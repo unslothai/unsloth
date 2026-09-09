@@ -30,7 +30,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_kernel_pushed_before_the_signal_is_still_deleted, test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them, test_the_exit_status_still_says_it_was_killed and 2 more.
 def _shared_setup_1(proc, tmp_path):
     try:
         _await_ready(proc)

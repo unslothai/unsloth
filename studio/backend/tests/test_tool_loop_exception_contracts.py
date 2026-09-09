@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_repeated_failing_call_stays_bounded, test_the_studio_loop_reports_the_real_error_and_continues, test_the_studio_loop_still_reports_a_genuinely_unknown_tool.
 def _shared_setup_1(monkeypatch):
     import test_studio_tool_loop as studio_h
     from core.inference import studio_tool_loop as loop_mod

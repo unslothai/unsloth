@@ -18,7 +18,6 @@ from unittest.mock import MagicMock
 import pytest
 
 
-# Shared setup for test_a_historical_image_stays_on_the_turn_that_sent_it, test_a_named_processor_template_is_classified_without_tool_use, test_an_image_capable_processor_without_a_template_still_marks_its_turn and 5 more.
 def _shared_setup_1(__file__):
     import os
     import sys
@@ -29,7 +28,6 @@ def _shared_setup_1(__file__):
     return _pytest
 
 
-# Shared setup for test_a_historical_image_stays_on_the_turn_that_sent_it, test_an_image_capable_processor_without_a_template_still_marks_its_turn, test_an_image_with_explicit_enable_tools_still_passes_the_client_catalog and 2 more.
 def _shared_setup_2(_pytest, backend, passthrough, payload):
     monkeypatch = _pytest.MonkeyPatch()
     try:
@@ -38,7 +36,6 @@ def _shared_setup_2(_pytest, backend, passthrough, payload):
         monkeypatch.undo()
 
 
-# Shared setup for test_a_named_processor_template_is_classified_without_tool_use, test_an_image_with_explicit_enable_tools_still_passes_the_client_catalog, test_image_tool_support_is_classified_from_the_processor_template and 1 more.
 def _shared_setup_3():
     import test_sf_client_tools_passthrough as passthrough
 

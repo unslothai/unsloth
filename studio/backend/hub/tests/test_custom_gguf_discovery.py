@@ -13,7 +13,6 @@ from hub.utils import gguf
 from utils.models.model_config import detect_gguf_model, _find_local_gguf_by_variant
 
 
-# Shared setup for test_aliased_nested_independent_loose_root_stays_selectable, test_overlapping_nested_independent_loose_root_stays_selectable, test_overlapping_nested_independent_model_root_stays_selectable.
 def _shared_setup_1(tmp_path):
     root = tmp_path / "root"
     parent = root / "parent"

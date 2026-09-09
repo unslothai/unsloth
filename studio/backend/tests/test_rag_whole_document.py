@@ -13,7 +13,6 @@ from core.rag.chunking import Chunk
 from core.inference import tools as inf_tools
 
 
-# Shared setup for test_build_rag_autoinject_keeps_the_project_hits_that_fit, test_build_rag_autoinject_whole_doc_merge_is_priced_in_tokens, test_build_rag_autoinject_whole_doc_merge_never_truncates_the_document.
 def _shared_setup_1(fake_search, monkeypatch):
     monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
     injected = _injected_text(
@@ -31,7 +30,6 @@ def _shared_setup_1(fake_search, monkeypatch):
     return injected
 
 
-# Shared setup for test_build_rag_autoinject_explicit_off_disables_whole_doc, test_build_rag_autoinject_server_kill_switch_blocks_whole_doc, test_build_rag_autoinject_whole_doc_runs_when_autoinject_false.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(
         tool,

@@ -486,7 +486,6 @@ class TestInstallPythonStackSubprocessMock:
     @pytest.mark.parametrize(
         "no_torch, is_macos, is_windows, filename, message",
         [
-            # With NO_TORCH=True, overrides.txt pip_install must NOT be called.
             pytest.param(
                 True,
                 True,
@@ -495,7 +494,6 @@ class TestInstallPythonStackSubprocessMock:
                 "overrides.txt should be skipped when NO_TORCH=True",
                 id = "no_torch_macos_skips_overrides",
             ),
-            # With IS_MACOS=True, triton-kernels.txt must NOT be called.
             pytest.param(
                 True,
                 True,
@@ -504,7 +502,6 @@ class TestInstallPythonStackSubprocessMock:
                 "triton-kernels.txt should be skipped on macOS",
                 id = "no_torch_macos_skips_triton",
             ),
-            # Windows+NO_TORCH: overrides.txt must be skipped.
             pytest.param(
                 True,
                 False,
@@ -513,7 +510,6 @@ class TestInstallPythonStackSubprocessMock:
                 "overrides.txt should be skipped with NO_TORCH=True on Windows",
                 id = "windows_no_torch_skips_overrides",
             ),
-            # Windows: triton-kernels.txt must be skipped (IS_WINDOWS guard).
             pytest.param(
                 True,
                 False,
@@ -522,7 +518,6 @@ class TestInstallPythonStackSubprocessMock:
                 "triton-kernels.txt should be skipped on Windows",
                 id = "windows_no_torch_skips_triton",
             ),
-            # Windows (without NO_TORCH): triton still skipped.
             pytest.param(
                 False,
                 False,
@@ -565,19 +560,16 @@ class TestInstallPythonStackSubprocessMock:
     @pytest.mark.parametrize(
         "filename, message",
         [
-            # Normal Linux: triton-kernels.txt IS called.
             pytest.param(
                 "triton-kernels.txt",
                 "triton-kernels.txt should be called on normal Linux",
                 id = "normal_linux_includes_triton",
             ),
-            # Normal Linux: extras.txt IS called (no filtering).
             pytest.param(
                 "extras.txt",
                 "extras.txt should be called on normal Linux",
                 id = "normal_linux_includes_extras",
             ),
-            # Normal Linux: extras-no-deps.txt IS called (no filtering).
             pytest.param(
                 "extras-no-deps.txt",
                 "extras-no-deps.txt should be called on normal Linux",

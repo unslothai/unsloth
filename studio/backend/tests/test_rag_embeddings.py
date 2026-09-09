@@ -16,7 +16,6 @@ import pytest
 from core.rag import config, embeddings
 
 
-# Shared setup for test_accelerator_fallback_loads_float32_on_cpu, test_cpu_never_loads_float16, test_opted_in_accelerator_loads_float16.
 def _shared_setup_1(monkeypatch):
     observed = {}
 
@@ -34,7 +33,6 @@ def _shared_setup_1(monkeypatch):
     return observed
 
 
-# Shared setup for test_accelerator_fallback_loads_float32_on_cpu, test_opted_in_accelerator_loads_float16, test_sentence_transformer_load_uses_live_cache.
 def _shared_setup_2(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "utils.hf_cache_settings.active_hf_hub_cache",
@@ -46,7 +44,6 @@ def _shared_setup_2(monkeypatch, tmp_path):
     embeddings._get("Org/Embedder")
 
 
-# Shared setup for test_device_defaults_to_cpu_on_an_accelerator_host, test_device_opts_in_to_the_accelerator, test_unrecognized_device_setting_falls_back_without_raising.
 def _shared_setup_3(monkeypatch):
     monkeypatch.setattr(
         embeddings,
@@ -55,7 +52,6 @@ def _shared_setup_3(monkeypatch):
     )
 
 
-# Shared setup for test_forced_llama_fallback_is_scoped_to_the_model_that_failed, test_runtime_preflight_keeps_st_when_no_fallback_exists, test_runtime_preflight_predicts_the_supported_llama_fallback.
 def _shared_setup_4(monkeypatch):
     monkeypatch.setattr(
         embeddings,

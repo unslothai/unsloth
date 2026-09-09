@@ -29,7 +29,6 @@ import types as _types
 from pathlib import Path
 
 
-# Shared setup for test_watchdog_does_not_kill_save_still_saving_within_window, test_watchdog_escalates_after_grace_once_complete_seen, test_watchdog_no_op_on_clean_quick_exit.
 def _shared_setup_1(monkeypatch):
     b = TrainingBackend()
     calls = _record_force_terminate(monkeypatch, b)
@@ -39,7 +38,6 @@ def _shared_setup_1(monkeypatch):
     return b, calls, proc
 
 
-# Shared setup for test_cancel_uses_shorter_absolute_timeout, test_later_cancel_tightens_watchdog_timeout, test_watchdog_backstop_fires_for_save_after_absolute_timeout.
 def _shared_setup_2(monkeypatch):
     b = TrainingBackend()
     calls = _record_force_terminate(monkeypatch, b)
@@ -48,7 +46,6 @@ def _shared_setup_2(monkeypatch):
     return b, calls
 
 
-# Shared setup for test_terminal_error_releases_an_in_flight_stop_watchdog, test_terminal_stall_arms_the_exit_watchdog, test_terminal_stall_releases_an_in_flight_stop_watchdog.
 def _shared_setup_3(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = _running_backend()

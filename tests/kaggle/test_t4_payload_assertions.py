@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_non_lora_tensor_beside_the_adapter_is_not_a_failure, test_a_syntactically_valid_but_empty_adapter_config_is_not_a_pass, test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails and 1 more.
 def _shared_setup_1():
     pytest.importorskip("safetensors")
     import torch
@@ -34,7 +33,6 @@ def _shared_setup_1():
     return save_file, saved_adapter_failures, torch, verify_saved_adapter
 
 
-# Shared setup for test_a_reference_captured_for_another_model_is_refused, test_a_reference_captured_with_another_learning_rate_is_refused, test_a_reference_that_records_no_hardware_is_unchecked_not_a_mismatch and 2 more.
 def _shared_setup_2(tmp_path):
     from run_t4_smoke import check_reference, reference_failures
 
@@ -43,7 +41,6 @@ def _shared_setup_2(tmp_path):
     return check_reference, ref, reference_failures
 
 
-# Shared setup for test_a_pin_the_run_could_not_read_is_recorded_as_unchecked, test_a_reference_with_no_recorded_revision_does_not_refuse, test_the_reference_check_still_works_without_an_observed_config and 1 more.
 def _shared_setup_3(tmp_path):
     from run_t4_smoke import check_reference
 

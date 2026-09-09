@@ -11,7 +11,6 @@ import pytest
 import torch
 
 
-# Shared setup for test_completed_run_keeps_output_dir_and_rejects_stale_cancel, test_finish_run_clears_output_dir_for_stop_without_save, test_finish_run_clears_output_dir_on_cancel_error_finalize and 1 more.
 def _shared_setup_1(monkeypatch, tmp_path):
     from storage import studio_db
 
@@ -30,7 +29,6 @@ def _shared_setup_1(monkeypatch, tmp_path):
     return studio_db
 
 
-# Shared setup for test_crashed_run_with_persisted_output_dir_is_resumable, test_list_runs_includes_config_json_for_resume_policy, test_resumed_errored_run_is_not_offered_again and 4 more.
 def _shared_setup_2(monkeypatch, tmp_path):
     from storage import studio_db
 

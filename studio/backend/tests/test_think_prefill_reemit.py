@@ -378,8 +378,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
 @pytest.mark.parametrize(
     "raw, expected",
     [
-        # A reply closes with <|eom|> like any other block, so the turn can carry
-        # on afterwards; treating the reply as the end would leak the rest verbatim.
+        # A reply closes with <|eom|> like any block, so the turn carries on afterwards.
         pytest.param(
             " to=user<|message|>Partly.<|eom|>"
             "<|start|>assistant to=self<|message|>Reconsider.<|eom|>"
@@ -387,8 +386,8 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             "Partly.<think>Reconsider.</think>Actually four.",
             id = "muse_glimmer_reasoning_after_a_reply_still_becomes_a_think_block",
         ),
-        # The checkpoint's own response_template matches `name` among other attributes;
-        # a stricter reading drops parameters or fails to see the call at all.
+        # The checkpoint's response_template allows attributes beside `name`; a stricter
+        # reading drops parameters or misses the call entirely.
         pytest.param(
             "to=web_search<|message|><atem:function_calls>\n"
             '<atem:invoke type="function" name="web_search">\n'
@@ -397,8 +396,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             '<tool_call>{"name": "web_search", "arguments": {"query": "FIFA"}}</tool_call>',
             id = "muse_glimmer_call_grammar_allows_attributes_beside_the_name",
         ),
-        # Only the call syntax and its envelope are framing; prose beside them is the
-        # answer, and rewriting the call must not quietly delete it.
+        # Only the call and its envelope are framing; prose beside them is the answer.
         pytest.param(
             "to=web_search<|message|>Looking it up.<atem:function_calls>"
             '<atem:invoke name="s"><atem:parameter name="q">v</atem:parameter></atem:invoke>'
@@ -408,9 +406,8 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             "One moment.",
             id = "muse_glimmer_text_the_model_wrote_around_a_call_is_kept",
         ),
-        # A tool block holding no call at all is not reshaped into something downstream
-        # might run: its body is content. The block closed, though, so the turn keeps
-        # parsing rather than shipping every later block as raw control markup.
+        # A tool block with no call is content, not something downstream might run, and it
+        # closed, so later blocks keep parsing instead of shipping as raw markup.
         pytest.param(
             " to=user<|message|>Checking.<|eom|>"
             '<|start|>assistant to=web_search<|message|>{"q": 1}<|eom|>'
@@ -425,8 +422,8 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             "<think>First.</think><think>Second.</think>Done.",
             id = "muse_glimmer_repeated_reasoning_blocks_each_become_a_think_block",
         ),
-        # A call the token budget truncated has no arguments worth executing, and its
-        # header is protocol framing, so neither belongs in what the user reads.
+        # A truncated call has no usable arguments and its header is framing, so neither
+        # reaches the user.
         pytest.param(
             "to=self<|message|>Need a search.<|eom|>"
             "<|start|>assistant to=web_search<|message|><atem:function_calls>\n"

@@ -616,8 +616,7 @@ def _page_text(monkeypatch, url, body, content_type):
             ["Uh oh!"],
             id = "fetch_page_text_html_conversion",
         ),
-        # A header-less server returning a bare HTML fragment (no <html>/doctype) must still be
-        # sniffed as HTML and converted, not served as raw markup.
+        # A header-less bare HTML fragment must still be sniffed and converted, not served raw.
         pytest.param(
             "https://example.com/fragment",
             _HTML_FRAGMENT,
@@ -635,8 +634,7 @@ def _page_text(monkeypatch, url, body, content_type):
             [],
             id = "fetch_page_text_missing_content_type_plain_text_raw",
         ),
-        # An explicit text/plain header on an HTML body is sniffed and converted, like the
-        # pre-extraction behavior of always converting HTML pages.
+        # text/plain on an HTML body is sniffed and converted, as before extraction existed.
         pytest.param(
             "https://example.com/mislabeled",
             _GITHUB_PAGE,

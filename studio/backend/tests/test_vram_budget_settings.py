@@ -16,7 +16,6 @@ import pytest
 import utils.vram_budget_settings as vb
 
 
-# Shared setup for test_a_nonterminal_retry_keeps_the_pending_value, test_every_pooled_caller_says_so, test_marker_is_committed_with_the_rest_of_the_launch_state and 4 more.
 def _shared_setup_1():
     import inspect
 
@@ -26,7 +25,6 @@ def _shared_setup_1():
     return compact
 
 
-# Shared setup for test_a_cpu_fallback_child_is_not_stamped_with_a_budget, test_a_terminal_failure_releases_the_pending_value, test_the_diffusion_launch_clears_the_marker.
 def _shared_setup_2():
     import inspect
 

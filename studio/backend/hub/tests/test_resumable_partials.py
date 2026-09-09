@@ -22,7 +22,6 @@ import pytest
 from hub.utils import resumable_partials as rp
 
 
-# Shared setup for test_a_complete_partial_is_left_for_upstream_to_finish, test_a_partial_left_by_another_user_is_not_built_on, test_a_partial_swapped_after_the_last_write_is_not_published and 5 more.
 def _shared_setup_1(module, partial, tmp_path):
     _patched_writer(module)(
         incomplete_path = partial,
@@ -34,7 +33,6 @@ def _shared_setup_1(module, partial, tmp_path):
     )
 
 
-# Shared setup for test_a_complete_partial_is_left_for_upstream_to_finish, test_a_partial_left_by_another_user_is_not_built_on, test_a_partial_swapped_after_the_last_write_is_not_published and 3 more.
 def _shared_setup_2(monkeypatch, tmp_path):
     module, calls = _fake_file_download(monkeypatch)
     assert rp.restore_resumable_partials() is True
@@ -43,7 +41,6 @@ def _shared_setup_2(monkeypatch, tmp_path):
     return calls, module, partial
 
 
-# Shared setup for test_a_planted_hard_link_is_not_appended_to, test_a_planted_partial_that_cannot_be_removed_defers_to_stock, test_a_planted_symlink_is_not_appended_to.
 def _shared_setup_3(monkeypatch, tmp_path):
     module, calls = _fake_file_download(monkeypatch)
     assert rp.restore_resumable_partials() is True

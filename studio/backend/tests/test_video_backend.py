@@ -28,7 +28,6 @@ from core.inference.video import (
 from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
 
 
-# Shared setup for test_a_broken_diagnostic_never_replaces_the_real_failure, test_a_direct_worker_call_keeps_its_cancellation, test_a_failed_generation_logs_the_resolved_request and 12 more.
 def _shared_setup_1(tmp_path):
     import core.inference.video as video_mod
 
@@ -37,7 +36,6 @@ def _shared_setup_1(tmp_path):
     return backend, video_mod
 
 
-# Shared setup for test_h3_reference_video_decodes_an_explicit_trim_with_matching_audio, test_h3_reference_video_refuses_a_clip_below_the_trained_window, test_h3_reference_video_refuses_instead_of_silently_truncating_a_long_clip and 10 more.
 def _shared_setup_2():
     pytest.importorskip("av")
     import base64
@@ -47,7 +45,6 @@ def _shared_setup_2():
     return base64, decode_h3_reference_video
 
 
-# Shared setup for test_begin_load_claims_no_companion_repos_for_a_non_h3_family, test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state, test_h3_native_load_claims_the_companion_repos_before_the_preflight and 2 more.
 def _shared_setup_3():
     from core.inference.video_minimax_h3 import (
         H3_COMPONENT_REPO,
@@ -57,7 +54,6 @@ def _shared_setup_3():
     return H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO
 
 
-# Shared setup for test_a_cancelled_h3_install_wait_reads_as_a_cancellation, test_a_managed_h3_native_run_holds_the_install_off, test_an_in_place_binary_swap_stops_the_h3_run and 1 more.
 def _shared_setup_4(monkeypatch, tmp_path):
     root = tmp_path / "sd-home" / "stable-diffusion.cpp"
     (root / "sd-bin").mkdir(parents = True)
@@ -67,7 +63,6 @@ def _shared_setup_4(monkeypatch, tmp_path):
     return managed
 
 
-# Shared setup for test_h3_native_load_refuses_a_binary_that_is_not_sd_cpp_before_downloading, test_h3_native_load_refuses_a_binary_that_predates_h3, test_h3_native_load_refuses_a_missing_binary_before_downloading.
 def _shared_setup_5(backend, fam):
     backend._run_load_h3_native(
         fam = fam,
@@ -78,7 +73,6 @@ def _shared_setup_5(backend, fam):
     )
 
 
-# Shared setup for test_a_broken_diagnostic_never_replaces_the_real_failure, test_a_failed_generation_logs_the_resolved_request, test_an_oom_on_a_math_only_device_names_the_quadratic_cost and 1 more.
 def _shared_setup_6(backend, monkeypatch):
     monkeypatch.setattr(
         type(backend._state.pipe),
@@ -87,7 +81,6 @@ def _shared_setup_6(backend, monkeypatch):
     )
 
 
-# Shared setup for test_dense_quant_skipped_under_offload, test_explicit_dense_quant_refuses_under_offload, test_the_video_load_places_on_the_selected_card_not_a_bare_device.
 def _shared_setup_7(monkeypatch, video_mod):
     real_plan = video_mod.plan_diffusion_memory
     monkeypatch.setattr(
@@ -97,7 +90,6 @@ def _shared_setup_7(monkeypatch, video_mod):
     )
 
 
-# Shared setup for test_h3_native_accelerator_load_keeps_the_video_gpu_claim, test_h3_native_cpu_fallback_releases_the_video_gpu_claim, test_h3_native_reused_cpu_binary_still_commits_to_cpu.
 def _shared_setup_8(_download, gpu_arbiter, monkeypatch):
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
@@ -108,7 +100,6 @@ def _shared_setup_8(_download, gpu_arbiter, monkeypatch):
     return backend
 
 
-# Shared setup for test_dense_quant_replan_uses_the_scaled_text_encoder, test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size, test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size.
 def _shared_setup_9(monkeypatch):
     from core.inference.video_families import detect_video_family
 
@@ -119,7 +110,6 @@ def _shared_setup_9(monkeypatch):
     return scale, text_encoder_gb, transformer_gb, vae_gb
 
 
-# Shared setup for test_a_non_oom_failure_does_not_blame_attention, test_an_oom_on_a_math_only_device_names_the_quadratic_cost, test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran and 1 more.
 def _shared_setup_10(backend, monkeypatch):
     records = _capture_generate_failures(monkeypatch)
 
@@ -128,7 +118,6 @@ def _shared_setup_10(backend, monkeypatch):
     return records
 
 
-# Shared setup for test_h3_native_accelerator_load_keeps_the_video_gpu_claim, test_h3_native_load_publishes_the_companion_repos_while_downloading, test_h3_native_reused_cpu_binary_still_commits_to_cpu.
 def _shared_setup_11(monkeypatch, sd_cpp_backend):
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -137,7 +126,6 @@ def _shared_setup_11(monkeypatch, sd_cpp_backend):
     )
 
 
-# Shared setup for test_h3_native_load_refuses_a_binary_that_is_not_sd_cpp_before_downloading, test_h3_native_load_refuses_a_binary_that_predates_h3, test_h3_native_load_refuses_a_missing_binary_before_downloading.
 def _shared_setup_12(_download, monkeypatch):
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
 

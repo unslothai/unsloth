@@ -12,7 +12,6 @@ from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import incomplete_blob_hash
 
 
-# Shared setup for test_progress_counts_completed_materialized_snapshot_file, test_progress_counts_the_snapshot_the_refs_point_at, test_progress_ignores_stale_revision_in_copy_layout and 1 more.
 def _shared_setup_1():
     result = snapshot_progress.compute_snapshot_progress(
         repo_type = "model",
@@ -28,7 +27,6 @@ def _shared_setup_1():
     return result
 
 
-# Shared setup for test_finalized_blob_supersedes_an_orphaned_partial, test_progress_counts_completed_materialized_snapshot_file, test_progress_counts_process_unique_incomplete_blob and 5 more.
 def _shared_setup_2(entry, monkeypatch):
     monkeypatch.setattr(
         snapshot_progress,
@@ -37,7 +35,6 @@ def _shared_setup_2(entry, monkeypatch):
     )
 
 
-# Shared setup for test_finalized_blob_supersedes_an_orphaned_partial, test_progress_counts_completed_materialized_snapshot_file, test_progress_ignores_stale_revision_in_copy_layout.
 def _shared_setup_3(manifest, monkeypatch):
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
@@ -46,7 +43,6 @@ def _shared_setup_3(manifest, monkeypatch):
     )
 
 
-# Shared setup for test_progress_counts_the_snapshot_the_refs_point_at, test_progress_ignores_stale_revision_in_copy_layout, test_progress_ignores_stale_revision_without_a_manifest.
 def _shared_setup_4(tmp_path):
     commit = "b" * 40
     entry = tmp_path / "models--Org--Model"

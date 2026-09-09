@@ -20,7 +20,6 @@ from types import SimpleNamespace
 import pytest
 
 
-# Shared setup for test_a_different_file_set_is_not_adopted, test_a_start_reports_whether_it_attached_to_a_live_job, test_active_downloads_publish_the_scoped_file_list and 1 more.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)

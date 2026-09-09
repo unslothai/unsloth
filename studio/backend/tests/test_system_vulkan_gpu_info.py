@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import main
 
 
-# Shared setup for test_system_gpu_info_does_not_merge_metrics_across_backend_index_spaces, test_system_gpu_info_preserves_vulkan_visibility_metrics, test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing.
 def _shared_setup_1(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))

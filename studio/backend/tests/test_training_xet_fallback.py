@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_cancel_interrupts_sidecar_wait_before_respawn, test_cancel_wins_pending_respawn_and_pump_finalizes, test_reset_waits_for_cancelled_respawn_finalization.
 def _shared_setup_1(b, monkeypatch, proc):
     b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
     b._handle_event({"type": "stall", "message": "x"})

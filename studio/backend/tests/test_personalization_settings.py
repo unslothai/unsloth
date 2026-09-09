@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 
-# Shared setup for test_personalization_put_preserves_absent_fields, test_personalization_put_preserves_existing_fields_on_stale_write, test_personalization_route_roundtrip_real_shape.
 def _shared_setup_1(monkeypatch, store):
     monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
     monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))

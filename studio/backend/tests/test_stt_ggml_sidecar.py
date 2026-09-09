@@ -35,7 +35,6 @@ from core.inference.stt_sidecar import (
 )
 
 
-# Shared setup for test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker, test_server_pid_is_tracked_for_parent_lifetime, test_training_forces_whisper_server_off_gpu.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(
         GgmlSttSidecar,

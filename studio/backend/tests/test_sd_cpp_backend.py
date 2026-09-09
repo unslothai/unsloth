@@ -25,7 +25,6 @@ from core.inference.sd_cpp_backend import (
 from core.inference.sd_cpp_engine import SdCppCancelled
 
 
-# Shared setup for test_a_cancel_during_server_revalidation_stops_before_the_process_spawns, test_server_start_failure_falls_back_to_oneshot, test_server_start_failure_keeps_the_engine_the_fallback_resolved and 1 more.
 def _shared_setup_1(b, fake, monkeypatch):
     monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
     monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
@@ -40,7 +39,6 @@ def _shared_setup_1(b, fake, monkeypatch):
     )
 
 
-# Shared setup for test_a_oneshot_load_refuses_a_cli_swapped_during_the_asset_download, test_server_start_failure_falls_back_to_oneshot, test_server_start_failure_keeps_the_engine_the_fallback_resolved and 1 more.
 def _shared_setup_2(b, fam):
     b._run_load(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
@@ -52,7 +50,6 @@ def _shared_setup_2(b, fam):
     )
 
 
-# Shared setup for test_h3_binary_gate_never_offers_to_delete_the_in_tree_developer_build, test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory, test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build.
 def _shared_setup_3(monkeypatch, own):
     monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
     monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
@@ -63,7 +60,6 @@ def _shared_setup_3(monkeypatch, own):
     return excinfo
 
 
-# Shared setup for test_download_plan_and_fetch_assets_pick_the_same_repo, test_download_plan_is_empty_when_every_native_asset_is_cached, test_download_plan_stages_the_mirrored_asset_repo.
 def _shared_setup_4(monkeypatch):
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(

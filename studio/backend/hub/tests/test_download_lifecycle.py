@@ -10,7 +10,6 @@ from hub.services import download_lifecycle
 from hub.utils import download_registry, state_dir
 
 
-# Shared setup for test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim, test_a_verdict_carried_onto_the_http_rung_is_still_charged, test_an_unspawnable_xet_retry_falls_through_to_http and 1 more.
 def _shared_setup_1():
     registry = download_registry.DownloadRegistry()
     key = download_registry.normalize_job_key("Org/Model")
@@ -25,7 +24,6 @@ def _shared_setup_1():
     return key, registry
 
 
-# Shared setup for test_a_first_stall_buys_another_xet_worker_and_records_nothing, test_a_pre_byte_trip_never_buys_another_xet_worker, test_the_attempts_knob_of_one_restores_the_straight_to_http_ladder and 1 more.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False

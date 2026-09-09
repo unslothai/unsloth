@@ -17,7 +17,6 @@ from models.training import TrainingRunSummary
 from routes import training_history
 
 
-# Shared setup for test_a_failure_computing_the_reason_is_not_fatal, test_a_provenance_refusal_is_reported_on_the_summary, test_a_resumable_run_carries_no_reason.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(training_history, "artifacts_present", lambda *a, **k: True)
     monkeypatch.setattr(

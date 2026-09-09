@@ -12,7 +12,6 @@ import pytest
 from fastapi import HTTPException
 
 
-# Shared setup for test_competing_pending_job_does_not_displace_the_active_owner, test_competing_rejected_job_does_not_displace_the_active_owner, test_handoff_without_a_start_request_exposes_only_the_new_identity and 6 more.
 def _shared_setup_1(backend, inline, monkeypatch):
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
     monkeypatch.setattr(rt.asyncio, "to_thread", inline)

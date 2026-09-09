@@ -35,7 +35,6 @@ import pytest
 from utils.hardware import hardware as hw
 
 
-# Shared setup for test_a_driver_total_below_the_carve_out_is_not_adopted, test_a_failing_carve_out_probe_keeps_the_device, test_an_unsettled_classifier_does_not_cost_a_card_its_occupancy and 1 more.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
@@ -45,7 +44,6 @@ def _shared_setup_1(monkeypatch):
     return devices
 
 
-# Shared setup for test_a_name_the_two_sides_spell_differently_still_joins, test_igpu_and_dgpu_each_report_their_own, test_the_arch_answers_when_the_names_do_not.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)

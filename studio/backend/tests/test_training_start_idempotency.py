@@ -17,7 +17,6 @@ from core.training.training import (
 from models.training import TrainingStartRequest
 
 
-# Shared setup for test_cancel_accepted_start_releases_tombstone_capacity_after_failure, test_cancel_accepted_start_stops_and_resets_only_its_job, test_concurrent_duplicate_cancel_returns_the_cancelled_tombstone and 1 more.
 def _shared_setup_1():
     backend = TrainingBackend()
     backend.reserve_start_request("request-current", "job-current")

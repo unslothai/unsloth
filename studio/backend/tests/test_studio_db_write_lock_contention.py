@@ -26,7 +26,6 @@ import storage.research_runs_db as research_runs_db
 import storage.studio_db as studio_db
 
 
-# Shared setup for test_concurrent_openers_all_get_normal, test_concurrent_workers_claim_a_run_exactly_once, test_eight_processes_upgrading_at_once_all_succeed.
 def _shared_setup_1(threads):
     for thread in threads:
         thread.start()

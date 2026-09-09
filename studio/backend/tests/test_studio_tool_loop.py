@@ -25,7 +25,6 @@ from core.inference.studio_tool_loop import (
 )
 
 
-# Shared setup for test_full_access_disables_the_sandbox_at_execution, test_sandbox_stays_on_by_default, test_tool_stdout_streams_while_the_call_runs.
 def _shared_setup_1():
     transport = FakeTransport(
         [

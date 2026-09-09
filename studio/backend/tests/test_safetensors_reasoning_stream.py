@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 
 
-# Shared setup for test_native_reasoning_streamer_selected_and_errors_raise, test_native_reasoning_streamer_starts_inside_prompt_opened_channel, test_text_only_vlm_fallback_resolves_native_markers_off.
 def _shared_setup_1():
     import threading
     import pytest

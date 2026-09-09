@@ -23,7 +23,6 @@ from storage import rag_db
 from utils.paths import rag_db_path
 
 
-# Shared setup for test_content_identical_touch_updates_metadata_without_reembedding, test_extension_changing_rename_reingests_with_the_new_parser, test_reconcile_retains_mapping_when_missing_file_reappears and 2 more.
 def _shared_setup_1(conn, folder):
     after = dict(
         conn.execute(
@@ -33,7 +32,6 @@ def _shared_setup_1(conn, folder):
     return after
 
 
-# Shared setup for test_a_failing_file_that_keeps_changing_cannot_block_removals, test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes, test_changed_file_failure_and_unavailable_scan_retain_prior_index and 2 more.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(
         folder_sync.ingestion,
@@ -42,7 +40,6 @@ def _shared_setup_2(monkeypatch):
     )
 
 
-# Shared setup for test_a_failing_file_that_keeps_changing_cannot_block_removals, test_an_unreadable_file_stops_withholding_removals_after_one_pass, test_unrelated_ingest_failure_still_removes_deleted_sources.
 def _shared_setup_3(rag_home):
     source, folder = _folder(rag_home)
     (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
@@ -53,17 +50,14 @@ def _shared_setup_3(rag_home):
     return folder, source
 
 
-# Shared setup for test_kb_deletion_retries_retired_scope_cleanup_after_failure, test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure, test_kb_upload_rejects_retired_scope_before_saving and 1 more.
 def _shared_setup_4():
     from routes import rag as rag_routes
     with _connection() as conn:
         store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
-    # Only the module escapes: `_connection` is a `closing(...)`, so `conn` is
-    # already closed by the time this returns.
+    # Only the module escapes: `_connection` is a `closing(...)`, so `conn` is shut.
     return rag_routes
 
 
-# Shared setup for test_normal_scheduling_reclaims_an_expired_running_job, test_skipped_reconciliation_releases_a_claim_the_queue_already_activated, test_unlink_waits_for_a_foreign_sync_lease.
 def _shared_setup_5(rag_home):
     from core.rag import job_leases
 
@@ -72,7 +66,6 @@ def _shared_setup_5(rag_home):
     return folder, job_id, job_leases
 
 
-# Shared setup for test_snapshot_accepts_a_source_the_scan_could_not_identify, test_snapshot_copies_the_source_byte_for_byte, test_snapshot_ignores_a_path_recovered_identity_os_fstat_disagrees_with.
 def _shared_setup_6(payload, snapshot):
     try:
         assert Path(snapshot).read_bytes() == payload

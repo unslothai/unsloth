@@ -27,7 +27,6 @@ from core.training.provenance import (
 from hub.utils import dataset_cache, hf_cache_state
 
 
-# Shared setup for test_dataset_snapshot_source_rejects_cross_platform_paths, test_embedding_hf_loader_attests_first_remote_dataset_load, test_exact_dataset_snapshot_rejects_cross_snapshot_symlink and 10 more.
 def _shared_setup_1(tmp_path):
     snapshot = _dataset_snapshot(
         tmp_path,
@@ -37,7 +36,6 @@ def _shared_setup_1(tmp_path):
     return snapshot
 
 
-# Shared setup for test_mlx_conflicting_quantization_widths_do_not_attest_as_4bit, test_mlx_top_level_8bit_quantization_does_not_attest_as_4bit, test_mlx_top_level_quantization_attests_prequantized_snapshot.
 def _shared_setup_2(model_snapshot, tmp_path):
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
     config = {
@@ -58,7 +56,6 @@ def _shared_setup_2(model_snapshot, tmp_path):
     return config, event
 
 
-# Shared setup for test_4bit_attestation_accepts_verified_runtime_quantization, test_4bit_attestation_rejects_full_precision_selected_snapshot, test_loaded_model_metadata_attests_actual_quantized_redirect.
 def _shared_setup_3(config, model):
     event = build_worker_provenance_event(
         config,
@@ -71,7 +68,6 @@ def _shared_setup_3(config, model):
     return event, updates
 
 
-# Shared setup for test_finalization_waits_for_inflight_provenance, test_parent_persists_sanitized_attested_config_and_updates_respawn_state, test_provenance_continues_after_failed_finalization.
 def _shared_setup_4(backend, config):
     backend._db_run_created = True
     backend._db_config = {
@@ -82,7 +78,6 @@ def _shared_setup_4(backend, config):
     }
 
 
-# Shared setup for test_loaded_model_metadata_attests_actual_quantized_redirect, test_resume_load_target_validates_redirect_snapshot_against_actual_repo, test_resume_route_restores_attested_actual_model_repo.
 def _shared_setup_5(tmp_path):
     actual = _model_snapshot(
         tmp_path,
@@ -93,7 +88,6 @@ def _shared_setup_5(tmp_path):
     return actual
 
 
-# Shared setup for test_mlx_runtime_4bit_attestation_requires_exact_runtime_policy, test_mlx_runtime_4bit_attests_however_the_model_stores_metadata, test_mlx_runtime_4bit_metadata_attests_unpinned_hub_load.
 def _shared_setup_6(dataset):
     config = {
         "model_name": "org/model",
@@ -104,7 +98,6 @@ def _shared_setup_6(dataset):
     return config
 
 
-# Shared setup for test_finalization_persists_provenance_after_event_update_failure, test_finalization_waits_for_inflight_provenance, test_provenance_continues_after_failed_finalization.
 def _shared_setup_7(tmp_path):
     from core.training.training import TrainingBackend
 

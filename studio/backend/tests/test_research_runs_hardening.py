@@ -42,7 +42,6 @@ from core.research_runs import (
 from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
 
 
-# Shared setup for test_plain_keepalives_mean_a_silent_backend_and_spend_the_budget, test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget, test_the_budget_starts_when_admission_ends.
 def _shared_setup_1():
     supervisor = _make_supervisor(_noop_check_active)
 
@@ -52,7 +51,6 @@ def _shared_setup_1():
     return started
 
 
-# Shared setup for test_stream_completion_first_output_timeout_survives_iterator_cleanup, test_stream_completion_rejects_zero_output_terminal_stream, test_stream_completion_times_out_when_output_never_starts.
 def _shared_setup_2():
     supervisor = _make_supervisor(_noop_check_active)
 

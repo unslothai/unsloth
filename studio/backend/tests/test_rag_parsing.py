@@ -8,7 +8,6 @@ from __future__ import annotations
 import pytest
 
 
-# Shared setup for test_docx_flattens_nested_table, test_docx_nested_table_keeps_in_cell_order, test_docx_table_keeps_columns_and_collapses_cell_newlines and 2 more.
 def _shared_setup_1():
     pytest.importorskip("docx")
     import docx

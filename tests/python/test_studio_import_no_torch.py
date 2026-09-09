@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_convert_alpaca_to_chatml_no_torch, test_convert_chatml_to_alpaca_no_torch, test_dataclass_deepseek_collator_instantiable and 5 more.
 def _shared_setup_1(code, no_torch_venv):
     result = subprocess.run(
         [no_torch_venv, "-c", code],

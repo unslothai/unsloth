@@ -36,7 +36,6 @@ from state.tool_approvals import resolve_tool_decision
 from utils.datasets import is_gpt_oss_model_name
 
 
-# Shared setup for test_render_html_auto_mode_static_runs_without_prompt, test_render_html_bypass_permissions_keeps_early_provisional, test_render_html_confirmation_gate_suppresses_early_provisional and 1 more.
 def _shared_setup_1():
     exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
     turn_iter = iter(
@@ -52,7 +51,6 @@ def _shared_setup_1():
     return exec_fn, turn_iter
 
 
-# Shared setup for test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_raises, test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted, test_render_with_native_template_fallback_swaps_when_override_drops_tools.
 def _shared_setup_2():
     from types import SimpleNamespace
 
@@ -63,7 +61,6 @@ def _shared_setup_2():
     return SimpleNamespace, messages, render_with_native_template_fallback, tools
 
 
-# Shared setup for test_render_html_emits_provisional_tool_start, test_render_html_provisional_card_closed_on_generator_exception, test_render_html_success_blocks_second_canvas_call.
 def _shared_setup_3(_gen, exec_fn):
     loop = run_safetensors_tool_loop(
         single_turn = _gen,
@@ -74,7 +71,6 @@ def _shared_setup_3(_gen, exec_fn):
     return loop
 
 
-# Shared setup for test_prefilled_no_close_reasoning_intent_still_reprompts, test_prefilled_reasoning_prefix_is_kept_for_reasoning_only_reprompt, test_reasoning_only_intent_still_reprompts_and_uses_a_tool.
 def _shared_setup_4(exec_fn, loop):
     events = _collect_events(loop)
 
@@ -83,7 +79,6 @@ def _shared_setup_4(exec_fn, loop):
     assert contents[-1] == "Here is the answer."
 
 
-# Shared setup for test_disabled_auto_heal_is_not_reprompted, test_explicit_nudge_off_is_not_reprompted, test_omitted_nudge_flag_follows_disabled_process_default.
 def _shared_setup_5(exec_fn, loop):
     events = _collect_events(loop)
     assert exec_fn.calls == []
@@ -92,7 +87,6 @@ def _shared_setup_5(exec_fn, loop):
     assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
 
-# Shared setup for test_deepseek_call_parses_to_name_and_args, test_family_call_parses_to_name_and_args, test_robust_form_parses_to_name_and_args.
 def _shared_setup_6(args, name, text):
     result = parse_tool_calls_from_text(text)
     assert len(result) == 1
@@ -100,7 +94,6 @@ def _shared_setup_6(args, name, text):
     assert json.loads(result[0]["function"]["arguments"]) == args
 
 
-# Shared setup for test_duplicate_noop_does_not_consume_budget_at_small_cap, test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool, test_same_turn_duplicate_does_not_drop_later_parallel_call.
 def _shared_setup_7(exec_fn):
     assert exec_fn.calls == [("web_search", {"query": "x"}), ("python", {"code": "print(1)"})]
 
@@ -171,8 +164,7 @@ class TestParser:
                 {"location": "Tokyo", "unit": "celsius"},
                 id = "gemma_native_tool_call_bare_string_values",
             ),
-            # Only the wrapping newline is trimmed, so code-argument indentation survives
-            # (str.strip() destroyed it).
+            # Only the wrapping newline is trimmed; str.strip() destroyed code indentation.
             pytest.param(
                 "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>",
                 "python",
@@ -224,8 +216,7 @@ class TestParser:
                 "ls -la",
                 id = "xml_unclosed",
             ),
-            # A code parameter with a literal </parameter> must not truncate: the parser uses
-            # end-of-body as the only boundary for single-param calls.
+            # Literal </parameter> in code must not truncate: single-param calls end at end-of-body.
             pytest.param(
                 "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>",
                 "python",
@@ -306,25 +297,21 @@ class TestParser:
                 "python",
                 id = "rehearsal_after_closed_think_still_parsed",
             ),
-            # Reasoning models (Qwen3.5 enable_thinking) open <think> in the PROMPT, so generated
-            # content starts inside the thought and carries only a closing </think>. A call
-            # rehearsed in that leading thought must be skipped, while a real call after the close
-            # still fires.
+            # Reasoning models open <think> in the PROMPT, so content starts inside the thought:
+            # a call rehearsed before the lone </think> is skipped, one after it fires.
             pytest.param(
                 'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}',
                 "python",
                 id = "rehearsal_inside_prefilled_think_is_ignored",
             ),
-            # A </think> literal inside a real leading call's arguments must not be read as a
-            # prefilled-reasoning close (which would skip the call).
+            # A </think> literal inside a leading call's arguments is not a prefill close.
             pytest.param(
                 'web_search[ARGS]{"query":"what is </think>"}',
                 "web_search",
                 id = "literal_close_think_in_leading_argument_not_prefill",
             ),
-            # A real leading call followed by a stray </think> and no further call is a normal
-            # answer, not prefilled reasoning; the call must still fire (the virtual span only
-            # applies when a real call follows the close).
+            # Stray </think> after a real leading call is a normal answer: the virtual prefill
+            # span only applies when a real call follows the close.
             pytest.param(
                 'Now web_search[ARGS]{"query":"x"}</think> answer',
                 "web_search",
@@ -370,9 +357,8 @@ class TestParser:
                 "[TOOL_CALLS]web_search{not valid}", id = "mistral_bracket_bad_json_dropped"
             ),
             pytest.param("python[ARGS]{not valid json}", id = "rehearsal_bad_json_dropped"),
-            # Rehearsal-shaped markup inside an unclosed <think> block must not be executed as a
-            # real tool call. Mid-stream the </think> tag has not arrived yet, so the strip regex
-            # has to accept end-of-string as a terminator.
+            # Rehearsal inside an UNCLOSED <think> is not a call: mid-stream </think> has not
+            # arrived, so the strip regex must accept end-of-string as a terminator.
             pytest.param(
                 '<think>I should call web_search[ARGS]{"query":"weather"} next to find the answer.',
                 id = "rehearsal_inside_unclosed_think_is_ignored",
@@ -747,8 +733,7 @@ class TestParserMultiFormat:
                 {"code": "print(2+2)"},
                 id = "llama3_python_tag_json_form_with_eom",
             ),
-            # Llama-3.2-Instruct emits bare JSON directly as content; no <|python_tag|> prefix
-            # per its training template.
+            # Llama-3.2-Instruct emits bare JSON as content, no <|python_tag|>, per its template.
             pytest.param(
                 '{"name":"web_search","parameters":{"query":"Tokyo weather"}}',
                 "web_search",
@@ -761,8 +746,7 @@ class TestParserMultiFormat:
                 {"a": 1, "b": 2},
                 id = "llama3_2_bare_json_arguments_key",
             ),
-            # Array object keyed on ``parameters`` (not ``arguments``) must keep its payload,
-            # matching the JSON/XML paths and SGLang's base detector.
+            # Keyed on ``parameters`` not ``arguments``: payload survives, as in SGLang's detector.
             pytest.param(
                 '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]',
                 "get_weather",
@@ -780,17 +764,15 @@ class TestParserMultiFormat:
                 {"a": 1, "b": 2},
                 id = "mistral_v11_with_args_marker",
             ),
-            # Mistral Small 3.2: ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``. The ``[CALL_ID]``
-            # segment must be skipped, not treated as a stop (llama.cpp test-chat.cpp:4785).
+            # Mistral Small 3.2 [CALL_ID] is skipped, not a stop (llama.cpp test-chat.cpp:4785).
             pytest.param(
                 '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
                 "special_function",
                 {"arg1": 1},
                 id = "mistral_call_id_form",
             ),
-            # Magistral wraps reasoning in ``[THINK]...[/THINK]``. A ``[TOOL_CALLS]`` inside the
-            # reasoning is chain-of-thought, not a real call; only the call after ``[/THINK]``
-            # counts (llama.cpp test-chat.cpp:2285).
+            # Magistral [THINK]...[/THINK]: only a call after [/THINK] counts, the one inside is
+            # chain-of-thought (llama.cpp test-chat.cpp:2285).
             pytest.param(
                 '[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{"x":1} '
                 'and more[/THINK][TOOL_CALLS]real_fn[ARGS]{"y":2}',
@@ -798,8 +780,7 @@ class TestParserMultiFormat:
                 {"y": 2},
                 id = "mistral_think_reasoning_ignored",
             ),
-            # A literal ``[THINK]`` inside a real tool argument (after the call) must not be
-            # stripped or corrupt the parse.
+            # A literal ``[THINK]`` inside a real tool argument must not be stripped.
             pytest.param(
                 '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}',
                 "search",
@@ -830,8 +811,7 @@ class TestParserMultiFormat:
                 },
                 id = "gemma4_nested_args",
             ),
-            # skip_special_tokens removes <|tool_call>/<tool_call|> and <|"|>, leaving a bare
-            # call:NAME{...} with an unquoted value.
+            # skip_special_tokens strips the envelope, leaving bare call:NAME{...}, unquoted value.
             pytest.param(
                 "call:web_search{query:weather in San Francisco right now}",
                 "web_search",
@@ -922,8 +902,7 @@ class TestParserMultiFormat:
             pytest.param(
                 "Hello world, how are you today?", id = "llama3_2_bare_json_plain_prose_does_not_fire"
             ),
-            # JSON embedded in prose must NOT fire (the parser is strict about content
-            # STARTING with `{`).
+            # JSON embedded in prose must NOT fire: content has to START with `{`.
             pytest.param(
                 'The tool result was: {"name":"foo"}',
                 id = "llama3_2_bare_json_embedded_in_prose_does_not_fire",
@@ -940,14 +919,12 @@ class TestParserMultiFormat:
                 '{"name":"foo","parameters":"this is a sentence"}',
                 id = "llama3_2_bare_json_string_parameters_does_not_fire",
             ),
-            # OpenAI ``arguments`` may be a JSON-string of a dict, but a plain non-JSON string
-            # must not pass the guard.
+            # OpenAI ``arguments`` may be a JSON-string of a dict, but plain prose must not pass.
             pytest.param(
                 '{"name":"foo","arguments":"not json"}',
                 id = "llama3_2_bare_json_string_arguments_not_json_does_not_fire",
             ),
-            # Reasoning that merely mentions a tool call but does not emit one after
-            # ``[/THINK]`` yields no calls.
+            # A call only mentioned in reasoning, with none after ``[/THINK]``, yields nothing.
             pytest.param(
                 '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.',
                 id = "mistral_think_reasoning_no_real_call",
@@ -1296,8 +1273,7 @@ class TestParserDeepSeek:
         assert [c["function"]["name"] for c in result] == ["get_time", "get_weather"]
 
     def test_v3_1_strict_recovers_after_missing_call_end(self):
-        # The FIRST inner call is missing its terminator, so strict mode skips it -- but the
-        # parser must keep scanning and still return the second. Auto-Heal keeps both.
+        # Strict skips the unterminated FIRST call but keeps scanning; Auto-Heal keeps both.
         text = _ds_section(
             _ds_call("get_weather", '{"city": "SF"}', closed = False),
             _ds_call("get_time", '{"tz": "PST"}'),
@@ -1328,8 +1304,7 @@ class TestParserDeepSeek:
         "opener",
         [
             pytest.param(_DS_OPEN, id = "deepseek_strip_markup"),
-            # The short opener is parsed, so its markup must also be stripped (the strip patterns
-            # used to require the long opener and left the short-opener markup leaking).
+            # Strip patterns once required the long opener and leaked the short one's markup.
             pytest.param(_DS_SHORT_OPEN, id = "deepseek_short_opener_is_stripped"),
         ],
     )
@@ -1494,8 +1469,7 @@ class TestParserKimi:
     @pytest.mark.parametrize(
         "text, name",
         [
-            # A Qwen/Hermes <tool_call> whose argument contains literal Kimi markup (a user asking
-            # about that syntax) must execute the OUTER call, not the embedded marker.
+            # Literal Kimi markup inside a Hermes argument: run the OUTER call, not the marker.
             pytest.param(
                 '<tool_call>{"name":"web_search","arguments":{"query":'
                 '"explain <|tool_call_begin|>functions.evil:0'
@@ -1503,15 +1477,13 @@ class TestParserKimi:
                 "web_search",
                 id = "outer_tool_call_with_embedded_kimi_marker_parses_outer",
             ),
-            # Control: a real Kimi call with no leading <tool_call> envelope still goes through
-            # the pre-pass.
+            # Control: a real Kimi call with no <tool_call> envelope still hits the pre-pass.
             pytest.param(
                 _kimi_section(_kimi_call("functions.web_search:0", '{"query":"x"}')),
                 "web_search",
                 id = "genuine_kimi_call_without_envelope_still_parses",
             ),
-            # A dotted Kimi id keeps its FULL name after stripping only the ``functions.`` prefix
-            # and the ``:idx`` suffix, matching current vLLM.
+            # Only the ``functions.`` prefix and ``:idx`` suffix are stripped, matching vLLM.
             pytest.param(
                 _kimi_section(_kimi_call("a.b.c:2")),
                 "a.b.c",
@@ -1536,8 +1508,7 @@ class TestParserKimi:
         assert result[0]["function"]["name"] == name
 
     def test_kimi_multi_call_with_index(self):
-        # Multiple consecutive calls inside a single section, each with its own monotonically
-        # incrementing ``:IDX``.
+        # Consecutive calls in one section, each with its own incrementing ``:IDX``.
         result = parse_tool_calls_from_text(
             _kimi_section(
                 _kimi_call("functions.read_file:0", '{"path":"a"}'),
@@ -1567,8 +1538,7 @@ class TestParserKimi:
         assert has_tool_signal("<|tool_calls_section_begin|>...")
 
     def test_kimi_call_without_section_wrapper(self):
-        # llama.cpp makes the ``<|tool_calls_section_begin|>`` wrapper optional -- Kimi K2 can
-        # emit a bare ``<|tool_call_begin|>`` call.
+        # llama.cpp makes the section wrapper optional: Kimi K2 can emit a bare call.
         result = parse_tool_calls_from_text(
             _kimi_call("functions.execute_command:0", '{"cmd":"ls"}')
         )
@@ -1742,7 +1712,7 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
             None,
             id = "rehearsal_call_name_is_not_streamed_before_args",
         ),
-        # Finding 5: name and [ARGS] in separate chunks, so the bare name is held until [ARGS] arrives.
+        # Name and [ARGS] in separate chunks: the bare name is held until [ARGS] arrives.
         pytest.param(
             [["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
             [("web_search", {"query": "cats"})],
@@ -1778,9 +1748,8 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
             None,
             id = "initial_buffer_flush_holds_split_rehearsal_name",
         ),
-        # Llama-3.2 ``custom_tools`` bare form ``{"name":..,"parameters":..}`` carries no XML
-        # signal. The loop must BUFFER it until the object closes and execute it via the safety
-        # net, never leaking the raw JSON to streaming clients as content.
+        # Llama-3.2 bare form has no XML signal: BUFFER until the object closes and fire via
+        # the safety net, never streaming the raw JSON as content.
         pytest.param(
             [['{"name":"web_search","parameters":{"query":"cats"}}'], ["Here are the results."]],
             [("web_search", {"query": "cats"})],
@@ -1788,8 +1757,7 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
             "Here are the results.",
             id = "bare_json_tool_call_is_not_streamed_as_content",
         ),
-        # Same, but the bare object arrives split mid-key, so the buffer is held open across
-        # chunks before it balances.
+        # Same, split mid-key, so the buffer stays open across chunks until it balances.
         pytest.param(
             [['{"name":"web_', 'search","parameters":{"query":"cats"}}'], ["Done."]],
             [("web_search", {"query": "cats"})],
@@ -1797,8 +1765,7 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
             None,
             id = "bare_json_tool_call_split_across_chunks_is_not_streamed",
         ),
-        # Gemma 4 wrapper-less ``call:NAME{...}`` has no XML signal; the loop must hold it
-        # (BUFFERING) and execute it, never streaming the raw call text.
+        # Gemma 4 wrapper-less ``call:NAME{...}`` has no XML signal: buffer, never stream it.
         pytest.param(
             [["call:web_search{query:cats}"], ["Found."]],
             [("web_search", {"query": "cats"})],
@@ -2192,8 +2159,7 @@ class TestLoopBasic:
                 None,
                 id = "function_xml_form",
             ),
-            # The loop must recognise Llama-3's <|python_tag|> marker, drain the rest of the
-            # turn, and execute the call.
+            # <|python_tag|> marker: drain the rest of the turn, then execute the call.
             pytest.param(
                 ["<|python_tag|>web_search.call(", 'query="weather in Tokyo"', ")"],
                 "The weather is sunny.",
@@ -2203,11 +2169,8 @@ class TestLoopBasic:
                 None,
                 id = "llama3_python_tag_form",
             ),
-            # Llama-3.1 / 3.2 emit a bare-JSON tool call ``{"name":..,"parameters":..}`` with NO
-            # XML signal. The loop's safety-net parse must still fire the tool instead of treating
-            # the turn as "planned without calling tools" and re-prompting the model into giving
-            # up. Regression for the has_tool_signal gate that dropped these; GGUF's llama-server
-            # parses them natively.
+            # Llama-3.1/3.2 bare JSON has NO XML signal; regression for the has_tool_signal gate
+            # that dropped it and re-prompted instead of firing the tool.
             pytest.param(
                 ['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
                 "The weather is sunny.",
@@ -2217,8 +2180,7 @@ class TestLoopBasic:
                 None,
                 id = "llama3_bare_json_form_fires_tool",
             ),
-            # Pre-v11 Mistral emission ``[TOOL_CALLS] [{...}]``; its ids must propagate to
-            # tool_start events.
+            # Pre-v11 Mistral ``[TOOL_CALLS] [{...}]``: ids must reach tool_start events.
             pytest.param(
                 ['[TOOL_CALLS] [{"name":"web_search",', '"arguments":{"query":"hi"},"id":"abc"}]'],
                 "done",
@@ -2248,8 +2210,7 @@ class TestLoopBasic:
                 None,
                 id = "gemma4_form",
             ),
-            # DeepSeek V3.1: the buffer state machine must wake on the opener and the parser must
-            # extract the V3.1 bare-JSON body.
+            # DeepSeek V3.1: the buffer wakes on the opener, the parser takes the bare-JSON body.
             pytest.param(
                 [
                     _DS_OPEN,
@@ -2281,9 +2242,8 @@ class TestLoopBasic:
                 None,
                 id = "glm_form",
             ),
-            # Kimi K2: the BARE name must reach execute_tool even though the model emitted
-            # ``functions.web_search:0``, while tool_start keeps the full id so the conversation
-            # roundtrip can replay it verbatim.
+            # Kimi K2: execute_tool gets the BARE name, tool_start the full id so a roundtrip
+            # replays verbatim.
             pytest.param(
                 [
                     "<|tool_calls_section_begin|>",
@@ -4286,8 +4246,7 @@ class TestRoutesPythonTagStrip:
                 "",
                 id = "python_tag_json_form_multiline_stripped",
             ),
-            # Two python_tag emissions back-to-back across a sentinel strip independently; the
-            # ``<|eom_id|>`` between them remains.
+            # Back-to-back python_tag emissions strip independently; the ``<|eom_id|>`` remains.
             pytest.param(
                 '<|python_tag|>brave_search.call(query="a")<|eom_id|><|python_tag|>python.call(code="x=1")',
                 "<|eom_id|>",
@@ -4304,9 +4263,8 @@ class TestParserRobustness:
     @pytest.mark.parametrize(
         "text, name, args",
         [
-            # Hermes wrapper around a Llama-3.2 bare-JSON object that uses ``parameters`` instead
-            # of ``arguments``. The bare-JSON and python_tag paths already accept both keys; this
-            # path now does too. Was extracting name only and silently dropping the args.
+            # Hermes wrapper around a bare-JSON object keyed ``parameters``: was extracting the
+            # name only and silently dropping the args.
             pytest.param(
                 '<tool_call>\n{"name": "search", "parameters": {"q": "ramen"}}\n</tool_call>',
                 "search",
@@ -4328,18 +4286,15 @@ class TestParserRobustness:
                 {"city": "Tokyo", "unit": "celsius"},
                 id = "function_xml_attribute_form_multi_param",
             ),
-            # Regression guard: the old ``<function=name><parameter=k>v`` syntax must keep
-            # parsing after the regex broadening.
+            # The old ``<function=name><parameter=k>v`` syntax must survive the regex broadening.
             pytest.param(
                 "<function=get_weather><parameter=city>Tokyo</parameter></function>",
                 "get_weather",
                 {"city": "Tokyo"},
                 id = "function_xml_legacy_equals_form_still_works",
             ),
-            # Meta's official Llama-3.x chat template prefixes every assistant turn with
-            # ``<|start_header_id|>assistant<|end_header_id|>\n\n``. The sentinel-strip in
-            # ``_parse_llama3_bare_json`` must reach past the role label to the JSON body, else
-            # every round-tripped tool call in history silently drops.
+            # Meta's Llama-3.x template prefixes every assistant turn with a role header; the
+            # sentinel-strip must reach past it or round-tripped calls in history silently drop.
             pytest.param(
                 "<|start_header_id|>assistant<|end_header_id|>\n\n"
                 '{"name": "get_weather", "parameters": {"city": "Tokyo"}}',
@@ -4347,9 +4302,8 @@ class TestParserRobustness:
                 {"city": "Tokyo"},
                 id = "llama3_chat_template_round_trip",
             ),
-            # Models routinely follow a tool call with explanatory prose. The body must terminate
-            # at ``</function>`` even without a ``</tool_call>`` wrapper, else the trailing prose
-            # leaks into the last parameter value.
+            # The body must end at ``</function>`` even with no ``</tool_call>`` wrapper, else
+            # trailing prose leaks into the last parameter value.
             pytest.param(
                 "<function=get_weather><parameter=city>Tokyo</parameter>"
                 "</function>\n\nHere is what I found.",

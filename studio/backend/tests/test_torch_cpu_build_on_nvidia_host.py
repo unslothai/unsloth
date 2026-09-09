@@ -48,7 +48,6 @@ import utils.hardware.hardware as hw
 from utils.hardware import nvidia
 
 
-# Shared setup for test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen, test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin, test_an_ordinary_intel_igpu_does_not_establish_a_mismatch.
 def _shared_setup_1(monkeypatch, tmp_path):
     import sys
 
@@ -57,7 +56,6 @@ def _shared_setup_1(monkeypatch, tmp_path):
     return sys
 
 
-# Shared setup for test_a_driver_without_the_cli_still_reports_its_cards, test_a_missing_nvidia_smi_does_not_warn_every_refresh, test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe.
 def _shared_setup_2(monkeypatch):
     def _missing(*_a, **_k):
         raise FileNotFoundError("nvidia-smi")
@@ -65,7 +63,6 @@ def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(nvidia.subprocess, "run", _missing)
 
 
-# Shared setup for test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards, test_a_missing_nvidia_smi_does_not_warn_every_refresh, test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe.
 def _shared_setup_3(monkeypatch):
     def _hang(*_a, **_k):
         raise subprocess.TimeoutExpired("nvidia-smi", 10)

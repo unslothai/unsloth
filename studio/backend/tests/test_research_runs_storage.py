@@ -12,7 +12,6 @@ from storage import research_runs_db as research_db
 from storage import studio_db
 
 
-# Shared setup for test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question, test_completion_cancellation_closes_loopback_request, test_error_after_lease_expiry_is_failed_instead_of_replanned and 10 more.
 def _shared_setup_1():
     from core import research_runs as worker
 
@@ -21,7 +20,6 @@ def _shared_setup_1():
     return supervisor, worker
 
 
-# Shared setup for test_cancel_requested_wins_finish_cas, test_execution_reset_clears_steps_and_sources, test_partial_report_is_persisted_and_emits_an_event and 4 more.
 def _shared_setup_2():
     _create()
     plan = research_db.set_plan("run-1", _plan())
@@ -30,7 +28,6 @@ def _shared_setup_2():
     return plan
 
 
-# Shared setup for test_expired_worker_cannot_write_progress_or_execution_state, test_planner_cannot_finalize_after_its_lease_timestamp_expires, test_recovered_running_research_resumes_durable_progress and 1 more.
 def _shared_setup_3():
     conn = studio_db.get_connection()
     try:
@@ -40,7 +37,6 @@ def _shared_setup_3():
         conn.close()
 
 
-# Shared setup for test_terminal_fallback_cannot_cross_a_no_placeholder_rebind, test_terminal_write_cannot_cross_a_rebind_after_the_worker_guard, test_terminal_write_cannot_cross_a_retry_after_the_worker_guard.
 def _shared_setup_4(supervisor, worker):
     research_db.request_cancel("run-1")
     claimed = research_db.claim_next(supervisor.worker_id)
@@ -53,7 +49,6 @@ def _shared_setup_4(supervisor, worker):
     return cancelled_plan, claimed, original_update
 
 
-# Shared setup for test_clear_history_cancels_runs_captured_by_delete_transaction, test_delete_thread_cancels_active_research_run, test_project_delete_cancels_runs_captured_by_delete_transaction and 2 more.
 def _shared_setup_5():
     _create()
     plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
@@ -61,7 +56,6 @@ def _shared_setup_5():
     research_db.claim_next("worker-1")
 
 
-# Shared setup for test_clear_history_cancels_runs_captured_by_delete_transaction, test_delete_thread_cancels_active_research_run, test_project_delete_cancels_runs_captured_by_delete_transaction.
 def _shared_setup_6():
     cancelled: list[str] = []
     request = SimpleNamespace(

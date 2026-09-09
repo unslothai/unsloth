@@ -14,7 +14,6 @@ import pytest
 from fastapi import HTTPException
 
 
-# Shared setup for test_enabled_intent_blocks_only_selected_launch_path, test_failed_stop_remains_retryable, test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic and 1 more.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(remote_access, "_start_worker", None)
     monkeypatch.setattr(remote_access, "_stop_worker", None)

@@ -40,7 +40,6 @@ import pytest
 from unsloth_pwsh_runner import run_pwsh
 
 
-# Shared setup for test_an_unrecorded_owner_is_unknown_rather_than_abandoned, test_the_recorded_owner_outranks_the_name, test_the_stale_sweep_never_deletes_through_a_link and 2 more.
 def _shared_setup_1(root):
     result = _run_powershell(
         _script(
@@ -52,7 +51,6 @@ def _shared_setup_1(root):
     assert result.returncode == 0, result.stderr
 
 
-# Shared setup for test_a_link_high_above_another_profile_is_still_a_link, test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link, test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile.
 def _shared_setup_2():
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)

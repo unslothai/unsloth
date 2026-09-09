@@ -19,7 +19,6 @@ import pytest
 from unsloth_cli import _studio_runtime_gate as gate
 
 
-# Shared setup for test_idle_scan_blocks_exact_outer_shim, test_idle_scan_does_not_exclude_managed_parent_of_updater, test_idle_scan_excludes_the_venv_python_redirector and 1 more.
 def _shared_setup_1(monkeypatch, payload):
     monkeypatch.setattr(
         subprocess,

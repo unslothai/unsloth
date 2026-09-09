@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_custom_hf_home_seeds_hub_and_xet, test_default_when_hf_home_unset, test_explicit_hub_cache_is_not_overridden and 2 more.
 def _shared_setup_1():
     sr = _load_storage_roots()
 

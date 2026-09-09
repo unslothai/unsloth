@@ -25,7 +25,6 @@ from core.inference.video import VideoBackend, _detect_load_family
 from core.inference.video_families import VIDEO_CANCELLED_MSG
 
 
-# Shared setup for test_h3_revet_catches_a_user_binary_whose_accelerator_changed, test_h3_revet_checks_identity_not_just_the_h3_marker, test_h3_revet_tolerates_an_unreadable_accelerator_reprobe.
 def _shared_setup_1(backend, device, h3_host, platform):
     from core.inference import sd_cpp_backend
 

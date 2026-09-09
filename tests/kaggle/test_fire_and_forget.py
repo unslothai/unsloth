@@ -30,7 +30,6 @@ import pytest
 import yaml
 
 
-# Shared setup for test_a_kernel_past_its_ceiling_is_reaped_and_reported, test_a_kernel_whose_status_did_not_post_is_KEPT_for_the_next_pass, test_a_kernel_whose_status_record_was_rejected_is_kept and 3 more.
 def _shared_setup_1(monkeypatch):
     deleted: list[str] = []
     monkeypatch.setattr(
@@ -39,7 +38,6 @@ def _shared_setup_1(monkeypatch):
     return deleted
 
 
-# Shared setup for test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted, test_an_unreadable_status_does_nothing_at_all, test_evidence_is_downloaded_before_the_kernel_is_deleted.
 def _shared_setup_2():
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -51,7 +49,6 @@ def _shared_setup_2():
     return entry
 
 
-# Shared setup for test_a_kernel_another_collector_finished_first_posts_nothing, test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted, test_an_incomplete_download_judges_nothing_and_keeps_the_kernel.
 def _shared_setup_3(deleted, monkeypatch):
     monkeypatch.setattr(
         launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True

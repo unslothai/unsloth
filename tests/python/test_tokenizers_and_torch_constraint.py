@@ -308,7 +308,7 @@ class TestTorchConstraintShell:
                 13, "macos", "x86_64", "torch>=2.4,<2.11.0", id = "intel_mac_x86_py313_default"
             ),
             pytest.param(13, "wsl", "x86_64", "torch>=2.4,<2.11.0", id = "wsl_py313_default"),
-            # Failed python query (returns 0) keeps the default constraint.
+            # A failed python query returns 0, which keeps the default constraint.
             pytest.param(
                 0, "macos", "arm64", "torch>=2.4,<2.11.0", id = "py_minor_0_fallback_default"
             ),

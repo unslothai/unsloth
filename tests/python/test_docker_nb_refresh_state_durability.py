@@ -25,7 +25,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_genuinely_edited_unrecorded_notebook_is_still_left_alone, test_a_kept_removed_notebook_survives_a_failed_state_append, test_an_unrecorded_notebook_identical_to_upstream_is_adopted and 2 more.
 def _shared_setup_1(tmp_path):
     tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
     dest.mkdir()

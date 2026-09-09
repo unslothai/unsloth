@@ -36,7 +36,6 @@ from core.inference.stt_sidecar import (
 )
 
 
-# Shared setup for test_a_child_that_outlived_the_kill_inside_start_stays_accounted, test_a_close_that_raises_is_a_failed_release, test_a_close_that_raises_over_a_child_already_gone_still_releases and 9 more.
 def _shared_setup_1(monkeypatch):
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(
@@ -44,7 +43,6 @@ def _shared_setup_1(monkeypatch):
     )
 
 
-# Shared setup for test_corrupt_or_escaping_revision_record_is_ignored, test_is_model_downloaded_is_false_for_a_cache_miss, test_preflight_rejects_partial_snapshot and 2 more.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(
         stt_sidecar_module,
@@ -53,7 +51,6 @@ def _shared_setup_2(monkeypatch):
     )
 
 
-# Shared setup for test_a_worker_that_died_is_not_resident_and_is_replaced_on_the_next_load, test_load_hands_the_cached_snapshot_to_the_worker_process, test_unload_stops_the_worker_process.
 def _shared_setup_3(monkeypatch):
     monkeypatch.setattr(
         stt_sidecar_module, "_pick_device", lambda _preference = None: ("cpu", "float32")
@@ -63,7 +60,6 @@ def _shared_setup_3(monkeypatch):
     return sidecar
 
 
-# Shared setup for test_a_close_that_raises_is_a_failed_release, test_a_close_that_raises_over_a_child_already_gone_still_releases, test_a_worker_that_outlived_the_kill_stays_resident_rather_than_reported_unloaded.
 def _shared_setup_4(workers):
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     sidecar.load("small")
@@ -73,7 +69,6 @@ def _shared_setup_4(workers):
     return sidecar
 
 
-# Shared setup for test_a_child_that_outlived_the_kill_inside_start_stays_accounted, test_a_late_cancelled_worker_that_outlived_the_kill_stays_resident, test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked.
 def _shared_setup_5(sidecar, workers):
     with pytest.raises(SttLoadCancelledError):
         sidecar.load("small")
@@ -81,7 +76,6 @@ def _shared_setup_5(sidecar, workers):
     assert len(workers) == 1
 
 
-# Shared setup for test_a_load_whose_child_outlived_the_kill_is_not_retried_onto_a_second_child, test_a_surviving_worker_is_not_handed_to_the_next_dictation, test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_dictation.
 def _shared_setup_6(sidecar, workers):
     with pytest.raises(SttModelBusyError, match = "did not exit"):
         sidecar.load("small")

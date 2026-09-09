@@ -26,7 +26,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_cached_path_swapped_for_another_chats_directory_is_dropped, test_a_case_variant_chat_gets_its_own_directory, test_a_chat_deleted_mid_call_keeps_its_sandbox and 39 more.
 def _shared_setup_1(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
@@ -36,7 +35,6 @@ def _shared_setup_1(monkeypatch, tmp_path):
     return tools
 
 
-# Shared setup for test_a_call_that_starts_during_the_snapshot_costs_the_card, test_a_case_variant_cannot_read_a_markerless_sandbox, test_a_case_variant_id_cannot_delete_a_markerless_sandbox and 30 more.
 def _shared_setup_2(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
 
@@ -46,7 +44,6 @@ def _shared_setup_2(monkeypatch, tmp_path):
     return tools
 
 
-# Shared setup for test_a_cached_sandbox_path_is_re_checked, test_a_chat_that_owns_nothing_never_reads_from_the_shared_root, test_a_default_folder_that_was_already_there_is_not_run_in and 17 more.
 def _shared_setup_3(monkeypatch, root):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
 
@@ -56,7 +53,6 @@ def _shared_setup_3(monkeypatch, root):
     return tools
 
 
-# Shared setup for test_a_chat_called_like_a_project_session_keeps_its_own_sandbox, test_a_chat_named_like_a_project_session_still_loses_its_files, test_a_chat_recreated_while_its_tool_ran_keeps_its_files and 11 more.
 def _shared_setup_4(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
 
@@ -67,7 +63,6 @@ def _shared_setup_4(monkeypatch, tmp_path):
     return studio_db, tools
 
 
-# Shared setup for test_a_chat_cannot_claim_another_chats_directory, test_a_delete_finds_the_folder_this_run_made, test_a_fallback_is_found_in_a_root_full_of_other_folders and 12 more.
 def _shared_setup_5(monkeypatch, tmp_path):
     root = _shared_root(tmp_path, monkeypatch)
 
@@ -77,7 +72,6 @@ def _shared_setup_5(monkeypatch, tmp_path):
     return root, tools
 
 
-# Shared setup for test_a_collision_is_not_a_retryable_failure, test_a_failed_legacy_move_is_retried, test_a_first_tool_call_does_not_wait_for_the_whole_legacy_tree and 7 more.
 def _shared_setup_6():
     from core.inference import tools
 
@@ -86,7 +80,6 @@ def _shared_setup_6():
     return tools
 
 
-# Shared setup for test_a_tool_writing_over_the_marker_does_not_lose_its_files, test_deleting_a_symlinked_session_spares_the_chat_it_points_at, test_our_own_fallback_link_is_still_dropped.
 def _shared_setup_7(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
 
@@ -96,7 +89,6 @@ def _shared_setup_7(monkeypatch):
     return tools
 
 
-# Shared setup for test_a_chat_recreated_under_the_same_id_keeps_its_sandbox, test_a_delete_that_waited_for_a_tool_call_says_it_kept_the_files, test_a_forked_chat_keeps_the_files_its_cards_point_at and 3 more.
 def _shared_setup_8(monkeypatch, tmp_path):
     import asyncio
 
@@ -108,7 +100,6 @@ def _shared_setup_8(monkeypatch, tmp_path):
     return asyncio, chat_history, tools
 
 
-# Shared setup for test_a_chat_moved_out_of_a_project_survives_its_deletion, test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted, test_a_project_workspace_a_fork_still_shows_is_kept and 4 more.
 def _shared_setup_9():
     import inspect
 
@@ -118,7 +109,6 @@ def _shared_setup_9():
     return route
 
 
-# Shared setup for test_a_chat_called_like_a_project_session_keeps_its_own_sandbox, test_a_chat_named_like_a_project_session_still_loses_its_files, test_a_long_project_id_still_reaches_its_workspace.
 def _shared_setup_10(monkeypatch, studio_db, workspace):
     monkeypatch.setattr(
         studio_db,
@@ -131,7 +121,6 @@ def _shared_setup_10(monkeypatch, studio_db, workspace):
     )
 
 
-# Shared setup for test_a_first_tool_call_does_not_wait_for_the_whole_legacy_tree, test_a_legacy_entry_that_is_a_symlink_is_left_alone, test_a_symlinked_session_cannot_serve_files_outside_the_sandbox and 3 more.
 def _shared_setup_11(fake_home, monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
@@ -139,7 +128,6 @@ def _shared_setup_11(fake_home, monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
 
 
-# Shared setup for test_a_download_refuses_a_file_swapped_for_a_link, test_a_download_sends_no_more_than_it_promised, test_a_download_serves_the_file_it_checked and 1 more.
 def _shared_setup_12(inference, monkeypatch, sandbox):
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
     monkeypatch.setattr(
@@ -149,7 +137,6 @@ def _shared_setup_12(inference, monkeypatch, sandbox):
     )
 
 
-# Shared setup for test_a_directory_studio_creates_is_marked, test_studio_writes_the_marker_when_it_creates_the_location, test_the_marker_survives_a_cache_clear.
 def _shared_setup_13(monkeypatch):
     monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
 
@@ -161,7 +148,6 @@ def _shared_setup_13(monkeypatch):
     return cache_cleanup, pinned
 
 
-# Shared setup for test_a_missing_file_manager_is_not_reported_as_a_missing_folder, test_a_sandbox_deleted_mid_request_does_not_reveal_the_root, test_revealing_a_sandbox_that_was_never_created_is_a_404 and 1 more.
 def _shared_setup_14():
     import asyncio
 
@@ -172,7 +158,6 @@ def _shared_setup_14():
     return HTTPException, asyncio, inference
 
 
-# Shared setup for test_a_download_sends_no_more_than_it_promised, test_a_download_serves_the_file_it_checked, test_a_listing_follows_a_tree_moved_out_from_under_it and 1 more.
 def _shared_setup_15(monkeypatch, tmp_path):
     import asyncio
 
@@ -183,7 +168,6 @@ def _shared_setup_15(monkeypatch, tmp_path):
     return asyncio, inference
 
 
-# Shared setup for test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal, test_a_user_python_file_is_never_executor_scratch, test_studios_own_sandbox_bookkeeping_is_not_a_user_file.
 def _shared_setup_16(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
@@ -194,7 +178,6 @@ def _shared_setup_16(monkeypatch, tmp_path):
     return inference, tools
 
 
-# Shared setup for test_a_project_delete_cancels_the_research_it_removed, test_a_project_delete_uses_the_membership_it_really_deleted, test_clearing_every_chat_cancels_the_research_it_removed and 1 more.
 def _shared_setup_17():
     import inspect
 
@@ -204,7 +187,6 @@ def _shared_setup_17():
     return chat_history, inspect, studio_db
 
 
-# Shared setup for test_a_missing_file_manager_is_not_reported_as_a_missing_folder, test_a_sandbox_deleted_mid_request_does_not_reveal_the_root, test_revealing_a_sandbox_that_was_never_created_is_a_404 and 1 more.
 def _shared_setup_18(HTTPException, asyncio, inference):
     with pytest.raises(HTTPException) as caught:
         asyncio.new_event_loop().run_until_complete(
@@ -213,7 +195,6 @@ def _shared_setup_18(HTTPException, asyncio, inference):
     return caught
 
 
-# Shared setup for test_every_reported_file_is_downloadable, test_only_the_real_scratch_dir_skips_a_path_segment, test_the_download_route_serves_the_full_depth_under_the_scratch_dir.
 def _shared_setup_19(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
@@ -224,7 +205,6 @@ def _shared_setup_19(monkeypatch, tmp_path):
     return HTTPException, tools
 
 
-# Shared setup for test_revealing_a_sandbox_opens_the_directory_it_resolved, test_revealing_a_sandbox_that_was_never_created_is_a_404, test_the_cached_model_reveal_still_goes_through_the_moved_helper.
 def _shared_setup_20(monkeypatch, opened, path_utils):
     monkeypatch.setattr(
         path_utils,
@@ -233,7 +213,6 @@ def _shared_setup_20(monkeypatch, opened, path_utils):
     )
 
 
-# Shared setup for test_a_marked_cwd_cache_is_still_cleared, test_a_marked_cwd_cache_is_still_registered, test_an_unrelated_cache_named_folder_in_the_cwd_is_not_ours.
 def _shared_setup_21(launch_dir, monkeypatch):
     monkeypatch.chdir(launch_dir)
     monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
@@ -243,7 +222,6 @@ def _shared_setup_21(launch_dir, monkeypatch):
     return cache_cleanup
 
 
-# Shared setup for test_a_deferred_delete_removes_the_whole_workspace, test_a_kept_project_workspace_still_resolves, test_a_kept_workspace_the_user_moved_still_resolves.
 def _shared_setup_22(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
@@ -253,7 +231,6 @@ def _shared_setup_22(monkeypatch, tmp_path):
     return tools
 
 
-# Shared setup for test_a_missing_file_manager_is_not_reported_as_a_missing_folder, test_revealing_a_sandbox_demands_a_directory, test_revealing_a_sandbox_opens_the_directory_it_resolved.
 def _shared_setup_23(tmp_path):
     from utils.paths import path_utils
 

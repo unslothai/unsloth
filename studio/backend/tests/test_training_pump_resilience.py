@@ -25,7 +25,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_dead_worker_crash_preserves_output_dir, test_interrupted_cancel_clears_in_memory_output_dir, test_worker_exit_reuses_terminal_stop_save_error.
 def _shared_setup_1(monkeypatch):
     b = TrainingBackend()
     finalized: dict = {}

@@ -19,7 +19,6 @@ from utils.datasets.format_conversion import convert_chatml_to_alpaca
 from utils.datasets.iterable import is_streaming_dataset
 
 
-# Shared setup for test_streaming_start_rejects_embedding_models, test_streaming_start_rejects_local_datasets, test_streaming_start_rejects_missing_max_steps and 2 more.
 def _shared_setup_1(request, training_route):
     backend = SimpleNamespace(
         current_job_id = None,

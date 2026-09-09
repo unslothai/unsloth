@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_forced_mismatch_keeps_the_required_tool_active, test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge, test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools.
 def _shared_setup_1(controller):
     assert not controller.force_final_answer
     assert [tool["function"]["name"] for tool in controller.active_tools()] == [

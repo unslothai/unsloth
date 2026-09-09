@@ -38,7 +38,6 @@ from core.inference import diffusion_memory as dm
 from utils.hardware import hardware as hw
 
 
-# Shared setup for test_activation_guard_fires_on_a_full_card_that_reports_itself_empty, test_activation_guard_still_silent_at_the_default_resolution, test_memory_plan_budget_sees_the_corrected_free.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setitem(
         sys.modules,

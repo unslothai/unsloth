@@ -43,7 +43,6 @@ from hub.utils import (
 from hub.workers import hf_download
 
 
-# Shared setup for test_download_dataset_promotes_existing_disk_manifest_after_metadata_recovers, test_download_dataset_recovers_commit_completion_after_transient_metadata_failure, test_download_dataset_recovery_commit_mismatch_is_not_attested.
 def _shared_setup_1(_metadata, hub_cache, monkeypatch, snapshot):
     monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
     monkeypatch.setattr(
@@ -67,7 +66,6 @@ def _shared_setup_1(_metadata, hub_cache, monkeypatch, snapshot):
     return manifest
 
 
-# Shared setup for test_download_registry_allows_disjoint_gguf_variant_downloads, test_download_registry_allows_overlapping_same_transport_variant_downloads, test_download_registry_allows_unknown_hash_gguf_variant_downloads.
 def _shared_setup_2(claimed, registry, state):
     second_claimed, second_state = registry.claim(
         "Org/Repo::Q4_K_M",
@@ -85,7 +83,6 @@ def _shared_setup_2(claimed, registry, state):
     assert second_state == "running"
 
 
-# Shared setup for test_download_dataset_continues_without_metadata_manifest, test_download_dataset_writes_manifest_for_xet, test_download_gguf_variant_writes_manifest_for_xet and 3 more.
 def _shared_setup_3(monkeypatch, verified):
     monkeypatch.setattr(
         hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
@@ -95,7 +92,6 @@ def _shared_setup_3(monkeypatch, verified):
     )
 
 
-# Shared setup for test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs, test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob, test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes.
 def _shared_setup_4(_run_inline, entry, monkeypatch):
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
@@ -114,7 +110,6 @@ def _shared_setup_4(_run_inline, entry, monkeypatch):
     )
 
 
-# Shared setup for test_download_registry_allows_disjoint_gguf_variant_downloads, test_download_registry_allows_overlapping_same_transport_variant_downloads, test_download_registry_serializes_cross_transport_variant_downloads.
 def _shared_setup_5():
     registry = download_registry.DownloadRegistry()
 
@@ -130,7 +125,6 @@ def _shared_setup_5():
     return claimed, registry, state
 
 
-# Shared setup for test_a_stale_revisions_filenames_do_not_settle_the_resolved_one, test_a_variant_complete_in_an_older_snapshot_settles, test_gguf_progress_unknown_hashes_prefers_the_manifest_file_set.
 def _shared_setup_6(entry, monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     assert download_manifest.write_manifest(
@@ -143,7 +137,6 @@ def _shared_setup_6(entry, monkeypatch, tmp_path):
     )
 
 
-# Shared setup for test_download_gguf_variant_writes_manifest_for_xet, test_download_snapshot_recovers_manifest_after_metadata_fallback, test_download_snapshot_writes_manifest_for_xet.
 def _shared_setup_7(monkeypatch, tmp_path, written):
     monkeypatch.setattr(
         download_manifest, "write_manifest", lambda *args: written.append(args) or True
@@ -155,7 +148,6 @@ def _shared_setup_7(monkeypatch, tmp_path, written):
     )
 
 
-# Shared setup for test_download_dataset_continues_without_metadata_manifest, test_download_gguf_variant_manifest_resume_purges_only_main_quant_hashes, test_download_gguf_variant_purges_only_main_quant_hashes.
 def _shared_setup_8(monkeypatch, snapshot_calls, tmp_path):
     monkeypatch.setitem(
         sys.modules,
@@ -166,7 +158,6 @@ def _shared_setup_8(monkeypatch, snapshot_calls, tmp_path):
     )
 
 
-# Shared setup for test_gguf_progress_complete_on_disk_ignores_full_baseline, test_gguf_progress_counts_completed_mmproj_with_expected_bytes, test_gguf_progress_subtracts_new_job_completed_baseline.
 def _shared_setup_9(blobs, entry, monkeypatch, tmp_path):
     (blobs / "mmprojhash").write_bytes(b"y" * 30)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -177,7 +168,6 @@ def _shared_setup_9(blobs, entry, monkeypatch, tmp_path):
     _patch_gguf_progress(monkeypatch, entry, requirement)
 
 
-# Shared setup for test_a_complete_scan_still_reports_the_target_as_gone, test_snapshot_progress_complete_with_manifest_synthesized_from_disk, test_snapshot_progress_confirms_complete_only_with_verified_snapshot and 1 more.
 def _shared_setup_10(entry, monkeypatch):
     monkeypatch.setattr(
         snapshot_progress,
@@ -186,7 +176,6 @@ def _shared_setup_10(entry, monkeypatch):
     )
 
 
-# Shared setup for test_cached_inventory_discards_a_scan_that_raced_an_invalidation, test_cached_inventory_requests_share_scan, test_cached_inventory_scan_stops_retrying_under_constant_invalidation.
 def _shared_setup_11(epoch, monkeypatch):
     monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
     monkeypatch.setattr(
@@ -196,7 +185,6 @@ def _shared_setup_11(epoch, monkeypatch):
     monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
 
 
-# Shared setup for test_model_cancel_registered_worker_requests_and_kills, test_model_claim_register_cancel_uses_registry_marker_owner, test_model_download_watcher_invalidates_hf_cache_scan.
 def _shared_setup_12(_Registry, monkeypatch):
     monkeypatch.setattr(downloads, "_registry", _Registry())
     monkeypatch.setattr(
@@ -206,7 +194,6 @@ def _shared_setup_12(_Registry, monkeypatch):
     )
 
 
-# Shared setup for test_delete_variant_keeps_blob_shared_with_other_snapshot, test_delete_variant_surfaces_locked_file_as_conflict, test_delete_variant_unlinks_unshared_blob.
 def _shared_setup_13(monkeypatch, repo, tmp_path):
     monkeypatch.setattr(
         deletion.cache_inventory,
@@ -216,7 +203,6 @@ def _shared_setup_13(monkeypatch, repo, tmp_path):
     _patch_variant_delete_side_effects(monkeypatch, tmp_path)
 
 
-# Shared setup for test_gguf_variants_scopes_partial_state_to_requested_cache, test_inventory_applies_download_state_to_its_owning_cache, test_inventory_scopes_cancel_markers_to_their_owning_cache and 1 more.
 def _shared_setup_14(cache_b, monkeypatch):
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
@@ -224,7 +210,6 @@ def _shared_setup_14(cache_b, monkeypatch):
     )
 
 
-# Shared setup for test_a_subtree_that_cannot_be_scanned_keeps_presence_unknown, test_gguf_progress_unknown_hashes_calls_a_sibling_only_dir_absent, test_gguf_progress_unknown_hashes_keeps_a_total_under_a_full_baseline and 1 more.
 def _shared_setup_15(tmp_path):
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
@@ -233,7 +218,6 @@ def _shared_setup_15(tmp_path):
     return entry, snap
 
 
-# Shared setup for test_a_blob_that_cannot_be_stated_keeps_presence_unknown, test_a_deleted_snapshot_link_is_absent_even_with_its_blob_left_behind, test_a_manifest_alone_is_not_evidence_the_variant_is_on_disk and 1 more.
 def _shared_setup_16(_run_inline, monkeypatch):
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
@@ -241,7 +225,6 @@ def _shared_setup_16(_run_inline, monkeypatch):
     )
 
 
-# Shared setup for test_cached_scans_hide_embedders_configured_by_cache_path, test_cached_scans_hide_embedders_configured_by_snapshot_path, test_cached_scans_hide_stale_default_embedder_after_custom_setting.
 def _shared_setup_17(monkeypatch):
     monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
     monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
@@ -250,7 +233,6 @@ def _shared_setup_17(monkeypatch):
     assert cache_inventory._scan_cached_models() == []
 
 
-# Shared setup for test_model_claim_register_cancel_uses_registry_marker_owner, test_model_download_watcher_invalidates_hf_cache_scan, test_two_concurrent_same_repo_variants_both_complete.
 def _shared_setup_18(monkeypatch):
     monkeypatch.setattr(
         downloads.download_registry,
@@ -259,7 +241,6 @@ def _shared_setup_18(monkeypatch):
     )
 
 
-# Shared setup for test_local_inventory_classifies_a_superseded_result_off_the_event_loop, test_local_inventory_classifies_off_the_event_loop, test_local_inventory_requests_share_scan.
 def _shared_setup_19():
     model = SimpleNamespace(id = "model", path = "model")
     model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
@@ -268,7 +249,6 @@ def _shared_setup_19():
     return model, response
 
 
-# Shared setup for test_download_dataset_disk_fallback_is_not_attested, test_download_dataset_promotes_existing_disk_manifest_after_metadata_recovers, test_download_dataset_recovers_commit_completion_after_transient_metadata_failure.
 def _shared_setup_20(tmp_path):
     hub_cache = tmp_path / "hub"
     snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
@@ -277,7 +257,6 @@ def _shared_setup_20(tmp_path):
     return hub_cache, snapshot
 
 
-# Shared setup for test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes, test_snapshot_progress_complete_with_manifest_synthesized_from_disk, test_snapshot_progress_confirms_complete_only_with_verified_snapshot.
 def _shared_setup_21(entry):
     blobs = entry / "blobs"
     snap = entry / "snapshots" / "rev0"

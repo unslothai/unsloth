@@ -29,7 +29,6 @@ import types
 from pathlib import Path
 
 
-# Shared setup for test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk, test_context_free_rocm_smi_declines_gpu_device_ordinal, test_context_free_rocm_smi_declines_inventory_count_mismatch and 3 more.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(
         hw,
@@ -38,7 +37,6 @@ def _shared_setup_1(monkeypatch):
     )
 
 
-# Shared setup for test_windows_rocm_apu_accepts_equal_duplicate_carve_outs, test_windows_rocm_apu_declines_a_conflicting_arch_candidate, test_windows_rocm_apu_declines_an_ambiguous_arch_fallback and 2 more.
 def _shared_setup_2(monkeypatch):
     mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
     monkeypatch.setattr(hw, "IS_ROCM", True)
@@ -48,7 +46,6 @@ def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
 
 
-# Shared setup for test_gpu_summary_apu_counters_need_positively_identified_uma, test_gpu_summary_apu_prefers_wddm_counters_over_process_local_hip, test_gpu_summary_pairs_rocm_apu_free_with_driver_total.
 def _shared_setup_3(monkeypatch):
     gib = 1 << 30
     torch_stub, _props = _summary_torch(
@@ -63,7 +60,6 @@ def _shared_setup_3(monkeypatch):
     return _props, gib
 
 
-# Shared setup for test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig, test_context_free_rocm_smi_declines_whole_gpu_metrics_for_a_partition, test_gpu_summary_prefers_context_free_driver_memory and 1 more.
 def _shared_setup_4(monkeypatch):
     monkeypatch.setattr(
         hw,
@@ -72,7 +68,6 @@ def _shared_setup_4(monkeypatch):
     )
 
 
-# Shared setup for test_context_free_rocm_smi_declines_inventory_count_mismatch, test_context_free_rocm_smi_declines_whole_gpu_metrics_for_a_partition, test_context_free_rocm_smi_translates_hip_ordinals.
 def _shared_setup_5(monkeypatch):
     for name in (
         "GPU_DEVICE_ORDINAL",
@@ -83,7 +78,6 @@ def _shared_setup_5(monkeypatch):
         monkeypatch.delenv(name, raising = False)
 
 
-# Shared setup for test_rocm_discrete_inventory_stays_context_free, test_rocm_props_that_cannot_be_classified_keep_the_driver_total, test_rocm_unclassified_apu_keeps_the_driver_total_with_a_legacy_flag and 1 more.
 def _shared_setup_6(mod, monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
@@ -92,7 +86,6 @@ def _shared_setup_6(mod, monkeypatch):
     return inventory
 
 
-# Shared setup for test_context_free_rocm_smi_declines_gpu_device_ordinal, test_context_free_rocm_smi_declines_inventory_count_mismatch, test_context_free_rocm_smi_declines_without_an_id_mapping.
 def _shared_setup_7(monkeypatch):
     from utils.hardware import amd
 

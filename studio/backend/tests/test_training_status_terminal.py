@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_late_stop_does_not_unfinish_a_completed_run, test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed, test_stop_mid_run_still_works.
 def _shared_setup_1():
     resp = asyncio.run(
         rt.stop_training(

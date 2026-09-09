@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_compile_check_with_no_baseline_is_refused_rather_than_assumed, test_a_gptoss_run_that_never_compiled_is_a_failure, test_the_other_gptoss_assertions_fire and 1 more.
 def _shared_setup_1():
     sys.path.insert(0, str(SMOKE_DIR))
     from run_gptoss_t4 import failures_for
@@ -32,7 +31,6 @@ def _shared_setup_1():
     return failures_for, report
 
 
-# Shared setup for test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent, test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given.
 def _shared_setup_2(stub, work):
     (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
     for name in ("git", "sleep"):
@@ -42,7 +40,6 @@ def _shared_setup_2(stub, work):
     return name, out
 
 
-# Shared setup for test_a_group_with_no_reward_spread_is_the_failure_that_matters, test_completions_that_are_all_empty_are_caught_even_when_rewards_agree, test_the_other_grpo_assertions_fire.
 def _shared_setup_3():
     sys.path.insert(0, str(SMOKE_DIR))
     from run_grpo_t4 import failures_for

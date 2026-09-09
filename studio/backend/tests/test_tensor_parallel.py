@@ -30,7 +30,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_crash_watchdog_ignores_intentional_termination, test_crash_watchdog_triggers_recovery_on_death, test_kill_process_stops_crash_watchdog.
 def _shared_setup_1(monkeypatch):
     b = _recovery_backend()
     proc = _ToggleProcess()
@@ -41,7 +40,6 @@ def _shared_setup_1(monkeypatch):
     return b, fired, proc
 
 
-# Shared setup for test_respawn_defers_to_an_inflight_mtp_reload, test_respawn_does_not_resurrect_a_deliberate_unload, test_respawn_rechecks_the_cancel_flag_after_the_grace_wait.
 def _shared_setup_2(b, monkeypatch):
     loads: list[GgufLoadIntent] = []
     monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)

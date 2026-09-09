@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_missing_launcher_is_recovered_from_the_path_shim, test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked, test_a_restored_launcher_still_cleans_up and 2 more.
 def _shared_setup_1(launcher, monkeypatch, studio):
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
@@ -26,7 +25,6 @@ def _shared_setup_1(launcher, monkeypatch, studio):
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
 
 
-# Shared setup for test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade, test_a_recoverable_copy_exists_while_setup_runs, test_legacy_backup_recovers_only_when_launcher_is_missing and 2 more.
 def _shared_setup_2(monkeypatch, setup, studio):
     monkeypatch.setattr(studio, "_run_setup_script", setup)
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
@@ -34,7 +32,6 @@ def _shared_setup_2(monkeypatch, setup, studio):
     _update(studio)
 
 
-# Shared setup for test_a_policy_block_with_a_broken_package_still_fails, test_an_existing_backup_survives_an_unvalidated_launcher, test_invalid_launcher_is_restored_and_update_fails and 1 more.
 def _shared_setup_3(launcher, studio):
     with pytest.raises(studio.typer.Exit):
         _update(studio)
@@ -42,7 +39,6 @@ def _shared_setup_3(launcher, studio):
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
 
 
-# Shared setup for test_a_quarantined_away_launcher_falls_back_to_the_interpreter, test_setup_noop_preserves_launcher_and_removes_backup, test_the_launcher_is_resolved_from_the_managed_studio_venv.
 def _shared_setup_4(monkeypatch, studio):
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     calls = []

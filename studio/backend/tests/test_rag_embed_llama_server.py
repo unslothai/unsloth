@@ -20,7 +20,6 @@ from core.rag import embed_llama_server as mod
 from core.rag.embed_llama_server import LlamaServerBackend
 
 
-# Shared setup for test_a_stale_quant_in_another_directory_is_not_the_planned_family, test_a_stand_in_quant_does_not_retire_the_pending_marker, test_the_planned_fallback_quant_landing_retires_the_pending_marker and 2 more.
 def _shared_setup_1(monkeypatch):
     import utils.embedding_model_settings as ems
 
@@ -33,7 +32,6 @@ def _shared_setup_1(monkeypatch):
     return cleared, ems, repo
 
 
-# Shared setup for test_a_failed_transfer_surfaces_instead_of_serving_another_variant, test_a_reachable_hub_is_preferred_over_a_cached_other_variant, test_an_unreachable_hub_falls_back_to_whatever_variant_is_cached.
 def _shared_setup_2(monkeypatch, tmp_path):
     import contextlib
     import huggingface_hub
@@ -47,7 +45,6 @@ def _shared_setup_2(monkeypatch, tmp_path):
     return huggingface_hub
 
 
-# Shared setup for test_a_completed_pending_download_uses_its_cached_fallback_quant, test_a_partly_present_planned_family_is_not_served, test_the_planned_family_outranks_a_variant_that_arrives_later.
 def _shared_setup_3(monkeypatch):
     import utils.embedding_model_settings as ems
 
@@ -58,7 +55,6 @@ def _shared_setup_3(monkeypatch):
     return ems, repo
 
 
-# Shared setup for test_a_stand_in_quant_does_not_retire_the_pending_marker, test_the_planned_fallback_quant_landing_retires_the_pending_marker, test_the_planned_family_outranks_a_variant_that_arrives_later.
 def _shared_setup_4(monkeypatch, tmp_path):
     _use_cache_root(monkeypatch, tmp_path / "hub")
     backend = LlamaServerBackend()

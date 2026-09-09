@@ -20,7 +20,6 @@ from core.inference.diffusion_prequant import (
 from core.inference.video import VideoBackend
 
 
-# Shared setup for test_an_explicit_speed_off_keeps_the_released_denoiser, test_auto_takes_the_hosted_denoiser_even_on_a_card_with_room_to_spare, test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_resident and 4 more.
 def _shared_setup_1():
     import torch
 

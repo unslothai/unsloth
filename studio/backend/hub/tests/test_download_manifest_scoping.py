@@ -12,7 +12,6 @@ import pytest
 from hub.utils import download_manifest, state_dir
 
 
-# Shared setup for test_repo_delete_clears_legacy_scope_when_handed_a_RESOLVED_root, test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory, test_variant_delete_clears_legacy_scope_when_handed_a_RESOLVED_root and 2 more.
 def _shared_setup_1(monkeypatch, spelled, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(
@@ -21,7 +20,6 @@ def _shared_setup_1(monkeypatch, spelled, tmp_path):
     )
 
 
-# Shared setup for test_every_enumerator_agrees_about_the_pre_resolve_digest, test_manifest_under_the_pre_resolve_digest_is_still_found, test_pre_resolve_digest_cancel_marker_is_cleared_by_a_new_attempt and 1 more.
 def _shared_setup_2(monkeypatch, tmp_path):
     spelled, _resolved = _redirected_hub_cache(tmp_path)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")

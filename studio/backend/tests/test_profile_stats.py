@@ -31,7 +31,6 @@ from storage.api_usage_db import (
 from storage.profile_stats_db import compute_profile_stats, invalidate_profile_stats_cache
 
 
-# Shared setup for test_a_resume_that_never_logged_a_step_keeps_the_source_counters, test_cancelling_a_resumed_run_keeps_the_source_superseded, test_resumed_runs_do_not_double_count_steps_or_tokens.
 def _shared_setup_1(conn):
     conn.execute(
         "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "

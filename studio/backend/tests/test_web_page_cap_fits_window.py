@@ -29,7 +29,6 @@ import pytest
 from core.inference import tools
 
 
-# Shared setup for test_a_backend_with_no_resident_process_is_not_cached, test_a_prefix_too_large_to_hold_is_skipped_not_stored, test_an_unhashable_identity_field_disables_the_cache_rather_than_raising and 1 more.
 def _shared_setup_1():
     text = "0123456789abcdef" * 2000
     budget = tools._tool_result_char_budget()

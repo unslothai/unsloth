@@ -27,7 +27,6 @@ from hub.utils import (
 )
 
 
-# Shared setup for test_delete_app_only_cache_path_isolated_by_hub_root, test_delete_app_processed_cache_isolated_by_hub_root, test_delete_raw_path_removes_only_same_scope_app_cache.
 def _shared_setup_1(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     first = _app_cache_entry(
@@ -45,7 +44,6 @@ def _shared_setup_1(monkeypatch, tmp_path):
     return first, repo_id, second
 
 
-# Shared setup for test_app_processed_cache_never_settles_a_partial_raw_row, test_dataset_cache_without_data_files_is_partial, test_processed_cache_settles_a_partial_raw_row_without_losing_its_path.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(
         cache_inventory,
@@ -61,7 +59,6 @@ def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
 
 
-# Shared setup for test_delete_cached_dataset_absent_everywhere_raises_404, test_delete_cached_dataset_purges_blob_only_repo_dir, test_delete_raw_path_removes_only_same_scope_app_cache.
 def _shared_setup_3(monkeypatch):
     monkeypatch.setattr(
         cache_inventory,
@@ -75,7 +72,6 @@ def _shared_setup_3(monkeypatch):
     )
 
 
-# Shared setup for test_delete_cached_dataset_absent_everywhere_raises_404, test_delete_cached_dataset_purges_blob_only_repo_dir, test_delete_cached_dataset_scopes_delete_to_selected_root.
 def _shared_setup_4(monkeypatch):
     monkeypatch.setattr(
         cache_inventory,
@@ -230,8 +226,8 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
             "LICENSE",
             id = "raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot",
         ),
-        # Neither suffix is in `datasets`' extension map, and a script also needs
-        # `trust_remote_code`, which no load path here passes and `datasets>=4` removed.
+        # Neither suffix is in `datasets`' extension map, and `datasets>=4` dropped
+        # `trust_remote_code`, which no load path here passes anyway.
         pytest.param(
             "README.md",
             "CITATION.cff",
@@ -239,8 +235,7 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
             "docs/usage.md",
             id = "raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script",
         ),
-        # `.gitignore` and friends are not in the enumerated list, but `datasets` skips every
-        # dotted name when resolving data files, so none of them can supply rows.
+        # `datasets` skips every dotted name when resolving data files, so none supply rows.
         pytest.param(
             "README.md",
             ".gitignore",
@@ -260,22 +255,20 @@ def test_raw_dataset_cache_has_data_rejects_payload_free_snapshots(
 @pytest.mark.parametrize(
     "file_a, file_b, expected",
     [
-        # Opening the cache dir in Finder or Explorer drops a `.DS_Store`/`Thumbs.db` beside the
-        # card, which must not read as payload.
+        # Finder and Explorer drop `.DS_Store`/`Thumbs.db`, which must not read as payload.
         pytest.param(
             ".DS_Store", "Thumbs.db", False, id = "raw_dataset_cache_has_data_ignores_os_clutter"
         ),
-        # Image and audio repos ship no extension the app keeps a format list for, so the check
-        # asks whether anything beyond metadata is present rather than matching known formats.
+        # Image and audio repos match no known format, so the check asks whether anything
+        # beyond metadata is present.
         pytest.param(
             "data/train-00000-of-00001.parquet",
             "data/train/0001.png",
             True,
             id = "raw_dataset_cache_has_data_finds_nested_payload_of_any_format",
         ),
-        # A snapshot carried through a Mac zip picks up `._name` sidecars and a `__MACOSX`
-        # tree. `datasets` skips dotted names and `__`-prefixed dirs when it resolves data files,
-        # so counting them as payload offered a card-only snapshot On Device again.
+        # A Mac zip adds `._name` sidecars and `__MACOSX`; `datasets` skips both, so counting
+        # them as payload offered a card-only snapshot On Device.
         pytest.param(
             "._README.md",
             "__MACOSX/._README.md",

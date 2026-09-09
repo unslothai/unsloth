@@ -30,7 +30,6 @@ import asyncio
 from types import SimpleNamespace
 
 
-# Shared setup for test_final_chunk_timings_reach_the_monitor, test_final_visible_text_updates_monitor, test_function_call_chunk_updates_monitor_reply and 2 more.
 def _shared_setup_1(monitor):
     monitor_id = monitor.start(
         endpoint = "/v1/responses",
@@ -43,7 +42,6 @@ def _shared_setup_1(monitor):
     return messages, monitor_id, payload
 
 
-# Shared setup for test_a_healed_truncated_tool_call_remains_incomplete, test_finalized_healed_tool_call_stamps_first_token, test_healed_responses_tool_call_reports_a_tool_call_stop and 2 more.
 def _shared_setup_3(api_monitor, tool):
     payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
     messages = [ChatMessage(role = "user", content = "hi")]
@@ -53,7 +51,6 @@ def _shared_setup_3(api_monitor, tool):
     return messages, monitor_id, payload
 
 
-# Shared setup for test_cancelled_chat_completion_finalizes_monitor, test_monitor_records_tool_only_reply, test_monitor_records_translated_visible_text.
 def _shared_setup_4():
     messages = [ChatMessage(role = "user", content = "hi")]
     request = SimpleNamespace(
@@ -64,7 +61,6 @@ def _shared_setup_4():
     return messages, request
 
 
-# Shared setup for test_text_format_json_schema_without_schema_is_ignored, test_text_format_text_carries_no_response_format, test_text_verbosity_only_carries_no_response_format.
 def _shared_setup_5(payload):
     messages = [ChatMessage(role = "user", content = "hi")]
 
@@ -73,7 +69,6 @@ def _shared_setup_5(payload):
     assert _extract_response_format(chat_req) is None
 
 
-# Shared setup for test_a_healed_truncated_tool_call_remains_incomplete, test_healed_responses_tool_call_reports_a_tool_call_stop, test_healed_responses_tool_call_stamps_first_token.
 def _shared_setup_6():
     from core.inference.api_monitor import api_monitor
 

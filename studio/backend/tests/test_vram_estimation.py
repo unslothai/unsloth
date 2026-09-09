@@ -22,7 +22,6 @@ from utils.hardware.vram_estimation import (
 )
 
 
-# Shared setup for test_flash_attention_uses_linear_path, test_flex_attention_treated_as_linear, test_sdpa_attention_uses_linear_path.
 def _shared_setup_1():
     flash = compute_activation_bytes(
         STRUCTURED_MIXED,

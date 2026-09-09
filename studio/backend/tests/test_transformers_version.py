@@ -18,7 +18,6 @@ from unittest.mock import patch
 import sys
 
 
-# Shared setup for test_a_model_type_the_default_lacks_never_reaches_the_version_field_probe, test_ordinary_4x_config_does_not_probe, test_version_field_probe_escalates_when_default_fails and 1 more.
 def _shared_setup_1(monkeypatch, self):
     self._patch_venvs(monkeypatch)
     monkeypatch.setattr(
@@ -26,7 +25,6 @@ def _shared_setup_1(monkeypatch, self):
     )
 
 
-# Shared setup for test_dead_owner_lock_reclaimed_promptly, test_foreign_process_lock_file_visible, test_unreadable_pid_lock_uses_age_cutoff.
 def _shared_setup_2(monkeypatch, tmp_path):
     import utils.transformers_version as tv
 
@@ -36,7 +34,6 @@ def _shared_setup_2(monkeypatch, tmp_path):
     return lock, tv
 
 
-# Shared setup for test_backoff_window_keeps_the_damaged_sidecar_withheld, test_kill_switch_frees_the_sidecar_mid_backoff, test_repair_backoff_window_never_repeats_the_scan.
 def _shared_setup_3(monkeypatch, self, tmp_path):
     live = self._sidecar(tmp_path / "venv_t5_latest")
     tv, _ = self._patch(monkeypatch, live)
@@ -157,7 +154,6 @@ class TestResolveBaseModel:
     @pytest.mark.parametrize(
         "cfg, adapter_cfg, expected",
         [
-            # adapter_config.json wins over config.json.
             pytest.param(
                 {"_name_or_path": "different/model"},
                 {"base_model_name_or_path": "meta-llama/Llama-3-8B"},
@@ -176,8 +172,7 @@ class TestResolveBaseModel:
                 "Qwen/Qwen3.5-9B",
                 id = "config_json_fallback_name_or_path",
             ),
-            # A malformed config (list/dict for model_name) must not raise: the non-string
-            # model_name is skipped and _name_or_path is used.
+            # A non-string model_name must not raise; it is skipped for _name_or_path.
             pytest.param(
                 {"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"},
                 None,
@@ -190,7 +185,6 @@ class TestResolveBaseModel:
                 "Qwen/Qwen3.5-9B",
                 id = "model_name_takes_priority_over_name_or_path",
             ),
-            # A self-referencing model_name is ignored, so the original path falls through.
             pytest.param(
                 {"model_name": _SELF}, None, _SELF, id = "config_json_skips_self_referencing"
             ),
@@ -1030,21 +1024,18 @@ class TestGetTransformersTier:
     @pytest.mark.parametrize(
         "architecture, model_type, expected",
         [
-            # Local checkpoint with Gemma4 architecture → 550.
             pytest.param(
                 "Gemma4ForConditionalGeneration",
                 "gemma4",
                 "550",
                 id = "gemma4_config_json_returns_550",
             ),
-            # Local checkpoint with Gemma4 Unified architecture → 510.
             pytest.param(
                 "Gemma4UnifiedForConditionalGeneration",
                 "gemma4_unified",
                 "510",
                 id = "gemma4_unified_config_json_returns_510",
             ),
-            # Local checkpoint with Gemma4 Assistant architecture → 510.
             pytest.param(
                 "Gemma4AssistantForCausalLM",
                 "gemma4_assistant",
@@ -2517,8 +2508,7 @@ class TestLocalConfig530Tier:
                 "530",
                 id = "tier_local_qwen35_moe_config_selects_530",
             ),
-            # Qwen3.6 configs carry qwen3_5 ids; a higher-tier name match wins, either from the
-            # folder name or from _name_or_path.
+            # Qwen3.6 configs carry qwen3_5 ids, so a higher-tier name match wins over them.
             pytest.param(
                 "Qwen3.6-27B",
                 {"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]},
@@ -2535,8 +2525,7 @@ class TestLocalConfig530Tier:
                 "550",
                 id = "local_qwen36_moe_via_name_or_path_keeps_550",
             ),
-            # A renamed folder with an unrecognised model_type but a known HF ID in
-            # _name_or_path still routes to the correct tier.
+            # An unrecognised model_type still routes by the HF ID in _name_or_path.
             pytest.param(
                 "my-custom-name",
                 {"model_type": "future_unknown_type", "_name_or_path": "Qwen/Qwen3.5-7B"},
@@ -2563,16 +2552,14 @@ class TestLocalConfig530Tier:
                 {"model_type": "llama", "_name_or_path": "/old/run/qwen3.5-source"},
                 id = "stale_absolute_name_or_path_not_promoted",
             ),
-            # _name_or_path equal to the model path itself (save_pretrained) must not be scanned
-            # for tier substrings: "qwen3.5" is in the path but the config says llama.
+            # save_pretrained writes _name_or_path == the path, which must not be tier-scanned.
             pytest.param(
                 "qwen3.5-experiment",
                 {"model_type": "llama", "_name_or_path": _SELF},
                 id = "hf_id_fallback_skipped_when_same_as_path",
             ),
-            # Same directory reached through its absolute path while model_name is relative: the
-            # two strings differ but resolve to one directory, so the local-dir branch recurses
-            # into the config checks instead of substring-matching the path.
+            # Absolute vs relative spellings of one directory: the strings differ, so the local-dir
+            # branch must recurse into the config rather than substring-match the path.
             pytest.param(
                 "qwen3.5-experiment",
                 {"model_type": "llama", "_name_or_path": _SELF},

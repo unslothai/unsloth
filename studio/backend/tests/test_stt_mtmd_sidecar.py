@@ -16,7 +16,6 @@ from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 from core.inference import stt_ggml_sidecar as ggml_mod
 
 
-# Shared setup for test_a_dead_server_can_still_be_replaced_while_a_request_is_pending, test_a_model_switch_never_kills_a_running_transcription, test_a_switch_to_a_missing_model_keeps_the_working_one and 1 more.
 def _shared_setup_1(monkeypatch, spawned):
     made, _, _ = spawned
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
@@ -25,7 +24,6 @@ def _shared_setup_1(monkeypatch, spawned):
     return made, sidecar
 
 
-# Shared setup for test_audio_is_never_sent_to_a_server_another_client_swapped_in, test_dictation_still_works_on_cpu_during_training, test_disconnecting_one_mtmd_request_does_not_kill_its_sibling.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(
         mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000

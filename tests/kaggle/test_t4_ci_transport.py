@@ -27,7 +27,6 @@ import pytest
 import yaml
 
 
-# Shared setup for test_a_repos_allow_patterns_reach_the_hub_and_a_bare_repo_stays_unfiltered, test_the_generated_prefetch_cell_runs_not_merely_compiles, test_the_last_prefetch_attempt_falls_back_to_classic_http.
 def _shared_setup_1(saved):
     if saved is None:
         sys.modules.pop("huggingface_hub", None)

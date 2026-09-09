@@ -29,7 +29,6 @@ from pathlib import Path
 import httpx
 
 
-# Shared setup for test_a_continuation_with_room_to_answer_in_is_still_sent, test_a_count_that_cannot_be_taken_is_not_a_refusal, test_a_respawn_refit_does_not_replay_a_caller_prefill_twice and 7 more.
 def _shared_setup_1(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
@@ -40,7 +39,6 @@ def _shared_setup_1(monkeypatch):
     return backend, payloads
 
 
-# Shared setup for test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer, test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering, test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request and 1 more.
 def _shared_setup_2(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
@@ -59,7 +57,6 @@ def _shared_setup_2(monkeypatch):
     return backend, payloads
 
 
-# Shared setup for test_continuation_is_capped, test_the_final_continuation_is_capped, test_the_partial_is_kept_when_it_never_converges.
 def _shared_setup_3(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
@@ -73,7 +70,6 @@ def _shared_setup_3(monkeypatch):
     return backend, payloads
 
 
-# Shared setup for test_a_caller_set_max_tokens_is_not_exceeded, test_a_continuation_that_would_be_rejected_is_not_sent, test_an_in_loop_continuation_that_would_be_rejected_is_not_sent and 1 more.
 def _shared_setup_4(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
@@ -84,7 +80,6 @@ def _shared_setup_4(monkeypatch):
     return backend, payloads
 
 
-# Shared setup for test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering, test_an_older_exchange_is_still_evicted_to_admit_the_recovery, test_the_recovery_is_declined_rather_than_sent_without_its_question.
 def _shared_setup_5(backend, monkeypatch):
     monkeypatch.setattr(
         backend,
@@ -96,7 +91,6 @@ def _shared_setup_5(backend, monkeypatch):
     )
 
 
-# Shared setup for test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering, test_a_respawn_refit_does_not_replay_a_caller_prefill_twice, test_a_respawn_refit_during_a_continuation_carries_the_partial and 2 more.
 def _shared_setup_6(_respawned, backend, monkeypatch):
     monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
 

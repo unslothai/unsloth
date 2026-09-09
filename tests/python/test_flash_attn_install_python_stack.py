@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest import mock
 
 
-# Shared setup for test_a_failed_removal_is_not_reported_as_removed, test_rejected_wheel_is_uninstalled, test_working_wheel_reports_no_warning.
 def _shared_setup_1(fake_run, step_messages):
     with (
         mock.patch.object(ips, "NO_TORCH", False),

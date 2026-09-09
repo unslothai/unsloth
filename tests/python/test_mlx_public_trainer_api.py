@@ -13,7 +13,6 @@ import warnings
 import pytest
 
 
-# Shared setup for test_mlx_clear_gpu_memory_drains_a_shared_stream_once, test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing, test_mlx_clear_gpu_memory_drains_only_the_streams_that_exist and 4 more.
 def _shared_setup_1():
     unsloth = _import_mlx_unsloth()
     import mlx.core as mx

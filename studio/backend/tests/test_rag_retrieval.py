@@ -13,7 +13,6 @@ from core.rag import config, retrieval, store, tool
 from core.rag.chunking import Chunk
 
 
-# Shared setup for test_build_rag_autoinject_emits_pipeline, test_build_rag_autoinject_scope_overrides_env, test_build_rag_autoinject_skips_without_hit and 1 more.
 def _shared_setup_1(monkeypatch):
     from core.inference import tools
     from storage import rag_db

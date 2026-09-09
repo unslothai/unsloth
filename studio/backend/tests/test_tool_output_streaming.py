@@ -27,7 +27,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_continuous_over_cap_output_does_not_starve_heartbeats, test_heartbeats_continue_while_capped_output_flows, test_heartbeats_emitted_while_tool_blocks.
 def _shared_setup_1(events, gen, release):
     while True:
         event = next(gen)
@@ -36,7 +35,6 @@ def _shared_setup_1(events, gen, release):
             release.set()
 
 
-# Shared setup for test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir, test_python_exec_mnt_data_open_is_remapped_into_workdir, test_python_exec_pathlib_write_text_is_remapped_into_workdir.
 def _shared_setup_2(baseline, code, target):
     _os.remove(target)
     streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)

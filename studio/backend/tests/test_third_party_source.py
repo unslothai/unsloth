@@ -22,7 +22,6 @@ import utils.third_party_source as source
 import utils.utils as utils
 
 
-# Shared setup for test_generated_init_prevents_a_later_regular_package_from_taking_over, test_import_purges_unchecked_bytecode_before_loading, test_import_replaces_a_module_from_outside_the_pinned_source.
 def _shared_setup_1(installed):
     pinned_module = source.import_sparktts_module(
         "sparktts.models.audio_tokenizer",
@@ -33,7 +32,6 @@ def _shared_setup_1(installed):
     return pinned_module
 
 
-# Shared setup for test_ignored_checkout_files_are_rejected_and_never_enter_runtime, test_index_flags_cannot_hide_modified_tracked_source, test_sealed_checkout_reconstructs_runtime_offline_without_git.
 def _shared_setup_2(monkeypatch, tmp_path):
     repository, pinned = _repository(tmp_path)
     _configure(monkeypatch, tmp_path, repository, pinned)
@@ -42,7 +40,6 @@ def _shared_setup_2(monkeypatch, tmp_path):
     return checkout, installed, pinned
 
 
-# Shared setup for test_exact_legacy_dac_weights_migrate_to_active_cache_offline, test_full_disk_falls_back_to_the_verified_legacy_dac_weights, test_unwritable_hub_cache_still_uses_verified_legacy_dac_weights.
 def _shared_setup_3(monkeypatch, payload, tmp_path):
     legacy = tmp_path / "legacy" / source._DAC_FILENAME
     legacy.parent.mkdir()

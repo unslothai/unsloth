@@ -32,7 +32,6 @@ from core.inference.sd_cpp_engine import (
 from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, SdCppUpscaleParams
 
 
-# Shared setup for test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from, test_identity_probe_does_not_memoize_a_probe_that_failed, test_identity_probe_is_memoized_per_file_revision and 2 more.
 def _shared_setup_1(monkeypatch, tmp_path):
     _clear_env(monkeypatch)
     candidate = tmp_path / "sd"
@@ -41,7 +40,6 @@ def _shared_setup_1(monkeypatch, tmp_path):
     return candidate
 
 
-# Shared setup for test_generate_does_not_return_stale_preexisting_output, test_generate_raises_on_nonzero_exit, test_generate_raises_when_no_output_despite_success.
 def _shared_setup_2(e, out):
     e.generate(
         SdCppModelFiles(diffusion_model = "/m/z.gguf"),

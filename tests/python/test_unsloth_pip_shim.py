@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_a_fragment_does_not_hide_a_local_protected_project, test_a_local_protected_project_is_found_in_uvs_working_directory, test_the_working_dir_env_also_finds_a_local_protected_project.
 def _shared_setup_1(monkeypatch, tmp_path):
     _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
     here, there = tmp_path / "here", tmp_path / "there"

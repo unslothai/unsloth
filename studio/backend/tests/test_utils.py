@@ -135,7 +135,6 @@ class TestIsAppleSilicon:
         [
             pytest.param("Darwin", "arm64", True, id = "true_on_darwin_arm64"),
             pytest.param("Linux", "x86_64", False, id = "false_on_linux_x86"),
-            # Intel Mac should return False.
             pytest.param("Darwin", "x86_64", False, id = "false_on_darwin_x86"),
         ],
     )

@@ -32,7 +32,6 @@ import routes.video as video_routes
 from routes.video import router as video_router
 
 
-# Shared setup for test_clearing_the_gallery_clears_the_terminal_generation_record, test_delete_and_clear, test_deleting_a_clip_clears_the_terminal_generation_record and 8 more.
 def _shared_setup_1(client):
     client.post(
         "/api/inference/video/load",
@@ -40,7 +39,6 @@ def _shared_setup_1(client):
     )
 
 
-# Shared setup for test_video_download_plan_judges_a_quantized_reference_pick_per_partition, test_video_download_plan_refuses_a_quantized_reference_task, test_video_download_plan_refuses_an_unavailable_transformer_quant and 1 more.
 def _shared_setup_2(monkeypatch):
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
@@ -52,7 +50,6 @@ def _shared_setup_2(monkeypatch):
     return backend
 
 
-# Shared setup for test_load_happy_path_and_arbiter_acquired, test_load_refuses_a_gpu_index_this_host_does_not_have, test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have.
 def _shared_setup_3(monkeypatch):
     import types
 
@@ -64,7 +61,6 @@ def _shared_setup_3(monkeypatch):
     return devmod
 
 
-# Shared setup for test_generate_cancelled_reports_failed_with_sentinel, test_generate_pipeline_error_reports_sanitized_failure, test_generate_value_error_reports_reason.
 def _shared_setup_4(client):
     resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
     assert resp.status_code == 200
@@ -73,7 +69,6 @@ def _shared_setup_4(client):
     return progress
 
 
-# Shared setup for test_load_refuses_an_unusable_explicit_precision_with_409, test_precision_refusal_precedes_eviction, test_the_training_guard_runs_before_the_precision_probe.
 def _shared_setup_5(client):
     resp = client.post(
         "/api/inference/video/load",

@@ -13,7 +13,6 @@ import pytest
 from hub.utils import download_registry, hf_cache_state, resumable_partials
 
 
-# Shared setup for test_a_breadcrumb_whose_worker_already_exited_is_claimed, test_a_companion_the_dead_worker_was_writing_is_owned_too, test_a_finalized_blob_still_counts_against_the_disk_check and 8 more.
 def _shared_setup_1(blobs, monkeypatch):
     monkeypatch.setattr(
         download_registry,
@@ -22,7 +21,6 @@ def _shared_setup_1(blobs, monkeypatch):
     )
 
 
-# Shared setup for test_startup_sweep_does_not_depend_on_a_breadcrumb, test_startup_sweep_leaves_a_resumable_partial_alone, test_unreadable_breadcrumbs_do_not_cancel_the_cache_sweep.
 def _shared_setup_2(blobs, monkeypatch):
     monkeypatch.setattr(
         download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
@@ -32,7 +30,6 @@ def _shared_setup_2(blobs, monkeypatch):
     _join_background_sweep()
 
 
-# Shared setup for test_a_locked_blob_is_spared_however_stale_it_looks, test_a_partial_still_being_written_is_left_alone, test_a_skipped_partial_is_swept_once_it_ages_out and 1 more.
 def _shared_setup_3(blobs, monkeypatch):
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     _prepare()

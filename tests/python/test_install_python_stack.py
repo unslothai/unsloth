@@ -18,7 +18,6 @@ from unittest import mock
 import pytest
 
 
-# Shared setup for test_ci_repair_restores_only_the_candidate_unsloth_checkout, test_local_repair_reinstalls_a_custom_package_from_its_normal_source, test_local_repair_restores_only_the_source_it_replaced.
 def _shared_setup_1(installs, monkeypatch):
     monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
     monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
@@ -31,7 +30,6 @@ def _shared_setup_1(installs, monkeypatch):
     )
 
 
-# Shared setup for test_a_failed_overlay_falls_back_to_the_staged_source, test_a_git_overlay_is_staged_before_the_uninstall_loop, test_an_editable_overlay_stages_the_checkout.
 def _shared_setup_2(monkeypatch, probes):
     monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: next(probes[name]))
     monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
@@ -39,7 +37,6 @@ def _shared_setup_2(monkeypatch, probes):
     monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
 
 
-# Shared setup for test_a_quarantined_backup_is_restored_when_staging_fails, test_a_sole_tilde_backup_is_repaired_by_a_fresh_install, test_pips_tilde_backup_is_moved_aside_so_the_loop_can_converge.
 def _shared_setup_3(tmp_path):
     backup = tmp_path / "~nsloth-2026.8.12.dist-info"
     backup.mkdir()
@@ -49,7 +46,6 @@ def _shared_setup_3(tmp_path):
     return backup
 
 
-# Shared setup for test_ci_repair_restores_only_the_candidate_unsloth_checkout, test_every_duplicate_record_is_uninstalled_before_reinstall, test_local_repair_restores_only_the_source_it_replaced.
 def _shared_setup_4(monkeypatch, probes):
     monkeypatch.setattr(
         ips.install_manifest,
@@ -58,7 +54,6 @@ def _shared_setup_4(monkeypatch, probes):
     )
 
 
-# Shared setup for test_a_committed_rewrite_is_not_undone, test_an_unbackable_metadata_stops_the_repair, test_the_original_metadata_comes_back_when_the_repair_fails.
 def _shared_setup_5(tmp_path):
     record = tmp_path / "unsloth-2026.8.12.dist-info"
     record.mkdir()
@@ -92,11 +87,8 @@ class TestBuildUvCmdTorchBackend:
     @pytest.mark.parametrize(
         "backend, expected_flag",
         [
-            # UV_TORCH_BACKEND=auto adds --torch-backend=auto.
             pytest.param("auto", "--torch-backend=auto", id = "uv_torch_backend_auto"),
-            # UV_TORCH_BACKEND=cpu adds --torch-backend=cpu.
             pytest.param("cpu", "--torch-backend=cpu", id = "uv_torch_backend_cpu"),
-            # Non-pinned commands still honour UV_TORCH_BACKEND.
             pytest.param("cpu", "--torch-backend=cpu", id = "uv_torch_backend_kept_for_unpinned"),
         ],
     )
@@ -1575,18 +1567,15 @@ class TestDuplicateCoreMetadataRepair:
     @pytest.mark.parametrize(
         "stdout",
         [
-            # Measured on uv 0.10.7: the emitted index lines carry userinfo and the
-            # `# from` annotation has it stripped. Taking the annotation at face value
-            # hands pip an unauthenticated URL for a private index, which answers 401 and
-            # aborts the repair.
+            # uv 0.10.7 strips userinfo from the `# from` annotation; trusting it hands pip an
+            # unauthenticated private index URL, which 401s and aborts the repair.
             pytest.param(
                 b"--index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
                 b"    # from https://private.corp/simple\n",
                 id = "the_annotated_index_is_recovered_with_its_credentials",
             ),
-            # uv puts a credentialed --index on the extra line and leaves --index-url as
-            # the public default, so reading only --index-url would name the wrong index.
+            # uv leaves --index-url as the public default, so only --index carries the credentials.
             pytest.param(
                 b"--index-url https://pypi.org/simple\n"
                 b"--extra-index-url https://user:secret@private.corp/simple\n"

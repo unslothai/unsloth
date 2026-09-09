@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 
-# Shared setup for test_a_cpu_install_is_reinstalled_when_cuda_is_requested, test_a_failed_post_teardown_upgrade_keeps_the_existing_server, test_a_failed_upgrade_keeps_the_working_binary_and_stops_retrying and 7 more.
 def _shared_setup_1(monkeypatch, tmp_path):
     import core.inference.sd_cpp_backend as bk
 
@@ -27,7 +26,6 @@ def _shared_setup_1(monkeypatch, tmp_path):
     return bk, root, server
 
 
-# Shared setup for test_safe_extractall_installs_a_chain_the_loader_can_still_walk, test_safe_extractall_is_idempotent_across_reinstalls, test_safe_extractall_rejects_a_cycle_hidden_behind_a_directory_alias and 7 more.
 def _shared_setup_2(tmp_path):
     if not _can_create_symlinks(tmp_path):
         pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
@@ -36,7 +34,6 @@ def _shared_setup_2(tmp_path):
     return target
 
 
-# Shared setup for test_a_deleted_server_still_reinstalls_rather_than_reading_as_serverless, test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli, test_a_serverless_install_does_not_fall_back_to_the_legacy_server and 1 more.
 def _shared_setup_3(monkeypatch, tmp_path):
     import core.inference.sd_cpp_backend as bk
 
@@ -50,7 +47,6 @@ def _shared_setup_3(monkeypatch, tmp_path):
     return bk, home, legacy
 
 
-# Shared setup for test_a_failed_post_teardown_upgrade_keeps_the_existing_server, test_a_serverless_deferred_install_still_lands_after_teardown, test_an_idle_backend_installs_the_matching_build_immediately and 3 more.
 def _shared_setup_4(bk, monkeypatch):
     monkeypatch.setattr(bk, "_install_allowed", lambda: True)
     monkeypatch.setattr(
@@ -58,7 +54,6 @@ def _shared_setup_4(bk, monkeypatch):
     )
 
 
-# Shared setup for test_a_mirror_only_pin_is_never_requested_upstream, test_falling_back_off_a_mirror_only_pin_warns_about_h3, test_install_falls_back_to_upstream_when_mirror_missing.
 def _shared_setup_5(monkeypatch):
     zb = _zip_with_sd_cli()
     _stub_two_repos(
@@ -70,7 +65,6 @@ def _shared_setup_5(monkeypatch):
     )
 
 
-# Shared setup for test_a_different_layout_upgrade_is_a_replacement_too, test_a_failure_before_the_sweep_is_an_ordinary_install_failure, test_a_first_install_failing_before_the_sweep_is_an_ordinary_failure and 1 more.
 def _shared_setup_6(monkeypatch):
     monkeypatch.setattr(
         sdmod,
@@ -79,7 +73,6 @@ def _shared_setup_6(monkeypatch):
     )
 
 
-# Shared setup for test_safe_extractall_falls_back_when_symlinks_are_unavailable, test_safe_extractall_repairs_a_flattened_install, test_safe_extractall_survives_a_hand_repaired_install and 1 more.
 def _shared_setup_7(tmp_path):
     archive = tmp_path / "libs.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -89,7 +82,6 @@ def _shared_setup_7(tmp_path):
     return archive
 
 
-# Shared setup for test_a_failed_server_upgrade_is_not_retried_by_the_cli_probe, test_a_serverless_deferred_install_still_lands_after_teardown, test_a_serverless_install_is_not_replaced_under_a_running_cli and 1 more.
 def _shared_setup_8(monkeypatch, tmp_path):
     import core.inference.sd_cpp_backend as bk
 
@@ -98,7 +90,6 @@ def _shared_setup_8(monkeypatch, tmp_path):
     return bk, cli, root
 
 
-# Shared setup for test_a_recorded_gpu_install_is_replaced_when_the_cpu_build_is_wanted, test_a_started_server_holds_the_tree_until_state_is_published, test_a_superseded_load_unpublishes_the_server_it_stops.
 def _shared_setup_9(monkeypatch, tmp_path):
     import core.inference.sd_cpp_backend as bk
 
@@ -108,7 +99,6 @@ def _shared_setup_9(monkeypatch, tmp_path):
     return bk, root, server
 
 
-# Shared setup for test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed, test_an_external_record_update_retires_the_memo, test_an_unreadable_record_does_not_retire_the_memo.
 def _shared_setup_10(tmp_path):
     root = tmp_path / "sd"
     root.mkdir()
@@ -119,7 +109,6 @@ def _shared_setup_10(tmp_path):
     return root
 
 
-# Shared setup for test_a_generation_re_resolves_the_cli_the_install_moved, test_a_partial_sweep_never_returns_the_file_it_deleted, test_a_re_found_cli_goes_through_the_usability_gate.
 def _shared_setup_11(root):
     old = root / "build" / "bin" / _CLI
     old.parent.mkdir(parents = True)
@@ -129,7 +118,6 @@ def _shared_setup_11(root):
     return new, old
 
 
-# Shared setup for test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory, test_the_sweep_keeps_a_binary_the_bundle_ships_as_a_symlink, test_the_sweep_keeps_a_binary_whose_parent_link_the_archive_replaces.
 def _shared_setup_12(archive, target):
     with zipfile.ZipFile(archive) as zf:
         supplied = sdmod._archive_binary_paths(zf, target)
@@ -137,7 +125,6 @@ def _shared_setup_12(archive, target):
     sdmod._discard_superseded_binaries(target, supplied)
 
 
-# Shared setup for test_safe_extractall_rejects_a_cycle_closed_through_link_parents, test_safe_extractall_rejects_a_link_that_descends_through_itself, test_safe_extractall_rejects_symlink_cycles.
 def _shared_setup_13(archive, target):
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "symlink cycle"):

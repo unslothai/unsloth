@@ -22,7 +22,6 @@ import pytest
 import yaml
 
 
-# Shared setup for test_the_digest_export_accepts_the_flattened_per_arch_indexes, test_the_digest_export_refuses_another_runs_manifest, test_the_exported_digest_comes_from_this_runs_tag.
 def _shared_setup_1(bin_dir, manifest_digest_step, tmp_path):
     out = tmp_path / "github_output"
     out.write_text("", encoding = "utf-8")

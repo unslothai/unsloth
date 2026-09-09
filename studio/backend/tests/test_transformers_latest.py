@@ -16,7 +16,6 @@ from pathlib import Path
 import sys
 
 
-# Shared setup for test_mlx_host_is_never_offered_a_transformers_upgrade, test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base, test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo and 1 more.
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(
         tl,
@@ -25,7 +24,6 @@ def _shared_setup_1(monkeypatch):
     )
 
 
-# Shared setup for test_mlx_host_is_never_offered_a_transformers_upgrade, test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base, test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo and 1 more.
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(tl, "_disabled", lambda: False)
     monkeypatch.setattr(tl, "_env_offline", lambda: False)
@@ -33,7 +31,6 @@ def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
 
 
-# Shared setup for test_upgrade_check_mixed_pypi_main_reports_dev_only, test_upgrade_check_requires_every_missing_type, test_upgrade_check_requires_primary_supported.
 def _shared_setup_3(monkeypatch):
     cfg = {
         "model_type": "zz_new_wrapper",
@@ -42,7 +39,6 @@ def _shared_setup_3(monkeypatch):
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
 
 
-# Shared setup for test_ensure_latest_offline_refuses, test_ensure_latest_rejects_bad_version, test_unpinned_sidecar_never_installs.
 def _shared_setup_4(monkeypatch):
     monkeypatch.setattr(
         tv,
@@ -51,7 +47,6 @@ def _shared_setup_4(monkeypatch):
     )
 
 
-# Shared setup for test_activation_prepends_latest_dir, test_pinned_sidecar_repairs_with_same_version, test_probe_order_includes_provisioned_latest.
 def _shared_setup_5(monkeypatch, tmp_path):
     venv_dir = tmp_path / ".venv_t5_latest"
     venv_dir.mkdir()

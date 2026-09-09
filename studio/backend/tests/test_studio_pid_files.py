@@ -21,7 +21,6 @@ from types import SimpleNamespace
 import pytest
 
 
-# Shared setup for test_a_filesystem_that_cannot_lock_is_not_read_as_contention, test_a_live_sibling_keeps_the_compiled_cache, test_a_lock_that_cannot_be_taken_at_all_still_clears and 2 more.
 def _shared_setup_1(monkeypatch):
     events = []
     monkeypatch.setattr(

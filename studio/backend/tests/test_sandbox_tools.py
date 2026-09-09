@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_canonical_git_dir_appended, test_git_cmd_shim_extension_added_to_pathext, test_host_git_dir_appended_after_curated and 7 more.
 def _shared_setup_1(monkeypatch):
     import core.inference.tools as tools_mod
     from core.inference.tools import _build_safe_env

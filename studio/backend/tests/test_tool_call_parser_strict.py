@@ -455,15 +455,12 @@ class TestParserLinearity:
     @pytest.mark.parametrize(
         "prefix, filler",
         [
-            # No closing quote or paren.
             pytest.param(
                 '<|python_tag|>upload.call(data="', "A", id = "llama3_unterminated_call_arg_is_linear"
             ),
-            # Giant word run, no '='.
             pytest.param(
                 "<|python_tag|>upload.call(", "a", id = "llama3_huge_wordrun_call_arg_is_linear"
             ),
-            # Unclosed array, all open braces.
             pytest.param("[TOOL_CALLS] [", "{", id = "mistral_unclosed_array_open_braces_is_linear"),
         ],
     )

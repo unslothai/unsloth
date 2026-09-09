@@ -19,7 +19,6 @@ import pytest
 from core.inference import stt_ggml_sidecar
 
 
-# Shared setup for test_a_plain_transformers_pick_is_left_alone, test_an_already_downloaded_snapshot_is_not_fetched_again, test_the_fallback_fetches_the_transformers_snapshot_it_needs.
 def _shared_setup_1(monkeypatch, stt_sidecar):
     started: list[tuple] = []
     monkeypatch.setattr(

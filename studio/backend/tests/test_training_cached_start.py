@@ -21,7 +21,6 @@ from hub.utils import hf_cache_state
 from models.training import TrainingStartRequest
 
 
-# Shared setup for test_client_error_probe_with_incomplete_cache_preserves_error, test_client_error_probe_with_partial_shards_preserves_error, test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights.
 def _shared_setup_1(route):
     metadata_error = HTTPException(
         status_code = 403,
@@ -39,7 +38,6 @@ def _shared_setup_1(route):
     assert exc_info.value is metadata_error
 
 
-# Shared setup for test_optimizer_checkpoint_does_not_make_adapter_trainable, test_start_rejects_claimed_cache_without_trainable_weights, test_start_rejects_local_dir_without_trainable_weights and 5 more.
 def _shared_setup_2(request, route):
     with pytest.raises(HTTPException) as exc_info:
         route._reject_untrainable_model_request(request)
@@ -48,7 +46,6 @@ def _shared_setup_2(request, route):
     return exc_info
 
 
-# Shared setup for test_pinned_dataset_cache_failure_never_falls_back_offline, test_strict_resume_cached_dataset_failure_never_loads_remote, test_strict_resume_cached_dataset_none_never_loads_remote and 1 more.
 def _shared_setup_3(config, worker):
     worker._load_hf_train_and_eval_datasets(
         config,
@@ -58,7 +55,6 @@ def _shared_setup_3(config, worker):
     )
 
 
-# Shared setup for test_worker_auto_eval_excludes_every_split_in_training_instruction, test_worker_does_not_load_explicit_eval_when_evaluation_is_disabled, test_worker_same_train_and_eval_split_defers_to_held_out_split.
 def _shared_setup_4(config, load_remote, train, worker):
     dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
         config,
@@ -71,7 +67,6 @@ def _shared_setup_4(config, load_remote, train, worker):
     return eval_dataset
 
 
-# Shared setup for test_start_rejects_adapter_only_local_dir, test_start_rejects_gguf_only_local_dir, test_start_rejects_missing_local_model and 1 more.
 def _shared_setup_5(request, route):
     with patch.object(route, "get_training_backend", return_value = _refusing_backend()):
         with pytest.raises(HTTPException) as exc_info:
@@ -81,7 +76,6 @@ def _shared_setup_5(request, route):
     return exc_info
 
 
-# Shared setup for test_strict_resume_cached_dataset_failure_never_loads_remote, test_strict_resume_cached_dataset_none_never_loads_remote, test_strict_resume_embedding_cached_dataset_none_never_loads_remote.
 def _shared_setup_6():
     from core.training import worker
     config = {
@@ -93,7 +87,6 @@ def _shared_setup_6():
     return config, worker
 
 
-# Shared setup for test_client_error_probe_uses_complete_sharded_cache, test_client_error_probe_with_partial_shards_preserves_error, test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights.
 def _shared_setup_7(tmp_path):
     snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
@@ -104,7 +97,6 @@ def _shared_setup_7(tmp_path):
     return first_shard, second_shard, snapshot
 
 
-# Shared setup for test_runtime_4bit_resume_reaches_worker_with_source_resource_pins, test_unadvertised_cache_pin_reaches_worker, test_wsl_windows_model_path_is_normalized_for_preflight_and_worker.
 def _shared_setup_8(captured):
     backend = SimpleNamespace(
         current_job_id = None,
@@ -114,7 +106,6 @@ def _shared_setup_8(captured):
     return backend
 
 
-# Shared setup for test_worker_exact_resume_rejects_incomplete_model_cache_with_clear_error, test_worker_incomplete_model_cache_reports_actionable_offline_error, test_worker_model_cache_fallback_recognizes_missing_tokenizer_and_processor.
 def _shared_setup_9(monkeypatch):
     from core.training import worker
 
@@ -123,7 +114,6 @@ def _shared_setup_9(monkeypatch):
     return worker
 
 
-# Shared setup for test_resume_resource_provenance_rejects_identity_changes, test_resume_resource_provenance_rejects_invalid_stored_structure, test_unattested_current_hub_model_resume_is_rejected.
 def _shared_setup_10(request, resume_run, route):
     with pytest.raises(HTTPException) as exc_info:
         route._prepare_resume_resource_provenance(request, resume_run)

@@ -27,7 +27,6 @@ from core.inference.tool_stream_exec import accepts_kwarg, search_images_kwargs
 from routes.inference import studio_router
 
 
-# Shared setup for test_a_clear_between_the_two_registry_reads_still_wins, test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared, test_a_selective_clear_still_aborts_the_fetch_for_an_image_it_reaped.
 def _shared_setup_1(clearing_lookup, monkeypatch):
     monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
     monkeypatch.setattr(

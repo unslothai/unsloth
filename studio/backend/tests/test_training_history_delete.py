@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 
-# Shared setup for test_active_dir_guard_compares_resolved_paths, test_delete_artifacts_refused_when_finished_sibling_shares_dir, test_delete_artifacts_refused_while_dir_in_use_by_active_run and 3 more.
 def _shared_setup_1(HTTPException):
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
@@ -25,7 +24,6 @@ def _shared_setup_1(HTTPException):
     return exc_info
 
 
-# Shared setup for test_active_dir_guard_compares_resolved_paths, test_delete_artifacts_refused_while_dir_in_use_by_active_run, test_delete_row_without_artifacts_allowed_while_dir_in_use and 2 more.
 def _shared_setup_2(monkeypatch, tmp_path):
     outputs = tmp_path / "outputs"
     run_dir = outputs / "run-1"
@@ -36,7 +34,6 @@ def _shared_setup_2(monkeypatch, tmp_path):
     return outputs, run_dir
 
 
-# Shared setup for test_nonserializable_resume_key_bypasses_cache, test_resource_resume_cache_key_tracks_snapshot_paths, test_resource_resume_validation_is_cached_per_request.
 def _shared_setup_3(monkeypatch):
     from core.training import provenance
 
@@ -50,7 +47,6 @@ def _shared_setup_3(monkeypatch):
     return calls
 
 
-# Shared setup for test_a_failed_purge_is_reported_and_puts_the_directory_back, test_delete_artifacts_refused_when_finished_sibling_shares_dir, test_delete_with_artifacts_removes_dir_under_outputs_root and 2 more.
 def _shared_setup_4(tmp_path):
     outputs = tmp_path / "outputs"
     run_dir = outputs / "run-1"
