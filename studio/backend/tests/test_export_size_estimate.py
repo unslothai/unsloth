@@ -465,6 +465,44 @@ def test_a_transformers_direct_file_still_outranks_a_stale_index(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 100
 
 
+def test_every_non_default_variant_is_held_with_its_archive(tmp_path):
+    component = tmp_path / "transformer"
+    _write(component / "diffusion_pytorch_model.safetensors", 4000)
+    _write(component / "diffusion_pytorch_model.fp8.safetensors", 2000)
+    _write(component / "diffusion_pytorch_model.fp8_e4m3fn-00001-of-00002.safetensors", 900)
+    _write(component / "diffusion_pytorch_model.fp8_e4m3fn-00002-of-00002.safetensors", 900)
+    _write(component / "diffusion_pytorch_model.non_ema.safetensors", 4000)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 4000
+
+
+def test_a_declared_diffusers_component_never_opens_a_stray_model_safetensors(tmp_path):
+    (tmp_path / "unet").mkdir()
+    (tmp_path / "unet" / "config.json").write_text('{"_class_name": "UNet2DConditionModel"}')
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.safetensors", 4000)
+    _write(tmp_path / "unet" / "model.safetensors", 35)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 4000
+
+
+def test_a_declared_transformers_component_never_opens_a_stray_diffusion_file(tmp_path):
+    # linyq/kiwi-edit-5b-instruct-only-diffusers/mllm_encoder: a transformers archive with a
+    # 35 MB diffusion_pytorch_model.safetensors dropped beside it.
+    component = tmp_path / "mllm_encoder"
+    component.mkdir()
+    (component / "config.json").write_text('{"architectures": ["Qwen2ForCausalLM"]}')
+    shards = {"model-00001-of-00002.safetensors": 4000, "model-00002-of-00002.safetensors": 3510}
+    for name, size in shards.items():
+        _write(component / name, size)
+    _write_index(component / "model.safetensors.index.json", shards)
+    _write(component / "diffusion_pytorch_model.safetensors", 35)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 7510
+
+
+def test_an_undeclared_folder_holding_both_spellings_charges_both_payloads(tmp_path):
+    _write(tmp_path / "comp" / "diffusion_pytorch_model.safetensors", 4000)
+    _write(tmp_path / "comp" / "model.safetensors", 35)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 4035
+
+
 def test_variant_only_shards_are_summed(tmp_path):
     _write(tmp_path / "model-00001-of-00002.fp16.safetensors", 300)
     _write(tmp_path / "model-00002-of-00002.fp16.safetensors", 200)

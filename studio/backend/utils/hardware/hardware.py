@@ -5696,20 +5696,25 @@ _TRAINER_BOOKKEEPING = re.compile(
     r"^(?:optimizer|scheduler|scaler|rng_state|training_args|trainer_state)"
     r"(?:[-_]\d+(?:-of-\d+)?)?$"
 )
-# A precision variant of an archive: model.fp16.safetensors, model-00001-of-00002.fp16.safetensors
-# or model.fp16-00001-of-00002.safetensors are these weights again, and a load passing no
-# variant never opens them.
-_WEIGHT_VARIANT = re.compile(r"\.(fp16|bf16|fp32|non_ema)$")
+# A variant of an archive: model.fp16.safetensors, model-00001-of-00002.fp8.safetensors or
+# model.non_ema-00001-of-00002.safetensors are these weights again, and a load passing no
+# variant never opens them. Anything after the default name is a variant, the same reading
+# core/inference/diffusion.py gives a pipeline's files; a numeric tail is a shard counter.
+_WEIGHT_VARIANT = re.compile(r"\.([A-Za-z][\w-]*)$")
 # The order from_pretrained tries, the direct file ahead of the index within each spelling.
-# diffusers resolves one name per component, its index or the direct file, safetensors first.
-_MODEL_ARCHIVES = (
+_TRANSFORMERS_ARCHIVES = (
     ("model", ".safetensors"),
     ("pytorch_model", ".bin"),
     ("consolidated", ".safetensors"),
     ("consolidated", ".pth"),
+)
+# diffusers resolves one name per component, its index or the direct file, safetensors first.
+# Which of the two tables a folder loads by is the folder's declared class, not a fixed order.
+_DIFFUSERS_ARCHIVES = (
     ("diffusion_pytorch_model", ".safetensors"),
     ("diffusion_pytorch_model", ".bin"),
 )
+_MODEL_ARCHIVES = _TRANSFORMERS_ARCHIVES + _DIFFUSERS_ARCHIVES
 # peft's own order, in a table of its own: an adapter is not another spelling of the base
 # model but a second payload loaded on top of it, so it never stands in for one.
 _ADAPTER_ARCHIVES = (
@@ -5730,6 +5735,24 @@ def _archive_stem(stem: str) -> tuple:
     if variant is None:
         return stem, None
     return _WEIGHT_COUNTER.sub("", stem[: variant.start()]), variant.group(1)
+
+
+def _declared_library(directories: list) -> Optional[str]:
+    """Which loader a folder's own config.json says opens it: a diffusers component carries
+    ``_class_name``/``_diffusers_version``, a transformers model ``architectures``/``model_type``.
+    ``None`` when the folder declares nothing, and its spellings are then two payloads."""
+    for directory in directories:
+        try:
+            config = json.loads((directory / "config.json").read_text(encoding = "utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(config, dict):
+            continue
+        if "_class_name" in config or "_diffusers_version" in config:
+            return "diffusers"
+        if "architectures" in config or "model_type" in config:
+            return "transformers"
+    return None
 
 
 def _index_targets(index: Path, directory: Path) -> set:
@@ -5825,9 +5848,24 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     splitting them lets a single archive lose in halves. ``tree`` carries every file, since an
     index may name a shard below itself; the second return is what it accounted for.
     """
-    # Two tables, resolved apart: a base model and an adapter saved beside it are both
-    # loaded, so an 80 MB adapter must never stand in for the 8 GB model it adapts.
-    model, model_held = _selected_archive(homes, sizes, tree, vendor, _MODEL_ARCHIVES)
+    # Tables resolved apart: a base model and an adapter saved beside it are both loaded, so
+    # an 80 MB adapter must never stand in for the 8 GB model it adapts. The transformers and
+    # diffusers spellings are two payloads too, unless the folder declares which class loads
+    # it: then the other spelling is one this load never opens and is held, not charged.
+    transformers_model, transformers_held = _selected_archive(
+        homes, sizes, tree, vendor, _TRANSFORMERS_ARCHIVES
+    )
+    diffusers_model, diffusers_held = _selected_archive(
+        homes, sizes, tree, vendor, _DIFFUSERS_ARCHIVES
+    )
+    library = _declared_library([folder for folder, _ in homes])
+    if library == "diffusers" and diffusers_model:
+        model = diffusers_model
+    elif library == "transformers" and transformers_model:
+        model = transformers_model
+    else:
+        model = {**transformers_model, **diffusers_model}
+    model_held = transformers_held | diffusers_held
     adapter, adapter_held = _selected_archive(homes, sizes, tree, vendor, _ADAPTER_ARCHIVES)
     archive = {**model, **adapter}
 
