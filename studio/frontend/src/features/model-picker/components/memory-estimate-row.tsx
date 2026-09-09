@@ -84,7 +84,7 @@ function MemoryFigure({
             ref={buttonRef}
             type="button"
             aria-label={`${label}: ${value}`}
-            className={`relative inline-flex h-8 w-[92px] shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-black/[0.04] px-3 text-ui-13 font-medium tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
+            className={`relative inline-flex h-8 w-[80px] shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-black/[0.04] px-2 text-ui-13 font-medium tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
           >
             <span aria-hidden="true" className="min-w-0 truncate">
               {candidates[displayIndex] ?? value}
@@ -148,6 +148,8 @@ export function MemoryEstimateRow({
   usableSystemRamKnown,
   isUnifiedMemory,
   singleMemoryPool,
+  reclaimableTotalBytes,
+  reclaimableGpuBytes,
   expanded,
   onExpandedChange,
 }: {
@@ -169,6 +171,9 @@ export function MemoryEstimateRow({
   isUnifiedMemory: boolean;
   /** Whether GPU and CPU share one memory pool. */
   singleMemoryPool: boolean;
+  /** What the resident copy of this model hands back when it is unloaded for the reload. */
+  reclaimableTotalBytes?: number;
+  reclaimableGpuBytes?: number;
   expanded: boolean;
   onExpandedChange: (next: boolean) => void;
 }) {
@@ -188,6 +193,8 @@ export function MemoryEstimateRow({
       usableSystemRamGb,
       usableSystemRamKnown,
       singleMemoryPool,
+      reclaimableTotalBytes,
+      reclaimableGpuBytes,
     },
   );
   const kvNote = resolveKvNote(estimate);
@@ -203,7 +210,7 @@ export function MemoryEstimateRow({
         aria-expanded={expanded}
         aria-controls={contentId}
         aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
-        className="group mb-3 flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="group mb-0.5 flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -252,7 +259,7 @@ export function MemoryEstimateRow({
           />
         )}
       </div>
-      <div id={contentId} hidden={!expanded} className="mt-4 space-y-3">
+      <div id={contentId} hidden={!expanded} className="mt-3 space-y-3">
         <MemoryBreakdownLine
           label="Weights"
           value={formatMemoryGb(estimate.weightsBytes)}
@@ -292,7 +299,7 @@ export function MemoryEstimateRow({
       </div>
       {advisory && (
         <p
-          className={`mt-4 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
+          className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
         >
           {advisory.text}
         </p>
