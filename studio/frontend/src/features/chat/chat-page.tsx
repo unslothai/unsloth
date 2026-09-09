@@ -247,6 +247,10 @@ import {
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
 
+const ProjectHooksLandingPanel = lazy(() =>
+  import("./components/project-hooks-landing-panel").then((module) => ({ default: module.ProjectHooksLandingPanel })),
+);
+
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
     default: module.ProjectSourcesPanel,
@@ -1343,7 +1347,7 @@ function ProjectLanding({
     () => useChatRuntimeStore.getState().activeThreadId,
   );
   // Land on Sources when the project was just created with dropped files.
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+  const [projectTab, setProjectTab] = useState<"chats" | "sources" | "hooks">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
   );
   // Drop the marker once committed: React may replay the initializer above.
@@ -1801,9 +1805,21 @@ function ProjectLanding({
               >
                 Sources
               </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("hooks")}
+                data-active={projectTab === "hooks"}
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Hooks
+              </button>
             </div>
 
-            {projectTab === "sources" ? (
+            {projectTab === "hooks" ? (
+              <Suspense fallback={<p className="mt-8 text-sm text-muted-foreground">Loading hooks…</p>}>
+                <ProjectHooksLandingPanel key={projectId} projectId={projectId} />
+              </Suspense>
+            ) : projectTab === "sources" ? (
               <Suspense
                 fallback={
                   <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">

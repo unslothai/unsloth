@@ -326,6 +326,7 @@ from routes import (
     video_openai_router,
     youtube_router,
 )
+from routes.project_hooks import router as project_hooks_router
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
@@ -1476,6 +1477,7 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(project_hooks_router, prefix = "/api/agent", tags = ["agent"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(
     chat_generation_runs_router,

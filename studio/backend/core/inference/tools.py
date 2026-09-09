@@ -10401,6 +10401,10 @@ def _render_html_result(arguments: dict) -> str:
     )
 
 
+from core.agent_workspace.hook_runtime import with_project_tool_hooks
+
+
+@with_project_tool_hooks
 def execute_tool(
     name: str,
     arguments: dict,
