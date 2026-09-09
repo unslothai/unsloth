@@ -871,6 +871,12 @@ def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
     this, or a variant downloads under one identity and is looked up, resumed or guarded under
     another. Ambiguity resolves to None so each caller fails closed.
 
+    A ROOT build outranks a path-qualified one, because the bare quant is the spelling the root
+    build USED to key under exactly: a tagged root beside ``distilled/model-Q4_K_M.gguf`` put two
+    keys in the alias list, and a pin that resolved before this change stopped resolving at all.
+    A path-qualified key never owned the bare spelling, so it only answers when nothing at the
+    root does. Two ROOT builds still tie, and still refuse.
+
     Separators are normalised on both sides, as ``collapse_same_quant_root_builds`` and
     ``_main_variant_rank`` already do: a key is always minted with forward slashes, but a request
     carrying a Windows path did not match its own key.
@@ -888,6 +894,10 @@ def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
         for original in by_lower.values()
         if accepts_bare_quant_alias(original) and bare_quant_alias(original).lower() == target
     ]
+    if len(matches) > 1:
+        matches = [
+            key for key in matches if "/" not in _forward_slashed(key)
+        ] or matches
     return matches[0] if len(matches) == 1 else None
 
 

@@ -279,10 +279,16 @@ def _delete_gguf_variant_from_repos(
     deleted_bytes = 0
     deleted_blobs = 0
     completed_hashes: set[str] = set()
+    # Every spelling whose blobs this delete actually removed. The manifest and cancel marker are
+    # written under the spelling the DOWNLOAD used, which for a legacy bare pin is not the
+    # qualified key the blobs key to, so purging only the request left the state behind and an
+    # offline refresh rebuilt a partial row for a checkpoint that is gone.
+    purge_variants: set[str] = {variant}
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
+        purge_variants.update(wanted_keys)
         matched = _repo_file_matches(
             target_repo,
             lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
@@ -366,7 +372,12 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
+    state_purged = any(
+        [
+            download_manifest.purge_state("model", repo_id, spelling, hub_cache = root)
+            for spelling in sorted(purge_variants)
+        ]
+    )
     # Reclaim the empty quant folder so it stops 404ing on delete.
     removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
     removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)

@@ -1608,8 +1608,17 @@ class DownloadRegistry:
             if admission_check is not None and not admission_check():
                 return False, "admission_blocked"
             deleting_scopes = self._deleting.get(repo)
+            # The reservation is recorded under the spelling the DELETE was requested with, while
+            # this claim carries the spelling the download was started with. Deletion resolves the
+            # legacy bare quant onto the qualified key, so the two name one build and literal
+            # membership let a claim through the window the reservation exists to close.
             if deleting_scopes is not None and (
-                None in deleting_scopes or variant_from_key(key) in deleting_scopes
+                None in deleting_scopes
+                or any(
+                    variant_spellings_may_name_one_build(variant_from_key(key), scope)
+                    for scope in deleting_scopes
+                    if scope is not None
+                )
             ):
                 return False, "deleting"
             active = self._repo_active.get(repo, set())
@@ -1626,6 +1635,9 @@ class DownloadRegistry:
                 # Same-transport variants of one model run concurrently, since each worker purges only its own
                 # re-resolved main blobs and the shared companion is guarded by its marker; cross-transport stays
                 # serialized so an HTTP resume and an XET rewrite never write one blob at once.
+                # DIFFERENT variants, though: two spellings of ONE build re-resolve to the same main
+                # blobs, so admitting the second launches a worker that rewrites what the first is
+                # writing. They are a conflict, not a sibling quant.
                 concurrent_gguf_variants = (
                     repo_type == "model"
                     and bool(variant)
@@ -1633,6 +1645,9 @@ class DownloadRegistry:
                     and other_metadata.repo_type == "model"
                     and bool(other_metadata.variant)
                     and other_metadata.transport == transport
+                    and not variant_spellings_may_name_one_build(
+                        variant, other_metadata.variant
+                    )
                 )
                 if concurrent_gguf_variants:
                     continue

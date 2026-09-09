@@ -209,7 +209,12 @@ def gguf_variant_requirements(
     if cached is not None:
         return cached
     requirements = _fetch_gguf_variant_requirements(repo_id, hf_token)
-    return plan_for_variant(requirements, variant)
+    resolved = plan_for_variant(requirements, variant)
+    if resolved is not None and variant.lower() not in requirements:
+        # The fetch caches each plan under its OWN key, so a legacy bare spelling missed the cache
+        # on every call and re-ran model_info. The progress endpoint asks once per poll.
+        _variant_requirement_cache_set_many(repo_id, hf_token, {variant: resolved})
+    return resolved
 
 
 def _fetch_gguf_variant_requirements(

@@ -701,3 +701,111 @@ def test_the_requirement_lookup_accepts_what_the_plan_lookup_accepts():
         [_Sibling(f) for f in ("m-Q4_K_M-mtp.gguf", "m-Q4_K_M-fp16.gguf")]
     )
     assert plan_for_variant(ambiguous, "Q4_K_M") is None
+
+
+def test_a_bare_pin_still_names_the_sole_root_build():
+    """A path-qualified key never owned the bare quant, so it must not contest one.
+
+    Re-keying a tagged ROOT build put it in the alias list beside
+    ``distilled/model-Q4_K_M``, and the pair made the pin ambiguous. On main that pin matched
+    the root build EXACTLY, so it resolved; here it stopped resolving at all.
+    """
+    from hub.utils.gguf import resolve_variant_alias
+
+    keys = ["model-Q4_K_M-mtp", "distilled/model-Q4_K_M"]
+    assert resolve_variant_alias(keys, "Q4_K_M") == "model-Q4_K_M-mtp"
+    # Two ROOT builds still tie, and still refuse.
+    assert resolve_variant_alias(["m-Q4_K_M-mtp", "m-Q4_K_M-fp16"], "Q4_K_M") is None
+    # Nothing at the root: the sole path-qualified key answers, as it did before.
+    assert resolve_variant_alias(["distilled/model-Q4_K_M"], "Q4_K_M") == (
+        "distilled/model-Q4_K_M"
+    )
+    # An exact key always wins over the alias tier.
+    assert resolve_variant_alias(["Q4_K_M", "distilled/model-Q4_K_M"], "Q4_K_M") == "Q4_K_M"
+
+
+def test_a_delete_reservation_holds_against_the_other_spelling():
+    """``begin_delete`` records the request's spelling and ``claim`` compared it literally, so a
+    worker spawned during the delete window wrote blobs the delete was already unlinking. This is
+    the reciprocal of the active-job guard: both ends of the window have to see one build."""
+    from hub.utils.download_registry import DownloadRegistry
+
+    repo = "org/repo"
+    for delete_variant, claim_variant in (
+        ("q4_k_m", "model-q4_k_m-mtp"),
+        ("model-q4_k_m-mtp", "q4_k_m"),
+    ):
+        registry = DownloadRegistry()
+        assert registry.begin_delete(repo, delete_variant) is True
+        ok, why = registry.claim(
+            f"{repo}::{claim_variant}",
+            "http",
+            repo_type = "model",
+            repo_id = repo,
+            variant = claim_variant,
+        )
+        assert ok is False and why == "deleting", (delete_variant, claim_variant, why)
+    # A genuinely different quant still downloads while another is deleted.
+    registry = DownloadRegistry()
+    assert registry.begin_delete(repo, "q4_k_m") is True
+    ok, _why = registry.claim(
+        f"{repo}::q8_0", "http", repo_type = "model", repo_id = repo, variant = "q8_0"
+    )
+    assert ok is True
+
+
+def test_two_spellings_of_one_build_do_not_run_as_sibling_quants():
+    """Sibling quants download concurrently because each worker purges only its own main blobs.
+    Two spellings of ONE build re-resolve to the SAME blobs, so the second worker rewrites what
+    the first is writing; that is a conflict, not a sibling."""
+    from hub.utils.download_registry import DownloadRegistry
+
+    repo = "org/repo"
+    registry = DownloadRegistry()
+    ok, _ = registry.claim(
+        f"{repo}::q4_k_m", "http", repo_type = "model", repo_id = repo, variant = "q4_k_m"
+    )
+    assert ok
+    ok, why = registry.claim(
+        f"{repo}::model-q4_k_m-mtp",
+        "http",
+        repo_type = "model",
+        repo_id = repo,
+        variant = "model-q4_k_m-mtp",
+    )
+    assert ok is False and why == "running", why
+    # A real sibling quant is still admitted concurrently.
+    ok, _ = registry.claim(
+        f"{repo}::q8_0", "http", repo_type = "model", repo_id = repo, variant = "q8_0"
+    )
+    assert ok is True
+
+
+def test_the_requirement_cache_answers_the_spelling_it_was_asked():
+    """The fetch caches each plan under its own key, so a legacy bare spelling missed on every
+    call and re-ran model_info. The download-progress endpoint asks once per poll."""
+    from hub.services.models import gguf_variants as service
+
+    class _Sibling:
+        def __init__(self, rfilename):
+            self.rfilename = rfilename
+            self.size = 1000
+            self.lfs = None
+
+    siblings = [_Sibling("model-Q4_K_M-mtp.gguf"), _Sibling("model-Q6_K.gguf")]
+    calls = {"n": 0}
+    real_fetch = service._fetch_gguf_variant_requirements
+
+    def _counting_fetch(repo_id, hf_token = None, *, _siblings = siblings, **kwargs):
+        calls["n"] += 1
+        return real_fetch(repo_id, hf_token, siblings = _siblings)
+
+    service._VARIANT_REQUIREMENT_CACHE.clear()
+    service._fetch_gguf_variant_requirements = _counting_fetch
+    try:
+        first = service.gguf_variant_requirements("org/repo", "Q4_K_M")
+        second = service.gguf_variant_requirements("org/repo", "Q4_K_M")
+    finally:
+        service._fetch_gguf_variant_requirements = real_fetch
+    assert first is not None and second is not None
+    assert calls["n"] == 1, f"the bare spelling re-fetched {calls['n']} times"
