@@ -19,7 +19,16 @@ on:
       - 'studio/setup.sh'
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
+      - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_node_prebuilt.py'
+      - 'studio/install_manifest.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/setup.ps1'
+      - 'install.ps1'
       - 'studio/backend/requirements/**'
+      # The harness below and the proxy it measures with.
+      - 'tests/studio/install/test_update_idempotency.py'
+      - 'tests/studio/install/idempotency_proxy.py'
       - 'unsloth_cli/commands/studio.py'
       - 'unsloth_cli/__init__.py'
       - 'unsloth_cli/_system_dir_guard.py'
@@ -174,6 +183,26 @@ jobs:
           jq -e '.studio_install_ok == true' /tmp/caps.json
           jq -e '.desktop_manageability_version >= 2' /tmp/caps.json
 
+      - name: A second update does nothing, and proves it
+        # The steps above read the update's LOG. This one measures it: the update runs
+        # with a CONNECT proxy as its only route out, so "downloaded nothing" is a byte
+        # count per host rather than an impression of speed, and the install is diffed
+        # before and after so "changed nothing" covers the files no log line mentions.
+        #
+        # It also damages the install on purpose (a sidecar file, the manifest, a
+        # llama.cpp binary, a requirements file) and asserts the update repairs exactly
+        # the damaged part. Those cases restore what they broke, but they run BEFORE the
+        # manifest-removal step below rather than after, so a failure here cannot be
+        # mistaken for the deliberately incomplete install that step creates.
+        timeout-minutes: 30
+        env:
+          UNSLOTH_IDEMPOTENCY_E2E: '1'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
+            2>&1 | tee logs/idempotency.log
+
       - name: An incomplete install must not report itself ready
         # An installer killed part-way leaves a working CLI but no studio.txt
         # deps, which the old preflight called ManagedReady. The manifest is
@@ -266,6 +295,116 @@ jobs:
             logs/install.log
             logs/update.log
             logs/update2.log
+            logs/idempotency.log
             logs/studio.log
             logs/uninstall.log
+          retention-days: 7
+
+  idempotency-macos:
+    name: Unsloth Updating Tests (macOS)
+    runs-on: macos-15
+    # The install is the expensive half; the harness itself is three updates that are
+    # supposed to do nothing plus five that do one thing each.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: A second update does nothing, and proves it
+        # macOS is where a no-op update cost the most before this: the llama.cpp and
+        # whisper.cpp re-validations START the servers, which on Apple Silicon means
+        # loading Metal. Same harness as the Linux leg.
+        timeout-minutes: 30
+        env:
+          UNSLOTH_IDEMPOTENCY_E2E: '1'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
+            2>&1 | tee logs/idempotency.log
+
+      - name: Upload macOS idempotency logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-update-idempotency-macos-log
+          path: |
+            logs/install.log
+            logs/idempotency.log
+          retention-days: 7
+
+  idempotency-windows:
+    name: Unsloth Updating Tests (Windows)
+    runs-on: windows-latest
+    # Windows installs are 3x the Linux ones (268-292s against 88s in the API smoke),
+    # and Defender is why; the harness after it is the same three updates.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Unsloth (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # A CHILD process, so install.ps1's Write-StudioLine output reaches
+          # Tee-Object: in-process it goes straight to [Console]::Out and the log is
+          # empty. Same idiom as studio-windows-api-smoke.yml.
+          $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 |
+            Tee-Object -FilePath logs/install.log
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      - name: A second update does nothing, and proves it
+        # The Windows leg is the one that can catch a path or marker written with the
+        # wrong separator: every comparison in the harness is a byte-for-byte one.
+        timeout-minutes: 40
+        shell: pwsh
+        env:
+          UNSLOTH_IDEMPOTENCY_E2E: '1'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          python -m pytest tests/studio/install/test_update_idempotency.py -v -s 2>&1 |
+            Tee-Object -FilePath logs/idempotency.log
+          if ($LASTEXITCODE -ne 0) { throw "the idempotency harness failed ($LASTEXITCODE)" }
+
+      - name: Upload Windows idempotency logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-update-idempotency-windows-log
+          path: |
+            logs/install.log
+            logs/idempotency.log
           retention-days: 7
