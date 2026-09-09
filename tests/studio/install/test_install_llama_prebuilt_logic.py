@@ -4822,20 +4822,20 @@ def _complete_existing_llama_install(
             path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
         else:
-            path.write_text("", encoding = "utf-8")
+            path.write_text("x", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding = "utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding = "utf-8")
         if source == "published" and visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
         if runtime_asset is not None and paired_runtime:
             for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
     return install_dir
 
 

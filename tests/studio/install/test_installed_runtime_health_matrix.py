@@ -370,7 +370,7 @@ def build_tree(
         if cudart:
             names += list(_CUDART_TRIO)
         for name in names:
-            (runtime / name).write_text("", encoding = "utf-8")
+            (runtime / name).write_text("x", encoding = "utf-8")
     return root
 
 

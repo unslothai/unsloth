@@ -170,10 +170,10 @@ def _complete_tree(root: Path) -> Path:
     for group in _shared_health_groups():
         # Dropping the globs from the first pattern still matches it:
         # libggml-cpu*.so* -> libggml-cpu.so.
-        (runtime_dir / group[0].replace("*", "")).write_text("", encoding = "utf-8")
+        (runtime_dir / group[0].replace("*", "")).write_text("x", encoding = "utf-8")
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
-        (runtime_dir / f"llama-{name}{ext}").write_text("", encoding = "utf-8")
+        (runtime_dir / f"llama-{name}{ext}").write_text("x", encoding = "utf-8")
     return runtime_dir
 
 
@@ -608,28 +608,44 @@ def test_a_dangling_symlink_pin_falls_through_like_any_absent_pin(tmp_path, monk
     assert active() is False
 
 
-def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(tmp_path, monkeypatch):
-    """Codex 3959620607, P2. The finder reads UNSLOTH_LLAMA_CPP_PATH at step 1b and the
-    stored folder only at step 2, so an override with an older selection still in the
-    settings database is the tree the backend opens. Reading the setting first returned
-    False, nothing graded that tree, and preflight stayed Ready over a runtime missing files.
-    default_managed_llama_dir points at exactly the override, so it is ours to grade."""
+def test_a_user_set_runtime_override_is_not_ours_to_repair(tmp_path, monkeypatch):
+    """Codex 3973660810, P1, superseding the grading half of 3959620607, P2.
+
+    3959620607 was right that the finder reads UNSLOTH_LLAMA_CPP_PATH at step 1b and the
+    stored folder only at step 2, so an override holding a server is the tree the backend
+    opens, and reading the setting first graded the wrong one. Grading that tree was still
+    the wrong answer: setup.sh derives LLAMA_CPP_DIR from STUDIO_HOME and setup.ps1 from
+    Get-ManagedLlamaCppDir, and neither reads UNSLOTH_LLAMA_CPP_PATH, so the repair the
+    verdict asks for rebuilds a different tree, reports success, and the next launch asks
+    again. A repair that cannot reach the tree is worse than no verdict, which is why
+    LLAMA_SERVER_PATH is skipped for the same reason.
+
+    The ordering the earlier item won is still pinned below: the override is classified
+    before the stored folder is read, so which of the two answers None is not an accident.
+    """
     active = _active_helper()
     override = tmp_path / "relocated" / "llama.cpp"
     server = (
         override / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
     )
     server.parent.mkdir(parents = True)
-    server.write_text("", encoding = "utf-8")
+    server.write_text("x", encoding = "utf-8")
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(override))
     _stub_stored_selection(monkeypatch, "/home/someone/older-build")
-    assert active() is True
+    assert active() is False
 
-    # The desktop's own marker is the exception: the finder skips the override when
-    # it set it, so the stored folder wins again and the managed tree is not ours.
+    # With no stored folder either, the answer is still None rather than the managed
+    # tree: the finder stops at the override, so the managed tree is not what loads.
+    _stub_stored_selection(monkeypatch, None)
+    assert active() is False
+
+    # The desktop's own marker is the exception: the finder skips the override when it
+    # set it, so the tree behind it is the managed one and it is repairable again.
     monkeypatch.setenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", "1")
+    assert active() is True
+    _stub_stored_selection(monkeypatch, "/home/someone/older-build")
     assert active() is False
 
 
@@ -657,15 +673,24 @@ def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path
         "it and the stored folder is what the backend opens"
     )
 
-    # A pin somewhere else under the same studio home is a real user pin and still
-    # outranks the stored folder, which is the case the marker check protects.
+    # A pin somewhere else under the same studio home is a real user pin, and the
+    # classification still tells the two apart: it is not the managed tree, so the
+    # managed tree is not what the finder reaches and nothing here is graded. It is
+    # also not repairable, which is Codex 3973660810 and why the answer is False
+    # rather than the pinned tree.
     elsewhere = tmp_path / "hand-built" / "llama.cpp"
     pinned = (
         elsewhere / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
     )
     pinned.parent.mkdir(parents = True)
-    pinned.write_text("", encoding = "utf-8")
+    pinned.write_text("x", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(elsewhere))
+    assert active() is False
+    # And the classification itself is unchanged: with the stored folder cleared, the
+    # managed-equal override is still graded and the pin elsewhere is still not.
+    _stub_stored_selection(monkeypatch, None)
+    assert active() is False
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(managed))
     assert active() is True
 
 
@@ -769,14 +794,13 @@ def test_a_skipped_runtime_verdict_says_so_in_its_reason(monkeypatch):
     ).read_text(encoding = "utf-8")
     body = source.split("def desktop_capabilities(", 1)[1].split("if json_output:", 1)[0]
     assert 'payload["llama_runtime_reason"] = "llama_runtime_not_managed"' in body
-    assert "llama_runtime_not_managed" in (
-        pathlib.Path(__file__).resolve().parents[3]
-        / "studio"
-        / "src-tauri"
-        / "src"
-        / "preflight"
-        / "managed.rs"
-    ).read_text(encoding = "utf-8"), "the desktop must know the reason the CLI emits"
+    # Codex 3973660789, P2: the third null. A probe that raised is a fact about one
+    # attempt and carries the damaged tree's own fingerprint, so it is not cacheable
+    # either, while "nothing installed" is a fact about the tree and still is.
+    assert 'payload["llama_runtime_reason"] = "llama_runtime_probe_failed"' in body
+    managed_rs = MANAGED_RS.read_text(encoding = "utf-8")
+    for reason in ("llama_runtime_not_managed", "llama_runtime_probe_failed"):
+        assert reason in managed_rs, "the desktop must know the reason the CLI emits"
 
 
 def test_the_stored_settings_lookup_can_reach_its_own_database_module(monkeypatch):

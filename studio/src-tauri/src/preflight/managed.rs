@@ -840,10 +840,21 @@ fn read_cached_capability(fingerprint: &ManagedBinFingerprint) -> Option<Desktop
 /// not mine to grade". Its null verdict is about a selection, not about the tree.
 const LLAMA_RUNTIME_NOT_MANAGED: &str = "llama_runtime_not_managed";
 
+/// And its word for "the probe itself raised", which is about one attempt.
+const LLAMA_RUNTIME_PROBE_FAILED: &str = "llama_runtime_probe_failed";
+
 /// Whether the runtime verdict in this answer was skipped rather than reached.
+///
+/// Both reasons mean no verdict was reached, and neither is a fact this fingerprint
+/// watches: the selection lives in the settings database and the environment, and a
+/// probe that raised shares the damaged tree's fingerprint exactly. The third null,
+/// nothing installed at all, is a fact about the tree and stays cacheable.
 fn llama_runtime_verdict_was_skipped(capability: &DesktopCapability) -> bool {
     capability.llama_runtime_ok.is_none()
-        && capability.llama_runtime_reason.as_deref() == Some(LLAMA_RUNTIME_NOT_MANAGED)
+        && matches!(
+            capability.llama_runtime_reason.as_deref(),
+            Some(LLAMA_RUNTIME_NOT_MANAGED) | Some(LLAMA_RUNTIME_PROBE_FAILED)
+        )
 }
 
 fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &DesktopCapability) {
@@ -2191,6 +2202,31 @@ mod tests {
             read_cached_capability(&fingerprint).is_some(),
             "only the skipped verdict is uncacheable, or every launch pays a probe"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_runtime_probe_that_raised_is_never_cached_either() {
+        // Codex 3973660789, P2. A probe that throws leaves a null verdict, which is
+        // Ready, and it carries the damaged tree's own fingerprint, so caching it
+        // froze a Ready that was never reached and every later launch skipped the
+        // probe. Its reason tells it apart from the two nulls that are facts.
+        let home = CapabilityCacheHome::new("probe-failed-verdict");
+        let root = scratch_dir("runtime-probe-failed");
+        install_fake_runtime(&root);
+        let fingerprint = fingerprint_for_runtime(&root);
+
+        let mut failed = healthy_capability();
+        failed.llama_runtime_ok = None;
+        failed.llama_runtime_reason = Some(LLAMA_RUNTIME_PROBE_FAILED.to_string());
+        assert!(desktop_capability_ready(&failed), "still Ready: this is about the cache");
+        write_cached_capability(&fingerprint, &failed);
+        assert!(
+            !home.cache_file().exists(),
+            "an attempt that raised must not freeze a Ready over a damaged tree"
+        );
+        assert!(read_cached_capability(&fingerprint).is_none());
 
         let _ = fs::remove_dir_all(&root);
     }

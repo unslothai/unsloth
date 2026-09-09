@@ -44,7 +44,7 @@ def _installed(tmp_path: Path, *, binaries: bool = False) -> Path:
         ext = ".exe" if host.is_windows else ""
         for name in ("server", "quantize"):
             binary = runtime_dir / f"llama-{name}{ext}"
-            binary.write_text("", encoding = "utf-8")
+            binary.write_text("x", encoding = "utf-8")
             os.chmod(binary, 0o755)
     return root
 
@@ -234,7 +234,7 @@ def _windows_tree(tmp_path: Path, names, *, marker: str) -> Path:
     runtime_dir.mkdir(parents = True)
     for name in names:
         binary = runtime_dir / name
-        binary.write_text("", encoding = "utf-8")
+        binary.write_text("x", encoding = "utf-8")
         os.chmod(binary, 0o755)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(marker, encoding = "utf-8")
     return root
@@ -341,7 +341,7 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
     for group in groups:
         stem = group[0].replace("*", "")
         target = runtime_dir / f"{stem}.0.9.8"
-        target.write_text("", encoding = "utf-8")
+        target.write_text("x", encoding = "utf-8")
         soname = runtime_dir / f"{stem}.0"
         os.symlink(target.name, soname)
         os.symlink(soname.name, runtime_dir / stem)
@@ -379,7 +379,7 @@ def test_a_library_renamed_in_place_no_longer_satisfies_its_group(tmp_path, suff
     runtime_dir = ILP.install_runtime_dir(root, host)
     groups = ILP.runtime_payload_health_groups("linux-cpu")
     for group in groups:
-        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("", encoding = "utf-8")
+        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("x", encoding = "utf-8")
     assert ILP._runtime_payload_has(root, host, groups) is True
 
     soname = runtime_dir / f"{groups[0][0].replace('*', '')}.0"
@@ -399,7 +399,7 @@ def test_a_renamed_library_does_not_stand_in_for_its_own_soname(tmp_path):
         "linux-cpu", source_label = "published", tag = "b10830"
     )
     for group in published:
-        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("", encoding = "utf-8")
+        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("x", encoding = "utf-8")
     assert ILP.installed_runtime_health(root, host = host) == (True, "")
 
     victim = runtime_dir / "libggml-base.so.0"
@@ -416,8 +416,74 @@ def test_an_entrypoint_is_still_a_file_the_loader_would_start(tmp_path):
     a complete tree, which is the repair loop installed_runtime_health forbids."""
     for name in ("llama-server", "llama-server.exe", "ggml-base.dll", "libggml.0.dylib"):
         entry = tmp_path / name
-        entry.write_text("", encoding = "utf-8")
+        entry.write_text("x", encoding = "utf-8")
         assert ILP._payload_match_is_loadable(entry) is True, name
+
+
+@pytest.mark.parametrize("name", ["llama-server", "libggml-base.so.0", "ggml-base.dll"])
+def test_a_zero_length_file_is_not_a_payload_or_an_entrypoint(tmp_path, name):
+    """Codex 3973660774, P1. An interrupted extraction, and security software that empties
+    a file rather than taking it, both leave the directory entry, so is_file() and the
+    execute bit stayed true. The fingerprint sees the length change and re-probes, and the
+    probe then answered healthy, so the repair the re-probe existed to trigger was never
+    offered. _existing_install_runs rejects the same tree on ENOEXEC or a loader failure."""
+    empty = tmp_path / name
+    empty.write_text("", encoding = "utf-8")
+    assert ILP._payload_match_is_loadable(empty) is False
+    assert ILP._entrypoint_is_runnable(empty, ILP.platform_only_host()) is False
+
+    empty.write_text("x", encoding = "utf-8")
+    assert ILP._payload_match_is_loadable(empty) is True
+
+
+def test_a_truncated_llama_server_is_broken_not_healthy(tmp_path):
+    """The end-to-end verdict for the same damage, with the payload left complete so the
+    reason has to come from the entrypoint check."""
+    if os.name == "nt":
+        host = _windows_host()
+        root = _windows_tree(
+            tmp_path,
+            _PUBLISHED_WINDOWS_PAYLOAD,
+            marker = json.dumps({"source": "published", "tag": "b10830"}),
+        )
+    else:
+        host = _macos_host()
+        root = _macos_tree(tmp_path)
+    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+
+    ext = ".exe" if host.is_windows else ""
+    (ILP.install_runtime_dir(root, host) / f"llama-server{ext}").write_text("", encoding = "utf-8")
+    assert ILP.installed_runtime_health(root, host = host) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
+
+
+def test_a_legacy_windows_cuda_marker_still_owes_the_paired_runtime(tmp_path):
+    """Codex 3973660801, P2. Markers written before ``runtime_asset`` existed name no paired
+    archive, so the cudart trio was dropped from the table and losing one member read as
+    healthy while llama-server.exe died in the loader, with no repair offered and the marker
+    never backfilled. The three arrive and go together, so one of them still being there is
+    what says this install was paired; a machine on a system CUDA toolkit has none of them
+    and is asked for none."""
+    host = _windows_host()
+    trio = ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
+    marker = json.dumps({"source": "published", "tag": "b10830", "backend": "cuda"})
+    root = _windows_tree(
+        tmp_path, _PUBLISHED_WINDOWS_PAYLOAD + ("ggml-cuda.dll",) + trio, marker = marker
+    )
+    assert ILP._kept_install_payload_is_healthy(root, host) is True
+
+    (ILP.install_runtime_dir(root, host) / "cublasLt64_12.dll").unlink()
+    assert (
+        ILP._kept_install_payload_is_healthy(root, host) is False
+    ), "the two remaining members must not stand in for the third"
+
+    # None of them present is the system-CUDA install, which owes nothing.
+    bare = _windows_tree(
+        tmp_path / "bare", _PUBLISHED_WINDOWS_PAYLOAD + ("ggml-cuda.dll",), marker = marker
+    )
+    assert ILP._kept_install_payload_is_healthy(bare, host) is True
 
 
 def _macos_host():
@@ -455,7 +521,7 @@ def _macos_payload(runtime_dir: Path) -> None:
         ("libggml-blas", "0.23.0"),
         ("libggml-rpc", "0.23.0"),
     ):
-        (runtime_dir / f"{stem}.{version}.dylib").write_text("", encoding = "utf-8")
+        (runtime_dir / f"{stem}.{version}.dylib").write_text("x", encoding = "utf-8")
         os.symlink(f"{stem}.{version}.dylib", runtime_dir / f"{stem}.0.dylib")
         os.symlink(f"{stem}.0.dylib", runtime_dir / f"{stem}.dylib")
 
@@ -470,7 +536,7 @@ def _macos_tree(tmp_path: Path) -> Path:
     )
     for name in ("server", "quantize"):
         binary = runtime_dir / f"llama-{name}"
-        binary.write_text("", encoding = "utf-8")
+        binary.write_text("x", encoding = "utf-8")
         # An installed entrypoint is executable, and the probe now asks for that
         # rather than for mere presence, the way _existing_install_runs does.
         os.chmod(binary, 0o755)
@@ -562,7 +628,7 @@ def test_a_bare_versionless_macos_dylib_still_satisfies_its_group(tmp_path):
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == "libggml"]:
         path.unlink()
-    (runtime_dir / "libggml.dylib").write_text("", encoding = "utf-8")
+    (runtime_dir / "libggml.dylib").write_text("x", encoding = "utf-8")
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
 
 

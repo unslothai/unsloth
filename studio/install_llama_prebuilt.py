@@ -6982,6 +6982,27 @@ def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> 
     return groups
 
 
+"""The CUDA runtime a windows-cuda bundle pairs with, installed and removed together."""
+_CUDA_RUNTIME_TRIO = ("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")
+
+
+def _has_a_paired_cuda_runtime(install_dir: Path) -> bool:
+    """Whether a windows-cuda tree carries any member of that trio.
+
+    A marker written before ``runtime_asset`` existed names no paired archive, so the
+    trio was dropped from the table entirely and losing one member read as healthy while
+    llama-server.exe died in the loader with no repair offered and no marker backfilled.
+    The three arrive and go together, so one of them still being there is what says this
+    install was paired; a machine running on a system CUDA toolkit has none and is asked
+    for none.
+    """
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    return any(
+        any(_payload_match_is_loadable(match) for match in runtime_dir.glob(pattern))
+        for pattern in _CUDA_RUNTIME_TRIO
+    )
+
+
 def _linux_split_entrypoint_groups(
     source_label: str | None, tag: str | None = None
 ) -> list[list[str]]:
@@ -7015,8 +7036,13 @@ def runtime_payload_health_groups(
     source_label: str | None = None,
     runtime_name: str | None = None,
     tag: str | None = None,
+    install_dir: Path | None = None,
 ) -> list[list[str]]:
-    """Return required runtime file groups for an install kind."""
+    """Return required runtime file groups for an install kind.
+
+    ``install_dir`` is read only where the marker cannot answer on its own, which today
+    is the windows-cuda trio a legacy marker does not name.
+    """
     if install_kind in {"linux-cpu", "linux-arm64"}:
         return [
             ["libllama-common.so*"],
@@ -7094,7 +7120,7 @@ def runtime_payload_health_groups(
     if install_kind == "windows-cuda":
         groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
-        if runtime_name:
+        if runtime_name or (install_dir is not None and _has_a_paired_cuda_runtime(install_dir)):
             groups.append(["cudart64_*.dll"])
             groups.append(["cublas64_*.dll"])
             groups.append(["cublasLt64_*.dll"])
@@ -7165,6 +7191,23 @@ def _has_versioned_siblings(path: Path) -> bool:
     return False
 
 
+def _is_nonempty_file(path: Path) -> bool:
+    """A regular file with something in it.
+
+    Length is the one property of a file's contents this probe may read: it executes
+    nothing, and a zero-length library or entrypoint is not a thing any loader can use.
+    An interrupted extraction and security software that empties a file in place both
+    leave the directory entry, so ``is_file()`` and the execute bit stayed true while
+    ``_existing_install_runs`` rejected the tree on ENOEXEC or a loader failure. No real
+    payload file is empty, so nothing shipped is refused by this.
+    """
+    try:
+        status = path.stat()
+    except OSError:
+        return False
+    return stat.S_ISREG(status.st_mode) and status.st_size > 0
+
+
 def _payload_match_is_loadable(path: Path) -> bool:
     """Whether a glob match is a file the loader would actually resolve.
 
@@ -7185,10 +7228,7 @@ def _payload_match_is_loadable(path: Path) -> bool:
     ``libggml.*.dylib`` stays satisfied by the terminal file. ``.dll`` names and
     bare executables are unaffected.
     """
-    try:
-        if not path.is_file():
-            return False
-    except OSError:
+    if not _is_nonempty_file(path):
         return False
     match = _LINKER_NAME_RE.match(path.name) or _DYLIB_NAME_RE.match(path.name)
     if match is None:
@@ -7249,6 +7289,7 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
             source_label = choice.source_label,
             runtime_name = choice.runtime_name,
             tag = choice.tag,
+            install_dir = install_dir,
         ),
     )
 
@@ -7319,6 +7360,7 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
                     source_label = source_label,
                     runtime_name = runtime_asset,
                     tag = marker_tag if isinstance(marker_tag, str) else None,
+                    install_dir = install_dir,
                 )
             }
             for kind in kinds
@@ -7430,11 +7472,12 @@ def _entrypoint_is_runnable(binary: Path, host: HostInfo) -> bool:
     Shared with ``_existing_install_runs`` so the keep-or-reinstall decision and
     the launch-time verdict cannot disagree: a tree this rejects but that one
     keeps would be repaired, left unchanged and rejected again next launch.
+
+    Empty is not runnable, whatever its mode bits say. A truncated entrypoint keeps
+    its execute bit, so os.access answered true while the exec of it dies on ENOEXEC,
+    which is what _binary_image_runs sees over in the keep decision.
     """
-    try:
-        if not binary.is_file():
-            return False
-    except OSError:
+    if not _is_nonempty_file(binary):
         return False
     return True if host.is_windows else os.access(binary, os.X_OK)
 

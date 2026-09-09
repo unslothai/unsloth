@@ -4245,14 +4245,18 @@ def _llama_runtime_to_grade() -> Path | None:
         )
     if override and not managed_override:
         # Only a folder that holds a server stops discovery. _scan_pinned finds no
-        # candidate under an empty or missing override and walks on, so returning
-        # that tree here graded a directory nobody loads, answered "not installed",
-        # and left the runtime the backend really opens ungraded.
+        # candidate under an empty or missing override and walks on, so a tree behind
+        # it is still ours to grade; one that holds a server is not.
+        # Not graded, because nothing can repair it: setup.sh derives LLAMA_CPP_DIR
+        # from STUDIO_HOME and setup.ps1 from Get-ManagedLlamaCppDir, and neither
+        # reads UNSLOTH_LLAMA_CPP_PATH at all, so an update sent here would rebuild a
+        # different tree, report success, and leave the next launch offering the same
+        # repair forever. LLAMA_SERVER_PATH is skipped for the same reason.
         # expanded_user_path, not Path.expanduser: the finder reads the same
         # variable through it, and a "~name" naming no account makes expanduser
         # raise RuntimeError out of a doctor whose whole job is to answer.
         if _layout_stops_discovery(llama_server_candidates(expanded_user_path(override))):
-            return default_managed_llama_dir()
+            return None
     if get_stored_custom_llama_cpp_path() is not None:
         return None
     if managed_override:
@@ -4380,7 +4384,13 @@ def desktop_capabilities(
             # The verdict itself is still null, so nothing turns stale on it.
             payload["llama_runtime_reason"] = "llama_runtime_not_managed"
     except Exception:
-        pass
+        # The third null, and the one that must not be kept. Nothing-installed is a
+        # fact about the machine; this is a fact about one attempt, and it shares the
+        # damaged tree's fingerprint, so caching it froze a Ready that was never
+        # reached over a runtime the probe would have rejected. Same reason string
+        # shape as the skip, so managed.rs refuses both without a second rule.
+        payload["llama_runtime_ok"] = None
+        payload["llama_runtime_reason"] = "llama_runtime_probe_failed"
     try:
         from importlib.metadata import version as package_version
         payload["version"] = package_version("unsloth")
