@@ -1288,6 +1288,7 @@ export const de = {
       copy: "Kopieren",
       copied: "Kopiert",
       commandBuilder: "Befehlsgenerator",
+      commandShell: "Shell für alle Befehle",
       agent: "Coding-Agent",
       model: "Modell",
       searchModels: "GGUF-Modelle suchen...",

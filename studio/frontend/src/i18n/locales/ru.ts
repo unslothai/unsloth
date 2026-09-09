@@ -1265,6 +1265,7 @@ export const ru = {
       copy: "Копировать",
       copied: "Скопировано",
       commandBuilder: "Конструктор команды",
+      commandShell: "Оболочка для всех команд",
       agent: "Кодинг-агент",
       model: "Модель",
       searchModels: "Поиск моделей GGUF…",
