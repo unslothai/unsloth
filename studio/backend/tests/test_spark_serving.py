@@ -2827,3 +2827,18 @@ def test_what_counts_as_a_gguf_load_before_the_loader_says(tmp_path):
     assert ss.looks_like_a_gguf_load("repo/x", "Q4_K_M", None) is True
     assert ss.looks_like_a_gguf_load("/models/m.GGUF", None, None) is True
     assert ss.looks_like_a_gguf_load("meta-llama/Llama-3.1-8B-Instruct", None, None) is False
+
+
+def test_the_capability_probe_follows_the_binary_the_loader_will_launch(monkeypatch, tmp_path):
+    # A flag decided against one build and passed to another fails every affected load.
+    chosen = tmp_path / "custom" / "llama-server"
+    chosen.parent.mkdir(parents = True)
+    write_fake_llama_server(chosen.parent, _FAKE_HELP_WITH_FLAG)
+    other = tmp_path / "bundle" / "llama-server"
+    other.parent.mkdir(parents = True)
+    write_fake_llama_server(other.parent, _FAKE_HELP_WITHOUT_FLAG)
+
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(chosen))
+    assert ss.llama_server_supports(ss.PIPELINE_GROUPS_FLAG) is True
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(other))
+    assert ss.llama_server_supports(ss.PIPELINE_GROUPS_FLAG) is False

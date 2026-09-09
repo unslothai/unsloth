@@ -931,7 +931,12 @@ _HELP_TEXT: Dict[Tuple[str, float], str] = {}
 
 
 def llama_server_help(binary: Optional[str] = None) -> str:
-    """The bundle llama-server's ``--help`` output, empty on any failure. Never raises."""
+    """The ``--help`` of the llama-server that will LAUNCH, empty on any failure. Never raises.
+
+    Not the bundle's: ``llama_server_binary`` is the backend's own
+    ``_find_llama_server_binary``, so LLAMA_SERVER_PATH, UNSLOTH_LLAMA_CPP_PATH and a custom
+    llama.cpp folder all select the same executable here that the load will run, and a flag is
+    never decided against a different build from the one it is passed to."""
     path = binary or llama_server_binary()
     if not path:
         return ""
