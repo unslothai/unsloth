@@ -1318,6 +1318,9 @@
       "_BLOCKED_BODY_MASK_RUN_RE": {
         "kind": "assign"
       },
+      "_CONTAINING_WRAPPERS": {
+        "kind": "assign"
+      },
       "_DEEPSEEK_BEGIN_RE": {
         "kind": "assign"
       },
@@ -1406,6 +1409,9 @@
         "kind": "assign"
       },
       "_HELP_OFFER": {
+        "kind": "assign"
+      },
+      "_INFERENCE_WRAPPER_OPENERS": {
         "kind": "assign"
       },
       "_KIMI_ARG_BEGIN": {
@@ -1621,6 +1627,11 @@
         "kind": "def",
         "signature": "text: str, vs: int, *, strict: bool=False"
       },
+      "_inference_wrapper_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_inside_open_parameter": {
         "decorators": [],
         "kind": "def",
@@ -1802,7 +1813,7 @@
         "kind": "def",
         "signature": "content: str"
       },
-      "_top_level_args_brace": {
+      "_top_level_args_value": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str, start: int, end: int"
