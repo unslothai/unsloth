@@ -1569,7 +1569,9 @@ def reconcile_split_speculation(
             f"at 32 rows"
             + (
                 " (the header was not readable yet, so this is applied without waiting for the "
-                "download to say whether there is a head)" if verdict == "unknown" else ""
+                "download to say whether there is a head)"
+                if verdict == "unknown"
+                else ""
             )
             + f". Previously: {mtp.get('reason')}"
         )
@@ -1705,8 +1707,7 @@ _GROUPS_REFUSED_ENV = frozenset({"LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"})
 
 
 def extra_args_refuse_pipeline_groups(
-    extra_args: Optional[List[str]] = None,
-    env: Optional[Dict[str, str]] = None,
+    extra_args: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None
 ) -> Optional[str]:
     """The first pass-through flag or environment setting the server still refuses together
     with the groups."""

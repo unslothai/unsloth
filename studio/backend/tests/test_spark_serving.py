@@ -3225,8 +3225,8 @@ def test_the_env_route_absolutises_the_same_sidecar_paths_the_argv_route_does():
         "LLAMA_ARG_MMPROJ": "proj.gguf",
         "LLAMA_ARG_SPEC_DRAFT_MODEL": "draft.gguf",
         "LLAMA_ARG_CHAT_TEMPLATE_FILE": "tmpl.jinja",
-        "LLAMA_ARG_MMPROJ_URL": "https://example/p.gguf",   # a URL, must be left alone
-        "LLAMA_ARG_SPEC_DRAFT_HF_REPO": "org/repo",          # a repo id, must be left alone
+        "LLAMA_ARG_MMPROJ_URL": "https://example/p.gguf",  # a URL, must be left alone
+        "LLAMA_ARG_SPEC_DRAFT_HF_REPO": "org/repo",  # a repo id, must be left alone
         "LLAMA_ARG_CACHE_TYPE_K": "Q8_0",
     }
     out = ss.replica_env(source, cwd = "/work")
@@ -3261,10 +3261,21 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
             self.extra_args_source = ("some/resolved-path", rvar)
 
     class _Req:
-        def __init__(self, mp, gv = None, lea = None):
+        def __init__(
+            self,
+            mp,
+            gv = None,
+            lea = None,
+        ):
             self.model_path, self.gguf_variant, self.llama_extra_args = mp, gv, lea
 
-    def run(stored_id, stored_var, req_path, req_var, extras = ("--lora", "a.gguf")):
+    def run(
+        stored_id,
+        stored_var,
+        req_path,
+        req_var,
+        extras = ("--lora", "a.gguf"),
+    ):
         monkeypatch.setattr(
             ri, "get_llama_cpp_backend", lambda: _Backend(list(extras), stored_id, stored_var)
         )
@@ -3272,14 +3283,17 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
 
     # the case the deleted substring fallback existed to serve: a hub id whose resolved stem
     # differs. Comparing requested against requested makes the resolved stem irrelevant.
-    assert run("unsloth/Qwen3-8B-GGUF", "UD-Q4_K_XL",
-               "unsloth/Qwen3-8B-GGUF", "UD-Q4_K_XL") == ["--lora", "a.gguf"]
+    assert run("unsloth/Qwen3-8B-GGUF", "UD-Q4_K_XL", "unsloth/Qwen3-8B-GGUF", "UD-Q4_K_XL") == [
+        "--lora",
+        "a.gguf",
+    ]
     # the bug, both directions
     assert run("org/qwen-7b-instruct", None, "org/qwen-7b", None) is None
     assert run("org/qwen-7b", None, "org/qwen-7b-instruct", None) is None
     # a user's own sidecar survives a warm reload of a genuinely identical model
     assert run("org/m", "Q4", "org/m", "Q4", extras = ("--lora", "/abs/adapter.gguf")) == [
-        "--lora", "/abs/adapter.gguf"
+        "--lora",
+        "/abs/adapter.gguf",
     ]
     # the variant is part of the identity: two quants are different files with different sidecars
     assert run("org/m", "Q4", "org/m", "Q8") is None
@@ -3287,9 +3301,10 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
     # nothing recorded -> no guessing, which is what this replaced
     assert run(None, None, "org/m", None) is None
     # an explicit field always wins; inheritance is only for a request that omits it
-    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Backend(["--lora", "a"], "org/m", None))
+    monkeypatch.setattr(
+        ri, "get_llama_cpp_backend", lambda: _Backend(["--lora", "a"], "org/m", None)
+    )
     assert ri._spark_inherited_extra_args(_Req("org/m", None, lea = [])) is None
-
 
 
 def test_a_peer_holding_a_different_file_at_the_same_path_does_not_become_a_replica(

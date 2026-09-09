@@ -1757,11 +1757,7 @@ def make_token_batches(tok, args, device):
         # `if line.strip()` for the same reason the layer-split reader has it: dataset_problem
         # only establishes that at least one NONBLANK row exists, so a valid file with a blank
         # separator line reached json.loads and raised -- after both ranks had allocated a model.
-        rows = [
-            json.loads(line)
-            for line in open(args.data, encoding = "utf-8")
-            if line.strip()
-        ]
+        rows = [json.loads(line) for line in open(args.data, encoding = "utf-8") if line.strip()]
         texts = [
             tok.apply_chat_template(
                 [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],

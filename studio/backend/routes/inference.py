@@ -13931,9 +13931,10 @@ def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
     # files with different sidecars. ``_resolve_inherited_extra_args`` has always compared it;
     # this function read only ``source[0]`` and dropped it, which is the same question answered
     # two ways by two functions.
-    if str(getattr(request, "gguf_variant", "") or "").strip().lower() != str(
-        source[1] or ""
-    ).strip().lower():
+    if (
+        str(getattr(request, "gguf_variant", "") or "").strip().lower()
+        != str(source[1] or "").strip().lower()
+    ):
         return None
     return list(stored)
 
