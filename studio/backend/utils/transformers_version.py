@@ -2163,6 +2163,13 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
         return [], True
     for di in dist_infos:
         name = di.name.split("-")[0]
+        # An optional package's leftovers are not damage to the sidecar: an interrupted
+        # tiktoken install leaves a dist-info whose RECORD names files that never landed,
+        # and reading that as damage wiped and rebuilt the whole sidecar on every check,
+        # for a package the rebuild is allowed to fail to add again. The top-up in setup
+        # (and the optional rule in _ensure_venv_dir) is what repairs it.
+        if _sidecar_package_is_optional(name):
+            continue
         try:
             record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:

@@ -560,3 +560,17 @@ def test_the_shim_marks_its_own_output(sidecar: pathlib.Path) -> None:
 def test_the_shim_refuses_what_it_does_not_implement() -> None:
     for args in ((), ("nonsense",), ("sidecar",)):
         assert _shim(*args).returncode == 2
+
+
+def test_an_optional_packages_leftovers_are_not_damage(sidecar: pathlib.Path) -> None:
+    """An interrupted tiktoken install leaves a dist-info whose RECORD names files that
+    never landed. Reading that as damage made the whole sidecar stale on every update,
+    for a package the rebuild is allowed to fail to add again; setup's top-up is what
+    repairs it. A required package's RECORD is still held to the disk."""
+    import shutil
+
+    shutil.rmtree(sidecar / "tiktoken")
+    assert im.sidecar_is_current(sidecar, PINS) == (True, "")
+    (sidecar / "hf_xet" / "__init__.py").unlink()
+    current, reason = im.sidecar_is_current(sidecar, PINS)
+    assert current is False and "hf_xet" in reason

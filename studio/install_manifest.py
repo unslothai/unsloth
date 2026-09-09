@@ -1347,6 +1347,13 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
                 payload_present = _sidecar_payload_present(root, dist)
     except Exception:
         return f"{name} metadata unreadable"
+    # An optional package (tiktoken) is one the sidecar is complete without: absent, or
+    # left as a dist-info by an interrupted install, it is setup's top-up's business, not
+    # a reason to rebuild the sidecar. Present, it is held to its pin like any other.
+    if canonical in OPTIONAL_SIDECAR_PACKAGES and (
+        not found or (not directory_present and not payload_present)
+    ):
+        return None
     if not found:
         return f"{name} not installed"
     if not directory_present and not payload_present:
@@ -1383,6 +1390,12 @@ def _sidecar_damaged_files(
         return []
     for dist_info in dist_infos:
         name = dist_info.name.split("-")[0]
+        # An optional package's leftovers are not damage: an interrupted tiktoken install
+        # leaves a dist-info whose RECORD names files that never landed, and setup's
+        # top-up is what repairs it. Mirrors _sidecar_package_is_optional in
+        # studio/backend/utils/transformers_version.py.
+        if name.strip().lower().replace("_", "-") in OPTIONAL_SIDECAR_PACKAGES:
+            continue
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except OSError:
@@ -1465,6 +1478,9 @@ def _sidecar_damaged_files(
 # values. The runtime's file scan has this escape hatch because a false positive costs a
 # several-hundred-MB reinstall, and the setup-side predicate must not be the one path
 # that still wipes the sidecar while the hatch is set. Package and version checks stay.
+# Packages a sidecar is complete without; setup installs them best-effort and the
+# runtime (transformers_version._OPTIONAL_SIDECAR_PACKAGES) treats them the same way.
+OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 
 
