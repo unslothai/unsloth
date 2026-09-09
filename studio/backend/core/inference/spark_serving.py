@@ -967,6 +967,12 @@ def effective_kv_settings(
     )
 
 
+def launch_files_from(args: Sequence[str]) -> List[str]:
+    """The sidecar paths an argv names, absolutised. A thin name over ``sidecar_files`` so the
+    sizing can ask "is this already charged?" without repeating how that is decided."""
+    return list(sidecar_files(args))
+
+
 def env_launch_files(env: Optional[Dict[str, str]]) -> List[str]:
     """The existing local files an environment names through ``_REPLICA_ENV_PATHS``.
 
@@ -2616,7 +2622,25 @@ class SparkServing:
                 if getattr(request, "llama_extra_args", None) is not None
                 else (inherited_extra_args or [])
             )
+            # The environment's sidecars as well as argv's. A projector or drafter set through
+            # LLAMA_ARG_MMPROJ or LLAMA_ARG_SPEC_DRAFT_MODEL is resident for the whole load and
+            # is forwarded to the replica -- that is what _REPLICA_ENV_PATHS is for -- so
+            # charging zero for it lets a plan pick `single` or `replicas` whose processes each
+            # exceed the node budget. Understating is the direction that OOMs.
             sidecars, sidecars_unknown = sidecar_bytes(extras_for_sizing)
+            for path in env_launch_files(dict(os.environ)):
+                if path in launch_files_from(extras_for_sizing):
+                    continue  # already charged from argv; do not count it twice
+                size = gguf_size_bytes(path)
+                if size is None:
+                    try:
+                        size = osp.getsize(path)
+                    except OSError:
+                        size = None
+                if size is None:
+                    sidecars_unknown = True
+                else:
+                    sidecars += int(size)
             if size is not None:
                 size += sidecars
             if sidecars_unknown:
@@ -2671,11 +2695,19 @@ class SparkServing:
             # across two. The user got a late out-of-memory, or minutes of unified-memory
             # thrashing, instead of the diagnosis that was already written.
             if plan.get("fits_any_topology") is False:
-                self.plan = plan
-                self.topology = "single"
-                self.reason = str(plan.get("reason", "")) or "no topology holds this load"
-                logger.warning("spark serving: refusing the load: %s", self.reason)
-                raise SparkLoadDoesNotFit(self.reason)
+                why = str(plan.get("reason", "")) or "no topology holds this load"
+                logger.warning("spark serving: refusing the load: %s", why)
+                # Nothing was started and nothing is being replaced, so this must leave the
+                # module exactly as it found it. The route catches this OUTSIDE the block that
+                # calls load_failed, so nothing else will roll it back: a resident two-node
+                # model would otherwise be reported as `single` for the rest of its life, and
+                # -- worse -- load_in_progress would stay true, which is the flag the
+                # supervisor uses to decide that a cleared _process is a load rather than an
+                # unload. It would then ignore a real unload forever and leave the peer and the
+                # router serving a model nothing thinks is loaded.
+                self.load_in_progress = False
+                self._restore_pre_load_state()
+                raise SparkLoadDoesNotFit(why)
             # The header read and the --help probe are file and process work: off the loop.
             extra = getattr(request, "llama_extra_args", None)
             mtp = await asyncio.to_thread(
@@ -2960,6 +2992,27 @@ class SparkServing:
         logger.info("spark serving: layer split over %s:%s (%s)", peer, port, self.reason)
         return _with_rpc_args(request)
 
+    def _restore_pre_load_state(self) -> bool:
+        """Put the reported topology back the way ``before_load`` found it. True if it did.
+
+        One helper rather than an inline tuple unpack, because there are now two callers that
+        must not drift: ``load_failed`` for a replacement the route rejected, and ``before_load``
+        itself for one it refuses on its own. The snapshot is consumed, so it cannot be applied
+        twice or outlive the attempt that took it."""
+        state, self._pre_load_state = self._pre_load_state, None
+        if state is None:
+            return False
+        (
+            self.topology,
+            self.reason,
+            self.plan,
+            self.pipeline_groups,
+            self.pipeline_groups_reason,
+            self.split_config,
+            self.split_config_reason,
+        ) = state
+        return True
+
     async def load_failed(self) -> None:
         self.load_in_progress = False
         # Not every failed load leaves nothing running: the route validates and can raise 400/409
@@ -2972,16 +3025,7 @@ class SparkServing:
             # describes it must be the topology reported. before_load snapshots it precisely
             # because a rejected replacement can fall back and overwrite it without ever
             # replacing anything.
-            if self._pre_load_state is not None:
-                (
-                    self.topology,
-                    self.reason,
-                    self.plan,
-                    self.pipeline_groups,
-                    self.pipeline_groups_reason,
-                    self.split_config,
-                    self.split_config_reason,
-                ) = self._pre_load_state
+            self._restore_pre_load_state()
             return
         self.mtp, self.mtp_reason = "unknown", "the load failed; nothing is running"
         if self.peer_process is not None or self.router is not None:
@@ -2990,6 +3034,13 @@ class SparkServing:
     async def after_load(self, llama_backend: Any, n_parallel: int) -> None:
         """Reconcile with what actually launched. Runs after every load, no-op reloads too."""
         self.load_in_progress = False
+        # This attempt is over, so its snapshot is spent. Left in place it described the
+        # topology that preceded the load rather than the one now running, and any later path
+        # that returns before taking a fresh one -- the pass-through refusal above, for
+        # instance -- would have `load_failed` restore that stale description over a live
+        # topology: a split created from `single` reported as `single` after a harmless 400,
+        # and the next split tearing down a peer it should have reused.
+        self._pre_load_state = None
         if not enabled():
             return
         try:

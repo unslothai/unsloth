@@ -583,3 +583,59 @@ def test_every_backend_being_gone_still_ends_the_request():
             await router.stop()
 
     run(scenario())
+
+
+def test_a_replica_that_closes_before_headers_is_retried_on_the_primary():
+    """A pre-header disconnect is a connect failure in every way that matters.
+
+    A replica that closes a pooled connection after ACCEPTING the request and before returning
+    headers is the ordinary shutdown and crash race on this pair -- it is why the relaunch
+    supervisor exists at all. httpx raises `RemoteProtocolError` for it, which fell into the
+    generic `HTTPError` branch: the backend was marked neither down nor unreachable, so
+    `dispatch` could not fail over to the healthy primary and sticky routing kept choosing the
+    same dead peer until the health loop caught up. No client bytes have been written at that
+    point, so the request is safely retryable.
+    """
+
+    async def scenario():
+        a = await FakeLlama("a").start()
+
+        # A backend that accepts, reads the request and closes without writing a response.
+        # A real llama-server dying between accept() and its first write looks exactly so.
+        accepted = []
+
+        async def _hang_up(reader, writer):
+            accepted.append(1)
+            try:
+                await reader.read(1)
+            except Exception:
+                pass
+            writer.close()
+
+        dead = await asyncio.start_server(_hang_up, "127.0.0.1", 0)
+        port = dead.sockets[0].getsockname()[1]
+
+        router = SparkRouter(health_interval = 3600.0)
+        router.add_backend("a", "127.0.0.1", a.port, 4, primary = True)
+        router.add_backend("b", "127.0.0.1", port, 4)
+        await router.start()
+        try:
+            # The peer answers its health probe (it accepts), so the router believes it.
+            router.get_backend("b").healthy = True
+            key_on_b = next(k for k in (f"t{i}" for i in range(200)) if router.pick(k).name == "b")
+            async with httpx.AsyncClient(timeout = 10) as client:
+                frames = await _chat(
+                    client, router.base_url, {"prompt": "x", CONVERSATION_FIELD: key_on_b}
+                )
+                assert frames == ["a-0", "a-1", "a-2", "a-3", "[DONE]"]
+            assert accepted, "the request really did reach the backend that hung up"
+            assert not router.get_backend("b").healthy, "a pre-header disconnect marks it down"
+            assert router.status()["retried_elsewhere"] == 1
+            assert router.get_backend("b").in_flight == 0
+        finally:
+            await router.stop()
+            dead.close()
+            await dead.wait_closed()
+            await a.stop()
+
+    run(scenario())

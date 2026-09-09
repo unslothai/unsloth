@@ -704,7 +704,24 @@ class SparkRouter:
             if admitted:
                 await self._release(backend)
             raise
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+            # Pre-header disconnects belong here, not in the generic HTTPError branch below.
+            # This except covers the SEND only -- `response` is not bound until after it -- so
+            # no client bytes have been written and nothing has been streamed back. A replica
+            # that closes a pooled connection after accepting the request and before returning
+            # headers is the ordinary shutdown and crash race on this pair, which the relaunch
+            # supervisor exists because of. Landing in HTTPError marked the backend neither
+            # down nor unreachable, so `dispatch` could not fail over to the healthy primary and
+            # sticky routing kept picking the same dead peer until the health loop caught up.
+            # Failures AFTER headers are returned are handled by the body iterator and keep
+            # their existing no-retry behaviour: bytes are already at the client by then.
+            httpx.RemoteProtocolError,
+            httpx.ReadError,
+            httpx.WriteError,
+        ) as exc:
             if admitted:
                 await self._release(backend)
             await self.mark_down(backend, f"{type(exc).__name__}: {exc}"[:200])

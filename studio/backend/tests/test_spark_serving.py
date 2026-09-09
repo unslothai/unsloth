@@ -4355,3 +4355,95 @@ def test_every_branch_that_commits_extra_args_also_records_the_requested_identit
             )
 
     assert len(resolved) >= 2, "the commit points moved; this invariant is no longer being checked"
+
+
+def test_a_refused_oversized_load_leaves_the_running_topology_exactly_as_it_was(
+    cluster, monkeypatch, tmp_path
+):
+    # The route catches SparkLoadDoesNotFit OUTSIDE the block that calls load_failed, so nothing
+    # else rolls this back. Two things had to be undone: the reported topology, which would
+    # otherwise describe a resident two-node model as `single` for the rest of its life, and
+    # load_in_progress -- the flag the supervisor uses to decide that a cleared _process is a
+    # load rather than an unload. Left true it would ignore a real unload forever, leaving the
+    # peer and the router serving a model nothing thinks is loaded.
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    _patch_remote(monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server")
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    state = ss.state()
+    assert state.topology == "replicas" and state.router is not None
+
+    before = (state.topology, state.reason, state.pipeline_groups, state.split_config)
+    cluster.fits_any_topology = False
+    cluster.reason = "needs 400.0 GiB, against 227.4 GiB across both Sparks"
+
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_FakeRequest(str(model)), 4))
+
+    assert (
+        state.topology,
+        state.reason,
+        state.pipeline_groups,
+        state.split_config,
+    ) == before, "the refusal overwrote the topology of a model that is still resident"
+    assert state.load_in_progress is False, "the supervisor would ignore every later unload"
+    assert state.router is not None, "and the live router must be untouched"
+
+
+def test_a_completed_load_does_not_leave_a_snapshot_to_be_restored(
+    cluster, monkeypatch, tmp_path
+):
+    # _pre_load_state described the topology BEFORE the load that has now finished. Any later
+    # path that returns before taking a fresh one -- the pass-through refusal, for instance --
+    # would have load_failed restore that stale description over a live topology: a split or
+    # replica set created from `single` reported as `single` after a harmless 400, and the next
+    # split tearing down a peer it should have reused.
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    _patch_remote(monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server")
+
+    state = ss.state()
+    # A snapshot from when nothing was attached, i.e. what the first load would have taken.
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    backend = _FakeBackend(12345, str(model))
+    run(ss.after_load(backend, 16))
+    assert state.topology == "replicas"
+    assert state._pre_load_state is None, "a finished attempt must not leave a snapshot behind"
+
+    # The route rejects the next request with a 400 and its wrapper calls load_failed. With a
+    # stale snapshot this restored `single` over the live replica set.
+    # is_loaded is a property on the double, and it already reads true here: the previous
+    # model is still resident, which is the whole case load_failed's restore exists for.
+    assert backend.is_loaded is True
+    state.attached_backend = backend
+    run(ss.load_failed())
+    assert state.topology == "replicas", "load_failed restored a snapshot from a finished load"
+
+
+def test_a_projector_set_only_in_the_environment_is_charged_to_the_node(
+    cluster, monkeypatch, tmp_path
+):
+    # LLAMA_ARG_MMPROJ is resident for the whole load and is forwarded to the replica, so
+    # charging zero for it let a plan pick `single` or `replicas` whose processes each exceed
+    # the node budget. Understating is the direction that OOMs.
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 4096)
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"y" * 8192)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(projector))
+    _patch_remote(monkeypatch)
+
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    charged = cluster.planner_calls[-1]["model_bytes"]
+    assert charged >= 4096 + 8192, f"the env projector was not charged: {charged}"
+
+    # And it is charged once, not twice, when argv names the same file.
+    cluster.planner_calls.clear()
+    request = _FakeRequest(str(model))
+    request.llama_extra_args = ["--mmproj", str(projector)]
+    run(ss.before_load(request, 4))
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 8192
