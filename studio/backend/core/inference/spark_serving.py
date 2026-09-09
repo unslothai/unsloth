@@ -2176,9 +2176,15 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
 
 
 def current_topology() -> Optional[str]:
-    if not enabled():
+    # Status polls run this constantly and it used to go through enabled(), which does rail
+    # discovery: a sysfs walk and an `ip` fork, measured at 16.2 ms per call on a paired Spark,
+    # synchronously on the event loop. It is not needed to answer this. Nothing is attached
+    # unless enabled() was already true when the load ran, and with nothing attached the honest
+    # answer is None on any machine, so the cheap check gives the same result off a Spark too.
+    st = state()
+    if st.attached_backend is None and st.peer_process is None and st.router is None:
         return None
-    return state().topology
+    return st.topology
 
 
 async def before_load(

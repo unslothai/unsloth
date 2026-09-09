@@ -2139,3 +2139,25 @@ def test_after_load_prices_the_aggregate_context_not_one_slot():
         or 0
     )
     assert picked_old == 4096
+
+
+def test_current_topology_does_not_pay_for_rail_discovery(cluster, monkeypatch):
+    # Status polls call this constantly. Going through enabled() cost a sysfs walk and an `ip`
+    # fork, measured at 16.2 ms per call on a paired Spark, on the event loop.
+    probed = []
+    monkeypatch.setattr(ss, "peer_address", lambda: probed.append(1) or "192.168.200.13")
+
+    st = ss.state()
+    st.attached_backend = None
+    st.peer_process = None
+    st.router = None
+    assert ss.current_topology() is None
+    assert not probed, "nothing is attached, so discovery must not run"
+
+    # With a topology attached the answer is the real one, still without discovery.
+    st.peer_process = object()
+    st.topology = "layer_split"
+    assert ss.current_topology() == "layer_split"
+    assert not probed
+    st.peer_process = None
+    st.topology = "single"
