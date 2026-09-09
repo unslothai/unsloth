@@ -146,6 +146,23 @@ class TestTheLease:
         other.release()
         assert queue.committed_now() == 0
 
+    @pytest.mark.asyncio
+    async def test_a_round_that_restates_the_same_size_moves_the_epoch(self):
+        """A yield planned before the tool came back finds the charge restated, even at
+        the same figure, and hands nothing back."""
+        queue = llama_admission.get_llama_admission_queue("http://lease.epoch")
+        lease = queue.reserve(
+            capacity = 4, config = LlamaAdmissionConfig(), tokens = 3847, budget = 8192
+        ).lease_nowait()
+        assert lease is not None
+        assert lease.park() is True
+        planned_at = lease.charge_seq
+        assert lease.recost(3847) is True
+        assert lease.charge_seq != planned_at
+        assert lease.yield_parked_commitment(charged_at = planned_at) == 0
+        assert queue.committed_now() == 3847
+        lease.release()
+
 
 class _ApprovalToolBackend(FakeLlamaCppBackend):
     base_url = "http://llama.test"

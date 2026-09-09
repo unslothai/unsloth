@@ -313,6 +313,10 @@ class DeferredPreemptionPolicy:
         if self._inner is not None:
             self._inner.on_declined()
 
+    def restart(self) -> None:
+        if self._inner is not None:
+            self._inner.restart()
+
 
 class NullPreemptionPolicy:
     """Never pauses. The default, so every existing call site is unchanged."""
@@ -479,6 +483,15 @@ class Participant:
     # Set by `note_measured`: the charge stays on top of the resident figure until a sample
     # taken after that call, the first reading that can hold its cells.
     measured_at_seq: Optional[int] = None
+    # What admission charged and the prompt part of it, kept so a request that starts over
+    # (the next of `n` choices) can be put back to them.
+    charged_tokens: int = 0
+    charged_prompt_tokens: int = 0
+
+    def replay_tokens(self) -> int:
+        """What a resume sends back as prompt: the prompt, with every paused partial folded
+        into it by `note_replayed`. The rest of the charge is output room, not replayed."""
+        return self.prompt_tokens if self.prompt_tokens > 0 else self.tokens
 
     def resident_tokens(self, generated: int) -> int:
         """Cells this holder occupies now that its prompt is in the cache.
@@ -663,6 +676,8 @@ class PreemptionController:
                 state = state,
                 **({} if signal is None else {"preempt_event": signal}),
             )
+            participant.charged_tokens = participant.tokens
+            participant.charged_prompt_tokens = participant.prompt_tokens
             # Its whole prompt is about to be prefilled. Announced HERE rather than by the
             # caller, so a sweep firing in between plans against the raised buffer.
             participant.announce_prefill(participant.tokens)
@@ -1052,6 +1067,25 @@ class PreemptionController:
                 except Exception:  # pragma: no cover - bookkeeping must not fail a run
                     _log.debug("could not yield a parked commitment", exc_info = True)
         return len(released)
+
+    def restart(self, gen_id: str) -> None:
+        """The same request starts over from its original prompt: the next of `n` choices.
+        The replayed partials and the resume debt of the last choice are not its own."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            participant.tokens = participant.charged_tokens
+            participant.base_tokens = participant.charged_tokens
+            participant.prompt_tokens = participant.charged_prompt_tokens
+            participant.generated_seen = 0
+            participant.measured = False
+            participant.measured_at_seq = None
+            participant.cells_reclaimed = False
+            participant.consecutive_preemptions = 0
+            participant.state = ParticipantState.DECODING
+            participant.preempt_event.clear()
+            participant.announce_prefill(participant.tokens)
 
     def note_replayed(self, gen_id: str, tokens: int) -> None:
         """Tokens a paused attempt decoded that the NEXT attempt sends back as prompt.
@@ -1516,9 +1550,11 @@ class ControllerPreemptionPolicy:
             return True
         if self._loop is None:
             return False
-        # Re-stated, not remembered: a resumed run carries the partial it generated, so it
-        # needs more room than it was preempted holding.
-        want = max(0, int(participant.tokens or 0))
+        # The replay, not the charge: the partial is folded into the prompt by
+        # `note_replayed`, while the output allowance above it is room the sweep watches
+        # rather than cells the resume brings back. Judged on the charge, a prompt that
+        # fits alone was declared too large before its first token.
+        want = max(0, int(participant.replay_tokens() or 0))
         # `want` grows with every pause and can pass the ceiling the wait is measured
         # against, so without these two the wait is for room no eviction can produce.
         if self._controller.cannot_ever_fit(want):
@@ -1631,6 +1667,12 @@ class ControllerPreemptionPolicy:
 
     def on_resumed(self) -> None:
         self._controller.note_resumed(self._gen_id)
+
+    def restart(self) -> None:
+        """The next of `n` choices: the same lease, a fresh count of resumes and the ledger
+        back to what admission charged, since the last choice's partials are not replayed."""
+        self._resumes = 0
+        self._controller.restart(self._gen_id)
 
     def on_declined(self) -> None:
         """This generation was chosen to pause and is not going to. Undo the decision.

@@ -49,6 +49,28 @@ def _controller(backend):
 
 
 class TestTheTokenPath:
+    def test_the_growth_is_on_the_ledger_before_the_reading_goes_out(self, monkeypatch):
+        """The `/slots` round trip can take its whole three second timeout while the
+        server keeps decoding, so the count is recorded first and the reading refines it."""
+        backend = _backend(7)
+        controller = _controller(backend)
+        controller.register("a", tokens = 100, prompt_tokens = 100)
+        controller.register("b", tokens = 100, prompt_tokens = 100)
+        seen: list[int] = []
+
+        def _fetch(base, headers = None):
+            seen.append(controller.participant("a").generated_seen)
+            return [{"id": 0, "is_processing": True, "n_prompt_tokens": 132}]
+
+        monkeypatch.setattr(inference, "fetch_llama_slots", _fetch)
+        _refresh, observe, _state = inference._openai_llama_residency_observer(
+            llama_backend = backend, completion_id = "a"
+        )
+
+        observe(150)
+
+        assert seen == [150], "the reading went out before the growth was recorded"
+
     def test_a_solo_chat_reads_no_slots(self, monkeypatch, _slots):
         backend = _backend(1)
         controller = _controller(backend)
