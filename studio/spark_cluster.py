@@ -3399,6 +3399,7 @@ def recommend_topology(
         "split_mtp": None,
         "split_mtp_note": None,
         "fits_one_node": fits_model,
+        "fits_any_topology": True,
         "users": users,
         "prompt_tokens": prompt_tokens,
         "single_node_bytes": single_need,
@@ -3407,6 +3408,24 @@ def recommend_topology(
         "measured_on": TOPOLOGY_MEASUREMENT,
     }
     gib = 2**30
+    # A split halves the weights and the KV across the pair, so what it can hold is bounded by
+    # the two nodes together. Above that no topology fits, and recommending one anyway spends
+    # the whole load, which for a model this size is minutes of transfer over the rail, before
+    # llama-server runs out of memory. Saying so up front is the only useful answer.
+    pair_free = free * 2.0  # this planner answers for the pair; there is no third node
+    pair_need = model_bytes + kv_each * users
+    if pair_need > pair_free:
+        out.update(
+            topology = "single",
+            fits_any_topology = False,
+            reason = (
+                f"the model ({model_bytes / gib:.1f} GiB) with KV for {users} users needs "
+                f"{pair_need / gib:.1f} GiB, against {pair_free / gib:.1f} GiB across both "
+                f"Sparks: no two-node topology holds it. Use a smaller quant, fewer users "
+                f"or a shorter context."
+            ),
+        )
+        return out
     if not fits_model:
         out.update(
             topology = "layer_split",

@@ -3013,6 +3013,12 @@ def run(
     # on any abort so they never orphan.
     from studio.backend.run import _graceful_shutdown, _server
 
+    # Installed HERE, not after the banner: steps 3 to 5 are the health wait and a model
+    # load that can run for minutes, and that is exactly when llama-server, cloudflared or a
+    # Spark peer process is most likely to be running. Without the handlers in place a SIGTERM
+    # in that window takes the default disposition and kills the process outright, so the
+    # except BaseException below never runs and those children orphan.
+    _request_shutdown = _install_run_shutdown_handlers(run_mod)
     try:
         request_host = getattr(app.state, "server_request_host", None)
         if not isinstance(request_host, str) or not request_host:
@@ -3156,6 +3162,8 @@ def run(
     # worker thread inside an ssh or a subprocess wait held the process open for 60 to
     # 90 s live. A second signal restores the default disposition, so an impatient
     # Ctrl+C still force-quits.
+    # Already installed before the health wait above; idempotent, and re-arming here keeps
+    # the wait below reading the same way whichever path reached it.
     _request_shutdown = _install_run_shutdown_handlers(run_mod)
     try:
         if run_mod._shutdown_event is not None:

@@ -29169,6 +29169,14 @@ class LlamaCppBackend:
                 "frequency_penalty": frequency_penalty,
             }
 
+            # Every round of one agent run names the same conversation, so the router
+            # keeps them on the llama-server holding its prefix. Without this the
+            # fallback hash is taken from the first user turn, which rolling compaction
+            # rewrites, so a long run drifts between replicas and re-prefills each time.
+            from core.inference.spark_serving import tag_conversation
+
+            tag_conversation(payload, thread_id)
+
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
             if perf_callback is not None:
@@ -31665,6 +31673,11 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+
+        # Same conversation as every round above it.
+        from core.inference.spark_serving import tag_conversation
+
+        tag_conversation(stream_payload, thread_id)
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
         if _reasoning_kw is not None:

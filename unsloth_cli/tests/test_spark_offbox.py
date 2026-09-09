@@ -2102,3 +2102,30 @@ def test_the_three_training_modes_are_mutually_exclusive(monkeypatch):
         assert result.exit_code == 2, result.output
         assert "different modes" in result.output
     assert seen == []
+
+
+def test_no_topology_is_recommended_for_a_model_neither_node_can_hold() -> None:
+    # A split halves the weights across the pair, so above the pair's combined budget nothing
+    # fits. Recommending one anyway spends the whole load, minutes of transfer over the rail,
+    # before llama-server runs out of memory.
+    sc = _load("studio/spark_cluster.py")
+    free = 113.0 * 2**30  # one node's serving budget
+
+    out = sc.recommend_topology(400.0 * 2**30, 0.0, 4, 512, free)
+    assert out["topology"] == "single"
+    assert out["fits_any_topology"] is False
+    assert "no two-node topology holds it" in out["reason"]
+
+    # It is the model PLUS its KV that has to fit, so a model inside the budget can still
+    # exceed it once enough users are asked for.
+    kv = 4.0 * 2**30
+    out = sc.recommend_topology(200.0 * 2**30, kv, 8, 512, free)
+    assert out["fits_any_topology"] is False
+
+    # Just inside stays a layer split, which is the whole point of the pair.
+    out = sc.recommend_topology(200.0 * 2**30, kv, 2, 512, free)
+    assert out["topology"] == "layer_split" and out["fits_any_topology"] is True
+
+    # And a model that fits on one node is untouched.
+    out = sc.recommend_topology(20.0 * 2**30, kv, 2, 512, free)
+    assert out["topology"] == "single" and out["fits_any_topology"] is True

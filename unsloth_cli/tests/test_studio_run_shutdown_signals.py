@@ -91,3 +91,14 @@ def test_the_run_command_installs_the_handlers_and_exits_hard(studio_mod):
     assert tail.index("_wait_for_server_shutdown") < tail.index(
         "os._exit(0)"
     ), "cleanup first, then the hard exit"
+
+
+def test_the_shutdown_handlers_are_installed_before_the_health_wait_and_load() -> None:
+    # Steps 3 to 5 are the health wait and a model load that can run for minutes, which is
+    # exactly when llama-server, cloudflared or a Spark peer is most likely to be running. A
+    # SIGTERM there used to take the default disposition and kill the process outright, so the
+    # cleanup never ran and those children orphaned.
+    source = (_REPO_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text()
+    install = source.index("_install_run_shutdown_handlers(run_mod)")
+    health = source.index("if not _wait_for_server(actual_port")
+    assert install < health, "the handlers must be armed before the health wait"

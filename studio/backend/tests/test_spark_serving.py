@@ -2842,3 +2842,19 @@ def test_the_capability_probe_follows_the_binary_the_loader_will_launch(monkeypa
     assert ss.llama_server_supports(ss.PIPELINE_GROUPS_FLAG) is True
     monkeypatch.setattr(ss, "llama_server_binary", lambda: str(other))
     assert ss.llama_server_supports(ss.PIPELINE_GROUPS_FLAG) is False
+
+
+def test_every_tool_loop_round_names_the_same_conversation():
+    # Once rolling compaction rewrites the first user turn, successive rounds of one agent run
+    # derive different fallback hashes and jump between replicas, discarding the prefix KV
+    # that sticky routing exists to preserve.
+    source = (
+        Path(ss.__file__).resolve().parent / "llama_cpp.py"
+    ).read_text()
+    start = source.index("def generate_chat_completion_with_tools(")
+    body = source[start:]
+    for marker in ('payload = {', 'stream_payload = {'):
+        assert marker in body, marker
+    # Each payload the tool loop sends is tagged.
+    assert body.count("tag_conversation(payload, thread_id)") >= 1
+    assert body.count("tag_conversation(stream_payload, thread_id)") >= 1
