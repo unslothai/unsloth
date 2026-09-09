@@ -147,10 +147,10 @@ def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
     text = SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("_sidecar_current() {")
     body = text[start : text.index("\n}\n", start)]
-    assert 'command -v python' in body
+    assert "command -v python" in body
     assert '"$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar' in body
     # The grep is the last resort, for a tree with no interpreter to ask at all.
-    assert body.index('command -v python') < body.index("_target_has_pkg_version")
+    assert body.index("command -v python") < body.index("_target_has_pkg_version")
 
 
 def test_the_ps1_sidecar_predicate_reads_the_shim_answer_under_native_error_promotion():
@@ -161,5 +161,7 @@ def test_the_ps1_sidecar_predicate_reads_the_shim_answer_under_native_error_prom
     start = text.index("function Test-SidecarCurrent {")
     body = text[start : text.index("\nfunction ", start + 1)]
     assert "$PSNativeCommandUseErrorActionPreference = $false" in body
-    assert body.index("$PSNativeCommandUseErrorActionPreference = $false") < body.index("& python $shim sidecar")
+    assert body.index("$PSNativeCommandUseErrorActionPreference = $false") < body.index(
+        "& python $shim sidecar"
+    )
     assert "finally" in body
