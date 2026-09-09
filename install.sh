@@ -3409,7 +3409,21 @@ _amd_nodes_closed_to_this_user() {
         if [ "$_node" = /dev/kfd ]; then
             # vendor_id 4098 = 0x1002, the same AMD guard _has_amd_rocm_gpu uses:
             # NVIDIA's open kernel module registers KFD nodes of its own.
-            _kfd_topology_has_an_amd_gpu || continue
+            #
+            # A topology that could not be READ is not one that named another vendor, and
+            # only the second is evidence. Where it is unknown, DRM confirms the same
+            # silicon independently, vendor read rather than assumed. Dropping the node
+            # there left the installer naming only the render node's group, and where the
+            # two carry different owning groups (video against render) that membership
+            # leaves KFD shut; the PCI branch further down then read the node as openable.
+            # Mirrors utils/hardware/amd.py::amd_nodes_closed_to_this_user.
+            _anctu_kfd_state=0
+            _kfd_topology_amd_state || _anctu_kfd_state=$?
+            if [ "$_anctu_kfd_state" -eq 1 ]; then
+                continue
+            elif [ "$_anctu_kfd_state" -ne 0 ]; then
+                _a_confirmed_amd_render_node_exists || continue
+            fi
         elif _node_vendor=$(_amd_render_node_vendor "$_node"); then
             [ "$_node_vendor" = "0x1002" ] || continue
         else
@@ -3452,9 +3466,41 @@ _an_amd_render_node_is_open() {
 # with no render node at all. vendor_id 4098 = 0x1002; the KFD CPU node reports 0 and
 # NVIDIA's open kernel module registers 4318. Mirrors
 # utils/hardware/amd.py::_kfd_topology_has_an_amd_gpu.
+# 0 = the topology names an AMD GPU, 1 = it was READ and names none, 2 = it could not be
+# read at all. The third is not the second: a container can map /dev/kfd while hiding
+# /sys/class/kfd, and collapsing the two drops the node from the closed list on exactly that
+# host. Mirrors utils/hardware/amd.py::_kfd_topology_amd_state.
+_kfd_topology_amd_state() {
+    _ktas=$(awk '
+        FNR == 1 { read_one = 1 }
+        /vendor_id/ && $2 == 4098 { found = 1 }
+        END { print (read_one + 0) ":" (found + 0) }
+    ' /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null) || _ktas=""
+    case "$_ktas" in
+        *:1) return 0 ;;
+        1:0) return 1 ;;
+        *)   return 2 ;;
+    esac
+}
+
+# Whether DRM names an AMD render node outright, with the vendor actually READ. The strict
+# counterpart to _amd_render_node_present, which counts an unreadable vendor as present on
+# purpose: this is used as INDEPENDENT evidence of AMD silicon, so an unknown vendor would
+# let an NVIDIA-only host claim one. Mirrors
+# utils/hardware/amd.py::_a_confirmed_amd_render_node_exists.
+_a_confirmed_amd_render_node_exists() {
+    for _acarne_node in /dev/dri/renderD*; do
+        [ -e "$_acarne_node" ] || continue
+        _acarne_vendor=$(_amd_render_node_vendor "$_acarne_node") || continue
+        [ "$_acarne_vendor" = "0x1002" ] && return 0
+    done
+    return 1
+}
+
 _kfd_topology_has_an_amd_gpu() {
-    awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
-        /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null
+    _kthag=0
+    _kfd_topology_amd_state || _kthag=$?
+    [ "$_kthag" -eq 0 ]
 }
 
 # Whether any AMD render node is PRESENT, whatever this account can do with it: ROCr opens

@@ -1254,6 +1254,38 @@ def the_vulkan_loader_has_no_usable_driver() -> bool:
     return not _loadable_icd_manifests()
 
 
+def the_vulkan_loader_override_to_blame() -> "str | None":
+    """The environment variable to name when the loader can load none of its manifests.
+
+    ``the_vulkan_loader_has_no_usable_driver`` answers the same question for three quite
+    different causes, and only two of them are repaired by installing a driver. A filter
+    that disables every manifest, and a forced list that replaces the search with paths
+    that do not resolve, are settings: reinstalling leaves the variable in place and the
+    probe just as empty, so the caller has to prescribe clearing it instead.
+
+    Filters first, because they are applied last and absolutely -- they exclude drivers a
+    forced list named as well, so where they leave nothing the forced list is not what is
+    deciding. ``VK_LOADER_DRIVERS_SELECT`` before ``VK_LOADER_DRIVERS_DISABLE`` for the
+    same reason ``_vulkan_loader_allows`` reads them in that order: a set select list
+    answers alone. ``None`` where no override is responsible, which is the missing-library
+    and 32-bit-only case the reinstall sentence was written for.
+    """
+    paths = _vulkan_icd_manifest_paths()
+    if not paths:
+        return None
+    if not any(_vulkan_loader_allows(path) for path in paths):
+        for var in ("VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
+            if (os.environ.get(var) or "").strip():
+                return var
+    # Reached only when the filters are not what emptied the set, so the manifests
+    # themselves do not resolve -- and a forced list means the ones that would have been
+    # found by the ordinary search were never looked at.
+    for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        if (os.environ.get(var) or "").strip():
+            return var
+    return None
+
+
 def a_non_amd_render_node_is_open() -> bool:
     """Whether a render node belonging to some OTHER vendor is open to this user.
 

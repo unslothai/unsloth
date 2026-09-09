@@ -10137,6 +10137,15 @@ class LlamaCppBackend:
                 except Exception:  # noqa: BLE001
                     return False
 
+            def _the_loader_override_to_blame() -> "str | None":
+                # Which of the three causes it is, since only two are repaired by
+                # installing anything.
+                try:
+                    from utils.hardware.amd import the_vulkan_loader_override_to_blame
+                    return the_vulkan_loader_override_to_blame()
+                except Exception:  # noqa: BLE001
+                    return None
+
             def _reason(text: str) -> str:
                 return f"{text}{_second_finding}"
 
@@ -10165,11 +10174,26 @@ class LlamaCppBackend:
                 # rather than returned, exactly like the mask sentences above -- the closed
                 # node is still true and still needs fixing.
                 if _is_vulkan and _the_vulkan_loader_has_no_driver():
-                    node_hint = (
-                        f"{node_hint} The Vulkan loader also has no driver it can load "
-                        f"here: every ICD manifest it would read is missing its library, "
-                        f"filtered out, or 32-bit, so reinstall the Vulkan driver as well."
-                    )
+                    # The repair depends on WHY, and the sentence used to prescribe the one
+                    # that cannot work for two of the three: a filter that disables every
+                    # manifest and a forced list pointing at paths that do not resolve are
+                    # environment settings, which reinstalling a driver leaves exactly as
+                    # they were. Named rather than described, so the user has something to
+                    # unset.
+                    _override = _the_loader_override_to_blame()
+                    if _override:
+                        node_hint = (
+                            f"{node_hint} The Vulkan loader also has no driver it can load "
+                            f"here, and {_override} is what leaves it with none: clear or "
+                            f"correct that variable, since reinstalling the driver does not "
+                            f"change an environment override."
+                        )
+                    else:
+                        node_hint = (
+                            f"{node_hint} The Vulkan loader also has no driver it can load "
+                            f"here: every ICD manifest it would read is missing its library "
+                            f"or is 32-bit, so reinstall the Vulkan driver as well."
+                        )
                 # A closed node explains an empty probe only when it is a node the runtime
                 # would have used. On a multi-AMD host one render node can be shut while a
                 # sibling is open, and the runtime then had a complete path and enumerated

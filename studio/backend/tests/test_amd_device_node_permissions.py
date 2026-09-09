@@ -4547,6 +4547,7 @@ def _vulkan_node_hint_under_icd_list(
     value,
     *,
     search_dirs = None,
+    env = None,
 ):
     """The empty-probe reason for a Vulkan build with the AMD node shut and NO other
     vendor's node open, so the answer is the node repair and the question is what is
@@ -4567,6 +4568,11 @@ def _vulkan_node_hint_under_icd_list(
         monkeypatch.setattr(amd, "_vulkan_icd_search_dirs", lambda: list(search_dirs))
     if value is not None:
         monkeypatch.setenv("VK_DRIVER_FILES", value)
+    # After the clearing above, since that is what makes an arm about ONE override able to
+    # set it. `value` reaches the loader through VK_DRIVER_FILES, so an arm that is about a
+    # different override passes None and names its search dirs instead.
+    for _name, _value in (env or {}).items():
+        monkeypatch.setenv(_name, _value)
     monkeypatch.setattr(
         LlamaCppBackend,
         "_installed_ggml_backends",
@@ -5476,3 +5482,158 @@ def test_a_hidden_topology_with_no_confirmed_amd_node_drops_it_too(monkeypatch, 
         topology = None,
     )
     assert "/dev/kfd" not in amd.amd_nodes_closed_to_this_user()
+
+
+def test_the_two_topology_readers_agree_on_this_host():
+    """The shell and Python tri-states are the same rule written twice, and the closed-node
+    walk on each side now branches on the third value, so a divergence would give one half
+    the DRM fallback and not the other. Asserted as AGREEMENT rather than as a fixed value,
+    so the arm is meaningful on a runner with a real KFD topology as well as on one without.
+    """
+    lines = _install_sh_lines()
+    script = "\n".join(
+        [
+            _shell_fn(lines, "_kfd_topology_amd_state"),
+            "_st=0",
+            "_kfd_topology_amd_state || _st=$?",
+            'printf "%s" "$_st"',
+        ]
+    )
+    shell_state = int(_install_sh_run(script).strip())
+    python_state = amd._kfd_topology_amd_state()
+    assert shell_state == {True: 0, False: 1, None: 2}[python_state]
+
+
+def test_the_two_confirmed_render_node_readers_agree_on_this_host():
+    """Its companion, and the other half of the fallback: the shell one has to be as strict
+    as the Python one, or an NVIDIA-only host claims an AMD node in the installer and not in
+    the backend."""
+    lines = _install_sh_lines()
+    script = "\n".join(
+        [
+            _shell_fn(lines, "_amd_render_node_vendor"),
+            _shell_fn(lines, "_a_confirmed_amd_render_node_exists"),
+            "_a_confirmed_amd_render_node_exists && printf yes || printf no",
+        ]
+    )
+    assert _install_sh_run(script).strip() == (
+        "yes" if amd._a_confirmed_amd_render_node_exists() else "no"
+    )
+
+
+def test_the_installer_kfd_arm_consults_the_same_fallback():
+    """Read off install.sh because a /dev/kfd cannot be fabricated here: the arm is gated on
+    the literal path and on live -e/-r/-w tests, which are the rule under test.
+
+    Without the fallback the installer names only the render node's group, and where the two
+    nodes carry different owning groups that membership leaves KFD shut -- and the PCI branch
+    further down then reads the node as openable. A revert removes these names and this fails
+    rather than passing quietly."""
+    lines = _install_sh_lines()
+    body = _shell_fn(lines, "_amd_nodes_closed_to_this_user")
+    _kfd = body.index('= /dev/kfd ]')
+    _elif = body.index("elif _node_vendor=")
+    _arm = body[_kfd:_elif]
+    assert "_kfd_topology_amd_state" in _arm
+    assert "_a_confirmed_amd_render_node_exists" in _arm
+    # The readable-but-not-AMD state still drops the node, which is what keeps an
+    # NVIDIA-only host silent; only the unreadable one reaches DRM.
+    assert "-eq 1 ]; then" in _arm and "continue" in _arm
+
+
+def _loader_blame(monkeypatch, manifests: dict, **env: str) -> "str | None":
+    """Which override amd.py blames for a loader that can load none of its manifests."""
+    for var in (
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES",
+        "VK_ADD_DRIVER_FILES",
+        "VK_LOADER_DRIVERS_SELECT",
+        "VK_LOADER_DRIVERS_DISABLE",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    monkeypatch.setattr(amd, "_vulkan_icd_manifest_paths", lambda: list(manifests))
+    return amd.the_vulkan_loader_override_to_blame()
+
+
+def test_a_filter_that_disables_every_driver_is_named_rather_than_a_reinstall(monkeypatch):
+    """VK_LOADER_DRIVERS_DISABLE applies to every driver the loader knows, so a list that
+    matches them all leaves it with none -- and no amount of reinstalling changes an
+    environment variable. The sentence prescribed exactly that repair."""
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {"/etc/vulkan/icd.d/radeon_icd.x86_64.json": True},
+            VK_LOADER_DRIVERS_DISABLE = "*",
+        )
+        == "VK_LOADER_DRIVERS_DISABLE"
+    )
+
+
+def test_a_select_list_naming_nothing_present_is_named_too(monkeypatch):
+    """Its sibling, and read first for the reason _vulkan_loader_allows reads it first: a
+    set select list answers alone, so a list naming a driver this host does not have
+    excludes the ones it does."""
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {"/etc/vulkan/icd.d/radeon_icd.x86_64.json": True},
+            VK_LOADER_DRIVERS_SELECT = "nvidia*",
+        )
+        == "VK_LOADER_DRIVERS_SELECT"
+    )
+
+
+def test_a_forced_list_pointing_at_nothing_is_named_as_well(monkeypatch):
+    """A forced list REPLACES the search, so a stale path leaves the loader with manifests
+    that do not resolve while the host's real drivers sit unread in the search dirs.
+    Reinstalling puts a driver exactly where nothing is looking."""
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {"/gone/radeon_icd.x86_64.json": True},
+            VK_DRIVER_FILES = "/gone/radeon_icd.x86_64.json",
+        )
+        == "VK_DRIVER_FILES"
+    )
+
+
+def test_a_missing_library_is_still_a_reinstall(monkeypatch):
+    """The control, and the case the original sentence was written for: no override is in
+    force, so the manifests are what they are and installing a driver is the repair. Without
+    it the fix could be "always blame the environment", which sends every user to unset
+    variables they never set."""
+    assert _loader_blame(monkeypatch, {"/etc/vulkan/icd.d/radeon_icd.x86_64.json": True}) is None
+
+
+def test_a_loader_with_no_manifests_at_all_blames_nothing(monkeypatch):
+    """The other control. Finding nothing says only that this cannot read the loader's
+    configuration, which the_vulkan_loader_has_no_usable_driver already answers False for,
+    so there is no override to name either."""
+    assert _loader_blame(monkeypatch, {}, VK_LOADER_DRIVERS_DISABLE = "*") is None
+
+
+def test_the_sentence_names_the_override_instead_of_a_reinstall(monkeypatch, linux, tmp_path):
+    """The message a user actually reads, since the helper above only decides it. The
+    manifest here resolves perfectly well and the filter is the whole reason the loader has
+    nothing, so "reinstall the Vulkan driver" is a repair that cannot work."""
+    _icd_manifest(tmp_path, "radeon_icd.json", present = True)
+    reason = _vulkan_node_hint_under_icd_list(
+        monkeypatch,
+        None,
+        search_dirs = [str(tmp_path)],
+        env = {"VK_LOADER_DRIVERS_DISABLE": "*"},
+    )
+    assert "no driver it can load" in reason
+    assert "VK_LOADER_DRIVERS_DISABLE" in reason
+    assert "reinstall the Vulkan driver" not in reason
+
+
+def test_the_reinstall_sentence_survives_where_it_is_right(monkeypatch, linux, tmp_path):
+    """The control: no override, a manifest whose library is gone. Without it the fix could
+    be "never say reinstall", which removes the repair for the case the sentence was
+    written for."""
+    _icd_manifest(tmp_path, "radeon_icd.json", present = False)
+    reason = _vulkan_node_hint_under_icd_list(monkeypatch, None, search_dirs = [str(tmp_path)])
+    assert "reinstall the Vulkan driver" in reason
