@@ -1828,15 +1828,18 @@ function boundMcpImageResults(
   }) as RunMessages;
 }
 
-/** Whether the loaded local model reads an MCP picture: its vision flag, not
- *  loadedIsMultimodal alone, which an audio-only model also sets. Unknown keeps them. */
+/** Whether the local target reads an MCP picture: the SELECTED model's vision flag,
+ *  in either direction, since a queued send can target a vision model while the
+ *  resident one is text-only and its loadedIsMultimodal is stale. The loaded state is
+ *  the fallback only when the selection's capability is unknown; unknown keeps them.
+ *  Not loadedIsMultimodal alone either way: an audio-only model also sets it. */
 function localTargetReadsImages(
   state: Pick<ChatRuntimeState, "models" | "params" | "loadedIsMultimodal">,
 ): boolean {
   const activeModel = state.models.find(
     (model) => model.id === state.params.checkpoint,
   );
-  if (activeModel?.isVision === false) return false;
+  if (typeof activeModel?.isVision === "boolean") return activeModel.isVision;
   return state.loadedIsMultimodal !== false;
 }
 

@@ -446,7 +446,7 @@ test("the upload gate is the backend's external MCP gate, not provider-level vis
 test("both local paths read the model's vision flag, not just multimodal", () => {
   assert.match(
     adapter,
-    /function localTargetReadsImages\([\s\S]*?if \(activeModel\?\.isVision === false\) return false;\n\s*return state\.loadedIsMultimodal !== false;/,
+    /function localTargetReadsImages\([\s\S]*?if \(typeof activeModel\?\.isVision === "boolean"\) return activeModel\.isVision;\n\s*return state\.loadedIsMultimodal !== false;/,
   );
   assert.match(adapter, /: localTargetReadsImages\(runtime\);/);
   assert.match(
