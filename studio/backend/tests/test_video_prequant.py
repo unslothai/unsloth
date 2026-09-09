@@ -1123,7 +1123,9 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     verified = src.index("_denoiser_prequant_verified")
     predownload = src.index("_predownload_base")
     assert planned < verified < predownload
-    assert 'h3_auto_denoiser or kwargs.get("transformer_quant")' in src
+    # The planned scheme, whichever planner settled it, is what the verification reads: an unset request that only
+    # the planner resolved must still drop the dense shards.
+    assert 'h3_auto_denoiser or video_auto_denoiser or kwargs.get("transformer_quant")' in src
 
 
 def _h3_placement_probe(
@@ -1179,3 +1181,244 @@ def test_an_unreadable_card_keeps_the_rotation(monkeypatch):
     monkeypatch.setattr(vid, "_h3_dense_denoiser_resident_bytes", lambda fam, **kw: (1, 1))
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
     assert vid._h3_dense_denoiser_fits(vid._h3_dense_denoiser_resident_bytes(None), None) is False
+
+
+# ── conventional families: one hosted checkpoint per denoiser ────────────────────
+def _moe_fam(**kwargs):
+    """A dual-expert MoE family (Wan2.2-A14B's shape) hosting both experts in one repo."""
+    return _fam(
+        is_moe = True,
+        # A repo whose name does not end in a scheme suffix, so the derived filename is the plain
+        # <Model>-<SCHEME>.pt this family publishes.
+        prequant_repos = (("nvfp4", "org/test-quantized"),),
+        prequant_filenames = (("nvfp4", "transformer_2", "test-transformer_2-NVFP4.pt"),),
+        **kwargs,
+    )
+
+
+def test_the_components_a_family_seeds_are_its_denoisers():
+    from core.inference.video_denoiser_prequant import denoiser_components
+    assert denoiser_components(_fam()) == ("transformer",)
+    assert denoiser_components(_fam(is_moe = True)) == ("transformer", "transformer_2")
+
+
+def test_the_second_expert_is_addressed_through_the_task_slot():
+    """Both experts share a base, a class, a config and a key set, so the only thing that tells
+    their checkpoints apart is the name. The task slot supplies it AND withholds the fallback: an
+    artifact resolved by fallback would be expert 1's file loaded as expert 2, which passes every
+    check the loader makes and denoises half the schedule from the wrong weights."""
+    from core.inference.video_denoiser_prequant import denoiser_prequant_sources
+
+    sources = denoiser_prequant_sources(_moe_fam(), "nvfp4", "org/test-video")
+    assert set(sources) == {"transformer", "transformer_2"}
+    assert sources["transformer"].filename == "test-NVFP4.pt"
+    assert sources["transformer_2"].filename == "test-transformer_2-NVFP4.pt"
+    # The first expert keeps the legacy fallback; the named one gets none.
+    assert sources["transformer"].fallback_filename == "transformer_nvfp4.pt"
+    assert sources["transformer_2"].fallback_filename is None
+
+
+def test_every_component_or_none():
+    """Seeding is all-or-nothing, so partial coverage is not coverage: a half-seeded MoE is a model
+    nobody measured, and reading it as covered drops shards the dense fallback then has to open."""
+    from core.inference.video_denoiser_prequant import denoiser_prequant_sources
+
+    # A single-DiT family resolves exactly what it resolved before.
+    single = _fam(prequant_repos = (("nvfp4", "org/test-NVFP4"),))
+    assert set(denoiser_prequant_sources(single, "nvfp4", "org/test-video")) == {"transformer"}
+    # The same table on an MoE family covers one expert of two, so it covers nothing: without a row
+    # of its own, transformer_2 would resolve the task-AGNOSTIC name, i.e. expert 1's file.
+    assert (
+        denoiser_prequant_sources(
+            _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),)), "nvfp4", "org/test-video"
+        )
+        is None
+    )
+    # No repo at all, and the requests that name no scheme.
+    assert denoiser_prequant_sources(_moe_fam(), "int8", "org/test-video") is None
+    for scheme in (None, "", "auto", "off", "none"):
+        assert denoiser_prequant_sources(_moe_fam(), scheme, "org/test-video") is None
+
+
+def _stub_prequant_loader(monkeypatch, outcomes):
+    """Record every ``load_prequantized_transformer`` call and return ``outcomes`` in order."""
+    import gc
+    import sys
+    import types
+
+    import core.inference.diffusion_prequant as pq
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.TestTransformer3DModel = object
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    events: list = []
+    calls: list = []
+
+    def _fake_load(transformer_cls, base, source, **kwargs):
+        calls.append({"base": base, "source": source, **kwargs})
+        events.append(("load", kwargs.get("component")))
+        return outcomes[len(calls) - 1]
+
+    monkeypatch.setattr(pq, "load_prequantized_transformer", _fake_load)
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: events.append(("collect", None)))
+    return calls, events
+
+
+def test_seeding_loads_every_expert_into_its_own_component(monkeypatch):
+    """The two seams that keep the experts apart: the config each DiT is built from and the
+    metadata stamp the checkpoint is checked against. Both are the component name, on both sides.
+    """
+    from core.inference.video_denoiser_prequant import denoiser_prequant_pipe_kwargs
+
+    first, second = object(), object()
+    calls, events = _stub_prequant_loader(monkeypatch, [first, second])
+
+    seeded = denoiser_prequant_pipe_kwargs(
+        _moe_fam(),
+        "org/test-video",
+        scheme = "nvfp4",
+        dtype = "bfloat16",
+        device = "cuda:0",
+        hf_token = "tok",
+        cache_dir = "/cache",
+    )
+    assert seeded == {"transformer": first, "transformer_2": second}
+    assert [c["config_subfolder"] for c in calls] == ["transformer", "transformer_2"]
+    assert [c["component"] for c in calls] == ["transformer", "transformer_2"]
+    assert [c["source"].filename for c in calls] == [
+        "test-NVFP4.pt",
+        "test-transformer_2-NVFP4.pt",
+    ]
+    # The Linear filter the artifact was baked under, so prequant and runtime-quant stay the same model.
+    from core.inference.diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
+
+    assert {c["min_features"] for c in calls} == {DEFAULT_MIN_LINEAR_FEATURES}
+    # An A14B expert deserializes from a ~7 GB pickle: the first is released before the second is opened.
+    assert events == [
+        ("load", "transformer"),
+        ("collect", None),
+        ("load", "transformer_2"),
+        ("collect", None),
+    ]
+
+
+def test_a_second_expert_that_will_not_load_seeds_nothing(monkeypatch):
+    """The same rule the runtime block applies across experts ("engaged on only N/M"): the seeded
+    half would be met by a dense-quantised other half nobody measured. The loaded expert is
+    released rather than left holding host RAM the dense build is about to need."""
+    from core.inference.video_denoiser_prequant import denoiser_prequant_pipe_kwargs
+
+    calls, events = _stub_prequant_loader(monkeypatch, [object(), None])
+
+    assert (
+        denoiser_prequant_pipe_kwargs(
+            _moe_fam(),
+            "org/test-video",
+            scheme = "nvfp4",
+            dtype = "bfloat16",
+            device = "cuda:0",
+        )
+        == {}
+    )
+    assert len(calls) == 2
+    assert events[-1] == ("collect", None)
+
+
+def test_seeding_declines_a_host_that_cannot_run_the_quant(monkeypatch):
+    # Gated like the runtime quant it replaces: finding out after a multi-GB fetch is the
+    # expensive order.
+    import types
+
+    import core.inference.diffusion_transformer_quant as tq
+    from core.inference.video_denoiser_prequant import denoiser_prequant_pipe_kwargs
+
+    calls, _events = _stub_prequant_loader(monkeypatch, [object(), object()])
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    assert (
+        denoiser_prequant_pipe_kwargs(
+            _moe_fam(),
+            "org/test-video",
+            scheme = "nvfp4",
+            dtype = "bfloat16",
+            device = "cuda:0",
+            target = types.SimpleNamespace(device = "cpu"),
+        )
+        == {}
+    )
+    assert calls == []
+
+
+# ── the plan-time scheme, and pinning it into the load ───────────────────────────
+def _video_auto(
+    monkeypatch,
+    *,
+    scheme,
+    fam = None,
+    **over,
+):
+    """``_video_auto_denoiser_scheme`` with the device selector stubbed to ``scheme``."""
+    from core.inference import video as vid
+
+    monkeypatch.setattr(
+        vid, "select_transformer_quant_scheme", lambda target, requested, family = None: scheme
+    )
+    kw = dict(
+        target = None,
+        requested = "auto",
+        base_repo = "org/test-video",
+        speed_mode = None,
+    )
+    kw.update(over)
+    return vid._video_auto_denoiser_scheme(fam if fam is not None else _moe_fam(), **kw)
+
+
+def test_the_conventional_auto_scheme_needs_an_artifact_for_every_expert(monkeypatch):
+    assert _video_auto(monkeypatch, scheme = "nvfp4") == "nvfp4"
+    # A scheme the family hosts nothing for keeps the dense DiT and the runtime quant.
+    assert _video_auto(monkeypatch, scheme = "int8") is None
+    # One artifact on a two-expert family is not coverage.
+    assert (
+        _video_auto(
+            monkeypatch, scheme = "nvfp4", fam = _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),))
+        )
+        is None
+    )
+    # And the selector declining (unsupported device, denied family) declines this too.
+    assert _video_auto(monkeypatch, scheme = None) is None
+
+
+def test_speed_off_and_the_modular_workflow_are_never_seeded_here(monkeypatch):
+    # speed_mode="off" is the bit-exact contract; the modular workflow seeds its own partition
+    # through _h3_auto_denoiser_scheme and must not be seeded twice.
+    assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = "off") is None
+    assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = " OFF ") is None
+    assert _video_auto(monkeypatch, scheme = "nvfp4", fam = _moe_fam(modular_workflow = "fl2va")) is None
+
+
+def test_an_install_that_cannot_open_a_checkpoint_keeps_the_dense_denoiser(monkeypatch):
+    # This runs BEFORE the download plan: choosing a scheme here drops the dense shards, and an
+    # install whose torchao cannot restrict the deserialization is going to refuse the artifact.
+    import core.inference.diffusion_prequant as pq
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None: False)
+    assert _video_auto(monkeypatch, scheme = "nvfp4") is None
+
+
+def test_the_conventional_coverage_probe_reads_every_component():
+    """``_denoiser_prequant_covered`` is what drops the dense shards from the pull, so it has to
+    answer for the whole family, and only for a full-pipeline load: a GGUF pick carries its own
+    denoiser."""
+    from core.inference.video import VideoBackend
+
+    fam = _moe_fam()
+    assert VideoBackend._denoiser_prequant_covered(fam, "nvfp4", "org/test-video")
+    assert not VideoBackend._denoiser_prequant_covered(fam, "int8", "org/test-video")
+    # An unresolved "auto" must not drop shards; the planner hands the settled scheme in.
+    assert not VideoBackend._denoiser_prequant_covered(fam, "auto", "org/test-video")
+    assert not VideoBackend._denoiser_prequant_covered(fam, None, "org/test-video")
+    assert not VideoBackend._denoiser_prequant_covered(
+        fam, "nvfp4", "org/test-video", None, kind = "gguf"
+    )
+    # One expert of two covers nothing.
+    half = _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),))
+    assert not VideoBackend._denoiser_prequant_covered(half, "nvfp4", "org/test-video")
