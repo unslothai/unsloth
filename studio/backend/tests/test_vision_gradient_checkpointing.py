@@ -142,12 +142,12 @@ def run_vision_training(monkeypatch):
 def test_none_reaches_both_the_sft_config_and_for_training(run_vision_training):
     seen = run_vision_training("none")
 
-    assert seen["config_args"]["gradient_checkpointing"] is False, (
-        "the vision branch re-enabled gradient checkpointing after the user turned it off"
-    )
-    assert "gradient_checkpointing_kwargs" not in seen["config_args"], (
-        "checkpointing kwargs were sent for a run that does not checkpoint"
-    )
+    assert (
+        seen["config_args"]["gradient_checkpointing"] is False
+    ), "the vision branch re-enabled gradient checkpointing after the user turned it off"
+    assert (
+        "gradient_checkpointing_kwargs" not in seen["config_args"]
+    ), "checkpointing kwargs were sent for a run that does not checkpoint"
     assert seen["for_training"] == [False], (
         "for_training re-flagged every layer, leaving them without a "
         "_gradient_checkpointing_func"
