@@ -3193,9 +3193,21 @@ def test_a_uniform_layout_still_takes_the_contiguous_tail():
 
 def test_a_cost_ranked_caller_takes_the_smaller_pick_outright():
     """Under require_cost_win the caller is choosing between two placements of
-    one rung, where rank() is monotone in bytes, so the smaller pick simply
-    wins and only a tie keeps the tail."""
-    layout = _tail_heavy_layout(tail = 150 * MIB, rest = 100 * MIB, n_blocks = 4)
-    assert _plan_for_deficit(layout, 90 * MIB).spilled_blocks == (3,)
-    ranked = _plan_for_deficit(layout, 90 * MIB, require_cost_win = True, host = HostProfile(threads = 6))
-    assert ranked.spilled_blocks == (0,), ranked.spilled_blocks
+    ONE rung, where rank() is monotone in bytes, so the smaller pick simply wins
+    and only a tie keeps the tail. Driven at the selector rather than through a
+    plan, because the gate's own verdict on that spill is a separate decision."""
+    from core.inference.offload_planner import SpillUnit, _select_units
+
+    units = [
+        SpillUnit(0, None, 100 * MIB),
+        SpillUnit(1, None, 100 * MIB),
+        SpillUnit(2, None, 150 * MIB),
+    ]
+    tail, freed = _select_units(units, 90 * MIB, SpillOrder.BACK_FIRST)
+    assert [u.index for u in tail] == [2] and freed == 150 * MIB
+    ranked, least = _select_units(units, 90 * MIB, SpillOrder.BACK_FIRST, cost_ranked = True)
+    assert [u.index for u in ranked] == [0] and least == 100 * MIB
+    # A tie still keeps the tail.
+    even = [SpillUnit(i, None, 100 * MIB) for i in range(3)]
+    kept, _ = _select_units(even, 90 * MIB, SpillOrder.BACK_FIRST, cost_ranked = True)
+    assert [u.index for u in kept] == [2]

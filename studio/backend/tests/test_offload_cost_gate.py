@@ -739,6 +739,10 @@ def test_the_dense_fallback_moves_the_fitters_leading_block_prefix():
     layout the two directions disagree on the host weights and on the layer
     count, so the fitter arm of the cost gate gets scored on a placement
     llama.cpp would not produce.
+
+    A leading prefix of WHOLE layers, plus at most the FFN of the next one: the
+    fitter's step 4 keeps that layer resident and overrides part of its FFN
+    rather than lowering ngl again, which is the boundary grading this models.
     """
     layout = mixed_quant_layout()
     placement = _fit_fallback_placement(
@@ -748,10 +752,15 @@ def test_the_dense_fallback_moves_the_fitters_leading_block_prefix():
     weights = sum(g.bytes_total for g in placement.host_groups if g.name in ("ffn", "layers"))
 
     sizes = [b.spillable_bytes + b.resident_bytes for b in layout.blocks]
-    prefixes = {sum(sizes[:k]): k for k in range(1, len(sizes) + 1)}
-    assert weights in prefixes, "the moved weights are not a leading prefix of the block list"
-    moved = prefixes[weights]
-    assert moved < len(sizes), "a partial fit, or the two ends cannot be told apart"
+    whole = [sum(sizes[:k]) for k in range(len(sizes) + 1)]
+    k = max(i for i, total in enumerate(whole) if total <= weights)
+    overflow = weights - whole[k]
+    assert k < len(sizes), "the moved weights are not a leading prefix of the block list"
+    assert (
+        overflow <= layout.blocks[k].spillable_bytes
+    ), "the boundary layer gave up more than its FFN"
+    moved = k + (1 if overflow else 0)
+    assert 0 < moved < len(sizes), "a partial fit, or the two ends cannot be told apart"
     assert weights != sum(sizes[-moved:]), (
         "the trailing blocks of this layout weigh the same as the leading ones, "
         "so the assertion above proves nothing"
@@ -831,7 +840,9 @@ def test_a_saturated_windowed_cache_is_charged_flat_when_the_fitter_moves_it():
     )
     assert placement is not None
     per_block = layout.blocks[0].spillable_bytes + layout.blocks[0].resident_bytes
-    moved = round(sum(g.bytes_total for g in placement.host_groups) / per_block)
+    # Whole layers only: the graded boundary layer stays on the device with its
+    # cache, so the tail of that division is FFN bytes and not a moved row.
+    moved = int(sum(g.bytes_total for g in placement.host_groups) // per_block)
     assert moved > 0
     flat = floor * moved / len(layout.blocks)
     assert placement.kv_host_bytes >= flat * 0.98, (placement.kv_host_bytes, flat)
@@ -1022,3 +1033,101 @@ def test_a_caller_nkvo_cache_is_host_ram_the_refusal_has_to_see():
     # Room for the cache as well, and the same spill is taken.
     fits = plan_placement(layout, card, headroom + without + cache, 32768, opts = gated(**base))
     assert fits.spilled_blocks == roomy.spilled_blocks, fits.reason
+
+
+def test_the_fallback_places_the_cache_by_the_per_layer_vector():
+    """A moved layer takes ITS OWN cache with it, not an even share of the total.
+
+    The fitter spread the cache uniformly over every block, which charges a
+    recurrent or MLP-only row a share it does not hold. On a hybrid that
+    over-states what the leading rows free, so the modelled fitter reaches the
+    budget early and is scored on a placement llama.cpp would not produce -- the
+    direction that makes the fallback look slower than it is and lets the gate
+    take spills it should decline.
+    """
+    layout = dense_layout()
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    uniform = _fit_fallback_placement(layout, gated(), 12 * GIB, 32768, **args)
+    # One attention row in five, so the fitter's prefix does not carry a whole
+    # number of periods and the two answers cannot coincide by construction.
+    hybrid = [1 if i % 5 == 4 else 0 for i in range(layout.n_layers)]
+    spread = _fit_fallback_placement(
+        layout, gated(), 12 * GIB, 32768, kv_layer_weights = hybrid, **args
+    )
+    assert uniform is not None and spread is not None
+    assert spread.kv_host_bytes < uniform.kv_host_bytes
+
+    # And rows that hold no cache at all take none with them: here every
+    # attention row is behind the prefix the fitter moves, so it frees no cache
+    # and has to move more weights instead.
+    recurrent_first = [1 if i >= layout.n_layers // 2 else 0 for i in range(layout.n_layers)]
+    none = _fit_fallback_placement(
+        layout, gated(), 12 * GIB, 32768, kv_layer_weights = recurrent_first, **args
+    )
+    assert none is not None and none.kv_host_bytes == 0
+    assert sum(g.bytes_total for g in none.host_groups) > sum(
+        g.bytes_total for g in uniform.host_groups
+    )
+
+
+def graded_dense_layout(n_blocks: int = 64) -> ModelLayout:
+    """A dense model with its FFN broken out per matrix, so the boundary layer
+    has fractions to give."""
+    d, u, g, a = int(0.08 * GIB), int(0.07 * GIB), int(0.05 * GIB), int(0.045 * GIB)
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = d + u + g,
+            resident_bytes = a,
+            ffn_down_bytes = d,
+            ffn_up_bytes = u,
+            ffn_gate_bytes = g,
+            attn_bytes = a,
+        )
+        for i in range(n_blocks)
+    )
+    return replace(dense_layout(n_blocks), blocks = blocks)
+
+
+def test_the_fallback_grades_its_boundary_layer_the_way_fit_cpp_does():
+    """common/fit.cpp does not lower ngl one more time when a fraction of a layer
+    would do: step 4 keeps that layer on the device and overrides part of its FFN
+    (LAYER_FRACTION_UP, narrowed to _GATE, widened to _ATTN), so the layer's
+    attention and cache stay resident. Walking whole layers charged the fallback
+    a boundary layer it only partly needed."""
+    graded = graded_dense_layout()
+    whole = replace(
+        graded,
+        blocks = tuple(
+            BlockLayout(
+                index = b.index, spillable_bytes = b.spillable_bytes, resident_bytes = b.resident_bytes
+            )
+            for b in graded.blocks
+        ),
+    )
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    fine = _fit_fallback_placement(graded, gated(), 12 * GIB, 32768, **args)
+    coarse = _fit_fallback_placement(whole, gated(), 12 * GIB, 32768, **args)
+    assert fine is not None and coarse is not None
+    fine_bytes = sum(g.bytes_total for g in fine.host_groups)
+    coarse_bytes = sum(g.bytes_total for g in coarse.host_groups)
+    assert fine_bytes < coarse_bytes, (fine_bytes, coarse_bytes)
+
+    # The boundary really is a FRACTION of one block, and the whole layers below
+    # it are a leading prefix.
+    per_block = graded.blocks[0].spillable_bytes + graded.blocks[0].resident_bytes
+    assert fine_bytes % per_block == graded.blocks[0].ffn_down_bytes
+
+
+def test_the_per_layer_vector_reaches_the_gate_from_plan_placement():
+    """The vector is a plan_placement argument and the fallback is built two
+    calls below it, so the end-to-end path is worth pinning: without the
+    threading the gate scores an arm that ignores what the caller measured."""
+    layout = dense_layout()
+    card = [14848 * 1024 * 1024]
+    hybrid = [1 if i % 5 == 4 else 0 for i in range(layout.n_layers)]
+    opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0)
+    plain = plan_placement(layout, card, 94 * GIB, 32768, opts = opts)
+    with_vector = plan_placement(layout, card, 94 * GIB, 32768, opts = opts, kv_layer_weights = hybrid)
+    assert plain.spilled_blocks == with_vector.spilled_blocks
+    assert plain.predicted_fit_request_ms != with_vector.predicted_fit_request_ms

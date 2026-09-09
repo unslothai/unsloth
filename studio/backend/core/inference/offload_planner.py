@@ -1056,6 +1056,27 @@ def _spill_penalty_ms(
     return generation_penalty_ms(placement, host)
 
 
+def _fit_boundary_overflow(block: BlockLayout, deficit: int) -> Optional[int]:
+    """FFN bytes ``common/fit.cpp`` overflows off its boundary layer to cover
+    ``deficit``, or None when even the whole FFN of it does not.
+
+    Step 4 of the fitter keeps ONE more layer on the device and overrides part of
+    that layer's FFN to the host instead of lowering ``n_gpu_layers`` again, so
+    the layer's attention, cache and recurrent state stay resident. It tries
+    ``LAYER_FRACTION_UP`` (``ffn_(gate|gate_up|down)``, keeping ffn_up), narrows
+    to ``_GATE`` (``ffn_down`` alone) when that still fits and widens to ``_ATTN``
+    (the whole FFN) when it does not. The three nest, so the smallest that covers
+    is what that trial order arrives at, and that is what this walks. A layout
+    with no per-rung breakdown has only the whole-FFN candidate, which is the
+    ``_ATTN`` one.
+    """
+    down = block.class_bytes(SpillClass.FFN_DOWN)
+    for nbytes in (down, down + block.class_bytes(SpillClass.FFN_GATE), block.spillable_bytes):
+        if nbytes > 0 and nbytes >= deficit:
+            return nbytes
+    return None
+
+
 def _fit_fallback_placement(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -1066,12 +1087,19 @@ def _fit_fallback_placement(
     kv_bytes_floor: int,
     kv_on_host: bool,
     n_seq: int = 1,
+    kv_layer_weights: Sequence[int] = (),
 ) -> Optional[Placement]:
     """What llama.cpp's own fitter would place here, priced the same way.
 
     ``n_seq`` is the slot count the child serves: the recurrent state is one copy
     per sequence, resident and moved alike, so the fitter modelled at one copy
     reaches the budget at the wrong layer count on a multi-slot hybrid.
+
+    ``kv_layer_weights`` is each layer's relative cache size, the same vector the
+    per-device check takes. Without it the cache was spread evenly over every
+    block, which charges a recurrent or MLP-only row a share it does not hold and
+    so over-charges the fitter on exactly the hybrid and iSWA layouts where the
+    gate has been wrong.
 
     This is the arm the planner is really competing against. When the planner
     abstains the launch path emits ``--fit on`` and no ``-ngl``, and fitting
@@ -1116,7 +1144,23 @@ def _fit_fallback_placement(
         if kv_on_host
         else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     )
-    kv_per_layer = kv_total / len(blocks)
+    weights = [max(0, int(w)) for w in kv_layer_weights]
+    if len(weights) != layout.n_layers or not any(weights):
+        weights = []
+    # Running weight over the blocks the fitter walks, so a cache total can be
+    # apportioned over any PREFIX of them. Uniform when the caller cannot say.
+    shares: list[int] = []
+    running = 0
+    for block in blocks:
+        running += weights[block.index] if weights else 1
+        shares.append(running)
+    total_share = shares[-1]
+
+    def kv_freed(total: int, moved: int) -> int:
+        """``total`` bytes of cache carried off by the first ``moved`` blocks."""
+        if moved <= 0 or total_share <= 0:
+            return 0
+        return int(total * shares[min(moved, len(shares)) - 1] / total_share)
 
     # The cache is RESERVED at n_ctx but only the live prefix is ever read, and
     # reading is what costs. Pricing the reservation charges a 32K allocation for
@@ -1150,7 +1194,7 @@ def _fit_fallback_placement(
     reserved_product = cache_bytes(layout, n_ctx, kv_quantised = quantised)
     floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
     if kv_on_host:
-        kv_live_per_layer = 0.0
+        kv_live_total = 0
     elif layout.has_swa and kv_bytes_floor > 0:
         # The measured floor of a windowed cache is context-FLAT once the window
         # is saturated (``cache_bytes`` returns it unscaled for that reason), and
@@ -1161,11 +1205,9 @@ def _fit_fallback_placement(
         # the hardware wins. The whole floor as live over-charges only the
         # full-context share, the direction a gate that has been wrong the other
         # way can afford.
-        kv_live_per_layer = kv_total / len(blocks)
+        kv_live_total = kv_total
     else:
-        kv_live_per_layer = (
-            cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale / len(blocks)
-        )
+        kv_live_total = int(cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale)
 
     if layout.is_moe:
         # MEASURED, not assumed. On an MoE model ``--fit on`` keeps EVERY layer
@@ -1211,7 +1253,7 @@ def _fit_fallback_placement(
         for moved, block in enumerate(blocks, start = 1):
             host_layers += block.resident_bytes
             host_recurrent = int(recurrent_per_layer * moved)
-            freed = host_experts + host_layers + int(kv_per_layer * moved) + host_recurrent
+            freed = host_experts + host_layers + kv_freed(kv_total, moved) + host_recurrent
             if resident - freed <= budget:
                 groups = [_ffn_group(layout, host_experts)]
                 if host_layers:
@@ -1220,7 +1262,7 @@ def _fit_fallback_placement(
                     groups.append(
                         TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
                     )
-                return Placement(host_groups = groups, kv_host_bytes = int(kv_live_per_layer * moved))
+                return Placement(host_groups = groups, kv_host_bytes = kv_freed(kv_live_total, moved))
         return None
 
     # Dense, where the whole-layer model IS what happens: measured n_part=0 with
@@ -1284,92 +1326,110 @@ def _fit_fallback_placement(
     recurrent_per_layer = (
         0.0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq) / len(blocks)
     )
+
+    def dense_placement(moved: int, spilled_ffn: int, attention: int) -> Placement:
+        """``moved`` whole layers off the device, plus ``spilled_ffn`` FFN bytes."""
+        groups: list[TensorGroup] = []
+        if spilled_ffn:
+            groups.append(_ffn_group(layout, spilled_ffn))
+        if attention:
+            # Attention, norms and routers: dense, read in full every token.
+            groups.append(TensorGroup("layers", attention, Access.CONTIGUOUS))
+        host_recurrent = int(recurrent_per_layer * moved)
+        if host_recurrent:
+            # CONTIGUOUS, not the cache rate: this is a small fixed-size conv
+            # and SSM state read straight through by the scan, not attention
+            # over a prefix that grows with the conversation. It is also
+            # context independent, so unlike the cache there is no reserved
+            # versus live distinction to make.
+            groups.append(
+                TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
+            )
+        live_kv = kv_freed(kv_live_total, moved)
+        # ``kv_host_bytes``, so this is charged at ``Access.KV_CACHE``'s
+        # calibrated 20.1x and not at the contiguous weight rate. This is the
+        # ONLY term that can see the planner's measured dense advantage, and
+        # an earlier revision charged it at 1.00x on the reasoning that a
+        # moved layer's attention runs on the CPU backend next to its own
+        # cache, so it never crosses the link. The residency claim is right
+        # (llama-kv-cache.cpp:214-225 gives layer ``il``'s cache the buffer
+        # type of ``model.dev_layer(il)``, so a host layer's cache is a host
+        # buffer), but the RATE that follows from it is not: 1.00x is
+        # ``REFERENCE_CONTIGUOUS_MS_PER_GIB``, measured on Q4 dense FFN, a
+        # contiguous quantised GEMM. Batch-1 attention over an f16 cache is a
+        # strided GEMV that parallelises over heads (4 KV heads here) rather
+        # than over rows, so it cannot reach that rate, and nothing in the
+        # model measures 1.00x for it. Charging it 1.00x made the model
+        # contradict every dense measurement we have: over the bench13 cells
+        # that reach this gate the fitter scored CHEAPER on 5 of 5 dense
+        # cells the hardware says the planner WINS, by 1.08x to 1.53x on
+        # generation, which would make ``-ot`` a MoE-only feature.
+        #
+        # 20.1x is the model's only calibrated constant for "attention cache
+        # read from host RAM", and it is the best-anchored one in the file
+        # (dense 119.7 against MoE 121.2 ms/GiB, agreeing to 1.3%). It is an
+        # UPPER bound for this regime, because that anchor is
+        # ``--no-kv-offload``, where the layer's weights stay on the GPU so
+        # the attention op stays there too and drags the cache over PCIe
+        # every token -- ggml only runs an op where its sources live for
+        # sources in a WEIGHTS buffer, and the cache is not one, with
+        # FLASH_ATTN_EXT excluded from that rule outright
+        # (ggml-backend.cpp:952-981). The true rate for CPU-side attention
+        # over a host cache is between 1.0x and 20.1x and is unmeasured.
+        #
+        # Taking the upper bound is the conservative end for a gate that has
+        # already been wrong in the other direction, and it still
+        # UNDER-predicts: it scores those five at 1.12x to 1.19x against a
+        # measured penalty ratio of 1.43x to 2.44x where a resident baseline
+        # exists to compute one (L4, Qwen3.8-27B Q4, 12/14/16 GiB). It
+        # also cannot rescue a cell it should not by much, because the term
+        # scales with how many layers the fitter has to move: where the load
+        # nearly fitted and the fitter moves almost nothing -- the #9861
+        # shape this gate exists to stop -- it contributes almost nothing.
+        # The two worst #9861 cells (Qwen3-8B Q4 near 11 GiB, measured 0.19x
+        # and 0.21x) decline at every thread count and context tried.
+        #
+        # It is NOT clean on the measured set, and that is stated here rather
+        # than in a commit message nobody reads at this line. Scored over the
+        # bench13 cells that reach this gate: 5 correct accepts, 0 false
+        # declines, and 2 FALSE ACCEPTS -- both gemma-4-E2B Q4 at 2 GiB,
+        # which is also the one cell that disagrees with itself across hosts
+        # (0.968 and 0.878 for the same placement). The threshold is not what
+        # is wrong there: E2B scores 1.465, HIGHER than every correct accept
+        # (1.12 to 1.19), so the ordering is wrong on that cell and no margin
+        # separates it. Left as a known miss rather than tuned away, because
+        # fitting a constant to two readings that disagree by 10% would be
+        # fitting noise.
+        return Placement(host_groups = groups, kv_host_bytes = live_kv)
+
     host_weights = 0
     host_spillable = 0
     for moved, block in enumerate(blocks, start = 1):
+        # fit.cpp's step 4 first: rather than lower ngl again it keeps this layer
+        # on the device and overrides part of its FFN to the host, so the layer's
+        # attention, cache and recurrent state stay resident with it. Tried before
+        # the whole-layer move because that is the order the fitter settles them
+        # in, and it is the difference between a boundary layer that was needed in
+        # part and one charged in full.
+        short = resident - (
+            host_weights + kv_freed(kv_total, moved - 1) + int(recurrent_per_layer * (moved - 1))
+        )
+        overflow = _fit_boundary_overflow(block, short - budget)
+        if overflow is not None:
+            return dense_placement(
+                moved - 1, host_spillable + overflow, host_weights - host_spillable
+            )
         host_weights += block.spillable_bytes + block.resident_bytes
         host_spillable += block.spillable_bytes
-        host_recurrent = int(recurrent_per_layer * moved)
         # lm_head is NOT in here: the output row stays on the device for any
         # n_gpu_layers >= 1, so the fitter never frees it on a partial fit and
         # never pays for it on the host either. Charging it did both -- the
         # fallback appeared to fit a layer or two early AND was billed a host
         # lm_head llama.cpp would not move, which inflated its score and let
         # spills through this gate that the real fitter beats.
-        freed = host_weights + int(kv_per_layer * moved) + host_recurrent
+        freed = host_weights + kv_freed(kv_total, moved) + int(recurrent_per_layer * moved)
         if resident - freed <= budget:
-            groups: list[TensorGroup] = []
-            if host_spillable:
-                groups.append(_ffn_group(layout, host_spillable))
-            attention = host_weights - host_spillable
-            if attention:
-                # Attention, norms and routers: dense, read in full every token.
-                groups.append(TensorGroup("layers", attention, Access.CONTIGUOUS))
-            if host_recurrent:
-                # CONTIGUOUS, not the cache rate: this is a small fixed-size conv
-                # and SSM state read straight through by the scan, not attention
-                # over a prefix that grows with the conversation. It is also
-                # context independent, so unlike the cache there is no reserved
-                # versus live distinction to make.
-                groups.append(
-                    TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
-                )
-            live_kv = int(kv_live_per_layer * moved)
-            # ``kv_host_bytes``, so this is charged at ``Access.KV_CACHE``'s
-            # calibrated 20.1x and not at the contiguous weight rate. This is the
-            # ONLY term that can see the planner's measured dense advantage, and
-            # an earlier revision charged it at 1.00x on the reasoning that a
-            # moved layer's attention runs on the CPU backend next to its own
-            # cache, so it never crosses the link. The residency claim is right
-            # (llama-kv-cache.cpp:214-225 gives layer ``il``'s cache the buffer
-            # type of ``model.dev_layer(il)``, so a host layer's cache is a host
-            # buffer), but the RATE that follows from it is not: 1.00x is
-            # ``REFERENCE_CONTIGUOUS_MS_PER_GIB``, measured on Q4 dense FFN, a
-            # contiguous quantised GEMM. Batch-1 attention over an f16 cache is a
-            # strided GEMV that parallelises over heads (4 KV heads here) rather
-            # than over rows, so it cannot reach that rate, and nothing in the
-            # model measures 1.00x for it. Charging it 1.00x made the model
-            # contradict every dense measurement we have: over the bench13 cells
-            # that reach this gate the fitter scored CHEAPER on 5 of 5 dense
-            # cells the hardware says the planner WINS, by 1.08x to 1.53x on
-            # generation, which would make ``-ot`` a MoE-only feature.
-            #
-            # 20.1x is the model's only calibrated constant for "attention cache
-            # read from host RAM", and it is the best-anchored one in the file
-            # (dense 119.7 against MoE 121.2 ms/GiB, agreeing to 1.3%). It is an
-            # UPPER bound for this regime, because that anchor is
-            # ``--no-kv-offload``, where the layer's weights stay on the GPU so
-            # the attention op stays there too and drags the cache over PCIe
-            # every token -- ggml only runs an op where its sources live for
-            # sources in a WEIGHTS buffer, and the cache is not one, with
-            # FLASH_ATTN_EXT excluded from that rule outright
-            # (ggml-backend.cpp:952-981). The true rate for CPU-side attention
-            # over a host cache is between 1.0x and 20.1x and is unmeasured.
-            #
-            # Taking the upper bound is the conservative end for a gate that has
-            # already been wrong in the other direction, and it still
-            # UNDER-predicts: it scores those five at 1.12x to 1.19x against a
-            # measured penalty ratio of 1.43x to 2.44x where a resident baseline
-            # exists to compute one (L4, Qwen3.8-27B Q4, 12/14/16 GiB). It
-            # also cannot rescue a cell it should not by much, because the term
-            # scales with how many layers the fitter has to move: where the load
-            # nearly fitted and the fitter moves almost nothing -- the #9861
-            # shape this gate exists to stop -- it contributes almost nothing.
-            # The two worst #9861 cells (Qwen3-8B Q4 near 11 GiB, measured 0.19x
-            # and 0.21x) decline at every thread count and context tried.
-            #
-            # It is NOT clean on the measured set, and that is stated here rather
-            # than in a commit message nobody reads at this line. Scored over the
-            # bench13 cells that reach this gate: 5 correct accepts, 0 false
-            # declines, and 2 FALSE ACCEPTS -- both gemma-4-E2B Q4 at 2 GiB,
-            # which is also the one cell that disagrees with itself across hosts
-            # (0.968 and 0.878 for the same placement). The threshold is not what
-            # is wrong there: E2B scores 1.465, HIGHER than every correct accept
-            # (1.12 to 1.19), so the ordering is wrong on that cell and no margin
-            # separates it. Left as a known miss rather than tuned away, because
-            # fitting a constant to two readings that disagree by 10% would be
-            # fitting noise.
-            return Placement(host_groups = groups, kv_host_bytes = live_kv)
+            return dense_placement(moved, host_spillable, host_weights - host_spillable)
     return None
 
 
@@ -1799,6 +1859,7 @@ def plan_placement(
                 quantised = resident_quantised,
                 kv_bytes_floor = resident_floor if resident_floor is not None else 0,
                 knobs = resident_knobs,
+                kv_layer_weights = kv_layer_weights,
                 requested_ctx = n_ctx,
                 reason = (
                     f"shrank context {n_ctx} -> {min(shrunk, n_ctx)} to keep every tensor "
@@ -2468,6 +2529,7 @@ def _plan_at(
                     kv_bytes_floor = floor,
                     budget = budget,
                     knobs = knobs,
+                    kv_layer_weights = kv_layer_weights,
                     requested_ctx = requested_ctx,
                     reason = (
                         f"the pooled budget fits{after}, but {uneven}; spilled "
@@ -2487,6 +2549,7 @@ def _plan_at(
             kv_bytes_floor = floor,
             budget = budget,
             knobs = knobs,
+            kv_layer_weights = kv_layer_weights,
             requested_ctx = requested_ctx,
             reason = (
                 f"the whole load fits in VRAM ({needed / GIB:.2f} of "
@@ -2534,6 +2597,7 @@ def _plan_at(
             kv_bytes_floor = kv_bytes_floor,
             budget = budget,
             knobs = knobs,
+            kv_layer_weights = kv_layer_weights,
             requested_ctx = requested_ctx,
             reason = (
                 "spilled the output head after its device could not cover "
@@ -2631,6 +2695,7 @@ def _plan_at(
             budget = budget,
             kv_on_host_rung = kv_host,
             knobs = knobs,
+            kv_layer_weights = kv_layer_weights,
             requested_ctx = requested_ctx,
             reason = reason,
         )
@@ -2794,6 +2859,7 @@ def _cost_gate(
     host_bytes: int = 0,
     host_ram_bytes: Optional[int] = None,
     knobs: Optional[_Knobs] = None,
+    kv_layer_weights: Sequence[int] = (),
 ) -> tuple[Optional[Plan], float, float]:
     """An abstaining Plan when ``--fit on`` is as good as this spill, else None.
 
@@ -2887,6 +2953,7 @@ def _cost_gate(
         kv_bytes_floor = kv_bytes_floor,
         kv_on_host = opts.kv_on_host,
         n_seq = n_slots,
+        kv_layer_weights = kv_layer_weights,
     )
     if fallback is None:
         # Nothing to COMPARE to, which is not the same as "the fitter cannot place
@@ -2967,6 +3034,7 @@ def _knob_only_gate(
     quantised: bool,
     kv_bytes_floor: int,
     knobs: Optional[_Knobs],
+    kv_layer_weights: Sequence[int] = (),
 ) -> tuple[Optional[Plan], float, float]:
     """The same ranking for a plan that spills nothing but gave a knob up.
 
@@ -2998,6 +3066,7 @@ def _knob_only_gate(
         kv_bytes_floor = kv_bytes_floor,
         kv_on_host = opts.kv_on_host,
         n_seq = n_slots,
+        kv_layer_weights = kv_layer_weights,
     )
     if fallback is None:
         # Nothing to compare to, exactly as in _cost_gate.
@@ -3098,6 +3167,7 @@ def _finish(
     budget: Optional[int] = None,
     kv_on_host_rung: bool = False,
     knobs: Optional[_Knobs] = None,
+    kv_layer_weights: Sequence[int] = (),
     requested_ctx: int = 0,
     reason: str = "",
 ) -> Plan:
@@ -3178,6 +3248,7 @@ def _finish(
             host_bytes = host_side,
             host_ram_bytes = host_ram_bytes,
             knobs = knobs,
+            kv_layer_weights = kv_layer_weights,
         )
         if declined is not None:
             return declined
@@ -3190,6 +3261,7 @@ def _finish(
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
             knobs = knobs,
+            kv_layer_weights = kv_layer_weights,
         )
         if declined is not None:
             return declined
