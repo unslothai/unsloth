@@ -29,6 +29,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
+MCP_ONE_SHOT_CONFIG_CHECK_VERSION = 1
 _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
 _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
@@ -1824,8 +1825,20 @@ def call_tool_sync(
     aborts an in-flight call. ``config_check`` re-reads the server row so a call
     that raced an edit or delete cannot dispatch on the stale configuration."""
 
+    async def _config_current() -> bool:
+        if config_check is None:
+            return True
+        try:
+            return bool(await asyncio.to_thread(config_check))
+        except Exception:  # noqa: BLE001 - a failed authority check denies dispatch
+            return False
+
     async def _one_shot() -> Any:
+        if not await _config_current():
+            raise RuntimeError("MCP server was updated or removed before the call")
         async with _client(url, headers, use_oauth) as client:
+            if not await _config_current():
+                raise RuntimeError("MCP server was updated or removed before the call")
             # raise_on_error=False lets an is_error result (which may still carry
             # image content) reach _flatten_result instead of FastMCP raising ToolError
             # and dropping the images. Transport failures still raise (handled below).

@@ -984,3 +984,49 @@ def test_http_tool_error_keeps_session(fake_clients):
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat").startswith("Error:")
     assert len(mcp_client._mcp_sessions) == 1
     assert len(fake_clients) == 1
+
+
+def test_http_config_check_blocks_before_dispatch(fake_clients):
+    out = call_tool_sync(HTTP_URL, None, "t", {}, config_check = lambda: False)
+    assert "MCP server was updated or removed before the call" in out
+    assert fake_clients == []
+
+
+@pytest.mark.parametrize(
+    "url,options",
+    [(HTTP_URL, {}), (HTTP_URL, {"scope": "chat", "use_oauth": True})],
+)
+def test_one_shot_current_configuration_preserves_dispatch(fake_clients, url, options):
+    assert (
+        call_tool_sync(url, None, "t", {"value": 1}, config_check = lambda: True, **options)
+        == "call-1"
+    )
+    assert fake_clients[0].calls == [("t", {"value": 1})]
+    assert _settled(fake_clients[0]) == 1
+
+
+@pytest.mark.parametrize(
+    "url,options",
+    [(HTTP_URL, {}), (HTTP_URL, {"scope": "chat", "use_oauth": True})],
+)
+@pytest.mark.parametrize("after_connect", [False, True])
+@pytest.mark.parametrize("probe_raises", [False, True])
+def test_one_shot_changed_or_unreadable_configuration_never_dispatches(
+    fake_clients, url, options, after_connect, probe_raises
+):
+    def check():
+        if after_connect and not fake_clients:
+            return True
+        if probe_raises:
+            raise RuntimeError("storage unavailable")
+        return False
+
+    result = call_tool_sync(url, None, "t", {}, config_check = check, **options)
+    assert result.startswith("Error:")
+    assert "MCP server was updated or removed before the call" in result
+    if after_connect:
+        assert len(fake_clients) == 1
+        assert fake_clients[0].calls == []
+        assert _settled(fake_clients[0]) == 1
+    else:
+        assert fake_clients == []
