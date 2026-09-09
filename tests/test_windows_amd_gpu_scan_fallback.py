@@ -656,6 +656,41 @@ def _existing_llama_dir(tmp_path: Path) -> Path:
     return path
 
 
+def _studio_home_dir(tmp_path: Path) -> Path:
+    """The --studio-home destination an env-redirect install hands to the child."""
+    path = tmp_path / "studio-home"
+    path.mkdir(exist_ok = True)
+    return path
+
+
+def _studio_repo_dir(tmp_path: Path) -> Path:
+    """The checkout a --local install hands to the child. DISTINCT from the studio home, so a
+    restore that swapped the two would show rather than reading as a pass."""
+    path = tmp_path / "studio-local-repo"
+    path.mkdir(exist_ok = True)
+    return path
+
+
+# The two variables the try does not always assign: UNSLOTH_STUDIO_HOME is set only under redirect
+# mode 'env' and STUDIO_LOCAL_REPO only under --local, and every other mode REMOVES them instead.
+# `default` is what an ordinary install does; `env_redirect_local` is the pair of modes that
+# actually set them, and without it their else-arm restores are never load-bearing -- see
+# test_the_optional_handoffs_are_restored_when_this_run_sets_them.
+_STUDIO_MODES = ("default", "env_redirect_local")
+
+
+def _studio_mode_lines(tmp_path: Path, studio_mode: str) -> list[str]:
+    if studio_mode == "default":
+        return [
+            "$StudioLocalInstall = $false; $RepoRoot = $null",
+            "$StudioRedirectMode = 'none'; $StudioHome = $null",
+        ]
+    return [
+        f"$StudioLocalInstall = $true; $RepoRoot = '{_studio_repo_dir(tmp_path)}'",
+        f"$StudioRedirectMode = 'env'; $StudioHome = '{_studio_home_dir(tmp_path)}'",
+    ]
+
+
 def _caller_env_report() -> str:
     """PowerShell that reports each saved variable's value and whether it exists at all."""
     return "\n".join(
@@ -690,25 +725,31 @@ def _run_handoff_lifecycle(
     bails: bool = False,
     with_llama_cpp_dir: bool = False,
     caller_env: str = "all",
+    studio_mode: str = "default",
 ) -> dict:
     assert not (bails and with_llama_cpp_dir), "the bail and the success path are exclusive"
+    assert studio_mode in _STUDIO_MODES, studio_mode
     present = _present_names(caller_env)
     call = "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs"
     block = _handoff_lifecycle_block()
     # Loudly: a silent miss leaves the probe unrun and every assertion reading
     # "<never ran>" with nothing saying why.
     assert call in block, "install.ps1 no longer makes the setup call this harness replaces"
-    body = block.replace(
-        call,
-        "throw 'setup exploded'"
-        if fails
-        else (
-            "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF; "
-            # Read at the same point, so it is what the child would inherit rather than what
-            # the finally later leaves behind.
-            "$script:SeenLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR"
-        ),
+    # Read at the point of the call, so these are what the child would inherit rather than what
+    # the finally later leaves behind. Recorded on the failure path too, before the throw: the
+    # environment the child would have seen is the same either way, and a case that claims to
+    # dirty a variable should be able to prove it whichever way the setup call ends.
+    probe = (
+        "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF; "
+        "$script:SeenLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR; "
+        # Test-Path, not the bare value: these two are REMOVED rather than assigned in the
+        # default modes, and "absent" has to be distinguishable from "assigned empty".
+        "$script:SeenStudioHome = $(if (Test-Path Env:UNSLOTH_STUDIO_HOME) "
+        "{ $env:UNSLOTH_STUDIO_HOME } else { $null }); "
+        "$script:SeenLocalRepo = $(if (Test-Path Env:STUDIO_LOCAL_REPO) "
+        "{ $env:STUDIO_LOCAL_REPO } else { $null })"
     )
+    body = block.replace(call, probe + ("; throw 'setup exploded'" if fails else ""))
     script = tmp_path / "handoff.ps1"
     script.write_text(
         "\n".join(
@@ -721,8 +762,7 @@ def _run_handoff_lifecycle(
                 # Installer inputs the block reads. Undefined, they throw under
                 # ErrorActionPreference Stop, the catch swallows it, and the probe never runs.
                 "$PackageName = 'unsloth'; $SkipTorch = $false; $TauriMode = $false",
-                "$StudioLocalInstall = $false; $RepoRoot = $null",
-                "$StudioRedirectMode = 'none'; $StudioHome = $null",
+                *_studio_mode_lines(tmp_path, studio_mode),
                 (
                     f"$WithLlamaCppDir = '{tmp_path / 'no-such-llama.cpp'}'"
                     if bails
@@ -744,6 +784,7 @@ def _run_handoff_lifecycle(
                 "function Write-ApplicationControlBlocked { param($Message, $Detail) }",
                 "function Exit-InstallFailure { param($Message) 1 }",
                 "$script:SeenByChild = '<never ran>'; $script:SeenLlamaCppDir = '<never ran>'",
+                "$script:SeenStudioHome = '<never ran>'; $script:SeenLocalRepo = '<never ran>'",
                 "$script:BlockError = $null",
                 # Read right after the setup call; null makes the block return early.
                 "$script:ManagedUnslothCliExit = 0",
@@ -760,6 +801,8 @@ def _run_handoff_lifecycle(
                 "@{",
                 "  seen_by_child = $script:SeenByChild",
                 "  seen_llama_cpp_dir = $script:SeenLlamaCppDir",
+                "  seen_studio_home = $script:SeenStudioHome",
+                "  seen_local_repo = $script:SeenLocalRepo",
                 "  block_error = $script:BlockError",
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
@@ -831,6 +874,85 @@ def test_the_caller_environment_survives_the_setup_call(
     assert out["after"] == inherited
     assert out["public"] == "gfx90a", "a user's own override must come back untouched"
     _assert_caller_env_restored(out, _present_names(caller_env), "the setup call")
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
+)
+@pytest.mark.parametrize("fails", [False, True], ids = ["setup_ok", "setup_throws"])
+def test_the_optional_handoffs_are_restored_when_this_run_sets_them(tmp_path, fails, caller_env):
+    """UNSLOTH_STUDIO_HOME and STUDIO_LOCAL_REPO are the two the try does not always assign, and
+    the case above never made it assign them.
+
+    The block sets UNSLOTH_STUDIO_HOME only under redirect mode 'env' and STUDIO_LOCAL_REPO only
+    under --local; every other mode takes the `Remove-Item` arm instead. The runs above hard-code
+    mode 'none' and no local install, so for these two the try LEFT THE VARIABLE ABSENT, and the
+    finally's else arm -- the `Remove-Item` that a caller who never had the variable depends on --
+    had nothing to undo. Deleting that arm outright was invisible: the variable was already gone.
+    Every other saved variable is assigned unconditionally in the try, so the same deletion shows
+    up there immediately; these two were the only pair with the hole.
+
+    So this drives the modes that really do set them, which puts a value the caller never had into
+    the environment and makes the removal load-bearing. Both setup outcomes, because the failure
+    path is the one that rolls back and retries in the caller's own shell.
+
+    The two seen_* assertions are what stop this decaying back into the case it replaces: if a
+    later edit stops the block assigning either variable, this says so instead of quietly going
+    green again on an undirtied restore."""
+    out = _run_handoff_lifecycle(
+        tmp_path,
+        arch = "gfx1151",
+        inherited = None,
+        fails = fails,
+        caller_env = caller_env,
+        studio_mode = "env_redirect_local",
+    )
+    assert out["seen_studio_home"] == str(
+        _studio_home_dir(tmp_path)
+    ), "the env-redirect install did not hand its studio home to the child"
+    assert out["seen_local_repo"] == str(
+        _studio_repo_dir(tmp_path)
+    ), "the --local install did not hand its repo to the child"
+    _assert_caller_env_restored(out, _present_names(caller_env), "the env-redirect local install")
+
+
+def test_every_save_sits_above_the_handoff_try():
+    """Ordering, not just membership: a save that drifts INSIDE the try is a live hazard.
+
+    test_every_saved_variable_in_the_block_is_covered compares SETS, so moving
+    `$previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME` down next to its assignment still
+    matches. Nothing at runtime catches it either: the harness's injected failure is the setup
+    call and the --with-llama-cpp-dir bail is the missing directory, and both sit BELOW where such
+    a save would land, so the flag is always bound by the time the finally runs. The case that
+    bites is a throw ABOVE it -- Get-ExpectedTorchFlavorTag on the second statement of the try is
+    the real one -- which leaves $hadPrevious* unbound, hence $null, hence the else arm, and the
+    finally removes a value the caller owned. Only the save's POSITION rules that out, and only
+    for the saves that sit above every statement that can throw.
+
+    The older order check, in test_installer_restores_the_private_handoff_after_setup, covers the
+    ROCm handoff alone. This covers all fifteen, and the set assertion keeps it from passing
+    vacuously if the regex or the anchor stops matching."""
+    block = _handoff_lifecycle_block()
+    assert block.count("\n    try {") == 1, "the block no longer has exactly one handoff try"
+    try_at = block.index("\n    try {")
+    saves = list(re.finditer(r"\$previous(\w+) = \$env:(\w+)", block))
+    flags = list(re.finditer(r"\$hadPrevious(\w+) = \(\$null -ne \$previous\w+\)", block))
+    assert {m.group(2) for m in saves} == {name for name, _ in _CALLER_ENV} | {HANDOFF}
+    assert len(flags) == len(saves), (
+        f"{len(saves)} saves but {len(flags)} $hadPrevious flags; a save without its flag "
+        "restores through an unbound $null and takes the remove arm"
+    )
+    for m in saves:
+        assert m.start() < try_at, (
+            f"the save of {m.group(2)} sits inside the try, so anything that throws above it "
+            "leaves $hadPrevious unbound and the finally removes a value the caller owned"
+        )
+    for m in flags:
+        assert m.start() < try_at, (
+            f"$hadPrevious{m.group(1)} is bound inside the try, so a throw above it leaves the "
+            "flag $null and the finally takes the remove arm against a caller that had a value"
+        )
 
 
 def test_every_saved_variable_in_the_block_is_covered():
