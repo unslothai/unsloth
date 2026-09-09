@@ -23,6 +23,17 @@ _UNKNOWN = object()
 
 # In-place mutators: `{{ catalog.append(tools) }}` renders "None", so the argument
 # reaches the receiver but never the output.
+# Methods whose result is a number, so nothing of the receiver or the arguments
+# survives into the rendered value. The `length` and `count` FILTERS are already
+# excluded by `_is_payload`; these are the method spellings.
+_SCALAR_RETURNING_METHODS = frozenset({"count", "index"})
+
+# How many nested activations of one macro to simulate. A schema formatter that
+# recurses over nested parameter objects reaches its catalog a level or two down, and
+# refusing at the first repeat reported those templates as tool-less. The step budget
+# is what stops this from being expensive.
+_RECURSION_LIMIT = 3
+
 _MUTATORS_RETURNING_NONE = frozenset(
     {"append", "extend", "insert", "update", "add", "clear", "sort", "reverse", "discard"}
 )
@@ -283,13 +294,16 @@ def _select(paths, member):
 
 def _template_built(node, state):
     """The member-name shortcuts below read a field off an untracked value, so they
-    only mean anything when the base is one. A base the template constructed is
-    tracked, and its provenance already lives in `aliases`."""
-    if isinstance(node, nodes.Name):
-        origin = state.origins.get(node.name)
-        return origin is not None and origin[:-1] in state.constructed
-    base = node.node.node if _reading_call(node) else node.node
-    return _reference_key(base) in state.constructed
+    only mean anything when the field is one the template wrote itself.
+
+    Asked of the field rather than its container: `{% set ns = namespace() %}
+    {% set ns.role = message.role %}` leaves ns template-built but ns.role external,
+    and the role check on it has to count.
+    """
+    key = state.origins.get(node.name) if isinstance(node, nodes.Name) else _reference_key(node)
+    if key is None or len(key) < 2:
+        return False
+    return key[:-1] in state.constructed and key in state.constructed
 
 
 def _tool_reference(node, state):
@@ -416,12 +430,26 @@ def _known_empty(node, state):
 
 
 def _raises(node):
-    """`{{ raise_exception(...) }}` aborts the render, so the path stops here."""
-    return (
+    """Whether evaluating this expression always reaches `raise_exception`.
+
+    Only the positions certain to be evaluated: the left operand that `and` and `or`
+    short-circuit on, the input of a filter, and every part of a concatenation.
+    `{{ tools|tojson or raise_exception(...) }}` does NOT raise when the catalog is
+    present, so a right operand does not count.
+    """
+    if (
         isinstance(node, nodes.Call)
         and isinstance(node.node, nodes.Name)
         and node.node.name == "raise_exception"
-    )
+    ):
+        return True
+    if isinstance(node, (nodes.And, nodes.Or)):
+        return _raises(node.left)
+    if isinstance(node, (nodes.Filter, nodes.Not)) and node.node is not None:
+        return _raises(node.node)
+    if isinstance(node, nodes.Concat):
+        return any(_raises(item) for item in node.nodes)
+    return False
 
 
 def _is_payload(node):
@@ -467,10 +495,14 @@ def _value_aliases(value, state, active):
     if isinstance(value, nodes.CondExpr):
         return set().union(
             *(
-                _value_aliases(expression, branch, active)
+                set()
+                if _known_empty(expression, branch)
+                else _value_aliases(expression, branch, active)
                 for expression, truth in ((value.expr1, True), (value.expr2, False))
+                if expression is not None
                 for branch in _assume(value.test, truth, state)
-            )
+            ),
+            set(),
         )
     if isinstance(value, nodes.And):
         return set().union(
@@ -514,7 +546,7 @@ def _value_aliases(value, state, active):
             return result
         # append/extend/update and the other in-place mutators return None: the data
         # goes into the receiver, not into the rendered result.
-        if value.node.attr in _MUTATORS_RETURNING_NONE:
+        if value.node.attr in _MUTATORS_RETURNING_NONE | _SCALAR_RETURNING_METHODS:
             return set()
     if isinstance(value, nodes.Call) and isinstance(value.node, nodes.Name):
         if value.node.name in ("namespace", "dict"):
@@ -524,7 +556,9 @@ def _value_aliases(value, state, active):
             return result
         macro = state.macros.get(value.node.name)
         if macro is not None:
-            if macro.name in active:
+            if active.count(macro.name) >= _RECURSION_LIMIT:
+                # Deep enough. A macro that recurses without bound renders nothing
+                # either, so giving up here costs only unbounded recursion.
                 return set()
             local = state.copy(scoped = True)
             parameters = [argument.name for argument in macro.args]
@@ -577,7 +611,7 @@ def _value_aliases(value, state, active):
                     )
             _replace(local.aliases, ("kwargs",), extra_keywords)
             # The macro's own names stay live: nothing outside it constrains its body.
-            emits, children = _scan(macro.body, local, active | {macro.name}, tail = _names(macro))
+            emits, children = _scan(macro.body, local, (*active, macro.name), tail = _names(macro))
             # A namespace write inside a macro escapes it, so the caller sees it:
             # {% macro load() %}{% set ns.catalog = tools %}{% endmacro %}{{ load() }}
             # leaves the catalog in ns. _export_scope already knows which of a
@@ -640,7 +674,11 @@ def _bind(
             if isinstance(value, (nodes.Name, nodes.Getattr, nodes.Getitem))
             else None
         )
-        if _constructs_object(value):
+        if isinstance(value, nodes.Const):
+            # `{% set ns.role = 'tool' %}` writes a literal, so the field is the
+            # template's own and a role check on it means nothing.
+            state.constructed.add(key)
+        elif _constructs_object(value):
             # The replacement populates its own members, so the old subtree goes
             # first: otherwise `{% set w={'message': message} %}` keeps the previous
             # literal's `w.message` marked template-built while it now holds input.
@@ -675,11 +713,30 @@ def _bind(
             state.origins.pop(target.name, None)
         # `{% set render = show %}` hands the name the macro, so calling it runs the
         # same body. _bind_paths has already dropped any macro under this name.
-        if isinstance(value, nodes.Name) and value.name in state.macros:
-            state.macros[target.name] = state.macros[value.name]
+        # A conditional picks one of its arms, and either may be a macro.
+        for candidate in _macro_sources(value):
+            macro = state.macros.get(candidate)
+            if macro is not None:
+                state.macros[target.name] = macro
+                break
     truth = _constant_truth(value, source) if value is not None else None
     if isinstance(target, nodes.Name) and truth is not None:
         state.facts[repr(nodes.Name(target.name, "load"))] = (truth, {target.name})
+
+
+def _macro_sources(value):
+    """The names an assigned expression could evaluate to, for carrying a macro across
+    `{% set render = show %}` and `{% set render = show if flag else other %}`."""
+    if isinstance(value, nodes.Name):
+        return [value.name]
+    if isinstance(value, nodes.CondExpr):
+        return [
+            name
+            for arm in (value.expr1, value.expr2)
+            if arm is not None
+            for name in _macro_sources(arm)
+        ]
+    return []
 
 
 def _mark_constructed(key, value, state):
@@ -798,6 +855,20 @@ def _mutate(call, state, active):
     elif removed is not None:
         # pop/remove/discard take the value back out, so its provenance goes too.
         _replace(state.aliases, (*key, removed), set())
+        if isinstance(removed, int) and not isinstance(removed, bool):
+            # A list closes the gap, so everything after the hole moves down one.
+            shifted = {
+                alias
+                for alias in state.aliases
+                if alias[: len(key)] == key
+                and len(alias) > len(key)
+                and isinstance(alias[len(key)], int)
+                and alias[len(key)] > removed
+            }
+            state.aliases.difference_update(shifted)
+            state.aliases.update(
+                (*key, alias[len(key)] - 1, *alias[len(key) + 1 :]) for alias in shifted
+            )
     else:
         state.aliases.update((*key, *suffix) for suffix in paths)
     if key[0] not in state.assigned:
@@ -986,11 +1057,17 @@ def _scan_loop(node, state, active, guarded, tail):
     # A filter can reject every item of a literal iterable, in which case the body
     # never runs and Jinja takes the else. Only an unfiltered literal is guaranteed
     # to iterate.
-    if not literal or (node.test is not None and else_reachable) or finished:
-        emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded, inner_tail)
+    # An else arm reached after a break must see the mutations that path already made,
+    # so it is scanned from each parked state as well as from the pre-loop one.
+    entries = []
+    if not literal or (node.test is not None and else_reachable):
+        entries.append(state)
+    entries.extend(finished)
+    for entry in entries:
+        emits, children = _scan(node.else_, entry.copy(scoped = True), active, guarded, inner_tail)
         if emits:
             return True, []
-        states.extend(_export_scope(state, child) for child in children)
+        states.extend(_export_scope(entry, child) for child in children)
     return False, states + finished
 
 
@@ -1018,6 +1095,12 @@ def _scan(
                 # does not, and a mutating call lands before the next statement.
                 aborted = False
                 for value in node.nodes:
+                    if _raises(value):
+                        # Checked first: the raise happens before this expression's
+                        # own payload would be rendered, not after it.
+                        _mutate(value, current, active)
+                        aborted = True
+                        break
                     if (
                         _is_payload(value)
                         and (guarded or _value_aliases(value, current, active))
@@ -1025,9 +1108,6 @@ def _scan(
                     ):
                         return True, []
                     _mutate(value, current, active)
-                    if _raises(value):
-                        aborted = True
-                        break
                 if aborted:
                     # The render stops here, so this path reaches no later output.
                     continue
@@ -1140,7 +1220,7 @@ def _analyse_template(template: str) -> bool:
         return False
     try:
         tree = _ENVIRONMENT.parse(template)
-        emits, _ = _scan(tree.body, _State({("tools",), ("tool_calls",)}), set())
+        emits, _ = _scan(tree.body, _State({("tools",), ("tool_calls",)}), ())
         return emits
     except Exception:
         # Fail closed. Besides the expected TemplateSyntaxError and _AnalysisLimit, a

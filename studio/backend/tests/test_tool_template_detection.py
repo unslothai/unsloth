@@ -1105,3 +1105,73 @@ def test_reordering_a_list_over_approximates_rather_than_losing_the_catalog():
 )
 def test_round_ten_leftovers_now_closed(template, expected):
     assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3971620568: an arm selected only where the value is proved empty.
+        ("{{ tools if not tools else [] }}", False),
+        ("{{ tools if tools else [] }}", True),
+        ("{{ [] if not tools else tools }}", True),
+        # 3971620577: recursion is simulated to a bounded depth.
+        (
+            "{% macro show(n,c) %}{% if n %}{{ show(n-1,c) }}{% else %}{{ c|tojson }}"
+            "{% endif %}{% endmacro %}{{ show(1,tools) }}",
+            True,
+        ),
+        (
+            "{% macro show(n,c) %}{% if n %}{{ show(n-1,c) }}{% else %}plain{% endif %}"
+            "{% endmacro %}{{ show(1,tools) }}",
+            False,
+        ),
+        ("{% macro f(c) %}{{ f(c) }}{% endmacro %}{{ f(tools) }}", False),
+        # 3971620584: a macro chosen through an expression is still that macro.
+        (
+            "{% macro show() %}{{ tools|tojson }}{% endmacro %}"
+            "{% set render = show if flag else show %}{{ render() }}",
+            True,
+        ),
+        (
+            "{% macro show() %}plain{% endmacro %}{% set render = show if flag else show %}"
+            "{{ render() }}",
+            False,
+        ),
+        # 3971620595: an else arm reached after break keeps that path's mutations.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% for x in [1] %}{% set ns.catalog=tools %}"
+            "{% break %}{% else %}{{ ns.catalog|tojson }}{% endfor %}",
+            True,
+        ),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% for x in [1] %}{% break %}{% else %}"
+            "{{ ns.catalog|tojson }}{% endfor %}",
+            False,
+        ),
+        # 3971620599: template-built is asked of the field, not just its container.
+        (
+            "{% set ns=namespace() %}{% set ns.role=message.role %}"
+            "{% if ns.role == 'tool' %}{{ message.content }}{% endif %}",
+            True,
+        ),
+        ("{% set ns=namespace(role='tool') %}{% if ns.role == 'tool' %}plain{% endif %}", False),
+        (
+            "{% set ns=namespace() %}{% set ns.role='tool' %}{% if ns.role == 'tool' %}plain"
+            "{% endif %}",
+            False,
+        ),
+        # 3971620605: a scalar-returning method reduces its input.
+        ("{{ tools.count(tools[0]) }}", False),
+        # 3971620613: an indexed removal shifts the later indices down.
+        ("{% set c=[[],tools] %}{% do c.pop(0) %}{{ c[0]|tojson }}", True),
+        ("{% set c=[[],tools] %}{% do c.pop(0) %}{{ c[1]|tojson }}", False),
+        ("{% set c=[tools,[]] %}{% do c.pop(1) %}{{ c[0]|tojson }}", True),
+        # 3971620621: a raise in an always-evaluated position aborts the expression.
+        ("{{ raise_exception('unsupported') or tools|tojson }}", False),
+        ("{{ tools|tojson or raise_exception('never') }}", True),
+        ("{{ raise_exception('always') }}{{ tools|tojson }}", False),
+        ("{{ tools|tojson }}{{ raise_exception('after') }}", True),
+    ],
+)
+def test_round_fifteen_paths(template, expected):
+    assert template_supports_tools(template) is expected
