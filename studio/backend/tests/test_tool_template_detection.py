@@ -517,3 +517,97 @@ def test_named_template_containers_reach_the_classifier_without_raising(template
     yields nothing, so a named-template map or list reaches detect_reasoning_flags."""
     from core.inference.llama_cpp import detect_reasoning_flags
     assert detect_reasoning_flags(template, "vendor/named")["supports_tools"] is False
+
+
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        # A filter can reject every item of a literal iterable, so the body never runs
+        # and Jinja takes the else.
+        (
+            "{% if tools %}{% for x in [1] if false %}x{% else %}{{ tools|tojson }}"
+            "{% endfor %}{% endif %}",
+            True,
+        ),
+        ("{% for x in [1] if true %}{{ tools|tojson }}{% else %}plain{% endfor %}", True),
+        # break and continue end the path: nothing after them in the body runs.
+        ("{% for x in [1] %}{% break %}{{ tools|tojson }}{% endfor %}", False),
+        ("{% for x in [1] %}{% continue %}{{ tools|tojson }}{% endfor %}", False),
+        ("{% for x in [1] %}{{ tools|tojson }}{% break %}{% endfor %}", True),
+        # Binding a name to a container does not copy it, so a mutation through either
+        # name is visible through both.
+        (
+            "{% set catalog=[] %}{% set alias=catalog %}{% do alias.extend(tools) %}"
+            "{{ catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set catalog=[] %}{% set alias=catalog %}{% do catalog.extend(tools) %}"
+            "{{ alias|tojson }}",
+            True,
+        ),
+        (
+            "{% set catalog=[] %}{% set alias=catalog %}{% do alias.extend(tools) %}"
+            "{% do catalog.clear() %}{{ catalog|tojson }}",
+            False,
+        ),
+        # A rebind breaks the sharing.
+        (
+            "{% set catalog=[] %}{% set alias=catalog %}{% set alias=[] %}"
+            "{% do alias.extend(tools) %}{{ catalog|tojson }}",
+            False,
+        ),
+        # A field named tool_calls on an object the template built itself proves
+        # nothing; on an untracked message value it still does.
+        ("{% set ns=namespace(tool_calls='plain') %}{{ ns.tool_calls }}", False),
+        ("{% set holder={'tool_calls': 'plain'} %}{{ holder.tool_calls }}", False),
+        ("{{ message.tool_calls|tojson }}", True),
+        ("{% set ns=namespace(role='tool') %}{% if ns.role == 'tool' %}plain{% endif %}", False),
+        ("{% if message.role == 'tool' %}{{ message.content }}{% endif %}", True),
+        # A subscript whose key is a name bound to a constant selects one field.
+        (
+            "{% set key='label' %}{% set wrapper={'catalog':tools,'label':'plain'} %}"
+            "{{ wrapper[key] }}",
+            False,
+        ),
+        (
+            "{% set key='catalog' %}{% set wrapper={'catalog':tools,'label':'plain'} %}"
+            "{{ wrapper[key]|tojson }}",
+            True,
+        ),
+        # {% call %} renders through the macro, not through the caller block.
+        (
+            "{% macro render(catalog, caller=None) %}{{ catalog|tojson }}{% endmacro %}"
+            "{% if tools %}{% call render(tools) %}{% endcall %}{% endif %}",
+            True,
+        ),
+        (
+            "{% macro render(catalog, caller=None) %}plain{% endmacro %}"
+            "{% if tools %}{% call render(tools) %}{% endcall %}{% endif %}",
+            False,
+        ),
+    ],
+)
+def test_reviewed_round_seven_paths_match_rendered_catalog(template, expected):
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    render = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"]).from_string(
+        template
+    )
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+    output = render.render(
+        tools = tools,
+        messages = [{"role": "user", "content": "Hi"}],
+        message = {"role": "tool", "content": "get_weather said sunny", "tool_calls": tools},
+    )
+    assert ("get_weather" in output) is expected
+    assert template_supports_tools(template) is expected
+    assert detect_reasoning_flags(template)["supports_tools"] is expected
+
+
+def test_an_unresolved_subscript_key_still_selects_every_field():
+    """The constant-key resolution narrows a subscript only when the key is known.
+    An unknown key has to keep selecting every field, or a catalog reached through a
+    computed key would be missed."""
+    template = "{% set wrapper={'catalog':tools,'label':'plain'} %}{{ wrapper[key]|tojson }}"
+    assert template_supports_tools(template) is True

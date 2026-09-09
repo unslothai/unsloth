@@ -33,6 +33,16 @@ class _State:
     facts: dict = field(default_factory = dict)
     assigned: set = field(default_factory = set)
     mutated: set = field(default_factory = set)
+    # Objects the template built itself, so a field named `tool_calls` or `role` on
+    # them carries no meaning. Survives a scope change: a namespace built outside a
+    # loop is still template-built inside it.
+    constructed: set = field(default_factory = set)
+    # Names bound to a constant, so a subscript written through one resolves to a
+    # single field rather than to every field.
+    consts: dict = field(default_factory = dict)
+    # name -> the name it shares a container with, so a mutation through one alias
+    # is seen through the others.
+    same: dict = field(default_factory = dict)
     budget: list = field(default_factory = lambda: [8192])
 
     def copy(self, scoped = False):
@@ -42,6 +52,9 @@ class _State:
             self.facts.copy(),
             set() if scoped else self.assigned.copy(),
             set() if scoped else self.mutated.copy(),
+            self.constructed.copy(),
+            self.consts.copy(),
+            self.same.copy(),
             self.budget,
         )
 
@@ -52,6 +65,19 @@ def _field(node):
     if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
         return node.arg.value
     return _UNKNOWN
+
+
+def _member(node, state):
+    """`_field`, plus subscripts whose key is a name bound to a constant."""
+    member = _field(node)
+    if (
+        member is _UNKNOWN
+        and isinstance(node, nodes.Getitem)
+        and isinstance(node.arg, nodes.Name)
+        and node.arg.name in state.consts
+    ):
+        return state.consts[node.arg.name]
+    return member
 
 
 def _reference_key(node):
@@ -145,9 +171,18 @@ def _select(paths, member):
     }
 
 
+def _template_built(node, state):
+    """The member-name shortcuts below read a field off an untracked value, so they
+    only mean anything when the base is one. A base the template constructed is
+    tracked, and its provenance already lives in `aliases`."""
+    return _reference_key(node.node) in state.constructed
+
+
 def _tool_reference(node, state):
     key = _reference_key(node)
-    return key in state.aliases or _field(node) == "tool_calls"
+    if key in state.aliases:
+        return True
+    return _field(node) == "tool_calls" and not _template_built(node, state)
 
 
 def _positive_test(node, state):
@@ -173,7 +208,10 @@ def _positive_test(node, state):
         operand = node.ops[0]
         if operand.op == "eq":
             return any(
-                _field(role) == "role" and isinstance(value, nodes.Const) and value.value == "tool"
+                _field(role) == "role"
+                and not _template_built(role, state)
+                and isinstance(value, nodes.Const)
+                and value.value == "tool"
                 for role, value in ((node.expr, operand.expr), (operand.expr, node.expr))
             )
     return False
@@ -204,9 +242,9 @@ def _value_aliases(value, state, active):
     if isinstance(value, nodes.Name):
         return {key[1:] for key in state.aliases if key[0] == value.name}
     if isinstance(value, (nodes.Getattr, nodes.Getitem)):
-        if _field(value) == "tool_calls":
+        if _field(value) == "tool_calls" and not _template_built(value, state):
             return {()}
-        return _select(_value_aliases(value.node, state, active), _field(value))
+        return _select(_value_aliases(value.node, state, active), _member(value, state))
     if isinstance(value, nodes.Dict):
         result = set()
         for pair in value.items:
@@ -300,9 +338,37 @@ def _bind(
                 _bind_paths(item, _select(paths, index), state)
         return
     _bind_paths(target, _value_aliases(value, source, active), state)
+    key = _reference_key(target)
+    if key is not None:
+        source_key = _reference_key(value) if isinstance(value, nodes.Name) else None
+        state.same.pop(key, None)
+        if _constructs_object(value):
+            state.constructed.add(key)
+        elif source_key is not None and source_key in state.constructed:
+            # Binding one name to another does not copy the container, so both names
+            # now denote the same object.
+            state.constructed.add(key)
+            state.same[key] = state.same.get(source_key, source_key)
+        else:
+            state.constructed.discard(key)
+    if isinstance(target, nodes.Name):
+        if isinstance(value, nodes.Const) and isinstance(value.value, (str, int)):
+            state.consts[target.name] = value.value
+        else:
+            state.consts.pop(target.name, None)
     truth = _constant_truth(value, source) if value is not None else None
     if isinstance(target, nodes.Name) and truth is not None:
         state.facts[repr(nodes.Name(target.name, "load"))] = (truth, {target.name})
+
+
+def _constructs_object(value):
+    if isinstance(value, (nodes.Dict, nodes.List, nodes.Tuple)):
+        return True
+    return (
+        isinstance(value, nodes.Call)
+        and isinstance(value.node, nodes.Name)
+        and value.node.name == "namespace"
+    )
 
 
 def _bind_paths(target, paths, state):
@@ -322,6 +388,12 @@ def _bind_paths(target, paths, state):
         state.mutated.add(key)
 
 
+def _same_object(key, state):
+    """Every name bound to the same container as `key`, `key` included."""
+    root = state.same.get(key, key)
+    return {key, root} | {name for name, other in state.same.items() if other == root}
+
+
 def _mutate(call, state, active):
     if not isinstance(call, nodes.Call) or not isinstance(call.node, nodes.Getattr):
         return
@@ -332,14 +404,17 @@ def _mutate(call, state, active):
     if method not in ("append", "extend", "clear"):
         return
     paths = set().union(*(_value_aliases(arg, state, active) for arg in call.args))
-    if method == "clear":
-        _replace(state.aliases, key, set())
-    elif paths:
-        if method == "append":
-            paths = {(_UNKNOWN, *suffix) for suffix in paths}
-        state.aliases.update((*key, *suffix) for suffix in paths)
-    state.mutated.add(key)
-    _forget(key, state)
+    if method == "append":
+        paths = {(_UNKNOWN, *suffix) for suffix in paths}
+    # Mutation goes through the object, not the name, so every name currently bound
+    # to this container sees it.
+    for target in _same_object(key, state):
+        if method == "clear":
+            _replace(state.aliases, target, set())
+        elif paths:
+            state.aliases.update((*target, *suffix) for suffix in paths)
+        state.mutated.add(target)
+        _forget(target, state)
 
 
 def _export_scope(parent, child):
@@ -417,7 +492,10 @@ def _scan_loop(node, state, active, guarded):
                     _export_scope(parent, child) for child in _assume(node.test, False, local)
                 )
         states = results
-    if not literal:
+    # A filter can reject every item of a literal iterable, in which case the body
+    # never runs and Jinja takes the else. Only an unfiltered literal is guaranteed
+    # to iterate.
+    if not literal or node.test is not None:
         emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded)
         if emits:
             return True, []
@@ -462,6 +540,19 @@ def _scan(
                     return True, []
                 results.extend(children)
                 continue
+            elif isinstance(node, (nodes.Break, nodes.Continue)):
+                # Everything after this in the body is unreachable, so the path stops
+                # here instead of carrying on into the next statement.
+                continue
+            elif isinstance(node, nodes.CallBlock):
+                # {% call macro(...) %}: the body is the caller block, so the generic
+                # handler below would only ever see an empty one. The invocation is
+                # where the catalog actually reaches the output.
+                if _value_aliases(node.call, current, active):
+                    return True, []
+                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                if emits:
+                    return True, []
             elif isinstance(node, nodes.AssignBlock):
                 emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
                 _bind_paths(node.target, {()} if emits else set(), current)
