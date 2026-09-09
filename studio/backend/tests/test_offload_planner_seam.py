@@ -2823,6 +2823,68 @@ def test_a_state_the_layout_cannot_model_stays_in_the_floor(monkeypatch):
     assert seen["kv_bytes_floor"] == attention + state
 
 
+def test_the_cache_callable_is_corrected_like_the_floor_it_replaces(monkeypatch):
+    """``kv_bytes_at`` re-prices the floor at every rung, and the planner takes
+    ``layout.recurrent_bytes`` per slot out of what it returns before adding the
+    same back. The floor and the map are corrected by the state the ESTIMATOR
+    priced, capped by the layout's; the callable went over raw. Where only the
+    layout prices the state (Nemotron-H carries no full_attention_interval, so
+    the estimator prices none) the planner then subtracted a state the callable
+    never held and sized the cache one state per slot UNDER the floor at the
+    requested context, the direction that loses the load. Corrected the same
+    way, the callable agrees with the floor whatever either side priced.
+    """
+    import dataclasses
+
+    from core.inference import offload_planner as planner
+    from core.inference.offload_planner import _measured_cache_at
+
+    state, attention = 512 * MIB, 3 * GIB
+
+    class _Hybrid(_Stub):
+        def _tensor_spill_layout(
+            self,
+            model_path,
+            *,
+            all_shards = False,
+        ):
+            layout = _Stub._tensor_spill_layout(self, model_path, all_shards = all_shards)
+            return None if layout is None else dataclasses.replace(layout, recurrent_bytes = state)
+
+    seen = {}
+    real = planner.plan_placement
+
+    def spy(layout, *args, **kwargs):
+        seen["layout"] = layout
+        seen.update(kwargs)
+        return real(layout, *args, **kwargs)
+
+    monkeypatch.setattr(planner, "plan_placement", spy)
+
+    for priced in (0, state // 2, state, 3 * state):
+        seen.clear()
+        whole = attention + 2 * priced
+
+        def raw(
+            ctx,
+            slots,
+            _w = whole,
+        ):
+            return _w * ctx // 32768 * slots // 2
+
+        _Hybrid()._planned_tensor_spill(
+            {
+                **_inputs(kv = whole, n_parallel = 2, free_mib = 12 * 1024, kv_bytes_at = raw),
+                "kv_recurrent_bytes_per_slot": priced,
+            },
+            env = {"UNSLOTH_SMART_OFFLOAD": "1"},
+        )
+        opts, layout = seen["opts"], seen["layout"]
+        cap = min(priced, state)
+        assert _measured_cache_at(layout, opts, 32768, 2) == seen["kv_bytes_floor"], priced
+        assert _measured_cache_at(layout, opts, 16384, 1) == raw(16384, 1) - cap, priced
+
+
 def test_the_launch_cache_type_reaches_the_planner_as_a_mode(monkeypatch):
     """A quantised main cache is priced as one, with the type in force named, so
     the f16 product cannot override the smaller measured floor; an f16 launch

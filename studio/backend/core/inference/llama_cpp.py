@@ -28536,6 +28536,23 @@ class LlamaCppBackend:
         )
         overhead_per_device = max(overhead_per_device, _reserve_floor)
 
+        # The callable is the estimator's figure, and the planner takes the LAYOUT's
+        # state per slot out of it before adding that back. The two states differ
+        # wherever one side cannot price the model (a KDA state the layout does not
+        # read, a Nemotron-H state the estimator does not), so the callable is
+        # corrected exactly as the floor and the map are and then carries the
+        # layout's state, which is the one the planner subtracts.
+        _kv_at_raw = inputs.get("kv_bytes_at")
+        _layout_state = max(0, layout.recurrent_bytes)
+        kv_bytes_at = (
+            (
+                lambda _c, _s, _f = _kv_at_raw: _attention_floor(_f(_c, _s), _s)
+                + _layout_state * max(1, int(_s))
+            )
+            if callable(_kv_at_raw)
+            else None
+        )
+
         decode_threads = _spilled_decode_threads(
             inputs.get("n_threads"),
             extra_args,
@@ -28588,7 +28605,7 @@ class LlamaCppBackend:
                 # The same measurement at any context, so the ladder re-prices the
                 # cache instead of scaling the floor. Absent from a caller that did
                 # not supply it, which leaves the planner's own rules in place.
-                kv_bytes_at = inputs.get("kv_bytes_at"),
+                kv_bytes_at = kv_bytes_at,
                 draft_bytes = draft_bytes,
                 draft_droppable = draft_droppable,
                 cache_ram_default_mib = int(inputs.get("cache_ram_default_mib") or 0),
