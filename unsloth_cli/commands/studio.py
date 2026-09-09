@@ -1388,14 +1388,9 @@ def _enforce_password_change_before_exposure(
                 _pbkdf2_hex(candidate, password_salt.encode("utf-8")), password_hash
             )
 
-        # Ctrl+C aborts a TUNNEL launch only; on a raw bind it declines the prompt, because that launch worked before this gate existed.
-        refusal = (
-            "Ctrl+C to abort."
-            if tunnel_will_start
-            else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
-        )
         typer.echo(
-            f"Unsloth Studio will be reachable {exposure}, so set a password now. {refusal}",
+            f"Unsloth Studio will be reachable {exposure}, so set a password now. "
+            "Ctrl+C to abort.",
             err = True,
         )
         try:
@@ -1416,25 +1411,12 @@ def _enforce_password_change_before_exposure(
             os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
-            if tunnel_will_start:
-                typer.echo(
-                    "\nError: password change aborted; refusing to publish Unsloth "
-                    "on a public URL with the default admin password. Re-run and "
-                    "set a password, or launch without --secure/--cloudflare.",
-                    err = True,
-                )
-                raise typer.Exit(1)
-            # A raw bind is not a publication, so Ctrl+C returns it to pre-prompt behaviour, as run.py's gate does.
             typer.echo(
-                "\nWarning: password change aborted, so Unsloth is starting with "
-                "the auto-generated admin password on a bind that is reachable "
-                f"from the network. {_deadline_sentence()} Change it by logging "
-                "in, with `unsloth studio reset-password`, or by passing "
-                "--password / UNSLOTH_STUDIO_PASSWORD.",
+                "\nError: password change aborted; refusing to expose Unsloth "
+                "with the default admin password. Re-run and set a password.",
                 err = True,
             )
-            os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
-            return
+            raise typer.Exit(1)
         _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password)
         typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
     finally:

@@ -463,14 +463,8 @@ def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
 
 
-def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
-    """Ctrl+C must not turn a working launch into no Studio.
-
-    `docker/studio_run.sh` execs `unsloth studio -H 0.0.0.0` and only supplies a
-    password when the initial-password file is non-empty, so a fresh
-    `docker run -it` meets this prompt and aborting would stop a container that
-    starts today. It proceeds on the bootstrap deadline it already had.
-    """
+def test_refusing_the_prompt_on_a_raw_bind_aborts(monkeypatch):
+    """Ctrl+C / EOF is an explicit refusal, even for a raw bind."""
     _patch_streams(monkeypatch, tty = True)
     _patch_seeded_admin(monkeypatch, requires_change = True)
 
@@ -482,8 +476,7 @@ def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
         lambda **_kw: False,  # Ctrl+C / EOF
     )
 
-    # proceed = True, and the bootstrap credential is still injected as before.
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (False, False)
 
 
 def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
@@ -711,7 +704,7 @@ def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
         os.close(master)
         os.close(slave)
 
-    assert changed is False
+    assert changed is None
     assert "No response at the terminal" in out.getvalue()
 
 
@@ -773,10 +766,10 @@ def test_the_gate_deadlines_a_raw_bind_prompt_and_never_the_tunnel(monkeypatch):
     assert seen["first_key_timeout"] is None
 
 
-def test_a_refusal_does_not_promise_a_deadline_that_is_disabled(monkeypatch):
+def test_an_unattended_fallback_does_not_promise_a_disabled_deadline(monkeypatch):
     """With TIMEOUT=0 nothing will shut this instance down; do not say otherwise.
 
-    The refusal path proceeds on purpose (the launch worked before the prompt
+    The unattended path proceeds on purpose (the launch worked before the prompt
     existed), but must not tell the operator a deadline will rescue them when
     `should_arm_bootstrap_timeout` will not arm one: that is the single sentence
     they would act on.
@@ -787,7 +780,7 @@ def test_a_refusal_does_not_promise_a_deadline_that_is_disabled(monkeypatch):
 
     from auth import terminal_prompt
 
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: None)
 
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
     err = stderr.getvalue()
@@ -795,14 +788,14 @@ def test_a_refusal_does_not_promise_a_deadline_that_is_disabled(monkeypatch):
     assert "shuts down after the bootstrap deadline" not in err, err
 
 
-def test_a_refusal_still_names_the_deadline_when_one_will_arm(monkeypatch):
+def test_an_unattended_fallback_names_the_deadline_when_one_will_arm(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
     stderr = _patch_streams(monkeypatch, tty = True)
     _patch_seeded_admin(monkeypatch, requires_change = True)
 
     from auth import terminal_prompt
 
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: None)
 
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
     err = stderr.getvalue()
