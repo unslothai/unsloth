@@ -176,6 +176,22 @@ class TestArgumentsAreTakenSeriously:
         assert "--check" in error
         assert "always rewrites" in error
 
+    def test_it_does_not_offer_ruff_as_a_read_only_equivalent(self):
+        # This script is enforce_kwargs_spacing --pre, then ruff, then
+        # enforce_kwargs_spacing again. `ruff format --check` covers the middle
+        # pass only, so a file can pass it cleanly and still be rewritten here.
+        # Sending people there would rebuild, in the error message, the same
+        # false green the argument handling above was fixed to stop producing.
+        _, error = parse_files(["--check", "any.py"])
+        assert error is not None
+        lowered = error.lower()
+        # Naming ruff is fine. Presenting it as the substitute is not, so if it
+        # is named it has to be disclaimed in the same breath.
+        if "ruff" in lowered:
+            assert "not an equivalent" in lowered
+        # And an honest alternative is offered rather than a partial one.
+        assert "diff" in lowered
+
     @pytest.mark.parametrize("flag", ["-q", "--diff", "--fix", "--unknown"])
     def test_options_are_refused_by_shape_not_by_a_list(self, flag):
         _, error = parse_files([flag])

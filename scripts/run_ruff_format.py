@@ -76,8 +76,11 @@ def parse_files(argv: list[str]) -> tuple[list[str], str | None]:
         if any(opt in ("--check", "--diff") for opt in options):
             message += (
                 "\n  There is no check mode: this script always rewrites the files"
-                " it is given.\n  For a read-only check, run"
-                " `python -m ruff format --check FILE` instead."
+                " it is given, and `ruff format --check` is not an equivalent."
+                "\n  It checks the middle one of three passes, so a clean ruff says"
+                " nothing about the kwarg-spacing passes either side of it."
+                "\n  To preview a run, copy the file aside, run this script on the"
+                " copy, and diff the two."
             )
         return [], f"{message}\n{USAGE}"
 
