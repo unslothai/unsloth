@@ -2438,6 +2438,8 @@ type ChatRuntimeStore = {
   /** What the running llama-server does about exact concurrency. "off" until a status says
    *  otherwise, so a backend that does not publish the field never claims the guarantee. */
   loadedExactConcurrency: ExactConcurrencyState;
+  /** The exact setting the active load asked for (auto/off/on), for a rollback to resend. */
+  loadedRequestedExactConcurrency: string | null;
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
@@ -4086,6 +4088,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   loadedExactConcurrency: "off",
+  loadedRequestedExactConcurrency: null,
   customContextLength: null,
   loadedCustomContextLength: null,
   defaultChatTemplate: null,
@@ -4995,6 +4998,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       loadedExactConcurrency: "off",
+      loadedRequestedExactConcurrency: null,
       customContextLength: null,
       loadedCustomContextLength: null,
       defaultChatTemplate: null,

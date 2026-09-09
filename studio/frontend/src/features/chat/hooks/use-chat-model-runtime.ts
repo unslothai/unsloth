@@ -1996,6 +1996,8 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              loadedRequestedExactConcurrency:
+                loadResponse.requested_exact_concurrency ?? null,
               // Keep the click-time value: the echo is the resolved count, and adopting it would pin a blank
               // "server default" control.
               nParallel: committedSlots,
@@ -2123,6 +2125,11 @@ export function useChatModelRuntime() {
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
+                  // The exact setting the PREVIOUS load asked for: a setting saved since the load
+                  // is what the failed switch just tried, and the rollback would fail on it too.
+                  ...(stateBeforeUnload.loadedRequestedExactConcurrency != null
+                    ? { exact_concurrency: stateBeforeUnload.loadedRequestedExactConcurrency }
+                    : {}),
                   n_parallel: stateBeforeUnload.loadedNParallel,
                   // omit unset fields: a null counts as set and would strip the previous server's extras
                   ...(stateBeforeUnload.loadedNBatch != null

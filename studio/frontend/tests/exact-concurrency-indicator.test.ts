@@ -30,6 +30,7 @@ const API_TYPES = read("src/features/chat/types/api.ts");
 const STORE = read("src/features/chat/stores/chat-runtime-store.ts");
 const CHIP = read("src/features/chat/components/exact-concurrency-chip.tsx");
 const CHAT_PAGE = read("src/features/chat/chat-page.tsx");
+const RUNTIME = read("src/features/chat/hooks/use-chat-model-runtime.ts");
 
 test("the three reported states map to themselves", () => {
   assert.equal(normalizeExactConcurrency("on"), "on");
@@ -89,6 +90,30 @@ test("the store holds the state and starts off", () => {
   assert.match(STORE, /loadedExactConcurrency: ExactConcurrencyState;/);
   // Both the initial state and the unload reset.
   assert.equal(STORE.match(/loadedExactConcurrency: "off",/g)?.length, 2);
+});
+
+test("a rollback resends the exact setting the previous load asked for", () => {
+  // The store may have been switched to `on` since that load; an omitted field would
+  // resolve to it and fail the model that was running fine.
+  const request = API_TYPES.slice(
+    API_TYPES.indexOf("export interface LoadModelRequest"),
+    API_TYPES.indexOf("export interface LoadModelResponse"),
+  );
+  assert.match(request, /exact_concurrency\?: string \| null;/);
+  assert.match(STORE, /loadedRequestedExactConcurrency: string \| null;/);
+  assert.equal(STORE.match(/loadedRequestedExactConcurrency: null,/g)?.length, 2);
+  assert.match(
+    APPLIER,
+    /loadedRequestedExactConcurrency: status\.requested_exact_concurrency \?\? null,/,
+  );
+  assert.match(
+    RUNTIME,
+    /loadedRequestedExactConcurrency:\s*loadResponse\.requested_exact_concurrency \?\? null,/,
+  );
+  assert.match(
+    RUNTIME,
+    /exact_concurrency: stateBeforeUnload\.loadedRequestedExactConcurrency/,
+  );
 });
 
 test("every status refresh republishes it, not just a seeded load", () => {

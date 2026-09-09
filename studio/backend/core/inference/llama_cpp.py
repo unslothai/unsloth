@@ -2168,7 +2168,7 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
         )
     if _preempt_ram_disabled_in(args, env = env):
         return "the server's parking is switched off (--preempt-ram 0)"
-    conflicts = _exact.contradicting_args(args)
+    conflicts = _exact.contradicting_args(args) + _exact.contradicting_env(env)
     if conflicts:
         return (
             "the launch line passes "
@@ -7312,6 +7312,8 @@ class LlamaCppBackend:
             and _kv_unified_from_args(args, env = env)
             and _flash_attn_enabled_from_args(args, env = env)
             and not _exact.contradicting_args(args)
+            # The env twins of the CPU placements reach the child however the argv was stripped.
+            and not _exact.contradicting_env(env)
             and bool(server_parks)
             and bool(parking_holds)
         )
@@ -23744,7 +23746,9 @@ class LlamaCppBackend:
                                 # Known now, so the child does not start the mode for it.
                                 _exact_wanted = False
                     # The user's extras are appended last and win by last-arg, so name the flag ourselves.
-                    _exact_conflicts = _exact.contradicting_args(extra_args)
+                    _exact_conflicts = _exact.contradicting_args(
+                        extra_args
+                    ) + _exact.contradicting_env(os.environ)
                     if _exact_conflicts:
                         self._record_load_warning(
                             "Exact concurrency was requested, but the extra arguments "
@@ -25977,6 +25981,26 @@ class LlamaCppBackend:
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
                 if (
+                    _exact_short is not None
+                    and _mtp_will_engage
+                    and not _mtp_active_for_launched_server
+                ):
+                    # Priced before launch with the drafter's state, and the server that came up
+                    # runs without one: judged again for what it parks, or a budget that holds
+                    # every park fails a healthy load.
+                    try:
+                        _exact_short = _exact_parking_shortfall_mib(
+                            _exact_kv_bytes,
+                            args = list(_last_spawn_cmd or cmd)
+                            + [str(a) for a in (extra_args or ())],
+                            env = env,
+                            draft_bytes = 0,
+                            parallel = n_parallel,
+                        )
+                    except Exception:
+                        pass
+                    self._exact_parking_short = _exact_short
+                if (
                     _exact_short is None
                     and getattr(self, "_exact_pool_unknown", False)
                     and _exact.wants_exact(_exact_setting)
@@ -25990,7 +26014,12 @@ class LlamaCppBackend:
                         _fitted_ctx = 0
                     try:
                         _fitted_bytes = _kv_bytes(_fitted_ctx) if _fitted_ctx > 0 else 0
-                        _fitted_draft = _draft_kv_state_bytes(_fitted_ctx)
+                        # No draft state to park on a server that came up without its drafter.
+                        _fitted_draft = (
+                            _draft_kv_state_bytes(_fitted_ctx)
+                            if _mtp_active_for_launched_server
+                            else 0
+                        )
                     except Exception:
                         _fitted_bytes, _fitted_draft = 0, 0
                     if _fitted_draft is None:
@@ -30607,6 +30636,22 @@ class LlamaCppBackend:
         # This turn's park counters, kept across the attempts a tool loop makes: a mutable holder
         # so the nested builders read the latest without a `nonlocal` in every one of them.
         _turn_preempt: dict = {}
+        # Whether the server's own `: recomputed` notice was relayed this turn; a build that only
+        # counts recomputes in its final object has the notice synthesised from the count.
+        _turn_saw_recompute: list = [False]
+
+        def _relay_server_preempt_counts(chunk):
+            """The `preempt` field of a final object: kept for the metadata, and a recompute
+            it counted without the notice is relayed as the notice would have been."""
+            counts = self._server_preempt_counts(chunk)
+            if counts is None:
+                return None
+            _turn_preempt.clear()
+            _turn_preempt.update(counts)
+            if counts.get("recomputes") and not _turn_saw_recompute[0]:
+                _turn_saw_recompute[0] = True
+                return {"type": "preempt", "state": "recomputed", "source": "server"}
+            return None
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -31528,6 +31573,8 @@ class LlamaCppBackend:
                                 # llama-server parked this slot or restored it; nothing is torn down.
                                 _park_event = self._server_park_event(line, preempt_policy)
                                 if _park_event is not None:
+                                    if _park_event.get("state") == "recomputed":
+                                        _turn_saw_recompute[0] = True
                                     yield _park_event
                                 continue
                             if not line.startswith("data: "):
@@ -31543,6 +31590,9 @@ class LlamaCppBackend:
                                 _cu = chunk_data.get("usage")
                                 if _cu:
                                     _iter_usage = _cu
+                                _recompute_event = _relay_server_preempt_counts(chunk_data)
+                                if _recompute_event is not None:
+                                    yield _recompute_event
 
                                 # See the note on the first stream loop: an error chunk has
                                 # no choices, so `continue` below would drop it silently.
@@ -34558,6 +34608,8 @@ class LlamaCppBackend:
                                 # llama-server parked this slot or restored it; nothing is torn down.
                                 _park_event = self._server_park_event(line, preempt_policy)
                                 if _park_event is not None:
+                                    if _park_event.get("state") == "recomputed":
+                                        _turn_saw_recompute[0] = True
                                     yield _park_event
                                 continue
                             if not line.startswith("data: "):
@@ -34574,10 +34626,9 @@ class LlamaCppBackend:
                                 _chunk_usage = chunk_data.get("usage")
                                 if _chunk_usage:
                                     _metadata_usage = _chunk_usage
-                                _chunk_preempt = self._server_preempt_counts(chunk_data)
-                                if _chunk_preempt is not None:
-                                    _turn_preempt.clear()
-                                    _turn_preempt.update(_chunk_preempt)
+                                _recompute_event = _relay_server_preempt_counts(chunk_data)
+                                if _recompute_event is not None:
+                                    yield _recompute_event
                                 # See the note on the first stream loop.
                                 _stream_error = stream_error_from_chunk(chunk_data)
                                 if _stream_error is not None:

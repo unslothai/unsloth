@@ -32,6 +32,15 @@ import routes.inference as inference
 from core.inference import llama_exact as exact
 from core.inference import llama_preemption as preemption_mod
 from core.inference.llama_cpp import LlamaCppBackend
+from .preempt_fakes import (
+    PreemptRecorder,
+    RecordingPolicy,
+    delta,
+    done,
+    finish,
+    run_tool_loop,
+    web_search_tool,
+)
 
 
 class TestARawStreamForwardsTheServersPark:
@@ -155,14 +164,64 @@ class TestARecomputeReachesTheClient:
 
     def test_the_tool_loop_carries_the_counters_too(self):
         source = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-        assert "_turn_preempt.update(_chunk_preempt)" in source
+        assert "_turn_preempt.update(counts)" in source
         assert '"preempt": dict(_turn_preempt) or None' in source
+
+    def test_the_tool_loop_relays_a_recompute_the_server_only_counted(self, monkeypatch):
+        # The final object counts a recompute no notice announced: the client is told once,
+        # from the count, the way the plain generator already does.
+        signal = preemption_mod.PreemptSignal()
+        stream = [delta("x"), delta("y", preempt = {"parks": 1, "recomputes": 1}), finish(), done()]
+        recorder = PreemptRecorder(monkeypatch, [stream], signal = signal)
+        events = run_tool_loop(
+            recorder.backend, signal = signal, policy = RecordingPolicy(), tools = [web_search_tool()]
+        )
+        dicts = [e for e in events if isinstance(e, dict)]
+        recomputed = [
+            e for e in dicts if e.get("type") == "preempt" and e.get("state") == "recomputed"
+        ]
+        assert recomputed == [{"type": "preempt", "state": "recomputed", "source": "server"}]
+        metadata = [e for e in dicts if e.get("type") == "metadata"][-1]
+        assert metadata["preempt"] == {"parks": 1, "recomputes": 1}
+
+    def test_a_notice_the_server_wrote_is_not_relayed_twice(self, monkeypatch):
+        signal = preemption_mod.PreemptSignal()
+        stream = [
+            delta("x"),
+            llama_mod._SERVER_RECOMPUTED_COMMENT + "\n",
+            delta("y", preempt = {"parks": 1, "recomputes": 1}),
+            finish(),
+            done(),
+        ]
+        recorder = PreemptRecorder(monkeypatch, [stream], signal = signal)
+        events = run_tool_loop(
+            recorder.backend, signal = signal, policy = RecordingPolicy(), tools = [web_search_tool()]
+        )
+        recomputed = [
+            e
+            for e in events
+            if isinstance(e, dict) and e.get("type") == "preempt" and e.get("state") == "recomputed"
+        ]
+        assert len(recomputed) == 1
 
 
 _GIB = 1024 * 1024 * 1024
 
 
 class TestTheNamedBudgetIsJudged:
+    def test_the_shortfall_follows_the_server_that_came_up(self):
+        # A drafter priced before launch and dropped by the retry: the budget is judged again
+        # with no draft state, before a healthy exact server is failed on the stale answer.
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        at = source.index("_mtp_will_engage and not _mtp_active_for_launched_server")
+        again = source.index("_exact_parking_shortfall_mib(", at)
+        assert "draft_bytes = 0" in source[again : again + 400]
+        assert "parking_holds = _exact_short is None" in source[again:]
+        # The auto-fit pricing drops the draft state on the same server.
+        assert (
+            "_draft_kv_state_bytes(_fitted_ctx) if _mtp_active_for_launched_server else 0" in source
+        )
+
     def test_a_budget_below_the_pool_is_a_shortfall(self):
         short = llama_mod._exact_parking_shortfall_mib(
             12 * _GIB, args = ["--preempt-ram", "1024"], env = {}
@@ -245,8 +304,10 @@ class TestTheNamedBudgetIsJudged:
     def test_the_pool_sized_after_launch_prices_its_draft_state_too(self):
         source = inspect.getsource(LlamaCppBackend.load_model)
         site = source.index("_fitted_bytes = _kv_bytes(_fitted_ctx)")
-        window = source[site : site + 900]
-        assert "_fitted_draft = _draft_kv_state_bytes(_fitted_ctx)" in window
+        window = source[site : site + 1100]
+        assert (
+            "_draft_kv_state_bytes(_fitted_ctx) if _mtp_active_for_launched_server else 0" in window
+        )
         assert "draft_bytes = _fitted_draft" in window
         assert "parallel = n_parallel" in window
         # A draft cache with no dimensions is a park nobody can size, so it is not certified.
@@ -277,7 +338,7 @@ class TestTheNamedBudgetIsJudged:
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "self._exact_pool_unknown = _exact_kv_bytes <= 0" in source
         judged = source.index('getattr(self, "_exact_pool_unknown", False)')
-        window = source[judged : judged + 2000]
+        window = source[judged : judged + 2400]
         assert "self._query_server_n_ctx()" in window
         assert "default_mib = _PREEMPT_RAM_DEFAULT_MIB" in window
         assert (
@@ -445,6 +506,14 @@ class TestAutoDoesNotStartAModeItWillReportUnavailable:
             )
             is None
         )
+
+    def test_an_inherited_cpu_placement_blocks_an_auto_launch(self, monkeypatch):
+        # The env twins reach the child whatever the argv says, and they append.
+        monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
+        why = llama_mod._exact_auto_blocker(
+            exact.EXACT_AUTO, self._ARGV, {"LLAMA_ARG_N_CPU_MOE": "8"}
+        )
+        assert why and "LLAMA_ARG_N_CPU_MOE=8" in why
 
     def test_a_clean_auto_launch_and_every_on_launch_go_ahead(self, monkeypatch):
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)

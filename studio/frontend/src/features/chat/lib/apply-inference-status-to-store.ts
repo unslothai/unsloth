@@ -425,6 +425,7 @@ export function applyActiveModelStatusToStore(
     // Read on every status, not just a seeded load: it describes the RUNNING server, so a
     // tab that opened onto an already-loaded model has to learn it from here.
     loadedExactConcurrency: normalizeExactConcurrency(status.exact_concurrency),
+    loadedRequestedExactConcurrency: status.requested_exact_concurrency ?? null,
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,

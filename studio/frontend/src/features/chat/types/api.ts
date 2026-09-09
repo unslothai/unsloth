@@ -45,6 +45,9 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /** Exact concurrency for this load (auto/off/on). Omitted, the persisted setting applies;
+   *  a rollback sends what the previous load asked for, not the setting saved since. */
+  exact_concurrency?: string | null;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
 

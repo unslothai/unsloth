@@ -222,6 +222,24 @@ class TestTheLaunchArgs:
         assert exact.contradicting_args(args) == expected
 
     @pytest.mark.parametrize(
+        ("env", "expected"),
+        [
+            ({}, []),
+            ({"LLAMA_ARG_CPU_MOE": "1"}, ["LLAMA_ARG_CPU_MOE=1"]),
+            ({"LLAMA_ARG_CPU_MOE": "true"}, ["LLAMA_ARG_CPU_MOE=true"]),
+            ({"LLAMA_ARG_CPU_MOE": "0"}, []),
+            ({"LLAMA_ARG_N_CPU_MOE": "8"}, ["LLAMA_ARG_N_CPU_MOE=8"]),
+            ({"LLAMA_ARG_N_CPU_MOE": "0"}, []),
+            ({"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"}, ["LLAMA_ARG_OVERRIDE_TENSOR=exps=CPU"]),
+            ({"LLAMA_ARG_OVERRIDE_TENSOR": "attn=CUDA0"}, []),
+            ({"LLAMA_ARG_KV_UNIFIED": "0"}, []),
+        ],
+    )
+    def test_what_the_mode_cannot_inherit(self, env, expected):
+        # llama.cpp reads these before argv and appends, so no later flag takes them back.
+        assert exact.contradicting_env(env) == expected
+
+    @pytest.mark.parametrize(
         ("value", "on_cpu"),
         [
             ("exps=CPU", True),
@@ -367,6 +385,15 @@ class TestTheReportedState:
                 self._state(setting = setting, env = {exact.CHILD_ENV: "1"}, args = args)
                 == exact.EXACT_STATE_UNAVAILABLE
             )
+        # An inherited CPU placement the argv never mentions counts the same way.
+        assert (
+            self._state(
+                setting = "on",
+                env = {exact.CHILD_ENV: "1", "LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"},
+                args = _STUDIO_ARGV,
+            )
+            == exact.EXACT_STATE_UNAVAILABLE
+        )
 
 
 class TestThePreemptionSnapshotReportsItAndNeverActsOnIt:
