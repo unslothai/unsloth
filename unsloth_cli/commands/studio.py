@@ -4661,7 +4661,7 @@ def _refuse_staged_update() -> None:
         backend_version = "unknown"
     if not isinstance(backend_version, str) or not backend_version:
         backend_version = "unknown"
-    shell_version = (os.environ.get("UNSLOTH_TAURI_SHELL_VERSION") or "").strip() or None
+    shell_version = (os.environ.get(_studio_stage.SHELL_VERSION_ENV) or "").strip() or None
     marker = STUDIO_HOME / ".update-failed.json"
     payload = (
         json.dumps({"backend_version": backend_version, "shell_version": shell_version}, indent = 2)
