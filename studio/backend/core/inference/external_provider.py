@@ -2535,6 +2535,7 @@ class ExternalProviderClient:
             "stop_sequence": "stop",
             "tool_use": "tool_calls",
             "refusal": "content_filter",
+            "model_context_window_exceeded": "length",
             "pause_turn": None,
         }
 
@@ -3196,6 +3197,15 @@ class ExternalProviderClient:
                                 # message_stop but we skip emitting a
                                 # finish_reason="stop" chunk that would truncate
                                 # the rendered message in the UI.
+                                # The `stop` default below reports an unmapped reason as a
+                                # finished answer, hiding a truncating one added upstream.
+                                if stop_reason not in _finish_reason_map:
+                                    logger.warning(
+                                        "Unmapped Anthropic stop_reason %r (model=%s); "
+                                        "reporting the turn as finished",
+                                        stop_reason,
+                                        model,
+                                    )
                                 mapped = _finish_reason_map.get(stop_reason, "stop")
                                 # Streaming refusal: emit a visible notice plus an
                                 # out-of-band _toolEvent so the frontend can prune
@@ -3217,6 +3227,12 @@ class ExternalProviderClient:
                                         "again._"
                                     )
                                     yield _emit_tool_event({"type": "anthropic_refusal"})
+                                if stop_reason == "model_context_window_exceeded":
+                                    logger.warning(
+                                        "Anthropic context window exhausted (model=%s)",
+                                        model,
+                                    )
+                                    yield _emit_tool_event({"type": "context_window_exceeded"})
                                 if mapped is not None:
                                     chunk = {
                                         "id": completion_id,
