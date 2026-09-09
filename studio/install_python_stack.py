@@ -513,6 +513,33 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     return match.group(1)[:2] if match else ""
 
 
+# CUDA 13 is where NVIDIA dropped the `-cuNN` suffix from the math libraries. `nvidia-npp` is
+# the 13.x runtime, and the `nvidia-npp-cu13` this would otherwise ask for is a stub whose own
+# summary reads "DEPRECATED: Use nvidia-npp instead". Neither way of resolving it is any good:
+#
+#   - normally, pip prefers the stable 0.0.1 over the prerelease and gets an sdist with no
+#     wheels, so a clean machine builds NPP from source. That is the loud one, and the only
+#     reason it is visible at all is that CI fails the build-from-source gate on it.
+#   - under --only-binary it takes 0.0.0a0, a 1.1 kB "Zero version placeholder" wheel whose
+#     single module is an empty __init__.py. That one installs cleanly, ships no NPP at all,
+#     and leaves torchcodec failing to dlopen libnppicc with nothing anywhere saying why.
+#
+# Per package, not a blanket rule for 13. `nvidia-nccl-cu13` is a real wheel and keeps its
+# suffix; only the names that actually moved may drop it.
+_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12
+
+
+def _npp_requirement(cuda_major: str) -> str:
+    """The NPP runtime for this CUDA major, spelled the way its publisher spells it.
+
+    Bounded to the major on the unsuffixed side, because that name keeps moving: it is 13.x
+    today, and a cu14 host must not silently take a 13 runtime or vice versa.
+    """
+    if int(cuda_major) <= _NPP_SUFFIXED_THROUGH_CUDA_MAJOR:
+        return f"nvidia-npp-cu{cuda_major}"
+    return f"nvidia-npp>={cuda_major},<{int(cuda_major) + 1}"
+
+
 # Any sign of the CUDA runtime, versioned or not: nvcudart_hybrid64.dll is the Windows cu130
 # spelling and carries no major. Absent entirely from a cpu build, which is what makes "" safe.
 _CUDA_RUNTIME_MARKER_RE = re.compile(
@@ -8111,7 +8138,8 @@ def install_python_stack() -> int:
             # torch's own dependency set, so a --no-deps install from a cuNNN index reports
             # success and then fails to import, disabling audio for a reason nothing here
             # would otherwise name. docker/Dockerfile installs nvidia-npp-cu12 beside the
-            # same wheel for exactly this. cu13x wheels want nvidia-npp-cu13.
+            # same wheel for exactly this. cu13x wheels want plain nvidia-npp; see
+            # _npp_requirement for why the suffix stops at 12.
             _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
             if _codec_fellback:
                 # The pin is gone, so the tag no longer describes this wheel. Probe EVERY
@@ -8125,13 +8153,14 @@ def install_python_stack() -> int:
                         "which its torch tag implies -- matching NPP to the wheel"
                     )
                     _npp_major = _npp_probed
-            if _npp_major and not pip_install_try(
+            _npp_spec = _npp_requirement(_npp_major) if _npp_major else ""
+            if _npp_spec and not pip_install_try(
                 "Installing torchcodec CUDA runtime (NPP)",
                 "--no-cache-dir",
-                f"nvidia-npp-cu{_npp_major}",
+                _npp_spec,
             ):
                 _note(
-                    f"could not install nvidia-npp-cu{_npp_major} -- torchcodec may fail to "
+                    f"could not install {_npp_spec} -- torchcodec may fail to "
                     "import on a host without the CUDA toolkit, leaving audio disabled"
                 )
 

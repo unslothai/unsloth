@@ -1199,7 +1199,7 @@ def test_a_cuda_index_codec_also_installs_npp():
     dependency set, so a --no-deps install from a cuNNN index reports success and then fails
     to import. docker/Dockerfile installs nvidia-npp-cu12 beside the same wheel."""
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    assert 'f"nvidia-npp-cu{_npp_major}"' in source
+    assert '_npp_spec = _npp_requirement(_npp_major) if _npp_major else ""' in source
     assert "Installing torchcodec CUDA runtime (NPP)" in source
 
     # The major follows the index leaf, and a cpu or rocm index asks for nothing.
@@ -1218,6 +1218,45 @@ def test_a_cuda_index_codec_also_installs_npp():
     # The Dockerfile this mirrors still pairs the two, so the rationale stays checkable.
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
     assert "nvidia-npp-cu12" in dockerfile
+
+
+def test_cuda_13_asks_for_the_unsuffixed_npp():
+    """`nvidia-npp-cu13` exists on PyPI but is a stub: version 0.0.1, summary "DEPRECATED: Use
+    nvidia-npp instead", sdist and no wheels. Asking for it does not fail, it builds NPP from
+    source on every clean machine, which is what the clean-machine gate caught:
+
+        ::error::built from source: nvidia-npp-cu13 -- these must resolve to wheels
+
+    Under --only-binary it is worse and silent: pip takes 0.0.0a0, a 1.1 kB placeholder whose
+    only module is an empty __init__.py, installs it happily, and torchcodec still cannot
+    dlopen libnppicc.
+
+    The 13.x runtime is plain `nvidia-npp`, which does publish manylinux aarch64 and x86_64
+    wheels."""
+    from studio.install_python_stack import _npp_requirement
+
+    # Suffixed through 12, where the suffixed names are the real ones.
+    assert _npp_requirement("11") == "nvidia-npp-cu11"
+    assert _npp_requirement("12") == "nvidia-npp-cu12"
+
+    # 13 and later take the unsuffixed name, bounded so the major cannot drift.
+    assert _npp_requirement("13") == "nvidia-npp>=13,<14"
+    assert _npp_requirement("14") == "nvidia-npp>=14,<15"
+
+    # No major may resolve to the stub, whatever _cuda_major_for_npp returns.
+    assert not any(
+        _npp_requirement(str(major)).startswith("nvidia-npp-cu13") for major in range(11, 20)
+    )
+
+
+def test_the_npp_rename_is_per_package_not_a_rule_about_13():
+    """NCCL kept its suffix at 13 while the math libraries dropped theirs, so this cannot be
+    generalised into "13 means no suffix". The boundary is a named constant rather than a bare
+    13 so that the next package to move is a one-line change with somewhere to say why."""
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert "_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12" in source
+    # The counterexample is recorded where the rule is, so nobody widens it from memory.
+    assert "nvidia-nccl-cu13" in source
 
 
 def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
