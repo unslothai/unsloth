@@ -243,11 +243,7 @@ function migrateThroughVersion21(
   }
 }
 
-// v22 added the pre-CPT LoRA slots. A session persisted mid-CPT has no record of
-// them, so recover the model defaults frozen in advancedSettingsBaseline. Two
-// baselines say nothing about what preceded CPT and are skipped: one captured
-// after CPT overwrote the hyperparams, which is exactly the CPT triple, and one
-// mergeTrainingConfig is about to discard because it belongs to another model.
+// Recover the pre-CPT slots from the defaults advancedSettingsBaseline froze.
 function migrateThroughVersion22(
   state: PersistedTrainingConfig,
   version: number,
@@ -255,8 +251,7 @@ function migrateThroughVersion22(
   if (version >= 22 || state.trainingMethod !== "cpt") return;
   const provenance = state.trainingMethodProvenance;
   if (typeof provenance !== "object" || provenance === null) return;
-  // The same identity test mergeTrainingConfig applies, empty string included:
-  // a baseline the merge is about to drop must not seed the provenance.
+  // mergeTrainingConfig's own identity test, empty string included.
   if (
     typeof state.modelDefaultsAppliedFor !== "string" ||
     state.modelDefaultsAppliedFor.length === 0 ||
@@ -270,6 +265,7 @@ function migrateThroughVersion22(
     string,
     unknown
   >;
+  // Exactly the CPT triple: captured after CPT applied, so it says nothing.
   if (
     loraRank === CPT_LORA_HYPERPARAMS.loraRank &&
     loraAlpha === CPT_LORA_HYPERPARAMS.loraAlpha &&
@@ -277,8 +273,7 @@ function migrateThroughVersion22(
   ) {
     return;
   }
-  // Recovery fills the gaps. A record that already carries a usable value keeps
-  // it: a real pre-CPT edit outranks the model defaults the baseline froze.
+  // Gaps only: a real pre-CPT edit outranks the defaults the baseline froze.
   const record = provenance as Record<string, unknown>;
   if (positiveIntOrNull(record.loraRankBeforeCpt) === null) {
     record.loraRankBeforeCpt = positiveIntOrNull(loraRank);

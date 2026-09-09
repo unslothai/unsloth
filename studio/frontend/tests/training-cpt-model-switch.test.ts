@@ -559,8 +559,6 @@ test("a target-modules edit does not strand the previous model adapter params", 
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   const state = useTrainingConfigStore.getState();
-  // The target edit is the user's, but the three LoRA fields were untouched,
-  // so they must follow the new model rather than stay on the old one.
   assert.equal(state.loraRank, 64);
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
@@ -590,8 +588,7 @@ test("leaving CPT does not report untouched adapter params as modified", async (
       }),
     ),
   );
-  // The model is chosen while CPT is already active, so the baseline is frozen
-  // during CPT -- the case where its LoRA half used to keep CPT's own triple.
+  // Chosen inside CPT, so the baseline freezes there: the regressing case.
   useTrainingConfigStore.getState().setTrainingMethod("cpt");
   useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
   await waitForModelDefaults("old/llama");
@@ -613,13 +610,8 @@ test("leaving CPT does not report untouched adapter params as modified", async (
   );
 });
 
-// Cache reconciliation aborts the in-flight model-config request and restarts it
-// with applyTrainingDefaults: false once an unrelated edit has moved the defaults
-// generation. The restart still names the selected model, so the CPT snapshot has
-// to follow it.
-async function cacheRestartInsideCpt(
-  beforeRestart: () => void,
-): Promise<void> {
+// Cache reconciliation restarts the request with applyTrainingDefaults: false.
+async function cacheRestartInsideCpt(beforeRestart: () => void): Promise<void> {
   useTrainingConfigStore.getState().reset();
   setAuthFetchHandler(() =>
     Promise.resolve(

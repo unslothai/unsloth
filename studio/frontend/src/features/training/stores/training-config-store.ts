@@ -170,10 +170,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             loraParamEditGenerations: { ..._loraParamEditGenerations },
           };
         }
-        // Cache reconciliation aborts the in-flight request and restarts it with
-        // applyTrainingDefaults: false, so a fresh snapshot here would forget the
-        // edits made before the restart and overwrite them. Measure against the
-        // selection's own baseline whenever the restart is for the same model.
+        // A cache restart re-requests the same model; a fresh snapshot forgets its edits.
         const requestedLoraParamEditGenerations =
           _modelDefaultsEditBaseline?.modelName === modelName
             ? { ..._modelDefaultsEditBaseline.loraParamEditGenerations }
@@ -321,10 +318,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const cptTargetOverrides = shouldApplyCptTargetDefaults
               ? { targetModules: cptDefaultsPatch.targetModules }
               : {};
-            // Of the values CPT forces, only trainOnCompletions belongs in the summary
-            // baseline. The adapter rank, alpha, variant and targets are not the
-            // model's defaults, and the summary compares against this baseline once
-            // the user has left CPT; inside CPT it reads CPT's own values instead.
+            // Only trainOnCompletions: CPT's forced adapter values are not the model's.
             const cptBaselineOverride = {
               trainOnCompletions: cptDefaultsPatch.trainOnCompletions,
             };
@@ -351,18 +345,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   }
                 : {};
 
-            // An explicit LoRA edit outranks the model defaults, exactly as
-            // _targetModulesEditGeneration protects an explicit target edit.
-            // Per field: editing the rank must not freeze alpha and variant.
+            // Per field, so editing the rank does not freeze alpha and variant.
             const loraParamUnedited = (key: LoraParamKey): boolean =>
               _loraParamEditGenerations[key] ===
               requestedLoraParamEditGenerations[key];
             const inCpt = get().trainingMethod === "cpt";
-            // The target and LoRA halves are gated separately: the targets
-            // follow _targetModulesEditGeneration because the fallback only
-            // writes them when that generation held, while the LoRA slots
-            // answer to their own per-field generations. Editing the targets
-            // must not strand the previous model's rank, alpha and variant.
+            // Gated separately, or a target edit strands the LoRA slots.
             const cptTargetProvenanceRefresh =
               inCpt && modelDefaultsPatch.targetModules !== undefined
                 ? {
@@ -391,11 +379,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ...cptTargetProvenanceRefresh,
               ...cptLoraProvenanceRefresh,
             };
-            // The target half stays behind applyTrainingDefaults because it also
-            // writes the live target modules. The LoRA half writes provenance
-            // only, and a metadata-only refresh still names a model the snapshot
-            // has to follow, so it runs regardless; the per-field generations
-            // above are what protect an edit.
             const cptFallbackProvenanceRefresh = {
               ...(shouldApplyCptTargetDefaults
                 ? cptTargetProvenanceRefresh

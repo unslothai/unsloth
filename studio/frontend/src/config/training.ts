@@ -133,7 +133,7 @@ export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;
 
-// What entering CPT forces the adapter to, and what the wizard counts as CPT's own default.
+// CPT forces these, and the wizard counts them as CPT's own defaults.
 export const CPT_LORA_HYPERPARAMS = {
   loraRank: 128,
   loraAlpha: 32,

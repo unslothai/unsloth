@@ -354,8 +354,7 @@ test("an empty model identifier is not treated as a baseline match", () => {
   };
   const migrated = migrateTrainingConfig(persisted, 21);
 
-  // mergeTrainingConfig drops a baseline with an empty identifier, so the
-  // migration must not have copied it into the provenance first.
+  // The merge drops it, so the migration must not have copied it first.
   assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, undefined);
   const merged = mergeTrainingConfig(
     migrated,
@@ -389,8 +388,6 @@ test("recovery does not overwrite a pre-CPT value the record already has", () =>
     21,
   );
 
-  // A tuned value outranks the model defaults the baseline froze; only the
-  // slots that hold nothing usable are filled in.
   assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, 48);
   assert.equal(migrated.trainingMethodProvenance.loraAlphaBeforeCpt, 8);
   assert.equal(migrated.trainingMethodProvenance.loraVariantBeforeCpt, "loftq");
