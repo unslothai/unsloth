@@ -451,6 +451,7 @@ def archive_turns(
                 continue
             ordinal = None
             archived_at = None
+            archived_rowid = None
             if stale is not None:
                 # Same turn, vectors from an embedder the query side no longer asks for.
                 # The copy is replaced rather than deduplicated, as ingestion does, since
@@ -461,9 +462,13 @@ def archive_turns(
                 # reorder the archive by the order its vectors were rebuilt. NULL stays
                 # NULL, since numbering a pre-column row moves the oldest turn behind every
                 # numbered one and the header would call it the conversation's last word.
-                previous = store.get_document(conn, stale) or {}
+                # And its ROWID: turns archived in one clock tick share a `created_at`, so
+                # insertion order is all that separates them. Reusable because the row is
+                # deleted below in this same transaction.
+                previous = store.document_rewrite_identity(conn, stale) or {}
                 ordinal = previous.get("archive_ordinal")
                 archived_at = previous.get("created_at")
+                archived_rowid = previous.get("rowid")
                 store.delete_document(conn, stale, commit = False)
             else:
                 # The nth copy of a repeated turn takes the nth occurrence's position, so a
@@ -495,6 +500,8 @@ def archive_turns(
                 # When the turn was archived, not when this row was written. None for a turn
                 # seen for the first time, which takes the clock as before.
                 created_at = archived_at,
+                # Likewise None for a first sighting: SQLite then assigns the next rowid.
+                rowid = archived_rowid,
                 commit = False,
             )
             try:
@@ -2108,25 +2115,46 @@ def _document_matches_one_run(
     return any(_one_run_from(start) for start in range(len(transcript)))
 
 
+def _order_key(ordinal, created_at, document_rowid, chunk_index) -> tuple:
+    """The recall order, spelling-independent: the single-query path passes a row's
+    snake_case columns and the merge passes a source's camelCase keys, and a second copy of
+    the key agrees only until someone edits one of them.
+    """
+    created = created_at or ""
+    rowid = document_rowid or 0
+    index = chunk_index or 0
+    if ordinal is None:
+        return (0, 0, created, rowid, index)
+    return (1, int(ordinal), created, rowid, index)
+
+
 def _conversation_order(row) -> tuple:
     """Sort key putting recalled turns in the order they were said.
 
     NULL ordinals sort FIRST, and that is not a fallback so much as a fact: they were
     written by a build that had no such column, so they genuinely predate every numbered
-    turn in the same scope. Within a turn, `chunk_index` keeps a long message's pieces
-    contiguous and in order, which relevance ordering gets wrong today. `created_at`
-    breaks ties, because the ordinal is deliberately not UNIQUE: the write lock is
-    best-effort, so two concurrent archive passes can compute the same MAX + 1 and must
-    tie-break rather than raise.
+    turn in the same scope. `created_at` breaks ties below that, because the ordinal is
+    deliberately not UNIQUE: the write lock is best-effort, so two concurrent archive
+    passes can compute the same MAX + 1 and must tie-break rather than raise.
+
+    Then the document's rowid, because `created_at` ties whenever the clock is coarser than
+    the write: Windows advances it about every 15.6 ms, so a compaction stamps a whole
+    conversation identically and the sort falls back to relevance order under a header
+    saying oldest first. Insertion order is what the archive recorded, and the rewrite path
+    preserves it (`create_document`'s `rowid`) so a re-embed cannot move a turn.
+
+    `chunk_index` comes LAST because it is a position WITHIN a document: above the rowid it
+    interleaves two tied documents (A0, B0, A1, B1, ...) rather than ordering them,
+    shredding the long message it exists to keep contiguous.
     """
     if row is None:
-        return (2, 0, "", 0)
-    ordinal = tool._row_value(row, "archive_ordinal")
-    created = tool._row_value(row, "created_at") or ""
-    index = tool._row_value(row, "chunk_index") or 0
-    if ordinal is None:
-        return (0, 0, created, index)
-    return (1, int(ordinal), created, index)
+        return (2, 0, "", 0, 0)
+    return _order_key(
+        tool._row_value(row, "archive_ordinal"),
+        tool._row_value(row, "created_at"),
+        tool._row_value(row, "document_rowid"),
+        tool._row_value(row, "chunk_index"),
+    )
 
 
 def _above_floor(hits: list, min_dense_score: float) -> list:
@@ -2460,16 +2488,15 @@ def recall(
         if not merged:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            # The same key `_conversation_order` uses on the single-query path: a turn with
-            # no ordinal predates every numbered one, and `chunkIndex` keeps a long turn's
-            # pieces in writing order rather than in the order the two queries returned
-            # them, which a stable sort would otherwise preserve.
+            # Literally the key `_conversation_order` uses, not a second copy that agrees
+            # today: component order included, or the merged block contradicts the unmerged
+            # one on the same archive.
             merged.sort(
-                key = lambda source: (
-                    source.get("turn") is not None,
-                    source.get("turn") or 0,
-                    source.get("createdAt") or "",
-                    source.get("chunkIndex") or 0,
+                key = lambda source: _order_key(
+                    source.get("turn"),
+                    source.get("createdAt"),
+                    source.get("documentRowid"),
+                    source.get("chunkIndex"),
                 )
             )
             kept = merged[:limit]

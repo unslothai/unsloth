@@ -5,11 +5,13 @@
  *  is re-sent with the partial as the final assistant turn plus `continue_final_message`, so
  *  the prompt ends mid-sentence and the new text is appended to the partial. */
 
-/** Why a turn ended before the model was done. */
+/** Why a turn ended before the model was done. `context_window` is a `length` cut the same
+ *  request can never fit into, hence its own reason. */
 export type IncompleteReason =
   | "length"
   | "cancelled"
   | "interrupted"
+  | "context_window"
   | "paused";
 
 /** Metadata stamped on an assistant message that stopped early. */
@@ -21,6 +23,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "length",
   "cancelled",
   "interrupted",
+  "context_window",
   "paused",
 ];
 
@@ -32,6 +35,26 @@ const MAX_OVERLAP = 400;
 
 /** How much of the partial's opening a restart has to reproduce to be called a restart. */
 const RESTART_PROBE = 48;
+
+/** The stop reason for a turn. The provider reports a filled window on the event ending its
+ *  turn, so the model had already stopped: that outranks every inferred reason, missing ones
+ *  included. */
+export function resolveIncompleteReason<T extends IncompleteReason | null>(
+  reason: T,
+  contextWindowExceeded: boolean,
+): T | "context_window" {
+  return contextWindowExceeded ? "context_window" : reason;
+}
+
+/** Whether the provider reported this reason rather than the client inferring it; the provider
+ *  wins where they disagree. */
+export function isProviderReportedReason(
+  reason: IncompleteReason | null | undefined,
+): boolean {
+  // `paused` too: it has no assistant-ui status of its own, so a reload would relabel it
+  // "Response stopped", which reads as something the user did. The stamp wins.
+  return reason === "context_window" || reason === "paused";
+}
 
 /** Read the incomplete marker off an assistant message's metadata. */
 export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
@@ -59,6 +82,7 @@ const STATUS_REASON: Record<
   cancelled: "cancelled",
   length: "length",
   interrupted: "error",
+  context_window: "length",
   paused: "cancelled",
 };
 
@@ -77,6 +101,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
+  context_window: "Response filled the model's context window",
   // No failure vocabulary: nothing went wrong, the model was shared out. Deliberately does
   // not promise text, since the backend can give up before the first token.
   paused: "Response paused while another chat used the model, and did not get it back",
@@ -85,6 +110,17 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
 /** The user-facing explanation of why a turn stopped. */
 export function incompleteLabel(reason: IncompleteReason): string {
   return INCOMPLETE_LABELS[reason];
+}
+
+/** A hosted window is fixed and the partial has nothing left to replay into, so the only
+ *  levers are a shorter conversation or a new one. */
+const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
+  context_window: "Start a new chat, or shorten this one, to keep going",
+};
+
+/** What to do about a turn that stopped early, or `null` when resuming is the answer. */
+export function incompleteRemedy(reason: IncompleteReason): string | null {
+  return INCOMPLETE_REMEDIES[reason] ?? null;
 }
 
 /** Drop text the continuation repeated from the end of the partial: local models continue
@@ -332,9 +368,10 @@ export function readContinuationRequest(
 }
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
- *  Every other reason is left alone, since `cancelled` would restart what the user just stopped
- *  and `interrupted` can hide a broken link. Bounded, because a model that will not stop would
- *  loop forever.
+ *  Every other reason is left alone, since `cancelled` would restart what the user just
+ *  stopped, `interrupted` can hide a broken link, and `context_window` has no room left to
+ *  resume into. Bounded, because a model that will not stop would loop forever and each round
+ *  drives compaction harder.
  *
  *  `paused` is refused for a reason of its own, pinned by a test: the backend resumes it in
  *  place, so a client-side continuation asks for a SECOND slot for a turn already queued for

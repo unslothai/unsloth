@@ -139,7 +139,9 @@ import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   incompleteLabel,
+  incompleteRemedy,
   isContinuableContent,
+  isProviderReportedReason,
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -6999,14 +7001,13 @@ const ContinueMessageBarForLastMessage: FC = () => {
     return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
   });
   // Cancelled comes through status (the adapter yields nothing after an abort); the
-  // other two are stamped on metadata so they survive a reload.
+  // other two are stamped on metadata so they survive a reload. A provider-reported reason
+  // is on the metadata either way, and outranks a cancelled status.
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
-  // `paused` has no assistant-ui status of its own, so a reload would relabel it "Response
-  // stopped", which reads as something the user did. The stamp wins for that one.
   const reason =
-    cancelled && stamped?.reason !== "paused"
+    cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
   // A turn the backend gave up on can be empty, and both content gates below assume text,
@@ -7027,6 +7028,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
       audioOutputModel,
     }) &&
     (noTextIsExpected || Boolean(partial.trim()));
+
+  // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
+  const remedy = reason ? incompleteRemedy(reason) : null;
 
   // The parent is what every round of one logical turn shares; the message id changes
   // each round, because a continuation runs as a sibling.
@@ -7183,7 +7187,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
   // `reason` is repeated rather than left to `resumable`, which is a boolean and so
   // narrows nothing: the label below needs it proven non-undefined.
-  if (!resumable || !reason) {
+  // The remedy is owed even when nothing can be resumed: a tool-calling turn never can be.
+  if (!reason || (!remedy && !resumable)) {
     return null;
   }
   if (autoContinuing) {
@@ -7218,18 +7223,20 @@ const ContinueMessageBarForLastMessage: FC = () => {
   return (
     <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm">
       <span className="min-w-0 flex-1 text-muted-foreground">
-        {incompleteLabel(reason)}.
+        {incompleteLabel(reason)}.{remedy ? ` ${remedy}.` : ""}
       </span>
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        className="h-7 shrink-0 gap-1.5 text-xs"
-        onClick={handleContinue}
-      >
-        <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
-        Continue
-      </Button>
+      {remedy ? null : (
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="h-7 shrink-0 gap-1.5 text-xs"
+          onClick={handleContinue}
+        >
+          <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
+          Continue
+        </Button>
+      )}
     </div>
   );
 };

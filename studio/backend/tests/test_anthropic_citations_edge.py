@@ -165,17 +165,23 @@ def _citation_payload(body: str) -> dict:
 # ── edge cases ───────────────────────────────────────────────
 
 
-def test_citation_with_no_preceding_text_still_emits_marker(monkeypatch):
-    """citations_delta before any text_delta must not crash; marker lands
-    at the start of the block."""
-    cit = {
+def _citation(**overrides):
+    """One Anthropic citation payload, with per-test overrides."""
+    return {
         "type": "char_location",
         "document_index": 0,
-        "document_title": "X",
+        "document_title": "Doc",
         "start_char_index": 0,
         "end_char_index": 5,
         "cited_text": "x",
+        **overrides,
     }
+
+
+def test_citation_with_no_preceding_text_still_emits_marker(monkeypatch):
+    """citations_delta before any text_delta must not crash; marker lands
+    at the start of the block."""
+    cit = _citation(document_title = "X")
     lines = _capture(
         monkeypatch,
         [
@@ -246,14 +252,7 @@ def test_citations_delta_with_missing_citation_field_is_ignored(monkeypatch):
 def test_char_location_with_reversed_indices_does_not_crash(monkeypatch):
     """Malformed char_location with reversed indices must not crash; the
     dedup key accepts any int pair and still surfaces a footnote."""
-    cit = {
-        "type": "char_location",
-        "document_index": 0,
-        "document_title": "Doc",
-        "start_char_index": 300,
-        "end_char_index": 50,
-        "cited_text": "?",
-    }
+    cit = _citation(start_char_index = 300, end_char_index = 50, cited_text = "?")
     lines = _capture(
         monkeypatch,
         [
@@ -408,14 +407,11 @@ def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
     """``cited_text`` must survive into the synthetic event so the Sources
     panel can render it as a tooltip. Anthropic does not bill cited_text
     against output tokens, so preserving it is free."""
-    cit = {
-        "type": "char_location",
-        "document_index": 0,
-        "document_title": "Trustworthy Doc",
-        "start_char_index": 0,
-        "end_char_index": 20,
-        "cited_text": "The grass is green.",
-    }
+    cit = _citation(
+        document_title = "Trustworthy Doc",
+        end_char_index = 20,
+        cited_text = "The grass is green.",
+    )
     lines = _capture(
         monkeypatch,
         [
@@ -436,14 +432,7 @@ def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
 def test_internal_key_field_never_leaks_to_client(monkeypatch):
     """The internal ``_key`` dedup sentinel must be stripped before the
     synthetic event is forwarded; it is not an Anthropic field."""
-    cit = {
-        "type": "char_location",
-        "document_index": 0,
-        "document_title": "Doc",
-        "start_char_index": 0,
-        "end_char_index": 5,
-        "cited_text": "..",
-    }
+    cit = _citation(cited_text = "..")
     lines = _capture(
         monkeypatch,
         [
@@ -511,14 +500,7 @@ def test_inline_marker_lands_after_text_run(monkeypatch):
     """Inline ``[N]`` must land AFTER the cited text run: Anthropic streams
     text then citation, so the proxy emits ``"...green.[1]"`` not
     ``"[1]green"``."""
-    cit = {
-        "type": "char_location",
-        "document_index": 0,
-        "document_title": "Doc",
-        "start_char_index": 0,
-        "end_char_index": 20,
-        "cited_text": "grass",
-    }
+    cit = _citation(end_char_index = 20, cited_text = "grass")
     lines = _capture(
         monkeypatch,
         [
@@ -658,14 +640,7 @@ def test_cited_text_truncated_in_synthetic_event(monkeypatch):
             "index": 0,
             "delta": {
                 "type": "citations_delta",
-                "citation": {
-                    "type": "char_location",
-                    "document_index": 0,
-                    "document_title": "doc",
-                    "start_char_index": 0,
-                    "end_char_index": 5,
-                    "cited_text": long_quote,
-                },
+                "citation": _citation(document_title = "doc", cited_text = long_quote),
             },
         },
         {"type": "content_block_stop", "index": 0},
