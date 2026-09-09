@@ -73,18 +73,27 @@ def _quota_left(headers: Any) -> bool:
         return False
 
 
-def note_github_rate_limited(headers: Any = None, *, wait: Optional[float] = None) -> float:
-    """Record the lockout and return its length; 0 when the headers say this was not one.
+def note_github_rate_limited(
+    headers: Any = None,
+    *,
+    wait: Optional[float] = None,
+    status: Optional[int] = None,
+) -> float:
+    """Record the lockout and return its length; 0 when this was not a rate limit.
 
     Never shortens a lockout already in place. A 403 whose headers report quota to spare
     is a permission refusal, not a rate limit -- a fine-grained token without access to
     the repo answers that way -- and locking every api.github.com call out of the process
-    for it would push the freshness checks onto the lagging redirect for nothing."""
+    for it would push the freshness checks onto the lagging redirect for nothing.
+
+    ``status`` 429 is always throttling, whatever the quota header says: X-RateLimit-*
+    describes the PRIMARY quota, and a secondary limit leaves it untouched.
+    """
     global _api_rate_limited_until
     if wait is None:
         wait = rate_limit_wait_seconds(headers)
     if wait is None:
-        if _quota_left(headers):
+        if status != 429 and _quota_left(headers):
             return 0.0
         wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
     wait = min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
@@ -237,7 +246,7 @@ def _fetch_newest_published_release_blocking(
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in GITHUB_RATE_LIMIT_STATUS:
-            wait = note_github_rate_limited(exc.headers)
+            wait = note_github_rate_limited(exc.headers, status = exc.code)
             logger.debug(
                 log_message,
                 repo = repo,

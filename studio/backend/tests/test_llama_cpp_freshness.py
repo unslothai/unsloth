@@ -982,3 +982,44 @@ def test_concurrent_refusals_cannot_shorten_a_longer_lockout():
     for t in threads:
         t.join()
     assert fr._flow.github_rate_limit_remaining() > 1700
+
+
+def test_a_429_is_throttling_even_with_primary_quota_left(monkeypatch):
+    """X-RateLimit-* describes the PRIMARY quota; a secondary limit answers 429 and
+    leaves it untouched. Reading the header alone would skip the redirect fallback and
+    walk straight back into the throttle."""
+    import email.message
+    import urllib.error
+    import urllib.request
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+
+    def fake_urlopen(req, timeout = 5.0):
+        if "api.github.com" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 429, "too many", headers, None)
+        return _Redirected("https://github.com/unslothai/llama.cpp/releases/tag/b9600")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9600"
+    assert fr._flow.github_rate_limit_remaining() > 0
+
+
+def test_a_403_naming_a_retry_after_is_throttling(monkeypatch):
+    """A secondary limit can answer 403 too, and says so with Retry-After."""
+    import email.message
+    import urllib.error
+    import urllib.request
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+    headers["Retry-After"] = "120"
+
+    def fake_urlopen(req, timeout = 5.0):
+        if "api.github.com" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 403, "slow down", headers, None)
+        return _Redirected("https://github.com/unslothai/llama.cpp/releases/tag/b9600")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9600"
+    assert 115 < fr._flow.github_rate_limit_remaining() <= 120

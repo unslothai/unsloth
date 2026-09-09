@@ -700,7 +700,10 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
     }
     # A token lifts the 60/hour per-IP limit. Only for GitHub's own API host, never for an
     # UNSLOTH_RELEASES_URL override.
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    # Same precedence as the freshness and changelog fetches: they share one process-wide
+    # lockout, so picking a different credential here would let one token's exhaustion
+    # silence requests the other could still make.
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token and urllib.parse.urlparse(url).hostname == "api.github.com":
         headers["Authorization"] = f"Bearer {token}"
     if _remote_etag:
@@ -822,7 +825,7 @@ def _http_error_source(
         # walk straight past the helper's check for exactly that.
         if urllib.parse.urlparse(url).hostname == "api.github.com":
             from utils.prebuilt.freshness_flow import note_github_rate_limited
-            note_github_rate_limited(error.headers)
+            note_github_rate_limited(error.headers, status = error.code)
         return (
             ReleaseSource(
                 release = None,

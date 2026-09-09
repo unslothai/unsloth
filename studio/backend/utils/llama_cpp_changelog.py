@@ -111,7 +111,7 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
         payload = json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in GITHUB_RATE_LIMIT_STATUS:
-            wait = note_github_rate_limited(exc.headers)
+            wait = note_github_rate_limited(exc.headers, status = exc.code)
             logger.debug(
                 "llama changelog fetch rate limited", repo = repo, tag = tag, backoff_seconds = int(wait)
             )

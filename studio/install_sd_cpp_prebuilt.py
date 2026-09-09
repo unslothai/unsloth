@@ -361,12 +361,29 @@ def _quota_left(headers: object) -> bool:
 
 
 def _is_rate_limited(exc: BaseException) -> bool:
-    """A refusal that a spent quota explains. A 403 whose headers still report quota is
-    a permission or policy refusal: the other rungs of the ladder may well answer, so it
-    must fall through rather than abort the whole resolution."""
+    """A refusal that throttling explains. 429 always is, whatever the quota header says:
+    X-RateLimit-* describes the PRIMARY quota and a secondary limit leaves it untouched.
+    A 403 whose headers still report quota is instead a permission or policy refusal, and
+    the other rungs of the ladder may well answer, so it must fall through."""
     if not isinstance(exc, urllib.error.HTTPError) or exc.code not in (403, 429):
         return False
-    return not _quota_left(getattr(exc, "headers", None))
+    if exc.code == 429:
+        return True
+    headers = getattr(exc, "headers", None)
+    if headers is not None and _header(headers, "Retry-After"):
+        return True
+    return not _quota_left(headers)
+
+
+def _header(headers: object, name: str) -> str:
+    try:
+        return str(getattr(headers, "get")(name) or "").strip()
+    except (AttributeError, TypeError):
+        return ""
+
+
+def _timed_out(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
 
 
 def _rate_limit_message() -> str:
@@ -560,6 +577,11 @@ def _download(
             return
         except (urllib.error.URLError, OSError) as exc:
             if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                raise
+            # A stalled socket already spent the whole timeout; retrying it would spend
+            # the same wait again, so three attempts would triple the deadline rather
+            # than recover anything. Terminal, exactly as url_exists treats it.
+            if _timed_out(exc):
                 raise
             if attempt >= attempts:
                 raise

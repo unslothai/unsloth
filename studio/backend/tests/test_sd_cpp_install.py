@@ -3527,5 +3527,41 @@ def test_a_permission_403_is_not_treated_as_a_spent_quota():
     assert sdmod._is_rate_limited(err(spent)) is True
     assert sdmod._is_rate_limited(err(None)) is True
     assert sdmod._is_rate_limited(err(permission)) is False
-    assert sdmod._is_rate_limited(err(spent)) is True
     assert sdmod._is_rate_limited(ValueError("not http")) is False
+
+
+def test_a_429_stops_the_ladder_whatever_the_quota_header_says():
+    """X-RateLimit-* is the PRIMARY quota; a secondary limit answers 429 and leaves it
+    alone, so reading the header alone would keep hammering the rest of the ladder."""
+    import email.message
+    import urllib.error
+
+    primary_quota_left = email.message.Message()
+    primary_quota_left["X-RateLimit-Remaining"] = "4998"
+    retry_after = email.message.Message()
+    retry_after["X-RateLimit-Remaining"] = "4998"
+    retry_after["Retry-After"] = "60"
+
+    def err(code, headers):
+        return urllib.error.HTTPError("https://api.github.com/x", code, "no", headers, None)
+
+    assert sdmod._is_rate_limited(err(429, primary_quota_left)) is True
+    assert sdmod._is_rate_limited(err(403, retry_after)) is True
+    assert sdmod._is_rate_limited(err(403, primary_quota_left)) is False
+
+
+def test_a_stalled_download_is_not_retried_into_a_tripled_deadline(tmp_path, monkeypatch):
+    """Three attempts at the full timeout would block an install for 15 minutes where
+    one stall used to cost 5. A timeout is terminal, exactly as url_exists treats it."""
+    import urllib.error
+
+    attempts = []
+
+    def stalls(req, timeout = None):
+        attempts.append(timeout)
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", stalls)
+    with pytest.raises(urllib.error.URLError):
+        sdmod._download("https://example.test/a.zip", tmp_path / "a.zip", timeout = 7.0)
+    assert attempts == [7.0]
