@@ -536,6 +536,23 @@ def test_nested_indexed_shards_hold_their_obsolete_sibling(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
 
 
+def test_root_bookkeeping_beside_component_archives_is_dropped(tmp_path):
+    _write(tmp_path / "transformer" / "diffusion_pytorch_model.safetensors", 4000)
+    _write(tmp_path / "vae" / "diffusion_pytorch_model.safetensors", 320)
+    _write(tmp_path / "optimizer.pt", 8000)
+    _write(tmp_path / "scheduler.pt", 100)
+    _write(tmp_path / "training_args.bin", 500)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 4320
+
+
+def test_trainer_state_beside_a_freely_named_payload_alone_still_counts(tmp_path):
+    # No loadable archive anywhere: nothing says weights.pth is the model and optimizer.pt
+    # its state, so both stay what they are on main.
+    _write(tmp_path / "weights.pth", 4000)
+    _write(tmp_path / "optimizer.pt", 8000)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 12000
+
+
 def test_variant_only_shards_are_summed(tmp_path):
     _write(tmp_path / "model-00001-of-00002.fp16.safetensors", 300)
     _write(tmp_path / "model-00002-of-00002.fp16.safetensors", 200)

@@ -5882,13 +5882,18 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     archive_stems = {(path.parent, path.stem) for path in archive}
     alternatives |= {path for path in sizes if (path.parent, path.stem) in archive_stems}
     rest = {path: size for path, size in sizes.items() if path not in alternatives}
-    if archive:
+    here = {folder for folder, _ in homes}
+    above_an_archive = any(
+        folder != other and other.is_relative_to(folder)
+        for folder in here
+        for other in tree.get("archive_dirs", ())
+    )
+    if archive or above_an_archive:
         rest = {p: s for p, s in rest.items() if not _TRAINER_BOOKKEEPING.match(p.stem)}
     components: dict = {}
     ordered = sorted(rest.items(), key = lambda i: (i[0].suffix != ".safetensors", i[0].name))
     for path, size in ordered:
         components.setdefault(path.stem, size)
-    here = {folder for folder, _ in homes}
     accounted = {path for path in alternatives if path.parent in here} | set(archive)
     # An index that reaches into a subfolder claims that shard family there whole: a sibling
     # the map no longer names (model-00003-of-00002) is an obsolete shard, not a component.
@@ -5998,7 +6003,13 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
                 vendor.add(target)
 
     settled: set = set()
-    tree = {"files": files, "settled": settled, "read": read}
+    # The folders holding a loadable archive: trainer state saved above them, at the root of a
+    # pipeline whose weights live in component folders, is bookkeeping all the same.
+    archive_bases = {base for base, _ in _WEIGHT_ARCHIVES}
+    archive_dirs = {index.parent for index in index_files} | {
+        path.parent for path in weight_sizes if _archive_stem(path.stem)[0] in archive_bases
+    }
+    tree = {"files": files, "settled": settled, "read": read, "archive_dirs": archive_dirs}
     total = 0
     for directory in sorted(sizes_by_directory, key = lambda d: (len(d.parts), d.as_posix())):
         unclaimed = {
