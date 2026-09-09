@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing, contextmanager
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,6 +58,16 @@ def _row(sql: str, params = ()) -> dict | None:
 
 def _mapping(folder: dict) -> dict | None:
     return _row("SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],))
+
+
+def _identity_mismatch(loaded: tuple, expected: tuple, stored: tuple) -> str:
+    """Name the half that diverged: a bare tuple comparison hides which id is wrong."""
+    parts = [
+        f"{label}: loaded {got!r} != expected {want!r} (column held {raw!r})"
+        for label, got, want, raw in zip(("device", "inode"), loaded, expected, stored)
+        if got != want
+    ]
+    return "; ".join(parts) or f"identity {loaded!r} != {expected!r}"
 
 
 class _CommitFails:
@@ -722,9 +733,13 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
     source_stat = source.stat()
     assert reauthorized.is_set()
     assert refreshed["id"] == folder["id"]
-    assert (refreshed["root_device"], refreshed["root_inode"]) == (
-        source_stat.st_dev,
-        source_stat.st_ino,
+    # Read back through the loader: an identity above SQLite's signed maximum is stored as
+    # a hex string, which is the ordinary case for a Windows device id.
+    loaded = folder_sync._load_identity(refreshed["root_device"], refreshed["root_inode"])
+    assert loaded == (source_stat.st_dev, source_stat.st_ino), _identity_mismatch(
+        loaded,
+        (source_stat.st_dev, source_stat.st_ino),
+        (refreshed["root_device"], refreshed["root_inode"]),
     )
     with _connection() as conn:
         mapping_after = dict(
@@ -835,9 +850,65 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
 
     assert _run(folder["id"])["status"] == "completed"
     row = _mapping(folder)
-    assert folder_sync._load_identity(row["device"], row["inode"]) == identity
+    loaded = folder_sync._load_identity(row["device"], row["inode"])
+    assert loaded == identity, _identity_mismatch(loaded, identity, (row["device"], row["inode"]))
     # The same identity must still compare equal, so nothing re-embeds every sync.
     assert _run(folder["id"])["changed"] == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, 1, (1 << 63) - 2, (1 << 63) - 1, 1 << 63, (1 << 63) + 1, (1 << 64) - 1, 1 << 127],
+    ids = ["zero", "one", "below-max", "at-max", "at-2-63", "above-2-63", "uint64-max", "refs-128"],
+)
+def test_identities_round_trip_across_the_sqlite_integer_boundary(value):
+    """os.stat ids are unsigned, SQLite INTEGER is signed, and the encoding straddles that edge."""
+    stored = folder_sync._store_identity((value, value))
+    with closing(sqlite3.connect(":memory:")) as conn:
+        # Same declared affinity as linked_folders and linked_folder_files.
+        conn.execute("CREATE TABLE ids(device INTEGER, inode INTEGER)")
+        conn.execute("INSERT INTO ids VALUES(?,?)", stored)
+        read = tuple(conn.execute("SELECT device, inode FROM ids").fetchone())
+
+    loaded = folder_sync._load_identity(*read)
+    assert loaded == (value, value), _identity_mismatch(loaded, (value, value), read)
+    # Anything SQLite can hold stays an integer, so rows written by older builds still load.
+    fits = value <= folder_sync._SQLITE_INTEGER_MAX
+    assert isinstance(read[0], int) is fits, (
+        f"{value} was stored as {read[0]!r}; a value that {'fits' if fits else 'overflows'} "
+        f"SQLite's signed range must be written as {'an integer' if fits else 'text'}"
+    )
+
+
+@requires_sqlite_vec
+def test_reauthorizing_encodes_a_root_identity_above_the_sqlite_maximum(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """A Windows volume serial fills all 64 bits, so half of them overflow SQLite INTEGER.
+
+    The reauthorize path writes root_device with its own UPDATE, so it needs its own case: a
+    real st_dev on this host is far too small to reach the encoding at all.
+    """
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("kept across the remount", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    identity = (0xAC8C2FEF8C2FB32E, 1 << 127)
+
+    monkeypatch.setattr(folder_sync, "_root_identity", lambda path: identity)
+
+    refreshed = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "scope-1",
+        path = str(source),
+    )
+
+    assert refreshed["id"] == folder["id"]
+    stored = (refreshed["root_device"], refreshed["root_inode"])
+    loaded = folder_sync._load_identity(*stored)
+    assert loaded == identity, _identity_mismatch(loaded, identity, stored)
+    # Reconciliation reloads the row as the identity to expect, so an undecoded column would
+    # fail the whole sync rather than round-trip.
+    assert _run(folder["id"])["status"] == "completed"
 
 
 def test_validate_folder_rejects_symlink_root(rag_home):
@@ -1815,7 +1886,7 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
         nonlocal retired
         saved_path.write_text("saved", encoding = "utf-8")
         retired = True
-        return str(saved_path), "race.txt"
+        return str(saved_path), "race.txt", "0" * 64
 
     monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(studio_db, "get_chat_project", lambda value: {"id": value})
@@ -1832,7 +1903,7 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
     )
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(rag_routes.upload_project_document(project_id, subject = "test"))
+        rag_routes.upload_project_document(project_id, subject = "test")
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert not saved_path.exists()
@@ -1853,7 +1924,7 @@ def test_upload_rechecks_owner_after_saving_file(rag_home, monkeypatch, scope_ty
         nonlocal owner_exists
         saved_path.write_text("saved", encoding = "utf-8")
         owner_exists = False
-        return str(saved_path), saved_path.name
+        return str(saved_path), saved_path.name, "0" * 64
 
     monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(rag_routes.folder_sync, "scope_retired", lambda scope: False)
@@ -1869,17 +1940,17 @@ def test_upload_rechecks_owner_after_saving_file(rag_home, monkeypatch, scope_ty
             "get_kb",
             lambda conn, value: {"id": value} if owner_exists else None,
         )
-        upload = rag_routes.upload_kb_document(owner_id, subject = "test")
+        upload = partial(rag_routes.upload_kb_document, owner_id, subject = "test")
     else:
         monkeypatch.setattr(
             studio_db,
             "get_chat_project",
             lambda value: {"id": value} if owner_exists else None,
         )
-        upload = rag_routes.upload_project_document(owner_id, subject = "test")
+        upload = partial(rag_routes.upload_project_document, owner_id, subject = "test")
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(upload)
+        upload()
 
     assert getattr(exc_info.value, "status_code", None) == 404
     assert not saved_path.exists()
@@ -2113,7 +2184,7 @@ def test_kb_upload_rejects_retired_scope_before_saving(rag_home, monkeypatch):
     )
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(rag_routes.upload_kb_document("knowledge", subject = "test"))
+        rag_routes.upload_kb_document("knowledge", subject = "test")
     assert getattr(exc_info.value, "status_code", None) == 409
 
 
@@ -2324,6 +2395,46 @@ def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeyp
 
 
 @requires_sqlite_vec
+def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
+    rag_home, monkeypatch
+):
+    """A recreated project must be left exactly as the delete found it, not merely unpurged.
+
+    The reconciler already refuses to purge a scope whose owner exists; this is the same guard
+    on the delete route, which reached the purge unconditionally. Aborting has to put back
+    everything the pass did, which is why only the tombstone is written before this recheck.
+    """
+    from routes import chat_history
+
+    scope = store.project_scope("p1")
+    source = rag_home / "relinked-by-the-new-project"
+    source.mkdir()
+    seen = {"checks": 0}
+
+    def recreated_after_the_check(project_id):
+        # gone for the check that decides to retire, back by the time the purge asks
+        seen["checks"] += 1
+        return None if seen["checks"] == 1 else {"id": project_id}
+
+    folder = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
+    monkeypatch.setattr(chat_history, "get_chat_project", recreated_after_the_check)
+
+    chat_history._delete_project_rag_sources("p1")
+
+    survivor = folder_sync.get_folder(folder["id"])
+    assert survivor is not None
+    # untouched, not just undeleted: a retired row left behind is not an abort
+    assert (survivor["status"], survivor["auto_sync"], survivor["last_error"]) == (
+        folder["status"],
+        folder["auto_sync"],
+        None,
+    )
+    assert seen["checks"] == 2
+    # and the scope is usable again immediately, not once the reconciler next runs
+    assert folder_sync.scope_retired(scope) is False
+
+
+@requires_sqlite_vec
 def test_reconciliation_restores_a_scope_whose_project_came_back(rag_home):
     scope = store.project_scope("p1")
     source = rag_home / "recreated-project"
@@ -2374,16 +2485,99 @@ def test_retirement_leaves_a_folder_linked_after_the_ownership_check(rag_home):
     source = rag_home / "before-check"
     source.mkdir()
     existing = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
-    checked_at = folder_sync.now_iso()
+    owned = folder_sync.linked_folder_ids(scope)
     # a second backend process links this one after the check and before the write
     later = rag_home / "after-check"
     later.mkdir()
     fresh = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(later))
 
-    folder_sync.retire_scope(scope, checked_at)
+    folder_sync.retire_scope(scope, owned)
 
     assert folder_sync.get_folder(existing["id"])["status"] == "retired"
     survivor = folder_sync.get_folder(fresh["id"])
     assert survivor["status"] == fresh["status"]
     assert survivor["auto_sync"] == fresh["auto_sync"]
     assert survivor["last_error"] is None
+
+
+@requires_sqlite_vec
+def test_the_ownership_bound_survives_a_clock_that_cannot_separate_the_two(rag_home, monkeypatch):
+    """Windows reads its clock in ~15.6ms steps, so both links can share one timestamp.
+
+    Freezing `_now` is that quantisation at its limit: any clock-derived bound has to guess,
+    and guessing wrong retires the folders of a project recreated with the same id, for good.
+    """
+    scope = store.project_scope("p1")
+    monkeypatch.setattr(folder_sync, "_now", lambda: "2026-01-01T00:00:00+00:00")
+    for name in ("before-check", "after-check"):
+        (rag_home / name).mkdir()
+    existing = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(rag_home / "before-check")
+    )
+    owned = folder_sync.linked_folder_ids(scope)
+    fresh = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(rag_home / "after-check")
+    )
+    assert existing["created_at"] == fresh["created_at"]
+
+    folder_sync.retire_scope(scope, owned)
+
+    assert folder_sync.get_folder(existing["id"])["status"] == "retired"
+    assert folder_sync.get_folder(fresh["id"])["status"] == fresh["status"]
+
+
+@requires_sqlite_vec
+def test_an_empty_ownership_snapshot_retires_nothing_but_still_tombstones(rag_home):
+    """`None` means no bound; `[]` means the check saw no folders, and is not the same thing."""
+    scope = store.project_scope("p1")
+    (rag_home / "linked-late").mkdir()
+    fresh = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(rag_home / "linked-late")
+    )
+
+    folder_sync.retire_scope(scope, [])
+
+    assert folder_sync.scope_retired(scope) is True
+    assert folder_sync.get_folder(fresh["id"])["status"] == fresh["status"]
+
+
+@requires_sqlite_vec
+def test_the_ownership_bound_is_applied_past_the_sqlite_parameter_cap(rag_home, monkeypatch):
+    """A scope with more folders than SQLite takes host parameters still retires all of them."""
+    scope = store.project_scope("p1")
+    monkeypatch.setattr(folder_sync, "_ID_CHUNK", 3)
+    folders = []
+    for index in range(7):
+        source = rag_home / f"folder-{index}"
+        source.mkdir()
+        folders.append(
+            folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
+        )
+    owned = folder_sync.linked_folder_ids(scope)
+    assert len(owned) == len(folders)
+
+    folder_sync.retire_scope(scope, owned)
+
+    assert [folder_sync.get_folder(f["id"])["status"] for f in folders] == ["retired"] * 7
+
+
+@requires_sqlite_vec
+def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home, monkeypatch):
+    """Retirement already runs without sqlite-vec loaded, so the snapshot must too."""
+    scope = store.project_scope("p1")
+    source = rag_home / "linked"
+    source.mkdir()
+    folder = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
+
+    def unavailable():
+        raise sqlite3.OperationalError("cannot load sqlite-vec")
+
+    # scoped, not monkeypatch.undo(): rag_home patches through the same fixture, so undoing
+    # here would restore the database path before the assertions read it
+    with monkeypatch.context() as no_vec:
+        no_vec.setattr(folder_sync.rag_db, "get_connection", unavailable)
+        owned = folder_sync.linked_folder_ids(scope)
+        folder_sync.retire_scope(scope, owned)
+
+    assert owned == [folder["id"]]
+    assert folder_sync.get_folder(folder["id"])["status"] == "retired"

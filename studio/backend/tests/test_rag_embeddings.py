@@ -24,6 +24,13 @@ from core.rag import config, embeddings
 _CRASHING_UNLESS_CPU_SCRIPT = (
     "import ctypes, os, sys\n"
     "if sys.argv[1] != 'cpu':\n"
+    # First, and above the Windows branch below: every crash this child can take has to
+    # be preceded by the clear, and the abort() arm was not. A no-op off Linux, which is
+    # why it can sit ahead of the platform test rather than inside each arm.
+    "    try:\n"
+    "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
+    "    except Exception:\n"
+    "        pass\n"
     # ctypes installs a structured exception handler on Windows, so the null read below
     # comes back as an ordinary OSError and the child exits like any reporting child,
     # which the probe reads as a working device. abort() is the real shape there: it is
@@ -31,10 +38,6 @@ _CRASHING_UNLESS_CPU_SCRIPT = (
     # probe already recognises.
     "    if sys.platform == 'win32':\n"
     "        os.abort()\n"
-    "    try:\n"
-    "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
-    "    except Exception:\n"
-    "        pass\n"
     "    ctypes.string_at(0)\n"
 )
 

@@ -237,6 +237,31 @@ def test_detect_dspark_file_prefers_matching_q8_sidecar(tmp_path):
     assert detect_dspark_file(str(weight)) == str(q8.resolve())
 
 
+def test_detect_dspark_file_finds_the_sidecar_hermes_stages_under_assets(tmp_path):
+    # Hermes' catalog ships DeepSeek V4 Flash with its DSpark drafter under models/assets/,
+    # the folder its router never lists; the weight sits one level up as a flat split.
+    weight = tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00002.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00002.gguf").write_bytes(b"target")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    sidecar = assets / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"q8")
+    (assets / "mmproj-Qwen3.8-27B-BF16.gguf").write_bytes(b"projector")
+
+    assert detect_dspark_file(str(weight)) == str(sidecar.resolve())
+
+
+def test_detect_mtp_file_finds_the_sidecar_hermes_stages_under_assets(tmp_path):
+    (tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf").write_bytes(b"x")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "mtp-gemma-4-12B-it.gguf").write_bytes(b"x")
+
+    found = detect_mtp_file(str(tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf"))
+    assert found == str((assets / "mtp-gemma-4-12B-it.gguf").resolve())
+
+
 def test_detect_dspark_file_accepts_the_suffix_naming_scheme(tmp_path):
     """``<model>-dspark.gguf`` pairs too, the same second scheme MTP accepts."""
     weight = tmp_path / "model-Q4_K_M.gguf"
@@ -684,6 +709,7 @@ def test_variant_plans_new_scheme_uses_root_drafter():
 
 def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
     # _pick_mtp is nested; capture it via the companion-download seam.
+
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)  # online: skip reuse probe
@@ -718,8 +744,8 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
 
 
 def test_companion_downloads_forward_the_load_cancel_event(monkeypatch):
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -797,8 +823,8 @@ def _capture_companion_download(backend):
 
 
 def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path, monkeypatch):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -817,8 +843,8 @@ def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path
 
 
 def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkeypatch):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -841,8 +867,8 @@ def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkey
 
 
 def test_download_mtp_keeps_a_lone_shared_head_offline(tmp_path, monkeypatch):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -867,9 +893,8 @@ def _stub_hub(
     listing_fails = False,
 ):
     """The live repo without a network, stubbed below the helper's own snapshot lookup."""
-    import huggingface_hub
-
     import core.inference.llama_cpp as llama_cpp_module
+    import huggingface_hub
 
     def _list(repo, token = None):
         if listing_fails:
@@ -888,8 +913,8 @@ def _stub_hub(
 def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_path, monkeypatch):
     """The helper repeats _companion_snapshot_sibling before listing, so the caller's
     fall-through returned the same borrowing head (unsloth#10322). Uses the real helper."""
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -919,8 +944,8 @@ def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_pat
 def test_download_mtp_keeps_the_borrowing_head_when_the_listing_never_answers(
     tmp_path, monkeypatch
 ):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -938,8 +963,8 @@ def test_download_mtp_keeps_the_borrowing_head_when_the_listing_never_answers(
 
 
 def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
-    import utils.models.model_config as mc
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snap = _seed_snapshot(
@@ -959,8 +984,9 @@ def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
 
 def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, monkeypatch):
     # Pre-fix build may have fetched only the MTP/ copy; reuse it offline.
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snap = _seed_snapshot(
@@ -979,8 +1005,9 @@ def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, m
 def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatch):
     # A newer partial snapshot holds only the MTP/ copy; an older one has the
     # root. Must still return the small root, not the large subdir copy.
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snap_partial = _seed_snapshot(tmp_path / "new", ["MTP/mtp-gemma-4-E4B-it-BF16.gguf"])
@@ -994,8 +1021,9 @@ def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatc
 def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch):
     # Two snapshots both hold a root drafter; newest-first order must win so a
     # fresh main GGUF is not paired with a stale drafter revision.
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     newest = _seed_snapshot(tmp_path / "newest", ["mtp-gemma-4-E4B-it.gguf"])
@@ -1007,8 +1035,8 @@ def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch
 
 
 def test_download_mtp_prefers_main_snapshot_offline(tmp_path, monkeypatch):
-    import utils.models.model_config as mc
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snapshots = tmp_path / "models--unsloth--gemma" / "snapshots"
@@ -1058,8 +1086,9 @@ def test_download_mtp_skips_discovery_for_embedded_head(tmp_path, monkeypatch):
 def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     # Online, do not reuse a cached copy: go to the download path so a changed
     # drafter is refetched (hf_hub_download checks the current revision).
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     snap = _seed_snapshot(tmp_path, ["mtp-gemma-4-E4B-it.gguf"])
@@ -1098,8 +1127,8 @@ def _dspark_download_probe(
     """Run _download_dspark against a stubbed capability probe and an optionally
     cached sidecar; report whether the ~11 GB fetch (and even the repo listing)
     was reached."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -1155,8 +1184,8 @@ def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
 def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
     """The reuse check retries a failed fetch but must never retry a repo that
     ships none, so the two "returned None" cases have to stay distinguishable."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -1196,8 +1225,8 @@ def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tm
     """A listing that never completed says nothing about the repo. Recording it as
     a definitive absence would suppress the reuse check's retry, so DSpark would
     never be fetched once connectivity returned."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2227,6 +2256,16 @@ def _write_gguf(path: Path, architecture: str) -> Path:
     return path
 
 
+def test_detect_dflash_file_leaves_a_shared_assets_pool_alone(tmp_path):
+    # The published sidecar names no family, so one under a Hermes assets/ pool could be any
+    # download's; DSpark and MTP sidecars name their weight, DFlash keeps the root-only rule.
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    (tmp_path / "assets").mkdir()
+    _write_gguf(tmp_path / "assets" / "dflash-kquant.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) is None
+
+
 def test_detect_dflash_file_finds_the_unpaired_published_sidecar(tmp_path):
     """The published sidecar is dflash-kquant.gguf, which names no model family,
     so the filename pairing DSpark uses would reject the one file this exists to
@@ -2314,8 +2353,8 @@ def _dflash_download_probe(
     supports_dflash,
     cached = None,
 ):
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2395,8 +2434,8 @@ def test_download_dflash_still_reports_a_cached_sidecar_it_cannot_run(tmp_path, 
 def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
     """Most repos publish none, and retrying that on every Apply would relaunch
     an identical server forever; a failed fetch must still be retried."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2473,8 +2512,8 @@ _MULTI_FAMILY_LISTING = [
 
 def _dflash_download_pick(monkeypatch, *, listing, near_path):
     """The sidecar _download_dflash's picker chooses out of a repo listing."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2628,6 +2667,7 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
     an order of magnitude under the ~11 GB DSpark case the rule was written for.
     The positive control below shows the reclaim itself still works."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
     from hub.utils.gguf import is_reclaimable_drafter_path
 
     assert is_reclaimable_drafter_path("dflash-kquant.gguf") is False
@@ -2713,7 +2753,6 @@ def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_
     rejection takes a read back, so the order is: resolve, ask accept, then read.
     """
     import os
-
     import utils.models.model_config as mc
 
     leased = tmp_path / "leased"
@@ -2769,8 +2808,8 @@ def _dflash_repo_download(
     sibling = None,
 ):
     """Drive _download_dflash over a repo listing whose files exist in tmp_path."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2932,7 +2971,9 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     Drives the real load path: the suppression lives inline in load_model's
     download phase, so nothing short of running it can pin the interaction.
     """
+    from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
+
     from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
     monkeypatch.setattr(
@@ -3244,8 +3285,8 @@ def test_cached_dflash_lookup_ignores_a_nested_dflash_named_weight(tmp_path, mon
 
 
 def _split_companion_download(tmp_path, monkeypatch, listing):
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo, token = None: list(listing))
@@ -3332,8 +3373,8 @@ def test_companion_snapshot_reuse_skips_an_incomplete_split_sidecar(tmp_path):
 def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeypatch):
     """The offline cache lookup is the third way a shard can reach --model-draft,
     and offline there is no fetch left to complete the set."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
@@ -3424,8 +3465,8 @@ def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp
 def _dflash_hub_download(tmp_path, monkeypatch, *, listing, fetch):
     """Drive _download_dflash through the real _download_companion_gguf, with only
     the two Hub calls stubbed out."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -3692,8 +3733,9 @@ def test_download_dflash_skips_a_root_weight_too_big_to_be_a_drafter(monkeypatch
 def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkeypatch):
     """The snapshot and cache paths both refuse half a split companion; the download
     path returned shard 1 and handed llama-server a set it cannot open."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
+    import huggingface_hub
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -3701,7 +3743,6 @@ def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkey
     )
     # Patched at the source: _download_companion_gguf imports list_repo_files inside
     # its own body, so a module attribute on llama_cpp is never consulted.
-    import huggingface_hub
 
     monkeypatch.setattr(
         huggingface_hub,
@@ -3788,9 +3829,9 @@ def test_download_dflash_sums_a_split_family_before_the_size_bound(monkeypatch, 
 def test_download_companion_records_an_incomplete_listing_as_settled():
     """The completeness rejection lands after outcome["listed"] was set true, so
     without this the caller reads a settled answer as one worth retrying forever."""
+    from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
     import huggingface_hub
-    from core.inference.llama_cpp import LlamaCppBackend
 
     import pytest as _pytest
 

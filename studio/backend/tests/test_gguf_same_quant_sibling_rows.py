@@ -1691,7 +1691,7 @@ def test_the_cached_template_walk_resolves_the_spelling_across_every_snapshot(tm
     older = _materialize(tmp_path / "older", [("model-Q4_K_M.gguf", 1)])
     monkeypatch.setattr(ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older])
     monkeypatch.setattr(ps, "read_gguf_chat_template", lambda path: f"template-of:{path}")
-    monkeypatch.setattr(ps, "is_anonymous", lambda token: False)
+    monkeypatch.setattr(ps, "cache_reads_authorized", lambda token, **kw: True)
     monkeypatch.setattr(ps, "is_local_path", lambda name: False)
     template = ps.read_default_chat_template("org/repo", "tok", gguf_variant = "Q4_K_M")
     assert template == f"template-of:{older / 'model-Q4_K_M.gguf'}"
@@ -1747,7 +1747,7 @@ def test_the_cached_template_walk_folds_key_case_across_snapshots(tmp_path, monk
     older = _materialize(tmp_path / "older", [("model-q4_k_m.gguf", 1)])
     monkeypatch.setattr(ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older])
     monkeypatch.setattr(ps, "read_gguf_chat_template", lambda path: f"template-of:{path}")
-    monkeypatch.setattr(ps, "is_anonymous", lambda token: False)
+    monkeypatch.setattr(ps, "cache_reads_authorized", lambda token, **kw: True)
     monkeypatch.setattr(ps, "is_local_path", lambda name: False)
     template = ps.read_default_chat_template("org/repo", "tok", gguf_variant = "Q4_K_M")
     assert template == f"template-of:{newer / 'model-Q4_K_M.gguf'}"

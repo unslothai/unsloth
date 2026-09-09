@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from hub.utils.hf_tokens import is_anonymous
+from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -373,41 +373,47 @@ def read_default_chat_template(
 
     # The walk returns a private repo's raw template without asking the Hub, so a denied
     # caller goes to the Hub and is refused there. A UI session keeps the cache.
-    if not is_anonymous(hf_token):
-        try:
-            # Resolve within each cached revision, newest first. A revision's sidecar
-            # supersedes its own embedded GGUF copy, but must not override a newer
-            # revision, so precedence stays per-snapshot rather than global.
-            snapshots = list(iter_snapshots_preferring_whole(resolved, gguf_variant))
-            target = gguf_variant
-            if gguf_variant:
-                # The spelling is resolved across EVERY cached revision before any one is read:
-                # a newer revision holding only the tagged build looked unambiguous alone and
-                # returned its template for a spelling the plain build in an older revision owns,
-                # and two tagged revisions returned an arbitrary one for an alias the loaders
-                # refuse. Each snapshot is then asked for the exact key the union decided.
-                from hub.utils.gguf import gguf_variant_key, resolve_variant_alias
+    # Walk first, authorize the answer: the walk is local, and with nothing cached there is
+    # no disk-backed answer to protect, so probing would spend up to the probe timeout to
+    # decide a question that no longer has a subject. Same order as the per-file gate below.
+    cached_template = None
+    try:
+        # Resolve within each cached revision, newest first. A revision's sidecar
+        # supersedes its own embedded GGUF copy, but must not override a newer
+        # revision, so precedence stays per-snapshot rather than global.
+        snapshots = list(iter_snapshots_preferring_whole(resolved, gguf_variant))
+        target = gguf_variant
+        if gguf_variant:
+            # The spelling is resolved across EVERY cached revision before any one is read:
+            # a newer revision holding only the tagged build looked unambiguous alone and
+            # returned its template for a spelling the plain build in an older revision owns,
+            # and two tagged revisions returned an arbitrary one for an alias the loaders
+            # refuse. Each snapshot is then asked for the exact key the union decided.
+            from hub.utils.gguf import gguf_variant_key, resolve_variant_alias
 
-                held: dict = {}
-                for snapshot in snapshots:
-                    try:
-                        held[snapshot] = {gguf_variant_key(p.relative_to(snapshot).as_posix()).lower() for p in _iter_ggufs(snapshot)}
-                    except OSError:
-                        held[snapshot] = set()
-                keys = set().union(*held.values()) if held else set()
-                if keys:
-                    target = resolve_variant_alias(sorted(keys), gguf_variant)
-                    # Only the snapshots that HOLD the decided key are asked, so the per-directory
-                    # lookup cannot re-alias the bare spelling onto a tagged file the union rejected.
-                    snapshots = [s for s in snapshots if target is not None and target.lower() in held[s]]
+            held: dict = {}
             for snapshot in snapshots:
-                template = _chat_template_from_dir(snapshot, target)
-                if template:
-                    return template
-        except Exception as exc:
-            logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+                try:
+                    held[snapshot] = {gguf_variant_key(p.relative_to(snapshot).as_posix()).lower() for p in _iter_ggufs(snapshot)}
+                except OSError:
+                    held[snapshot] = set()
+            keys = set().union(*held.values()) if held else set()
+            if keys:
+                target = resolve_variant_alias(sorted(keys), gguf_variant)
+                # Only the snapshots that HOLD the decided key are asked, so the per-directory
+                # lookup cannot re-alias the bare spelling onto a tagged file the union rejected.
+                snapshots = [s for s in snapshots if target is not None and target.lower() in held[s]]
+        for snapshot in snapshots:
+            cached_template = _chat_template_from_dir(snapshot, target)
+            if cached_template:
+                break
+    except Exception as exc:
+        logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+        cached_template = None
+    if cached_template and cache_reads_authorized(hf_token, repo_id = resolved):
+        return cached_template
 
-    if is_anonymous(hf_token) and hf_env_offline():
+    if hf_env_offline() and not cache_reads_authorized(hf_token, repo_id = resolved):
         # Offline, hf_hub_download serves the cached copy without checking the credential,
         # so the fallback would hand back the template the walk just refused. The route
         # forces offline whenever the Hub looks unreachable.
@@ -418,12 +424,44 @@ def read_default_chat_template(
 
         _api = HfApi(token = hf_token)
 
+        def _this_file_is_cached(rel: str) -> bool:
+            """THIS file at this revision, not merely a directory for the repo.
+
+            What the download could serve from disk is the one candidate template, so a
+            snapshot holding only weights can answer nothing and refusing it costs an
+            authorized caller a template the Hub would have given it. Fails closed.
+            """
+            try:
+                from huggingface_hub import try_to_load_from_cache
+
+                # The same cache the download below names: without it this asks the library
+                # default while the read it guards happens in the operator's chosen root, so
+                # a template living only there reported a miss and opened the gate.
+                return isinstance(
+                    try_to_load_from_cache(
+                        repo_id = resolved, filename = rel, cache_dir = active_hf_hub_cache()
+                    ),
+                    str,
+                )
+            except Exception:
+                return True
+
         def _remote_worth_downloading(rel: str) -> bool:
+            # hf_hub_download returns the cached pointer for ANY failed head call, a 403 as
+            # much as an unreachable Hub, before it re-raises. So a successful metadata
+            # lookup is no more proof than the offline gate was: a gated repo can publish
+            # file metadata publicly. Asked once, ahead of both.
+            if cached_read_refused(
+                hf_token,
+                repo_id = resolved,
+                is_cached = lambda: _this_file_is_cached(rel),
+            ):
+                return False
             # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
-                # An inconclusive lookup preserves the existing download behavior.
+                # Nothing cached to serve: let the Hub enforce its own access.
                 return True
             matched = [info for info in infos if getattr(info, "path", None) == rel]
             if not matched:
