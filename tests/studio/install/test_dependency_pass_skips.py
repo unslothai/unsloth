@@ -1506,3 +1506,30 @@ def test_a_second_pass_in_one_process_starts_with_no_audited_steps() -> None:
     source = (stack.__file__ and open(stack.__file__, encoding = "utf-8").read()) or ""
     reset = source.index("_STEP_RESULTS.clear()")
     assert "_AUDITED_STEPS.clear()" in source[reset : reset + 400]
+
+
+def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -> None:
+    """find_spec sees only the top-level directory; a module the RECORD names that is
+    gone or truncated is what makes the recorded verdict false, so it is what is checked."""
+    import importlib.metadata
+    import importlib.util
+    from types import SimpleNamespace
+
+    payload = tmp_path / "mlx_lm" / "sample_utils.py"
+    payload.parent.mkdir()
+    payload.write_bytes(b"x" * 10)
+
+    class _Entry(str):
+        size = 10
+
+    dist = SimpleNamespace(
+        files = [_Entry("mlx_lm/sample_utils.py"), _Entry("mlx_lm/__pycache__/x.pyc")],
+        locate_file = lambda f: tmp_path / str(f),
+    )
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: dist)
+    assert stack._mlx_payload_present() is True
+    payload.write_bytes(b"x" * 3)
+    assert stack._mlx_payload_present() is False
+    payload.unlink()
+    assert stack._mlx_payload_present() is False

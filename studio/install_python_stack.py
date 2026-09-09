@@ -7905,18 +7905,30 @@ def _mlx_health_fingerprint() -> dict:
 
 
 def _mlx_payload_present() -> bool:
-    """The MLX stack's top-level packages are on disk, found without importing them.
+    """The MLX stack's payload is on disk as its RECORDs describe it, without importing it.
 
     The recorded verdict below is keyed on pins and interpreter, which a payload deleted
-    or moved after the pass leaves unchanged; a package whose files are gone cannot be
-    the one the verdict describes.
+    or truncated after the pass leaves unchanged. find_spec alone sees only the top-level
+    directory, so every file each distribution's RECORD names is checked for presence and
+    size (bytecode excepted, it is regenerated); a package missing an internal module
+    fails at the import the verdict vouches for. A few hundred stats, well under the
+    import the probe would pay.
     """
     try:
+        import importlib.metadata
         import importlib.util
-        return all(
-            importlib.util.find_spec(name) is not None
-            for name in ("mlx", "mlx_lm", "mlx_vlm", "transformers")
-        )
+
+        for name in ("mlx", "mlx_lm", "mlx_vlm", "transformers"):
+            if importlib.util.find_spec(name) is None:
+                return False
+        for dist_name in ("mlx", "mlx-lm", "mlx-vlm"):
+            dist = importlib.metadata.distribution(dist_name)
+            for entry in dist.files or []:
+                if entry.size is None or str(entry).endswith(".pyc"):
+                    continue
+                if os.stat(dist.locate_file(entry)).st_size != entry.size:
+                    return False
+        return True
     except Exception:  # noqa: BLE001 - not finding it is the probe's job to explain
         return False
 
