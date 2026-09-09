@@ -205,6 +205,8 @@ def _wheel_route_defs(*, arch_family: bool = True, rocminfo: str = _rocminfo_stu
         _shell_function("_amd_generic_tag_carries_gfx"),
         _shell_function("_amd_mask_survivors"),
         _shell_function("_amd_runtime_gfx_target"),
+        _shell_function("_amd_gfx_is_shadowing_integrated"),
+        _shell_function("_amd_prefer_discrete_gfx"),
         _shell_function("_rocminfo_gpu_records"),
         _shell_function("_amd_ordered_gfx_devices"),
         "_ensure_rocm_probe_env() { :; }",
@@ -1138,6 +1140,55 @@ def _route_shell_masked(
     a bash single-quoted string is a literal backslash-n, so a harness that joined them would
     hand the route test one unroutable token and answer no whatever the code does.
     """
+    return (
+        _bash(
+            _route_script(physical, rocm_tag, devices, kfd, tail = _ROUTE_YES_NO),
+            env = _route_env(mask),
+        )
+        == "yes"
+    )
+
+
+_ROUTE_YES_NO = "_amd_request_has_a_wheel_route && echo yes || echo no"
+# The published target, not the verdict: on a host whose integrated GPU enumerates first the
+# interesting failure is not whether ROCm wins but which card it wins FOR.
+_ROUTE_TARGET = (
+    '_amd_request_has_a_wheel_route >/dev/null 2>&1; printf "%s" "${_AMD_REQUEST_TARGET_GFX:-}"'
+)
+
+
+def _route_env(mask: dict) -> dict:
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.endswith("VISIBLE_DEVICES") and k != "UNSLOTH_ROCM_GFX_ARCH"
+    }
+    env.update(mask)
+    return env
+
+
+def _route_target_masked(
+    physical: "list[str]",
+    rocm_tag: str = "rocm7.2",
+    devices: "list[str] | None" = None,
+    kfd: "list[str] | None" = None,
+    **mask: str,
+) -> str:
+    """The gfx the request would install FOR, or "" when it declines."""
+    return _bash(
+        _route_script(physical, rocm_tag, devices, kfd, tail = _ROUTE_TARGET),
+        env = _route_env(mask),
+    )
+
+
+def _route_script(
+    physical: "list[str]",
+    rocm_tag: str,
+    devices: "list[str] | None",
+    kfd: "list[str] | None",
+    *,
+    tail: str,
+) -> str:
     emit = 'printf "%s\\n" ' + " ".join(repr(a) for a in physical) if physical else ":"
     # KFD node order is what the mask ordinals index, and once rocminfo says nothing it is
     # the only ordered source left, so a test about ordering cannot leave it stubbed empty.
@@ -1150,16 +1201,10 @@ def _route_shell_masked(
             "_amd_gpu_present_via_pci() { return 0; }",
             *_wheel_route_defs(rocminfo = _fake_rocminfo(physical if devices is None else devices)),
             f"_detect_rocm_version_tag() {{ printf '%s\\n' {rocm_tag!r}; }}",
-            "_amd_request_has_a_wheel_route && echo yes || echo no",
+            tail,
         ]
     )
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if not k.endswith("VISIBLE_DEVICES") and k != "UNSLOTH_ROCM_GFX_ARCH"
-    }
-    env.update(mask)
-    return _bash(script, env = env) == "yes"
+    return script
 
 
 def test_a_mask_that_selects_only_an_unroutable_card_keeps_cuda():
@@ -2223,3 +2268,58 @@ def test_the_ambiguity_flag_does_not_survive_the_next_host(stack, monkeypatch):
         is False
     )
     assert _viable_masked(stack, monkeypatch, devices = ["gfx1100"]) is True
+
+
+def test_an_integrated_gpu_enumerated_first_does_not_strand_the_discrete_card():
+    """A Ryzen APU enumerates ahead of the discrete Radeon beside it, and the wheel family
+    is picked for ONE arch. install.sh took the first survivor, so gfx90c decided: it has no
+    route, the request fell back to CUDA, and because install.sh exports the family it chose
+    and _ensure_rocm_torch returns on its first line for a non-ROCm one, the Python
+    preference at _resolve_amd_gfx never ran. The routable gfx1200 was stranded."""
+    assert _route_shell_masked(["gfx90c", "gfx1200"]) is True
+    assert _route_target_masked(["gfx90c", "gfx1200"]) == "gfx1200"
+
+
+def test_a_routable_integrated_gpu_still_yields_to_the_discrete_one():
+    """The same divergence with a quieter symptom, and the reason the fix cannot just be
+    "decline when the first arch has no route": gfx1036 IS routable through gfx103X-all, so
+    the shell said yes and installed for the Raphael iGPU while a gfx1100 sat beside it.
+    Python deposes the APU here too."""
+    assert _route_target_masked(["gfx1036", "gfx1100"]) == "gfx1100"
+
+
+def test_a_discrete_card_enumerated_first_is_left_alone():
+    """The control: same two cards, opposite order. The preference only fires on an
+    integrated pick, so nothing here may move."""
+    assert _route_target_masked(["gfx1200", "gfx90c"]) == "gfx1200"
+
+
+def test_an_integrated_gpu_alone_is_still_declined():
+    """The control that keeps the fix honest. gfx90c has no route and there is no sibling to
+    prefer, so the request must still yield to CUDA -- a preference that invented a target
+    here would install wheels with no kernels for the only card present."""
+    assert _route_shell_masked(["gfx90c"]) is False
+    assert _route_target_masked(["gfx90c"]) == ""
+
+
+def test_an_unroutable_sibling_does_not_rescue_an_unroutable_integrated_pick():
+    """gfx1010 is in neither the generic wheel nor any per-arch index, so deposing gfx90c for
+    it buys nothing and the request still declines. Same end state as install_python_stack's
+    _routable-or-nothing candidate rule."""
+    assert _route_shell_masked(["gfx90c", "gfx1010"]) is False
+
+
+def test_gfx906_is_not_a_candidate_for_the_swap():
+    """gfx906's only route is the rocm6.3 legacy tag, which opens solely when it is the sole
+    arch on the host, so promoting it here would install a rocm7.x wheel whose BLAS has no
+    gfx906 kernels and strand BOTH cards. _MIXED_HOST_UNROUTABLE excludes it on the Python
+    side for the same reason, leaving the routable iGPU in place."""
+    assert _route_target_masked(["gfx1036", "gfx906"]) == "gfx1036"
+
+
+def test_a_pinned_host_keeps_the_device_the_user_named():
+    """A set mask is the user naming a device, and _visible_devices_pinned exempts the Python
+    rule for exactly that reason. HIP_VISIBLE_DEVICES=0 selects the iGPU deliberately, so the
+    preference must not quietly install for the other card."""
+    assert _route_target_masked(["gfx90c", "gfx1200"], HIP_VISIBLE_DEVICES = "0") == ""
+    assert _route_shell_masked(["gfx90c", "gfx1200"], HIP_VISIBLE_DEVICES = "0") is False

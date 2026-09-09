@@ -3533,6 +3533,61 @@ _amd_runtime_gfx_target() {
     printf '%s\n' "$_argt_list" | awk 'NF { print; exit }'
 }
 
+# The AMD integrated GPUs that shadow a discrete card by enumerating ahead of it. Mirror of
+# _SHADOWING_INTEGRATED_GFX in studio/install_python_stack.py, held to it by
+# tests/studio/install/test_rocm_arch_table_parity.py: this table existing in one installer
+# and not the other is the shape of #7264 / #7277 / #7293, where an AMD user on the missed
+# path silently got the wrong wheels.
+_amd_gfx_is_shadowing_integrated() {
+    case "$1" in
+        gfx90c|gfx1013|gfx1033|gfx1035|gfx1036|gfx1103|gfx1153) return 0 ;;
+    esac
+    return 1
+}
+
+# The card to install for when enumeration put an integrated GPU first, mirroring
+# _resolve_amd_gfx's #7776 preference in install_python_stack.py.
+#
+# The wheel family is picked for ONE arch, so letting the APU decide strands the discrete
+# card: on gfx90c ahead of gfx1200 the request found no route at all and fell back to CUDA,
+# and on gfx1036 ahead of gfx1100 it installed gfx103X-all for the iGPU. Both halves of this
+# feature have to agree, because install.sh exports the family it chose and
+# _ensure_rocm_torch returns on its first line for a non-ROCm one -- so the shell deciding
+# CUDA here is final, and the Python preference never runs.
+#
+# A set mask is the user naming a device and is honoured verbatim, exactly as
+# _visible_devices_pinned gates the Python rule. gfx906 is not a candidate: its only route
+# is the rocm6.3 legacy tag, which opens solely when it is the sole arch, so naming it on a
+# mixed host installs a rocm7.x wheel with no gfx906 kernels and strands BOTH cards.
+# Deposing a routable APU for one no index carries is the same trade, so an unroutable
+# sibling is taken only when the integrated pick has no route either.
+_amd_prefer_discrete_gfx() {
+    _apdg_devs="$1"
+    _apdg_sel="$2"
+    if ! _amd_gfx_is_shadowing_integrated "$_apdg_sel"; then
+        printf '%s' "$_apdg_sel"
+        return 0
+    fi
+    if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ] || \
+       [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
+        printf '%s' "$_apdg_sel"
+        return 0
+    fi
+    _apdg_others=$(printf '%s\n' "$_apdg_devs" | awk 'NF' | while IFS= read -r _apdg_g; do
+        _amd_gfx_is_shadowing_integrated "$_apdg_g" && continue
+        [ "$_apdg_g" = gfx906 ] && continue
+        printf '%s\n' "$_apdg_g"
+    done)
+    _apdg_pick=$(printf '%s\n' "$_apdg_others" | awk 'NF' | while IFS= read -r _apdg_g; do
+        _amd_gfx_has_wheel_route "$_apdg_g" && printf '%s\n' "$_apdg_g"
+    done | awk 'NF { print; exit }')
+    if [ -z "$_apdg_pick" ] && ! _amd_gfx_has_wheel_route "$_apdg_sel"; then
+        _apdg_pick=$(printf '%s\n' "$_apdg_others" | awk 'NF { print; exit }')
+    fi
+    [ -n "$_apdg_pick" ] || _apdg_pick="$_apdg_sel"
+    printf '%s' "$_apdg_pick"
+}
+
 _amd_request_has_a_wheel_route() {
     # The one card this run hands torch, published for get_torch_index_url's
     # miscomputing-arch gate, which has only the unmasked inventory to judge on. Cleared
@@ -3630,6 +3685,12 @@ _amd_request_has_a_wheel_route() {
         return 1
     fi
     [ -n "$_arwr_sel" ] || return 1
+    # Enumeration order is not a choice of card. The list the preference reads is the
+    # per-device one when there is one, and the flat inventory otherwise -- where the count
+    # is 1 and no preference can apply anyway.
+    _arwr_pref="$_arwr_devs"
+    [ -n "$_arwr_pref" ] || _arwr_pref="$_arwr_archs"
+    _arwr_sel=$(_amd_prefer_discrete_gfx "$_arwr_pref" "$_arwr_sel")
     # gfx906's only route is the rocm6.3 legacy tag, which opens solely when gfx906 is the
     # sole arch, so a second AMD arch anywhere on the host makes it unroutable however the
     # masks select. Counted on the physical inventory for that reason, since the reroute
