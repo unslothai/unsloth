@@ -106,7 +106,8 @@ def save_preparation(record: dict, raw_token: str, *, now: int) -> None:
         conn.execute(
             """
             DELETE FROM agent_prepared_commits
-            WHERE status IN ('awaiting_confirmation', 'failed', 'expired')
+            WHERE (status IN ('awaiting_confirmation', 'failed', 'expired')
+                   OR (status = 'confirming' AND commit_sha IS NULL))
               AND expires_at < ?
             """,
             (now,),

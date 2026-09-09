@@ -10,14 +10,13 @@ on:
   pull_request:
     paths:
       - 'studio/backend/core/agent_workspace/**'
-      - 'studio/backend/core/inference/mcp_client.py'
+      - 'studio/backend/core/project_retirement.py'
       - 'studio/backend/routes/project_git_review.py'
       - 'studio/backend/routes/project_worktrees.py'
       - 'studio/backend/routes/chat_history.py'
       - 'studio/backend/storage/studio_db.py'
       - 'studio/backend/tests/test_project_git*.py'
       - 'studio/backend/tests/test_agent_workspace_worktrees_focused.py'
-      - 'studio/backend/tests/test_mcp_stdio_sessions.py'
       - 'studio/backend/main.py'
       - '.github/workflows/studio-git-review-ci.yml'
   merge_group:
@@ -41,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-latest, macos-15]
-        variant: [standalone, secure-tools]
+        variant: [lifecycle, secure-tools]
 
     env:
       PYTHONIOENCODING: utf-8
@@ -53,6 +52,14 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Compose project lifecycle support
+        shell: bash
+        env:
+          LIFECYCLE_REVISION: 31327e51f71055215b6d67fb4de9b6eb38494a73
+        run: |
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$LIFECYCLE_REVISION"
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$LIFECYCLE_REVISION"
 
       # Compose #10577 to verify shared tool locks and native Windows untracked reads.
       - name: Compose the secure command prerequisite
@@ -85,5 +92,6 @@ jobs:
           tests/test_project_git_review_routes.py
           tests/test_agent_workspace_worktrees_focused.py
           tests/test_project_git_safety.py
-          tests/test_mcp_stdio_sessions.py
+          tests/test_project_git_review_regressions.py
+          tests/test_project_git_prerequisites.py
           -q --tb=short --timeout=120 --maxfail=5

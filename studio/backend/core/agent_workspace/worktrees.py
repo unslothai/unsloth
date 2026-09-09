@@ -528,6 +528,15 @@ def _reconcile_record(record: dict) -> str:
             _mark_attention(record)
             return "attention"
         _verify_owned_marker(record, require_workspace = _lstat(target) is not None)
+        if record["status"] == "removed":
+            if entry is not None or _lstat(target) is not None:
+                return "attention"
+            try:
+                Path(record["markerPath"]).unlink()
+            except OSError:
+                return "error"
+            _remove_empty_container(target.parent)
+            return "removed"
         if entry is not None and _registration_matches(record, entry) and _plain_directory(target):
             if record["status"] in {"creating", "removing"}:
                 changed = transition_worktree_status(
@@ -608,6 +617,8 @@ def cleanup_worktree(project_id: str, worktree_id: str) -> dict:
         if record is None or record["projectId"] != project_id:
             raise AgentWorkspaceError("Studio worktree not found.")
         if record["status"] == "removed":
+            if _reconcile_record(record) in {"attention", "error"}:
+                raise AgentWorkspaceError("Worktree cleanup needs manual recovery.")
             return record
         if record["status"] != "active":
             _reconcile_record(record)

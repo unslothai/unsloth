@@ -6,6 +6,11 @@ managed project workspace. Folder selection and native path grants remain in
 the existing-folder workspace PR; this split does not accept a renderer-supplied
 filesystem root.
 
+Read-only review works independently. Git mutations require project lifecycle
+support from #10633; they refuse before workspace access without that support.
+OAuth GitHub handoff additionally requires #10632's configuration-check capability.
+These shared changes are separate PRs and are not included in this source diff.
+
 ## Review path
 
 1. `backend/core/agent_workspace/git_review.py` produces bounded status and
@@ -39,8 +44,8 @@ filesystem root.
    configuration, tool contract, local branch, commit, and complete content
    fingerprint. Confirmation verifies the published head with the connector's
    `get_commit` before invoking `create_pull_request`. The OAuth/one-shot MCP
-   path also rechecks configuration immediately before transport entry and
-   tool dispatch. Ambiguous submission errors require checking GitHub before
+   path requires the separately installed configuration checks before handoff.
+   Ambiguous submission errors require checking GitHub before
    retrying; the UI never retries automatically.
 7. `git_retirement.py` prevents archive/delete from racing guarded operations.
    Project deletion refuses while owned worktrees, checkpoint refs, or prepared
@@ -65,8 +70,8 @@ read; ownership secrets are never returned.
 | Checkpoints, prepared refs, worktrees | Native Git with guarded operations | Refused before mutation |
 | GitHub handoff | UI-reviewed connector path | Unavailable until mutation/review boundary is qualified |
 
-The independent workflow composes the pinned secure-tools source as an additional
-matrix variant. Shared UI insertions from the other review splits may require
+The native workflow composes pinned lifecycle support in both variants and the
+pinned secure-tools source in the second variant. Shared UI insertions from the other review splits may require
 integration when those PRs land. No generated frontend files are included.
 
 Prepared refs are recovery objects; they are not branch commits or a push.
@@ -89,8 +94,11 @@ From `studio/backend`:
 ```sh
 python -m pytest tests/test_project_git_review.py tests/test_project_git_review_routes.py \
   tests/test_agent_workspace_worktrees_focused.py tests/test_project_git_safety.py \
-  tests/test_mcp_stdio_sessions.py -q --timeout=120
+  tests/test_project_git_review_regressions.py tests/test_project_git_prerequisites.py -q --timeout=120
 ```
+
+Compose the pinned lifecycle commit in the workflow before testing mutations.
+The prerequisite tests explicitly cover refusal when that support is absent.
 
 From `studio/frontend`: `npm test`, `npm run typecheck`, `npm run build`, and
 `npm run bundle:check`. The dedicated native workflow is

@@ -697,7 +697,9 @@ async def lifespan(app: FastAPI):
     try:
         from core.agent_workspace.worktrees import reconcile_worktrees_on_startup
         from core.agent_workspace.checkpoints import reconcile_checkpoints_on_startup
-        if os.name == "posix":
+        from core.agent_workspace.git_guard import project_retirement_available
+
+        if os.name == "posix" and project_retirement_available():
             await asyncio.to_thread(reconcile_worktrees_on_startup)
             await asyncio.to_thread(reconcile_checkpoints_on_startup)
     except Exception as exc:

@@ -1123,23 +1123,7 @@ def patch_project(
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
-    from core.agent_workspace.git_retirement import begin_git_retirement, finish_git_retirement
-
-    fence = None
-    retiring = bool(patch.get("archived"))
-    begun = False
-    if retiring and get_chat_project(project_id) is None:
-        raise HTTPException(status_code = 404, detail = "Project not found.")
-    try:
-        if retiring:
-            fence = begin_git_retirement(project_id)
-            begun = True
-        project = update_chat_project(project_id, patch)
-    except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    finally:
-        if begun:
-            finish_git_retirement(project_id, fence)
+    project = update_chat_project(project_id, patch)
     if project is not None:
         project = ensure_chat_project_workspace(project_id)
     if project is None:
@@ -1183,22 +1167,6 @@ async def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    from starlette.concurrency import run_in_threadpool
-    from core.agent_workspace.git_retirement import begin_git_retirement, finish_git_retirement
-
-    if await run_in_threadpool(get_chat_project, project_id) is None:
-        raise HTTPException(status_code = 404, detail = "Project not found.")
-    try:
-        fence = await run_in_threadpool(begin_git_retirement, project_id, deleting = True)
-    except (RuntimeError, OSError) as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    try:
-        return await _delete_git_retired_project(project_id, request, delete_files, current_subject)
-    finally:
-        await run_in_threadpool(finish_git_retirement, project_id, fence)
-
-
-async def _delete_git_retired_project(project_id, request, delete_files, current_subject):
     from starlette.concurrency import run_in_threadpool
 
     # Rows first, files last: a member chat can still be running a tool in the

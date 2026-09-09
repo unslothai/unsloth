@@ -1027,7 +1027,7 @@ def _patch_sections(raw: bytes) -> list[bytes]:
 
 
 def _structured_hunks(section: str) -> tuple[list[dict[str, Any]], int, int, int]:
-    raw_lines = section.splitlines()
+    raw_lines = section.split("\n")
     hunks: list[dict[str, Any]] = []
     additions = 0
     deletions = 0

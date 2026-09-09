@@ -984,9 +984,3 @@ def test_http_tool_error_keeps_session(fake_clients):
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat").startswith("Error:")
     assert len(mcp_client._mcp_sessions) == 1
     assert len(fake_clients) == 1
-
-
-def test_http_config_check_blocks_before_dispatch(fake_clients):
-    out = call_tool_sync(HTTP_URL, None, "t", {}, config_check = lambda: False)
-    assert "MCP server was updated or removed before the call" in out
-    assert fake_clients == []

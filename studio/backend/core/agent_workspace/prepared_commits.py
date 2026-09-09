@@ -105,6 +105,21 @@ def prepare_commit(project_id, paths, message):
                 raise AgentWorkspaceError(
                     "Selected file contents could not be fully reviewed. Reduce the change set."
                 )
+            rename_sources = []
+            for item in preview_files:
+                if not item["code"].startswith("R"):
+                    continue
+                source = item.get("oldPath")
+                if not source or item.get("oldPathEncoding") != "utf-8":
+                    raise AgentWorkspaceError("The rename source cannot be safely selected.")
+                if source not in paths and (root / source).exists():
+                    raise AgentWorkspaceError(
+                        "Select the recreated rename source as well before preparing this commit."
+                    )
+                rename_sources.append(source)
+            # A temporary index begins at HEAD: both halves of a rename must be
+            # staged, or the reviewed move would become an added copy.
+            paths = _owned_paths(root, paths + rename_sources)
             if workspace_fingerprint(root) != fingerprint:
                 raise AgentWorkspaceError("Repository changed while the commit preview was built.")
             identifier = str(uuid.uuid4())

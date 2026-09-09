@@ -180,6 +180,12 @@ async def _connector_tools(server_id: str) -> tuple[dict, list[dict]]:
     server = await asyncio.to_thread(mcp_servers_db.get_server, server_id)
     if server is None or not server.get("is_enabled"):
         raise AgentWorkspaceError("The selected GitHub connector is unavailable.")
+    if server.get("use_oauth"):
+        from core.inference import mcp_client
+        if getattr(mcp_client, "MCP_ONE_SHOT_CONFIG_CHECK_VERSION", 0) < 1:
+            raise AgentWorkspaceError(
+                "OAuth GitHub handoff is unavailable until connector configuration checks are installed."
+            )
     if is_stdio(server["url"]) and not stdio_mcp_enabled():
         raise AgentWorkspaceError("Local MCP connectors are disabled on this host.")
     try:
@@ -453,14 +459,15 @@ class ConfirmCommitRequest(BaseModel):
 
 @router.get("/projects/{project_id}/git/manage")
 def git_management_state(project_id: str):
+    from core.agent_workspace.git_guard import project_retirement_available
     from core.agent_workspace.git_service import repository_head, project_git
     from core.agent_workspace.prepared_commit_state import list_ref_bearing_preparations
 
-    _project(project_id)
+    project = _project(project_id)
     result = {
         "projectId": project_id,
-        "workspaceRevision": 0,
-        "mutationsAvailable": os.name == "posix",
+        "workspaceRevision": int(project.get("workspaceRevision") or 0),
+        "mutationsAvailable": os.name == "posix" and project_retirement_available(),
         "checkpoints": [_public_checkpoint(record) for record in list_checkpoints(project_id)],
         "worktrees": [_public(record) for record in list_project_worktrees(project_id)],
         "preparedCommits": [
@@ -470,6 +477,10 @@ def git_management_state(project_id: str):
         "head": None,
         "fingerprint": None,
     }
+    if not project_retirement_available():
+        result["unavailableReason"] = (
+            "Git changes are unavailable until project lifecycle support is installed."
+        )
     if os.name == "posix":
         try:
             root, repository = project_git(project_id)

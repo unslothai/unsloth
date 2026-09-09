@@ -11,8 +11,20 @@ from .git_context import AgentWorkspaceError, project_workspace_access
 from .process_fence import _acquire_project_execution_fence, _release_project_execution_fence
 
 
+def project_retirement_available() -> bool:
+    try:
+        from core.project_retirement import PROJECT_RETIREMENT_PROTOCOL
+    except ImportError:
+        return False
+    return PROJECT_RETIREMENT_PROTOCOL == 1
+
+
 @contextmanager
 def project_git_guard(project_id: str):
+    if not project_retirement_available():
+        raise AgentWorkspaceError(
+            "Git changes are unavailable until project lifecycle support is installed."
+        )
     from .git_state import require_git_admission, set_git_retirement
     with project_workspace_access(project_id) as workspace:
         try:
