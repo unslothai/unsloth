@@ -69,7 +69,6 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
-  // The Unsloth version offered. Not a notes key; it scopes the expanded state.
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
@@ -105,19 +104,17 @@ export function UpdateBanner({
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
-            // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
-                  // Only rendered notes may shrink in the capped rail. Without
-                  // them, shrink-0 keeps the compact card at its natural height.
+                  // Only rendered notes may shrink in the capped rail.
                   "has-[[data-slot=update-release-notes]]:min-h-[calc(117px+93px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
                 ),
           )}
           data-testid="tauri-update-banner"
         >
-          {/* Paint the full floor even when the notes content is short. */}
+          {/* Paint the full floor even when the notes are short. */}
           <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
@@ -188,7 +185,6 @@ export function UpdateBanner({
 
             <div
               className={cn(
-                // Wraps on a narrow card, never compresses on a short one.
                 "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
                 !showFailure && notesTargetVersion
                   ? "justify-between"
@@ -199,7 +195,6 @@ export function UpdateBanner({
                 <Button
                   size="sm"
                   variant="ghost"
-                  // same type size as the action buttons
                   className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
                   onClick={() =>
                     setNotesVersion(notesOpen ? null : notesTargetVersion)
@@ -242,7 +237,6 @@ export function UpdateBanner({
                   </Button>
                 </>
               ) : (
-                // wrap + right-align so the action pair stays together
                 <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                   <Button
                     size="sm"
@@ -265,11 +259,7 @@ export function UpdateBanner({
               )}
             </div>
             {(manualMessage || manualReport) && (
-              // The clipboard fallback, and the one region of the failure card
-              // that may give up height. The card is capped at the viewport and
-              // clips, and the rail cannot scroll to what that cap hides, so
-              // without a scroller here the report the reader is being asked to
-              // select and copy is the part that goes missing in a short window.
+              // The one region that may give up height: the card is capped and clips, and the rail cannot scroll to it.
               <div
                 className="hover-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
                 data-testid="tauri-update-manual-report"

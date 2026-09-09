@@ -1272,9 +1272,8 @@ export const it = {
       docs: "Documentazione",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:

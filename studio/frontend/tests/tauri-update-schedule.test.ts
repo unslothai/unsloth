@@ -207,7 +207,6 @@ function createHookReact() {
           (next: unknown) => {
             if (index === 0 && typeof next === "string")
               statusUpdates.push(next);
-            // Progress is the hook's only numeric state, so this needs no index.
             if (typeof next === "number") progressUpdates.push(next);
           },
         ];
@@ -324,9 +323,7 @@ function hookHarness(
         }
         if (command === "desktop_update_cleanup_armed") return true;
         if (command === "start_backend_update") {
-          // The command itself is what decides the backend step, so a test that
-          // means to fail it says so here rather than leaning on a stub that
-          // happens to throw somewhere earlier in the same path.
+          // The command itself decides the backend step, rather than a stub that happens to throw.
           if (backendUpdate === "fails")
             throw new Error("backend update failed");
           queueMicrotask(() => emit("update-complete"));
@@ -451,8 +448,7 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "available");
 
-  // start_backend_update itself refuses, which is the failure the classic path
-  // reports rather than an accident of how the listeners are stubbed.
+  // start_backend_update itself refuses, which is the failure the classic path reports.
   await hook.controller.installUpdate();
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "error");
@@ -468,8 +464,7 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
 test("a bundle download the update did not start reports its progress", async (t) => {
   const hook = hookHarness(t, {
     backendUpdate: "completes",
-    // A webview reload left a native download running; download_desktop_update
-    // would refuse a second one, so the update watches this one instead.
+    // A webview reload left a native download running, and a second one would be refused.
     bundleStates: [
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: false, downloading: true },
@@ -486,7 +481,6 @@ test("a bundle download the update did not start reports its progress", async (t
 
   hook.browser.fireTimeouts(BUNDLE_POLL_MS);
   await settle();
-  // One listener for the whole wait, however many polls it takes.
   assert.deepEqual(hook.download.attached, ["2.0.0"]);
 
   hook.browser.fireTimeouts(BUNDLE_POLL_MS);
@@ -494,7 +488,6 @@ test("a bundle download the update did not start reports its progress", async (t
   await installing;
 
   assert.equal(hook.polls(), 3);
-  // Watched to the end, not restarted, and the listener let go either way.
   assert.equal(hook.download.started, 0);
   assert.equal(hook.download.released, 1);
   assert.ok(hook.progressUpdates.includes(40));

@@ -36,11 +36,7 @@ def _extract(pattern: str, source: str) -> str:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    # Through a FILE, not -Command: these scripts carry the whole extracted helper chain, and Windows caps a command
-    # line at 32767 characters.
-    # Passed inline, the moment the chain grows past that every test here dies as WinError 206 "The filename or
-    # extension is too long" instead of testing anything.
-    # utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI.
+    # Through a FILE, not -Command: Windows caps a command line at 32767 characters. utf-8-sig, or PowerShell 5.1 reads the .ps1 as ANSI.
     handle, name = tempfile.mkstemp(suffix = ".ps1")
     os.close(handle)
     try:
@@ -50,9 +46,7 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
             check = True,
             capture_output = True,
             text = True,
-            # Decoded as utf-8 with replacement, not the console codepage: cp1252
-            # cannot decode what PowerShell writes and the whole test then dies as
-            # a UnicodeDecodeError on a byte in an error message.
+            # utf-8 with replacement: cp1252 cannot decode what PowerShell writes.
             encoding = "utf-8",
             errors = "replace",
             env = env,
@@ -73,9 +67,7 @@ def _ps_file(directory: Path, name: str, script: str) -> str:
     return str(path)
 
 
-# The chain Get-StudioFinalPath dispatches to. It used to compile the native helper inline, so a test could extract
-# it alone; extracting the dispatcher by itself now yields a body whose calls are all undefined, which reads as
-# "could not resolve" rather than as a missing helper (issue #9140).
+# The chain Get-StudioFinalPath dispatches to: extracted alone, the dispatcher yields undefined calls (#9140).
 _FINAL_PATH_CHAIN = (
     "Write-StudioLine",
     "Test-StudioDirectoryUsable",
@@ -103,14 +95,11 @@ def _mutex_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
-            # Test-StudioPathEqual reports an unresolvable identity through this, and these scripts run under
-            # -ErrorActionPreference Stop, so leaving it out made the CATCH path throw CommandNotFound and every test
-            # that reaches it fail for a reason that has nothing to do with what it measures. Extracted rather than
-            # stubbed: it is self-contained, and a stub would keep passing if the real call ever went wrong.
+            # These scripts run under -ErrorActionPreference Stop, and Test-StudioPathEqual reports through
+            # Write-StudioLine. Extracted, not stubbed: a stub would keep passing if the real call went wrong.
             "Write-StudioLine",
             "Enter-StudioNamedMutex",
-            # Get-StudioFinalPath is a dispatcher now: it falls back to the pure
-            # PowerShell resolver when the native helper did not compile (#9140).
+            # Get-StudioFinalPath is a dispatcher: it falls back to the pure PowerShell resolver (#9140).
             "Test-StudioDirectoryUsable",
             "Remove-StudioStalePrivateTempDirectories",
             "Get-StudioPrivateTempRoots",
@@ -173,9 +162,7 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    # Long enough that the child outlives the scan itself. Windows PowerShell 5.1 pays a cold start plus a real csc.exe
-    # compile of the native helper before it can look at anything, which alone can outlast a six-ping child; the process
-    # would then be gone by the time the scan ran, and the test would read as "the in-use check missed it".
+    # Long enough that the child outlives the scan: PowerShell 5.1 pays a cold start plus a csc.exe compile first.
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = creationflags,
@@ -223,8 +210,7 @@ def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
-    # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile, so a short probe can exit before the scan
-    # runs.
+    # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile.
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -339,10 +325,8 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "$process.Path" not in detector
     assert "Get-StudioProcessImagePath -ProcessId $process.Id" in detector
 
-    # The same contract has to hold on every rung of that helper's fallback: a
-    # confirmed image, never a command line. Its Win32_Process rung exists because a
-    # host that cannot compile the native helper would otherwise find no running
-    # processes and overwrite a venv Unsloth has open (issue #9140).
+    # The same contract on every rung: a confirmed image, never a command line. The Win32_Process rung
+    # exists because a host that cannot compile the native helper would overwrite a venv in use (#9140).
     image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
     assert ".CommandLine" not in image
     assert "ExecutablePath" in image
@@ -949,13 +933,10 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     provision_wait = desktop_auth_source.index("child.wait_with_output()", provision_spawn)
     assert provision_guard < provision_spawn < provision_wait
 
-    # The guard covers the idle scan and the whole child lifetime, with nothing
-    # spawned before the scan has run under it.
+    # The guard covers the idle scan and the whole child lifetime.
     update_call = update_source.index("crate::process::with_studio_runtime_launch_guard(")
     update_scan = update_source.index("ensure_managed_environment_is_idle(&bin)", update_call)
-    # A 805-807 rollback an earlier launch deferred still names the live runtime as
-    # something to undo, so it is settled here rather than after the update has
-    # installed into that runtime.
+    # A deferred 805-807 rollback still names the live runtime, so it is settled before the update installs there.
     update_legacy = update_source.index("staged_update::reconcile_before_update(", update_scan)
     update_spawn = update_source.index("spawn_update(&bin, &state)", update_legacy)
     update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
@@ -969,9 +950,7 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
         < update_guard_release
     )
 
-    # The child inherits the gate on every platform, not just Windows: the POSIX
-    # shell holds its own flock around the child, so a CLI that tried to take the
-    # gate itself would refuse the update as busy.
+    # The child inherits the gate on every platform: the POSIX shell holds its own flock around the child.
     spawn_fn = update_source.index("fn spawn_update(")
     spawn_gate_env = update_source.index("configure_runtime_gate_environment(&mut cmd);", spawn_fn)
     assert spawn_fn < spawn_gate_env < update_call
@@ -1006,9 +985,7 @@ def test_runtime_gate_handoff_covers_managed_children():
     )
     assert save < set_handoff < autostart < restore
 
-    # The save sits above the try that now covers the whole handoff, not beside
-    # the set: a finally reached before its own $hadPrevious* was assigned reads
-    # an unset flag as "there was nothing here" and clears a value it never set.
+    # The save sits above the try covering the whole handoff, or a finally clears a value it never set.
     setup_save = install_source.index("$previousSetupRuntimeGateHandoff =")
     setup_try = install_source.index("\n    try {\n        $env:SKIP_STUDIO_BASE", setup_save)
     setup_python = install_source.index("$env:UNSLOTH_SETUP_PYTHON =", setup_try)
@@ -1050,8 +1027,7 @@ def test_runtime_gate_handoff_covers_managed_children():
 
 
 def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
-    """The cleanup renames whole runtime trees, so it must not run beside an
-    installer or a backend launch that is already holding the gate."""
+    """The cleanup renames whole runtime trees, so it must not run beside anything holding the gate."""
     main_source = MAIN_RS.read_text(encoding = "utf-8")
     staged_source = STAGED_UPDATE_RS.read_text(encoding = "utf-8")
 
@@ -1060,8 +1036,7 @@ def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
     reconcile = main_source.index("staged_update::reconcile_legacy_at_launch", reconcile_gate)
     assert setup < reconcile_gate < reconcile
 
-    # Nothing activates a stage any more: the whole directory goes, and it goes
-    # before the rollback, which would otherwise treat it as a tree to keep.
+    # Nothing activates a stage any more: the whole directory goes, and before the rollback.
     entry = staged_source.index("pub(crate) fn reconcile_legacy_at_launch(")
     trash = staged_source.index("remove_stale_trash(home);", entry)
     failed = staged_source.index("fs::remove_file(home.join(FAILED_MARKER));", trash)
@@ -1069,10 +1044,7 @@ def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
     rollback = staged_source.index("roll_back_unconfirmed(home)", stage)
     assert entry < trash < failed < stage < rollback
 
-    # The stage is a clone of the managed venv, so the launch renames it and
-    # unlinks it elsewhere rather than blocking the setup hook on the delete. The
-    # fallback goes to a thread too: on Windows the rename fails exactly when a file
-    # inside is still open, which is the large tree the background delete exists for.
+    # The stage is a clone of the managed venv, so the launch renames it and unlinks off the launch path.
     discard = staged_source.index("fn discard_stage_with(")
     rename = staged_source.index("rename(&stage, &trash)", discard)
     spawn = staged_source.index("std::thread::spawn", rename)
@@ -1099,23 +1071,12 @@ def test_tauri_start_install_rejects_backend_conflicts_before_spawn():
     ids = ["mutex", "process"],
 )
 def test_the_extracted_helpers_can_call_everything_they_call(helpers):
-    """Every installer function these harnesses reach must be in the harness.
-
-    The scripts above run under -ErrorActionPreference Stop, so a helper that
-    calls an installer function nobody extracted dies with CommandNotFound, and
-    the test fails for a reason unrelated to what it measures. That is not
-    hypothetical: Test-StudioPathEqual reports an unresolvable path identity
-    through Write-StudioLine, which was missing, so both
-    test_path_identity_failure_is_reported_as_unknown cases failed on Windows
-    while passing nowhere they could be noticed.
-
-    Runs on every platform, unlike the scripts themselves, so the harness cannot
-    drift out of step again where only a Windows runner would see it.
-    """
+    """Every installer function these harnesses reach must be in the harness: the scripts run under
+    -ErrorActionPreference Stop, so a missing one fails the test for an unrelated reason. Runs on
+    every platform, unlike the scripts themselves."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     extracted = helpers(source)
-    # Every top-level installer function, i.e. everything the harness COULD be missing. A call to a cmdlet or to a
-    # function defined inside the scripts is not this test's business.
+    # Every top-level installer function, i.e. everything the harness COULD be missing.
     installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))
     provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
     assert provided, "the helper extraction produced nothing"

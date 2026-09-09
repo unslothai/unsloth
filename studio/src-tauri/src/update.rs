@@ -7,7 +7,6 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
-// ── Types ──
 
 #[derive(Default)]
 pub struct UpdateProcess {
@@ -45,32 +44,27 @@ impl UpdateKind {
     }
 }
 
-// ── Spawn ──
 fn build_update_command(bin: &std::path::Path, args: &[&str]) -> Result<Command, String> {
     // Only the Windows arm below mutates it.
     #[cfg_attr(not(windows), allow(unused_mut))]
-    // Isolated, as this call site shipped. It is the one managed invocation nobody
-    // types by hand, and the one that decides which install gets rewritten: a
-    // user-site unsloth_cli must not be able to answer `from unsloth_cli import app`
-    // here. Everything else inherits, because the console script does.
+        // Isolated, as this call site shipped: it is the one managed invocation nobody types by
+        // hand and the one that decides which install gets rewritten, so a user-site unsloth_cli
+        // must not answer `from unsloth_cli import app` here.
     let mut cmd = crate::process::build_managed_cli_command_with(
         bin,
         args,
         crate::process::Isolation::Isolated,
     )?;
-    // The only managed invocation that scrubs, and the only one that shipped doing it.
-    // Elsewhere inheriting is the point, since the console script honours these. Here
-    // the failure is unrecoverable: a foreign PYTHONHOME stops the managed interpreter
-    // finding its own site-packages, and a PYTHONPATH pointing at another checkout
-    // makes `from unsloth_cli import app` update the wrong install.
+        // The only managed invocation that scrubs: a foreign PYTHONHOME stops the managed
+        // interpreter finding its own site-packages, and a PYTHONPATH pointing at another checkout
+        // updates the wrong install.
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
     Ok(cmd)
 }
 
 fn configure_tauri_update_environment(cmd: &mut Command) {
-    // The desktop owns both its shortcuts and its frontend bundle. The managed
-    // Python update only needs backend dependencies and native helpers.
+        // The desktop owns its shortcuts and frontend bundle; this update needs only backend deps.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
@@ -81,9 +75,8 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     );
 }
 
-// The shell holds the retained POSIX flock around the whole update child, so the
-// CLI has to inherit the gate rather than try to take it again. Windows has always
-// handed off the same way; setting it everywhere keeps one behaviour.
+    // The shell holds the retained POSIX flock around the whole update child, so the CLI must
+    // inherit the gate rather than take it again. Set everywhere, as Windows always did.
 fn configure_runtime_gate_environment(cmd: &mut Command) {
     cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 }
@@ -107,8 +100,7 @@ fn spawn_update(
     let mut cmd = build_update_command(bin, UPDATE_ARGS)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    // A login-started desktop inherits C:\Windows\system32, which the CLI refuses
-    // to run from; the Windows branch above hits the same guard. Pin both.
+        // A login-started desktop inherits C:\Windows\system32, which the CLI refuses to run from.
     crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
         format!(
             "Failed to pick a working directory for the update: {}",
@@ -116,19 +108,17 @@ fn spawn_update(
         )
     })?;
 
-    // PYTHONPATH is dropped by the context itself on Windows, where -I covers
-    // only the first interpreter and the update starts more.
+        // PYTHONPATH is dropped by the context itself on Windows, where -I covers only the first
+        // interpreter and the update starts more.
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // Keep the update on the desktop-managed install and avoid rebuilding assets
-    // that are already compiled into the signed Tauri bundle.
+        // Keep the update on the desktop-managed install and skip assets already in the bundle.
     configure_tauri_update_environment(&mut cmd);
     configure_runtime_gate_environment(&mut cmd);
 
-    // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
-    // which otherwise encodes redirected streams with the locale code page.
+        // read_lossy_lines decodes as UTF-8; the child is Python, which otherwise uses the locale page.
     #[cfg(windows)]
     {
         cmd.env("PYTHONUTF8", "1");
@@ -160,7 +150,6 @@ fn spawn_update(
     Ok((stdout, stderr))
 }
 
-// ── Stream ──
 
 fn read_lossy_lines<R: std::io::Read>(
     stream: R,
@@ -240,7 +229,6 @@ fn stream_output(
     threads
 }
 
-// ── Wait ──
 
 fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
@@ -271,7 +259,6 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     Err("Update timed out after 2 hours".to_string())
 }
 
-// ── Public API ──
 
 pub fn run_backend_update(
     app: AppHandle,
@@ -326,15 +313,13 @@ fn run_update(
     let _ = app.emit(progress_event, "Starting backend update...");
 
     let explicit_error = Arc::new(Mutex::new(None));
-    // Update mutates the managed environment for its whole lifetime. This function
-    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
+        // Update mutates the managed environment for its whole lifetime. Synchronous, so the
+        // thread-owned Win32 mutex never crosses an await.
     let result = crate::process::with_studio_runtime_launch_guard(|| {
         crate::process::ensure_managed_environment_is_idle(&bin)?;
-        // Under the gate and after the idle scan, so the tree this settles is one
-        // nothing else is holding. A 805-807 rollback the last launch deferred still
-        // names the live runtime as something to undo, and updating on top of that
-        // journal has the next idle launch restoring the pre-update trees over
-        // everything installed here.
+                // Under the gate and after the idle scan. A 805-807 rollback the last launch deferred
+                // still names the live runtime as something to undo, and updating on top of that journal
+                // has the next idle launch restoring the pre-update trees over everything installed here.
         crate::staged_update::reconcile_before_update(&crate::diagnostics::studio_dir())?;
         let (stdout, stderr) =
             spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
@@ -354,7 +339,7 @@ fn run_update(
         }
         result
     });
-    // Read only after the guard returned, so both reader threads are joined.
+        // Read only after the guard returned, so both reader threads are joined.
     let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
     match result {
@@ -606,11 +591,8 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
-                // -I here and nowhere else. This is the invocation that decides
-                // which install gets rewritten, and it shipped isolated; a
-                // user-site unsloth_cli answering `from unsloth_cli import app`
-                // would update the wrong one. Every invocation a user could have
-                // typed instead inherits, because the console script does.
+                                // -I here and nowhere else: this invocation decides which install gets
+                                // rewritten, and a user-site unsloth_cli would update the wrong one.
                 OsString::from("-X"),
                 OsString::from("utf8"),
                 OsString::from("-I"),
@@ -620,9 +602,8 @@ mod tests {
                 OsString::from("update")
             ]
         );
-        // The updater's PYTHONHOME / PYTHONPATH handling is asserted once, in
-        // windows_update_command_still_scrubs_the_python_search_path below. This
-        // test owns the program and the argument vector.
+                // PYTHONHOME / PYTHONPATH handling is asserted in
+                // windows_update_command_still_scrubs_the_python_search_path below.
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -637,9 +618,7 @@ mod tests {
             .contains("python.exe"));
     }
 
-    // The Windows trampoline moved into process.rs; nothing about the POSIX
-    // Dropping -I made this load bearing rather than belt and braces: without -E the
-    // child now reads both. See build_update_command for what each one breaks.
+        // Without -E the child reads PYTHONHOME and PYTHONPATH; see build_update_command.
     #[test]
     fn update_command_scrubs_the_python_search_path() {
         let dir = std::env::temp_dir().join(format!(
@@ -667,7 +646,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    // command may move with it. macOS and Linux still exec the console script.
+        // macOS and Linux still exec the console script.
     #[cfg(not(windows))]
     #[test]
     fn posix_update_command_still_execs_the_console_script() {
@@ -688,8 +667,8 @@ mod tests {
         }
     }
 
-    // POSIX updates fail "busy" against the shell's own retained flock unless the
-    // child inherits it, so the handoff is set on every platform, not just Windows.
+        // POSIX updates fail "busy" against the shell's own retained flock unless the child
+        // inherits it, so the handoff is set on every platform.
     #[test]
     fn update_child_uses_the_parent_runtime_gate_on_every_platform() {
         use std::ffi::OsStr;

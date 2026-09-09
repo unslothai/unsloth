@@ -3,12 +3,9 @@
 
 """The passive half of the 805-807 background update contract.
 
-Those shells run the INSTALLED (old) CLI with `--stage`; that CLI clones the venv,
-runs this package's setup inside the clone, and on POSIX later imports
-`finalize_for_activation` from this module out of the staged tree. This wheel no
-longer stages anything of its own, but an old shell paired with a new wheel still
-reaches the names below, so they stay: stdlib only, and importable under
-`python -I`.
+Those shells run the INSTALLED (old) CLI with `--stage`, which clones the venv, runs this
+package's setup inside the clone and on POSIX imports `finalize_for_activation` from the staged
+tree. This wheel stages nothing, but those names must stay: stdlib only, importable under -I.
 """
 
 from __future__ import annotations
@@ -20,9 +17,8 @@ from pathlib import Path
 
 STAGE_DIR_NAME = ".update-stage"
 STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
-# Where a staged update parks the uv cache it used. The live marker is written only once
-# the stage is accepted, so an update that never activates cannot redirect the environment
-# it did not replace.
+# Where a staged update parks the uv cache it used; the live marker is written only once the
+# stage is accepted, so an update that never activates cannot redirect the environment.
 UV_CACHE_MARKER = "uv-cache-dir"
 SHELL_VERSION_ENV = "UNSLOTH_TAURI_SHELL_VERSION"
 VENV_NAME = "unsloth_studio"
@@ -73,27 +69,14 @@ def _is_venv_python_shell_wrapper(lines: list[bytes]) -> bool:
 
 
 def _relocatable_script(body: bytes, original: int) -> bytes:
-    """The rewritten script, never shorter than the one the installer recorded.
-
-    `RELOCATABLE_SHEBANG` is 82 bytes; the shebang it replaces is
-    `#!<venv>/bin/python`, so every venv path past about 68 characters makes the
-    rewrite SHORTER than what RECORD says. `studio/install_manifest.py` calls any
-    payload file smaller than its recorded size damage, so on those installs
-    `setup.sh` forces the full dependency pass at every update and a deep
-    verification never passes -- the whole cost of the check falling on exactly the
-    users whose Studio path is long.
-
-    The padding goes between the shebang and the body rather than after it, so the
-    script still ends in whatever the installer wrote. `/bin/sh` never reads past
-    the exec on line 2, and to Python it is one more comment.
-    """
+    """The rewritten script, never shorter than the one the installer recorded: RELOCATABLE_SHEBANG is
+    82 bytes, so past ~68 characters of venv path the rewrite would shrink it and install_manifest.py
+    calls that damage. The padding sits between shebang and body, unread by /bin/sh."""
     shebang = RELOCATABLE_SHEBANG.encode("utf-8")
     deficit = original - len(shebang) - len(body)
     if deficit <= 0:
         return shebang + body
-    # `# ` and the newline are 3 bytes, so a smaller deficit is covered by the
-    # shortest comment line there is. Longer than the original is fine; only
-    # shorter is read as damage.
+    # `# ` plus the newline is 3 bytes. Longer than the original is fine; only shorter reads as damage.
     return shebang + b"# " + b"#" * max(deficit - 3, 0) + b"\n" + body
 
 
@@ -153,14 +136,8 @@ def console_script(venv: Path) -> Path:
 
 
 def probe_console_script(venv: Path, env: dict[str, str]) -> None:
-    """POSIX runs this file, not `python -m`, so it is the probe that counts.
-
-    An installer rewrites it with a shebang naming the interpreter by absolute
-    path, and activation moves the venv out of that path, so a stale one shows up
-    nowhere else. Windows is exempt: resolve_managed_cli_invocation_with runs
-    python.exe there, and quarantine can take the unsigned launcher stub off a
-    working install, so its absence would fail a stage that is fine.
-    """
+    """POSIX runs this file, not `python -m`, so it is the probe that counts. Windows is exempt: quarantine
+    can take the unsigned launcher stub off a working install."""
     if platform.system() == "Windows":
         return
     script = console_script(venv)
@@ -169,7 +146,7 @@ def probe_console_script(venv: Path, env: dict[str, str]) -> None:
     try:
         result = _run([str(script), "-h"], cwd = venv.parent, env = env)
     except OSError as exc:
-        # A shebang naming a missing interpreter fails here, not with a return code: the kernel refuses the exec.
+        # A shebang naming a missing interpreter fails here, not with a return code.
         raise StageError(f"staged launcher is not executable: {exc}") from exc
     if result.returncode != 0:
         raise StageError(f"staged launcher failed to start: {result.stderr.strip()[-2000:]}")

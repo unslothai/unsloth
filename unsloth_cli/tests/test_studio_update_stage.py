@@ -96,9 +96,7 @@ def test_make_relocatable_rewrites_shell_wrapper_for_path_with_spaces(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shebangs")
 def test_make_relocatable_never_shrinks_a_script_below_its_recorded_size(tmp_path):
-    """RECORD keeps the size the installer wrote, and `install_manifest.verify_install`
-    calls anything smaller damage. The relocatable shebang is 82 bytes, so a venv path
-    past ~68 characters would shrink every console script in the venv."""
+    """RECORD keeps the size the installer wrote and anything smaller is damage, so an 82-byte shebang would shrink every console script."""
     long_root = tmp_path / ("d" * 60) / ("e" * 60)
     long_root.mkdir(parents = True)
     venv = _make_venv(long_root)
@@ -112,9 +110,7 @@ def test_make_relocatable_never_shrinks_a_script_below_its_recorded_size(tmp_pat
 
     for name, original in originals.items():
         assert (venv / "bin" / name).stat().st_size >= original, name
-    # Padded, not truncated: the script still ends in what the installer wrote, and
-    # the pad between the shebang and the body is a comment to Python and unread by
-    # /bin/sh, which never gets past the exec on line 2.
+    # Padded, not truncated: the script still ends in what the installer wrote.
     text = (venv / "bin" / "unsloth").read_text(encoding = "utf-8")
     assert text.startswith(_studio_stage.RELOCATABLE_SHEBANG)
     assert text.endswith("print('cli')\n")
@@ -123,9 +119,8 @@ def test_make_relocatable_never_shrinks_a_script_below_its_recorded_size(tmp_pat
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shebangs")
 def test_a_finalised_stage_under_a_long_path_passes_the_record_size_check(tmp_path):
-    """The end-to-end shape of the regression: an 805-807 shell finalises a stage with
-    this module, and the size comparison `install_manifest` runs afterwards is what
-    decides whether every later update repeats the whole dependency pass."""
+    """End-to-end shape of the regression: the size comparison install_manifest runs after a finalised
+    stage decides whether every later update repeats the whole dependency pass."""
     stage_root = tmp_path / ("l" * 70) / "studio" / _studio_stage.STAGE_DIR_NAME
     stage_root.mkdir(parents = True)
     venv = _make_venv(stage_root)
@@ -226,8 +221,7 @@ def _invoke_stage(monkeypatch, home: Path):
 
 
 def test_stage_is_refused_and_records_what_the_old_shell_asked_for(monkeypatch, tmp_path):
-    """An 805-807 shell still spawns `--stage`. It has to fail, and it has to leave the
-    marker those shells read, or the same shell offers to prepare the update again."""
+    """An 805-807 shell still spawns `--stage`: it has to fail and leave the marker, or the shell asks again."""
     home = tmp_path / "studio"
     monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, "0.1.807-beta")
 
@@ -243,9 +237,7 @@ def test_stage_is_refused_and_records_what_the_old_shell_asked_for(monkeypatch, 
 
 
 def test_a_refusal_clears_a_stage_an_earlier_shell_left_behind(monkeypatch, tmp_path):
-    """805-807 report `partial` for any stage directory before they read the failure
-    marker, and `partial` maps straight back to `stage`, so an orphan left here has
-    the same shell asking again at every recheck."""
+    """805-807 map any stage directory back to `stage`, so an orphan has the shell asking at every recheck."""
     home = tmp_path / "studio"
     stage = home / _studio_stage.STAGE_DIR_NAME
     (stage / _studio_stage.VENV_NAME / "bin").mkdir(parents = True)
@@ -256,7 +248,6 @@ def test_a_refusal_clears_a_stage_an_earlier_shell_left_behind(monkeypatch, tmp_
 
     assert result.exit_code == 1, result.output
     assert not stage.exists()
-    # Neither the stage nor the trash name it may have been renamed to survives.
     assert [p.name for p in home.iterdir() if p.name.startswith(".update-")] == [
         ".update-failed.json"
     ]
@@ -274,9 +265,7 @@ def test_a_refusal_clears_a_stage_an_earlier_shell_left_behind(monkeypatch, tmp_
 def test_a_refusal_records_the_shell_version_or_nothing(
     monkeypatch, tmp_path, environment, expected
 ):
-    """`StagedVersions.shell_version` is an `Option<String>`, so null parses; those
-    shells skip a repeat only when the recorded version equals the one they are
-    offering, which a placeholder would fail exactly as null does."""
+    """`shell_version` is an `Option<String>`, so null parses; a placeholder would fail their equality check as null does."""
     home = tmp_path / "studio"
     if environment is None:
         monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
@@ -304,9 +293,7 @@ def test_a_refusal_that_cannot_write_the_marker_still_reports_the_error(monkeypa
 
 
 def test_the_activation_finalizer_imports_under_isolated_python():
-    """The 805-807 activation path runs `python -I -c "from unsloth_cli._studio_stage
-    import finalize_for_activation"` inside the staged venv. Any import this module
-    grows beyond the stdlib breaks that, and only there."""
+    """The 805-807 activation path imports finalize_for_activation under `python -I` inside the staged venv."""
     result = subprocess.run(
         [
             sys.executable,

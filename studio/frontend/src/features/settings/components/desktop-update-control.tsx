@@ -11,7 +11,6 @@ function formatDesktopVersion(version: string): string {
   return version.startsWith("v") ? version : `v${version}`;
 }
 
-/** Explains the automatic check, so the button does not read as the only path. */
 export function DesktopUpdateNote(): ReactElement | null {
   const t = useT();
   const update = useTauriUpdateController();
@@ -23,16 +22,13 @@ export function DesktopUpdateNote(): ReactElement | null {
   );
 }
 
-// Lives in General, under the version rows it acts on: that is the tab the
-// settings dialog opens on. Desktop-only, outside Tauri there is no controller
-// in context and the row renders nothing.
+// Lives in General, under the version rows it acts on. Desktop-only: outside Tauri there is no controller.
 export function DesktopUpdateControl(): ReactElement | null {
   const t = useT();
   const update = useTauriUpdateController();
   if (!update) return null;
 
   const checking = update.status === "checking";
-  // A running install owns the update screen; no second "Update now".
   const inFlight =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -57,8 +53,7 @@ export function DesktopUpdateControl(): ReactElement | null {
         : t("settings.about.update.desktopAvailableDescription");
   } else if (checkFailed) {
     label = t("settings.about.update.desktopCheckFailed");
-    // Keep the raw reason: failures can come from the network, HTTP response,
-    // release manifest, or updater itself.
+    // Keep the raw reason: failures come from the network, HTTP, manifest or updater.
     description = update.checkError ?? label;
   } else if (update.hasChecked) {
     label = t("settings.about.update.desktopCurrent");

@@ -1273,9 +1273,8 @@ export const ko = {
       docs: "문서",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
