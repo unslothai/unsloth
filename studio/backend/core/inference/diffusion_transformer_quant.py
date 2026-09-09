@@ -211,6 +211,17 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
+def divisible_for_scheme(scheme: str) -> int:
+    """The GEMM tiling floor ``scheme`` needs on a Linear's in/out features (0 = none).
+
+    scaled_mm wants 16-aligned dims and MX block scaling tiles 32 wide, so a ragged Linear
+    crashes the first real matmul AFTER the quantise pass reported success (the smoke probe only
+    proves an aligned GEMM runs). Shared by the runtime path and the offline prequant builder, so
+    an artifact cannot bake a different admitted set than the runtime would quantise -- which the
+    loader also checks, against this same answer."""
+    return {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
+
+
 # Per-arch preference for ``auto``, best first. On Blackwell fp8 leads: on B200 plain fp8 dynamic is faster AND more
 # accurate at DiT shapes, while mxfp8 block scaling only adds overhead. nvfp4's FP4 GEMM is real with torch>=2.11 but
 # wins only on very large GEMMs (0.81x on Z-Image 1024px, LPIPS 0.166 vs fp8 0.044), so it is kept OUT of the ladder
