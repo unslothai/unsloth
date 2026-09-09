@@ -1159,20 +1159,21 @@ class _NativeWindowsMutationOps:
                 ("replace_if_exists", api.wintypes.BOOL),
                 ("root_directory", api.wintypes.HANDLE),
                 ("file_name_length", api.wintypes.DWORD),
-                ("file_name", ctypes.c_ubyte * len(encoded_name)),
+                # Keep the WCHAR terminator and native structure padding in
+                # the buffer passed to Win32, outside FileNameLength.
+                ("file_name", ctypes.c_ubyte * (len(encoded_name) + 2)),
             ]
 
         info = FileRenameInfo()
         info.replace_if_exists = bool(replace)
         info.root_directory = parent_handle
         info.file_name_length = len(encoded_name)
-        info.file_name[:] = encoded_name
-        size = FileRenameInfo.file_name.offset + info.file_name_length
+        info.file_name[: len(encoded_name)] = encoded_name
         if api.kernel32.SetFileInformationByHandle(
             handle,
             _FILE_RENAME_INFO_CLASS,
             ctypes.byref(info),
-            size,
+            ctypes.sizeof(info),
         ):
             return True
         code = ctypes.get_last_error()

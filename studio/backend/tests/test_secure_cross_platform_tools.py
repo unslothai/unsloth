@@ -1059,7 +1059,7 @@ def test_windows_replacement_rejects_named_streams_portably():
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "native Win32 mutation")
-@pytest.mark.parametrize("filename", ["created.txt", "created-\U0001f9ea.txt"])
+@pytest.mark.parametrize("filename", ["a", "a.py", "created.txt", "created-\U0001f9ea.txt"])
 def test_native_windows_project_mutation_round_trip(tmp_path, filename):
     root = tmp_path / "repository"
     root.mkdir()

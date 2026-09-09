@@ -1240,8 +1240,10 @@ def test_native_linux_owner_sigkill_contains_project_command(tmp_path, release_s
             text = True,
             timeout = 10,
         )
-        if release_state == "before":
-            assert recorded_pid in json.loads(reaper.stdout)
+        # Parent-death signaling can finish cleanup before startup recovery.
+        # The reaper reports only processes it killed; either outcome must
+        # leave the recorded group gone and remove its recovery record below.
+        assert set(json.loads(reaper.stdout)) <= {recorded_pid}
         group_deadline = time.monotonic() + 5
         while time.monotonic() < group_deadline:
             try:

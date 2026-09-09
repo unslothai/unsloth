@@ -101,10 +101,9 @@ jobs:
         working-directory: studio/backend
         run: >-
           python -m pytest
-          tests/test_secure_cross_platform_tools.py::test_native_windows_project_mutation_round_trip
-          tests/test_edit_file_tool.py
           tests/test_secure_cross_platform_tools.py
+          tests/test_edit_file_tool.py
           tests/test_secure_process_supervisor.py
           tests/test_studio_pid_files.py::test_graceful_shutdown_retries_project_quarantine_before_generic_sweep
           tests/test_studio_pid_files.py::test_graceful_shutdown_retries_quarantine_even_when_generic_sweep_fails
-          -q --tb=short --timeout=60 --maxfail=1
+          -q --tb=short --timeout=60 --maxfail=5
