@@ -22,6 +22,17 @@ on:
   merge_group:
   push:
     branches: [main, 'codex/git-worktrees-*']
+    paths:
+      - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/project_retirement.py'
+      - 'studio/backend/routes/project_git_review.py'
+      - 'studio/backend/routes/project_worktrees.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
+      - 'studio/backend/tests/test_project_git*.py'
+      - 'studio/backend/tests/test_agent_workspace_worktrees_focused.py'
+      - 'studio/backend/main.py'
+      - '.github/workflows/studio-git-review-ci.yml'
   workflow_dispatch:
 
 concurrency:
@@ -66,8 +77,8 @@ jobs:
         if: matrix.variant == 'secure-tools'
         shell: bash
         env:
-          EDIT_REVISION: a5d144019bb585e246d0752c11d325807d0bfb19
-          SECURE_TOOLS_REVISION: ba95d92a7d66d45dc6902a00947a4eaccfc06759
+          EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
+          SECURE_TOOLS_REVISION: 9f8e3d6b23c0a8922422411442c7ee182cf65ea7
         run: |
           git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$EDIT_REVISION"
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$EDIT_REVISION"
