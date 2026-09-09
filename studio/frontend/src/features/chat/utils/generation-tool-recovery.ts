@@ -137,6 +137,18 @@ export function createGenerationToolRecovery(
   )
     ? 0
     : snapshotSeq;
+  // Cards saved before the adapter recorded identities have no backend id to match on, and an
+  // id-less start carries none either, so replay hands them out in the order they were saved.
+  const legacyPending = savedPending.filter(
+    (entry) => typeof record(entry.part)?.backendToolCallId !== "string",
+  );
+  const claimLegacy = (entry: CarriedPart | undefined) => {
+    const at = entry ? legacyPending.indexOf(entry) : -1;
+    if (at !== -1) legacyPending.splice(at, 1);
+    return entry;
+  };
+  // A card a provider completes twice. Cleared by a start on the same id, which means a new round.
+  const completed = new Map<string, CarriedPart>();
   const findSavedEntry = (backendId: string, approvalId: unknown) => {
     const matches = savedPending.filter((entry) => {
       const part = record(entry.part);
@@ -186,7 +198,10 @@ export function createGenerationToolRecovery(
     if (seq <= snapshotSeq) {
       const entry =
         event.type === "tool_start"
-          ? findSavedEntry(backendId, event.approval_id)
+          ? claimLegacy(
+              findSavedEntry(backendId, event.approval_id) ??
+                (backendId ? undefined : legacyPending[0]),
+            )
           : undefined;
       if (entry) {
         entry.part = {
@@ -194,7 +209,7 @@ export function createGenerationToolRecovery(
           backendToolCallId: backendId,
           generationToolCallId: `${runId}:${seq}`,
         };
-        pending.set(backendId, entry);
+        pending.set(backendId || ` idless:legacy:${seq}`, entry);
       }
       return;
     }
@@ -225,6 +240,12 @@ export function createGenerationToolRecovery(
       pending.size > 0
     ) {
       for (const active of pending.values()) entry = active;
+    }
+    // OpenAI Responses closes a web search with a "Searching:" placeholder and reopens it at the
+    // end with the citation blocks. A start on the same id would have meant a new round, so only
+    // an uninterrupted second completion reaches the card it already finished.
+    if (!entry && event.type === "tool_end" && backendId) {
+      entry = completed.get(backendId);
     }
     // Gemini can emit a second completion carrying a generated image.
     if (
@@ -280,6 +301,7 @@ export function createGenerationToolRecovery(
         ...(record(event.provenance) ? { provenance: event.provenance } : {}),
       };
       pending.set(backendId || ` idless:${runId}:${seq}`, entry);
+      if (backendId) completed.delete(backendId);
       return;
     }
     if (!entry) {
@@ -317,6 +339,7 @@ export function createGenerationToolRecovery(
         pending.delete(id);
       }
     }
+    if (backendId) completed.set(backendId, entry);
   };
   // The Sources-panel entries the live path derives from every finished web_search / web_fetch
   // card at the end of a stream. Recovery has the same results but never reaches that yield, so

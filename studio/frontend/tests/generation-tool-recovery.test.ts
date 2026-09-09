@@ -934,3 +934,69 @@ test("an unsafe search URL never reaches the Sources panel", async () => {
   );
   assert.equal(content.filter((part) => part.type === "source").length, 0);
 });
+
+test("a web search completed twice keeps the citation list", async () => {
+  const citations = [
+    "Title: Unsloth docs",
+    "URL: https://docs.unsloth.ai/",
+    "Snippet: guide",
+  ].join("\n");
+  const { content } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" },
+      { type: "tool_end", tool_call_id: "ws_0", result: "Searching: unsloth" },
+      { type: "tool_end", tool_call_id: "ws_0", result: citations },
+    ],
+  );
+  const card = content.find((part) => part.type === "tool-call");
+  assert.equal(card?.result, citations);
+  assert.deepEqual(
+    content.filter((part) => part.type === "source").map((part) => part.url),
+    ["https://docs.unsloth.ai/"],
+  );
+});
+
+test("a start on the same id still opens a second round", async () => {
+  const { content } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "call_0", tool_name: "edit_file" },
+      { type: "tool_end", tool_call_id: "call_0", result: "first" },
+      { type: "tool_start", tool_call_id: "call_0", tool_name: "edit_file" },
+      { type: "tool_end", tool_call_id: "call_0", result: "second" },
+    ],
+  );
+  assert.deepEqual(
+    content
+      .filter((part) => part.type === "tool-call")
+      .map((part) => part.result),
+    ["first", "second"],
+  );
+});
+
+test("a legacy id-less pending card is matched through replay", async () => {
+  const legacy = {
+    type: "tool-call",
+    toolCallId: "edit_file_1757000000000",
+    toolName: "edit_file",
+    args: {},
+    argsText: "{}",
+  };
+  const { content, replayFrom } = await recoverRun(
+    [legacy],
+    [
+      { type: "tool_start", tool_call_id: "", tool_name: "edit_file" },
+      { type: "tool_end", tool_call_id: "", result: "done" },
+    ],
+    { cursor: 1 },
+  );
+  assert.equal(replayFrom, 0, "an identity-less card replays from the start");
+  const cards = content.filter((part) => part.type === "tool-call");
+  assert.equal(
+    cards.length,
+    1,
+    "the historical start must not open a second card",
+  );
+  assert.equal(cards[0].result, "done");
+});
