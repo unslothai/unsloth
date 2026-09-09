@@ -41,6 +41,11 @@ from ._gated_delta_net import _fast_path_applicable as _gdn_applicable
 __all__ = ["patch_qwen3_5_decoder_layers"]
 
 _BASE_OPTIONS = {
+    # C++ wrapper: the graph's kernel launches, allocations and extern GEMM calls are issued from
+    # generated C++ instead of Python. Same kernels, same numbers; roughly halves the CPU time per
+    # region call, which is what bounds this launch-bound job. Costs more compile time on a cold
+    # inductor cache. UNSLOTH_QWEN3_5_CPP_WRAPPER=0 turns it off.
+    "cpp_wrapper": os.environ.get("UNSLOTH_QWEN3_5_CPP_WRAPPER", "1") == "1",
     "epilogue_fusion": True,
     "max_autotune": False,
     "shape_padding": True,
@@ -362,5 +367,5 @@ def patch_qwen3_5_decoder_layers(model):
         n += int(module._unsloth_fused_ok)
     layers = sum(1 for m in model.modules() if type(m).__name__ == "Qwen3_5DecoderLayer")
     if layers:
-        print(f"Unsloth: Qwen3.5 fused two-region layer forward on {n}/{layers} decoder layers.")
+        print(f"Unsloth: Qwen3.5 fused layer forward on {n}/{layers} decoder layers (cpp_wrapper={_BASE_OPTIONS['cpp_wrapper']}).")
     return n
