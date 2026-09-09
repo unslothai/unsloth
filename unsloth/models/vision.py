@@ -2596,6 +2596,12 @@ class FastBaseModel:
                                 ):
                                     continue
                                 module.weight[module.padding_idx] = 0
+        # Qwen3.5 GatedDeltaNet: compile the eager ops around the fla kernel (see _gated_delta_net.py).
+        try:
+            from ._gated_delta_net import patch_gated_delta_net_fast_forward
+            patch_gated_delta_net_fast_forward(model)
+        except Exception as e:
+            logger.warning(f"Unsloth: GatedDeltaNet fast forward not installed: {e}")
         return model
 
     @staticmethod
