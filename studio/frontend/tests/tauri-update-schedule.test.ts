@@ -11,6 +11,13 @@ const PERIODIC_INTERVAL_MS = 60 * 60 * 1_000;
 const BUNDLE_POLL_MS = 500;
 const BUNDLE_WAIT_MS = 10 * 60 * 1_000;
 
+/** The shape `patchPreparation` writes; only the fields the tests read. */
+interface PreparationState {
+  shell: string;
+  backend: string;
+  shellProgress: number;
+}
+
 interface BundleState {
   version: string | null;
   downloaded: boolean;
@@ -20,7 +27,11 @@ interface BundleState {
 type UpdateController = {
   checkForUpdate: () => Promise<void>;
   installUpdate: () => Promise<void>;
+  prepareUpdate: (version: string) => Promise<void>;
 };
+
+/** Every prefetch bridge call the hook can make, in the order it made them. */
+type PrefetchCalls = string[];
 
 type Listener = EventListenerOrEventListenerObject;
 
@@ -30,8 +41,12 @@ interface HookHarnessOptions {
   tauri?: boolean;
   /** Whether `start_backend_update` resolves; the shell steps only run if it does. */
   backendUpdate?: "completes" | "fails";
+  /** Whether `downloadDesktopUpdate` resolves; the shell refuses a second one. */
+  bundleDownload?: "completes" | "refuses";
   /** One entry per `desktopUpdateBundleStatus` poll; the last one repeats. */
   bundleStates?: BundleState[];
+  /** Version `checkDesktopUpdate` starts answering with from this call on. */
+  newVersionAt?: number;
 }
 
 function createEventTarget() {
@@ -197,6 +212,7 @@ function createHookReact() {
   const cleanups: Array<() => void> = [];
   const statusUpdates: string[] = [];
   const progressUpdates: number[] = [];
+  const preparationUpdates: PreparationState[] = [];
   let stateIndex = 0;
   return {
     react: {
@@ -208,6 +224,9 @@ function createHookReact() {
             if (index === 0 && typeof next === "string")
               statusUpdates.push(next);
             if (typeof next === "number") progressUpdates.push(next);
+            // The preparation is the only object state, and named by its shape.
+            if (typeof next === "object" && next !== null && "shell" in next)
+              preparationUpdates.push(next as PreparationState);
           },
         ];
       },
@@ -227,6 +246,7 @@ function createHookReact() {
     unmount(): void {
       for (const cleanup of cleanups.splice(0)) cleanup();
     },
+    preparationUpdates,
     progressUpdates,
     statusUpdates,
   };
@@ -237,8 +257,10 @@ function hookHarness(
   {
     failCheckAt,
     noUpdateAt,
+    newVersionAt,
     tauri = true,
     backendUpdate = "fails",
+    bundleDownload = "completes",
     bundleStates = [{ version: null, downloaded: false, downloading: false }],
   }: HookHarnessOptions = {},
 ) {
@@ -269,6 +291,77 @@ function hookHarness(
       throw new Error("no download listener is attached");
     },
   };
+  const prefetchCalls: PrefetchCalls = [];
+  let prefetch = {
+    state: "none" as const,
+    backendVersion: null,
+    shellVersion: null,
+    cacheDir: null,
+    createdAt: null,
+    running: false,
+    runningShellVersion: null,
+  };
+  const updater = {
+    checkDesktopUpdate: () => {
+      checks += 1;
+      if (checks === failCheckAt) throw new Error("update check failed");
+      if (checks === noUpdateAt) return Promise.resolve(null);
+      return Promise.resolve({
+        version: newVersionAt !== undefined && checks >= newVersionAt ? "3.0.0" : "2.0.0",
+        currentVersion: "1.0.0",
+        rawJson: {},
+      });
+    },
+    desktopUpdateBundleStatus: () => {
+      const state = bundleStates[Math.min(polls, bundleStates.length - 1)];
+      polls += 1;
+      return Promise.resolve(state);
+    },
+    downloadDesktopUpdate: () => {
+      download.started += 1;
+      if (bundleDownload === "refuses")
+        return Promise.reject(new Error("a download is already running"));
+      return Promise.resolve();
+    },
+    installDesktopUpdate: () => Promise.resolve(),
+    listenDesktopUpdateDownload: (
+      version: string,
+      onProgress: (percent: number) => void,
+    ) => {
+      download.attached.push(version);
+      download.report = onProgress;
+      return Promise.resolve(() => {
+        download.released += 1;
+      });
+    },
+    sameUpdateVersion: (left: string | null | undefined, right: string) =>
+      Boolean(left) && left === right,
+    prefetchStatus: () => {
+      prefetchCalls.push("status");
+      return Promise.resolve(prefetch);
+    },
+    startPrefetch: (version: string) => {
+      prefetchCalls.push(`start:${version}`);
+      return Promise.resolve("ready");
+    },
+    adoptPrefetch: () => {
+      prefetchCalls.push("adopt");
+      return Promise.resolve(prefetch);
+    },
+    cancelPrefetch: () => {
+      prefetchCalls.push("cancel");
+      return Promise.resolve();
+    },
+    discardPrefetch: () => {
+      prefetchCalls.push("discard");
+      return Promise.resolve();
+    },
+  };
+  // The real decision table, so the harness cannot disagree with the shipped one.
+  const preparation = loadWithStubs<Record<string, unknown>>(
+    new URL("../src/lib/update-preparation.ts", import.meta.url),
+    { "@/lib/tauri-updater": updater },
+  );
   const hook = loadWithStubs<{
     useTauriUpdate: () => UpdateController;
   }>(new URL("../src/hooks/use-tauri-update.ts", import.meta.url), {
@@ -277,40 +370,8 @@ function hookHarness(
     "@/lib/tauri-diagnostics": {
       copySupportDiagnostics: async () => ({ copied: true }),
     },
-    "@/lib/tauri-updater": {
-      checkDesktopUpdate: () => {
-        checks += 1;
-        if (checks === failCheckAt) throw new Error("update check failed");
-        if (checks === noUpdateAt) return Promise.resolve(null);
-        return Promise.resolve({
-          version: "2.0.0",
-          currentVersion: "1.0.0",
-          rawJson: {},
-        });
-      },
-      desktopUpdateBundleStatus: () => {
-        const state = bundleStates[Math.min(polls, bundleStates.length - 1)];
-        polls += 1;
-        return Promise.resolve(state);
-      },
-      downloadDesktopUpdate: () => {
-        download.started += 1;
-        return Promise.resolve();
-      },
-      installDesktopUpdate: () => Promise.resolve(),
-      listenDesktopUpdateDownload: (
-        version: string,
-        onProgress: (percent: number) => void,
-      ) => {
-        download.attached.push(version);
-        download.report = onProgress;
-        return Promise.resolve(() => {
-          download.released += 1;
-        });
-      },
-      sameUpdateVersion: (left: string | null | undefined, right: string) =>
-        Boolean(left) && left === right,
-    },
+    "@/lib/tauri-updater": updater,
+    "@/lib/update-preparation": preparation,
     "@/lib/toast": { toast: { error: () => undefined } },
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
@@ -363,8 +424,13 @@ function hookHarness(
     download,
     host,
     polls: () => polls,
+    prefetchCalls,
+    preparationUpdates: host.preparationUpdates,
     progressUpdates: host.progressUpdates,
     relaunches: () => relaunches,
+    setPrefetch: (next: Partial<typeof prefetch>) => {
+      prefetch = { ...prefetch, ...next } as typeof prefetch;
+    },
     statusUpdates: host.statusUpdates,
   };
 }
@@ -448,7 +514,15 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "available");
 
-  // start_backend_update itself refuses, which is the failure the classic path reports.
+  // First press prepares in the background; the offer only becomes installable
+  // once both halves have settled.
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+
+  // Second press is the restart, and start_backend_update itself refuses, which
+  // is the failure the classic path reports.
   await hook.controller.installUpdate();
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "error");
@@ -464,8 +538,12 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
 test("a bundle download the update did not start reports its progress", async (t) => {
   const hook = hookHarness(t, {
     backendUpdate: "completes",
-    // A webview reload left a native download running, and a second one would be refused.
     bundleStates: [
+      // The first press only prepares, and finds the bundle already retained.
+      { version: "2.0.0", downloaded: true, downloading: false },
+      // By Restart the retained bundle is gone and a native download this
+      // renderer did not start is in flight; download_desktop_update would
+      // refuse a second one, so the update watches this one instead.
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: true, downloading: false },
@@ -474,7 +552,16 @@ test("a bundle download the update did not start reports its progress", async (t
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
 
+  // First press prepares; the bundle is already there, so nothing is downloaded
+  // and nothing is watched yet.
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.deepEqual(hook.download.attached, []);
+
   const installing = hook.controller.installUpdate();
+  await settle();
   await settle();
   assert.deepEqual(hook.download.attached, ["2.0.0"]);
   hook.download.report(40);
@@ -487,7 +574,9 @@ test("a bundle download the update did not start reports its progress", async (t
   await settle();
   await installing;
 
-  assert.equal(hook.polls(), 3);
+  // One poll for the preparation and three for the wait it took over.
+  assert.equal(hook.polls(), 4);
+  // Watched to the end, not restarted, and the listener let go either way.
   assert.equal(hook.download.started, 0);
   assert.equal(hook.download.released, 1);
   assert.ok(hook.progressUpdates.includes(40));
@@ -498,13 +587,24 @@ test("a bundle download the update did not start reports its progress", async (t
 test("waiting out a bundle download the update did not start is bounded", async (t) => {
   const hook = hookHarness(t, {
     backendUpdate: "completes",
-    // Stuck: the flag never clears, so without the bound the update waits forever.
-    bundleStates: [{ version: "2.0.0", downloaded: false, downloading: true }],
+    bundleStates: [
+      // The first press only prepares, and finds the bundle already retained.
+      { version: "2.0.0", downloaded: true, downloading: false },
+      // Stuck: the flag never clears, so without the bound the update waits forever.
+      { version: "2.0.0", downloaded: false, downloading: true },
+    ],
   });
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
 
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.equal(hook.download.started, 0);
+
   const installing = hook.controller.installUpdate();
+  await settle();
   await settle();
   assert.deepEqual(hook.download.attached, ["2.0.0"]);
 
@@ -516,6 +616,131 @@ test("waiting out a bundle download the update did not start is bounded", async 
   // Handed back to the real download, which is what surfaces the failure.
   assert.equal(hook.download.started, 1);
   assert.equal(hook.download.released, 1);
+});
+
+test("a preparation that watches a download somebody else started shows it", async (t) => {
+  const hook = hookHarness(t, {
+    // A webview reload left a native download running, and the press that
+    // prepares runs into it before the press that installs ever happens.
+    bundleStates: [
+      { version: "2.0.0", downloaded: false, downloading: true },
+      { version: "2.0.0", downloaded: false, downloading: true },
+      { version: "2.0.0", downloaded: true, downloading: false },
+    ],
+  });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+  hook.download.report(40);
+
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+
+  // The adopted download is what the preparation reports, all the way to done.
+  assert.ok(
+    hook.preparationUpdates.some((state) => state.shellProgress === 40),
+  );
+  assert.equal(hook.preparationUpdates.at(-1)?.shell, "done");
+  // Watched to the end, never restarted, and the listener let go once.
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.equal(hook.download.started, 0);
+  assert.equal(hook.download.released, 1);
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+});
+
+test("a preparation waiting on somebody else's download is bounded", async (t) => {
+  const hook = hookHarness(t, {
+    // Stuck: the flag never clears, so without the bound the offer sits at
+    // "preparing" for good and the Restart button never arrives.
+    bundleStates: [{ version: "2.0.0", downloaded: false, downloading: true }],
+    bundleDownload: "refuses",
+  });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+  assert.equal(hook.statusUpdates.at(-1), "preparing");
+  assert.equal(hook.download.started, 0);
+
+  hook.browser.advance(BUNDLE_WAIT_MS);
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+
+  // Handed back to the real download, and its refusal puts the plain Update
+  // button back rather than leaving the offer stuck on a bar that never moves.
+  assert.equal(hook.download.started, 1);
+  assert.equal(hook.download.released, 1);
+  assert.equal(hook.preparationUpdates.at(-1)?.shell, "failed");
+  assert.equal(hook.statusUpdates.at(-1), "available");
+});
+
+test("a recheck of the version being prepared does not restart the prefetch", async (t) => {
+  const hook = hookHarness(t);
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.deepEqual(hook.prefetchCalls, ["status", "start:2.0.0"]);
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  assert.equal(hook.checks(), 2);
+  // The offer is unchanged, so the pill stays on Restart and nothing is redone.
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.deepEqual(hook.prefetchCalls, ["status", "start:2.0.0"]);
+});
+
+test("a newer offer cancels the preparation and starts it again", async (t) => {
+  const hook = hookHarness(t, { newVersionAt: 2 });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.deepEqual(hook.prefetchCalls, ["status", "start:2.0.0"]);
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  await settle();
+  await settle();
+  assert.deepEqual(hook.prefetchCalls, [
+    "status",
+    "start:2.0.0",
+    "cancel",
+    "status",
+    "start:3.0.0",
+  ]);
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+});
+
+test("a withdrawn offer discards what was prepared for it", async (t) => {
+  const hook = hookHarness(t, { noUpdateAt: 2 });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.deepEqual(hook.prefetchCalls, ["status", "start:2.0.0"]);
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "idle");
+  // Nothing is on offer any more, so the prepared copy is holding disk for nothing.
+  assert.equal(hook.prefetchCalls.at(-1), "discard");
 });
 
 test("restoring an overdue hidden window checks immediately", async (t) => {

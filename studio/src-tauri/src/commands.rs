@@ -893,6 +893,7 @@ pub fn prefetch_status(
 ) -> prefetch::PrefetchStatus {
     let mut status = prefetch::status(&diagnostics::studio_dir());
     status.running = update::is_prefetch_running(&prefetch_state);
+    status.running_shell_version = update::running_prefetch_version(&prefetch_state);
     status
 }
 

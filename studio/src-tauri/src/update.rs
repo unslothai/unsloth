@@ -504,18 +504,38 @@ fn run_update(
 /// background download is not a reason to warn anyone about quitting or to refuse
 /// a real update. Sharing one slot would make it both.
 #[derive(Clone)]
-pub struct PrefetchState(pub UpdateState);
+pub struct PrefetchState {
+    process: UpdateState,
+    /// The offered shell version the RUNNING prefetch was started for.
+    ///
+    /// The marker on disk only names a prefetch that finished, and a webview
+    /// reload loses the renderer's own record, so without this a reloaded window
+    /// cannot tell whether the run in progress is preparing the offer it is
+    /// showing or an older one.
+    running_version: Arc<Mutex<Option<String>>>,
+}
 
 pub fn new_prefetch_state() -> PrefetchState {
-    PrefetchState(new_update_state())
+    PrefetchState {
+        process: new_update_state(),
+        running_version: Arc::new(Mutex::new(None)),
+    }
 }
 
 pub fn is_prefetch_running(state: &PrefetchState) -> bool {
-    is_update_running(&state.0)
+    is_update_running(&state.process)
+}
+
+pub fn running_prefetch_version(state: &PrefetchState) -> Option<String> {
+    state
+        .running_version
+        .lock()
+        .ok()
+        .and_then(|version| version.clone())
 }
 
 pub fn stop_prefetch(state: &PrefetchState) -> Result<(), String> {
-    stop_update(&state.0)
+    stop_update(&state.process)
 }
 
 /// What the child said about why it stopped, gathered while it was still running.
@@ -601,7 +621,9 @@ pub(crate) fn run_prefetch_update(
     state: PrefetchState,
     shell_version: Option<String>,
 ) -> Result<(), String> {
-    let kind = UpdateKind::Prefetch { shell_version };
+    let kind = UpdateKind::Prefetch {
+        shell_version: shell_version.clone(),
+    };
     let bin = match crate::process::find_unsloth_binary() {
         Some(bin) => bin,
         None => return Err("Unsloth binary not found. Cannot prepare an update.".to_string()),
@@ -609,13 +631,21 @@ pub(crate) fn run_prefetch_update(
 
     info!("[prefetch] Preparing the next update via {:?}", bin);
     let outcome = Arc::new(Mutex::new(PrefetchOutcome::default()));
-    let (stdout, stderr) =
-        spawn_prefetch(&bin, &state.0, &kind).map_err(|msg| format!("spawn_prefetch: {msg}"))?;
+    let (stdout, stderr) = spawn_prefetch(&bin, &state.process, &kind)
+        .map_err(|msg| format!("spawn_prefetch: {msg}"))?;
+    // Recorded only once the child exists, and cleared below however it ends, so
+    // it can never outlive the run it names.
+    if let Ok(mut running) = state.running_version.lock() {
+        *running = shell_version;
+    }
     let threads = stream_prefetch_output(&app, outcome.clone(), stdout, stderr);
 
-    let result = wait_for_exit(&state.0);
+    let result = wait_for_exit(&state.process);
     for handle in threads {
         let _ = handle.join();
+    }
+    if let Ok(mut running) = state.running_version.lock() {
+        *running = None;
     }
     // Read only after both readers are joined, so the last line still counts.
     let outcome = outcome
@@ -1040,7 +1070,7 @@ mod tests {
         let mut wrapped = CommandWrap::from(command);
         #[cfg(unix)]
         wrapped.wrap(ProcessGroup::leader());
-        prefetch.0.lock().unwrap().child = Some(wrapped.spawn().unwrap());
+        prefetch.process.lock().unwrap().child = Some(wrapped.spawn().unwrap());
 
         assert!(is_prefetch_running(&prefetch));
         assert!(!is_update_running(&update));

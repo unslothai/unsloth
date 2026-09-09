@@ -55,6 +55,8 @@ pub struct PrefetchStatus {
     pub created_at: Option<i64>,
     /// A prefetch child is running now, so this is being written, not stale.
     pub running: bool,
+    /// The offer that running child is preparing for, when there is one.
+    pub running_shell_version: Option<String>,
 }
 
 fn prefetch_dir(home: &Path) -> PathBuf {
@@ -103,6 +105,7 @@ pub fn status(home: &Path) -> PrefetchStatus {
         cache_dir: marker.cache_dir,
         created_at: marker.created_at,
         running: false,
+        running_shell_version: None,
     }
 }
 

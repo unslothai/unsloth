@@ -29,11 +29,16 @@ export function DesktopUpdateControl(): ReactElement | null {
   if (!update) return null;
 
   const checking = update.status === "checking";
+  const preparing = update.status === "preparing";
+  const ready = update.status === "ready";
+  // A running install owns the update screen; no second "Update now".
   const inFlight =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
     update.status === "installing";
-  const busy = checking || inFlight;
+  // Preparing counts: the offer has already been accepted and the only thing
+  // left to press is Restart, which this row shows once it is ready.
+  const busy = checking || inFlight || preparing;
   const available = update.info !== null && !checking;
   const checkFailed = update.checkError !== null && !available;
 
@@ -50,7 +55,11 @@ export function DesktopUpdateControl(): ReactElement | null {
       ? t("settings.about.update.desktopExternalServer")
       : update.updatePolicyMode === "manual_linux_package"
         ? t("settings.about.update.desktopManualInstall")
-        : t("settings.about.update.desktopAvailableDescription");
+        : ready
+          ? t("settings.about.update.desktopReadyToRestartDescription")
+          : preparing
+            ? t("settings.about.update.desktopPreparingDescription")
+            : t("settings.about.update.desktopAvailableDescription");
   } else if (checkFailed) {
     label = t("settings.about.update.desktopCheckFailed");
     // Keep the raw reason: failures come from the network, HTTP, manifest or updater.
@@ -66,7 +75,11 @@ export function DesktopUpdateControl(): ReactElement | null {
   const action = available
     ? update.updatePolicyMode === "manual_linux_package"
       ? t("settings.about.update.openReleasePage")
-      : t("settings.about.update.updateNow")
+      : ready
+        ? t("settings.about.update.restartToUpdate")
+        : preparing
+          ? t("settings.about.update.preparing")
+          : t("settings.about.update.updateNow")
     : checkFailed
       ? t("settings.about.update.retryCheck")
       : update.hasChecked
