@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Deterministic host coverage for project-backed editing and command execution.
+# This lane does not download a model or depend on a model choosing a tool.
+
+name: Studio project command supervision
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/inference/tools.py'
+      - 'studio/backend/run.py'
+      - 'studio/backend/storage/studio_db.py'
+      - 'studio/backend/utils/process_lifetime.py'
+      - 'studio/backend/tests/test_edit_file_tool.py'
+      - 'studio/backend/tests/test_secure_process_supervisor.py'
+      - 'studio/backend/tests/test_project_command_boundaries.py'
+      - 'studio/backend/tests/test_studio_pid_files.py'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/workflows/studio-command-supervision-ci.yml'
+  merge_group:
+  push:
+    # Let the source split qualify on its author's fork before upstream
+    # maintainers approve the pull_request runs.
+    branches: [main, 'codex/project-command-supervision-*']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: secure tools (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # Linux executes the supervised command boundary. Windows and macOS
+      # assert that project commands fail before Popen on unsupported backends.
+      matrix:
+        include:
+          # This image permits unprivileged user namespaces. Newer Ubuntu
+          # images may deny them through AppArmor; production detects that
+          # restriction and refuses project commands.
+          - os: ubuntu-22.04
+            boundary_required: '1'
+          - os: windows-latest
+            boundary_required: '0'
+          - os: macos-15
+            boundary_required: '1'
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+      UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE: '1'
+      UNSLOTH_SECURE_BOUNDARY_REQUIRED: ${{ matrix.boundary_required }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Compose confined edit support
+        shell: bash
+        env:
+          EDIT_REVISION: a5d144019bb585e246d0752c11d325807d0bfb19
+        run: |
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$EDIT_REVISION"
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$EDIT_REVISION"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the Linux project boundary
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends bubblewrap || { apt-get update -qq && apt-get install -y --no-install-recommends bubblewrap; }'
+
+      - name: Verify the Linux namespace facility
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bwrap --version
+          bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev -- /bin/true
+
+      - name: Install focused backend dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            fastapi httpx typer packaging structlog huggingface-hub \
+            pyjwt cryptography python-multipart aiofiles sqlalchemy psutil pyyaml requests \
+            pytest pytest-timeout
+
+      - name: Run secure project tool tests
+        working-directory: studio/backend
+        run: >-
+          python -m pytest
+          tests/test_project_command_boundaries.py
+          tests/test_edit_file_tool.py
+          tests/test_secure_process_supervisor.py
+          tests/test_studio_pid_files.py::test_graceful_shutdown_retries_project_quarantine_before_generic_sweep
+          tests/test_studio_pid_files.py::test_graceful_shutdown_retries_quarantine_even_when_generic_sweep_fails
+          -q --tb=short --timeout=60 --maxfail=5

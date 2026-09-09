@@ -16135,6 +16135,54 @@ def _created_file_sentinels(
     return out
 
 
+def _render_supervised_project_result(
+    supervised,
+    *,
+    timeout,
+    workdir: str,
+    spill_dir: "str | None",
+    spill_scope: "str | None",
+    before: dict,
+    session_id: "str | None",
+    call_token: "dict | None",
+) -> str:
+    """Render a supervised result through the existing tool and artifact contract."""
+    truncation_notice = str(getattr(supervised, "truncation_notice", "") or "")
+    if supervised.output_truncated and not truncation_notice:
+        retained_bytes = len((supervised.output or "").encode("utf-8"))
+        truncation_notice = (
+            f"\n[Process produced {supervised.output_bytes} bytes. Only the bounded "
+            f"{retained_bytes}-byte prefix was retained.]\n"
+        )
+    if supervised.status == "timed_out":
+        rendered = _truncate(f"Execution timed out after {timeout} seconds.{truncation_notice}")
+        return rendered + (
+            _created_file_sentinels(workdir, before, None, call_token) if session_id else ""
+        )
+    if supervised.status == "cancelled":
+        return f"Execution cancelled.{truncation_notice}" + (
+            _created_file_sentinels(workdir, before, None, call_token) if session_id else ""
+        )
+
+    result = supervised.output or ""
+    if truncation_notice:
+        if result.endswith(truncation_notice):
+            result = result[: -len(truncation_notice)]
+        result = f"{truncation_notice.strip()}\n{result}"
+    if supervised.exit_code not in (None, 0):
+        result = f"Exit code {supervised.exit_code}:\n{result}"
+    hint = _missing_path_hint(result, workdir)
+    result = _defuse_sentinels(result)
+    result = (
+        _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+        if result.strip()
+        else "(no output)" + hint
+    )
+    if session_id:
+        result += _created_file_sentinels(workdir, before, None, call_token)
+    return result
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -16178,17 +16226,50 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
-    workdir = _get_workdir(session_id)
-    # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
-    # one session by design. Retaining a result in either, under a path the next chat can
-    # list, would leave behind output that existed only in this call's own response. See
-    # `_spill_scope`, which returns None for exactly those cases.
-    spill_scope = _spill_scope(session_id, thread_id)
-    spill_dir = workdir if session_id else None
-    call_token = _call_started(workdir)
-    # Snapshot mtimes to detect new and overwritten files.
-    _before = _snapshot_workdir_files(workdir)
+    workdir = None
+    spill_scope = None
+    spill_dir = None
+    call_token = None
+    _before = {}
     try:
+        workdir = _get_workdir(session_id)
+        project_id = _project_execution_id(
+            session_id,
+            workdir,
+            disable_sandbox = disable_sandbox,
+        )
+        # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
+        # one session by design. Retaining a result in either, under a path the next chat can
+        # list, would leave behind output that existed only in this call's own response. See
+        # `_spill_scope`, which returns None for exactly those cases.
+        spill_scope = _spill_scope(session_id, thread_id)
+        spill_dir = workdir if session_id else None
+        call_token = _call_started(workdir)
+        # Snapshot mtimes to detect new and overwritten files.
+        _before = _snapshot_workdir_files(workdir)
+        if project_id is not None:
+            from core.agent_workspace.supervisor import (
+                MAX_OUTPUT_LIMIT_BYTES,
+                run_project_python,
+            )
+            supervised = run_project_python(
+                project_id,
+                code,
+                timeout_seconds = timeout,
+                output_limit_bytes = MAX_OUTPUT_LIMIT_BYTES,
+                cancel_event = cancel_event,
+                output_callback = output_callback,
+            )
+            return _render_supervised_project_result(
+                supervised,
+                timeout = timeout,
+                workdir = workdir,
+                spill_dir = spill_dir,
+                spill_scope = spill_scope,
+                before = _before,
+                session_id = session_id,
+                call_token = call_token,
+            )
         # In the workdir: Python puts it on sys.path[0], so an earlier call's
         # helper.py stays importable and __file__ resolves inside the sandbox.
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
@@ -16213,19 +16294,22 @@ def _python_exec(
             # replace so non-ASCII output never crashes the read on Windows.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
             env = safe_env,
         )
+        preexec = _bypass_preexec if disable_sandbox else _sandbox_preexec
+        argv = [sys.executable, "-u", tmp_path]
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            popen_kwargs["cwd"] = workdir
+            popen_kwargs["preexec_fn"] = preexec
         else:
+            popen_kwargs["cwd"] = workdir
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
@@ -16354,6 +16438,11 @@ def _bash_exec(
     call_token = None
     try:
         workdir = _get_workdir(session_id)
+        project_id = _project_execution_id(
+            session_id,
+            workdir,
+            disable_sandbox = disable_sandbox,
+        )
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)
         spill_dir = workdir if session_id else None
@@ -16361,6 +16450,29 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
+        if project_id is not None:
+            from core.agent_workspace.supervisor import (
+                MAX_OUTPUT_LIMIT_BYTES,
+                run_project_process,
+            )
+            supervised = run_project_process(
+                project_id,
+                _get_shell_cmd(command),
+                timeout_seconds = timeout,
+                output_limit_bytes = MAX_OUTPUT_LIMIT_BYTES,
+                cancel_event = cancel_event,
+                output_callback = output_callback,
+            )
+            return _render_supervised_project_result(
+                supervised,
+                timeout = timeout,
+                workdir = workdir,
+                spill_dir = spill_dir,
+                spill_scope = spill_scope,
+                before = _before,
+                session_id = session_id,
+                call_token = call_token,
+            )
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
@@ -16371,15 +16483,18 @@ def _bash_exec(
             # thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
             env = safe_env,
         )
+        preexec = _bypass_preexec if disable_sandbox else _sandbox_preexec
+        argv = _get_shell_cmd(command)
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            popen_kwargs["cwd"] = workdir
+            popen_kwargs["preexec_fn"] = preexec
         else:
+            popen_kwargs["cwd"] = workdir
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
@@ -16436,3 +16551,34 @@ def _bash_exec(
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
+
+
+@contextlib.contextmanager
+def project_workspace_in_flight(project_id: str):
+    """Keep project operations visible to project deletion cleanup."""
+    with _session_in_flight(project_session_id(project_id)):
+        yield
+
+
+
+def _project_execution_id(
+    session_id: "str | None", workdir: str, *, disable_sandbox: bool
+) -> "str | None":
+    """Return the persisted project id for a sandboxed project tool call.
+
+    Root identity, leasing, the mutation slot, and process containment are
+    resolved by the supervisor. This helper only distinguishes a real project
+    session from an ordinary chat whose caller-chosen id shares the prefix.
+    """
+    if disable_sandbox or not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    if _thread_exists(session_id):
+        return None
+    project_workdir = _get_project_workdir(session_id)
+    if project_workdir is None:
+        # A missing row or failed lookup cannot downgrade a project request to
+        # the ordinary conversation command path, which lacks containment.
+        raise RuntimeError("the project workspace is unavailable; the command did not run")
+    if os.path.realpath(project_workdir) != os.path.realpath(workdir):
+        raise RuntimeError("the project workspace changed before execution")
+    return session_id[len(_PROJECT_SESSION_PREFIX) :]

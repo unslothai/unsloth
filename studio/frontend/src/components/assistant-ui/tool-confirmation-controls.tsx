@@ -4,6 +4,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { useChatActive, useChatNavigationStore } from "@/features/chat";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
@@ -16,7 +17,7 @@ import type {
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
-import { useChatActive, useChatNavigationStore } from "@/features/chat";
+import { canRememberToolApproval } from "./tool-approval-policy";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -51,9 +52,11 @@ export function ToolConfirmationControls({
     (s) => s.clearToolConfirmation,
   );
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
+  const canRememberApproval = canRememberToolApproval(toolName);
   const autoAllowed = useChatRuntimeStore(
     (s) =>
-      s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false,
+      canRememberApproval &&
+      (s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
   );
 
   const [decided, setDecided] = useState(false);
@@ -175,17 +178,19 @@ export function ToolConfirmationControls({
       >
         Allow
       </Button>
-      <Button
-        size="xs"
-        variant="outline"
-        disabled={pending !== null}
-        onClick={() => {
-          if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
-          void resolve("allow");
-        }}
-      >
-        Always allow
-      </Button>
+      {canRememberApproval ? (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={pending !== null}
+          onClick={() => {
+            if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
+            void resolve("allow");
+          }}
+        >
+          Always allow
+        </Button>
+      ) : null}
       <Button
         size="xs"
         variant="destructive"
