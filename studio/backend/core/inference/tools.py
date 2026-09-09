@@ -7349,24 +7349,20 @@ def _prepare_tool_launch(plan):
             # fallback itself, and it comes through here.
             prepared.env = _with_session_packages(prepared.env, plan.workdir)
         return prepared
+    except os_sandbox.WorkdirUnsafeError:
+        # The session workdir is the one thing a tool call can write to, so this
+        # is the refusal that must never become an unisolated launch: answering it
+        # by running on the host would hand model-authored code a switch for its
+        # own boundary. Told apart by TYPE rather than by asking the probe again,
+        # because a transient probe failure would otherwise re-open the very
+        # channel the scan just found.
+        raise
     except os_sandbox.SandboxUnavailableError:
-        # A refusal about the session WORKDIR is never turned into an unisolated
-        # launch: the workdir is the single thing a tool call can write to, so
-        # answering those by running the next call on the host would hand
-        # model-authored code a switch for its own boundary.
-        #
-        # A backend can also refuse because it has just stopped being available --
-        # bwrap removed by a package update -- and that is the fallback's own
-        # case. The two are told apart by re-probing rather than by reading the
-        # cached verdict, which is up to 60s old and so is exactly long enough to
-        # answer it wrongly. The probe costs about a tenth of a second and only
-        # runs here, on a path that was going to fail the call otherwise.
+        # Any other refusal from a backend means it has stopped being available --
+        # bwrap removed by a package update -- which is the fallback's own case.
         if plan.requested_mode == "required" or (
-            plan.requested_mode in os_sandbox.TOOL_EXECUTION_MODES
-            and os_sandbox.capability_snapshot(force = True).available
+            plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
         ):
-            raise
-        if plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES:
             raise
         logger.warning(
             "The sandbox backend is no longer available, running with software safeguards",

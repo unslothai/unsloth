@@ -40,6 +40,7 @@ from .os_sandbox import (
     PreparedSandboxLaunch,
     SandboxUnavailableError,
     ToolLaunchPlan,
+    WorkdirUnsafeError,
     scan_workdir_for_host_channels,
 )
 
@@ -264,12 +265,10 @@ def _validate_workdir(workdir: str) -> str:
     """
     resolved = os.path.realpath(workdir)
     if not os.path.isdir(resolved) or os.path.dirname(resolved) == resolved:
-        raise SandboxUnavailableError("the session workdir is not a safe canonical directory")
+        raise WorkdirUnsafeError("the session workdir is not a safe canonical directory")
     for mount in _host_mount_points():
         if mount != resolved and _within(mount, resolved):
-            raise SandboxUnavailableError(
-                f"the session workdir contains a nested host mount: {mount}"
-            )
+            raise WorkdirUnsafeError(f"the session workdir contains a nested host mount: {mount}")
     scan_workdir_for_host_channels(resolved)
     return resolved
 
@@ -458,7 +457,7 @@ def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
             except FileExistsError:
                 pass
             except OSError as exc:
-                raise SandboxUnavailableError(
+                raise WorkdirUnsafeError(
                     f"the session workdir's model cache path cannot be prepared: {exc}"
                 ) from exc
             # Verified whether or not it was just made, and whether or not the
@@ -468,7 +467,7 @@ def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
             try:
                 opened = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fds[-1])
             except OSError as exc:
-                raise SandboxUnavailableError(
+                raise WorkdirUnsafeError(
                     f"the session workdir's model cache path is not a plain directory: {name}"
                 ) from exc
             if name in levels:

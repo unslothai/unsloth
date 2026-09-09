@@ -88,6 +88,17 @@ class SandboxUnavailableError(RuntimeError):
         self.remediation = remediation
 
 
+class WorkdirUnsafeError(SandboxUnavailableError):
+    """The session workdir itself carries a way out, so this launch is refused.
+
+    Told apart from every other refusal by TYPE rather than by asking the probe
+    again: the workdir is the one thing a tool call can write to, so this is the
+    error that must never be answered by running unisolated, and deciding that
+    from a second probe's verdict means a transient probe failure re-opens the
+    very channel the scan just found.
+    """
+
+
 @dataclass(frozen = True)
 class SandboxCapability:
     """What this host can actually enforce, proven by a live probe.
@@ -265,7 +276,7 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
             # channel, and not something to refuse a launch over.
             logger.info("Skipped an unreadable session workdir entry: %s", exc.filename)
             return
-        raise SandboxUnavailableError(
+        raise WorkdirUnsafeError(
             f"the session workdir cannot be fully inspected: {exc.filename or workdir}"
         ) from exc
 
@@ -273,7 +284,7 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
         for name in (*dirs, *names):
             entries += 1
             if entries > WORKDIR_SCAN_ENTRIES or time.monotonic() > deadline:
-                raise SandboxUnavailableError(
+                raise WorkdirUnsafeError(
                     "the session workdir is too large to check for host channels before a "
                     f"launch (over {WORKDIR_SCAN_ENTRIES} entries or "
                     f"{WORKDIR_SCAN_SECONDS:.0f}s)"
@@ -282,7 +293,7 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
             try:
                 info = os.lstat(path)
             except OSError as exc:
-                raise SandboxUnavailableError(
+                raise WorkdirUnsafeError(
                     f"the session workdir changed during its safety scan: {path}"
                 ) from exc
             if stat.S_ISLNK(info.st_mode):
@@ -292,12 +303,12 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
                 # answer on both platforms. Linux asks the mount table as well,
                 # since this misses a same-filesystem bind mount.
                 if os.path.ismount(path):
-                    raise SandboxUnavailableError(
+                    raise WorkdirUnsafeError(
                         f"the session workdir contains a nested host mount: {path}"
                     )
                 continue
             if not stat.S_ISREG(info.st_mode):
-                raise SandboxUnavailableError(
+                raise WorkdirUnsafeError(
                     f"the session workdir contains a device or IPC node: {path}"
                 )
             if info.st_nlink > 1:
@@ -305,7 +316,7 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
                 found[0] += 1
     for found, total, path in links.values():
         if found < total:
-            raise SandboxUnavailableError(
+            raise WorkdirUnsafeError(
                 f"the session workdir contains a file hard-linked from outside it: {path}"
             )
 

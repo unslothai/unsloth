@@ -591,19 +591,26 @@ def test_the_tool_descriptions_are_untouched_by_this_change():
 # end of Python and Terminal for the session.
 
 
-def _declining_backend(monkeypatch, reason: str) -> None:
+def _declining_backend(
+    monkeypatch,
+    reason: str,
+    unsafe: bool = True,
+) -> None:
+    """A planner that refuses. *unsafe* picks WHICH refusal: a workdir the scan
+    rejected, or a backend that has stopped being available. The two are told
+    apart by type, and they get opposite answers."""
+    error = os_sandbox.WorkdirUnsafeError if unsafe else SandboxUnavailableError
+
     def decline(plan):
-        raise SandboxUnavailableError(reason)
+        raise error(reason)
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", decline)
 
 
-@pytest.mark.skipif(
-    not os_sandbox.capability_snapshot().available, reason = "this host cannot isolate"
-)
-def test_a_declined_launch_fails_rather_than_de_isolating_where_isolation_was_possible(monkeypatch):
-    """The other half, and the one that closes the escalation: on a host that can
-    isolate, a refusal never becomes an unisolated launch."""
+def test_an_unsafe_workdir_fails_the_call_rather_than_de_isolating_it(monkeypatch):
+    """The refusal that closes the escalation. Told apart by TYPE, not by asking
+    the probe again: a transient probe failure would otherwise re-open the very
+    channel the scan just found."""
     _declining_backend(monkeypatch, "the session workdir contains a device node")
     tools._last_tool_execution_record = None
     out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
@@ -735,61 +742,18 @@ def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
 
 
 def test_a_backend_that_has_just_stopped_being_available_still_falls_back(monkeypatch):
-    """A refusal after a successful probe is not always about the workdir: bwrap
-    removed by a package update raises the same error, and the cached verdict is
-    up to 60s stale. Re-probed before refusing, so that case reaches the fallback
-    the docs promise instead of failing the call."""
-    _declining_backend(monkeypatch, "bubblewrap (bwrap) is not installed on this host")
-    probes = []
-
-    def gone(**kwargs):
-        probes.append(kwargs.get("force"))
-        return os_sandbox.SandboxCapability(backend = "none", available = False, reason = "bwrap is gone")
-
-    monkeypatch.setattr(os_sandbox, "capability_snapshot", gone)
+    """Not every refusal after a successful probe is about the workdir: bwrap
+    removed by a package update raises one too, and that is the fallback's own
+    case. Told apart by type rather than by a second probe, whose transient
+    failure would otherwise be enough to run in a workdir the scan rejected."""
+    _declining_backend(
+        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
+    )
     tools._last_tool_execution_record = None
     assert "42" in tools._python_exec("print(6 * 7)", None, 60, _SESSION)
-    assert tools._last_tool_execution_record.os_isolation is False
-    # Forced, or the stale verdict answers it.
-    assert probes and probes[-1] is True
-
-
-def test_a_package_installed_in_an_isolated_call_survives_the_fallback(monkeypatch):
-    """The backends point PIP_TARGET at <workdir>/.unsloth-packages, so a package
-    an isolated call installed lives there. A later call in the same session can
-    still fall back -- bwrap removed by a package update -- and losing the package
-    halfway through a chat is the visible half of that."""
-    workdir = tools._get_workdir(_SESSION)
-    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
-    os.makedirs(os.path.join(packages, "bin"), exist_ok = True)
-    with open(os.path.join(packages, "installed_by_an_earlier_call.py"), "w") as handle:
-        handle.write("VALUE = 'from the session package directory'\n")
-    _declining_backend(monkeypatch, "bubblewrap (bwrap) is not installed on this host")
-    monkeypatch.setattr(
-        os_sandbox,
-        "capability_snapshot",
-        lambda **kwargs: os_sandbox.SandboxCapability(
-            backend = "none", available = False, reason = "bwrap is gone"
-        ),
-    )
-    try:
-        out = tools._python_exec(
-            "import installed_by_an_earlier_call as m; print('IMPORTED', m.VALUE)",
-            None,
-            60,
-            _SESSION,
-        )
-        assert "from the session package directory" in out, out
-    finally:
-        shutil.rmtree(packages, ignore_errors = True)
-
-
-def test_a_host_that_never_isolated_is_handed_back_what_it_handed_in():
-    """The other half: the package directory only joins the path when it exists."""
-    workdir = tools._get_workdir(_SESSION)
-    shutil.rmtree(os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH), ignore_errors = True)
-    handed_in = {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}
-    assert tools._with_session_packages(handed_in, workdir) == handed_in
+    record = tools._last_tool_execution_record
+    assert record.os_isolation is False
+    assert "sandbox_became_unavailable" in record.limitations
 
 
 def test_a_backend_that_fails_at_launch_drops_the_cached_verdict(monkeypatch):

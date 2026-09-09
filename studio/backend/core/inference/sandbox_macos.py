@@ -53,6 +53,7 @@ from .os_sandbox import (
     PreparedSandboxLaunch,
     SandboxUnavailableError,
     ToolLaunchPlan,
+    WorkdirUnsafeError,
     scan_workdir_for_host_channels,
 )
 
@@ -769,11 +770,11 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise SandboxUnavailableError(reason)
     workdir = _validated(os.path.abspath(plan.workdir))
     if not os.path.isdir(workdir):
-        raise SandboxUnavailableError(f"the session workdir does not exist: {workdir}")
+        raise WorkdirUnsafeError(f"the session workdir does not exist: {workdir}")
     if posixpath.dirname(workdir) == workdir:
         # "/" as the session workdir would make the entire filesystem the
         # writable set, which is the opposite of what this backend claims.
-        raise SandboxUnavailableError(f"the session workdir cannot be a filesystem root: {workdir}")
+        raise WorkdirUnsafeError(f"the session workdir cannot be a filesystem root: {workdir}")
     # The same scan the Linux backend runs, and for the same reason: this profile
     # grants file-write* over the workdir subpath, so a regular file in here that
     # is hard-linked to one outside writes through to the host inode and the
