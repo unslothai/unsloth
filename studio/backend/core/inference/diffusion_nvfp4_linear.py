@@ -236,8 +236,21 @@ def _baked_activation_scales(metadata: Any) -> Optional[dict]:
 
 
 def _declares_baked_scales(metadata: Any) -> bool:
-    policy = metadata.get(POLICY_KEY) if isinstance(metadata, dict) else None
-    return bool(isinstance(policy, dict) and policy.get(POLICY_BAKED_KEY))
+    """Did this artifact CLAIM to bake activation scales, whatever shape it has?
+
+    Two artifacts declare it in two places, because they have two shapes: a per-layer policy build
+    carries the flag inside its policy block, and a WHOLE-MODEL build (PR 1's video artifacts, every
+    admitted linear at nvfp4) has no policy block at all and declares it at the top level. Only the
+    refusal message reads this -- the conversion itself is keyed on the scales being present -- but
+    a whole-model artifact whose bake produced nothing would otherwise be reported as one that never
+    asked for it, which is the difference between a build to rerun and a backend to stop asking for.
+    """
+    if not isinstance(metadata, dict):
+        return False
+    policy = metadata.get(POLICY_KEY)
+    if isinstance(policy, dict) and policy.get(POLICY_BAKED_KEY):
+        return True
+    return bool(metadata.get(POLICY_BAKED_KEY))
 
 
 def convert_nvfp4_backend(

@@ -489,3 +489,49 @@ def test_prewarm_without_flashinfer_is_a_no_op(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _no_flashinfer)
     assert nl.nvfp4_prewarm(_quantized_tree(), (1, 512)) == 0
+
+
+def test_a_whole_model_artifact_converts_without_a_policy_block():
+    """PR 1's video artifacts quantise EVERY admitted linear and declare no policy at all. The
+    backend keys on the baked scales, not on a policy, so those artifacts get the fast layer too;
+    a conversion that required a policy block would silently leave every video family on torchao."""
+    torch = _cuda_or_skip()
+    import torch.nn as nn
+    from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+    from torchao.quantization import quantize_
+
+    torch.manual_seed(11)
+    tree = nn.Sequential(nn.Linear(3072, 3072), nn.SiLU(), nn.Linear(3072, 3072))
+    tree = tree.to("cuda", torch.bfloat16).eval()
+    quantize_(tree, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
+    x = torch.randn(512, 3072, device = "cuda", dtype = torch.bfloat16) * 0.05
+    with torch.inference_mode():
+        hidden = tree[1](tree[0](x))
+        before = tree(x)
+    metadata = {
+        "scheme": "nvfp4",
+        "family": "wan2.2-ti2v-5b",
+        # Top level, because a whole-model artifact has no policy block to carry it.
+        "activation_scales_baked": True,
+        "act_global_scales": {
+            "0": float(ops.global_scale(x)),
+            "2": float(ops.global_scale(hidden)),
+        },
+    }
+    assert nl.convert_nvfp4_backend(tree, metadata, "flashinfer") == 2
+    assert nl.is_nvfp4_flashinfer_linear(tree[0]) and nl.is_nvfp4_flashinfer_linear(tree[2])
+    with torch.inference_mode():
+        after = tree(x)
+    assert bool(torch.isfinite(after).all())
+    assert _rel(after, before) < FORWARD_REL_BOUND
+
+
+def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
+    """The same distinction the policy artifacts get: a build whose bake produced no scales is a
+    build to rerun, and a checkpoint that never asked for one is a backend to stop asking."""
+    pytest.importorskip("torch")
+
+    logger = _RecordingLogger()
+    metadata = {"scheme": "nvfp4", "activation_scales_baked": True, "act_global_scales": {}}
+    assert nl.convert_nvfp4_backend(_quantized_tree(), metadata, "flashinfer", logger = logger) == 0
+    assert "flag set, scales missing" in logger.text
