@@ -1933,6 +1933,9 @@ class SparkServing:
         self.split_config: Optional[str] = None
         self.split_config_reason: Optional[str] = None
         self.mtp: str = "unknown"
+        # Held from before_load to after_load. The loader clears its _process during a
+        # load, and the supervisor must not read that as an unload.
+        self.load_in_progress: bool = False
         self.mtp_reason: Optional[str] = "no load yet"
         self._supervisor: Optional[asyncio.Task] = None
         self._relaunch_task: Optional[asyncio.Task] = None
@@ -1993,6 +1996,7 @@ class SparkServing:
         ``inherited_extra_args`` counts as the caller's, not as room for this module."""
         if not enabled():
             return request
+        self.load_in_progress = True
         try:
             # Nothing is torn down here: the load may be a no-op whose llama-server still
             # depends on the running peer.
@@ -2209,6 +2213,16 @@ class SparkServing:
         # holding somebody's work puts one of the two into an out-of-memory, and the plan was
         # priced against the whole node budget. Our own is excluded, since a reuse that got
         # this far has already been refused above.
+        if getattr(request, "gpu_ids", None) is not None:
+            # The backend strips every --device pass-through when gpu_ids is set, because the
+            # pin owns placement. A split needs --device RPC0,CUDA0 to keep the output layer
+            # and the logits local, and without it llama.cpp's default CUDA-first enumeration
+            # puts them on the peer: the measured slow path, silently. Better to say so than
+            # to launch a split that is not the one this module priced.
+            return _fall_back(
+                "a layer split needs its own device order and an explicit GPU selection "
+                "replaces it; clear the GPU pin to serve this model across both Sparks"
+            )
         if argv_or_env_rpc(_effective(request)):
             # Their placement, not ours. Appending a second --rpc plus a managed device order,
             # split mode and tensor split either overrides a working manual split or reaches
@@ -2296,6 +2310,7 @@ class SparkServing:
         return _with_rpc_args(request)
 
     async def load_failed(self) -> None:
+        self.load_in_progress = False
         # Not every failed load leaves nothing running: the route validates and can raise 400/409
         # before it unloads, so a rejected replacement leaves the previous model loaded and still
         # being served. Tearing its topology down there would kill a working split or router over
@@ -2309,6 +2324,7 @@ class SparkServing:
 
     async def after_load(self, llama_backend: Any, n_parallel: int) -> None:
         """Reconcile with what actually launched. Runs after every load, no-op reloads too."""
+        self.load_in_progress = False
         if not enabled():
             return
         try:
@@ -2573,6 +2589,13 @@ class SparkServing:
                 if backend is None:
                     return
                 if getattr(backend, "_process", None) is None:
+                    if self.load_in_progress:
+                        # NOT an unload. The loader clears _process before its download and
+                        # preparation phase, so a replacement for an already-split model shows
+                        # this transient state for the whole of it. Tearing down there kills
+                        # the rpc-server the replacement has ALREADY been configured to use,
+                        # and its llama-server then launches into nothing.
+                        continue
                     logger.info(
                         "spark serving: this node's llama-server was unloaded; tearing the peer down"
                     )

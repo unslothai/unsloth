@@ -2922,3 +2922,61 @@ def test_an_unreadable_build_is_not_evidence_of_a_mismatch(cluster, monkeypatch,
 
     assert ss.parse_llama_server_version("version: 6109 (a1b2c3d)") == "6109 (a1b2c3d)"
     assert ss.parse_llama_server_version("no version here") is None
+
+
+def test_a_replacement_load_does_not_look_like_an_unload_to_the_supervisor(cluster, monkeypatch):
+    # The loader clears _process before its download and preparation phase, so a replacement
+    # for an already-split model shows that transient state for the whole of it. Tearing down
+    # there kills the rpc-server the replacement has already been configured to use.
+    st = ss.state()
+    detached = []
+
+    async def fake_detach():
+        detached.append(1)
+
+    monkeypatch.setattr(st, "detach", fake_detach)
+    monkeypatch.setattr(ss, "SUPERVISOR_INTERVAL_S", 0.01)
+    st.attached_backend = SimpleNamespace(_process = None, _port = 8080, _healthy = True)
+    st.attached_port = 8080
+
+    async def scenario():
+        st.load_in_progress = True
+        supervisor = asyncio.ensure_future(st._supervise())
+        await asyncio.sleep(0.1)
+        assert not detached, "a load in progress is not an unload"
+        # The load ends without a server: now it really is gone.
+        st.load_in_progress = False
+        await asyncio.sleep(0.1)
+        supervisor.cancel()
+        try:
+            await supervisor
+        except (asyncio.CancelledError, Exception):
+            pass
+        assert detached == [1]
+
+    run(scenario())
+
+
+def test_an_explicit_gpu_pin_does_not_get_a_split_with_the_wrong_device_order(
+    cluster, monkeypatch, tmp_path
+):
+    # The backend strips every --device pass-through when gpu_ids is set, so a split would
+    # launch without RPC0,CUDA0 and llama.cpp's CUDA-first default would put the output layer
+    # and the logits on the peer: the measured slow path, silently.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+
+    request = _FakeRequest(str(model))
+    request.gpu_ids = [0]
+    out = run(ss.before_load(request, 4))
+    assert out is request
+    assert not started and ss.state().topology == "single"
+    assert "GPU pin" in ss.state().reason
+
+    # Without the pin the split is planned as before.
+    _calls, started = _patch_remote(monkeypatch)
+    out = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert started and "--rpc" in (out.llama_extra_args or [])
