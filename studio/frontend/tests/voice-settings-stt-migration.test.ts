@@ -11,6 +11,18 @@ import {
   migrateVoiceSettings,
 } from "../src/features/settings/stores/stt-model-catalog.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
+const CUSTOM_ENGINE_BEFORE_TAURI =
+  /savedEngine === "custom"\s*\? "custom"\s*:\s*isTauri/;
+const EXTERNAL_PROVIDER_FORM_FIELD = /form\.set\("provider_id", providerId\)/;
+const EXTERNAL_PRELOAD_GUARD =
+  /if \(!usesExternalEndpoint && sessionEngine\) \{[\s\S]*loadSttModel/;
+const CONNECTIONS_ENABLED_SEND_GUARD =
+  /if \(!providersState\.connectionsEnabled\) \{[\s\S]*form\.set\("provider_id", providerId\)/;
+const LEGACY_KEY_FALLBACK =
+  /getExternalProviderApiKey\(providerId\)[\s\S]*encryptProviderApiKey\(legacyApiKey\)/;
+
 test("the default dictation model is a recommended one", () => {
   assert.ok(RECOMMENDED_STT_MODELS.has(DEFAULT_STT_MODEL));
 });
@@ -47,4 +59,40 @@ test("migration keeps the rest of the save intact", () => {
     0,
   );
   assert.equal(migrated?.dictationLanguage, "ja-JP");
+});
+
+test("custom transcription uses a saved connection without loading local STT", () => {
+  const storeSource = readSrc("features/settings/stores/voice-settings-store.ts");
+  const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
+
+  assert.match(storeSource, CUSTOM_ENGINE_BEFORE_TAURI);
+  assert.match(adapterSource, EXTERNAL_PROVIDER_FORM_FIELD);
+  assert.match(adapterSource, EXTERNAL_PRELOAD_GUARD);
+  assert.match(adapterSource, CONNECTIONS_ENABLED_SEND_GUARD);
+  assert.match(adapterSource, LEGACY_KEY_FALLBACK);
+});
+
+test("the custom dictation connection picker handles deleted and empty connections", () => {
+  const voiceTabSource = readSrc("features/settings/tabs/voice-tab.tsx");
+
+  assert.match(
+    voiceTabSource,
+    /if \(sttProviderId && !hasSelectedSttConnection\) \{\s*setSttProviderId\(""\);/,
+  );
+  assert.match(
+    voiceTabSource,
+    /value=\{hasSelectedSttConnection \? sttProviderId : undefined\}/,
+  );
+  assert.match(
+    voiceTabSource,
+    /disabled=\{!connectionsEnabled \|\| !hasSttConnections\}/,
+  );
+  assert.match(
+    voiceTabSource,
+    /"settings\.voice\.dictation\.connectionEmpty"/,
+  );
+  assert.doesNotMatch(
+    voiceTabSource,
+    /<SelectItem value=\{sttProviderId\}/,
+  );
 });

@@ -41,6 +41,7 @@ function config(
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,
+    disableVision: false,
     chatTemplateOverride,
   };
 }

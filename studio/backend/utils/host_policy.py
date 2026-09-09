@@ -14,18 +14,18 @@ have `unsloth_cli` on sys.path. Keep the two in sync.
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 
-# Loopback aliases; any other bind address is treated as network-reachable. Only
-# the exact aliases the rest of the stack assumes for loopback (health checks,
-# banner URLs, run.py all hard-code 127.0.0.1), so other 127.0.0.0/8 addresses
-# are deliberately left out -- they are not supported launch hosts.
+# Only the exact aliases the rest of the stack hard-codes for loopback: other 127.0.0.0/8 addresses are deliberately
+# left out, since they are not supported launch hosts.
+# Health checks, banner URLs and run.py all hard-code 127.0.0.1.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-# Whether a loopback launch in THIS process auto-enabled the gate. run_server
-# normally runs once per process, but if it is reused with a different host
-# (embedders, tests) a stale loopback default must not carry into a later
-# public bind, so we only ever take back a value we set ourselves.
+# Whether a loopback launch in THIS process auto-enabled the gate.
+# run_server normally runs once per process, but if it is reused with a different host (embedders, tests) we only ever
+# take back a value we set ourselves.
 _auto_enabled = False
 _remote_connector_active = False
 _lan_connector_active = False
@@ -36,14 +36,208 @@ def is_external_host(host: str) -> bool:
     return host.lower() not in _LOOPBACK_HOSTS
 
 
+def _normalized_ip(address: str):
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return None
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    return parsed
+
+
+def _literal_ip_address(host: str):
+    if not isinstance(host, str) or not host:
+        return None
+    literal = _normalized_ip(host)
+    if literal is not None:
+        return literal
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(host))
+    except OSError:
+        return None
+
+
+def _resolved_host_ip_addresses(host: str):
+    if not isinstance(host, str) or not host:
+        return ()
+    try:
+        addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return ()
+    resolved = []
+    for _family, _kind, _protocol, _name, sockaddr in addresses:
+        try:
+            parsed = ipaddress.ip_address(sockaddr[0])
+        except (IndexError, ValueError):
+            continue
+        if parsed not in resolved:
+            resolved.append(parsed)
+    return tuple(resolved)
+
+
+def _resolved_ip_addresses(host: str):
+    literal = _literal_ip_address(host)
+    if literal is not None:
+        return (literal,)
+    resolved = []
+    for parsed in _resolved_host_ip_addresses(host):
+        if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+            parsed = parsed.ipv4_mapped
+        if parsed not in resolved:
+            resolved.append(parsed)
+    return tuple(resolved)
+
+
+def wildcard_ip_versions(host: str) -> tuple[int, ...]:
+    """IP versions for every unspecified address this host resolves to."""
+    versions = {
+        address.version for address in _resolved_ip_addresses(host) if address.is_unspecified
+    }
+    return tuple(version for version in (4, 6) if version in versions)
+
+
+def resolved_bind_address_count(host: str) -> int:
+    """Number of distinct socket addresses this host resolves to."""
+    if _literal_ip_address(host) is not None:
+        return 1
+    if not isinstance(host, str) or not host:
+        return 0
+    try:
+        addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return 0
+    endpoints = {
+        (family, tuple(sockaddr))
+        for family, _kind, _protocol, _name, sockaddr in addresses
+        if sockaddr
+    }
+    return len(endpoints)
+
+
+def is_wildcard_host(host: str) -> bool:
+    """True when the host resolves to an unspecified bind address."""
+    return bool(wildcard_ip_versions(host))
+
+
+def normalize_wildcard_bind_host(host: str) -> str:
+    """Return a safe canonical bind for an effective wildcard host."""
+    if isinstance(host, str):
+        try:
+            parsed_literal = ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            if (
+                isinstance(parsed_literal, ipaddress.IPv6Address)
+                and parsed_literal.ipv4_mapped is not None
+            ):
+                return str(parsed_literal.ipv4_mapped)
+    literal = _literal_ip_address(host)
+    if literal is not None:
+        if not literal.is_unspecified:
+            return host
+        return "::" if literal.version == 6 else "0.0.0.0"
+
+    raw_addresses = _resolved_host_ip_addresses(host)
+    addresses = []
+    has_mapped_address = False
+    for address in raw_addresses:
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+            has_mapped_address = True
+        if address not in addresses:
+            addresses.append(address)
+    if has_mapped_address:
+        if len(addresses) == 1:
+            return str(addresses[0])
+        raise ValueError(
+            f"--host {host!r} resolves to ambiguous IPv4-mapped addresses; "
+            "use an explicit bind address."
+        )
+    wildcard_versions = {address.version for address in addresses if address.is_unspecified}
+    if not wildcard_versions:
+        return host
+    specific_versions = {address.version for address in addresses if not address.is_unspecified}
+    if len(wildcard_versions) == 2 and not specific_versions:
+        return host
+    if specific_versions - wildcard_versions or (len(wildcard_versions) == 2 and specific_versions):
+        raise ValueError(
+            f"--host {host!r} mixes wildcard and specific address families; "
+            "use an explicit bind address."
+        )
+    return "::" if 6 in wildcard_versions else "0.0.0.0"
+
+
+def wildcard_loopback_host(host: str) -> "str | None":
+    """The loopback address reachable through a wildcard bind."""
+    versions = wildcard_ip_versions(host)
+    if 4 in versions:
+        return "127.0.0.1"
+    return "::1" if 6 in versions else None
+
+
+def published_url_host(host: str) -> str:
+    """Authority host for a URL Studio hands out - a banner line, `server_url`, a tunnel origin."""
+    escaped = host.replace("%", "%25")
+    if ":" not in escaped or (escaped.startswith("[") and escaped.endswith("]")):
+        return escaped
+    return f"[{escaped}]"
+
+
+def dial_host(host: str) -> str:
+    """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx
+    hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
+    return f"[{host}]" if ":" in host else host
+
+
+# Self-call address resolution. A `--host` other than a wildcard binds one interface only, so
+# loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
+LOOPBACK_FALLBACK_HOST = "127.0.0.1"
+
+
+def is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def scope_request_host(server) -> "str | None":
+    """Accepting address from an ASGI `scope["server"]`. Never carries an IPv6 zone id."""
+    if not isinstance(server, (tuple, list)) or len(server) < 2:
+        return None
+    host = server[0]
+    if not isinstance(host, str) or not host:
+        return None
+    return wildcard_loopback_host(host) or host
+
+
+def prefer_loopback(current: "str | None", candidate: str) -> str:
+    """Keep loopback once seen: a wildcard bind reports whichever interface each request arrived
+    on, and that address can change while the loopback it also serves stays valid."""
+    if current is not None and is_loopback_host(current):
+        return current
+    return candidate
+
+
+def self_request_host(app_state, server = None) -> str:
+    """`server_request_host` is authoritative - run_server publishes it from the live listener
+    sockets; the scope pair covers running outside run_server."""
+    published = getattr(app_state, "server_request_host", None)
+    if isinstance(published, str) and published:
+        return published
+    return scope_request_host(server) or LOOPBACK_FALLBACK_HOST
+
+
 # Tauri desktop webview origins. api-only serving (the desktop app calling a
 # local backend) locks CORS to these.
 _TAURI_CORS_ORIGINS = (
-    "tauri://localhost",  # Linux/macOS Tauri webview
-    "http://tauri.localhost",  # Windows Tauri webview
-    "http://localhost",  # dev fallback
-    "http://localhost:5173",  # Tauri dev/Vite
-    "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "http://localhost",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 )
 
 
@@ -70,10 +264,8 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
     """
     global _auto_enabled
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
-    # If our prior auto-default was changed out from under us (in-process reuse),
-    # relinquish ownership: an explicit =0 is then honored below as a sticky
-    # force-disable, while a cleared var falls back to the host default like a
-    # fresh process.
+    # If our prior auto-default was changed out from under us, relinquish ownership: an explicit =0 is then a sticky
+    # force-disable, while a cleared var falls back to the host default.
     if _auto_enabled and current != "1":
         _auto_enabled = False
     # An explicit operator value is one we did not set; never touch it.
@@ -104,6 +296,16 @@ def set_lan_connector_active(active: bool) -> None:
     """Publish whether a runtime LAN listener is serving beyond loopback."""
     global _lan_connector_active
     _lan_connector_active = bool(active)
+
+
+def tunnel_connector_active() -> bool:
+    """True while a tunnel is publishing this server past the local network."""
+    return _remote_connector_active
+
+
+def lan_connector_active() -> bool:
+    """True while a runtime LAN listener is serving the local network."""
+    return _lan_connector_active
 
 
 def remote_connector_active() -> bool:

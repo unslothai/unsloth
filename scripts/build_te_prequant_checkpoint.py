@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build a pre-cast text-encoder checkpoint for the Studio TE prequant path.
+"""Build a pre-cast text-encoder checkpoint for the Unsloth TE prequant path.
 
 Apply the runtime layerwise-fp8 STORAGE cast (``diffusion_precision._cast_fp8``) to a
 model's dense text encoder ONCE and save the cast state dict, so the backend can load the

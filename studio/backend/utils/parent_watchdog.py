@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 # Exits a desktop-owned backend when the app that spawned it dies without
-# running its cleanup. The orphan would otherwise keep the port and make the
+# running its cleanup. The orphan would otherwise keep the port and make
 # next launch's preflight refuse to start.
 
 from __future__ import annotations
@@ -28,11 +28,8 @@ def _fire(on_parent_exit: Callable[[], None]) -> None:
 
 
 def _watch_unix(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
-    # The app spawns the backend as its direct child on Unix, so "my parent is
-    # no longer the owner pid" is the death signal: kernel truth, immune to pid
-    # reuse, and indifferent to whether the corpse was reaped (a kill-0 probe
-    # would count an unreaped zombie as alive). Checked before the first wait
-    # so an owner that died during backend startup is caught immediately.
+    # "My parent is no longer the owner pid" is the death signal: kernel truth, immune to pid reuse, and indifferent to
+    # reaping, which a kill-0 probe is not. Checked before the first wait.
     while True:
         if os.getppid() != parent_pid:
             _fire(on_parent_exit)
@@ -59,8 +56,7 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
     WAIT_OBJECT_0 = 0
     handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
     if not handle:
-        # A same-user owner is always openable, so failure means the parent
-        # already died and its pid went stale: exit, don't abandon the watch.
+        # A same-user owner is always openable.
         _fire(on_parent_exit)
         return
     try:

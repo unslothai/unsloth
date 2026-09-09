@@ -33,6 +33,49 @@ import utils.openai_auto_switch_settings as settings
 from auth.authentication import get_current_subject
 from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
+from routes.video import router as video_router
+import core.inference.diffusion as diffusion_module
+import core.inference.diffusion_families as families
+import core.inference.llama_keepwarm as chat
+import core.inference.media_keepwarm as keepwarm
+import core.inference.video as video_module
+
+
+def _a_real_video_family(name = "wan2.2-ti2v-5b"):
+    """A real ``VideoFamily``, for tests that just need the route to carry one.
+
+    A bare ``object()`` stands in for a forty-field frozen dataclass, so the first field
+    nobody hand-copied fails the test on an AttributeError about nothing it asserts.
+    """
+    from core.inference.video_families import detect_video_family
+
+    # By name, not repo id: which tokens a repo id matches is its own rule, tested elsewhere.
+    fam = detect_video_family("", override = name)
+    assert fam is not None, f"the video family registry no longer has {name!r}"
+    return fam
+
+
+def _video_load_backend(**overrides):
+    """A real ``VideoBackend`` with only the asserted methods replaced.
+
+    Every other call the route makes runs the real implementation, which for the load
+    route's preflight and reservation helpers is pure registry resolution: no hub, no GPU,
+    no weights, and ``__init__`` only allocates locks. A hand-rolled stub instead needs
+    extending every time the route grows a call, and until it is, unrelated tests fail on a
+    missing attribute rather than on what they assert.
+
+    ``overrides`` are checked against the class, so a stub for a method that does not exist
+    fails loudly instead of quietly never being called.
+    """
+    from core.inference.video import VideoBackend
+
+    unknown = sorted(name for name in overrides if not hasattr(VideoBackend, name))
+    assert not unknown, f"not part of the video backend's surface: {unknown}"
+
+    backend = VideoBackend()
+    for name, impl in overrides.items():
+        setattr(backend, name, impl)
+    return backend
 
 
 def _info(
@@ -54,6 +97,26 @@ def _info(
         source = source,
         task = task,
     )
+
+
+def _gguf_info(
+    *args,
+    model_format = "gguf",
+    **kwargs,
+):
+    """_info for a GGUF model entry."""
+    return _info(*args, model_format = model_format, **kwargs)
+
+
+def _gguf_image_info(
+    *args,
+    model_format = "gguf",
+    source = "hf_cache",
+    task = mas.IMAGE_TASK,
+    **kwargs,
+):
+    """_info for a cached GGUF image model."""
+    return _info(*args, model_format = model_format, source = source, task = task, **kwargs)
 
 
 def _hf_cache_repo(root, repo_id, *, files):
@@ -150,15 +213,7 @@ def test_a_cached_gguf_repo_resolves_to_its_repo_id(catalog, tmp_path):
     repo_dir, _snapshot = _hf_cache_repo(
         tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-image-turbo-Q4_K_S.gguf"]
     )
-    catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            repo_dir,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
+    catalog.append(_gguf_image_info("unsloth/Z-Image-Turbo-GGUF", repo_dir))
 
     pick = mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
 
@@ -328,15 +383,7 @@ def flux(catalog, tmp_path):
 def cached_gguf(catalog, tmp_path):
     """A GGUF repo in the HF cache, whose snapshot entries are symlinks into blobs/."""
     repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
-    catalog.append(
-        _info(
-            "city96/FLUX.1-dev-gguf",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
+    catalog.append(_gguf_image_info("city96/FLUX.1-dev-gguf", repo))
     return repo
 
 
@@ -346,11 +393,10 @@ def two_bpw(catalog, tmp_path):
     for bpw in ("3.53", "3.97"):
         (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
         catalog.append(
-            _info(
+            _gguf_info(
                 f"z-IQ4_XS-{bpw}bpw",
                 tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf",
                 task = mas.IMAGE_TASK,
-                model_format = "gguf",
             )
         )
     return tmp_path
@@ -526,9 +572,6 @@ def test_a_companion_base_repo_does_not_count_as_serving(
 
 
 def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
-    import core.inference.video as video_module
-    from routes.video import router as video_router
-
     calls: list = []
 
     async def _switch_stub(
@@ -557,7 +600,7 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
     )
 
     assert resp.status_code == 200
-    # Not the OpenAI envelope: this route is a Studio surface and its errors are plain details.
+    # Not the OpenAI envelope: this route is an Unsloth surface and its errors are plain details.
     assert calls == [("unsloth/Wan2.2", arb.VIDEO, False, "hf_abc")]
 
 
@@ -569,11 +612,10 @@ def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
     for quant in ("Q4_K_M", "Q8_0"):
         (tmp_path / f"z-image-{quant}.gguf").write_bytes(b"")
         catalog.append(
-            _info(
+            _gguf_info(
                 f"z-image-{quant}",
                 tmp_path / f"z-image-{quant}.gguf",
                 task = mas.IMAGE_TASK,
-                model_format = "gguf",
             )
         )
     backend.repo_id = str(tmp_path)
@@ -714,20 +756,22 @@ def test_a_replacement_load_is_not_reported_as_the_requested_model(
 
 
 def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, monkeypatch):
-    # The resident engine can be native sd.cpp while the target loads through diffusers; its
-    # planner refuses the pick, and that refusal would read as nothing missing.
     pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
     asked: list = []
 
     class _Planner:
         def download_plan(self, model_path, **kwargs):
-            asked.append(model_path)
+            asked.append((model_path, kwargs))
             return {"total_bytes": 7}
 
     monkeypatch.setattr(locality, "planners_for", lambda owner, p: [_Planner()])
 
     assert mas.missing_download_bytes(arb.DIFFUSION, pick) == 7
-    assert asked == [pick.model_path]
+    assert [model_path for model_path, _kwargs in asked] == [pick.model_path]
+    # Only the oversized-memory verdict is suppressed. The probe stays on, because the
+    # byte count has to be taken over the same file list the load will fetch.
+    assert asked[0][1]["memory_verdict"] is False
+    assert "allow_device_probe" not in asked[0][1]
 
 
 def test_two_bpw_builds_of_one_quant_are_not_confused(two_bpw, enabled, backend, loads):
@@ -752,15 +796,7 @@ def test_an_unverifiable_download_plan_refuses_rather_than_loading(
     # The video planner reports zero bytes when its own metadata call failed, because its normal
     # caller falls back to an inline pull. Zero there is "unknown", not "nothing to fetch".
     repo, _snapshot = _hf_cache_repo(tmp_path, "unsloth/Wan2.2-GGUF", files = ["wan-Q4_K_M.gguf"])
-    catalog.append(
-        _info(
-            "unsloth/Wan2.2-GGUF",
-            repo,
-            task = mas.VIDEO_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
+    catalog.append(_gguf_image_info("unsloth/Wan2.2-GGUF", repo, task = mas.VIDEO_TASK))
     monkeypatch.setattr(
         backend, "download_plan", lambda model_path, **kw: {"total_bytes": 0, "plan_failed": True}
     )
@@ -910,15 +946,7 @@ def test_a_cache_tree_inside_a_scan_folder_still_loads_by_repo_id(catalog, tmp_p
     repo, _snapshot = _hf_cache_repo(
         tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-Q4_K_S.gguf"]
     )
-    catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "custom",
-        )
-    )
+    catalog.append(_gguf_image_info("unsloth/Z-Image-Turbo-GGUF", repo, source = "custom"))
 
     pick = mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
 
@@ -1008,7 +1036,6 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
 ):
     # Shielding alone let the caller unwind both contexts while setup was still before
     # begin_load, so a newly admitted generation could be cut short by the orphaned switch.
-    import core.inference.media_keepwarm as keepwarm
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1104,11 +1131,10 @@ def test_a_ref2va_checkpoint_expects_its_own_partition(catalog, enabled, tmp_pat
     # keyframe default rejected the checkpoint that had just loaded.
     (tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf").write_bytes(b"")
     catalog.append(
-        _info(
+        _gguf_info(
             "minimax_h3_ref2va-Q4_K_M",
             tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf",
             task = mas.VIDEO_TASK,
-            model_format = "gguf",
         )
     )
     backend.repo_id = str(tmp_path)
@@ -1134,20 +1160,43 @@ def test_a_local_video_pipeline_is_still_planned(h3_modular, enabled, backend, l
     assert loads == []
 
 
+def test_every_backend_call_the_video_route_makes_exists_on_the_backend():
+    """``backend.<name>`` in routes/video.py must name something ``VideoBackend`` has.
+
+    ``get_video_backend()`` is untyped at the call site, so a method renamed on the class or
+    misspelled in the route is no syntax error, no lint finding, and invisible to any double
+    stubbing the old name. It is an AttributeError on a real load, and the route's own tests
+    mock the backend out. Read off the parse tree, not the text.
+    """
+    import ast
+    import inspect
+
+    import routes.video as video_route
+    from core.inference.video import VideoBackend
+
+    tree = ast.parse(inspect.getsource(video_route))
+    asked = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "backend"
+        and isinstance(node.ctx, ast.Load)
+    }
+    assert asked, "no backend calls found -- the route was restructured, so this guard is blind"
+    missing = sorted(name for name in asked if not hasattr(VideoBackend, name))
+    assert not missing, f"routes/video.py calls backend methods that do not exist: {missing}"
+
+
 def test_the_video_load_route_records_provenance_without_raising(monkeypatch):
     # The provenance call is made positionally from both load routes, so a signature that drifts
     # from them 500s every load after the background work has already been accepted.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
-    class _Backend:
-        def validate_load_request(self, *a, **k):
-            return object()
-
-        def begin_load(self, *a, **k):
-            return {"loaded": False, "repo_id": None}
-
-    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    backend = _video_load_backend(
+        validate_load_request = lambda *a, **k: _a_real_video_family(),
+        begin_load = lambda *a, **k: {"loaded": False, "repo_id": None},
+    )
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
     monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
     monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
@@ -1254,7 +1303,6 @@ def test_a_stalled_gate_does_not_pin_the_switch_lock(
 ):
     # A gate held elsewhere must not keep the setup task, and with it the switch lock, alive
     # past the budget: acquisition happens before the non-cancellable phase.
-    import core.inference.media_keepwarm as keepwarm
 
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
     keepwarm._TRACKERS[arb.VIDEO].gate.acquire()
@@ -1289,7 +1337,6 @@ def test_two_switches_on_different_backends_do_not_refuse_each_other(
 def test_the_ltx23_extras_check_names_the_exact_companions(tmp_path, monkeypatch):
     # The extras repo also holds checkpoints, so any-weight-file evidence proves nothing about
     # the three variant-specific companions the assembly reads.
-    import core.inference.diffusion_families as families
     import core.inference.video_ltx2 as ltx2
     import core.inference.video_families as video_families
 
@@ -1316,7 +1363,6 @@ def test_the_ltx23_extras_check_names_the_exact_companions(tmp_path, monkeypatch
 def test_the_chat_probe_counts_a_parked_switcher_once(monkeypatch):
     # A waiter is marked inside its own switch, so counting both discounted it twice and an
     # active chat stream read as idle, which the final gated drain no longer re-checks.
-    import core.inference.llama_keepwarm as chat
     monkeypatch.setattr(chat, "other_inference_request_count", lambda **kw: 2)
     with mas.note_switcher(arb.DIFFUSION), mas.note_switcher(arb.VIDEO):
         with mas.note_waiter(arb.VIDEO):
@@ -1326,7 +1372,6 @@ def test_the_chat_probe_counts_a_parked_switcher_once(monkeypatch):
 def test_a_sharded_encoder_without_its_index_is_incomplete(monkeypatch):
     # One shard and no index is an interrupted pull of a repo that is always sharded, so
     # from_pretrained would fetch the index and the rest.
-    import core.inference.diffusion_families as families
 
     monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
     monkeypatch.setattr(locality, "_cached_snapshot_file", lambda repo, name: None)
@@ -1373,7 +1418,6 @@ def test_a_model_unloaded_during_resolution_is_not_reported_as_resident(
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
-    import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module
     from routes.inference import router
 
@@ -1528,8 +1572,6 @@ def test_the_video_route_refuses_what_the_target_cannot_serve(
 ):
     # begin_generate would say the same thing, but only after the switch had evicted the
     # resident model and spent minutes loading a target that was never going to serve this.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
     path, filename = pick
@@ -1563,7 +1605,6 @@ def test_the_video_route_refuses_what_the_target_cannot_serve(
 def test_an_encoder_missing_its_config_is_incomplete(monkeypatch):
     # Every shard on disk and no config.json still reaches the Hub: the pipeline builds the
     # encoder with from_pretrained on the whole repository, not on the weights alone.
-    import core.inference.diffusion_families as families
 
     monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
     monkeypatch.setattr(locality, "_cached_snapshot_file", lambda repo, name: None)
@@ -1581,7 +1622,6 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
 ):
     # Neither the repo nor the filename carries a family token, so only the loader's
     # general.architecture fallback resolves LTX and reaches the 2.3 extras check.
-    import core.inference.video as video_module
     import core.inference.video_ltx2 as ltx2
     from core.inference.video_families import detect_video_family
 
@@ -1631,15 +1671,7 @@ def test_a_gguf_the_loader_cannot_open_is_not_advertised(catalog, tmp_path):
     _repo_dir, snapshot = _hf_cache_repo(
         tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-image-turbo-Q4_K_S.gguf"]
     )
-    catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            snapshot,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
+    catalog.append(_gguf_image_info("unsloth/Z-Image-Turbo-GGUF", snapshot))
 
     assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None
     assert mas.available_media_model_ids(mas.IMAGE_TASK) == []
@@ -1651,7 +1683,6 @@ def test_a_cpu_switch_does_not_hold_the_gates_it_cannot_evict_behind(
     # A CPU load releases GPU ownership instead of taking it, so waiting on chat's lifecycle gate
     # let an unrelated teardown time the switch out, and holding it blocked new chat requests for
     # as long as the re-plan and the load registration took.
-    import core.inference.llama_keepwarm as chat
 
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
@@ -1672,8 +1703,6 @@ def test_a_cpu_switch_does_not_hold_the_gates_it_cannot_evict_behind(
 def test_the_video_route_refuses_a_flow_control_the_target_does_not_expose(monkeypatch):
     # LTX-2 exposes no audio_flow_shift, and _resolve_flow_shifts would only say so after the
     # switch had evicted the resident pipeline and loaded the target.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
 
@@ -1782,8 +1811,6 @@ def test_a_sharded_component_missing_a_shard_is_refused(catalog, enabled, tmp_pa
 def test_a_native_h3_target_refuses_an_audio_shift_sd_cpp_cannot_apply(monkeypatch):
     # A MiniMax-H3 GGUF always loads through sd.cpp, which derives the audio schedule against a
     # fixed shift, so the engine rule is knowable before the switch rather than only after it.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
 
@@ -1943,8 +1970,6 @@ def test_a_single_file_hidream_still_checks_its_encoder(
 def test_a_native_h3_target_refuses_max_reference_sizing(monkeypatch):
     # stable-diffusion.cpp scales every reference to the generation's pixel area, so 'max' needs
     # the Diffusers engine, and an H3 GGUF is always native.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
 
@@ -2016,7 +2041,6 @@ def test_a_hosted_modular_component_is_checked_against_the_cache(
     # load_components pulls each repository the modular index names, and the video planner omits
     # its base manifest whenever the local path exists, so a hosted component that is not on
     # disk would be downloaded after the resident pipeline had already gone.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     component = cache / "models--unsloth--MiniMax-H3" / "snapshots" / ("a" * 40) / "vae"
@@ -2093,7 +2117,6 @@ def test_a_stalled_load_probe_still_answers_inside_the_budget(flux, enabled, bac
 def test_setup_that_never_registers_gives_the_gates_back(flux, enabled, backend, monkeypatch):
     # A first-run native install runs for minutes before begin_load, and holding both media
     # admission gates and chat's that long blocks every unrelated request.
-    import core.inference.media_keepwarm as keepwarm
 
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
     monkeypatch.setattr(mas, "_SETUP_GRACE_S", 0.5)
@@ -2134,7 +2157,6 @@ def test_a_superseded_snapshot_does_not_vouch_for_the_active_one(
 ):
     # refs/main names the revision from_pretrained resolves to, so a complete component in an
     # older snapshot must not answer for the partial one the load will actually read.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     repo = cache / "models--unsloth--MiniMax-H3"
@@ -2167,7 +2189,6 @@ def test_a_root_level_hosted_component_needs_more_than_one_shard(
 ):
     # A component named as a whole repo went through _upstream_is_cached, whose no-manifest
     # branch is satisfied by a single weight file an interrupted sharded pull leaves behind.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     snapshot = cache / "models--unsloth--MiniMax-H3-VAE" / "snapshots" / ("a" * 40)
@@ -2200,11 +2221,10 @@ def test_a_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path):
     # present, so half a split set would evict the resident model and then fail at startup.
     (tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf").write_bytes(b"")
     catalog.append(
-        _info(
+        _gguf_info(
             "z-image",
             tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf",
             task = mas.IMAGE_TASK,
-            model_format = "gguf",
         )
     )
 
@@ -2221,7 +2241,6 @@ def test_a_pinned_component_revision_is_the_one_checked(
 ):
     # ComponentSpec.load is handed the whole spec, so a pinned revision is what gets fetched;
     # a complete default snapshot must not answer for it.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     repo = cache / "models--unsloth--MiniMax-H3"
@@ -2254,7 +2273,6 @@ def test_a_pinned_component_variant_needs_its_own_weights(
 ):
     # from_pretrained asks for the named variant's files rather than falling back to the
     # default ones, so a component holding only the default weights is not complete for it.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     component = cache / "models--unsloth--MiniMax-H3" / "snapshots" / ("a" * 40) / "vae"
@@ -2331,7 +2349,6 @@ def test_a_shard_index_declaring_nothing_is_not_proof(catalog, enabled, tmp_path
 def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path, monkeypatch):
     # An active cache is loaded by repo id, which skipped the split check entirely, while the
     # planners look only at the selected first shard and report nothing missing.
-    import core.inference.diffusion as diffusion_module
 
     repo_dir, snapshot = _hf_cache_repo(
         tmp_path,
@@ -2339,15 +2356,7 @@ def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path
         files = ["z-image-Q4_K_M-00001-of-00002.gguf"],
     )
     monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(tmp_path))
-    catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            repo_dir,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
+    catalog.append(_gguf_image_info("unsloth/Z-Image-Turbo-GGUF", repo_dir))
 
     assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None
 
@@ -2364,7 +2373,6 @@ def test_chat_admitted_before_the_gate_still_stops_the_switch(
 ):
     # A chat request that passed the lifecycle gate after the outer drain's last probe is
     # already running when the switch takes that gate, and the GPU handoff would terminate it.
-    import core.inference.llama_keepwarm as chat
 
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
     outer = {"done": False}
@@ -2414,12 +2422,7 @@ def test_two_h3_partitions_of_one_quant_are_told_apart(catalog, enabled, tmp_pat
         name = f"minimax_h3_{partition}-Q4_K_M.gguf"
         (tmp_path / name).write_bytes(b"")
         catalog.append(
-            _info(
-                f"minimax_h3_{partition}-Q4_K_M",
-                tmp_path / name,
-                task = mas.VIDEO_TASK,
-                model_format = "gguf",
-            )
+            _gguf_info(f"minimax_h3_{partition}-Q4_K_M", tmp_path / name, task = mas.VIDEO_TASK)
         )
     backend.repo_id = str(tmp_path)
     backend.gguf_variant = "Q4_K_M"
@@ -2436,22 +2439,27 @@ def _capture_begin_load(monkeypatch, route):
     """Record the local_files_only begin_load is called with, for either media route."""
     seen: list = []
 
-    class _Backend:
-        def validate_load_request(self, *a, **k):
-            return types.SimpleNamespace(name = "z-image", base_repo = None)
-
-        def begin_load(self, *a, **k):
-            seen.append(k.get("local_files_only"))
-            return {"loaded": False, "repo_id": None}
+    def _begin_load(*a, **k):
+        seen.append(k.get("local_files_only"))
+        return {"loaded": False, "repo_id": None}
 
     if route == "images":
         import core.inference.diffusion_engine_router as router_module
+
+        class _Backend:
+            def validate_load_request(self, *a, **k):
+                return types.SimpleNamespace(name = "z-image", base_repo = None)
+
+            begin_load = staticmethod(_begin_load)
+
         monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: _Backend())
         monkeypatch.setattr(router_module, "get_active_diffusion_engine", lambda: _Backend())
     else:
-        import core.inference.video as video_module
-
-        monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+        backend = _video_load_backend(
+            validate_load_request = lambda *a, **k: _a_real_video_family(),
+            begin_load = _begin_load,
+        )
+        monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
         monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
         monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
         monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
@@ -2493,14 +2501,7 @@ def test_a_non_h3_sibling_stays_in_the_ambiguity_group(catalog, enabled, tmp_pat
     # for the non-H3 one, so neither may be treated as already serving the other.
     for name in ("minimax_h3_fl2va-Q4_K_M.gguf", "wan-Q4_K_M.gguf"):
         (tmp_path / name).write_bytes(b"")
-        catalog.append(
-            _info(
-                name.removesuffix(".gguf"),
-                tmp_path / name,
-                task = mas.VIDEO_TASK,
-                model_format = "gguf",
-            )
-        )
+        catalog.append(_gguf_info(name.removesuffix(".gguf"), tmp_path / name, task = mas.VIDEO_TASK))
     backend.repo_id = str(tmp_path)
     backend.gguf_variant = "Q4_K_M"
     backend.model_kind = "gguf"
@@ -2527,7 +2528,6 @@ def test_a_media_request_parked_on_a_gate_is_not_read_as_running_chat_work(monke
     # gate: the in-gate drain discounted it on the media side but chat_busy(count_pending=False)
     # read the same blocked request as running chat work, so an otherwise idle switch answered
     # 409 and loaded nothing. Driven with the real gates and the real middleware.
-    import core.inference.llama_keepwarm as chat
 
     class _Backend:
         def status(self):

@@ -43,6 +43,15 @@ def test_chat_load_evicts_diffusion(calls):
     assert arb.current_owner() == arb.CHAT
 
 
+def test_chat_load_can_refuse_to_evict_diffusion(calls):
+    arb.acquire_for(arb.DIFFUSION)
+    with pytest.raises(arb.GpuOwnerBusyError) as excinfo:
+        arb.acquire_for(arb.CHAT, allow_evict = False)
+    assert excinfo.value.owner == arb.DIFFUSION
+    assert calls == []
+    assert arb.current_owner() == arb.DIFFUSION
+
+
 def test_reacquiring_same_owner_does_not_evict(calls):
     arb.acquire_for(arb.CHAT)
     arb.acquire_for(arb.CHAT)
@@ -332,10 +341,11 @@ def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
         encoding = "utf-8"
     )
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
-    unsloth_load = load_impl.index(
-        "success = await asyncio.to_thread(\n            backend.load_model,"
-    )
+    unsloth_load = load_impl.index("success = await asyncio.to_thread(")
     tail = load_impl[unsloth_load:]
-    guard = tail.index("if current_owner() != CHAT:")
+    # Gated on chat_load_needs_gpu like the GGUF branch: a load that never took the
+    # arbiter has no ownership to lose, and checking against a None owner would 409
+    # every CPU-placed audio load.
+    guard = tail.index("if chat_load_needs_gpu and current_owner() != CHAT:")
     assert "await asyncio.to_thread(backend.unload_model, config.identifier)" in tail[guard:]
     assert tail.index("status_code = 409", guard) > guard

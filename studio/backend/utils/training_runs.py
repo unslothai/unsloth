@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from typing import Any, Optional
@@ -13,6 +14,19 @@ _INVALID_SEGMENT_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_RUN_DIR_NAME_CHARS = 255
 _PROJECT_MARKER = "__project-"
 _PROJECT_MARKER_ESCAPE = f"{_PROJECT_MARKER}-"
+_UNSLOTH_ORG_PREFIX = "unsloth_"
+
+# We emit a bare epoch; hand-made folders often use a date-time. Anything else
+# (``_final``, ``_v2``, ``_8b``) is part of the model name, not a stamp.
+_RUN_DIR_TIMESTAMP = re.compile(r"\A\d{6,}(?:[-_]\d{2,})?\Z")
+
+# ``validate_repo_id`` transcribed to keep this module stdlib-only. A folder name is user
+# input, so trust the parse only when the Hub would accept what falls out of it.
+_REPO_NAME = re.compile(r"\A(?!.*(?:--|\.\.))(?![-.])[\w.-]{1,96}(?<![-.])\Z")
+
+
+def _is_valid_repo_name(name: str) -> bool:
+    return bool(_REPO_NAME.match(name)) and not name.endswith(".git")
 
 
 def _trim_segment(segment: str, max_chars: int) -> str:
@@ -97,8 +111,61 @@ def model_segment_from_default_output_dir_name(output_dir_name: str) -> Optional
     return model_segment or None
 
 
+def _model_segment_from_run_dir_name(output_dir_name: str) -> Optional[str]:
+    """``model_segment_from_default_output_dir_name`` widened to date-time stamps.
+
+    The strict inverse gates on ``isdigit()`` because it only reads folders we wrote; this
+    one also reads folders we did not. Same shape otherwise, project suffix and escape included.
+    """
+    head, separator, last_segment = str(output_dir_name or "").rpartition("_")
+    if not separator or not _RUN_DIR_TIMESTAMP.match(last_segment):
+        return None
+    marker_index = _appended_project_marker_index(head)
+    if marker_index >= 0:
+        head = head[:marker_index]
+    return _unescape_project_marker(head) or None
+
+
+def base_model_from_run_dir_name(dir_name: str) -> Optional[str]:
+    """``unsloth_<model>_<timestamp>`` -> ``unsloth/<model>``, else None.
+
+    The last resort when no config names a base model. It sits beside
+    ``build_default_output_dir_name`` because it is that function read backwards; keeping the
+    pair together is what stops the parse drifting from the names we write.
+
+    None matters as much as a name here. Without a timestamp the folder is not one we wrote,
+    and every caller already asks the user instead. Guessing reaches the Hub: ``unsloth/`` is
+    rejected outright, and a truncated ``unsloth/llama_3`` for ``unsloth_llama_3_8b`` is worse,
+    being a valid id that does not exist.
+    """
+    model_segment = _model_segment_from_run_dir_name(dir_name)
+    if model_segment is None or not model_segment.startswith(_UNSLOTH_ORG_PREFIX):
+        return None
+    model_name = model_segment[len(_UNSLOTH_ORG_PREFIX) :]
+    if not _is_valid_repo_name(model_name):
+        return None
+    return f"unsloth/{model_name}"
+
+
 def extract_project_name(config: Any) -> Optional[str]:
     """Read and normalize a project name from a stored config dict."""
     if not isinstance(config, dict):
         return None
     return normalize_project_name(config.get("project_name"))
+
+
+def drop_non_finite(value: Any) -> Any:
+    """Replace inf and NaN with None, recursively.
+
+    json writes them as the non-standard ``Infinity`` / ``NaN`` literals, but Starlette renders
+    with ``allow_nan = False``, so a stored config carrying one 500s the view that returns it.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: drop_non_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [drop_non_finite(v) for v in value]
+    return value

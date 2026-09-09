@@ -3,7 +3,7 @@
 
 """Rendered cancel/retry regression for staged diffusion downloads.
 
-The browser runs the real Studio UI against a deterministic API simulation of
+The browser runs the real Unsloth UI against a deterministic API simulation of
 the reported sequence:
 
 1. Start with the 2.6 GB Klein GGUF already cached.

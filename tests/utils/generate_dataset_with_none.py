@@ -2,11 +2,10 @@
 
 from datasets import Dataset
 
-# ChatML (messages, role/content). pyarrow needs uniform column types, so
-# messages=None / non-list (P1) rows live in a SEPARATE dataset.
 
+# ChatML (messages, role/content).
+# pyarrow needs uniform column types, so messages=None / non-list (P1) rows live in a SEPARATE dataset.
 _CHATML_ROWS = [
-    # clean rows
     {
         "messages": [
             {"role": "user", "content": "What is 2+2?"},
@@ -68,49 +67,48 @@ _CHATML_ROWS = [
             {"role": "assistant", "content": "Shakespeare."},
         ]
     },
-    # bad rows: None/empty turn content (all values are lists, so pyarrow is happy)
     {
         "messages": [
             {"role": "user", "content": None},
             {"role": "assistant", "content": "Sure!"},
         ]
-    },  # None content
+    },
     {
         "messages": [
             {"role": "user", "content": ""},
             {"role": "assistant", "content": "OK."},
         ]
-    },  # empty string
+    },
     {
         "messages": [
             {"role": "user", "content": "   "},
             {"role": "assistant", "content": "Got it."},
         ]
-    },  # whitespace only
+    },
     {
         "messages": [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": None},
         ]
-    },  # None assistant
+    },
     {
         "messages": [
             {"role": "user", "content": None},
             {"role": "assistant", "content": None},
         ]
-    },  # both None
+    },
     {
         "messages": [
             {"role": "user", "content": ""},
             {"role": "assistant", "content": ""},
         ]
-    },  # both empty
+    },
     {
         "messages": [
             {"role": "user", "content": "Anything?"},
             {"role": "assistant", "content": "  \t  "},
         ]
-    },  # tab whitespace
+    },
     {"messages": [None, {"role": "assistant", "content": "Reply"}]},  # None turn element
 ]
 
@@ -127,10 +125,7 @@ def make_chatml_p1_rows() -> list:
     return list(_CHATML_P1_ROWS)
 
 
-# ShareGPT (conversations, from/value)
-
 _SHAREGPT_ROWS = [
-    # clean
     {
         "conversations": [
             {"from": "human", "value": "Hello"},
@@ -161,7 +156,6 @@ _SHAREGPT_ROWS = [
             {"from": "gpt", "value": "Goodbye!"},
         ]
     },
-    # bad
     {
         "conversations": [
             {"from": "human", "value": None},
@@ -184,10 +178,8 @@ _SHAREGPT_ROWS = [
     {"conversations": [None, {"from": "gpt", "value": "Hi"}]},
 ]
 
-# Alpaca (instruction / output columns)
 
 _ALPACA_ROWS = [
-    # clean
     {
         "instruction": "Summarise this text.",
         "input": "The sky is blue.",
@@ -205,7 +197,6 @@ _ALPACA_ROWS = [
         "input": "",
         "output": "Old pond — / frog jumps in / water's sound",
     },
-    # bad
     {"instruction": None, "input": "", "output": "Some output"},
     {"instruction": "", "input": "", "output": "Some output"},
     {"instruction": "Valid instruction", "input": "", "output": None},

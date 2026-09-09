@@ -21,6 +21,7 @@ sed -n "${_fn_start},${_guard_end}p" "$INSTALL_SH" > "$WORK/path_guard.sh"
 _run_guard() {
     _home="$1"
     _tauri="$2"
+    _redirect="${3:-default}"
     mkdir -p "$_home/.local/bin" "$_home/foreign"
     printf '#!/bin/sh\n' > "$_home/.local/bin/unsloth"
     printf '#!/bin/sh\n' > "$_home/foreign/unsloth"
@@ -33,7 +34,7 @@ _run_guard() {
         TAURI_MODE="$_tauri"; export TAURI_MODE
         PATH="$_home/foreign:$_home/.local/bin:/usr/bin:/bin"; export PATH
         _LOCAL_BIN="$HOME/.local/bin"
-        _STUDIO_HOME_REDIRECT=default
+        _STUDIO_HOME_REDIRECT="$_redirect"
         _UNSLOTH_LOGIN_PATH="$PATH"
         _UNSLOTH_UV_BIN_DIR=""
         # shellcheck disable=SC1090
@@ -74,6 +75,40 @@ if grep -qF "$_exact_line" "$_normal_home/.bashrc"; then
 else
     echo "  PASS: non-Tauri install keeps existing PATH behavior"
 fi
+
+_custom_home="$WORK/custom"
+mkdir -p "$_custom_home"
+printf 'export PATH="%s/foreign:$HOME/.local/bin:$PATH"\n' "$_custom_home" > "$_custom_home/.bashrc"
+_run_guard "$_custom_home" true env
+if grep -qF "$_exact_line" "$_custom_home/.bashrc"; then
+    echo "  FAIL: a custom Studio root rewrites the shell profile"
+    exit 1
+fi
+echo "  PASS: custom Studio roots remain session-only"
+
+# Force an append failure without depending on root's treatment of chmod 0444.
+mkdir "$WORK/rc-directory"
+_failure_output=$(
+    set -e
+    step() { echo "$*"; }
+    substep() { :; }
+    HOME="$_tauri_home"; export HOME
+    SHELL=/bin/bash
+    TAURI_MODE=true
+    _LOCAL_BIN="$HOME/.local/bin"
+    _STUDIO_HOME_REDIRECT=default
+    _UNSLOTH_LOGIN_PATH="$PATH"
+    _UNSLOTH_UV_BIN_DIR=""
+    C_WARN=""
+    . "$WORK/path_guard.sh"
+    _persist_login_path_dir "$_LOCAL_BIN" '$HOME/.local/bin' '~/.local/bin' '\.local/bin' "$WORK/rc-directory" true
+    echo 'append-failure-survived'
+)
+if [[ "$_failure_output" != *"could not write"* ]] || [[ "$_failure_output" != *"append-failure-survived"* ]]; then
+    echo "  FAIL: a failed profile append aborts the desktop install"
+    exit 1
+fi
+echo "  PASS: a failed profile append warns and preserves install success"
 
 _tauri_marker=$(grep -n 'Tauri mode: done, skip shortcuts and auto-launch' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _tauri_exit=$(awk -v start="$_tauri_marker" 'NR > start && /exit 0/ { print NR; exit }' "$INSTALL_SH")

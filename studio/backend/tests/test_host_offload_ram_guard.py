@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A GGUF that misses VRAM spills into host RAM under `--fit on`, unpriced. When
-that spill is larger than available RAM the mmap'd weights thrash rather than
-fail, the desktop stops responding and the OS kills the app, so the load must be
-refused before llama-server is spawned."""
+"""A GGUF that misses VRAM spills into host RAM under `--fit on`, unpriced. When that
+spill is larger than available RAM the weights page in from disk as the model runs, so
+generation is slow.
+
+This used to REFUSE the load. It no longer does: the spill is mmap'd, so an oversized
+model pages rather than failing, and running a quant larger than fast memory off an SSD
+is deliberate and supported, which this check cannot tell apart from a mistake. Same
+arithmetic, different consequence -- it warns, and the load proceeds."""
 
 from __future__ import annotations
 
@@ -51,12 +55,14 @@ class TestHostOffloadShortfall:
         assert _shortfall(20 * _GB, 23 * _MIB_PER_GB) is None
         assert _shortfall(20 * _GB, 21 * _MIB_PER_GB) is not None
 
-    def test_a_refusal_names_the_escape(self):
-        """The picker still offers a variant this refuses, so the message has to say how
-        to load it anyway."""
+    def test_the_warning_says_the_load_goes_ahead(self):
+        """Nothing here blocks a load any more, so the message must not read as a
+        refusal or send the user hunting for an env var. It states the cost and says
+        the load continues."""
         msg = _shortfall(20 * _GB, 21 * _MIB_PER_GB)
         assert msg is not None
-        assert "UNSLOTH_ALLOW_HOST_OFFLOAD=1" in msg
+        assert "Loading anyway" in msg
+        assert "UNSLOTH_ALLOW_HOST_OFFLOAD" not in msg
 
     def test_a_refusal_never_prints_a_need_at_or_under_the_usable_figure(self):
         """A spill inside available RAM but inside the headroom too is still refused, so

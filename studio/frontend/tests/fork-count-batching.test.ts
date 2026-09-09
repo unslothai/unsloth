@@ -7,10 +7,11 @@
 // raises that event once per chunk. One shared subscription, one request per thread.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test, { mock } from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
@@ -44,7 +45,10 @@ function fireHistoryUpdated(): void {
 }
 
 /** A fresh module instance plus the request log its fetches write to. */
-function freshStore(counts: Record<string, number> = {}): {
+function freshStore(
+  counts: Record<string, number> = {},
+  incognito: readonly string[] = [],
+): {
   store: Store;
   requests: string[];
 } {
@@ -58,6 +62,9 @@ function freshStore(counts: Record<string, number> = {}): {
           requests.push(threadId);
           return new Map(Object.entries(counts));
         },
+      },
+      "./chat-history-storage": {
+        isThreadIncognito: (threadId: string) => incognito.includes(threadId),
       },
     },
   );
@@ -82,7 +89,10 @@ test("a 200-message thread costs one request, not one per message", async () => 
   assert.deepEqual(requests, ["thread-a"]);
   assert.equal(historyListenerCount(), 1);
   // Every badge sees the count the single request brought back.
-  assert.equal(seen.every((count) => count === 3), true);
+  assert.equal(
+    seen.every((count) => count === 3),
+    true,
+  );
   assert.equal(store.forkCountFor("thread-a", "m7"), 3);
   assert.equal(store.forkCountFor("thread-a", "m8"), 0);
 
@@ -135,7 +145,11 @@ test("badges churning under the hover autohide do not refetch the thread", async
     badge();
   }
   await flush();
-  assert.equal(requests.length, 1, "hovering ten messages refetched the whole thread");
+  assert.equal(
+    requests.length,
+    1,
+    "hovering ten messages refetched the whole thread",
+  );
 
   // Closing the thread is what drops the counts.
   thread();
@@ -153,15 +167,15 @@ test("two threads on screen cost one request each", async () => {
 });
 
 test("the badge no longer owns a listener or a per-message request", () => {
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.doesNotMatch(thread, /getForkCount\(/);
   assert.doesNotMatch(thread, /addEventListener\(CHAT_HISTORY_UPDATED_EVENT/);
   assert.match(thread, /subscribeForkCounts\(remoteId, onChange\)/);
   // The badges all unmount at rest, so the thread has to hold the subscription itself.
-  assert.match(thread, /const useThreadForkCounts[\s\S]*?subscribeForkCounts\(remoteId,/);
+  assert.match(
+    thread,
+    /const useThreadForkCounts[\s\S]*?subscribeForkCounts\(remoteId,/,
+  );
   assert.match(thread, /^ {2}useThreadForkCounts\(\);$/m);
 });
 
@@ -193,8 +207,12 @@ test("a continuous stream costs one refresh per ceiling, not one per debounce wi
   }
   const streamMs = chunks * gap;
   const midStream = requests.length - 1;
-  const throttleWould = Math.floor(streamMs / store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
-  const ceilingAllows = Math.floor(streamMs / store.FORK_COUNT_REFRESH_MAX_WAIT_MS);
+  const throttleWould = Math.floor(
+    streamMs / store.FORK_COUNT_REFRESH_DEBOUNCE_MS,
+  );
+  const ceilingAllows = Math.floor(
+    streamMs / store.FORK_COUNT_REFRESH_MAX_WAIT_MS,
+  );
   assert.equal(
     midStream,
     ceilingAllows,
@@ -324,7 +342,11 @@ test("unsubscribing cancels the ceiling as well as the trailing edge", async (t)
 
   const second = store.subscribeForkCounts("thread-b", () => {});
   await flush();
-  assert.deepEqual(requests, ["thread-a", "thread-b"], "the new thread fetches once on subscribe");
+  assert.deepEqual(
+    requests,
+    ["thread-a", "thread-b"],
+    "the new thread fetches once on subscribe",
+  );
 
   mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS * 2);
   await flush();
@@ -334,4 +356,76 @@ test("unsubscribing cancels the ceiling as well as the trailing edge", async (t)
     "a ceiling armed by the previous thread outlived it and refetched the new one",
   );
   second();
+});
+
+test("a chat created in the app asks for its fork counts", async (t) => {
+  // A `__LOCALID_` id is the permanent primary key of every chat Studio creates, so skipping
+  // the fetch on that prefix left their badges reading 0 for good.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore({ m1: 2 });
+
+  const unsubscribe = store.subscribeForkCounts("__LOCALID_abc123", () => {});
+  await flush();
+  assert.deepEqual(requests, ["__LOCALID_abc123"]);
+  assert.equal(store.forkCountFor("__LOCALID_abc123", "m1"), 2);
+
+  unsubscribe();
+});
+
+test("a temporary chat is the one thread that never asks", async (t) => {
+  // An incognito thread has no row, so its forks cannot exist. The saved chat beside it still
+  // asks: the guard is the row, not the `__LOCALID_` prefix both of them carry.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore({ m1: 2 }, ["__LOCALID_temp"]);
+
+  const stop = [
+    store.subscribeForkCounts("__LOCALID_temp", () => {}),
+    store.subscribeForkCounts("__LOCALID_saved", () => {}),
+  ];
+  await flush();
+  assert.deepEqual(requests, ["__LOCALID_saved"]);
+
+  for (let i = 0; i < 20; i++) fireHistoryUpdated();
+  mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS);
+  await flush();
+  assert.equal(
+    requests.filter((id) => id === "__LOCALID_temp").length,
+    0,
+    "nor must a burst of history events reach a temporary chat",
+  );
+  assert.equal(store.forkCountFor("__LOCALID_temp", "m1"), 0);
+  assert.equal(store.forkCountFor("__LOCALID_saved", "m1"), 2);
+
+  for (const unsubscribe of stop) unsubscribe();
+});
+
+test("every subscribed thread refreshes, whatever its id looks like", async (t) => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore({ m1: 2 });
+
+  const stop = [
+    store.subscribeForkCounts("__LOCALID_abc123", () => {}),
+    store.subscribeForkCounts("thread-saved", () => {}),
+  ];
+  await flush();
+  assert.deepEqual(requests.slice().sort(), [
+    "__LOCALID_abc123",
+    "thread-saved",
+  ]);
+
+  requests.length = 0;
+  fireHistoryUpdated();
+  mock.timers.tick(store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
+  await flush();
+  assert.deepEqual(requests.slice().sort(), [
+    "__LOCALID_abc123",
+    "thread-saved",
+  ]);
+  assert.equal(store.forkCountFor("thread-saved", "m1"), 2);
+  assert.equal(store.forkCountFor("__LOCALID_abc123", "m1"), 2);
+
+  for (const unsubscribe of stop) unsubscribe();
 });

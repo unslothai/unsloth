@@ -8,11 +8,9 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
-/**
- * Normalize streamed string or structured delta content to inline text.
- * Structured reasoning-only chunks remain distinguishable so their fallback
- * timer can span consecutive chunks even though each chunk carries closed tags.
- */
+/** Normalize streamed string or structured delta content to inline text. Structured
+ *  reasoning-only chunks stay distinguishable so their fallback timer can span consecutive
+ *  chunks even though each chunk carries closed tags. */
 export function extractDeltaText(delta: unknown): {
   text: string;
   structuredReasoningContinues: boolean;
@@ -80,8 +78,8 @@ export function extractDeltaText(delta: unknown): {
   return { text, structuredReasoningContinues };
 }
 
-// ContentPart from @assistant-ui/react has readonly fields, so `last.text +=
-// text` fails (TS2540). Replace the last element with a merged object instead.
+// ContentPart from @assistant-ui/react has readonly fields, so `last.text += text` fails
+// (TS2540). Replace the last element with a merged object instead.
 
 export function appendTextPart(parts: ContentPart[], text: string): void {
   if (!text) return;
@@ -139,54 +137,37 @@ export function hasUnclosedThinkTag(raw: string): boolean {
   return raw.lastIndexOf(THINK_OPEN_TAG) > raw.lastIndexOf(THINK_CLOSE_TAG);
 }
 
-/**
- * The most characters of a `<think>` or `</think>` that can sit before the point
- * a previous call stopped at: one short of the longer tag, since a tag
- * straddling the boundary has at least one character on the new side.
- */
+/** The most characters of a `<think>` or `</think>` that can sit before the point a previous
+ *  call stopped at: one short of the longer tag, since a tag straddling the boundary has at
+ *  least one character on the new side. */
 const THINK_TAG_OVERLAP =
   Math.max(THINK_OPEN_TAG.length, THINK_CLOSE_TAG.length) - 1;
 
 export type ThinkTagTracker = {
-  /**
-   * Take the characters an arrival added. Reads `delta` and the seven
-   * characters in front of it, never the accumulated reply.
-   */
+  /** Take the characters an arrival added. Reads `delta` and the seven characters in front of it,
+   *  never the accumulated reply. */
   append(delta: string): void;
-  /**
-   * Take back the suffix a rewrite removed. `text` is the buffer AFTER the
-   * removal, and is read only when a tag left with the suffix or the retained
-   * overlap has to be refilled, both of which the trailing template-literal
-   * strip makes rare.
-   */
+  /** Take back the suffix a rewrite removed. `text` is the buffer AFTER the removal, and is read
+   *  only when a tag left with the suffix or the retained overlap has to be refilled. */
   retract(text: string): void;
-  /**
-   * Whether the accumulated text ends inside a `<think>` block, that is, what
-   * `hasUnclosedThinkTag` returns for the same text.
-   */
+  /** Whether the accumulated text ends inside a `<think>` block, that is, what
+   *  `hasUnclosedThinkTag` returns for the same text. */
   endsInsideThink(): boolean;
 };
 
-/**
- * Track `hasUnclosedThinkTag` across a stream without reading the buffer.
- *
- * `hasUnclosedThinkTag` walks the whole reply, so calling it once per SSE
- * arrival costs O(reply^2) over a reply. Reading the buffer at all costs that
- * much, even for one character: `text += delta` builds a cons string, and the
- * next read of it flattens the whole thing. So this takes the delta rather
- * than the buffer, and keeps the last seven characters itself, which is the
- * most a tag split across arrivals can hide in front of one. A `<think>`
- * delivered one character at a time over seven arrivals is still found on the
- * arrival that completes it.
- */
+/** Track `hasUnclosedThinkTag` across a stream without reading the buffer. That helper walks the
+ *  whole reply, so calling it per SSE arrival costs O(reply^2). Reading the buffer at all
+ *  costs that much even for one character, since `text += delta` builds a cons string the next
+ *  read flattens. So this takes the delta and keeps the last seven characters itself, the most
+ *  a tag split across arrivals can hide in front of one. */
 export function createThinkTagTracker(): ThinkTagTracker {
-  // Characters taken so far; the two indices are the last position of each tag
-  // within them, or -1, exactly as `lastIndexOf` reports.
+  // Characters taken so far; the two indices are the last position of each tag within them, or
+  // -1, exactly as `lastIndexOf` reports.
   let length = 0;
   let lastOpen = -1;
   let lastClose = -1;
-  // The final `THINK_TAG_OVERLAP` characters, held flat so the next arrival can
-  // be searched together with the tag prefix it may complete.
+  // The final `THINK_TAG_OVERLAP` characters, held flat so the next arrival can be searched
+  // together with the tag prefix it may complete.
   let overlap = "";
 
   const refindWithin = (text: string): void => {
@@ -205,8 +186,8 @@ export function createThinkTagTracker(): ThinkTagTracker {
       }
       const window = overlap + delta;
       const from = length - overlap.length;
-      // A tag re-found inside the overlap is the one already recorded, so it
-      // can only reproduce the index it produced last time.
+      // A tag re-found inside the overlap is the one already recorded, so it can only reproduce the
+      // index it produced last time.
       const openAt = window.lastIndexOf(THINK_OPEN_TAG);
       if (openAt !== -1) {
         lastOpen = Math.max(lastOpen, from + openAt);

@@ -41,5 +41,5 @@ logging:
 
 inference:
   temperature: 1.2
-  top_p: 1.2
-
+  # 1.0 disables nucleus sampling and satisfies the API's 0-to-1 constraint.
+  top_p: 1.0

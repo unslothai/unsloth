@@ -61,9 +61,15 @@ def test_runtime_gate_handoff_is_one_shot(monkeypatch):
     assert gate.consume_runtime_gate_handoff() is False
 
 
+def test_runtime_gate_acquire_is_one_shot(monkeypatch):
+    monkeypatch.setenv(gate._RUNTIME_GATE_ACQUIRE_ENV, "1")
+    assert gate.consume_runtime_gate_acquire() is True
+    assert gate.consume_runtime_gate_acquire() is False
+
+
 def test_terminal_launch_boundaries_use_the_runtime_gate():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    assert source.count("with _studio_runtime_launch_guard(") >= 4
+    assert source.count("with _studio_runtime_launch_guard(") >= 5
     assert "runtime_gate_child_environment()" in source
     assert "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()" in source
 
@@ -80,7 +86,7 @@ def test_terminal_update_holds_the_gate_through_environment_mutation():
     # The launcher transaction wraps the mutation; it replaced the self-exe lock release.
     launcher = body.index("_WindowsLauncherUpdateTransaction()", idle_scan)
     setup = body.index("_run_setup_script(", launcher)
-    verify = body.index("_fail_if_install_damaged()", setup)
+    verify = body.index("_fail_if_install_damaged(", setup)
     assert consume < guard < idle_scan < launcher < setup < verify
 
 
@@ -90,8 +96,56 @@ def test_terminal_setup_holds_the_gate_through_environment_mutation():
     consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
     guard = body.index("with _studio_runtime_launch_guard(", consume)
     idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
-    setup = body.index("_run_setup_script(", idle_scan)
-    assert consume < guard < idle_scan < setup
+    launcher = body.index("_WindowsLauncherUpdateTransaction()", idle_scan)
+    setup = body.index("_run_setup_script(", launcher)
+    assert consume < guard < idle_scan < launcher < setup
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX flock is required")
+def test_posix_runtime_gate_blocks_another_process_and_recovers(tmp_path):
+    script = """
+import sys
+from pathlib import Path
+from unsloth_cli import _studio_runtime_gate as gate
+try:
+    with gate.studio_runtime_launch_guard(Path(sys.argv[1])):
+        pass
+except gate.StudioRuntimeGateBusy:
+    raise SystemExit(7)
+"""
+    with gate.studio_runtime_launch_guard(tmp_path) as acquired:
+        assert acquired is True
+        blocked = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check = False)
+        assert blocked.returncode == 7
+
+    recovered = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check = False)
+    assert recovered.returncode == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX flock is required")
+def test_posix_runtime_gate_waits_for_parent_handoff(tmp_path):
+    script = """
+import sys
+from pathlib import Path
+from unsloth_cli import _studio_runtime_gate as gate
+print("waiting", flush=True)
+with gate.studio_runtime_launch_guard(Path(sys.argv[1]), wait=True):
+    print("acquired", flush=True)
+"""
+    with gate.studio_runtime_launch_guard(tmp_path):
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(tmp_path)],
+            stdout = subprocess.PIPE,
+            text = True,
+        )
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "waiting"
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.wait(timeout = 0.2)
+
+    stdout, _ = child.communicate(timeout = 5)
+    assert child.returncode == 0
+    assert stdout.strip() == "acquired"
 
 
 def test_interrupted_windows_setup_kills_tree_before_return(monkeypatch):
@@ -195,8 +249,8 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
 def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
-    # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv
-    # interpreter, so both arrive through the redirector and would self-block.
+    # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv interpreter, so both arrive through
+    # the redirector and would self-block.
     studio_home = tmp_path / "studio"
     scripts = studio_home / "unsloth_studio" / "Scripts"
     managed_python = scripts / "python.exe"

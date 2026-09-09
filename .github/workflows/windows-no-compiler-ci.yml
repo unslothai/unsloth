@@ -1,0 +1,255 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The behavioural half of "the installer does not run a compiler".
+#
+# tests/studio/test_installer_av_shapes.py reads the scripts and fails on an
+# Add-Type that is not -AssemblyName. Text checks are blind to the two ways this
+# regresses in practice: a compile reached through a module, a dot-sourced file or
+# a generated here-string, and a compile a dependency performs on our behalf while
+# our own process tree is what a scanner scores. Bitdefender flagged the chain:
+#
+#     unsloth-studio.exe -> powershell.exe -> csc.exe -> %TEMP%\<random>.dll
+#
+# so the assertion that matters is about processes, not source. This job turns on
+# 4688 process-creation auditing with command lines, runs the real installer, and
+# fails if csc.exe, vbc.exe or cvtres.exe appears, or if a DLL lands in a temporary
+# directory while the installer is running.
+#
+# The positive control is not optional and runs FIRST, because a detector that sees
+# nothing looks exactly like a clean run and every part of this can silently fail to
+# apply: auditpol overridden by machine policy, a full Security log, command-line
+# capture off. So the job compiles one throwaway type with Add-Type and REQUIRES both
+# signals to fire, failing as a broken detector before the real measurement.
+#
+# Scope: this proves nothing about a machine where App Control or Smart App Control
+# is enforcing, since a hosted runner has neither. It proves the shipped install path
+# spawns no compiler and drops no temporary DLL, which is the reported shape.
+#
+# Which revision of studio/setup.ps1 each leg measures is part of that scope. The
+# installer delegates setup to the managed CLI, so a default run executes the
+# setup.ps1 inside the released package, not the checkout. The shell leg therefore
+# measures the release; the desktop leg passes --local to overlay the checkout as an
+# editable install, and refuses to report a result unless the overlay is in the log.
+
+name: Windows No Compiler CI
+
+on:
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'studio/setup.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/process.rs'
+      - 'tests/studio/test_installer_av_shapes.py'
+      # The watcher implements both detectors, so a PR touching only it could disable
+      # detection without running the positive control that would catch that.
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - '.github/workflows/windows-no-compiler-ci.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  no-compiler-under-the-installer:
+    name: the installer spawns no C# compiler
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      # Outside any user profile, like the Application Control leg: the paths under
+      # test must not depend on whose profile ran.
+      UNSLOTH_STUDIO_HOME: 'C:\Users\Public\no-compiler-home'
+      UNSLOTH_EVIDENCE: 'C:\Users\Public\no-compiler-evidence'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Enable process creation auditing with command lines
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:UNSLOTH_EVIDENCE | Out-Null
+
+          # 4688 with the command line, which distinguishes "csc.exe ran" from
+          # "csc.exe ran for us". The subcategory produces the event, the policy
+          # value fills in the command line.
+          auditpol /set /subcategory:"Process Creation" /success:enable | Out-Null
+          $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+          New-Item -Path $auditKey -Force | Out-Null
+          New-ItemProperty -Path $auditKey -Name 'ProcessCreationIncludeCmdLine_Enabled' `
+              -Value 1 -PropertyType DWord -Force | Out-Null
+
+          # Large enough that the installer's own noise cannot roll the window under
+          # test off the end of the Security log.
+          wevtutil sl Security /ms:268435456
+
+          $state = auditpol /get /subcategory:"Process Creation"
+          $state | Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\auditpol.txt"
+          # Joined to one string, and matched on the subcategory line rather than the
+          # bare word: auditpol returns an ARRAY of lines, and -notmatch on an array
+          # filters rather than tests, so a healthy runner still returned the three
+          # header lines and a non-empty array is truthy. This threw on every healthy
+          # machine.
+          if (($state | Out-String) -notmatch 'Process Creation\s+Success') {
+              throw "process creation auditing did not turn on; this job cannot measure anything"
+          }
+
+      - name: Positive control -- the detector must see a real compile
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+
+          $probe = {
+              # One throwaway type, compiled the way the installer used to: the only
+              # Add-Type in this repository's CI, here to prove the detector works.
+              Add-Type -TypeDefinition 'public static class UnslothCompilerProbe { public static int N() { return 1; } }'
+              [UnslothCompilerProbe]::N() | Out-Null
+          }
+          $seen = Invoke-WithCompilerWatch -Name 'positive-control' -Action $probe `
+              -EvidenceRoot $env:UNSLOTH_EVIDENCE
+
+          if (-not $seen.Compilers) {
+              throw ("the positive control compiled a type and no compiler process was recorded. " +
+                     "The detector is broken, so a clean result later would mean nothing.")
+          }
+          if (-not $seen.TempLibraries) {
+              throw ("the positive control compiled a type and no temporary DLL was recorded. " +
+                     "The temporary-directory half of the detector is broken.")
+          }
+          Write-Host ("detector verified: {0} compiler process(es), {1} temporary DLL(s)" -f `
+              $seen.Compilers.Count, $seen.TempLibraries.Count)
+
+      - name: Require the installer to run without a compiler
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+
+          $install = {
+              # Spawned the way the desktop spawns it, not dot-sourced: the shape
+              # under test is a child powershell.exe, and a dot-source would hide a
+              # compile started by the installer's own children from the 4688
+              # ancestry. --no-torch for time; the native declarations happen before
+              # that. Not --tauri, which refuses the UNSLOTH_STUDIO_HOME that keeps
+              # every step reading one tree.
+              New-Item -ItemType Directory -Force -Path logs | Out-Null
+              & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                  -File "$env:GITHUB_WORKSPACE\install.ps1" --no-torch *>&1 |
+                  Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install.log"
+              $exit = $LASTEXITCODE
+              $global:LASTEXITCODE = 0
+              if ($exit -ne 0) { throw "install.ps1 exited $exit" }
+          }
+          $seen = Invoke-WithCompilerWatch -Name 'installer' -Action $install `
+              -EvidenceRoot $env:UNSLOTH_EVIDENCE
+
+          if ($seen.Compilers) {
+              $seen.Compilers | ForEach-Object { Write-Host "COMPILER: $_" }
+              throw ("the installer spawned {0} compiler process(es). This is the chain that was " +
+                     "blocked in the field: a windowless PowerShell launching csc.exe and dropping " +
+                     "a DLL in TEMP. Declare native methods with New-StudioEmittedNativeType." -f `
+                     $seen.Compilers.Count)
+          }
+          if ($seen.TempLibraries) {
+              $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }
+              throw ("the installer left {0} DLL(s) in a temporary directory. Even without a " +
+                     "compiler process this is the artefact half of the same shape." -f `
+                     $seen.TempLibraries.Count)
+          }
+          Write-Host "no compiler, no temporary DLL"
+
+      - name: Require the desktop mode to run without a compiler
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+
+          # --tauri is what the launcher passes: install.rs initialises its argument
+          # list with it unconditionally. The step above runs shell mode because only
+          # that honours a pinned UNSLOTH_STUDIO_HOME; running only it left a compile
+          # reached through a Tauri-only branch invisible to a job whose claim is the
+          # desktop shape. So both modes run, with the home unpinned here.
+          #
+          # --local is the only thing that makes this leg measure the setup.ps1 in THIS
+          # checkout. Without it install.ps1 hands the work to the managed CLI, which
+          # runs the setup.ps1 inside the released package, so a PR touching only
+          # studio/setup.ps1 measured a different revision of the file it changed. The
+          # gate below proves the overlay took; a run that fell back to the release is
+          # void, not clean.
+          $desktop = {
+              Remove-Item Env:\UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+              & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                  -File "$env:GITHUB_WORKSPACE\install.ps1" --tauri --local --no-torch *>&1 |
+                  Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install-tauri.log"
+              $exit = $LASTEXITCODE
+              $global:LASTEXITCODE = 0
+              # Not gated on exit 0: a desktop-mode install can decline for unrelated
+              # reasons, and the question is only whether a compiler ran on the way.
+              Write-Host "install.ps1 --tauri exited $exit"
+              # It IS gated on reaching the work. A run that stopped at argument
+              # validation spawns nothing, so both detectors come back empty and the
+              # step prints "no compiler" having measured nothing. This STEP line is
+              # emitted after the install lock is taken, where the native declarations
+              # happen, so seeing it means the branch under test ran.
+              $log = ""
+              if (Test-Path "$env:UNSLOTH_EVIDENCE\install-tauri.log") {
+                  $log = Get-Content -Raw "$env:UNSLOTH_EVIDENCE\install-tauri.log"
+              }
+              if ($log -notmatch 'Checking system dependencies') {
+                  throw ("the desktop-mode install stopped before it reached any install " +
+                         "work (exit $exit), so this measurement is void rather than clean.")
+              }
+              # And that setup ran from the checkout. This line is printed by the
+              # --local overlay step; without it the delegated setup came out of the
+              # released package.
+              if ($log -notmatch 'overlaying local repo') {
+                  throw ("the local overlay never ran (exit $exit), so the setup.ps1 that " +
+                         "executed was not the one in this checkout. Void, not clean.")
+              }
+              # Which revision, recorded rather than asserted, so the artifact says
+              # what was measured instead of leaving it inferred from the commit.
+              $setup = Join-Path $env:GITHUB_WORKSPACE 'studio\setup.ps1'
+              "path=$setup" | Out-File "$env:UNSLOTH_EVIDENCE\setup-measured.txt" -Encoding utf8
+              "sha256=$((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash)" |
+                  Out-File "$env:UNSLOTH_EVIDENCE\setup-measured.txt" -Encoding utf8 -Append
+          }
+          $seen = Invoke-WithCompilerWatch -Name 'installer-tauri' -Action $desktop `
+              -EvidenceRoot $env:UNSLOTH_EVIDENCE
+
+          if ($seen.Compilers) {
+              $seen.Compilers | ForEach-Object { Write-Host "COMPILER: $_" }
+              throw "the desktop-mode installer spawned $($seen.Compilers.Count) compiler process(es)."
+          }
+          if ($seen.TempLibraries) {
+              $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }
+              throw "the desktop-mode installer left $($seen.TempLibraries.Count) DLL(s) in a temporary directory."
+          }
+          Write-Host "desktop mode: no compiler, no temporary DLL"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-no-compiler
+          path: 'C:\Users\Public\no-compiler-evidence'
+          if-no-files-found: warn
+
+      - name: Restore auditing
+        if: always()
+        shell: powershell
+        run: |
+          auditpol /set /subcategory:"Process Creation" /success:disable | Out-Null
+          $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+          Remove-ItemProperty -Path $auditKey -Name 'ProcessCreationIncludeCmdLine_Enabled' `
+              -ErrorAction SilentlyContinue
+          exit 0

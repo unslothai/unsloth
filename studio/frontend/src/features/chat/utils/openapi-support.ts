@@ -3,9 +3,9 @@
 
 const GUARD_FIELDS = ["expectedTitle", "expectedOpeningMessageId"] as const;
 
-/** Whether the served schema declares the guard fields. The desktop app ships
- *  its own frontend against a separately installed backend, and an older one
- *  drops these and writes unguarded. Anything unrecognised is unsupported. */
+/** Whether the served schema declares the guard fields. The desktop app ships its own frontend
+ *  against a separately installed backend, and an older one drops these and writes unguarded.
+ *  Anything unrecognised is unsupported. */
 export function schemaDeclaresRepairGuards(document: unknown): boolean {
   if (typeof document !== "object" || document === null) return false;
   const components = (document as { components?: unknown }).components;
@@ -22,9 +22,8 @@ export function schemaDeclaresRepairGuards(document: unknown): boolean {
 
 export interface GuardProbe {
   supported: boolean;
-  /** Only a schema that arrived and parsed settles it. A 401 while the token
-   *  warms up or a 503 at startup is a moment, not an answer, and caching one
-   *  would park the migration for the session. */
+  /** Only a schema that arrived and parsed settles it. A 401 while the token warms up or a 503 at
+   *  startup is a moment, not an answer, and caching one would park the migration for the session. */
   settled: boolean;
 }
 

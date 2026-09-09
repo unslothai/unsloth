@@ -1,0 +1,118 @@
+{# Unsloth-branded JupyterLab login page. Overwrites jupyter_server's default
+   login.html (same overwrite pattern as the favicon/logo). Extends the stock
+   page.html so favicon (already the Unsloth icon) and form plumbing stay intact;
+   we override the title, hide the stock header, and render a dark centered card
+   matching the "Unsloth Dark" (Monokai) theme. The card logo reads
+   static/logo/logo.png, which the image build replaces with the Unsloth logo. #}
+{% extends "page.html" %}
+
+{% block title %}Unsloth{% endblock %}
+
+{% block stylesheet %}
+<style>
+  html, body {
+    background: hsl(70, 8%, 12%) !important;
+    color: hsl(60, 30%, 96%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  /* Hide the stock top header (jupyter_server's index.css uses a higher-
+     specificity selector, so force it); the centered card carries the brand. */
+  #header, .header-bar { display: none !important; }
+  /* Column, not the flex default row: #site holds two children (the login card
+     and the AGPLv3 attribution). As a row they sat side by side, pushing the card
+     left of centre and the attribution up to the top-right. Stack them so the card
+     is horizontally centred and the attribution sits below it as a footer. */
+  #site { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; }
+  .unsloth-login-card {
+    margin-top: 11vh;
+    background: hsl(70, 8%, 18%);
+    border: 1px solid hsl(70, 8%, 28%);
+    border-radius: 12px;
+    padding: 38px 40px 32px;
+    width: 360px;
+    max-width: 90vw;
+    text-align: center;
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+  }
+  .unsloth-login-card img.logo { height: 72px; width: auto; margin-bottom: 14px; }
+  /* A random Unsloth Studio sloth sticker, shown like the Studio login screen. */
+  .unsloth-login-card img.sloth {
+    height: 104px; width: 104px; object-fit: contain;
+    margin: 2px auto 10px; display: block;
+  }
+  .unsloth-login-card h1 { font-size: 22px; margin: 0 0 4px; font-weight: 700; }
+  .unsloth-login-card p.sub { color: hsl(60, 8%, 64%); margin: 0 0 24px; font-size: 14px; }
+  .unsloth-login-card label {
+    display: block; text-align: left; font-size: 13px;
+    margin-bottom: 6px; color: hsl(60, 8%, 76%);
+  }
+  .unsloth-login-card input[type="password"] {
+    width: 100%; box-sizing: border-box; padding: 10px 12px;
+    border-radius: 8px; border: 1px solid hsl(70, 8%, 32%);
+    background: hsl(70, 8%, 13%); color: inherit; font-size: 14px; margin-bottom: 18px;
+  }
+  .unsloth-login-card input[type="password"]:focus {
+    outline: none; border-color: hsl(160, 55%, 48%);
+  }
+  .unsloth-login-card button {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: none;
+    background: hsl(160, 55%, 42%); color: #fff; font-weight: 600; font-size: 14px; cursor: pointer;
+  }
+  .unsloth-login-card button:hover { background: hsl(160, 55%, 36%); }
+  .unsloth-login-card .message { margin-top: 16px; font-size: 13px; }
+  .unsloth-login-card .message.error { color: hsl(0, 75%, 68%); }
+  /* License attribution footer. Part of the Unsloth attribution set the image's
+     integrity guard verifies (Built by the Unsloth team + AGPLv3 + copyright +
+     source link). */
+  .unsloth-attrib {
+    margin-top: 18px; text-align: center; font-size: 12px; line-height: 1.6;
+    color: hsl(60, 8%, 58%); width: 360px; max-width: 90vw;
+  }
+  .unsloth-attrib a { color: hsl(160, 45%, 60%); text-decoration: none; }
+  .unsloth-attrib a:hover { text-decoration: underline; }
+</style>
+{% endblock %}
+
+{% block site %}
+{# A different Unsloth Studio sloth sticker each visit (matches Studio's login).
+   The PNGs are copied into static/sloth/NN.png by the image build; if one is
+   missing the onerror handler falls back to the Unsloth logo so the page never
+   shows a broken image. #}
+{% set sloths = [
+  "01.png", "02.png", "03.png", "04.png", "05.png", "06.png", "07.png",
+  "08.png", "09.png", "10.png", "11.png", "12.png", "13.png", "14.png",
+  "15.png", "16.png", "17.png", "18.png", "19.png", "20.png"
+] %}
+<div class="unsloth-login-card">
+  <img class="sloth" src='{{ static_url("sloth/" ~ (sloths | random)) }}'
+       onerror="this.onerror=null;this.className='logo';this.src='{{ static_url('logo/logo.png') }}';"
+       alt='Unsloth' />
+  <h1>Unsloth</h1>
+  <p class="sub">Sign in to JupyterLab</p>
+  {% if login_available %}
+  <form action="{{base_url}}login?next={{next}}" method="post">
+    {{ xsrf_form_html() | safe }}
+    <label for="password_input">
+      {% if token_available %}{% trans %}Password or token{% endtrans %}{% else %}{% trans %}Password{% endtrans %}{% endif %}
+    </label>
+    <input type="password" name="password" id="password_input" autofocus>
+    <button type="submit" id="login_submit">{% trans %}Log in{% endtrans %}</button>
+  </form>
+  {% endif %}
+  {% if message %}
+    {% for key in message %}
+    <div class="message {{key}}">{{ message[key] }}</div>
+    {% endfor %}
+  {% endif %}
+</div>
+<div class="unsloth-attrib">
+  Built by the Unsloth team.
+  <a href="https://github.com/unslothai/unsloth#license" target="_blank" rel="noopener">Apache 2.0, AGPLv3 License Link</a><br/>
+  Copyright 2026-Present the Unsloth team.<br/>
+  <a href="https://github.com/unslothai/unsloth" target="_blank" rel="noopener">github.com/unslothai/unsloth</a>
+  &middot;
+  <a href="https://unsloth.ai" target="_blank" rel="noopener">unsloth.ai</a>
+</div>
+{% endblock %}
+
+{% block script %}{% endblock %}

@@ -13,7 +13,7 @@ needed together:
    on ``__getitem__``.  It returns an immutable *view*; ``set_transform`` would
    mutate the caller's object, which the preview/eval code also holds.
 2. TRL gets ``dataset_kwargs = {"skip_prepare_dataset": True}`` so it does not
-   map over the view, materialising the pass we are avoiding.  Studio already
+   map over the view, materialising the pass we are avoiding.  Unsloth already
    uses that hook for the VLM branch.
 3. ``dataloader_num_workers`` > 0 with prefetch and persistent workers, so the
    tokenizer runs overlapped with the GPU.
@@ -136,7 +136,7 @@ def platform_supports_dataloader_workers() -> bool:
     """Fork, and only fork.
 
     The hazard is ``spawn``, not the OS: a spawned worker re-imports the entry
-    point against a fresh ``sys.path``, and Studio's is modified in-process, so
+    point against a fresh ``sys.path``, and Unsloth's is modified in-process, so
     the import fails (why ``trainer.py`` already forces 0 workers on Windows and
     macOS, which default to spawn).  A Linux process set to ``spawn`` or
     ``forkserver`` is the same hazard, and a platform check cannot see it.
@@ -151,7 +151,7 @@ def trl_supports_skip_prepare_dataset() -> bool:
 
     ``SFTConfig`` must carry ``dataset_kwargs`` and ``SFTTrainer.__init__`` must
     read the key.  If the source is unreadable (compiled or patched build) the
-    field alone decides: Studio's VLM branch has relied on this hook across every
+    field alone decides: Unsloth's VLM branch has relied on this hook across every
     supported TRL, so a missing source is not evidence of a missing hook.
     """
     try:
@@ -226,7 +226,7 @@ def model_needs_token_type_ids(model: Any, processing_class: Any) -> bool:
             if module is not None and hasattr(module, marker):
                 return True
     except Exception:  # noqa: BLE001
-        return True  # unprobeable reads as "needs them", i.e. stay eager
+        return True
 
     try:
         for base in type(processing_class).__mro__:
@@ -366,7 +366,6 @@ def decide_online_tokenization(
     if override is False:
         return veto(f"{ENV_FLAG}=0")
 
-    # ---- correctness gates: never overridable ----
     if not platform_supports_dataloader_workers():
         if sys.platform in ("win32", "darwin"):
             return veto(f"{sys.platform} spawns DataLoader workers")
@@ -444,10 +443,9 @@ def decide_online_tokenization(
         if resolved_max_steps_epochs is not None
         else _epoch_count(num_train_epochs, max_steps)
     )
-    # The lazy view re-tokenizes every pass: +2.9% of steady-state time measured
-    # over 2.4 epochs (237.2s eager vs 244.1s online, identical loss).  One pass
-    # pays that once against a 97s map; each extra epoch pays again while the
-    # saving stays fixed, so anything past a single pass keeps the Arrow cache.
+    # The lazy view re-tokenizes every pass: +2.9% of steady-state time measured over 2.4 epochs, paid per epoch against
+    # a one-off 97s map, so anything past a single pass keeps the Arrow cache.
+    # Measured 237.2s eager against 244.1s online, identical loss.
     if not forced and epochs > 1.0:
         detail = (
             "step-capped run of unknown length"
@@ -665,7 +663,7 @@ def release_train_dataloader(trainer: Any) -> int:
     ``dataloader_persistent_workers = True`` lets the barrier's workers survive
     into ``train()``, and equally keeps them alive after it returns: memo holds
     loader holds iterator holds the processes, so nothing drops the last
-    reference.  Studio then merges, quantizes and exports -- the most
+    reference.  Unsloth then merges, quantizes and exports -- the most
     memory-hungry part of a run -- with four forked children still resident, each
     holding the parent's CUDA file descriptors.
 
@@ -688,11 +686,10 @@ def release_train_dataloader(trainer: Any) -> int:
     shut: list = []
     released += _shutdown_loader_workers(loader, shut)
 
-    # Worker count is a TrainingArguments setting, so the EVAL loader gets the
-    # same workers and `persistent_workers = True`; transformers keeps it in
-    # `_eval_dataloaders` (unchanged 4.51.3 through 5.5.0) and torch keeps its
-    # `_iterator` alive once iterated, so eval workers outlive train() just as
-    # the train ones do.  Drop the memo too, so a later eval rebuilds.
+    # The EVAL loader inherits the same workers and persistent_workers, and torch keeps its _iterator alive once
+    # iterated, so eval workers outlive train() just as the train ones do.
+    # Worker count is a TrainingArguments setting and transformers keeps the eval loader in `_eval_dataloaders`
+    # (unchanged 4.51.3 through 5.5.0). Drop the memo too, so a later eval rebuilds.
     memo = getattr(trainer, "_eval_dataloaders", None)
     if isinstance(memo, dict):
         for key in list(memo.keys()):
