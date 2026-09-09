@@ -56,7 +56,7 @@ jobs:
       - name: Compose project lifecycle support
         shell: bash
         env:
-          LIFECYCLE_REVISION: 31327e51f71055215b6d67fb4de9b6eb38494a73
+          LIFECYCLE_REVISION: 9ced365ad35a84f34d5cdb00f9f0cd766825fe4c
         run: |
           git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$LIFECYCLE_REVISION"
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$LIFECYCLE_REVISION"
@@ -67,7 +67,7 @@ jobs:
         shell: bash
         env:
           EDIT_REVISION: a5d144019bb585e246d0752c11d325807d0bfb19
-          SECURE_TOOLS_REVISION: 9d25a218f4dc335a952b8817588a0d023479c6de
+          SECURE_TOOLS_REVISION: ba95d92a7d66d45dc6902a00947a4eaccfc06759
         run: |
           git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$EDIT_REVISION"
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$EDIT_REVISION"
