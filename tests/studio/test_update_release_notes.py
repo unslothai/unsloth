@@ -828,6 +828,27 @@ def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_release
     assert hits["count"] == 1, "refresh must not bypass a rate-limit lockout"
 
 
+def test_a_token_is_sent_only_to_the_github_api_host(notes_module, monkeypatch):
+    """GH_TOKEN lifts the 60/hour per-IP limit, and must never travel to an
+    UNSLOTH_RELEASES_URL override."""
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout = None):
+        seen.append(request.get_header("Authorization"))
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    monkeypatch.setenv("GH_TOKEN", "ghp_test_token")
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    notes_module._fetch_latest_release()
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "https://mirror.example/releases")
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+    assert seen == ["Bearer ghp_test_token", None]
+
+
 def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
     """GitHub says not to request again before X-RateLimit-Reset, so the reset
     wins over the back-off. Only the first wait used to be bounded, so the fetch

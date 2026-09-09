@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -178,6 +179,9 @@ def reset_release_notes_cache() -> None:
         _remote_last_good = None
         _rate_limited_until = 0.0
         _cache_condition.notify_all()
+    from utils.prebuilt.freshness_flow import clear_github_rate_limit
+
+    clear_github_rate_limit()
 
 
 def is_supported_version_query(version: str) -> bool:
@@ -594,6 +598,11 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
         # Or a compressing proxy hands back bytes we would decode as notes.
         "Accept-Encoding": "identity",
     }
+    # A token lifts the 60/hour per-IP limit. Only for GitHub's own API host, never for an
+    # UNSLOTH_RELEASES_URL override.
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token and urllib.parse.urlparse(url).hostname == "api.github.com":
+        headers["Authorization"] = f"Bearer {token}"
     if _remote_etag:
         headers["If-None-Match"] = _remote_etag
 
@@ -697,6 +706,10 @@ def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, fl
         # The deadline itself is bounded, not just the first wait on it: the next fetch answers from it, so capping only the TTL left a skewed header parking the popup for as long as it liked.
         _rate_limited_until = min(deadline, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
         ttl = max(_rate_limited_until - now, 0.0)
+        # The quota is shared with the freshness and changelog fetches; tell them too.
+        from utils.prebuilt.freshness_flow import note_github_rate_limited
+
+        note_github_rate_limited(wait = ttl)
         return (
             ReleaseSource(
                 release = None,
