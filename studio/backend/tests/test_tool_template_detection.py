@@ -890,7 +890,10 @@ def test_unrelated_conditions_do_not_exhaust_the_budget(blocks):
             False,
         ),
         # 3969190349: an update replaces the fields it names.
-        ("{% set d={'catalog':tools} %}{% do d.update({'catalog':[]}) %}{{ d.catalog|tojson }}", False),
+        (
+            "{% set d={'catalog':tools} %}{% do d.update({'catalog':[]}) %}{{ d.catalog|tojson }}",
+            False,
+        ),
         ("{% set d={'catalog':tools} %}{% do d.update(catalog=[]) %}{{ d.catalog|tojson }}", False),
         (
             "{% set d={'catalog':tools,'other':tools} %}{% do d.update({'catalog':[]}) %}"
@@ -898,7 +901,10 @@ def test_unrelated_conditions_do_not_exhaust_the_budget(blocks):
             True,
         ),
         # 3969190360: a literal iterable knows which iteration is first and last.
-        ("{% for x in [1] %}{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}", False),
+        (
+            "{% for x in [1] %}{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}",
+            False,
+        ),
         ("{% for x in [1] %}{% if loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}", True),
         (
             "{% for x in [1,2] %}{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}",

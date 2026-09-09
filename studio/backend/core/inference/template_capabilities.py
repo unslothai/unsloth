@@ -423,11 +423,7 @@ def _value_aliases(value, state, active):
         if value.node.attr == "copy" and not value.args and not value.kwargs:
             return _value_aliases(value.node.node, state, active)
         if value.node.attr == "get" and value.args:
-            member = (
-                value.args[0].value
-                if isinstance(value.args[0], nodes.Const)
-                else _UNKNOWN
-            )
+            member = value.args[0].value if isinstance(value.args[0], nodes.Const) else _UNKNOWN
             result = _select(_value_aliases(value.node.node, state, active), member)
             # The default is what a missing field falls back to, so it counts too.
             for fallback in value.args[1:]:
