@@ -47,10 +47,11 @@ def test_client_builds_stdio_when_enabled_without_spawning(monkeypatch):
 
 
 def test_client_builds_stdio_with_encoded_arguments_without_shell(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+
     import fastmcp
     from fastmcp.client import transports
     from models.mcp_servers import McpStdioCommand
-    import routes.mcp_servers as routes_mcp
 
     _enable(monkeypatch)
     captured = {}
@@ -89,6 +90,7 @@ def test_client_http_unaffected_by_gate(monkeypatch):
 
 def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpServerCreate
 
     _reset_db(tmp_path, monkeypatch)
@@ -105,6 +107,7 @@ def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
 
 def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpServerCreate
 
     _reset_db(tmp_path, monkeypatch)
@@ -120,6 +123,7 @@ def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
 
 def test_connection_test_forces_oauth_off_for_stdio(monkeypatch):
     import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpServerTestRequest
 
     _enable(monkeypatch)
@@ -143,8 +147,8 @@ def test_connection_test_forces_oauth_off_for_stdio(monkeypatch):
 
 
 def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -163,8 +167,8 @@ def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
 
 
 def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -185,8 +189,8 @@ def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
 
 
 def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -207,8 +211,8 @@ def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
 
 
 def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)

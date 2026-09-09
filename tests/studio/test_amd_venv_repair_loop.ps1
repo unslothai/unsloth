@@ -652,10 +652,11 @@ Check "it reports the resolved flavor, not the raw index URL" (
 # session must not inherit the first one's answer. Assigning "" clears it on every edition (7.5+
 # keeps a present blank value, 5.1 and 7.0-7.4 remove the variable) and setup reads both as
 # unknown. The -match half is the anti-vacuity half: a bare -notmatch passes against a tree that
-# never grew the assignment at all.
+# never grew the assignment at all. The finally that puts the caller's own value back is a
+# conditional assignment too, and is not the report; only its $previous* form is allowed.
 Check "the report is assigned on every run, not only when known" (
     ($installText -match '(?m)^\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = ') -and
-    ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG'))
+    ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = (?!\$previous)'))
 Check "it is handed over before setup is invoked" (
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -ge 0 -and
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -lt

@@ -9,23 +9,12 @@
 // codec, which is the same shape as the Orpheus defect this PR was opened to fix.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const catalog = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/model-catalog.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const policy = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/audio-picker-policy.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc, readText } from "./helpers/kit.ts";
+
+const catalog = readSrc("features/model-picker/components/model-selector/model-catalog.ts");
+const policy = readSrc("features/model-picker/components/model-selector/audio-picker-policy.ts");
 
 // The codec-backed families decoded by the legacy main-slot backend. Native
 // architecture families are checked against their dedicated backend below.
@@ -53,10 +42,7 @@ test("the curated audio catalog offers no model the backend cannot decode", () =
 });
 
 test("the five native catalog rows are wired to native backend architectures", () => {
-  const backend = readFileSync(
-    new URL("../../backend/core/inference/native_audio.py", import.meta.url),
-    "utf8",
-  ).toLowerCase();
+  const backend = readText("../../backend/core/inference/native_audio.py").toLowerCase();
   for (const repo of [
     "bosonai/higgs-tts-2-3b-base",
     "openmoss-team/moss-tts-local-transformer-v1.5",

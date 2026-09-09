@@ -356,15 +356,17 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     generic nor the family exclusions, so without this they are quantized bare and raise on the
     first forward exactly like an unexcluded one."""
     from core.inference.diffusion_transformer_quant import (
+        _quiet_config,
         apply_small_m_padding,
         exclude_tokens_for_scheme,
         make_filter_fn,
     )
     from torchao.quantization import Int8WeightOnlyConfig, quantize_
 
+    # Int8WeightOnlyConfig defaults to set_inductor_config=True, process-wide, and the trainer compiles next.
     quantize_(
         transformer,
-        Int8WeightOnlyConfig(),
+        _quiet_config(Int8WeightOnlyConfig),
         filter_fn = make_filter_fn(
             512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
         ),

@@ -11,6 +11,8 @@ import test from "node:test";
 
 import ts from "typescript";
 
+import { readSrc } from "./helpers/kit.ts";
+
 /** Keyed by a marker on the menu's trigger. */
 const NON_MODAL = [
   ["components/assistant-ui/thread.tsx", "thinkEffortAriaLabel({"],
@@ -114,9 +116,6 @@ test("the dismiss guard is mounted only while the menu is open", () => {
 
 test("the menu content still animates out, which is why the guard is gated", () => {
   // Without the animation the gate above is merely harmless; revisit it rather than drop it.
-  const content = readFileSync(
-    new URL("../src/components/ui/dropdown-menu.tsx", import.meta.url),
-    "utf8",
-  );
+  const content = readSrc("components/ui/dropdown-menu.tsx");
   assert.match(content, /data-closed:animate-out/);
 });
