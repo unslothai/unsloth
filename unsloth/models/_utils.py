@@ -3232,6 +3232,30 @@ def patch_bnb_optimizer_step_sync():
     Optimizer8bit.step = step
 
 
+def patch_triton_heuristics_run():
+    """`triton.runtime.autotuner.Heuristics.run` rebuilds a dict of every kernel argument once per
+    heuristic value per launch (fla kernels carry several). Build it once per launch and keep it
+    in step with the values computed so far; each heuristic sees exactly what it saw before.
+    """
+    try:
+        from triton.runtime.autotuner import Heuristics
+    except Exception:
+        return
+    if getattr(Heuristics.run, "_unsloth_single_dict", False):
+        return
+
+    def run(self, *args, **kwargs):
+        nargs = {**dict(zip(self.arg_names, args)), **kwargs}
+        for v, heur in self.values.items():
+            value = heur(nargs)
+            kwargs[v] = value
+            nargs[v] = value
+        return self.fn.run(*args, **kwargs)
+
+    run._unsloth_single_dict = True
+    Heuristics.run = run
+
+
 def patch_fla_autotuner_fast_path():
     """unsloth_zoo's `compile_fla_no_autotune` makes every fla Triton autotuner reuse its first
     tuned config for every key (`_ReuseBestCache`). After that, fla's `CachedAutotuner.run`
@@ -3442,6 +3466,7 @@ def patch_gradient_accumulation_fix(Trainer):
 
     patch_bnb_optimizer_step_sync()
     patch_fla_autotuner_fast_path()
+    patch_triton_heuristics_run()
 
     # Count parameters once for the FLOPs tally instead of walking the model every micro-step.
     if getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops":

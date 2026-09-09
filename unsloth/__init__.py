@@ -14,6 +14,13 @@
 
 import os, importlib.util, platform, sys
 
+# fla's backend dispatch wraps its hot kernel entry points (chunk_gated_delta_rule_fwd_h,
+# chunk_bwd_dqkwg) and, on every call, walks the registry and asks each backend's verifier; the
+# only registered backend is the context-parallel one, which rejects every single-process call.
+# Unsloth trains on one process, so bypass the walk; the flag must be set before fla is imported.
+if int(os.environ.get("WORLD_SIZE", "1") or 1) <= 1:
+    os.environ.setdefault("FLA_DISABLE_BACKEND_DISPATCH", "1")
+
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Transformers 4.x imports TensorFlow / Flax merely because they are installed (processing_utils
