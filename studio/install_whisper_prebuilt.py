@@ -1108,7 +1108,20 @@ def existing_install_matches(
     llama dir leaves dictation broken while update reports up to date)."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
+    return installed_tree_is_intact(install_dir, host)
+
+
+def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
+    """The on-disk half of existing_install_matches, without the fingerprint.
+
+    Split out so existing_install_current_without_plan -- which runs before anything is
+    resolved and so has no selection to fingerprint against -- makes exactly the same
+    demands of the tree. Two copies of these rules is how a fast path comes to accept an
+    install the slow path repairs.
+    """
     server = installed_server_path(install_dir, host)
+    if not server.is_file():
+        return False
     if not host.is_windows and not os.access(server, os.X_OK):
         log(f"existing install at {install_dir} has a non-executable server; reinstalling")
         return False
@@ -1399,6 +1412,91 @@ def plan_selection(
     )
 
 
+def installed_paired_runtime_tree() -> str | None:
+    """The ggml tree of the llama runtime a slim bundle would hardlink right now.
+
+    Read from the live llama marker, so prebuilt_core can record it beside
+    paired_llama_tag without knowing anything about llama.cpp.
+    """
+    tree = installed_llama_ggml_tree()
+    return tree if isinstance(tree, str) and tree else None
+
+
+def existing_install_current_without_plan(
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    whisper_tag: str,
+    published_repo: str,
+    published_release_tag: str | None,
+    requested_backend: str,
+) -> bool:
+    """Whether the whisper.cpp install on disk is already the one this run would make.
+
+    Runs BEFORE _release_plan_for_host, which fetches the release, its manifest and its
+    checksum index on every update to conclude that nothing moved. Every check is on-disk
+    evidence or a tag comparison; the one network call is the same HEAD the llama
+    pre-check makes, and only when the requested tag is "latest".
+
+    The slim pairing is what makes this component's version of the check different: a
+    slim whisper bundle hardlinks the llama runtime's ggml libraries, so a llama install
+    that moved underneath it invalidates a whisper install whose own release did not.
+    """
+    if llama.prebuilt_full_check_requested():
+        return False
+    marker = load_prebuilt_metadata(install_dir)
+    if not marker:
+        return False
+    if marker.get("schema_version") != SCHEMA_VERSION or marker.get("component") != COMPONENT:
+        return False
+    if (marker.get("published_repo") or "") != published_repo:
+        return False
+    if marker.get("backend") != requested_backend:
+        return False
+    recorded_release = marker.get("release_tag")
+    if not isinstance(recorded_release, str) or not recorded_release:
+        return False
+    pinned = (published_release_tag or "").strip()
+    requested = (whisper_tag or "latest").strip().lower()
+    if pinned:
+        if pinned != recorded_release:
+            return False
+    elif requested not in ("", "latest"):
+        # An upstream version pin. The marker records which upstream tag it carries, so
+        # it can answer for itself without a manifest search.
+        if str(marker.get("upstream_tag") or "") != whisper_tag.strip():
+            return False
+    else:
+        if not llama._download_host_resolve_enabled():
+            return False
+        try:
+            latest = llama._download_host_latest_release_tag(published_repo)
+        except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
+            log(f"could not resolve the latest {COMPONENT} release without the API ({exc})")
+            return False
+        if not latest or latest != recorded_release:
+            return False
+    # A slim install is only as current as the llama runtime it hardlinks: a llama
+    # update that moved ggml invalidates a whisper install whose own release did not,
+    # and selection_from_artifact is what would normally notice. Nothing pairs without
+    # the recorded tree, so a marker written before this key existed takes the full
+    # path once rather than being trusted.
+    if marker.get("install_kind") == "slim":
+        recorded_tree = marker.get("paired_llama_ggml_tree")
+        if not isinstance(recorded_tree, str) or not recorded_tree:
+            return False
+        if recorded_tree != installed_llama_ggml_tree():
+            return False
+    if not installed_tree_is_intact(install_dir, host):
+        return False
+    # "already matches" is the substring setup.sh:3635 and setup.ps1:6109 grep for.
+    log(
+        f"existing {COMPONENT} install already matches {recorded_release} "
+        f"({marker.get('backend')}); nothing to do"
+    )
+    return True
+
+
 def install_prebuilt(
     install_dir: Path,
     *,
@@ -1420,6 +1518,15 @@ def install_prebuilt(
         f"target {COMPONENT} from {published_repo} "
         f"({os_token}-{arch_token}, backend {requested_backend})"
     )
+    if not force and existing_install_current_without_plan(
+        install_dir,
+        host,
+        whisper_tag = whisper_tag,
+        published_repo = published_repo,
+        published_release_tag = published_release_tag,
+        requested_backend = requested_backend,
+    ):
+        return 0
     plan = _release_plan_for_host(
         host,
         published_repo = published_repo,

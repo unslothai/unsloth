@@ -2079,6 +2079,16 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         payload["install_kind"] = "slim"
         payload["paired_llama_tag"] = selection.paired_llama_tag
         payload["linked_from"] = selection.linked_from
+        # The ggml tree of the llama runtime these hardlinks point into. The tag alone
+        # cannot answer whether a later llama build still backs this bundle -- that is
+        # what llama_runtime_pairs exists for -- and a no-network re-check has no
+        # release to ask. Recorded from the live llama marker at install time, so the
+        # next run can compare it against the live one. Absent means "written before
+        # this key existed", which reads as "cannot say" and takes the full path.
+        paired_tree = getattr(ops, "installed_paired_runtime_tree", None)
+        paired_tree = paired_tree() if callable(paired_tree) else None
+        if isinstance(paired_tree, str) and paired_tree:
+            payload["paired_llama_ggml_tree"] = paired_tree
         if selection.linked_libraries is not None:
             payload["linked_libraries"] = list(selection.linked_libraries)
         if selection.runtime_wiring_version is not None:

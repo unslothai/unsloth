@@ -4128,6 +4128,12 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
 
 
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
+    return runtime_patterns_for_install_kind(choice.install_kind, choice.source_label)
+
+
+def runtime_patterns_for_install_kind(
+    install_kind: str, source_label: "str | None" = None
+) -> list[str]:
     # Broad shared-library glob + explicit binary names. Lets upstream
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
@@ -4136,7 +4142,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # DiffusionGemma visual-server (when the bundle ships it, for native
     # DiffusionGemma serving); other CLIs upstream ships (llama-cli,
     # llama-bench, ...) are skipped.
-    if choice.install_kind in {
+    if install_kind in {
         "linux-cpu",
         "linux-cuda",
         "linux-arm64-cuda",
@@ -4145,14 +4151,14 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "linux-vulkan",
     }:
         return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
-    if choice.install_kind in {"macos-arm64", "macos-x64"}:
+    if install_kind in {"macos-arm64", "macos-x64"}:
         return [
             "llama-server",
             "llama-quantize",
             "llama-diffusion-gemma-visual-server",
             "lib*.dylib",
         ]
-    if choice.install_kind in {
+    if install_kind in {
         "windows-cpu",
         "windows-cuda",
         "windows-hip",
@@ -4166,7 +4172,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "llama-diffusion-gemma-visual-server.exe",
             "*.dll",
         ]
-    raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {choice.install_kind}")
+    raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {install_kind}")
 
 
 def runtime_subdirs_for_choice(choice: AssetChoice) -> list[str]:
@@ -6557,6 +6563,7 @@ def persisted_marker_backend_request(backend_request: str | None, choice: AssetC
 def write_prebuilt_metadata(
     install_dir: Path,
     *,
+    host: HostInfo | None = None,
     requested_tag: str,
     llama_tag: str,
     release_tag: str,
@@ -6639,7 +6646,17 @@ def write_prebuilt_metadata(
         "mapped_targets": list(choice.mapped_targets or []),
         # CUDA analog of mapped_targets: SM coverage for the same runtime gate.
         "supported_sms": [str(s) for s in (choice.supported_sms or [])],
+        # In the fingerprint since #5106 but never written down, so the next run could
+        # not recompute it from the marker alone -- which is exactly what
+        # existing_install_current_without_plan has to do before it reaches the network.
+        "runtime_sha256": choice.runtime_sha256,
         "install_fingerprint": fingerprint,
+        # size + sha256 of the binaries a reuse decision would otherwise have to RUN.
+        # `llama-server --version` loads the CUDA runtime, which on macOS and Windows is
+        # most of what re-validating a prebuilt install costs on every update; hashing
+        # them is ~100 ms and answers the same question -- are these the bytes we
+        # installed. Absent on a pre-PR marker, which then takes the full path once.
+        "runtime_files": runtime_file_records(install_dir, host),
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -7090,6 +7107,291 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
     )
 
 
+# The binaries a reuse decision would otherwise start. The DiffusionGemma visual server
+# is optional and only present in the bundles that ship it.
+_RUNTIME_RECORD_NAMES = (
+    "llama-server",
+    "llama-quantize",
+    "llama-diffusion-gemma-visual-server",
+)
+
+
+def _runtime_record_paths(install_dir: Path, host: "HostInfo | None" = None) -> "list[Path]":
+    """Both copies of each binary, on every layout this installer produces.
+
+    _find_llama_server_binary reaches the root copy first and, without a symlink, the
+    two can rot independently. Both the Windows Release/ layout and the POSIX one are
+    walked whatever the host says: a record is only ever taken of a file that is
+    actually there, and a host argument that has to be threaded through every caller is
+    how this would go stale on the one platform nobody tests it on.
+    """
+    directories = [
+        install_dir,
+        install_dir / "build" / "bin",
+        install_dir / "build" / "bin" / "Release",
+    ]
+    if host is not None:
+        directories.insert(1, install_runtime_dir(install_dir, host))
+    paths: list[Path] = []
+    for directory in directories:
+        for name in _RUNTIME_RECORD_NAMES:
+            for candidate in (directory / name, directory / f"{name}.exe"):
+                if candidate not in paths:
+                    paths.append(candidate)
+    return paths
+
+
+def runtime_file_records(
+    install_dir: Path, host: "HostInfo | None" = None
+) -> "dict[str, dict[str, Any]]":
+    """size + sha256 of each runtime binary present, keyed by path inside the install."""
+    records: dict[str, dict[str, Any]] = {}
+    for candidate in _runtime_record_paths(install_dir, host):
+        try:
+            relative = candidate.relative_to(install_dir).as_posix()
+        except ValueError:
+            continue
+        try:
+            info = candidate.stat()
+            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        records[relative] = {"size": info.st_size, "sha256": digest}
+    return records
+
+
+def _runtime_files_match(install_dir: Path, host: HostInfo, marker: "dict[str, Any]") -> bool:
+    """Whether every recorded runtime binary is still byte-for-byte what was installed.
+
+    Fails CLOSED, unlike the payload scans: this is the evidence that replaces actually
+    starting the binaries, so an empty or unreadable record is not proof of anything.
+    A marker written before this existed has none, and takes the full path once.
+    """
+    recorded = marker.get("runtime_files")
+    if not isinstance(recorded, dict) or not recorded:
+        return False
+    for relative, expected in recorded.items():
+        if not isinstance(expected, dict):
+            return False
+        candidate = install_dir / relative
+        try:
+            info = candidate.stat()
+            if info.st_size != expected.get("size"):
+                log(f"kept install rejected: {relative} is {info.st_size} bytes")
+                return False
+            if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected.get("sha256"):
+                log(f"kept install rejected: {relative} does not match the recorded digest")
+                return False
+        except OSError as exc:
+            log(f"kept install rejected: {relative} is unreadable ({exc})")
+            return False
+    # A binary that appeared since, or one the record never covered, is not evidence
+    # against the install -- but a RECORDED one that vanished is, and the loop above
+    # already caught that.
+    return True
+
+
+def _marker_install_fingerprint(marker: "dict[str, Any]") -> "str | None":
+    """Recompute the fingerprint from the marker's own recorded fields.
+
+    Self-consistency, not a comparison against a fresh plan: it proves the marker was
+    written whole by this installer and has not been hand-edited or truncated, which is
+    what lets the rest of the no-network check trust the fields it reads. A marker
+    missing any input -- every pre-PR one, which never recorded runtime_sha256 -- gets
+    None and takes the full path once.
+    """
+    keys = (
+        "published_repo",
+        "release_tag",
+        "asset",
+        "asset_sha256",
+        "source",
+        "source_asset",
+        "source_sha256",
+        "runtime_line",
+        "runtime_asset",
+        "runtime_sha256",
+        "bundle_profile",
+        "coverage_class",
+    )
+    if "runtime_sha256" not in marker or "tag" not in marker:
+        return None
+    payload = {key: marker.get(key) for key in keys}
+    payload["upstream_tag"] = marker.get("tag")
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+_PREBUILT_FULL_CHECK_ENV = "UNSLOTH_PREBUILT_FULL_CHECK"
+
+
+def prebuilt_full_check_requested() -> bool:
+    """The escape hatch for the no-network re-check. A skip nobody can turn off is a bug
+    nobody can work around."""
+    return os.environ.get(_PREBUILT_FULL_CHECK_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _expected_release_tag_without_plan(
+    marker: "dict[str, Any]", llama_tag: str, published_repo: str, published_release_tag: str
+) -> "str | None":
+    """The release this run would install, worked out without listing anything.
+
+    None means "cannot say", and every caller treats that as a reason to take the full
+    path. Three shapes:
+      * a pinned UNSLOTH_LLAMA_RELEASE_TAG names the answer outright;
+      * an upstream bNNNN pin is answered by the marker's recorded upstream tag, since
+        the fork publishes one release per upstream build;
+      * "latest" costs ONE HEAD on github.com/<repo>/releases/latest -- no
+        api.github.com call, so no rate limit, and no manifest or checksum download.
+    """
+    pinned = (published_release_tag or "").strip()
+    if pinned:
+        return pinned
+    requested = normalized_requested_llama_tag(llama_tag)
+    if requested != "latest":
+        # An upstream pin. The recorded upstream tag is what would be asked for, so a
+        # marker that already names it is current by construction; anything else is not.
+        recorded_upstream = marker.get("tag")
+        if not isinstance(recorded_upstream, str) or recorded_upstream != requested:
+            return None
+        recorded_release = marker.get("release_tag")
+        return recorded_release if isinstance(recorded_release, str) else None
+    if not _download_host_resolve_enabled():
+        # The caller asked for the API path, which is the one this exists to avoid.
+        return None
+    try:
+        return _download_host_latest_release_tag(published_repo or DEFAULT_PUBLISHED_REPO)
+    except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
+        log(f"could not resolve the latest release without the API ({exc})")
+        return None
+
+
+def _diffusion_visual_server_missing_for_marker(
+    install_dir: Path, host: HostInfo, marker: "dict[str, Any]"
+) -> bool:
+    """The marker-only twin of diffusion_visual_server_backfill_needed.
+
+    An install made before the visual-server entered the copy allowlist matches on tag
+    and is missing the binary, so a tag-match skip never backfills it and DiffusionGemma
+    fails with "runner not found". The plan-based check reads the chosen bundle's
+    pattern list; here the marker's own recorded install kind stands in for it. Gated to
+    the fork ("published") bundles that carry it, so upstream installs -- which never
+    ship it -- cannot thrash on repeated updates.
+    """
+    if marker.get("source") != "published":
+        return False
+    backend = marker_backend(marker)
+    platform_prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
+    kinds = [
+        kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
+    ]
+    if not kinds:
+        # An unknown backend cannot say the bundle ships one, and guessing yes would
+        # re-extract every update on a host whose bundle never carried it.
+        return False
+    name = "llama-diffusion-gemma-visual-server" + (".exe" if host.is_windows else "")
+    if not any(
+        name in runtime_patterns_for_install_kind(kind, marker.get("source")) for kind in kinds
+    ):
+        return False
+    for candidate in (
+        install_dir / name,
+        install_dir / "build" / "bin" / name,
+        install_dir / "build" / "bin" / "Release" / name,
+    ):
+        if candidate.is_file():
+            return False
+    return True
+
+
+def existing_install_current_without_plan(
+    install_dir: Path,
+    *,
+    llama_tag: str,
+    published_repo: str,
+    published_release_tag: str,
+    backend_request: str,
+    force_cpu: bool,
+) -> bool:
+    """Whether the install on disk is already the one this run would produce.
+
+    Runs BEFORE the release listing, the manifest fetch and the checksum download, so a
+    no-op update costs one HEAD instead of the whole selection plus a re-validation that
+    starts llama-server and loads the CUDA runtime -- 13-63 s on macOS, ~5 s on Windows,
+    every update, to arrive back where it started.
+
+    Every check is on-disk evidence or a tag comparison. Nothing here reasons about what
+    a bundle SHOULD contain: that is existing_install_matches_choice's job, and it needs
+    the plan. This one only asserts that the recorded install is intact and that the
+    release it names is the release this run would ask for.
+    """
+    if prebuilt_full_check_requested():
+        return False
+    marker = load_prebuilt_metadata(install_dir)
+    if not marker:
+        return False
+    # (1) the marker describes an install this run would have made.
+    if (marker.get("published_repo") or "") != (published_repo or DEFAULT_PUBLISHED_REPO):
+        return False
+    if not isinstance(marker.get("install_fingerprint"), str):
+        return False
+    # An explicit --force-cpu or --llama-backend still wins: a request that differs from
+    # what is recorded is a request to change the install, not to keep it.
+    recorded_request = marker.get("backend_request")
+    if not isinstance(recorded_request, str) or recorded_request != backend_request:
+        return False
+    if bool(marker.get("force_cpu")) != bool(force_cpu):
+        return False
+    # (2) the release this run would ask for is the release that is installed.
+    expected_release = _expected_release_tag_without_plan(
+        marker, llama_tag, published_repo, published_release_tag
+    )
+    if not expected_release or expected_release != marker.get("release_tag"):
+        return False
+    # (3) the marker was written whole by this installer, so its fields can be trusted.
+    if _marker_install_fingerprint(marker) != marker.get("install_fingerprint"):
+        return False
+    host = detect_host()
+    # (4) the tree is the shape the marker's backend implies, and is executable.
+    if not _install_tree_is_usable(install_dir, host):
+        return False
+    if not _kept_install_payload_is_healthy(install_dir, host):
+        return False
+    extension = ".exe" if host.is_windows else ""
+    binaries = [
+        install_runtime_dir(install_dir, host) / f"llama-{name}{extension}"
+        for name in ("server", "quantize")
+    ]
+    if not all(os.access(binary, os.X_OK) for binary in binaries):
+        return False
+    try:
+        # Each preflight is a no-op outside its platform. Kept, unlike the --version
+        # spawns: they answer whether the OS can LOAD the image, which a hash cannot.
+        preflight_linux_installed_binaries(binaries, install_dir, host)
+        preflight_macos_installed_binaries(binaries, install_dir, host)
+    except Exception:  # noqa: BLE001
+        return False
+    # (5) and the bytes are the ones that were installed.
+    if not _runtime_files_match(install_dir, host, marker):
+        return False
+    # The one backfill that is not a release change, so it has to be asked separately.
+    if _diffusion_visual_server_missing_for_marker(install_dir, host, marker):
+        return False
+    # "already matches" is the substring setup.sh:2912 and setup.ps1:5981 grep for to
+    # report "prebuilt up to date and validated" rather than "installed and validated".
+    log(
+        "existing llama.cpp install already matches selected release "
+        f"{expected_release} upstream_tag={marker.get('tag')}; skipping download and install"
+    )
+    return True
+
+
 def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     """Check the payload shared by install kinds allowed by the tree's marker."""
     marker = load_prebuilt_metadata(install_dir)
@@ -7371,6 +7673,7 @@ def validate_prebuilt_choice(
     ensure_repo_shape(install_dir)
     write_prebuilt_metadata(
         install_dir,
+        host = host,
         requested_tag = requested_tag,
         llama_tag = llama_tag,
         release_tag = release_tag,
@@ -8808,6 +9111,25 @@ def install_prebuilt(
                         f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
                     ) from exc
 
+            # Before the release listing, the manifest fetch and the checksum download:
+            # on an install that is already current all of that resolves back to the
+            # bundle on disk, and then re-validates it by starting llama-server, which
+            # loads the CUDA runtime. Measured at 13-63 s per macOS update and ~5 s per
+            # Windows one, for no change. The check below costs one HEAD on github.com.
+            if existing_install_current_without_plan(
+                install_dir,
+                llama_tag = llama_tag,
+                published_repo = published_repo,
+                published_release_tag = published_release_tag,
+                # The request as effective_backend_request resolved it, which is what
+                # write_prebuilt_metadata recorded for the install that produced this
+                # marker. Anything else -- an explicit --llama-backend or
+                # UNSLOTH_LLAMA_CPP_BACKEND naming a different one -- is a request to
+                # CHANGE the install, so it must not match.
+                backend_request = backend,
+                force_cpu = force_cpu,
+            ):
+                return
             try:
                 selection = _select(backend)
             except BackendUnavailable:

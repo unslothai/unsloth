@@ -5911,3 +5911,244 @@ def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
         'choice.install_kind.startswith("windows-")' in gate
     ), "fresh Windows installs are not payload checked"
     assert "VULKAN_INSTALL_KINDS" in gate, "the Vulkan check must not be dropped"
+
+
+# ── the no-network re-check ──
+#
+# An update of an already-current install used to list the release, fetch its manifest
+# and checksum index, re-derive the same bundle, and then re-validate the tree by
+# STARTING llama-server -- which loads the CUDA runtime. 13-63 s per macOS update and
+# ~5 s per Windows one, to arrive back where it started. This check does the same job
+# from the marker plus one HEAD, so every case below that cannot prove the install is
+# current has to fall through to the full path.
+existing_install_current_without_plan = INSTALL_LLAMA_PREBUILT.existing_install_current_without_plan
+runtime_file_records = INSTALL_LLAMA_PREBUILT.runtime_file_records
+
+
+def _current_install(tmp_path: Path, monkeypatch, **marker_overrides) -> Path:
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir(parents = True)
+    write_linux_install_shape(install_dir)
+    for name in ("llama-server", "llama-quantize"):
+        for parent in (install_dir, install_dir / "build" / "bin"):
+            (parent / name).chmod(0o755)
+    choice = asset_choice()
+    checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
+    write_prebuilt_metadata(
+        install_dir,
+        host = linux_host(),
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+        backend_request = "auto",
+    )
+    if marker_overrides:
+        marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+        payload = json.loads(marker_path.read_text(encoding = "utf-8"))
+        for key, value in marker_overrides.items():
+            if value is None:
+                payload.pop(key, None)
+            else:
+                payload[key] = value
+        marker_path.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda **_k: linux_host())
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: "release-1"
+    )
+    monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
+    return install_dir
+
+
+def _check(install_dir: Path, **overrides) -> bool:
+    kwargs = dict(
+        llama_tag = "latest",
+        published_repo = "unslothai/llama.cpp",
+        published_release_tag = "",
+        backend_request = "auto",
+        force_cpu = False,
+    )
+    kwargs.update(overrides)
+    return existing_install_current_without_plan(install_dir, **kwargs)
+
+
+def test_a_current_install_is_recognised_without_listing_the_release(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+
+    def boom(*_a, **_k):
+        raise AssertionError("the no-network check must not reach the GitHub API")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_release_bundle", boom, raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "resolve_release_tag", boom, raising = False)
+    assert _check(install_dir) is True
+
+
+def test_the_latest_lookup_is_one_head_on_the_download_host(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_download_host_latest_release_tag",
+        lambda repo: (calls.append(repo), "release-1")[1],
+    )
+    assert _check(install_dir) is True
+    assert calls == ["unslothai/llama.cpp"]
+
+
+def test_a_newer_release_upstream_is_not_current(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: "release-2"
+    )
+    assert _check(install_dir) is False
+
+
+def test_a_lookup_that_cannot_answer_takes_the_full_path(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    for answer in (None, ""):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: answer
+        )
+        assert _check(install_dir) is False
+
+    def raises(_repo):
+        raise OSError("github.com unreachable")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", raises)
+    assert _check(install_dir) is False
+
+
+def test_the_api_only_escape_hatch_declines_the_fast_path(tmp_path, monkeypatch):
+    """UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE asks for the API path, which is the
+    one this check exists to avoid."""
+    install_dir = _current_install(tmp_path, monkeypatch)
+    monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+    assert _check(install_dir) is False
+
+
+def test_a_pinned_release_tag_needs_no_lookup_at_all(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+
+    def boom(_repo):
+        raise AssertionError("a pinned release tag names the answer outright")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", boom)
+    assert _check(install_dir, published_release_tag = "release-1") is True
+    assert _check(install_dir, published_release_tag = "release-9") is False
+
+
+def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+
+    def boom(_repo):
+        raise AssertionError("an upstream pin needs no release listing")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", boom)
+    assert _check(install_dir, llama_tag = "b9001") is True
+    assert _check(install_dir, llama_tag = "b9999") is False
+
+
+def test_a_full_check_request_always_does_the_work(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    for value in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", value)
+        assert _check(install_dir) is False
+    for value in ("0", "false", "", "maybe"):
+        monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", value)
+        assert _check(install_dir) is True
+
+
+def test_a_different_repo_or_backend_request_is_not_current(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    assert _check(install_dir, published_repo = "someone/else") is False
+    # An explicit --llama-backend naming something else is a request to CHANGE the
+    # install, so it must reach the selector.
+    assert _check(install_dir, backend_request = "vulkan") is False
+    assert _check(install_dir, force_cpu = True) is False
+
+
+def test_a_marker_written_before_this_existed_takes_the_full_path_once(tmp_path, monkeypatch):
+    """runtime_sha256 and runtime_files are new keys; without them the marker cannot be
+    verified against itself or the disk, and guessing yes would keep a broken install."""
+    for missing in ("runtime_sha256", "runtime_files", "install_fingerprint"):
+        install_dir = _current_install(tmp_path / missing, monkeypatch, **{missing: None})
+        assert _check(install_dir) is False, missing
+
+
+def test_a_hand_edited_marker_is_not_trusted(tmp_path, monkeypatch):
+    """The fingerprint is recomputed from the marker's own fields, so a field changed
+    without the fingerprint no longer adds up."""
+    install_dir = _current_install(tmp_path, monkeypatch, asset = "some-other-bundle.tar.gz")
+    assert _check(install_dir) is False
+
+
+def test_a_truncated_binary_is_not_current(tmp_path, monkeypatch):
+    """The check this replaces started llama-server. Hashing the recorded binaries
+    answers the same question in ~100 ms."""
+    install_dir = _current_install(tmp_path, monkeypatch)
+    assert _check(install_dir) is True
+    (install_dir / "build" / "bin" / "llama-server").write_text("", encoding = "utf-8")
+    assert _check(install_dir) is False
+
+
+def test_a_swapped_binary_of_the_same_size_is_not_current(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    target = install_dir / "build" / "bin" / "llama-quantize"
+    original = target.read_text(encoding = "utf-8")
+    target.write_text("X" * len(original), encoding = "utf-8")
+    target.chmod(0o755)
+    assert _check(install_dir) is False
+
+
+def test_a_deleted_binary_is_not_current(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    (install_dir / "llama-server").unlink()
+    assert _check(install_dir) is False
+
+
+def test_a_gutted_runtime_payload_is_not_current(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    (install_dir / "build" / "bin" / "libggml-base.so.0").unlink()
+    assert _check(install_dir) is False
+
+
+def test_a_non_executable_binary_is_not_current(tmp_path, monkeypatch):
+    install_dir = _current_install(tmp_path, monkeypatch)
+    (install_dir / "build" / "bin" / "llama-server").chmod(0o644)
+    assert _check(install_dir) is False
+
+
+def test_no_marker_at_all_is_not_current(tmp_path, monkeypatch):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda **_k: linux_host())
+    assert _check(install_dir) is False
+
+
+def test_the_records_cover_both_copies_of_each_binary(tmp_path):
+    """_find_llama_server_binary reaches the root copy first and, without a symlink,
+    the two can rot independently."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+    records = runtime_file_records(install_dir, linux_host())
+    assert set(records) == {
+        "llama-server",
+        "llama-quantize",
+        "build/bin/llama-server",
+        "build/bin/llama-quantize",
+    }
+    for record in records.values():
+        assert record["size"] > 0 and len(record["sha256"]) == 64
+
+
+def test_the_skip_log_carries_the_string_the_setup_scripts_grep_for(tmp_path, monkeypatch, capsys):
+    """setup.sh and setup.ps1 both match the loose substring "already matches" to
+    report "prebuilt up to date and validated" rather than "installed and validated"."""
+    install_dir = _current_install(tmp_path, monkeypatch)
+    assert _check(install_dir) is True
+    captured = capsys.readouterr()
+    assert "already matches" in captured.out + captured.err

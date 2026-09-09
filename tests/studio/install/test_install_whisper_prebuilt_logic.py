@@ -2232,3 +2232,198 @@ def test_resolver_reports_metal_slim_on_macos(tmp_path, monkeypatch, capsys):
     assert payload["asset"] == MAC_SLIM_ASSET
     assert payload["backend"] == "metal"
     assert payload["requested_backend"] == "metal"
+
+
+# ── the no-network re-check ──
+#
+# install_prebuilt used to fetch the release, its manifest and its checksum index on every
+# update before it could even ask whether the install was already current. These tests hold
+# the check that answers from the marker plus at most one HEAD, and -- because a slim whisper
+# bundle hardlinks llama's ggml libraries -- that it still notices a llama runtime that moved
+# underneath an install whose own release did not.
+def _installed_cpu_tree(
+    tmp_path,
+    monkeypatch,
+    *,
+    backend = "cpu",
+):
+    host = _host("linux", "x64")
+    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
+    calls = {"n": 0}
+
+    def fake_download(url, destination):
+        calls["n"] += 1
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256)
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = backend) == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: RELEASE_TAG, raising = False
+    )
+    monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
+    return install_dir, host, calls
+
+
+def _whisper_check(install_dir, host, **overrides) -> bool:
+    kwargs = dict(
+        whisper_tag = "latest",
+        published_repo = M.DEFAULT_PUBLISHED_REPO,
+        published_release_tag = None,
+        requested_backend = "cpu",
+    )
+    kwargs.update(overrides)
+    return M.existing_install_current_without_plan(install_dir, host, **kwargs)
+
+
+def test_whisper_current_install_needs_no_release_fetch(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+
+    def boom(*_a, **_k):
+        raise AssertionError("the no-network check must not fetch the release")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", boom)
+    assert _whisper_check(install_dir, host) is True
+
+
+def test_whisper_second_install_run_downloads_and_fetches_nothing(tmp_path, monkeypatch):
+    """The end-to-end shape: a repeat install_prebuilt is now a marker read, not a
+    release fetch followed by a fingerprint comparison."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    fetches = {"n": 0}
+    real_fetch = M.fetch_release_for_install
+
+    def counting(*args, **kwargs):
+        fetches["n"] += 1
+        return real_fetch(*args, **kwargs)
+
+    monkeypatch.setattr(M, "fetch_release_for_install", counting)
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+    assert fetches["n"] == 0
+    # --force is still the way to make it do the work anyway.
+    assert M.install_prebuilt(install_dir, backend = "cpu", force = True) == M.EXIT_SUCCESS
+    assert fetches["n"] == 1
+
+
+def test_whisper_newer_release_or_unreachable_lookup_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "v1.9.2-unsloth.1"
+    )
+    assert _whisper_check(install_dir, host) is False
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", lambda _repo: None)
+    assert _whisper_check(install_dir, host) is False
+
+    def raises(_repo):
+        raise OSError("github.com unreachable")
+
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", raises)
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_whisper_pinned_and_upstream_tags_answer_without_a_lookup(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+
+    def boom(_repo):
+        raise AssertionError("a pinned tag names the answer outright")
+
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", boom)
+    assert _whisper_check(install_dir, host, published_release_tag = RELEASE_TAG) is True
+    assert _whisper_check(install_dir, host, published_release_tag = "v9.9.9") is False
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
+    assert _whisper_check(install_dir, host, whisper_tag = "v1.0.0") is False
+
+
+def test_whisper_a_different_repo_or_backend_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    assert _whisper_check(install_dir, host, published_repo = "someone/else") is False
+    assert _whisper_check(install_dir, host, requested_backend = "cuda") is False
+
+
+def test_whisper_full_check_request_declines_the_fast_path(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", "1")
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_whisper_a_damaged_tree_is_not_current(tmp_path, monkeypatch):
+    """installed_tree_is_intact is the shared on-disk half, so the fast path refuses
+    exactly what the slow path would have repaired."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    server = M.installed_server_path(install_dir, host)
+    assert _whisper_check(install_dir, host) is True
+    server.chmod(0o644)
+    assert _whisper_check(install_dir, host) is False
+    server.chmod(0o755)
+    assert _whisper_check(install_dir, host) is True
+    server.unlink()
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_whisper_no_marker_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    (install_dir / M.METADATA_FILENAME).unlink()
+    assert _whisper_check(install_dir, host) is False
+
+
+def _slim_marker(install_dir: Path, **overrides) -> None:
+    marker_path = install_dir / M.METADATA_FILENAME
+    payload = json.loads(marker_path.read_text(encoding = "utf-8"))
+    payload["install_kind"] = "slim"
+    payload["runtime_wiring_version"] = M.SLIM_RUNTIME_WIRING_VERSION
+    payload["linked_libraries"] = ["libggml-base.so"]
+    payload["paired_llama_tag"] = "b9001"
+    payload["paired_llama_ggml_tree"] = "ggml-abc"
+    for key, value in overrides.items():
+        if value is None:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+    marker_path.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
+
+
+def test_a_slim_install_whose_llama_runtime_moved_is_not_current(tmp_path, monkeypatch):
+    """The reason this check cannot just be the llama one: whisper's slim bundle
+    hardlinks llama's ggml libraries, so a llama update invalidates a whisper install
+    at an unchanged whisper release. selection_from_artifact is what normally notices,
+    and it does not run on this path."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is True
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-def")
+    assert _whisper_check(install_dir, host) is False
+    # A llama install that vanished entirely reads as no tree at all.
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: None)
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_a_slim_marker_written_before_the_tree_was_recorded_takes_the_full_path(
+    tmp_path, monkeypatch
+):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir, paired_llama_ggml_tree = None)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_a_slim_install_missing_a_wired_library_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is True
+    (M.installed_server_path(install_dir, host).parent / "libggml-base.so").unlink()
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_installed_paired_runtime_tree_reads_the_live_llama_marker(monkeypatch):
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert M.installed_paired_runtime_tree() == "ggml-abc"
+    for empty in (None, "", 7):
+        monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: empty)
+        assert M.installed_paired_runtime_tree() is None
