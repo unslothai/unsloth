@@ -869,6 +869,46 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
+def _strip_images_sentinel(result: str) -> str:
+    """Drop a trailing ``__IMAGES__`` envelope, and only that.
+
+    Validated rather than split on sight, like the two above and like
+    ``studio_tool_loop._carries_image_sentinel``: a tool whose own output quotes
+    the marker would otherwise lose everything after it while the card the user
+    reads still shows the whole result.
+    """
+    head, sep, payload = result.rpartition("\n__IMAGES__:")
+    if not sep:
+        return result
+    try:
+        images = json.loads(payload)
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(images, list) or not images:
+        return result
+    if not all(isinstance(image, str) and image for image in images):
+        return result
+    return head.rstrip()
+
+
+def _strip_rag_sources_sentinel(result: str) -> str:
+    """Drop a trailing ``__RAG_SOURCES__`` source map, and only that.
+
+    The retrieval tools append ``RAG_SOURCES_SENTINEL`` plus a JSON list; a
+    result that merely mentions the marker is text.
+    """
+    head, sep, payload = result.rpartition("\n__RAG_SOURCES__:")
+    if not sep:
+        return result
+    try:
+        sources = json.loads(payload)
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(sources, list):
+        return result
+    return head.rstrip()
+
+
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
@@ -883,9 +923,8 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     result = _strip_mcp_image_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
-    for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
-        if sentinel in result:
-            result = result.split(sentinel, 1)[0].rstrip()
+    result = _strip_images_sentinel(result)
+    result = _strip_rag_sources_sentinel(result)
     return result
 
 

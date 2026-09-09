@@ -3136,7 +3136,7 @@ class TestLoopBehaviour:
         assert "__IMAGES__" in tool_end["result"]
 
     def test_image_sentinel_stripped_with_leading_marker(self):
-        # Sentinel at start (no newline) must not leak to the model.
+        # A call that printed nothing is nothing but the envelope; it must not leak to the model.
         from core.inference import safetensors_agentic as _sa
 
         captured: list[list[dict]] = []
@@ -3153,7 +3153,7 @@ class TestLoopBehaviour:
                 single_turn = fake_single_turn,
                 messages = [{"role": "user", "content": "plot please"}],
                 tools = [{"function": {"name": "python"}}],
-                execute_tool = lambda *_a, **_kw: "__IMAGES__:/tmp/x.png",
+                execute_tool = lambda *_a, **_kw: '\n__IMAGES__:["/tmp/x.png"]',
                 cancel_event = threading.Event(),
                 max_tool_iterations = 3,
                 auto_heal_tool_calls = True,
@@ -3167,7 +3167,7 @@ class TestLoopBehaviour:
             assert "__IMAGES__" not in tm["content"], f"sentinel leaked to model: {tm['content']!r}"
 
     def test_image_sentinel_stripped_with_multiple_markers(self):
-        # Consecutive sentinels: cut at the first, nothing leaks.
+        # Consecutive markers: the trailing envelope goes, a line the tool printed itself stays.
         from core.inference import safetensors_agentic as _sa
 
         captured: list[list[dict]] = []
@@ -3179,7 +3179,7 @@ class TestLoopBehaviour:
             else:
                 yield "done"
 
-        multi = "panel\n__IMAGES__:/tmp/a.png\n__IMAGES__:/tmp/b.png"
+        multi = 'panel\n__IMAGES__:/tmp/a.png\n__IMAGES__:["/tmp/b.png"]'
         events = list(
             _sa.run_safetensors_tool_loop(
                 single_turn = fake_single_turn,
@@ -3194,8 +3194,9 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs
         for tm in tool_msgs:
-            assert "__IMAGES__" not in tm["content"], f"second sentinel leaked: {tm['content']!r}"
-            assert tm["content"] == "panel", f"expected payload-only 'panel', got {tm['content']!r}"
+            assert (
+                tm["content"] == "panel\n__IMAGES__:/tmp/a.png"
+            ), f"expected the printed line kept, got {tm['content']!r}"
 
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(

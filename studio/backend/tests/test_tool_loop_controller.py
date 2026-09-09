@@ -133,9 +133,9 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
     assert decision.tool_start_event()["type"] == "tool_start"
     assert decision.as_assistant_tool_call()["function"]["arguments"] == '{"query":"gpu prices"}'
 
-    completion = controller.record_result(decision, "Search result\n__IMAGES__:{...}")
+    completion = controller.record_result(decision, 'Search result\n__IMAGES__:["a.png"]')
 
-    assert completion.tool_end_payload()["result"] == "Search result\n__IMAGES__:{...}"
+    assert completion.tool_end_payload()["result"] == 'Search result\n__IMAGES__:["a.png"]'
     assert completion.tool_end_event()["type"] == "tool_end"
     assert completion.tool_message() == {
         "role": "tool",
@@ -279,9 +279,30 @@ def test_render_html_success_filters_active_tools_and_repeat_is_internal():
 
 
 def test_strip_result_for_model_removes_frontend_image_sentinel():
-    assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == "text"
-    assert strip_result_for_model("text __IMAGES__:payload") == "text"
+    assert strip_result_for_model('text\n__IMAGES__:["a.png"]') == "text"
     assert strip_result_for_model("plain text") == "plain text"
+
+
+def test_a_result_that_only_quotes_the_image_or_source_marker_is_kept_whole():
+    """Only a structurally valid trailing envelope is stripped, the way
+    `_strip_files_sentinel` and `_strip_mcp_image_suffix` beside it already are."""
+    quoted = 'tools.py:16134:        out += f"\\n__IMAGES__:{_json.dumps(images)}"\nsecond hit\nthird hit'
+    for name in (None, "terminal", "mcp__fs__read"):
+        assert strip_result_for_model(quoted, name) == quoted
+
+    # What `_defuse_sentinels` leaves behind when a program prints the marker itself.
+    defused = "line one\n __IMAGES__:printed by the program\nline three"
+    assert strip_result_for_model(defused, "python") == defused
+
+    sources = 'line one\nRAG_SOURCES_SENTINEL = "\\n__RAG_SOURCES__:"\nline three'
+    assert strip_result_for_model(sources, "rag_search") == sources
+
+    assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == 'text\n__IMAGES__:{"paths":[]}'
+    assert strip_result_for_model('output\n__IMAGES__:["a.png"]', "python") == "output"
+    assert (
+        strip_result_for_model('answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]', "rag_search")
+        == "answer"
+    )
 
 
 def test_the_card_text_keeps_digits_the_browser_would_round():
