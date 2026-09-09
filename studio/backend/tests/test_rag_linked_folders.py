@@ -1816,7 +1816,7 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
         nonlocal retired
         saved_path.write_text("saved", encoding = "utf-8")
         retired = True
-        return str(saved_path), "race.txt"
+        return str(saved_path), "race.txt", "0" * 64
 
     monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(studio_db, "get_chat_project", lambda value: {"id": value})
@@ -1854,7 +1854,7 @@ def test_upload_rechecks_owner_after_saving_file(rag_home, monkeypatch, scope_ty
         nonlocal owner_exists
         saved_path.write_text("saved", encoding = "utf-8")
         owner_exists = False
-        return str(saved_path), saved_path.name
+        return str(saved_path), saved_path.name, "0" * 64
 
     monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(rag_routes.folder_sync, "scope_retired", lambda scope: False)
