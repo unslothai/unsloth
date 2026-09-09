@@ -16,8 +16,10 @@ estimate for a lease that runs up to 25 growing rounds.
 
 import base64
 
+from models.inference import AnthropicMessagesRequest
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    _openai_llama_admission_messages_for_estimate,
     _openai_llama_admission_tokens,
 )
 from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
@@ -360,6 +362,71 @@ class TestMediaIsCharged:
             )
             cost = _openai_llama_admission_tokens(payload, budget = 65536, capacity = 4)
             assert cost > 2000, f"{field} was charged {cost}, i.e. nothing for the media"
+
+
+class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
+    """/v1/messages reserves from the RAW Anthropic request, so its own image block has to
+    be compacted too. #9842 fixed this for /v1/chat/completions and left this surface
+    pricing a screenshot at its base64 length, which clamps the reservation to the whole
+    cache and makes the shared queue serve that one request alone.
+    """
+
+    def _request(self, data: str):
+        return AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": data,
+                            },
+                        },
+                    ],
+                }
+            ],
+        )
+
+    def test_a_big_anthropic_image_costs_what_a_tiny_one_costs(self):
+        # Clear of the clamp, as the image_url cases above are, so the estimator is what
+        # is being compared rather than `min(budget, ...)`.
+        big = _openai_llama_admission_tokens(
+            self._request(_image_b64(1024)), budget = 1_000_000, capacity = 4
+        )
+        tiny = _openai_llama_admission_tokens(
+            self._request("AAAA"), budget = 1_000_000, capacity = 4
+        )
+        assert abs(big - tiny) <= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            f"a 1 MiB Anthropic image was charged {big} against {tiny} for a 4-char one: "
+            "the base64 transport is being priced as prompt text"
+        )
+        assert (
+            big >= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        ), "image bytes must be bounded but still charged"
+
+    def test_a_screenshot_does_not_reserve_the_whole_cache(self):
+        budget = 32768
+        cost = _openai_llama_admission_tokens(
+            self._request(_image_b64(150)), budget = budget, capacity = 4
+        )
+        assert cost < budget, (
+            f"a 150 KiB screenshot was charged {cost} against a {budget}-token cache, so "
+            "the queue admits it alone and every other chat waits"
+        )
+
+    def test_the_estimate_does_not_carry_the_base64(self):
+        data = _image_b64(64)
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+            self._request(data).messages
+        )
+        assert image_parts == 1, "the bounded per-image allowance is keyed on this count"
+        assert data not in str(estimate_messages)
 
 
 class TestTheToolLoopOpensAtAnEqualShare:

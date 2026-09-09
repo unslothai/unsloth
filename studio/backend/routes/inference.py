@@ -1969,11 +1969,19 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
         if isinstance(content, list):
             estimate_content = []
             for part in content:
-                if not isinstance(part, dict) or part.get("type") != "image_url":
+                if not isinstance(part, dict) or part.get("type") not in ("image_url", "image"):
                     estimate_content.append(part)
                     continue
 
                 image_parts += 1
+                if part.get("type") == "image":
+                    source = part.get("source")
+                    compact_source = {"type": "base64", "data": "[image]"}
+                    if isinstance(source, dict) and source.get("media_type") is not None:
+                        compact_source["media_type"] = source["media_type"]
+                    estimate_content.append({"type": "image", "source": compact_source})
+                    continue
+
                 image_url = part.get("image_url")
                 compact_image_url = {"url": "[image]"}
                 if isinstance(image_url, dict) and image_url.get("detail") is not None:
