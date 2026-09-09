@@ -37,6 +37,7 @@ from core import tool_healing as _tool_healing
 # marker forms (<|tool_call>, [TOOL_CALLS], <function=>) are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
 _markerless_blocked_execution = _tool_healing._markerless_blocked_execution
+_markerless_execution_class = _tool_healing._markerless_execution_class
 
 
 # Flip the streaming buffer STREAMING->DRAINING so partial markup never leaks.
@@ -930,7 +931,9 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             continue
         name = _top_level_bare_json_name(probe[:lead])
         values = _top_level_args_values(probe, obj, lead)
-        if _markerless_blocked_execution(name, enabled_tool_names):
+        # Name only, not the enabled gate: a DISABLED execution name must still hide its
+        # body, or a wrapper quoted inside it is reconsidered on its own and promoted.
+        if _markerless_execution_class(name):
             # Only the ARGUMENTS: the scans that decide the call is blocked read the NAME out
             # of this same body. ``arguments`` is accepted as an object or as a JSON string.
             for begin, stop, is_string in values:
@@ -972,7 +975,7 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
                 # where it does and ``<=`` would exclude every one of them.
                 or _strictly_inside(trusted, m.start())
                 or any(head.endswith(prefix) for prefix in _MARKERLESS_TRUSTED_PREFIXES)
-                or not _markerless_blocked_execution(m.group(1), enabled_tool_names)
+                or not _markerless_execution_class(m.group(1))
             ):
                 continue
             # An open body cannot close without a ``}``, which ``find`` settles in C. The walk
@@ -3116,14 +3119,20 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
         i += 1
         while i < n and probe[i] in " \t\r\n":
             i += 1
-        if key == "name":
-            if i < n and probe[i] == '"':
-                try:
-                    value, _consumed = decoder.raw_decode(probe[i:])
-                except (json.JSONDecodeError, ValueError):
-                    return None
-                return value if isinstance(value, str) else None
-            return None
+        if key == "name" and i < n and probe[i] == '"':
+            try:
+                value, consumed = decoder.raw_decode(probe[i:])
+            except (json.JSONDecodeError, ValueError):
+                return None
+            if isinstance(value, str) and value:
+                return value
+            # Falsey ``name``, and a non-string one falls through to the skip below for the
+            # same reason: the authoritative parser reads ``obj.get("name") or
+            # obj.get("function")``, so ``{"name": null, "function": "terminal"}`` is a
+            # terminal call. Returning None here left its body unmasked and the passthrough
+            # healer promoted the wrapper quoted inside it.
+            i += consumed
+            continue
         if key == "function" and function_value is None and i < n and probe[i] == '"':
             # ``"function"`` aliases the call name.
             try:

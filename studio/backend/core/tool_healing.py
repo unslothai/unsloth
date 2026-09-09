@@ -47,13 +47,24 @@ def _markerless_promotable(name, enabled_tool_names) -> bool:
     return enabled_tool_names is None or name in enabled_tool_names
 
 
+def _markerless_execution_class(name) -> bool:
+    """True for an execution-class or MCP name, WITHOUT the enabled gate.
+
+    What a body is allowed to CONTAIN cannot depend on whether the outer tool is offered:
+    with only ``python`` enabled, ``terminal[ARGS]{"c": "<function=python>...</function>"}``
+    had its span skipped as "not blocked", and both parsers then read the quoted wrapper as
+    a real python call. Enabledness governs promotion and chain handling, not opacity."""
+    return isinstance(name, str) and (
+        name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX)
+    )
+
+
 def _markerless_blocked_execution(name, enabled_tool_names) -> bool:
     """True when ``name`` is enabled but the guard declines its bare span. Unlike a disabled
-    name it keeps its place in a chain and its body stays opaque; only promotion is lost."""
-    return (
-        isinstance(name, str)
-        and (name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX))
-        and (enabled_tool_names is None or name in enabled_tool_names)
+    name it keeps its place in a chain; only promotion is lost. For whether the BODY stays
+    opaque, use ``_markerless_execution_class``."""
+    return _markerless_execution_class(name) and (
+        enabled_tool_names is None or name in enabled_tool_names
     )
 
 

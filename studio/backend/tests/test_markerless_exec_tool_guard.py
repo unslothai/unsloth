@@ -1888,3 +1888,34 @@ def test_a_repeated_arguments_key_masks_the_value_json_actually_uses():
     gate = {"terminal", "python"}
     assert light(text, enabled_tool_names = gate) == []
     assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+
+
+def test_a_falsey_name_falls_back_to_the_function_alias_before_masking():
+    """``_parse_llama3_bare_json`` reads ``obj.get("name") or obj.get("function")``, so a null
+    name IS a terminal call. The span scan returned None on the name key instead, left the
+    body visible, and the passthrough healer promoted the wrapper quoted inside it."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    text = ('{"name":null,"function":"terminal","arguments":{"command":'
+            '"<function=python><parameter=code>print(1)</parameter></function>"}}')
+    gate = {"terminal", "python"}
+    assert light(text, enabled_tool_names = gate) == []
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    # A real string name still wins over the alias.
+    both = '{"name":"web_search","function":"terminal","parameters":{"q":"x"}}'
+    assert [c["function"]["name"]
+            for c in parse_tool_calls_from_text(both, enabled_tool_names = {"web_search"})] \
+        == ["web_search"]
+
+
+@pytest.mark.parametrize("gate", [{"python"}, {"python", "terminal"}])
+def test_a_disabled_execution_name_still_hides_its_body(gate):
+    """Enabledness governs promotion, not opacity. With only python enabled the disabled
+    terminal span was skipped as "not blocked" and its quoted wrapper was then read as a
+    real python call by both parsers."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    text = ('terminal[ARGS]{"c":"<function=python><parameter=code>print(1)'
+            '</parameter></function>"}')
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    assert light(text, enabled_tool_names = gate) == []

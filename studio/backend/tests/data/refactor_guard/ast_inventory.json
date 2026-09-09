@@ -1680,6 +1680,9 @@
       "_markerless_blocked_execution": {
         "kind": "assign"
       },
+      "_markerless_execution_class": {
+        "kind": "assign"
+      },
       "_markerless_promotable": {
         "kind": "assign"
       },
@@ -2235,6 +2238,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "name, enabled_tool_names"
+      },
+      "_markerless_execution_class": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name"
       },
       "_markerless_promotable": {
         "decorators": [],
