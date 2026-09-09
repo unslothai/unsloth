@@ -255,6 +255,7 @@ import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
+  incompleteLabel,
   type IncompleteReason,
   readIncompleteInfo,
   resolveIncompleteReason,
@@ -1429,7 +1430,10 @@ function toOpenAIMessages(
   }
 
   if (message.role === "assistant") {
-    return serializeAssistantReplayMessages(message, includeReasoningContent);
+    return fillStoppedAssistantReplay(
+      message,
+      serializeAssistantReplayMessages(message, includeReasoningContent),
+    );
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -1466,6 +1470,39 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
     message.status?.type === "incomplete" ||
     readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null
   );
+}
+
+/** A Stop with no output would otherwise serialise empty, so pruneOutboundHistory would
+ *  drop the user prompt once a later turn follows it (#10428 after #10445). */
+function stoppedAssistantReplayText(message: RunMessage): string {
+  const info = readIncompleteInfo(
+    (message as { metadata?: unknown }).metadata,
+  );
+  return incompleteLabel(info?.reason ?? "cancelled");
+}
+
+function fillStoppedAssistantReplay(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  if (!assistantTurnEndedEarly(message)) {
+    return serialized;
+  }
+  if (serialized.length === 0) {
+    return [{ role: "assistant", content: stoppedAssistantReplayText(message) }];
+  }
+  const [only, ...rest] = serialized;
+  if (rest.length !== 0 || only?.role !== "assistant") {
+    return serialized;
+  }
+  if (
+    hasReplayContent(only.content) ||
+    only.tool_calls ||
+    only.reasoning_content
+  ) {
+    return serialized;
+  }
+  return [{ ...only, content: stoppedAssistantReplayText(message) }];
 }
 
 /** A Stop before the turn produced anything serialises to a lone empty assistant message,

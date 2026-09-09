@@ -58,6 +58,16 @@ test("an abandoned turn is pruned with the user prompt that triggered it", () =>
   );
 });
 
+test("a stopped empty assistant is filled before the prune sees it", () => {
+  assert.match(adapter, /function fillStoppedAssistantReplay\(/);
+  assert.match(
+    adapter,
+    /return fillStoppedAssistantReplay\(\s*message,\s*serializeAssistantReplayMessages\(/,
+  );
+  assert.match(adapter, /function stoppedAssistantReplayText\(/);
+  assert.match(adapter, /incompleteLabel\(info\?\.reason \?\? "cancelled"\)/);
+});
+
 test("a trailing abandoned turn keeps the prompt it followed", () => {
   assert.match(adapter, /if \(refused \|\| index < lastSurviving\) \{/);
 });
