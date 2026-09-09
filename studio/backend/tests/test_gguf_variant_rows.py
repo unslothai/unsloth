@@ -1068,14 +1068,29 @@ def test_the_remote_default_variant_prefers_the_root_checkpoint():
     """pick_best_gguf keeps whichever filename it met first among equals, so a repo with
     model-Q6_K.gguf beside distilled/model-Q6_K.gguf could hand the picker the distilled
     checkpoint as its automatic default -- while a bare repo id means the ROOT checkpoint to
-    _match_variant(None, ...) and to local_model_resolver."""
-    import inspect
+    _match_variant(None, ...) and to local_model_resolver.
 
-    from hub.services.models import gguf_variants as service
+    Asserted on the behaviour rather than on the source text: the candidate helper also has to
+    collapse same-quant ROOT builds now, so a literal source match pinned the old spelling of a
+    rule that has since grown a second half.
+    """
+    from hub.services.models.gguf_variants import _default_variant_candidates
+    from hub.utils.gguf import pick_best_gguf
 
-    source = inspect.getsource(service)
-    assert 'root_rows = [v.filename for v in variants if "/" not in v.quant]' in source
-    assert "pick_best_gguf(_default_variant_candidates(variants))" in source
+    class _Row:
+        def __init__(self, filename):
+            self.filename = filename
+            self.quant = gguf_variant_key(filename)
+
+    for order in (
+        ["model-Q6_K.gguf", "distilled/model-Q6_K.gguf"],
+        ["distilled/model-Q6_K.gguf", "model-Q6_K.gguf"],
+    ):
+        rows = [_Row(f) for f in order]
+        assert pick_best_gguf(_default_variant_candidates(rows)) == "model-Q6_K.gguf"
+    # Nothing at the root falls back to the whole set rather than refusing.
+    only_qualified = [_Row("distilled/model-Q6_K.gguf")]
+    assert _default_variant_candidates(only_qualified) == ["distilled/model-Q6_K.gguf"]
 
 
 def test_the_load_guard_sees_the_alias_the_delete_accepts():

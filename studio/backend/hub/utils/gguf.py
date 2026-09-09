@@ -858,6 +858,11 @@ def accepts_bare_quant_alias(key: str) -> bool:
     return is_qualified_gguf_variant_key(key) and not is_h3_denoiser_variant_key(key)
 
 
+def _forward_slashed(text: Optional[str]) -> str:
+    """A variant spelling with Windows separators folded to the ``/`` a key is minted with."""
+    return (text or "").replace("\\", "/")
+
+
 def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
     """The key among *keys* that *wanted* names, or None when it names zero or several.
 
@@ -865,13 +870,17 @@ def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
     is. Every caller that accepts the legacy bare spelling for a qualified key has to agree on
     this, or a variant downloads under one identity and is looked up, resumed or guarded under
     another. Ambiguity resolves to None so each caller fails closed.
+
+    Separators are normalised on both sides, as ``collapse_same_quant_root_builds`` and
+    ``_main_variant_rank`` already do: a key is always minted with forward slashes, but a request
+    carrying a Windows path did not match its own key.
     """
-    target = (wanted or "").strip().lower()
+    target = _forward_slashed(wanted).strip().lower()
     if not target:
         return None
     by_lower: dict[str, str] = {}
     for key in keys:
-        by_lower.setdefault((key or "").strip().lower(), key)
+        by_lower.setdefault(_forward_slashed(key).strip().lower(), key)
     if target in by_lower:
         return by_lower[target]
     matches = [
@@ -891,8 +900,8 @@ def variant_spellings_may_name_one_build(a: Optional[str], b: Optional[str]) -> 
     :func:`accepts_bare_quant_alias`, so an H3 stem counts too -- since a false match only
     refuses a delete while a false miss unlinks a model that is resident.
     """
-    left = (a or "").strip().lower()
-    right = (b or "").strip().lower()
+    left = _forward_slashed(a).strip().lower()
+    right = _forward_slashed(b).strip().lower()
     if not left or not right:
         return False
     if left == right:
@@ -921,12 +930,14 @@ def collapse_same_quant_root_builds(keys: Iterable[str]) -> list[str]:
     among tagged-only builds fall to the lexicographically first key, which is deterministic and
     is the family the grouped row used to pick.
     """
+    # Materialised once: the input is read twice, and an Iterable may be a one-shot generator.
+    ordered = list(keys)
     groups: dict[str, list[str]] = {}
-    passthrough: list[str] = []
-    for key in keys:
+    passthrough: set[str] = set()
+    for key in ordered:
         token = extract_quant_token(key)
         if token is None or "/" in (key or "").replace("\\", "/"):
-            passthrough.append(key)
+            passthrough.add(key)
             continue
         groups.setdefault(token.lower(), []).append(key)
     winners = []
@@ -939,7 +950,7 @@ def collapse_same_quant_root_builds(keys: Iterable[str]) -> list[str]:
     # Input order is preserved for everything that was not collapsed, so callers that care about
     # listing order see no other change.
     keep = set(winners)
-    return [k for k in keys if k in keep or k in passthrough]
+    return [k for k in ordered if k in keep or k in passthrough]
 
 
 def _is_quant_directory(segment: str) -> bool:

@@ -31,6 +31,7 @@ from hub.utils.hf_cache_state import (
 )
 from hub.utils.gguf import (
     GgufVariantInfo,
+    collapse_same_quant_root_builds,
     extract_quant_label,
     gguf_variant_key,
     iter_hf_cache_snapshots,
@@ -60,6 +61,7 @@ from hub.utils.gguf_plan import (
     GgufVariantPlan as _GgufVariantRequirement,
     build_gguf_variant_plans,
     is_main_gguf_variant_path,
+    plan_for_variant,
     plan_from_expected_files,
 )
 from utils.paths.path_utils import is_appledouble_metadata
@@ -193,12 +195,21 @@ def gguf_variant_requirements(
     variant: str,
     hf_token: Optional[str] = None,
 ) -> Optional[_GgufVariantRequirement]:
+    """The size and hashes the download of *variant* is measured against.
+
+    Looked up through ``plan_for_variant``, not a literal dict get: these ARE the plans the
+    worker fetches, so a spelling the plan lookup accepts has to price and progress here too.
+    A legacy bare pin for a lone tagged build otherwise reported no expected size and no
+    expected files, and the poller fell back to a byte tally that cannot tell this quant's
+    blobs from a sibling's. Ambiguity still refuses, since that is what ``plan_for_variant``
+    decides.
+    """
     key = _variant_hash_cache_key(repo_id, variant, hf_token)
     cached = _variant_requirement_cache_get(key)
     if cached is not None:
         return cached
     requirements = _fetch_gguf_variant_requirements(repo_id, hf_token)
-    return requirements.get(variant.lower())
+    return plan_for_variant(requirements, variant)
 
 
 def _fetch_gguf_variant_requirements(
@@ -1015,9 +1026,17 @@ def _default_variant_candidates(variants) -> list[str]:
     ``_match_variant(None, ...)`` and ``local_model_resolver``, which both define it as the root.
     Every branch of this service (remote, cached, partial-local) has to apply it, or the answer
     depends on which one served the request. Nothing at the root falls back to the whole set.
+
+    Same-quant root builds are collapsed for the same reason and by the same rule the other two
+    resolvers use: a plain build and its tagged sibling tie in the ranking, so without the
+    collapse the winner falls out of listing order, and this service is size-sorted where the
+    remote map is in Hub order. Only the ranking INPUT narrows -- every build stays advertised
+    and individually selectable.
     """
-    root_rows = [v.filename for v in variants if "/" not in v.quant]
-    return root_rows or [v.filename for v in variants]
+    keys = collapse_same_quant_root_builds([v.quant for v in variants])
+    ranked = [v for v in variants if v.quant in set(keys)]
+    root_rows = [v.filename for v in ranked if "/" not in v.quant]
+    return root_rows or [v.filename for v in ranked] or [v.filename for v in variants]
 
 
 async def get_gguf_variants_answer(

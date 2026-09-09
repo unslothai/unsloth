@@ -572,3 +572,136 @@ def test_a_resident_build_is_not_confused_with_the_row_the_resolver_chose():
     assert resolve_variant_alias(inventory, "Q4_K_M") == "Q4_K_M"
     # And with no plain row the bare spelling still reaches the one tagged build.
     assert resolve_variant_alias(["gemma-4-31B_q4_0-it"], "q4_0") == "gemma-4-31B_q4_0-it"
+
+
+def test_an_active_download_blocks_the_delete_that_now_reaches_its_build():
+    """The delete resolves the legacy bare quant onto the qualified key, so the in-flight guard
+    has to accept the same alias.
+
+    ``_variant_keys_to_delete`` unlinks ``model-Q4_K_M-mtp``'s files for a request spelled
+    ``Q4_K_M``. A user who started that download before the split has the job registered under
+    the bare spelling and the picker now offers the qualified row, so the two sides of the guard
+    hold different spellings of ONE build. Comparing them literally let the delete through while
+    the worker was still writing the blobs.
+    """
+    from hub.utils.download_registry import DownloadRegistry
+
+    repo = "org/repo"
+    for job_variant, delete_variant in (
+        ("q4_k_m", "model-q4_k_m-mtp"),
+        ("model-q4_k_m-mtp", "q4_k_m"),
+        ("q4_k_m", "q4_k_m"),
+    ):
+        registry = DownloadRegistry()
+        key = f"{repo}::{job_variant}"
+        claimed, why = registry.claim(
+            key, "http", repo_type = "model", repo_id = repo, variant = job_variant
+        )
+        assert claimed, why
+        assert registry.begin_delete(repo, delete_variant) is False
+        # And the load-side probe sees the job under either spelling.
+        assert registry.has_active_variant(repo, delete_variant) is True
+    # A genuinely different quant still downloads and deletes concurrently.
+    registry = DownloadRegistry()
+    registry.claim(
+        f"{repo}::q4_k_m", "http", repo_type = "model", repo_id = repo, variant = "q4_k_m"
+    )
+    assert registry.begin_delete(repo, "q8_0") is True
+    assert registry.has_active_variant(repo, "q8_0") is False
+
+
+def test_a_whole_snapshot_job_still_blocks_every_variant_delete():
+    """The alias compare must not lose the None cases: a variantless job writes the whole
+    snapshot, so it conflicts with any delete, and a whole-repo delete conflicts with any job."""
+    from hub.utils.download_registry import DownloadRegistry
+
+    repo = "org/repo"
+    registry = DownloadRegistry()
+    registry.claim(repo, "http", repo_type = "model", repo_id = repo)
+    assert registry.begin_delete(repo, "q4_k_m") is False
+    assert registry.has_active_variant(repo, "q4_k_m") is False
+    assert registry.has_active_variant(repo, None) is True
+
+    registry = DownloadRegistry()
+    registry.claim(
+        f"{repo}::q4_k_m", "http", repo_type = "model", repo_id = repo, variant = "q4_k_m"
+    )
+    assert registry.begin_delete(repo, None) is False
+
+
+def test_every_resolver_agrees_what_a_bare_repo_id_means():
+    """The collapse is the ranking input for all three answers to "which build is the default",
+    so the picker service has to apply it too. It is size-sorted where the remote map is in Hub
+    listing order, so without it the two disagree exactly when a repo publishes a plain build
+    beside a tagged one -- and the id would change weights once the repo was downloaded."""
+    from core.inference.openai_auto_download import _match_variant
+    from hub.services.models.gguf_variants import _default_variant_candidates
+    from hub.utils.gguf import pick_best_gguf
+
+    class _Row:
+        def __init__(self, filename):
+            self.filename = filename
+            self.quant = gguf_variant_key(filename)
+            self.size_bytes = 100
+
+    files = ["Hy3-Q4_K_M.gguf", "Hy3-Q4_K_M-mtp.gguf"]
+    for order in (files, files[::-1]):
+        rows = [_Row(f) for f in order]
+        assert pick_best_gguf(_default_variant_candidates(rows)) == "Hy3-Q4_K_M.gguf"
+        assert _match_variant(None, {row.quant: row.size_bytes for row in rows}) == "Q4_K_M"
+
+
+def test_the_collapse_reads_a_one_shot_iterable_once():
+    """It is annotated ``Iterable[str]`` and reads its argument twice, so a generator emptied
+    the result silently -- a default of nothing rather than the wrong build, but only because
+    every caller happens to hand it a list today."""
+    from hub.utils.gguf import collapse_same_quant_root_builds
+
+    keys = ["Q4_K_M", "model-Q4_K_M-mtp"]
+    assert collapse_same_quant_root_builds(key for key in keys) == ["Q4_K_M"]
+    assert collapse_same_quant_root_builds(iter(keys)) == collapse_same_quant_root_builds(keys)
+
+
+def test_a_windows_spelled_request_matches_the_key_it_names():
+    """A key is always minted with forward slashes, but a request can arrive carrying the host's
+    separator. ``collapse_same_quant_root_builds`` and ``_main_variant_rank`` already fold it;
+    the shared resolver and the delete guard have to agree, or one Windows install resolves a
+    directory-qualified pin and another refuses it."""
+    from hub.utils.gguf import resolve_variant_alias, variant_spellings_may_name_one_build
+
+    keys = ["weights/model-Q4_K_M", "Q6_K"]
+    assert resolve_variant_alias(keys, "weights/model-Q4_K_M") == "weights/model-Q4_K_M"
+    assert resolve_variant_alias(keys, "weights\\model-Q4_K_M") == "weights/model-Q4_K_M"
+    # And a listing that itself arrived with backslashes still answers a posix-spelled pin.
+    assert resolve_variant_alias(["weights\\model-Q4_K_M"], "weights/model-Q4_K_M") == (
+        "weights\\model-Q4_K_M"
+    )
+    assert variant_spellings_may_name_one_build("weights\\model-Q6_K", "weights/model-Q6_K")
+
+
+def test_the_requirement_lookup_accepts_what_the_plan_lookup_accepts():
+    """Requirements ARE the plans the worker fetches, so the two lookups have to agree.
+
+    A literal dict get missed the legacy bare spelling of a lone tagged build, so the download
+    reported no expected size and no expected files and the poller fell back to a byte tally
+    over the shared blobs directory -- which cannot tell this quant's bytes from a sibling's.
+    """
+    from hub.services.models.gguf_variants import _build_gguf_variant_requirements
+
+    class _Sibling:
+        def __init__(self, rfilename):
+            self.rfilename = rfilename
+            self.size = 1000
+            self.lfs = None
+
+    requirements = _build_gguf_variant_requirements(
+        [_Sibling(f) for f in ("model-Q4_K_M-mtp.gguf", "model-Q6_K.gguf")]
+    )
+    assert sorted(requirements) == ["model-q4_k_m-mtp", "q6_k"]
+    for pin in ("Q4_K_M", "model-Q4_K_M-mtp"):
+        assert plan_for_variant(requirements, pin) is not None, pin
+    # Two builds at one quant: the bare spelling names neither, here as everywhere else.
+    ambiguous = _build_gguf_variant_requirements(
+        [_Sibling(f) for f in ("m-Q4_K_M-mtp.gguf", "m-Q4_K_M-fp16.gguf")]
+    )
+    assert plan_for_variant(ambiguous, "Q4_K_M") is None
