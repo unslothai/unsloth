@@ -345,10 +345,12 @@ def estimate_kv_bytes(
     gguf_path: Optional[str],
     n_ctx: int,
     cache_type: Optional[str] = None,
+    cache_type_v: Optional[str] = None,
 ) -> Optional[int]:
-    """KV cache for ``n_ctx`` tokens at ``cache_type``, from the GGUF header, or None when
-    the file or the keys cannot be read. SWA layers are charged in full, so the estimate errs
-    high for models that have them."""
+    """KV cache for ``n_ctx`` tokens at ``cache_type``, and ``cache_type_v`` when K and V are
+    configured apart, from the GGUF header, or None when the file or the keys cannot be read.
+    SWA layers are charged in full, so the estimate errs high for models that have them, which
+    is the direction that costs a needless split rather than a node."""
     if not gguf_path or n_ctx <= 0:
         return None
     try:
@@ -379,7 +381,10 @@ def estimate_kv_bytes(
             head_dim = n_embd // n_head
         if not (n_layer and n_kv and head_dim):
             return None
-        return int(2 * n_layer * int(n_ctx) * n_kv * head_dim * kv_bytes_per_elem(cache_type))
+        per_elem = kv_bytes_per_elem(cache_type) + kv_bytes_per_elem(
+            cache_type if cache_type_v is None else cache_type_v
+        )
+        return int(n_layer * int(n_ctx) * n_kv * head_dim * per_elem)
     except Exception:
         return None
 
@@ -1819,8 +1824,13 @@ class SparkServing:
             )
             cache_types = getattr(llama_backend, "_effective_cache_types", None) or ()
             cache_type = cache_types[0] if cache_types else None
+            # K and V are configurable apart. Pricing V as K understates an asymmetric cache by
+            # up to 4x (q4_0 with f32), and understating is the direction that OOMs a node.
+            cache_type_v = cache_types[1] if len(cache_types) > 1 else cache_type
             kv_total = (
-                await asyncio.to_thread(estimate_kv_bytes, gguf_path, n_ctx, cache_type)
+                await asyncio.to_thread(
+                    estimate_kv_bytes, gguf_path, n_ctx, cache_type, cache_type_v
+                )
                 if gguf_path
                 else None
             )

@@ -2079,3 +2079,29 @@ def test_ssh_run_kills_and_reaps_a_timed_out_child(monkeypatch):
     assert rc == 255
     assert killed, "timed-out ssh child was never killed"
     assert waited, "timed-out ssh child was never reaped"
+
+
+def test_estimate_kv_bytes_prices_k_and_v_apart(tmp_path):
+    # K and V are configurable independently. Pricing V as K understates an asymmetric cache,
+    # and understating is the direction that puts a model on a node that cannot hold it.
+    gguf = pytest.importorskip("gguf")
+    path = tmp_path / "tiny.gguf"
+    writer = gguf.GGUFWriter(str(path), "llama")
+    writer.add_block_count(2)
+    writer.add_head_count(4)
+    writer.add_head_count_kv(2)
+    writer.add_embedding_length(64)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+    cells = 2 * 1024 * 2 * 16  # layers x tokens x kv heads x head dim
+    q4, f32 = 18 / 32, 4.0
+
+    # V defaults to K, so the symmetric answer is unchanged.
+    assert ss.estimate_kv_bytes(str(path), 1024, "q4_0") == int(cells * (q4 + q4))
+    # K=q4_0 with V=f32 must be priced on both axes, not as two q4_0.
+    asymmetric = ss.estimate_kv_bytes(str(path), 1024, "q4_0", "f32")
+    assert asymmetric == int(cells * (q4 + f32))
+    assert asymmetric > 4 * ss.estimate_kv_bytes(str(path), 1024, "q4_0")
