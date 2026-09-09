@@ -158,7 +158,9 @@ def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
     return text.lower().startswith("unsloth/")
 
 
-def looks_like_quant(variant: Optional[str], *, allow_root_stem: bool = True) -> bool:
+def looks_like_quant(
+    variant: Optional[str], *, allow_root_stem: bool = False, known_keys = None
+) -> bool:
     """Whether a ``:suffix`` names a GGUF quant rather than a foreign tag.
 
     Neither a namespace nor a colon proves a request was meant for this server
@@ -191,8 +193,17 @@ def looks_like_quant(variant: Optional[str], *, allow_root_stem: bool = True) ->
     # ``8b-instruct-q4_0-fp16`` mints identically -- so admitting it there turns a 404 that should
     # fall through to that provider into a refusal. Every caller that holds the listing, or the
     # loaded model's own identity, still needs the root stem recognised as a real quant.
+    # A root stem is admitted on EVIDENCE, never on shape: ``allow_root_stem`` where the caller
+    # holds the repo's listing and this is a key it minted, or ``known_keys`` where the caller
+    # holds an inventory or the resident model's own identity and the stem is one of them. A
+    # context-free caller gets neither, reads a foreign ``8b-instruct-q4_0-fp16`` as no quant, and
+    # falls through to its inventory checks -- which find a real pin and miss a foreign tag.
+    vouched = allow_root_stem or (
+        known_keys is not None
+        and normalized.strip().lower() in {str(k).replace("\\", "/").strip().lower() for k in known_keys if k}
+    )
     if (
-        allow_root_stem
+        vouched
         and extract_quant_token(normalized) is not None
         and gguf_variant_key(f"{normalized}.gguf") == normalized
     ):
@@ -334,7 +345,7 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
         # per checkpoint, and keying this map on the bare label left every one of those rows a hard miss here: a 404
         # instead of the download.
         quant = gguf_variant_key(name)
-        if not looks_like_quant(quant):
+        if not looks_like_quant(quant, allow_root_stem = True):
             # With no recognized quant token the extractors part ways: this one takes the last hyphenated segment ("7b"
             # of llama-7b) while the plan and worker key the whole stem, so advertising ours dispatches an unresolvable
             # variant.
@@ -920,7 +931,7 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
             # org/repo:Q4_K_M with a 404 and the worker's fallback was never reached. Unambiguous only, for the same
             # reason.
             exact = _bare_quant_alias(wanted, lowered)
-        if exact is not None or looks_like_quant(wanted):
+        if exact is not None or looks_like_quant(wanted, known_keys = variants):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
     # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked against it: preferred_quant

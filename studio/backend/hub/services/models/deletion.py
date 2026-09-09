@@ -328,7 +328,17 @@ def _bare_state_belongs_to_another_build(
     except Exception:
         return True
     if manifest is None:
-        return False
+        # None is "absent" AND "present but unreadable", and a cancel before any manifest was
+        # written leaves only a marker. Either of those is live state for a download this delete
+        # is not removing, so it stays; only a spelling with nothing recorded at all is free.
+        try:
+            recorded = any(
+                str(v).lower() == bare.lower()
+                for v, _p in download_manifest.iter_variant_manifests("model", repo_id, hub_cache = root)
+            ) or download_manifest.has_cancel_marker("model", repo_id, bare, hub_cache = root)
+        except Exception:
+            return True
+        return bool(recorded)
     paths = [getattr(f, "path", "") for f in getattr(manifest, "expected_files", ())]
     main = [p for p in paths if p and _is_main_gguf_filename(p)]
     if not main:

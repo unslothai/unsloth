@@ -8084,8 +8084,10 @@ def _loaded_satisfies(requested: str) -> bool:
         ]
         if not _matches_any(base, candidates):
             return False
-        if not looks_like_quant(variant):
-            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
+        resident_variant = getattr(llama_backend, "hf_variant", None) or ""
+        if not looks_like_quant(variant, known_keys = [resident_variant]):
+            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough. A root
+            # stem counts only when it is the resident build's own identity, not on shape.
             return True
         return _resident_variant_matches(
             base, variant, getattr(llama_backend, "hf_variant", None) or ""
@@ -8687,7 +8689,7 @@ async def _maybe_auto_switch_model(
                 if not _matches_any(
                     requested_base, (target_id, override_id, public_model_id(target_id))
                 ) or (
-                    looks_like_quant(requested_variant)
+                    looks_like_quant(requested_variant, known_keys = [variant] if variant else None)
                     and (not variant or requested_variant.lower() != variant.lower())
                 ):
                     return
@@ -8742,7 +8744,7 @@ async def _maybe_auto_switch_model(
         # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
         # a serving Q8 to load the preferred Q4 for a request either satisfies.
         _, _requested_variant = split_model_ref(requested_model)
-        bare = not looks_like_quant(_requested_variant)
+        bare = not looks_like_quant(_requested_variant, known_keys = [variant] if variant else None)
 
         def _already_serving() -> bool:
             # Match against both the concrete load path and the advertised repo id,

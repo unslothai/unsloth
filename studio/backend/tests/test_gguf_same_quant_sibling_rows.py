@@ -423,9 +423,16 @@ def test_a_foreign_provider_tag_is_not_one_of_our_rows():
     to keep reading a qualified root stem as a real quant."""
     from core.inference.openai_auto_download import looks_like_quant
 
+    # Shape alone never admits a root stem: a foreign tag with text past its quant reads as
+    # no quant at all, and the context-free callers fall through to their inventory checks.
     for tag in ("8b-instruct-q4_0", "8b-instruct-q4_0-fp16", "70b-instruct-q8_0-f16"):
-        assert looks_like_quant(tag, allow_root_stem = False) is False
-    assert looks_like_quant("gemma-4-31B_q4_0-it") is True
+        assert looks_like_quant(tag) is False
+    assert looks_like_quant("gemma-4-31B_q4_0-it") is False
+    # Evidence admits it: a listing the caller minted, or an inventory / resident identity.
+    assert looks_like_quant("gemma-4-31B_q4_0-it", allow_root_stem = True) is True
+    assert looks_like_quant("gemma-4-31B_q4_0-it", known_keys = ["gemma-4-31B_q4_0-it"]) is True
+    assert looks_like_quant("gemma-4-31B_q4_0-it", known_keys = ["Q8_0"]) is False
+    assert looks_like_quant("8b-instruct-q4_0-fp16", known_keys = ["gemma-4-31B_q4_0-it"]) is False
     # Neither the plain nor the path-qualified shape ever depended on the root-stem test.
     for shape in ("Q4_K_M", "distilled/model-Q6_K"):
         assert looks_like_quant(shape) is True
@@ -1436,3 +1443,41 @@ def test_the_reveal_resolves_the_bare_spelling_across_every_revision(tmp_path, m
     plain.unlink()
     repo.revisions = [rev(new, tagged, 2)]
     assert models_module._resolve_cached_model_path("org/repo", "Q4_K_M") == tagged
+
+
+def test_a_bare_manifest_that_exists_but_will_not_parse_keeps_its_state(tmp_path, monkeypatch):
+    """``read_manifest`` answers None for "absent" and for "present but unreadable" alike, and
+    a cancel before any manifest was written leaves only a marker. Treating None as "safe to
+    purge" erased a partial sibling's resume state; only a spelling with NOTHING recorded is free."""
+    from hub.services.models import deletion
+
+    state = {"manifests": [], "marker": False}
+    monkeypatch.setattr(deletion.download_manifest, "read_manifest",
+                        lambda repo_type, repo_id, variant = None, *, hub_cache = None: None)
+    monkeypatch.setattr(deletion.download_manifest, "iter_variant_manifests",
+                        lambda repo_type, repo_id, *, hub_cache = None: iter(state["manifests"]))
+    monkeypatch.setattr(deletion.download_manifest, "has_cancel_marker",
+                        lambda repo_type, repo_id, variant = None, *, hub_cache = None: state["marker"])
+    keep = lambda: deletion._bare_state_belongs_to_another_build("org/repo", "q4_k_m", {"model-q4_k_m-mtp"}, None)
+    assert keep() is False                                  # nothing recorded: free to purge
+    state["manifests"] = [("q4_k_m", tmp_path / "m.json")]  # present but unreadable: keep
+    assert keep() is True
+    state["manifests"] = []
+    state["marker"] = True                                   # cancelled before a manifest: keep
+    assert keep() is True
+
+
+def test_the_progress_scan_matches_main_shards_by_the_resolved_key():
+    """A legacy bare request resolves to a lone tagged build whose files key to the qualified
+    name; matching them against the bare spelling missed every main shard, so a finished
+    download read as absent and the manager retired its state."""
+    from hub.services.models.downloads import _progress_matcher_variant
+    from hub.utils import gguf_plan
+
+    plans = build_gguf_variant_plans([_Sibling("gemma-4-31B_q4_0-it.gguf", 17)])
+    requirement = plan_for_variant(plans, "q4_0")
+    key = _progress_matcher_variant(requirement, "q4_0")
+    assert key == "gemma-4-31B_q4_0-it"
+    assert gguf_plan.is_main_gguf_variant_path("gemma-4-31B_q4_0-it.gguf", key) is True
+    assert gguf_plan.is_main_gguf_variant_path("gemma-4-31B_q4_0-it.gguf", "q4_0") is False
+    assert _progress_matcher_variant(None, "q4_0") == "q4_0"
