@@ -855,3 +855,78 @@ def test_unrelated_conditions_do_not_exhaust_the_budget(blocks):
         + "{% if tools %}{{ tools|tojson }}{% endif %}"
     )
     assert template_supports_tools(template) is True
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3969190325: every feasible macro outcome survives, not just the last scanned.
+        (
+            "{% macro load() %}{% if tools %}{% set ns.catalog=tools %}"
+            "{% else %}{% set ns.catalog=[] %}{% endif %}{% endmacro %}"
+            "{% set ns=namespace(catalog=[]) %}{{ load() }}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% macro noop() %}plain{% endmacro %}"
+            "{{ noop() }}{{ ns.catalog|tojson }}",
+            False,
+        ),
+        # 3969190330: rebinding a root makes its members external again.
+        (
+            "{% set wrapper={'message':{'role':'plain'}} %}{% set wrapper=payload %}"
+            "{% if wrapper.message.role == 'tool' %}{{ wrapper.message.content }}{% endif %}",
+            True,
+        ),
+        (
+            "{% set wrapper={'message':{'role':'plain'}} %}"
+            "{% if wrapper.message.role == 'tool' %}{{ wrapper.message.content }}{% endif %}",
+            False,
+        ),
+        # 3969190339: dict() builds a record just as a literal does.
+        (
+            "{% set wrapper=dict(role='tool', content='plain') %}"
+            "{% if wrapper.role == 'tool' %}{{ wrapper.content }}{% endif %}",
+            False,
+        ),
+        # 3969190349: an update replaces the fields it names.
+        ("{% set d={'catalog':tools} %}{% do d.update({'catalog':[]}) %}{{ d.catalog|tojson }}", False),
+        ("{% set d={'catalog':tools} %}{% do d.update(catalog=[]) %}{{ d.catalog|tojson }}", False),
+        (
+            "{% set d={'catalog':tools,'other':tools} %}{% do d.update({'catalog':[]}) %}"
+            "{{ d.other|tojson }}",
+            True,
+        ),
+        # 3969190360: a literal iterable knows which iteration is first and last.
+        ("{% for x in [1] %}{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}", False),
+        ("{% for x in [1] %}{% if loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}", True),
+        (
+            "{% for x in [1,2] %}{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}",
+            True,
+        ),
+        (
+            "{% for m in messages %}{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}",
+            True,
+        ),
+        # 3969190379: in-place mutators render None, so the argument never reaches output.
+        ("{% set catalog=[] %}{{ catalog.append(tools) }}", False),
+        ("{{ tools.clear() }}", False),
+        ("{% set catalog=[] %}{% do catalog.append(tools) %}{{ catalog|tojson }}", True),
+        # 3969190387: get() selects the field, and its default counts too.
+        ("{% set wrapper={'catalog':tools} %}{{ wrapper.get('catalog')|tojson }}", True),
+        ("{% set wrapper={'label':'x'} %}{{ wrapper.get('label') }}", False),
+        ("{% set wrapper={} %}{{ wrapper.get('x', tools)|tojson }}", True),
+        # 3969190396: iterating a mapping walks its keys, not its values.
+        ("{% for key in {'x': tools} %}{{ key }}{% endfor %}", False),
+        ("{% for v in tools %}{{ v|tojson }}{% endfor %}", True),
+        # 3969190408: an inline loop filter guards the body, as GLM-4-32B spells it.
+        (
+            "{% for message in messages if message.role == 'tool' %}{{ message.content }}"
+            "{% endfor %}",
+            True,
+        ),
+        ("{% for m in messages if m.role != 'system' %}{{ m.content }}{% endfor %}", False),
+    ],
+)
+def test_round_twelve_paths(template, expected):
+    assert template_supports_tools(template) is expected

@@ -21,6 +21,12 @@ class _Generation(Extension):
 _ENVIRONMENT = Environment(extensions = [_Generation, "jinja2.ext.loopcontrols", "jinja2.ext.do"])
 _UNKNOWN = object()
 
+# In-place mutators: `{{ catalog.append(tools) }}` renders "None", so the argument
+# reaches the receiver but never the output.
+_MUTATORS_RETURNING_NONE = frozenset(
+    {"append", "extend", "insert", "update", "add", "clear", "sort", "reverse", "discard"}
+)
+
 
 class _AnalysisLimit(Exception):
     pass
@@ -416,6 +422,21 @@ def _value_aliases(value, state, active):
         # the fallback reads `copy` as a data field and loses everything under it.
         if value.node.attr == "copy" and not value.args and not value.kwargs:
             return _value_aliases(value.node.node, state, active)
+        if value.node.attr == "get" and value.args:
+            member = (
+                value.args[0].value
+                if isinstance(value.args[0], nodes.Const)
+                else _UNKNOWN
+            )
+            result = _select(_value_aliases(value.node.node, state, active), member)
+            # The default is what a missing field falls back to, so it counts too.
+            for fallback in value.args[1:]:
+                result |= _value_aliases(fallback, state, active)
+            return result
+        # append/extend/update and the other in-place mutators return None: the data
+        # goes into the receiver, not into the rendered result.
+        if value.node.attr in _MUTATORS_RETURNING_NONE:
+            return set()
     if isinstance(value, nodes.Call) and isinstance(value.node, nodes.Name):
         if value.node.name in ("namespace", "dict"):
             result = set().union(*(_value_aliases(arg, state, active) for arg in value.args))
@@ -453,12 +474,19 @@ def _value_aliases(value, state, active):
             # leaves the catalog in ns. _export_scope already knows which of a
             # scope's mutations outlive it, and the macro's own parameters were
             # dropped from `assigned` by the scoped copy above.
+            # Different paths through the macro can leave different things in the
+            # namespace. The question this analyser answers is whether the catalog
+            # can reach the output on any feasible path, so the outcomes are unioned
+            # rather than overwritten - otherwise the last child scanned wins.
+            merged = set()
             for child in children:
                 exported = _export_scope(state, child)
-                state.aliases.clear()
-                state.aliases.update(exported.aliases)
+                merged |= exported.aliases
                 state.mutated.update(exported.mutated)
                 state.facts = exported.facts
+            if children:
+                state.aliases.clear()
+                state.aliases.update(merged)
             return {()} if emits else set()
     # Other expressions serialize or transform their inputs.
     return (
@@ -515,7 +543,11 @@ def _bind(
             ]
             state.constructed.update(inherited)
         else:
-            state.constructed.discard(key)
+            # Not just the root: `{% set wrapper = payload %}` makes every member of
+            # the old wrapper external again, so a role check on one has to count.
+            state.constructed.difference_update(
+                [built for built in state.constructed if built[: len(key)] == key]
+            )
     if isinstance(target, nodes.Name):
         if isinstance(value, nodes.Const) and isinstance(value.value, (str, int)):
             state.consts[target.name] = value.value
@@ -551,7 +583,7 @@ def _constructs_object(value):
     return (
         isinstance(value, nodes.Call)
         and isinstance(value.node, nodes.Name)
-        and value.node.name == "namespace"
+        and value.node.name in ("namespace", "dict")
     )
 
 
@@ -582,6 +614,17 @@ def _mutate(call, state, active):
         return
     method = call.node.attr
     positional = {suffix for arg in call.args for suffix in _value_aliases(arg, state, active)}
+    if method == "update":
+        # An update REPLACES the fields it names, so whatever they held before is
+        # gone whether or not the new value carries provenance of its own.
+        overwritten = [keyword.key for keyword in call.kwargs]
+        for argument in call.args:
+            if isinstance(argument, nodes.Dict):
+                overwritten.extend(
+                    pair.key.value for pair in argument.items if isinstance(pair.key, nodes.Const)
+                )
+        for member in overwritten:
+            _replace(state.aliases, (*key, member), set())
     if method == "update" and all(isinstance(arg, nodes.Dict) for arg in call.args):
         # A positional mapping keeps its own keys, exactly as the keyword form below
         # does: d.update({'catalog': tools}) puts the catalog at d.catalog and leaves
@@ -719,21 +762,43 @@ def _scan_loop(node, state, active, guarded, tail):
         for parent in states:
             local = parent.copy(scoped = True)
             if value is None:
+                # `{% for key in {'x': tools} %}` walks the keys, not the values, so
+                # nothing under the mapping reaches the target.
+                over_keys = isinstance(node.iter, nodes.Dict)
                 _bind_paths(
-                    node.target, _select(_value_aliases(node.iter, parent, active), _UNKNOWN), local
+                    node.target,
+                    set()
+                    if over_keys
+                    else _select(_value_aliases(node.iter, parent, active), _UNKNOWN),
+                    local,
                 )
             else:
                 _bind(node.target, value, local, active)
             # `loop.first` reprs the same in every loop, so an outer loop's facts would
             # otherwise prune branches of a nested one.
             _forget(("loop",), local)
+            if literal:
+                # A literal iterable is simulated item by item, so which iteration this
+                # is happens to be known: `{% for x in [1] %}{% if not loop.first %}`
+                # never runs its body.
+                position = values.index(value)
+                for member, truth in (
+                    ("first", position == 0),
+                    ("last", position == len(values) - 1),
+                ):
+                    local.facts[repr(nodes.Getattr(nodes.Name("loop", "load"), member, "load"))] = (
+                        truth,
+                        {"loop"},
+                    )
             candidates = [local] if node.test is None else _assume(node.test, True, local)
             for candidate in candidates:
                 emits, children = _scan(
                     node.body,
                     candidate,
                     active,
-                    guarded or _tool_reference(node.iter, parent),
+                    guarded
+                    or _tool_reference(node.iter, parent)
+                    or (node.test is not None and _positive_test(node.test, candidate)),
                     inner_tail,
                 )
                 if emits:
