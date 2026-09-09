@@ -6529,6 +6529,10 @@ class LlamaCppBackend:
         # offload can take them back out. _fit_load_mode_flags' role, one setting up.
         self._memory_dio_flags: list[str] = []
         self._memory_policy_active: bool = False
+        # What would still mark this launch with the managed flags removed: a scrubbed
+        # env var or a vetoed extra. Recorded so a rung that withdraws the DirectIO pair
+        # can tell a child that is now equal to an unmanaged one from one that is not.
+        self._memory_policy_extras_touched: bool = False
         # False when a launch is fully offloaded to a discrete GPU, where
         # page-locking host RAM is skipped on purpose.
         self._memory_mlock_applicable: bool = True
@@ -8397,6 +8401,12 @@ class LlamaCppBackend:
         if clear_record:
             self._memory_dio_flags = []
         self._memory_dio_applicable = False
+        # The pair may have been this policy's only mark, and a child equal to an
+        # unmanaged one must not be torn down when the toggles go off. The same
+        # recompute the --fit off retry makes when it drops the page-lock; the
+        # _mem_policy_for_cmd snapshot puts `cmd`'s answer back for the rung that
+        # respawns from it.
+        self._memory_policy_active = self._memory_policy_extras_touched
         logger.info("Model Memory: dropping the managed --load-mode dio; %s", reason)
         return stripped
 
@@ -14636,6 +14646,7 @@ class LlamaCppBackend:
         self._memory_dio_applicable = False
         self._memory_dio_flags = []
         self._memory_policy_active = False
+        self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
         self._memory_launch_pending = False
@@ -23608,6 +23619,7 @@ class LlamaCppBackend:
                     extra_args or []
                 )
                 self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
+                self._memory_policy_extras_touched = _mem_policy_touched_extras
                 # What `cmd` itself means, snapshotted before any respawn edits it.
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
                 # and write the policy back; the arch-crash retry (#7624) respawns
@@ -24726,8 +24738,13 @@ class LlamaCppBackend:
                     # with: the record has to describe the argv that started, whichever
                     # of the two changed it, or the reload comparator judges this child
                     # against a mode it does not have.
-                    if self._fit_load_mode_flags or _cpu_pageable_note:
-                        self._record_memory_state(_last_spawn_cmd, env)
+                    #
+                    # Unconditional now, not gated on the two rewrites that used to be the
+                    # only ones: the replay also withdraws the managed DirectIO, which was
+                    # a third way for the record to go stale, and every source of staleness
+                    # here ends up in _last_spawn_cmd anyway. Recording from the argv that
+                    # really started is truthful whether or not anything rewrote it.
+                    self._record_memory_state(_last_spawn_cmd, env)
                     intent = self._apply_cpu_fallback_state(
                         intent,
                         is_vision = fallback_has_mmproj,
@@ -24850,9 +24867,9 @@ class LlamaCppBackend:
                         # `cmd` before anything spawns. The arch-crash rung re-derives it
                         # from `cmd` too, so the _mem_policy_for_cmd snapshot it restores
                         # cannot put the stale pair back. The pageable override rewrites
-                        # the same field, so either one having fired makes the record stale.
-                        if self._fit_load_mode_flags or _replay_pageable_note:
-                            self._record_memory_state(cmd, env)
+                        # the same field, and so does the managed DirectIO withdrawal, so
+                        # the record simply follows the argv that is about to spawn.
+                        self._record_memory_state(cmd, env)
                         # The preflight above priced and, where needed, rewrote the argv
                         # this replay was built FROM; an override settled here is news it
                         # could not have carried. Appended to whatever notice is recorded,
@@ -25617,6 +25634,18 @@ class LlamaCppBackend:
                                         "projector into host RAM the fit credited to VRAM."
                                     )
                                 _cpu_projector_cmd = _stripped_cpu_projector_cmd
+                            # And the managed DirectIO, for the reason the block above
+                            # already gives: those bytes move into host RAM, where dio
+                            # buffers them instead of mapping them. A copy strip, so the
+                            # record stays nameable for the fallbacks below.
+                            _dio_stripped_projector_cmd = self._drop_managed_dio(
+                                _cpu_projector_cmd,
+                                "the CPU-projector retry moves the projector into host RAM",
+                                clear_record = False,
+                            )
+                            if _dio_stripped_projector_cmd != _cpu_projector_cmd:
+                                _cpu_projector_cmd = _dio_stripped_projector_cmd
+                                self._record_memory_state(_cpu_projector_cmd, env)
                             logger.warning(
                                 "llama-server failed while loading this model's GPU "
                                 "vision projector (--mmproj); retrying with the "
@@ -26865,6 +26894,7 @@ class LlamaCppBackend:
             self._memory_dio_applicable = False
             self._memory_dio_flags = []
             self._memory_policy_active = False
+            self._memory_policy_extras_touched = False
             self._memory_mlock_applicable = True
             self._memory_launch_pending = False
             self._vram_fraction_pending = None

@@ -2844,10 +2844,95 @@ class TestTheDioRecordSurvivesACopyStrip:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend._memory_dio_flags = list(_lsa.MANAGED_DIO_FLAGS)
         backend._memory_dio_applicable = True
+        backend._memory_policy_active = True
+        # Nothing else marked this launch, so withdrawing the pair leaves a child
+        # equal to an unmanaged one.
+        backend._memory_policy_extras_touched = False
         cmd = ["--model", "m.gguf", *_lsa.MANAGED_DIO_FLAGS]
         run = backend._drop_managed_dio(list(cmd), "copy", clear_record = False)
         assert run == ["--model", "m.gguf"]
         assert backend._memory_dio_flags == list(_lsa.MANAGED_DIO_FLAGS)
         # ...so the rung that really respawns cmd can still take them out.
+        assert backend._memory_policy_active is False
         assert backend._drop_managed_dio(cmd, "cmd") == ["--model", "m.gguf"]
         assert backend._memory_dio_flags == []
+
+
+class TestEveryRungThatGivesUpTheOffloadWithdrawsTheDio:
+    """Four rungs hand the placement back, and each one has to take the managed
+    pair with it: under dio llama.cpp does not map the file, so whatever it then
+    leaves in host RAM is an allocated buffer instead of a mapping the kernel can
+    page. The fit's own load mode is already withdrawn at all four."""
+
+    @staticmethod
+    def _load_model_source():
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_the_cpu_projector_rung_drops_it(self):
+        src = self._load_model_source()
+        arm = src[: src.index('"-mmproj-cpu"')]
+        arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
+        assert "self._drop_managed_dio(" in arm
+        # A copy strip: the fallbacks below respawn from an argv that still has it.
+        assert "clear_record = False" in arm
+
+    def test_all_four_rungs_are_covered(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        launch = self._load_model_source()
+        replay = inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch)
+        # --fit on retry, arch-crash retry, CPU-projector retry, CPU-fallback replay.
+        assert launch.count("self._drop_managed_dio(") == 3
+        assert replay.count("self._drop_managed_dio(") == 1
+        # Exactly one of them strips `cmd` itself and may forget the tokens.
+        assert launch.count("clear_record = False") == 2
+        assert replay.count("clear_record = False") == 1
+
+
+class TestWithdrawingTheDioClearsPolicyActivity:
+    """The pair can be the policy's ONLY mark. Left set, turning the toggles off
+    demands a reload of an argv identical to an unmanaged launch, which is the
+    same recompute the --fit off retry already makes for the page-lock."""
+
+    @staticmethod
+    def _backend(extras_touched):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._memory_dio_flags = list(_lsa.MANAGED_DIO_FLAGS)
+        b._memory_dio_applicable = True
+        b._memory_policy_active = True
+        b._memory_policy_extras_touched = extras_touched
+        return b
+
+    def test_the_only_mark_leaves_an_unmanaged_child(self):
+        b = self._backend(False)
+        assert b._drop_managed_dio(["-m", "x", *_lsa.MANAGED_DIO_FLAGS], "cpu") == ["-m", "x"]
+        assert b._memory_policy_active is False
+
+    def test_a_scrubbed_var_or_vetoed_extra_keeps_it_active(self):
+        b = self._backend(True)
+        b._drop_managed_dio(["-m", "x", *_lsa.MANAGED_DIO_FLAGS], "cpu")
+        assert b._memory_policy_active is True
+
+    def test_the_launch_records_what_would_still_mark_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "self._memory_policy_extras_touched = _mem_policy_touched_extras" in src
+
+    def test_the_cpu_replay_record_follows_the_spawned_argv(self):
+        """Gating the re-record on the two rewrites that used to be the only ones
+        left the DirectIO withdrawal as a third way for it to go stale."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "if self._fit_load_mode_flags or _cpu_pageable_note:" not in src
+        assert "if self._fit_load_mode_flags or _replay_pageable_note:" not in src
+        assert "self._record_memory_state(_last_spawn_cmd, env)" in src
