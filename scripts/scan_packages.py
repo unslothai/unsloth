@@ -3016,9 +3016,7 @@ def _write_baseline(
         entries.append(entry)
     # Preserve or replace provenance without treating it as an entry.
     provenance = (
-        reviewed_packages
-        if reviewed_packages is not None
-        else source_doc.get("reviewed_packages")
+        reviewed_packages if reviewed_packages is not None else source_doc.get("reviewed_packages")
     )
     doc = {
         "_comment": (
