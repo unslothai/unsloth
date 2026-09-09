@@ -255,8 +255,11 @@ function migrateThroughVersion22(
   if (version >= 22 || state.trainingMethod !== "cpt") return;
   const provenance = state.trainingMethodProvenance;
   if (typeof provenance !== "object" || provenance === null) return;
+  // The same identity test mergeTrainingConfig applies, empty string included:
+  // a baseline the merge is about to drop must not seed the provenance.
   if (
     typeof state.modelDefaultsAppliedFor !== "string" ||
+    state.modelDefaultsAppliedFor.length === 0 ||
     state.modelDefaultsAppliedFor !== state.selectedModel
   ) {
     return;
@@ -274,11 +277,20 @@ function migrateThroughVersion22(
   ) {
     return;
   }
-  Object.assign(provenance, {
-    loraRankBeforeCpt: positiveIntOrNull(loraRank),
-    loraAlphaBeforeCpt: positiveIntOrNull(loraAlpha),
-    loraVariantBeforeCpt: isLoraVariant(loraVariant) ? loraVariant : null,
-  });
+  // Recovery fills the gaps. A record that already carries a usable value keeps
+  // it: a real pre-CPT edit outranks the model defaults the baseline froze.
+  const record = provenance as Record<string, unknown>;
+  if (positiveIntOrNull(record.loraRankBeforeCpt) === null) {
+    record.loraRankBeforeCpt = positiveIntOrNull(loraRank);
+  }
+  if (positiveIntOrNull(record.loraAlphaBeforeCpt) === null) {
+    record.loraAlphaBeforeCpt = positiveIntOrNull(loraAlpha);
+  }
+  if (!isLoraVariant(record.loraVariantBeforeCpt)) {
+    record.loraVariantBeforeCpt = isLoraVariant(loraVariant)
+      ? loraVariant
+      : null;
+  }
 }
 
 function isDatasetFormat(value: unknown): value is DatasetFormat {

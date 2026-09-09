@@ -343,30 +343,46 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const loraParamUnedited = (key: LoraParamKey): boolean =>
               _loraParamEditGenerations[key] ===
               requestedLoraParamEditGenerations[key];
-            const cptProvenanceRefresh =
-              get().trainingMethod === "cpt"
+            const inCpt = get().trainingMethod === "cpt";
+            // The target and LoRA halves are gated separately: the targets
+            // follow _targetModulesEditGeneration because the fallback only
+            // writes them when that generation held, while the LoRA slots
+            // answer to their own per-field generations. Editing the targets
+            // must not strand the previous model's rank, alpha and variant.
+            const cptTargetProvenanceRefresh =
+              inCpt && modelDefaultsPatch.targetModules !== undefined
                 ? {
-                    ...(modelDefaultsPatch.targetModules !== undefined
-                      ? {
-                          targetModulesBeforeCpt: [
-                            ...modelDefaultsPatch.targetModules,
-                          ],
-                        }
-                      : {}),
-                    ...(loraParamUnedited("loraRank") &&
-                    modelDefaultsPatch.loraRank !== undefined
-                      ? { loraRankBeforeCpt: modelDefaultsPatch.loraRank }
-                      : {}),
-                    ...(loraParamUnedited("loraAlpha") &&
-                    modelDefaultsPatch.loraAlpha !== undefined
-                      ? { loraAlphaBeforeCpt: modelDefaultsPatch.loraAlpha }
-                      : {}),
-                    ...(loraParamUnedited("loraVariant") &&
-                    modelDefaultsPatch.loraVariant !== undefined
-                      ? { loraVariantBeforeCpt: modelDefaultsPatch.loraVariant }
-                      : {}),
+                    targetModulesBeforeCpt: [
+                      ...modelDefaultsPatch.targetModules,
+                    ],
                   }
                 : {};
+            const cptLoraProvenanceRefresh = inCpt
+              ? {
+                  ...(loraParamUnedited("loraRank") &&
+                  modelDefaultsPatch.loraRank !== undefined
+                    ? { loraRankBeforeCpt: modelDefaultsPatch.loraRank }
+                    : {}),
+                  ...(loraParamUnedited("loraAlpha") &&
+                  modelDefaultsPatch.loraAlpha !== undefined
+                    ? { loraAlphaBeforeCpt: modelDefaultsPatch.loraAlpha }
+                    : {}),
+                  ...(loraParamUnedited("loraVariant") &&
+                  modelDefaultsPatch.loraVariant !== undefined
+                    ? { loraVariantBeforeCpt: modelDefaultsPatch.loraVariant }
+                    : {}),
+                }
+              : {};
+            const cptProvenanceRefresh = {
+              ...cptTargetProvenanceRefresh,
+              ...cptLoraProvenanceRefresh,
+            };
+            const cptFallbackProvenanceRefresh = {
+              ...(shouldApplyCptTargetDefaults
+                ? cptTargetProvenanceRefresh
+                : {}),
+              ...(applyTrainingDefaults ? cptLoraProvenanceRefresh : {}),
+            };
 
             set({
               ...patch,
@@ -382,12 +398,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...cptProvenanceRefresh,
                     },
                   }
-                : shouldApplyCptTargetDefaults &&
-                    Object.keys(cptProvenanceRefresh).length > 0
+                : Object.keys(cptFallbackProvenanceRefresh).length > 0
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
-                        ...cptProvenanceRefresh,
+                        ...cptFallbackProvenanceRefresh,
                       },
                     }
                   : {}),

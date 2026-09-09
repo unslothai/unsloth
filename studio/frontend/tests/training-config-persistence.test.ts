@@ -335,6 +335,67 @@ test("a baseline captured inside CPT is not mistaken for pre-CPT params", () => 
   assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, undefined);
 });
 
+test("an empty model identifier is not treated as a baseline match", () => {
+  const persisted = {
+    selectedModel: "",
+    modelDefaultsAppliedFor: "",
+    trainingMethod: "cpt",
+    advancedSettingsBaseline: {
+      loraRank: 8,
+      loraAlpha: 8,
+      loraVariant: "lora",
+    },
+    trainingMethodProvenance: {
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: null,
+      datasetFormatBeforeCpt: null,
+      targetModulesBeforeCpt: null,
+    },
+  };
+  const migrated = migrateTrainingConfig(persisted, 21);
+
+  // mergeTrainingConfig drops a baseline with an empty identifier, so the
+  // migration must not have copied it into the provenance first.
+  assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, undefined);
+  const merged = mergeTrainingConfig(
+    migrated,
+    initialTrainingConfigState as never,
+  );
+  assert.equal(merged.advancedSettingsBaseline, null);
+  assert.equal(merged.trainingMethodProvenance.loraRankBeforeCpt, null);
+});
+
+test("recovery does not overwrite a pre-CPT value the record already has", () => {
+  const migrated = migrateTrainingConfig(
+    {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
+      trainingMethod: "cpt",
+      advancedSettingsBaseline: {
+        loraRank: 8,
+        loraAlpha: 8,
+        loraVariant: "lora",
+      },
+      trainingMethodProvenance: {
+        learningRateManuallySet: false,
+        modelAdapterLearningRate: null,
+        datasetFormatBeforeCpt: null,
+        targetModulesBeforeCpt: null,
+        loraRankBeforeCpt: 48,
+        loraAlphaBeforeCpt: 0,
+        loraVariantBeforeCpt: "loftq",
+      },
+    },
+    21,
+  );
+
+  // A tuned value outranks the model defaults the baseline froze; only the
+  // slots that hold nothing usable are filled in.
+  assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, 48);
+  assert.equal(migrated.trainingMethodProvenance.loraAlphaBeforeCpt, 8);
+  assert.equal(migrated.trainingMethodProvenance.loraVariantBeforeCpt, "loftq");
+});
+
 test("a baseline left over from another model is not used as pre-CPT params", () => {
   const migrated = migrateTrainingConfig(
     {

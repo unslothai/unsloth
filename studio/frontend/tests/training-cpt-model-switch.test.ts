@@ -489,3 +489,76 @@ test("editing one LoRA field does not freeze the other two on a model switch", a
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
 });
+
+test("a target-modules edit does not strand the previous model adapter params", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() =>
+    Promise.resolve(
+      Response.json({
+        id: "old/llama",
+        config: {
+          lora: {
+            lora_r: 8,
+            lora_alpha: 8,
+            target_modules: [...LLAMA_TARGETS],
+          },
+        },
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    ),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
+  await waitForModelDefaults("old/llama");
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+
+  let resolveModelConfig!: (response: Response) => void;
+  setAuthFetchHandler(
+    () =>
+      new Promise<Response>((resolve) => {
+        resolveModelConfig = resolve;
+      }),
+  );
+  useTrainingConfigStore
+    .getState()
+    .selectTrainingModel("LiquidAI/LFM2-1.2B", "text");
+  useTrainingConfigStore
+    .getState()
+    .setTargetModules([...LLAMA_TARGETS, "embed_tokens"]);
+  resolveModelConfig(
+    Response.json({
+      id: "LiquidAI/LFM2-1.2B",
+      config: {
+        lora: {
+          lora_r: 64,
+          lora_alpha: 128,
+          use_dora: true,
+          target_modules: ["all-linear"],
+        },
+      },
+      is_vision: false,
+      is_embedding: false,
+      is_audio: false,
+      audio_type_known: true,
+      is_lora: false,
+      model_type: "text",
+      model_size_bytes: null,
+      max_position_embeddings: 32768,
+    }),
+  );
+  await waitForModelDefaults("LiquidAI/LFM2-1.2B");
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  const state = useTrainingConfigStore.getState();
+  // The target edit is the user's, but the three LoRA fields were untouched,
+  // so they must follow the new model rather than stay on the old one.
+  assert.equal(state.loraRank, 64);
+  assert.equal(state.loraAlpha, 128);
+  assert.equal(state.loraVariant, "dora");
+});
