@@ -106,11 +106,7 @@ def _as_const(node, state):
     """The literal a node is known to be, either written out or bound to a name."""
     if isinstance(node, nodes.Const):
         return node
-    if (
-        state is not None
-        and isinstance(node, nodes.Name)
-        and node.name in state.consts
-    ):
+    if state is not None and isinstance(node, nodes.Name) and node.name in state.consts:
         return nodes.Const(state.consts[node.name])
     return None
 
@@ -131,10 +127,7 @@ def _constant_truth(node, state = None):
         if folded is not None and all(operand is not None for operand in operands):
             replacement = nodes.Compare(
                 folded,
-                [
-                    nodes.Operand(operand.op, value)
-                    for operand, value in zip(node.ops, operands)
-                ],
+                [nodes.Operand(operand.op, value) for operand, value in zip(node.ops, operands)],
             )
             try:
                 # The rebuilt node is synthetic, so it carries no environment of its
@@ -219,9 +212,7 @@ def _collapse(states, live):
     for state in states:
         if state.facts:
             state.facts = {
-                expression: fact
-                for expression, fact in state.facts.items()
-                if fact[1] & live
+                expression: fact for expression, fact in state.facts.items() if fact[1] & live
             }
         seen.setdefault(_signature(state), state)
     return list(seen.values()) if len(seen) < len(states) else states
@@ -456,9 +447,7 @@ def _value_aliases(value, state, active):
                     source = state if parameter.name in arguments else local.copy(),
                 )
             # The macro's own names stay live: nothing outside it constrains its body.
-            emits, children = _scan(
-                macro.body, local, active | {macro.name}, tail = _names(macro)
-            )
+            emits, children = _scan(macro.body, local, active | {macro.name}, tail = _names(macro))
             # A namespace write inside a macro escapes it, so the caller sees it:
             # {% macro load() %}{% set ns.catalog = tools %}{% endmacro %}{{ load() }}
             # leaves the catalog in ns. _export_scope already knows which of a
