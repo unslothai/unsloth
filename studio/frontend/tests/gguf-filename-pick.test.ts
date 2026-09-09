@@ -115,3 +115,33 @@ test("a bit-width modifier is part of the token, not a tag past it", () => {
   };
   assert.equal(pickGgufFilename([bpw], "IQ4_XS"), null);
 });
+
+test("a label that is only the start of the tagged build's token names nothing", () => {
+  assert.equal(pickGgufFilename([TAGGED], "Q4_K"), null);
+  const ud = {
+    filename: "model-UD-Q4_K_XL-mtp.gguf",
+    quant: "model-UD-Q4_K_XL-mtp",
+    downloaded: true,
+  };
+  assert.equal(pickGgufFilename([ud], "Q4_K_XL"), null);
+  assert.equal(pickGgufFilename([ud], "UD-Q4_K_XL"), ud.filename);
+});
+
+test("an H3 denoiser partition never answers to its bare quant", () => {
+  const fl2va = {
+    filename: "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf",
+    quant: "minimax_h3_fl2va_pruned-UD-Q2_K_XL",
+    downloaded: true,
+  };
+  assert.equal(pickGgufFilename([fl2va], "UD-Q2_K_XL"), null);
+});
+
+test("a build keyed by its parent directory answers to that directory's token", () => {
+  const nested = {
+    filename: "Q6_K/model-3.5bpw.gguf",
+    quant: "Q6_K/model-3.5bpw",
+    downloaded: true,
+  };
+  assert.equal(pickGgufFilename([nested], "Q6_K-3.5bpw"), nested.filename);
+  assert.equal(pickGgufFilename([nested], "Q6_K"), null);
+});

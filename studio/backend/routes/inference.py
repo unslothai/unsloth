@@ -8086,9 +8086,19 @@ def _loaded_satisfies(requested: str) -> bool:
     active = getattr(backend, "active_model_name", None)
     if not active:
         return False
-    # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
+    # Only llama.cpp carries a quant identity, so this backend can only match on the repo. A
+    # root stem (``model-Q4_K_M-mtp``) is a GGUF request too when the local index says so.
     if looks_like_quant(variant):
         return False
+    if variant and looks_like_quant(variant, allow_root_stem = True):
+        try:
+            from core.inference.local_model_resolver import resolve_local_gguf
+
+            hit = resolve_local_gguf(f"{base}:{variant}", allow_scan = False)
+        except Exception:
+            hit = None
+        if hit and len(hit) > 1 and hit[1]:
+            return False
     # The alias too: auto-switch records the repo id there, not in active_model_name.
     return _matches_any(
         base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]

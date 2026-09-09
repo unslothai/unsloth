@@ -17,17 +17,64 @@ function asName(value: unknown): string | null {
 export const isGgufName = (value: string): boolean =>
   value.toLowerCase().endsWith(".gguf");
 
-const escapeRegex = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// The backend's `_GGUF_QUANT_RE`, `_select_quant_match` and `_H3_DENOISER_PARTITIONS`, so the
+// token a qualified key answers to is derived the way the lister derived the key.
+const QUANT_RE =
+  /(UD-)?(MXFP\d+(?:_[A-Z0-9]+)*|IQ\d+_[A-Z]+(?:_[A-Z0-9]+)?|TQ\d+_\d+|Q\d+_K_[A-Z]+|Q\d+_\d+|Q\d+_K|BF16|F16|F32)/gi;
+const BPW_RE = /^-\d+(?:\.\d+)?bpw/i;
+const BPW_TRAILING_RE = /-\d+(?:\.\d+)?bpw(?=\.[A-Za-z0-9]+$|$)/i;
+const SPLIT_SUFFIX_RE = /-\d{3,}-of-\d{3,}/i;
+const FLOAT_PRECISION = new Set(["BF16", "F16", "F32"]);
+const H3_DENOISER_PARTITIONS = ["minimax_h3_fl2va", "minimax_h3_ref2va"];
 
-/** Whether `quant` is a qualified key whose bare quant token is `label`: the token delimited on
- *  both sides, and not the start of a bit-width modifier (`IQ4_XS-3.53bpw` is its own token). */
-const bareLabelOf = (quant: string, label: string): boolean =>
-  quant.toLowerCase() !== label.toLowerCase() &&
-  new RegExp(
-    `(^|[-_./])${escapeRegex(label)}(?!-\\d+(?:\\.\\d+)?bpw)([-_./]|$)`,
-    "i",
-  ).test(quant);
+function selectQuantMatch(text: string): RegExpExecArray | null {
+  let fallback: RegExpExecArray | null = null;
+  for (const match of text.matchAll(QUANT_RE)) {
+    if (FLOAT_PRECISION.has(match[2].toUpperCase())) {
+      fallback ??= match;
+      continue;
+    }
+    return match;
+  }
+  return fallback;
+}
+
+/** The complete quant token a qualified key carries, bit-width modifier included: the basename
+ *  decides, then parent directories nearest first. Null when nothing in the key names a quant. */
+function quantTokenOf(key: string): string | null {
+  const parts = key.replace(/\\/g, "/").split("/");
+  const stem = (parts.pop() ?? "").replace(SPLIT_SUFFIX_RE, "").trim();
+  for (const text of [stem, ...parts.reverse()]) {
+    const match = selectQuantMatch(text);
+    if (!match) {
+      continue;
+    }
+    const token = `${match[1] ?? ""}${match[2]}`;
+    const adjacent = BPW_RE.exec(text.slice(match.index + match[0].length));
+    if (adjacent) {
+      return `${token}${adjacent[0]}`;
+    }
+    // Named by a parent directory, the modifier may end the basename instead.
+    const trailing = text === stem ? null : BPW_TRAILING_RE.exec(stem);
+    return trailing ? `${token}${trailing[0]}` : token;
+  }
+  return null;
+}
+
+/** Whether `quant` is a qualified key whose complete bare quant token is `label`. `Q4_K` is not
+ *  the token of `model-Q4_K_M-mtp`, and an H3 denoiser partition never answers to its bare quant
+ *  (the backend's `accepts_bare_quant_alias`), since that spelling picks the wrong checkpoint. */
+const bareLabelOf = (quant: string, label: string): boolean => {
+  if (quant.toLowerCase() === label.toLowerCase()) {
+    return false;
+  }
+  const basename =
+    quant.replace(/\\/g, "/").split("/").pop()?.toLowerCase() ?? "";
+  if (H3_DENOISER_PARTITIONS.some((p) => basename.startsWith(p))) {
+    return false;
+  }
+  return quantTokenOf(quant)?.toLowerCase() === label.toLowerCase();
+};
 
 /** The .gguf to load, given the listing and what the pick carried: a filename, a quant label, or nothing. A load needs a real
  *  filename and a label is not one. Null when the repo is ambiguous, so the caller keeps its prompt. */

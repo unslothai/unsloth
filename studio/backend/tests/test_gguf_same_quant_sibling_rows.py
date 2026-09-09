@@ -1525,6 +1525,41 @@ def test_a_request_for_the_other_root_build_is_not_satisfied_by_the_resident(mon
     assert inf._loaded_satisfies("org/repo:latest") is True
 
 
+def test_a_non_gguf_resident_does_not_satisfy_a_request_for_a_tagged_gguf_build(monkeypatch):
+    """With the transformers backend serving ``org/repo``, ``org/repo:model-Q4_K_M-mtp`` read as
+    a foreign tag on the non-llama branch and the repo match alone declared it satisfied. The
+    same index lookup the llama branch makes applies: a spelling the index resolves to a GGUF
+    build is a GGUF request, and no non-GGUF resident answers it."""
+    import types
+
+    import routes.inference as inf
+    from core.inference import local_model_resolver
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: types.SimpleNamespace(is_loaded = False))
+    backend = types.SimpleNamespace(active_model_name = "org/repo", _openai_advertised_id = None)
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inf, "public_model_id", lambda name: name)
+    index = {"model-q4_k_m-mtp": "model-Q4_K_M-mtp"}
+    asked = []
+
+    def resolve(requested, **kw):
+        asked.append((requested, kw.get("allow_scan")))
+        v = requested.split(":", 1)[1].lower() if ":" in requested else ""
+        return ("/p", index[v], "org/repo") if v in index else None
+
+    monkeypatch.setattr(local_model_resolver, "resolve_local_gguf", resolve)
+    assert inf._loaded_satisfies("org/repo:model-Q4_K_M-mtp") is False
+    assert asked == [("org/repo:model-Q4_K_M-mtp", False)]
+    assert inf._loaded_satisfies("org/repo:Q4_K_M") is False
+    # A tag the index does not know, or a bare repo, still means the resident repo.
+    assert inf._loaded_satisfies("org/repo:latest") is True
+    assert inf._loaded_satisfies("org/repo") is True
+    # A path-shaped or tag-shaped spelling never earns the index lookup.
+    asked.clear()
+    assert inf._loaded_satisfies("org/repo:8b") is True
+    assert asked == []
+
+
 def test_cached_load_candidates_resolve_the_spelling_across_every_snapshot(tmp_path, monkeypatch):
     """A newer revision holding only the tagged build looked unambiguous on its own and was
     loaded for a spelling the plain build in an older revision owns; two tagged revisions each
