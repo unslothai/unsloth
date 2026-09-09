@@ -182,6 +182,21 @@ def _stable_hash(text: str) -> int:
     return int.from_bytes(hashlib.blake2b(text.encode("utf-8"), digest_size = 8).digest(), "big")
 
 
+def _join_to_limit(parts: Any) -> str:
+    """``" ".join(parts)[:PREFIX_KEY_CHARS]`` without building the join first. An embeddings
+    request carries its whole batch in ``input``, so the eager form copies megabytes per request
+    to keep a kilobyte. Byte-identical output; it just stops once the limit is reached."""
+    out: List[str] = []
+    total = 0
+    for part in parts:
+        text = str(part)
+        out.append(text)
+        total += len(text) + (1 if len(out) > 1 else 0)
+        if total >= PREFIX_KEY_CHARS:
+            break
+    return " ".join(out)[:PREFIX_KEY_CHARS]
+
+
 def _prompt_prefix(body: Dict[str, Any]) -> str:
     """System prompt plus the first user turn, truncated so a huge first message does not cost
     a hash of megabytes."""
@@ -211,14 +226,14 @@ def _prompt_prefix(body: Dict[str, Any]) -> str:
         return "\n".join(parts)[:PREFIX_KEY_CHARS]
     prompt = body.get("prompt")
     if isinstance(prompt, list):
-        prompt = " ".join(str(p) for p in prompt)
+        prompt = _join_to_limit(prompt)
     if isinstance(prompt, str):
         return prompt[:PREFIX_KEY_CHARS]
     inp = body.get("input")
     if isinstance(inp, str):
         return inp[:PREFIX_KEY_CHARS]
     if isinstance(inp, list):
-        return " ".join(str(p) for p in inp)[:PREFIX_KEY_CHARS]
+        return _join_to_limit(inp)
     return ""
 
 
@@ -229,7 +244,18 @@ def conversation_key(headers: Dict[str, str], body: Optional[Dict[str, Any]]) ->
         return header
     if not isinstance(body, dict):
         return None
-    for name in (CONVERSATION_FIELD, "conversation_id", "thread_id", "session_id", "user"):
+    # NOT "user": that is OpenAI's stable per-END-USER abuse identifier (now safety_identifier),
+    # so keying on it collapses every conversation a person has onto one backend, which on a
+    # single-user Studio session pins all traffic to one node. Conversation continuity is
+    # previous_response_id / conversation in that API.
+    for name in (
+        CONVERSATION_FIELD,
+        "conversation_id",
+        "thread_id",
+        "session_id",
+        "previous_response_id",
+        "conversation",
+    ):
         value = body.get(name)
         if isinstance(value, (str, int)) and str(value).strip():
             return f"{name}:{value}"

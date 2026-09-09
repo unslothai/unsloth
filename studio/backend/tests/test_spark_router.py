@@ -23,6 +23,7 @@ from core.inference.spark_router import (
     UpstreamUnreachable,
     conversation_key,
 )
+from core.inference import spark_router as sr
 from .spark_fake_llama import FakeLlama, sse_contents
 
 
@@ -402,3 +403,34 @@ def test_a_freed_slot_goes_to_the_queued_request_not_a_newcomer():
             await a.stop()
 
     run(scenario())
+
+
+def test_openai_end_user_id_is_not_a_conversation_key():
+    # "user" is OpenAI's stable per-end-user abuse identifier, superseded by safety_identifier,
+    # not a thread id. Keying on it collapses every conversation a person has onto one backend,
+    # which on a single-user Studio session pins all traffic to one node and defeats replicas.
+    a = {"user": "u-1", "messages": [{"role": "user", "content": "first topic"}]}
+    b = {"user": "u-1", "messages": [{"role": "user", "content": "unrelated topic"}]}
+    ka = sr.conversation_key({}, a)
+    kb = sr.conversation_key({}, b)
+    assert ka != kb, "two conversations from one end user collapsed onto one routing key"
+
+    # A real conversation id still pins, and still wins over the prompt hash.
+    c = {"conversation_id": "c-9", "messages": [{"role": "user", "content": "x"}]}
+    d = {"conversation_id": "c-9", "messages": [{"role": "user", "content": "y"}]}
+    assert sr.conversation_key({}, c) == sr.conversation_key({}, d) == "conversation_id:c-9"
+
+    # previous_response_id is what the Responses API uses for continuity.
+    e = {"previous_response_id": "resp-1", "messages": [{"role": "user", "content": "z"}]}
+    assert sr.conversation_key({}, e) == "previous_response_id:resp-1"
+
+
+def test_prefix_key_does_not_join_the_whole_embedding_batch():
+    # Byte-identical to the eager join, without copying the batch to keep a kilobyte.
+    batch = [f"row-{i}-" + "x" * 200 for i in range(5000)]
+    eager = " ".join(batch)[: sr.PREFIX_KEY_CHARS]
+    assert sr._join_to_limit(batch) == eager
+    assert sr._prompt_prefix({"input": batch}) == eager
+    # and the single-element and empty cases
+    assert sr._join_to_limit(["a", "b"]) == "a b"
+    assert sr._join_to_limit([]) == ""
