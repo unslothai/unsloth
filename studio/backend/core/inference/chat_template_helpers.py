@@ -3380,6 +3380,31 @@ def apply_chat_template_for_generation(
         raise
 
 
+# Windows loader errors that mean the image was refused rather than missing: 577
+# ERROR_INVALID_IMAGE_HASH is Smart App Control and App Control for Business, 225
+# ERROR_VIRUS_INFECTED is an antivirus blocking on access, 1260 is AppLocker or SRP.
+_BLOCKED_IMAGE_WINERRORS = frozenset({225, 577, 1260})
+
+
+def _looks_like_a_blocked_import(exc: BaseException | None) -> bool:
+    """Whether an exception is a native module that would not load.
+
+    The winerror is checked first because it is unambiguous; the text match is the
+    fallback for a wrapper that re-raises without one, which is what a tokenizer class
+    raising ImportError from its own backend guard looks like. The chain is walked
+    because transformers wraps the original.
+    """
+    while exc is not None:
+        if getattr(exc, "winerror", None) in _BLOCKED_IMAGE_WINERRORS:
+            return True
+        if isinstance(exc, ImportError):
+            text = str(exc).lower()
+            if "dll load failed" in text or "sentencepiece" in text:
+                return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def resolve_native_chat_template(
     model_info: dict,
     active_model_name,
@@ -3411,7 +3436,25 @@ def resolve_native_chat_template(
         )
         native_tpl = nt.chat_template or False
     except Exception as exc:
-        logger.warning("Could not load native chat template for '%s': %s", template_source, exc)
+        # A tokenizer that will not build is not always a network problem. Smart App
+        # Control blocks sentencepiece's compiled extension by reputation, and the
+        # import error that follows arrived here as one warning among many while the
+        # model went on generating under a substituted template: wrong prompt
+        # formatting, and nothing naming the cause. Named at error level instead, since
+        # nothing downstream can recover from it and the user can act on it.
+        if _looks_like_a_blocked_import(exc):
+            logger.error(
+                "Could not load the native chat template for '%s' because a Python "
+                "extension would not load: %s. Prompt formatting falls back to a "
+                "generic template until this is resolved. If Windows blocked the file "
+                "(Smart App Control or antivirus), allow it and restart.",
+                template_source,
+                exc,
+            )
+        else:
+            logger.warning(
+                "Could not load native chat template for '%s': %s", template_source, exc
+            )
         # A failed fetch is not "no template": leave the sentinel unset so the next call
         # retries (caching False would pin the tool-dropping override).
         return None

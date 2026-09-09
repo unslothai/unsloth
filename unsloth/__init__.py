@@ -1587,3 +1587,14 @@ try:
     del _fix_dill
 except Exception:
     pass
+
+# Smart App Control blocks _sentencepiece.cp313-win_amd64.pyd by reputation, while
+# transformers decides sentencepiece is available from find_spec and metadata alone, so
+# every path gated on that flag walks into a loader error. See
+# import_fixes.disable_sentencepiece_if_blocked; a no-op off Windows.
+try:
+    from .import_fixes import disable_sentencepiece_if_blocked as _guard_sentencepiece
+    _guard_sentencepiece()
+    del _guard_sentencepiece
+except Exception:
+    pass

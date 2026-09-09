@@ -6054,3 +6054,150 @@ def fix_dill_module_by_value_pickling():
             "site-packages tree."
         )
     return True
+
+
+# Windows loader errors that mean "this image was refused", not "this file is broken".
+# 577 ERROR_INVALID_IMAGE_HASH is what Smart App Control and App Control for Business
+# raise, 225 ERROR_VIRUS_INFECTED is what an antivirus blocking on access raises, and
+# 1260 ERROR_ACCESS_DISABLED_BY_POLICY is AppLocker or SRP. They are separated from the
+# rest only so the message can name a cause the user can act on; every failure to load
+# the extension is handled the same way.
+_BLOCKED_IMAGE_WINERRORS = frozenset({225, 577, 1260})
+
+_SENTENCEPIECE_GUARD_RESULT = None
+
+
+def smart_app_control_state():
+    """Smart App Control's state: 0 off, 1 enforced, 2 evaluation, or None if unknown.
+
+    Read from HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy, which a standard
+    user can already read, so this needs no elevation and prompts for nothing.
+    Win32_DeviceGuard answers a related question and does require admin, which is why
+    it is not used here.
+
+    None covers every "cannot say": not Windows, no winreg, the value absent because
+    the build never configured SAC, or the read denied. Callers must treat None as
+    unknown rather than off, and none of them decides anything on this value alone.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\CI\Policy",
+            0,
+            winreg.KEY_READ,
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "VerifiedAndReputablePolicyState")
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def sentencepiece_import_error():
+    """The exception importing sentencepiece raises here, or None when it imports.
+
+    Windows only, and only when the package is installed: everywhere else the answer
+    is already right, and paying an import to confirm it would slow every session on
+    the platforms nobody reported this from.
+
+    The import is the only authoritative test. Smart App Control blocks a file by
+    reputation, so it can refuse this one extension on a machine where SAC is on and
+    everything else loads, and it can be off while an antivirus refuses the same file.
+    Reading the SAC state and disabling sentencepiece on that alone would take the
+    tokenizer away from the large majority of SAC users whose extension loads fine.
+    """
+    if sys.platform != "win32":
+        return None
+    if "sentencepiece" in sys.modules:
+        # Already imported, so it loaded.
+        return None
+    if importlib.util.find_spec("sentencepiece") is None:
+        # Genuinely not installed. transformers already agrees, and there is nothing
+        # here to correct.
+        return None
+    try:
+        importlib.import_module("sentencepiece")
+    except Exception as exception:
+        return exception
+    return None
+
+
+def disable_sentencepiece_if_blocked():
+    """Tell transformers sentencepiece is absent when its extension will not load.
+
+    Smart App Control blocks ``_sentencepiece.cp313-win_amd64.pyd`` by reputation, and
+    ``transformers._is_package_available`` decides on ``find_spec`` plus installed
+    metadata, neither of which loads anything: ``is_sentencepiece_available()`` answers
+    True and every path gated on it walks into an ImportError raised from inside the
+    tokenizer machinery. The worst of those is quiet rather than loud. Studio's
+    ``get_native_chat_template`` catches any exception from
+    ``AutoTokenizer.from_pretrained``, logs a warning and returns None, so the model
+    keeps generating with a substituted template and the user sees wrong formatting
+    rather than an error naming a blocked file.
+
+    Correcting the flag makes transformers take the fast-tokenizer path it takes on a
+    machine without sentencepiece, which is the supported configuration for every model
+    shipping ``tokenizer.json``, and makes the models that genuinely need the extension
+    fail with the backend message that names it instead of a loader error.
+
+    Returns True only when a real block was found and the flag was corrected. On every
+    other machine this is a no-op: not Windows, not installed, or it imported.
+    """
+    global _SENTENCEPIECE_GUARD_RESULT
+    if _SENTENCEPIECE_GUARD_RESULT is not None:
+        return _SENTENCEPIECE_GUARD_RESULT
+
+    exception = sentencepiece_import_error()
+    if exception is None:
+        _SENTENCEPIECE_GUARD_RESULT = False
+        return False
+
+    try:
+        import transformers.utils.import_utils as _import_utils
+    except Exception:
+        # Nothing to correct yet. Not cached, so a later call after transformers is
+        # imported still gets the chance.
+        return False
+
+    # The module global, not the function: is_sentencepiece_available() returns it, and
+    # transformers.utils re-exports the same function object, so one assignment covers
+    # every caller. The function is replaced only if a future version stops reading it.
+    _import_utils._sentencepiece_available = False
+    try:
+        still_available = bool(_import_utils.is_sentencepiece_available())
+    except Exception:
+        still_available = False
+    if still_available:
+        _import_utils.is_sentencepiece_available = lambda: False
+        _transformers_utils = sys.modules.get("transformers.utils")
+        if _transformers_utils is not None:
+            _transformers_utils.is_sentencepiece_available = (
+                _import_utils.is_sentencepiece_available
+            )
+
+    winerror = getattr(exception, "winerror", None)
+    if winerror in _BLOCKED_IMAGE_WINERRORS:
+        cause = f"blocked by Windows (error {winerror})"
+    else:
+        cause = "could not be loaded"
+    sac = smart_app_control_state()
+    if sac == 1:
+        cause += "; Smart App Control is on"
+    elif sac == 2:
+        cause += "; Smart App Control is in evaluation mode"
+    warnings.warn(
+        f"Unsloth: the sentencepiece extension {cause}: {exception}\n"
+        "Continuing without it. Models that ship a fast tokenizer (tokenizer.json) are "
+        "unaffected; a model that only ships tokenizer.model will now say sentencepiece "
+        "is required instead of failing later with a loader error.\n"
+        "To restore it, allow the file in your security software, or reinstall "
+        "sentencepiece so a differently named copy is written.",
+        stacklevel = 2,
+    )
+    _SENTENCEPIECE_GUARD_RESULT = True
+    return True

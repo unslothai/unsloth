@@ -235,6 +235,24 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
+if sys.platform == "win32":
+    # Smart App Control blocks sentencepiece's compiled extension by reputation, and
+    # transformers decides the package is available from find_spec and metadata alone,
+    # so is_sentencepiece_available() answers True while every import of it raises. The
+    # quiet consequence is a model generating under a substituted chat template, since
+    # get_native_chat_template catches the failure. Corrected here, at the top of the
+    # process, so no tokenizer is ever built while the flag still reads True.
+    #
+    # Windows only, so no other platform pays the probe, and a no-op unless the import
+    # really fails. The unsloth package is installed into this venv; the guard living
+    # there rather than here keeps the CLI and the backend on one implementation.
+    try:
+        from unsloth.import_fixes import disable_sentencepiece_if_blocked
+
+        disable_sentencepiece_if_blocked()
+    except Exception:
+        pass
+
 import hashlib
 import ipaddress
 import mimetypes
