@@ -5869,6 +5869,21 @@ function Test-TargetPackageVersion {
 # retries it alone instead. Mirrors _SIDECAR_COMMON_PINS in setup.sh.
 $SidecarCommonPins = @("huggingface_hub==1.8.0", "hf_xet==1.4.2")
 
+# Mirror of setup.sh's fast_install_sidecar: an inherited UV_OVERRIDE replaces a
+# requirement outright (uv's override semantics), so one naming huggingface_hub or hf_xet
+# would install another version than the exact pin, the sidecar audit would reject it, and
+# the next setup would rebuild the sidecar to the same wrong answer.
+function Fast-Install-Sidecar {
+    param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    $savedOverride = $env:UV_OVERRIDE
+    try {
+        Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
+        Fast-Install @Args_
+    } finally {
+        if ($null -ne $savedOverride) { $env:UV_OVERRIDE = $savedOverride }
+    }
+}
+
 function Repair-SidecarTiktoken {
     param(
         [Parameter(Mandatory = $true)][string]$TargetDir,
@@ -5884,7 +5899,7 @@ function Repair-SidecarTiktoken {
     # --upgrade: a --target install without it does not replace existing files, so a
     # damaged tiktoken\ directory an interrupted install left would be kept under fresh
     # metadata and read as present on the next run.
-    $output = Fast-Install --target $TargetDir --no-deps --upgrade tiktoken 2>&1 | Out-String
+    $output = Fast-Install-Sidecar --target $TargetDir --no-deps --upgrade tiktoken 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
     }
@@ -5907,26 +5922,24 @@ function Test-SidecarCurrent {
     }
     $pins = @("transformers==$Version") + $SidecarCommonPins
     $out = ""
-    # The shim answers "stale" with exit 1. Under PowerShell 7 with
-    # $PSNativeCommandUseErrorActionPreference set and ErrorActionPreference "Stop", that
-    # exit is a terminating error, the catch below discarded the answer, and the
-    # fallback grep then accepted a sidecar the shim had just rejected.
-    $previousNativeErrorPreference = $null
-    $restoreNativeErrorPreference = $false
-    # The variable exists from PowerShell 7.3; under Set-StrictMode a read of an absent
-    # variable is a terminating error, so its existence is what is tested, not the version.
-    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
-        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
-        $PSNativeCommandUseErrorActionPreference = $false
-        $restoreNativeErrorPreference = $true
-    }
-    try {
-        $out = (& python $shim sidecar $TargetDir @pins 2>$null | Out-String).Trim()
-    } catch {
-        $out = ""
-    } finally {
-        if ($restoreNativeErrorPreference) {
-            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+    # Run as a bounded process, not as a native command: the shim's own scan budget
+    # starts after it has read every RECORD and cannot interrupt a stalled read, so a
+    # Studio home on a wedged mount would hold setup here forever, and a native command's
+    # nonzero exit ("stale") is a terminating error under
+    # $PSNativeCommandUseErrorActionPreference. The argv travels base64-encoded, so a path
+    # with quotes or backslashes cannot break the -c string. A timeout reads as stale, and
+    # the rebuild that follows is the installer's own fallback.
+    $pythonExe = $null
+    try { $pythonExe = (Get-Command python -ErrorAction Stop).Source } catch { $pythonExe = $null }
+    if ($pythonExe) {
+        $argv = (@($shim, "sidecar", $TargetDir) + $pins) -join [char]0
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($argv))
+        $code = "import sys, runpy, base64; sys.argv = base64.b64decode('$encoded').decode('utf-8').split(chr(0)); runpy.run_path(sys.argv[0], run_name='__main__')"
+        $probe = Invoke-BoundedPythonProbe -PythonExe $pythonExe -Code $code -TimeoutSec 60
+        if ($probe.TimedOut) {
+            $out = "sidecar: audit did not answer within 60 seconds"
+        } else {
+            $out = ([string]$probe.Output).Trim()
         }
     }
     # The marker, not the exit code alone. An install_manifest.py predating the shim has
@@ -5956,11 +5969,11 @@ function Install-T5Sidecar {
     Mark-StudioOwned -Path $TargetDir
     foreach ($pkg in @("transformers==$Version", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
         if ($script:UnslothVerbose) {
-            Fast-Install --target $TargetDir --no-deps $pkg
+            Fast-Install-Sidecar --target $TargetDir --no-deps $pkg
             $t5PkgExit = $LASTEXITCODE
             $output = ""
         } else {
-            $output = Fast-Install --target $TargetDir --no-deps $pkg | Out-String
+            $output = Fast-Install-Sidecar --target $TargetDir --no-deps $pkg | Out-String
             $t5PkgExit = $LASTEXITCODE
         }
         if ($t5PkgExit -ne 0) {
@@ -5971,11 +5984,11 @@ function Install-T5Sidecar {
         }
     }
     if ($script:UnslothVerbose) {
-        Fast-Install --target $TargetDir --no-deps tiktoken
+        Fast-Install-Sidecar --target $TargetDir --no-deps tiktoken
         $tiktokenInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install --target $TargetDir --no-deps tiktoken | Out-String
+        $output = Fast-Install-Sidecar --target $TargetDir --no-deps tiktoken | Out-String
         $tiktokenInstallExit = $LASTEXITCODE
     }
     if ($tiktokenInstallExit -ne 0) {
