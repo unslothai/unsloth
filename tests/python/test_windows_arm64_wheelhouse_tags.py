@@ -496,9 +496,12 @@ class TestAHostedOptionalIsActuallyInstalled:
         assert any("removed" in n for n in notes), notes
         assert not any("installed xformers" in n for n in notes), notes
 
-    def test_the_step_runs_in_the_install(self, ips):
-        """A helper nothing calls re-enables nothing."""
-        assert "    _install_wheelhouse_optionals()" in STACK_SRC
+    def test_the_step_runs_after_the_final_torch_repair(self, ips):
+        """A helper nothing calls re-enables nothing, and one that runs before the flavor
+        invariant validates xformers against a torch the invariant may then replace."""
+        call = STACK_SRC.index("    _install_wheelhouse_optionals()")
+        invariant = STACK_SRC.index("_ensure_expected_torch_flavor(torch_flavor_tag)")
+        assert invariant < call < STACK_SRC.index("# 13b. torchcodec")
 
     def test_a_hosted_torchcodec_keeps_its_requirement(self, ips):
         """The one line that asks for torchcodec was filtered out before the resolver."""
@@ -1307,3 +1310,138 @@ class TestSqliteVecIsAnExplicitOptionalToo:
                 l for l in text.splitlines() if "sqlite-vec" in l and not l.strip().startswith("#")
             ]
             assert rows and all("ARM64" in r for r in rows), name
+
+
+class TestInstallPs1HandsOverWhatPyPIProvides:
+    """install.ps1 discards a wheelhouse wheel once PyPI serves the same version for this
+    interpreter, and records that only in its own session. The managed copy is gone, so the
+    find-links scan here no longer answers for it and tiktoken went back onto the skip list,
+    taking openai-whisper with it, with both resolvable from PyPI."""
+
+    @pytest.fixture
+    def native_on_pypi(self, ips, monkeypatch, wheelhouse):
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_public_pypi_is_reachable", lambda: True)
+        monkeypatch.delenv("UNSLOTH_WOA_PYPI_PROVIDED", raising = False)
+
+    def test_the_handed_over_versions_count_as_published(self, ips, monkeypatch, native_on_pypi):
+        monkeypatch.setenv("UNSLOTH_WOA_PYPI_PROVIDED", "tiktoken==0.12.0 sqlite-vec==0.1.9")
+        assert ips._public_index_win_arm64_versions("tiktoken") == {"0.12.0"}
+        assert ips._public_index_win_arm64_versions("sqlite_vec") == {
+            "0.1.9"
+        }, "read by canonical name, the way every table here is"
+        assert ips._public_index_win_arm64_versions("numba") == set()
+
+    def test_a_handed_over_wheel_leaves_the_skip_list(self, ips, monkeypatch, native_on_pypi):
+        """The managed copy is gone, so nothing but the handover says tiktoken resolves."""
+        assert "tiktoken" in ips._windows_arm64_skip_packages()
+        monkeypatch.setenv("UNSLOTH_WOA_PYPI_PROVIDED", "tiktoken==0.12.0")
+        assert "tiktoken" not in ips._windows_arm64_skip_packages()
+
+    def test_together_with_the_index_table_it_unblocks_whisper(
+        self, ips, monkeypatch, native_on_pypi
+    ):
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        assert "openai-whisper" in ips._windows_arm64_skip_packages()
+        monkeypatch.setenv("UNSLOTH_WOA_PYPI_PROVIDED", "tiktoken==0.12.0")
+        assert "openai-whisper" not in ips._windows_arm64_skip_packages()
+
+    def test_the_handover_still_needs_pypi(self, ips, monkeypatch, native_on_pypi):
+        """install.ps1 probed PyPI for the resolver it configured; a run whose resolve cannot
+        reach it gets the skip back, as the index table does."""
+        monkeypatch.setenv("UNSLOTH_WOA_PYPI_PROVIDED", "tiktoken==0.12.0")
+        monkeypatch.setattr(ips, "_public_pypi_is_reachable", lambda: False)
+        assert ips._public_index_win_arm64_versions("tiktoken") == set()
+        assert "tiktoken" in ips._windows_arm64_skip_packages()
+
+    def test_nothing_is_claimed_off_win_arm64(self, ips, monkeypatch, native_on_pypi):
+        monkeypatch.setenv("UNSLOTH_WOA_PYPI_PROVIDED", "tiktoken==0.12.0")
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: False)
+        assert ips._public_index_win_arm64_versions("tiktoken") == set()
+
+    @pytest.mark.parametrize("value", ["tiktoken", "==0.12.0", "tiktoken==", "  ", "a=b"])
+    def test_an_entry_without_both_halves_is_ignored(self, ips, monkeypatch, value):
+        monkeypatch.setenv("UNSLOTH_WOA_PYPI_PROVIDED", value)
+        assert ips._woa_pypi_provided_versions() == {}
+
+    def test_install_ps1_exports_it_beside_the_other_handovers(self):
+        """Always assigned, like UNSLOTH_WOA_HAS_TORCHAUDIO, so a previous run in the same
+        session cannot leak its answer; and put back with the rest when the installer returns."""
+        assert '$env:UNSLOTH_WOA_PYPI_PROVIDED = ($_woaProvidedPairs -join " ")' in INSTALL_SRC
+        assert '@("UNSLOTH_WOA_PYPI_PROVIDED", $hadPreviousWoaPyPIProvided,' in INSTALL_SRC
+
+
+class TestAHostedTorchcodecIsInstalledByItsStep:
+    """The requirement filter kept a hosted torchcodec's row, but no requirements file has one,
+    and the dedicated step skipped every platform without a published wheel. Hosting the wheel
+    therefore re-enabled nothing, against what the drop list in install.ps1 promises."""
+
+    @pytest.fixture
+    def native(self, ips, monkeypatch, wheelhouse):
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        return wheelhouse
+
+    def test_the_hosted_version_inside_the_torch_window(self, ips, native):
+        _stage(native, "torchcodec", "0.10.1")
+        assert ips._wheelhouse_torchcodec_version("2.10.0+cu134") == "0.10.1"
+
+    def test_a_wheel_outside_the_window_is_not_offered(self, ips, native):
+        """torch 2.11 selects 0.11.x; a 0.10 build is another torch's codec."""
+        _stage(native, "torchcodec", "0.10.1")
+        assert ips._wheelhouse_torchcodec_version("2.11.0+cu134") is None
+
+    def test_no_torch_version_means_no_window(self, ips, native):
+        _stage(native, "torchcodec", "0.10.1")
+        assert ips._wheelhouse_torchcodec_version(None) is None
+        assert ips._wheelhouse_torchcodec_version("") is None
+
+    def test_no_other_platform_is_offered_one(self, ips, monkeypatch, wheelhouse):
+        _stage(wheelhouse, "torchcodec", "0.10.1")
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: False)
+        assert ips._wheelhouse_torchcodec_version("2.10.0") is None
+
+    @staticmethod
+    def _run_step(ips, hosted, **stubs):
+        """Run step 13b on a platform without a published torchcodec wheel."""
+        from textwrap import dedent
+        from unittest.mock import Mock
+
+        calls = []
+        namespace = vars(ips).copy()
+        namespace.update(
+            NO_TORCH = False,
+            PLATFORM_LACKS_TORCHCODEC_WHEEL = True,
+            _wheelhouse_hosts = lambda name: hosted is not None,
+            _wheelhouse_torchcodec_version = lambda torch_version: hosted,
+            _probe_installed_torch_version = lambda: "2.10.0+cu134",
+            _progress = Mock(),
+            _note = Mock(),
+            pip_install_try = lambda label, *a, **kw: calls.append((a, kw)) or True,
+        )
+        namespace.update(stubs)
+        step = STACK_SRC.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
+        exec(dedent(step[step.index("    _codec_torch_ver = None") :]), namespace)
+        return calls, namespace
+
+    def test_a_hosted_wheel_is_installed_pinned_and_without_deps(self, ips):
+        calls, ns = self._run_step(ips, "0.10.1")
+        assert len(calls) == 1, calls
+        args, kw = calls[0]
+        assert "torchcodec==0.10.1" in args and "--no-deps" in args
+        assert kw.get("constrain") is False, "constraints.txt knows nothing of this wheel"
+        ns["_progress"].assert_called_once_with("torchcodec")
+
+    def test_without_one_the_platform_skip_is_unchanged(self, ips):
+        calls, ns = self._run_step(ips, None)
+        assert calls == []
+        ns["_progress"].assert_called_once_with("torchcodec (skipped, no wheel for this platform)")
+
+    def test_a_hosted_wheel_outside_the_window_is_skipped_with_a_reason(self, ips):
+        calls, ns = self._run_step(ips, None, _wheelhouse_hosts = lambda name: True)
+        assert calls == []
+        ns["_progress"].assert_called_once_with("torchcodec (skipped, no wheel for this platform)")
+        assert any("outside the window" in c.args[0] for c in ns["_note"].call_args_list)
+
+    def test_a_failed_install_leaves_audio_off_without_failing(self, ips):
+        calls, ns = self._run_step(ips, "0.10.1", pip_install_try = lambda *a, **kw: False)
+        assert any("stays disabled" in c.args[0] for c in ns["_note"].call_args_list)

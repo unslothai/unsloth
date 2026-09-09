@@ -8496,6 +8496,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
     $hadPreviousWoaTorchPrerelease = ($null -ne $previousWoaTorchPrerelease)
     $previousWoaSelectedTorchIndex = $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX
     $hadPreviousWoaSelectedTorchIndex = ($null -ne $previousWoaSelectedTorchIndex)
+    $previousWoaPyPIProvided = $env:UNSLOTH_WOA_PYPI_PROVIDED
+    $hadPreviousWoaPyPIProvided = ($null -ne $previousWoaPyPIProvided)
     try {
         $env:SKIP_STUDIO_BASE = "1"
         $env:STUDIO_PACKAGE_NAME = $PackageName
@@ -8517,6 +8519,14 @@ sys.exit(2 if conflict else (0 if installed else 1))
         } else {
             Remove-Item Env:UNSLOTH_WOA_SELECTED_TORCH_INDEX -ErrorAction SilentlyContinue
         }
+        # Wheelhouse wheels discarded because PyPI serves the same version: the managed copy is gone, so this is the only record install_python_stack.py has that they resolve.
+        $_woaProvidedPairs = @()
+        foreach ($_woaProvidedKey in @($script:WoaPyPIProvided.Keys | Sort-Object)) {
+            foreach ($_woaProvidedVer in @($script:WoaPyPIProvided[$_woaProvidedKey] | Where-Object { $_ } | Select-Object -Unique)) {
+                $_woaProvidedPairs += "$_woaProvidedKey==$_woaProvidedVer"
+            }
+        }
+        $env:UNSLOTH_WOA_PYPI_PROVIDED = ($_woaProvidedPairs -join " ")
         # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
         $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
         # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
@@ -8663,7 +8673,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
         foreach ($_woaPair in @(
                 @("UNSLOTH_WOA_HAS_TORCHAUDIO", $hadPreviousWoaHasTorchaudio, $previousWoaHasTorchaudio),
                 @("UNSLOTH_WOA_TORCH_PRERELEASE", $hadPreviousWoaTorchPrerelease, $previousWoaTorchPrerelease),
-                @("UNSLOTH_WOA_SELECTED_TORCH_INDEX", $hadPreviousWoaSelectedTorchIndex, $previousWoaSelectedTorchIndex))) {
+                @("UNSLOTH_WOA_SELECTED_TORCH_INDEX", $hadPreviousWoaSelectedTorchIndex, $previousWoaSelectedTorchIndex),
+                @("UNSLOTH_WOA_PYPI_PROVIDED", $hadPreviousWoaPyPIProvided, $previousWoaPyPIProvided))) {
             if ($_woaPair[1]) { Set-Item "Env:$($_woaPair[0])" $_woaPair[2] }
             else { Remove-Item "Env:$($_woaPair[0])" -ErrorAction SilentlyContinue }
         }
