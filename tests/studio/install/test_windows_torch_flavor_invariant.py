@@ -631,7 +631,7 @@ def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
     the index while the resident trio still satisfies its pins. The index a trio came
     from is recorded after each successful install and compared before the fast path."""
     text = _SETUP_PS1.read_text(encoding = "utf-8")
-    force = text.index('$_recordedRocmIndex -ne $ROCmIndexUrl.TrimEnd(\'/\')')
+    force = text.index("$_recordedRocmIndex -ne $ROCmIndexUrl.TrimEnd('/')")
     record = text.index("Set-Content -LiteralPath $script:RocmIndexRecord")
     installed = text.index('$env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"')
     assert force < installed < record

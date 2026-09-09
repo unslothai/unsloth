@@ -8065,7 +8065,13 @@ def _may_skip_on_evidence() -> bool:
     return _PASS_EVIDENCE is not None and not _full_deps_requested()
 
 
-_FOREIGN_RESOLVER_ENV = ("UV_CONSTRAINT", "UV_BUILD_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS")
+_FOREIGN_RESOLVER_ENV = (
+    "UV_CONSTRAINT",
+    "UV_BUILD_CONSTRAINT",
+    "PIP_CONSTRAINT",
+    "PIP_NO_DEPS",
+    "UV_NO_DEPS",
+)
 
 
 def _foreign_resolver_inputs() -> list:
