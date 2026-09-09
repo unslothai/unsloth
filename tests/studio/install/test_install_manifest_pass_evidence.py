@@ -562,14 +562,20 @@ def test_the_shim_refuses_what_it_does_not_implement() -> None:
         assert _shim(*args).returncode == 2
 
 
-def test_an_optional_packages_leftovers_are_not_damage(sidecar: pathlib.Path) -> None:
-    """An interrupted tiktoken install leaves a dist-info whose RECORD names files that
-    never landed. Reading that as damage made the whole sidecar stale on every update,
-    for a package the rebuild is allowed to fail to add again; setup's top-up is what
-    repairs it. A required package's RECORD is still held to the disk."""
+def test_an_absent_tiktoken_is_optional_but_a_present_one_is_held_to_its_record(
+    sidecar: pathlib.Path,
+) -> None:
+    """Absence is what is optional: a sidecar without tiktoken is current, and setup's
+    top-up adds it. Present, tiktoken's RECORD is held to the disk like every other
+    package's, since a file it names that is not there is a tokenizer that fails at
+    import. A required package's RECORD is held to the disk too."""
     import shutil
 
+    (sidecar / "tiktoken" / "__init__.py").unlink()
+    current, reason = im.sidecar_is_current(sidecar, PINS)
+    assert current is False and "tiktoken" in reason
     shutil.rmtree(sidecar / "tiktoken")
+    shutil.rmtree(next(sidecar.glob("tiktoken-*.dist-info")))
     assert im.sidecar_is_current(sidecar, PINS) == (True, "")
     (sidecar / "hf_xet" / "__init__.py").unlink()
     current, reason = im.sidecar_is_current(sidecar, PINS)
