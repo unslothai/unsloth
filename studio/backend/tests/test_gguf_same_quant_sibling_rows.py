@@ -1059,11 +1059,16 @@ def test_two_builds_under_a_quant_only_directory_collapse_like_root_files():
     key through, so the remote resolver ranked them in Hub order and the local one by size."""
     from hub.utils.gguf import collapse_same_quant_root_builds
 
-    both = [gguf_variant_key("Q4_K_M/model-Q4_K_M-mtp.gguf"), gguf_variant_key("Q4_K_M/model-Q4_K_M-fp16.gguf")]
+    both = [
+        gguf_variant_key("Q4_K_M/model-Q4_K_M-mtp.gguf"),
+        gguf_variant_key("Q4_K_M/model-Q4_K_M-fp16.gguf"),
+    ]
     assert len(collapse_same_quant_root_builds(both)) == 1
     assert collapse_same_quant_root_builds(both) == collapse_same_quant_root_builds(both[::-1])
     # A plain root row still wins the group; a real checkpoint directory still passes through.
-    assert collapse_same_quant_root_builds(["Q4_K_M", gguf_variant_key("Q4_K_M/model-Q4_K_M-mtp.gguf")]) == ["Q4_K_M"]
+    assert collapse_same_quant_root_builds(
+        ["Q4_K_M", gguf_variant_key("Q4_K_M/model-Q4_K_M-mtp.gguf")]
+    ) == ["Q4_K_M"]
     assert collapse_same_quant_root_builds(["distilled/m-Q6_K"]) == ["distilled/m-Q6_K"]
 
 
@@ -1075,15 +1080,23 @@ def test_the_local_index_gives_the_bare_spelling_to_the_root_build():
     from core.inference.local_model_resolver import _legacy_variant_aliases
 
     row = lambda q, f: types.SimpleNamespace(quant = q, filename = f)
-    aliases = dict(_legacy_variant_aliases([
-        row("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
-        row("distilled/model-Q4_K_M", "distilled/model-Q4_K_M.gguf"),
-    ]))
+    aliases = dict(
+        _legacy_variant_aliases(
+            [
+                row("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
+                row("distilled/model-Q4_K_M", "distilled/model-Q4_K_M.gguf"),
+            ]
+        )
+    )
     assert aliases["q4_k_m"] == "model-Q4_K_M-mtp"
-    two_roots = dict(_legacy_variant_aliases([
-        row("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
-        row("model-Q4_K_M-fp16", "model-Q4_K_M-fp16.gguf"),
-    ]))
+    two_roots = dict(
+        _legacy_variant_aliases(
+            [
+                row("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
+                row("model-Q4_K_M-fp16", "model-Q4_K_M-fp16.gguf"),
+            ]
+        )
+    )
     assert "q4_k_m" not in two_roots
 
 
@@ -1097,7 +1110,8 @@ def test_deleting_by_the_bare_quant_reaches_the_root_build(monkeypatch):
             self._names = names
 
     monkeypatch.setattr(
-        deletion, "_repo_file_matches",
+        deletion,
+        "_repo_file_matches",
         lambda repo, pred: [(None, None, n) for n in repo._names if pred(n)],
     )
     with_subordinate = _Repo(["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"])
@@ -1117,8 +1131,14 @@ def test_the_media_index_gives_the_bare_spelling_to_the_root_build(tmp_path, mon
     files = ["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"]
     monkeypatch.setattr(mmi, "_gguf_load_path", lambda info, on_disk, load_dir: str(load_dir))
     monkeypatch.setattr(mmi, "_loader_can_open", lambda load_path, filename: True)
-    monkeypatch.setattr(model_config, "list_local_gguf_variants",
-                        lambda p: ([types.SimpleNamespace(quant = gguf_variant_key(f), filename = f) for f in files], False))
+    monkeypatch.setattr(
+        model_config,
+        "list_local_gguf_variants",
+        lambda p: (
+            [types.SimpleNamespace(quant = gguf_variant_key(f), filename = f) for f in files],
+            False,
+        ),
+    )
     index = {}
     assert mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path) is True
     alias = next(k for k in index if k.lower() == "repo:q4_k_m")
@@ -1147,8 +1167,12 @@ def test_cached_path_resolution_sees_every_revision_at_once(tmp_path, monkeypatc
 
     first = _materialize(tmp_path / "rev1", [("model-Q4_K_M-mtp.gguf", 1)])
     second = _materialize(tmp_path / "rev2", [("model-Q4_K_M-fp16.gguf", 2)])
-    monkeypatch.setattr(gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [first, second])
+    monkeypatch.setattr(
+        gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [first, second]
+    )
     assert gguf_module.resolve_local_gguf_path("org/repo", "Q4_K_M") is None
     # One build across revisions is still found, under its legacy spelling.
     monkeypatch.setattr(gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [first])
-    assert gguf_module.resolve_local_gguf_path("org/repo", "Q4_K_M") == str(first / "model-Q4_K_M-mtp.gguf")
+    assert gguf_module.resolve_local_gguf_path("org/repo", "Q4_K_M") == str(
+        first / "model-Q4_K_M-mtp.gguf"
+    )
