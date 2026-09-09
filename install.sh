@@ -1813,6 +1813,14 @@ LAUNCHER_EOF
     if [ -z "$_css_found_icon" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/rounded-512.png" ]; then
         _css_found_icon="$_css_script_dir/studio/frontend/public/rounded-512.png"
     fi
+    # icon.png always ships in the wheel; no need to reach raw.githubusercontent.com.
+    if [ -z "$_css_found_icon" ]; then
+        for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
+            if [ -f "$_sp/icon.png" ]; then
+                _css_found_icon="$_sp/icon.png"
+            fi
+        done
+    fi
 
     # Copy or download rounded-512.png (used for both Linux icon and macOS icns)
     if [ -n "$_css_found_icon" ]; then
@@ -2060,6 +2068,15 @@ STUB_EOF
         fi
         _css_lnk_name_ps=$(printf '%s' "$_css_lnk_name" | sed "s/'/''/g")
 
+        # The packaged .ico (frontend/dist) is copied first; GitHub is only the fallback.
+        _css_wsl_ico_win=""
+        for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/frontend/dist; do
+            if [ -f "$_sp/unsloth.ico" ] && command -v wslpath >/dev/null 2>&1; then
+                _css_wsl_ico_win=$(wslpath -w "$_sp/unsloth.ico" 2>/dev/null) || _css_wsl_ico_win=""
+            fi
+        done
+        _css_wsl_ico_win_ps=$(printf '%s' "$_css_wsl_ico_win" | sed "s/'/''/g")
+
         # Create shortcuts via a temp PowerShell script to avoid escaping issues
         _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
         if [ -n "$_css_ps1_tmp" ]; then
@@ -2074,6 +2091,13 @@ if (-not \$targetExe) { exit 1 }
 \$preIconHash = \$null
 if (Test-Path -LiteralPath \$iconPath) {
     try { \$preIconHash = (Get-FileHash -LiteralPath \$iconPath -Algorithm SHA256).Hash } catch {}
+}
+\$packagedIcon = '$_css_wsl_ico_win_ps'
+if (-not (Test-Path -LiteralPath \$iconPath) -and \$packagedIcon -and (Test-Path -LiteralPath \$packagedIcon)) {
+    try {
+        New-Item -ItemType Directory -Force -Path \$iconDir | Out-Null
+        Copy-Item -LiteralPath \$packagedIcon -Destination \$iconPath -Force -ErrorAction Stop
+    } catch {}
 }
 if (-not (Test-Path -LiteralPath \$iconPath)) {
     try {
