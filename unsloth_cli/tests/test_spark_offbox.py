@@ -2033,3 +2033,72 @@ def test_data_parallel_refuses_a_save_it_cannot_perform_and_a_zero_microbatch():
     save_guard = body.index("--save is not implemented for --fsdp")
     train_loop = body.index("for step in range(args.steps)")
     assert save_guard < train_loop, "the fsdp save refusal must precede the training loop"
+
+
+def _train_cli(monkeypatch):
+    """`unsloth spark train` with the cluster and the Spark gate stubbed, returning the argv
+    it would hand to studio.spark_cluster. Hardware-independent: nothing is launched."""
+    import typer.testing
+
+    from unsloth_cli.commands import spark as spark_cmd
+
+    seen: list[list[str]] = []
+
+    class _FakeCluster:
+        def main(self, argv):
+            seen.append(list(argv))
+            return 0
+
+    monkeypatch.setattr(spark_cmd, "_cluster_or_none", lambda: _FakeCluster())
+    monkeypatch.setattr(spark_cmd, "_require_spark", lambda sc, what: None)
+    return typer.testing.CliRunner(), spark_cmd.spark_app, seen
+
+
+def test_the_planner_command_for_an_oversized_model_actually_parses(monkeypatch):
+    # plan_training recommends --shard-load --grad-checkpoint for a model that does not fit
+    # on one Spark, which is the only topology that can train it at all. The train command
+    # has to accept every option that recommendation contains.
+    sc = _load("studio/spark_cluster.py")
+    plan = sc.plan_training(200.0, 2, model = "meta-llama/Llama-3.3-70B-Instruct")
+    recommended = [c for c in plan["commands"] if c.startswith("unsloth spark train")]
+    assert recommended, plan["commands"]
+
+    runner, app, seen = _train_cli(monkeypatch)
+    for command in recommended:
+        argv = command.split()[2:]  # drop "unsloth spark"
+        argv = [a for a in argv if a != "--run"]  # do not launch anything from a test
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 0, result.output
+    assert any("--grad-checkpoint" in " ".join(a) for a in seen), seen
+
+
+def test_data_parallel_defaults_do_not_reject_themselves(monkeypatch):
+    # The trainer requires --batch to be divisible by --microbatches, so the layer split's
+    # default of 32 against the default batch of 8 exited before loading anything.
+    runner, app, seen = _train_cli(monkeypatch)
+    assert runner.invoke(app, ["train", "--data-parallel", "unsloth/Qwen3-4B"]).exit_code == 0
+    pipeline_args = seen[-1][seen[-1].index("--pipeline-args") + 1].split()
+    batch = int(pipeline_args[pipeline_args.index("--batch") + 1])
+    microbatches = int(pipeline_args[pipeline_args.index("--microbatches") + 1])
+    assert batch % microbatches == 0
+    assert batch % 2 == 0 and microbatches % 2 == 0  # both ranks get equal rows
+
+    # A layer split keeps the measured M=32, which is where its speedup comes from.
+    seen.clear()
+    assert runner.invoke(app, ["train", "--layer-split", "unsloth/Qwen3-4B"]).exit_code == 0
+    assert "--microbatches 32" in seen[-1][seen[-1].index("--pipeline-args") + 1]
+
+
+def test_the_three_training_modes_are_mutually_exclusive(monkeypatch):
+    # --data-parallel is copied into layer_split and the built-in trainer branch wins, so a
+    # --script alongside it was dropped in silence and --run started the wrong program.
+    runner, app, seen = _train_cli(monkeypatch)
+    for argv in (
+        ["train", "--script", "t.py", "--data-parallel", "unsloth/Qwen3-4B"],
+        ["train", "--script", "t.py", "--layer-split", "unsloth/Qwen3-4B"],
+        ["train", "--layer-split", "unsloth/Qwen3-4B", "--data-parallel", "unsloth/Qwen3-4B"],
+    ):
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 2, result.output
+        assert "different modes" in result.output
+    assert seen == []

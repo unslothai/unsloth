@@ -939,13 +939,22 @@ def train(
         help = "Load only each node's own layers. Required for a model larger than one Spark.",
     ),
     microbatches: int = typer.Option(
-        32,
+        0,
         "--microbatches",
-        help = "Higher fills the pipeline better. Measured on "
-        "two Sparks vs one: M=4 1.13x, M=8 1.56x, "
+        help = "0 picks the default for the topology: 32 for a layer split, 2 for "
+        "--data-parallel. Higher fills the PIPELINE better, which is why the layer "
+        "split wants it. Measured on two Sparks vs one: M=4 1.13x, M=8 1.56x, "
         "M=16 1.70x, M=32 1.96x. The ceiling is 2M/(M+1), "
         "so M=32 already reaches 99% of it and going "
-        "beyond gains almost nothing.",
+        "beyond gains almost nothing. A data-parallel replica has no pipeline to fill, "
+        "and --batch must divide by this, so 32 there would only reject the default batch.",
+    ),
+    grad_checkpoint: bool = typer.Option(
+        False,
+        "--grad-checkpoint",
+        help = "Recompute activations in the backward pass. Slower per step, and required "
+        "to fit a model larger than one Spark; `unsloth spark plan` recommends it with "
+        "--shard-load for exactly that case.",
     ),
     pp_backend: str = typer.Option(
         "torch",
@@ -1002,9 +1011,31 @@ def train(
             "give one of --script <train.py>, --layer-split <model> or --data-parallel <model>."
         )
         raise typer.Exit(2)
-    if layer_split and data_parallel:
-        typer.echo("--layer-split and --data-parallel are different topologies; give one.")
+    # All three are modes, not options that compose: --data-parallel is copied into
+    # layer_split below and the built-in trainer branch runs, so a --script given alongside
+    # either of them would be dropped without a word and, with --run, the built-in trainer
+    # would start on the other mode's model instead of the caller's program.
+    chosen = [
+        name
+        for name, value in (
+            ("--script", script),
+            ("--layer-split", layer_split),
+            ("--data-parallel", data_parallel),
+        )
+        if value
+    ]
+    if len(chosen) > 1:
+        typer.echo(f"{', '.join(chosen)} are different modes; give one.")
         raise typer.Exit(2)
+    if microbatches < 0:
+        typer.echo("--microbatches cannot be negative.")
+        raise typer.Exit(2)
+    if microbatches == 0:
+        # A data-parallel replica has no pipeline to fill, so the layer split's 32 buys it
+        # nothing and --batch must divide by it: with the default batch of 8 the trainer
+        # refuses 32 outright, and `unsloth spark train --data-parallel MODEL --run` exited
+        # before it loaded anything.
+        microbatches = 2 if data_parallel else 32
     if data_parallel:
         layer_split = data_parallel
     if layer_split:
@@ -1018,6 +1049,8 @@ def train(
         ]
         if shard_load:
             extra.append("--shard-load")
+        if grad_checkpoint:
+            extra.append("--grad-checkpoint")
         if full_finetune:
             extra.append("--full-finetune")
         if data_parallel:
