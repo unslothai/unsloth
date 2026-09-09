@@ -374,6 +374,25 @@ _custom_studio_data_dirs() {
 #   3. Env-mode studio.conf at $<root>/share/studio.conf (discovered via 1)
 # install.sh writes UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so the install root is three
 # dirnames up. Each discovered non-default root is printed on its own line, de-duplicated.
+# The master root UNSLOTH_HOME names, or empty. studio/ is its child and llama.cpp, node and
+# whisper.cpp are its other children, so removing the Studio root alone strands them. Stripped
+# and tilde-expanded like storage_roots.unsloth_home() and studio/setup.sh, or a padded value
+# would name a directory neither install nor uninstall agrees on.
+_master_root() {
+    _mr=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    [ -n "$_mr" ] || return 0
+    # shellcheck disable=SC2088
+    case "$_mr" in
+        "~") _mr="$HOME" ;;
+        "~/"*) _mr="$HOME/${_mr#'~/'}" ;;
+    esac
+    # shellcheck disable=SC1007
+    _mr_canon=$(CDPATH= cd -P -- "$_mr" 2>/dev/null && pwd -P)
+    [ -n "$_mr_canon" ] && _mr="$_mr_canon"
+    case "$_mr" in "$HOME/.unsloth"|/|"") return 0 ;; esac
+    printf '%s\n' "$_mr"
+}
+
 _custom_studio_roots() {
     # $1 = "lexical": skip the canonicalization (see the legacy sd.cpp sibling below). Reset on
     # every call, so a plain call is never affected by a preceding lexical one.
@@ -418,6 +437,11 @@ _custom_studio_roots() {
     elif [ -n "${STUDIO_HOME:-}" ]; then
         _emit "$STUDIO_HOME"
         _from_conf "$STUDIO_HOME/share/studio.conf"
+    elif [ -n "$(_master_root)" ]; then
+        # Last, as in storage_roots.studio_root(): UNSLOTH_HOME names the tree, and the two
+        # above name this exact directory, so either of them wins outright.
+        _emit "$(_master_root)/studio"
+        _from_conf "$(_master_root)/studio/share/studio.conf"
     fi
     # Default-mode conf.
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
@@ -557,6 +581,37 @@ _unsloth_uninstall_main() {
             _remove_path "$_lex_sd_cpp"
         fi
     done
+    # The master root's own children. Marker-gated and deny-listed rather than removed outright
+    # like the ~/.unsloth ones below: <master> is a directory the user chose and may hold their
+    # files, so only a tree an Unsloth installer marked is ours to delete. The locks and .staging
+    # are ours by name (prebuilt_core.py) and carry no marker.
+    _mr_root="$(_master_root)"
+    if [ -n "$_mr_root" ]; then
+        if _is_unsafe_root "$_mr_root"; then
+            echo "  refusing to remove unsafe path: $_mr_root" >&2
+        else
+            for _mr_child in llama.cpp node whisper.cpp stable-diffusion.cpp; do
+                _mr_path="$_mr_root/$_mr_child"
+                if _is_unsafe_root "$_mr_path"; then
+                    echo "  refusing to remove unsafe path: $_mr_path" >&2
+                elif [ -e "$_mr_path" ] && [ ! -f "$_mr_path/.unsloth-studio-owned" ]; then
+                    echo "  keeping $_mr_child without Unsloth owner marker: $_mr_path" >&2
+                else
+                    _remove_path "$_mr_path"
+                fi
+            done
+            for _mr_lock in .llama.cpp.install.lock .node.install.lock \
+                    .whisper.cpp.install.lock .sd.cpp.install.lock .staging; do
+                _remove_path "$_mr_root/$_mr_lock"
+            done
+            for _mr_stale in "$_mr_root"/.*.install.lock.stale.*; do
+                [ -e "$_mr_stale" ] && _remove_path "$_mr_stale"
+            done
+            # Only when nothing of the user's is left; rmdir refuses a non-empty directory.
+            rmdir "$_mr_root" 2>/dev/null || true
+        fi
+    fi
+    # end master-root children
     _remove_root_recording_db "$HOME/.unsloth/studio"
     # Shared llama.cpp build + cache, siblings of studio in default mode (deleting studio misses
     # them). No-op in env/custom mode and when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is kept.

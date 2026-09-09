@@ -384,3 +384,30 @@ def test_every_runtime_ownership_guard_uses_the_runtime_flag():
         assert not any(
             name in line for name in ("$LlamaCppDir", "$WhisperCppDir", "$NodeDir")
         ), line
+
+
+UNINSTALL_SH = REPO_ROOT / "scripts" / "uninstall.sh"
+UNINSTALL_PS1 = REPO_ROOT / "scripts" / "uninstall.ps1"
+
+
+def test_both_uninstallers_clear_the_master_root_children():
+    """setup installs llama.cpp, node and whisper.cpp as children of the master root, so an
+    uninstaller that only knows the legacy siblings and the Studio root strands them. Behaviour
+    is covered by tests/sh/test_uninstall_master_root.sh; this holds the PowerShell twin, which
+    the Linux runners cannot execute, and pins the marker gate on both."""
+    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    assert "_master_root() {" in sh
+    assert "function _MasterRoot" in ps
+    for src, marker in ((sh, ".unsloth-studio-owned"), (ps, ".unsloth-studio-owned")):
+        block = _slice(src, "master root's own children", "llama.cpp build + cache")
+        assert marker in block, block
+        for child in ("llama.cpp", "node", "whisper.cpp"):
+            assert child in block, (child, block)
+    # A user-chosen root reaches the deny list on both sides before anything is removed.
+    assert "_is_unsafe_root \"$_mr_root\"" in sh
+    assert "_IsUnsafeRoot $masterRoot" in ps
+    # And it only contributes its studio child when neither exact override is set, as in
+    # storage_roots.studio_root().
+    assert '_emit "$(_master_root)/studio"' in sh
+    assert '$envRoot = (Join-Path $master "studio")' in ps

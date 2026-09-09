@@ -444,6 +444,22 @@ Environment:
     # Discover non-default Unsloth roots from env vars + studio.conf files. Mirrors install.ps1's
     # precedence: UNSLOTH_STUDIO_HOME wins and STUDIO_HOME is ignored when both are set, or
     # uninstalling install A would also delete install B from a stale STUDIO_HOME.
+    # The master root UNSLOTH_HOME names, or $null. studio\ is its child and llama.cpp, node and
+    # whisper.cpp are its other children, so removing the Studio root alone strands them. Trimmed
+    # and tilde-expanded like storage_roots.unsloth_home() and studio\setup.ps1.
+    function _MasterRoot {
+        if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
+        $expanded = _ExpandTilde $env:UNSLOTH_HOME.Trim()
+        $norm = $null
+        try { $norm = [System.IO.Path]::GetFullPath($expanded).TrimEnd('\','/') } catch { return $null }
+        if (-not $norm) { return $null }
+        # The default root is left to the blocks that own it, which remove it unconditionally.
+        if ($env:USERPROFILE -and ($norm -ieq (Join-Path $env:USERPROFILE ".unsloth").TrimEnd('\','/'))) {
+            return $null
+        }
+        return $norm
+    }
+
     function _CustomStudioRoots {
         $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $defaultRoot = $null
@@ -467,6 +483,11 @@ Environment:
             $envRoot = $env:UNSLOTH_STUDIO_HOME
         } elseif ($env:STUDIO_HOME) {
             $envRoot = $env:STUDIO_HOME
+        } else {
+            # Last, as in storage_roots.studio_root(): UNSLOTH_HOME names the tree, and the two
+            # above name this exact directory, so either of them wins outright.
+            $master = _MasterRoot
+            if ($master) { $envRoot = (Join-Path $master "studio") }
         }
         if ($envRoot) {
             $expandedEnv = _ExpandTilde $envRoot
@@ -816,6 +837,41 @@ Environment:
     # Unsloth's %TEMP% before the sweep ever looked at its owner.pid.
     $preservedTemp = @(_RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp)
     if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir -Preserve $preservedTemp }
+    # The master root's own children. Marker-gated rather than removed outright like the
+    # ~/.unsloth ones below: <master> is a directory the user chose and may hold their files, so
+    # only a tree an Unsloth installer marked is ours to delete. The locks and .staging are ours
+    # by name (prebuilt_core.py) and carry no marker. Mirrors scripts/uninstall.sh.
+    $masterRoot = _MasterRoot
+    if ($masterRoot -and (_IsUnsafeRoot $masterRoot)) {
+        _Substep "refusing to remove unsafe path: $masterRoot" "Yellow"
+        $masterRoot = $null
+    }
+    if ($masterRoot) {
+        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "stable-diffusion.cpp")) {
+            $childPath = Join-Path $masterRoot $childName
+            if ((Test-Path -LiteralPath $childPath) -and
+                -not (Test-Path -LiteralPath (Join-Path $childPath ".unsloth-studio-owned") -PathType Leaf)) {
+                _Substep "keeping $childName without Unsloth owner marker: $childPath" "Yellow"
+            } else {
+                _RemovePath $childPath
+            }
+        }
+        foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock",
+                                ".whisper.cpp.install.lock", ".sd.cpp.install.lock", ".staging")) {
+            _RemovePath (Join-Path $masterRoot $lockName)
+        }
+        if (Test-Path -LiteralPath $masterRoot) {
+            foreach ($stale in @(Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue |
+                                 Where-Object { $_.Name -like "*.install.lock.stale.*" })) {
+                _RemovePath $stale.FullName
+            }
+        }
+        # Only when nothing of the user's is left.
+        if ((Test-Path -LiteralPath $masterRoot) -and
+            -not (Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue)) {
+            _RemovePath $masterRoot
+        }
+    }
     # Shared llama.cpp build + cache, siblings of studio under ~/.unsloth in default mode.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
     # "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp produces
