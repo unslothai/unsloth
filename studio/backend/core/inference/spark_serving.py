@@ -22,6 +22,7 @@ import asyncio
 import base64
 import collections
 import getpass
+import fnmatch
 import glob
 import importlib.util
 import logging
@@ -382,6 +383,12 @@ def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
     expanded = osp.expanduser(model_path)
     if osp.isfile(expanded):
         return expanded
+    if osp.isdir(expanded):
+        # A local directory of GGUF variants is what an export produces, and the loader opens
+        # one of them. Returning None here made the planner size nothing and answer `single`,
+        # so a local export larger than one Spark could never reach the split it needs. Asked
+        # of the loader's own lister and picker, so the file sized is the file opened.
+        return _local_dir_gguf(expanded, variant)
     if "/" not in model_path or osp.isabs(model_path):
         return None
     cache = os.environ.get("HF_HUB_CACHE") or osp.join(
@@ -407,6 +414,38 @@ def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
         if candidates:
             return candidates[0]
     return None
+
+
+def _local_dir_gguf(directory: str, variant: Optional[str]) -> Optional[str]:
+    """The GGUF the loader would open out of a local directory, or None.
+
+    The loader's own lister and picker, not a glob: a directory holding several quants plus an
+    mmproj has to resolve to the same one the load will open, or the plan prices a file nobody
+    reads. Falls back to a companion-filtered glob when the loader cannot be imported, which is
+    the case this module's tests run in."""
+    try:
+        from utils.models.model_config import list_local_gguf_variants
+
+        # ``(variants, has_vision)``, the same shape as the remote lister, and the second
+        # element is not ours to interpret here.
+        variants, _has_vision = list_local_gguf_variants(directory)
+        variants = list(variants or [])
+    except Exception:
+        variants = []
+    if variants:
+        chosen = _pick_variant(variants, str(variant).strip().casefold() if variant else "")
+        if chosen is not None:
+            name = str(getattr(chosen, "filename", "") or "")
+            candidate = name if osp.isabs(name) else osp.join(directory, osp.basename(name))
+            if osp.isfile(candidate):
+                return candidate
+    pattern = f"*{variant}*.gguf" if variant else "*.gguf"
+    found = sorted(
+        c
+        for c in glob.glob(osp.join(directory, "**", pattern), recursive = True)
+        if osp.isfile(c) and not _is_companion_gguf(c)
+    )
+    return found[0] if found else None
 
 
 def _snapshot_mtime(directory: str) -> float:
@@ -848,6 +887,66 @@ def sidecar_bytes(args: Sequence[str], *, cwd: Optional[str] = None) -> Tuple[in
     return total, unknown
 
 
+_CTX_SIZE_FLAGS = ("--ctx-size", "-c")
+_CACHE_TYPE_K_FLAGS = ("--cache-type-k", "-ctk")
+_CACHE_TYPE_V_FLAGS = ("--cache-type-v", "-ctv")
+
+
+def _last_operand(args: Sequence[str], flags: Sequence[str]) -> Optional[str]:
+    """The last operand any of *flags* carries in *args*, or None. Last wins, as llama.cpp does."""
+    tokens = [str(a) for a in args or ()]
+    found: Optional[str] = None
+    for index, token in enumerate(tokens):
+        name, sep, inline = token.partition("=")
+        if name not in flags:
+            continue
+        value = inline if sep else (tokens[index + 1] if index + 1 < len(tokens) else "")
+        if str(value).strip():
+            found = str(value).strip()
+    return found
+
+
+def effective_kv_settings(
+    request: Any, extras: Optional[Sequence[str]] = None
+) -> Tuple[int, Optional[str], Optional[str]]:
+    """``(context, cache_type_k, cache_type_v)`` this load will ACTUALLY run with.
+
+    Pricing the request's first-class fields alone is pricing a configuration the load does not
+    use. The pass-through block is appended after the managed flags and llama.cpp is last-wins,
+    so a `--ctx-size 131072` or a `-ctk q4_0` in the extras is what the server allocates against,
+    and the KV is where the difference is large enough to change the topology: a model whose
+    weights fit one Spark but whose real cache does not was planned `single` and then spilled.
+
+    K and V are read apart. Studio leaves the cache types in the ENVIRONMENT rather than
+    materialising them into argv -- the same fact ``replica_env`` exists for -- so the env is
+    consulted for those two and the extras override it. The context is not read from the
+    environment: the managed argv sets `-c` from ``max_seq_length`` and beats
+    ``LLAMA_ARG_CTX_SIZE``, which llama.cpp applies before argv. Pricing V as K understates an
+    asymmetric cache by up to 4x, which is the direction that OOMs a node."""
+    ctx = int(getattr(request, "max_seq_length", None) or 0)
+    from_extras = _last_operand(extras or (), _CTX_SIZE_FLAGS)
+    if from_extras:
+        try:
+            ctx = int(from_extras)
+        except ValueError:
+            pass  # llama-server will refuse it; nothing to price here
+
+    def _cache(flags: Sequence[str], env_name: str) -> Optional[str]:
+        value = _last_operand(extras or (), flags)
+        if value:
+            return value
+        value = str(os.environ.get(env_name) or "").strip()
+        if value:
+            return value
+        return getattr(request, "cache_type_kv", None)
+
+    return (
+        max(0, ctx),
+        _cache(_CACHE_TYPE_K_FLAGS, "LLAMA_ARG_CACHE_TYPE_K"),
+        _cache(_CACHE_TYPE_V_FLAGS, "LLAMA_ARG_CACHE_TYPE_V"),
+    )
+
+
 def launch_files(argv: List[str], gguf_path: str) -> List[str]:
     """Every file the launch reads; the replica needs all of them at the same path. argv names
     only the first shard, so expand it: a peer holding just that one passes preflight and then
@@ -1127,6 +1226,22 @@ async def replica_build_mismatch(peer: str, peer_binary: str) -> Optional[str]:
     return f"this node runs llama-server {local} and {peer} runs {remote}"
 
 
+# The names this process writes, not "anything under the temp directory". The directory alone
+# was the whole test, so a model or a sidecar living directly under /tmp -- an ordinary place to
+# put one -- was classified as generated and handed to ``replicate_generated_files``, which
+# reads the file whole, base64-encodes it and embeds it in an ssh command line. For a
+# multi-gigabyte GGUF that is Studio's memory and the OS argument limit, instead of the
+# ordinary peer-file preflight that would have reported it missing in a sentence.
+_GENERATED_NAME_PATTERNS = ("unsloth_chat_template_*.jinja",)
+# A generated template is a few KiB. This is a backstop against a name that matches the pattern
+# by accident, since being wrong here is measured in gigabytes over ssh.
+_GENERATED_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _looks_generated(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pattern) for pattern in _GENERATED_NAME_PATTERNS)
+
+
 def generated_launch_files(files: Sequence[str]) -> List[str]:
     """The launch files this process WROTE rather than found: the ones in the temp directory.
 
@@ -1141,7 +1256,11 @@ def generated_launch_files(files: Sequence[str]) -> List[str]:
     out: List[str] = []
     for path in files:
         try:
-            if osp.realpath(osp.dirname(str(path))) == temp_root and osp.isfile(str(path)):
+            if not _looks_generated(osp.basename(str(path))):
+                continue
+            if osp.realpath(osp.dirname(str(path))) != temp_root or not osp.isfile(str(path)):
+                continue
+            if osp.getsize(str(path)) <= _GENERATED_MAX_BYTES:
                 out.append(str(path))
         except OSError:
             continue
@@ -2417,12 +2536,13 @@ class SparkServing:
                 size = remote_size
             # max_seq_length 0 means "let the backend size it", so after_load re-plans with
             # the context actually allocated.
-            requested_ctx = int(getattr(request, "max_seq_length", None) or 0)
-            cache_type = getattr(request, "cache_type_kv", None)
+            requested_ctx, cache_type, cache_type_v = effective_kv_settings(
+                request, extras_for_sizing
+            )
             kv_total = None
             if local_file and requested_ctx:
                 kv_total = await asyncio.to_thread(
-                    estimate_kv_bytes, local_file, requested_ctx, cache_type
+                    estimate_kv_bytes, local_file, requested_ctx, cache_type, cache_type_v
                 )
             users = max(1, int(n_parallel))
             kv_per_user = (kv_total / users) if kv_total else 0.0
@@ -2589,7 +2709,12 @@ class SparkServing:
         # that correctly fell back to `single` on a cold start got `--rpc ... --device RPC0,CUDA0`
         # appended on a warm one. Order-dependent placement is the worst version of this bug,
         # because the first load looks like proof that the guard works.
-        if getattr(request, "gpu_ids", None) is not None:
+        # Truthiness, not ``is not None``: the documented automatic-placement form is
+        # ``gpu_ids: []``, and every other placement site in the backend reads it that way
+        # (``if not gpu_ids``, ``automatic = not placement.requested_gpu_ids``). Reading an
+        # empty list as an explicit pin refused the split for a GGUF that needs it and sent the
+        # request to the single node that cannot hold it.
+        if getattr(request, "gpu_ids", None):
             # The backend strips every --device pass-through when gpu_ids is set, because the
             # pin owns placement. A split needs --device RPC0,CUDA0 to keep the output layer
             # and the logits local, and without it llama.cpp's default CUDA-first enumeration

@@ -3930,3 +3930,134 @@ def test_the_peer_is_searched_for_the_rpc_name_the_local_bundle_resolved(
     lookup = next(c for c in _calls if "MISSING" in c)
     assert "rpc-server" in lookup
     assert "/rpc-server" in lookup, "the name the local bundle resolved is not being asked for"
+
+
+def test_the_plan_prices_the_context_the_extras_actually_ask_for(cluster, monkeypatch, tmp_path):
+    # The pass-through block is appended after the managed flags and llama.cpp is last-wins, so
+    # a --ctx-size in the extras is what the server allocates against. Pricing max_seq_length
+    # instead planned a model whose WEIGHTS fit one Spark but whose real cache does not as
+    # `single`, and it then spilled or shrank instead of getting the split it needed.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+
+    priced = []
+    monkeypatch.setattr(
+        ss,
+        "estimate_kv_bytes",
+        lambda path, ctx, k = None, v = None: priced.append((ctx, k, v)) or 0,
+    )
+    request = _FakeRequest(str(model))
+    request.max_seq_length = 4096
+    request.cache_type_kv = "f16"
+    request.llama_extra_args = ["--ctx-size", "131072", "-ctk", "q8_0", "--cache-type-v", "q4_0"]
+    run(ss.before_load(request, 4))
+
+    assert priced == [(131072, "q8_0", "q4_0")], (
+        "the plan priced the request's fields, not what the load will run with"
+    )
+
+
+def test_the_cache_types_are_read_from_the_environment_and_apart(cluster, monkeypatch, tmp_path):
+    # Studio leaves the cache types in the ENVIRONMENT rather than materialising them, which is
+    # the whole reason replica_env exists. And K and V are configurable apart: pricing V as K
+    # understates an asymmetric cache by up to 4x, which is the direction that OOMs a node.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "q4_0")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "f32")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+
+    priced = []
+    monkeypatch.setattr(
+        ss,
+        "estimate_kv_bytes",
+        lambda path, ctx, k = None, v = None: priced.append((ctx, k, v)) or 0,
+    )
+    request = _FakeRequest(str(model))
+    request.max_seq_length = 8192
+    request.cache_type_kv = "f16"
+    run(ss.before_load(request, 4))
+    assert priced == [(8192, "q4_0", "f32")]
+
+    # An extras value overrides the environment, since it reaches the server last.
+    priced.clear()
+    request.llama_extra_args = ["--cache-type-k", "q8_0"]
+    run(ss.before_load(request, 4))
+    assert priced == [(8192, "q8_0", "f32")]
+
+
+def test_an_empty_gpu_list_is_automatic_placement_not_a_pin(cluster, monkeypatch, tmp_path):
+    # `gpu_ids: []` is the documented automatic form and every other placement site in the
+    # backend reads it by truthiness. Reading it as an explicit pin refused the split for a
+    # GGUF that needs one and sent the request to the single node that cannot hold it.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _patch_remote(monkeypatch)
+
+    request = _FakeRequest(str(model))
+    request.gpu_ids = []
+    out = run(ss.before_load(request, 4))
+    assert ss.state().topology == "layer_split", "an empty list was read as an explicit pin"
+    assert "--rpc" in out.llama_extra_args
+
+    # A real pin still owns placement, which is the behaviour being preserved.
+    request2 = _FakeRequest(str(model))
+    request2.gpu_ids = [0]
+    run(ss.before_load(request2, 4))
+    assert ss.state().topology == "single"
+    assert "GPU pin" in ss.state().reason or "GPU selection" in ss.state().reason
+
+
+def test_a_local_directory_of_gguf_variants_is_sized_not_skipped(tmp_path):
+    # A local export is a DIRECTORY of quants, and the loader opens one of them. Answering
+    # "size unknown" for it planned `single`, so a local export larger than one Spark could
+    # never reach the split it needs.
+    directory = tmp_path / "export"
+    directory.mkdir()
+    (directory / "model-Q4_K_M.gguf").write_bytes(b"x" * 16)
+    (directory / "model-BF16.gguf").write_bytes(b"x" * 64)
+    (directory / "mmproj-model.gguf").write_bytes(b"x" * 4)
+
+    picked = ss.cached_repo_file(str(directory), None)
+    assert picked is not None, "a local directory of GGUFs must resolve to a file"
+    assert "mmproj" not in osp_basename(picked), "a companion is not the weights"
+
+    # And a named variant still selects that one.
+    assert osp_basename(ss.cached_repo_file(str(directory), "BF16") or "") == "model-BF16.gguf"
+
+
+def osp_basename(path: str) -> str:
+    import os.path
+
+    return os.path.basename(str(path))
+
+
+def test_only_generated_templates_are_shipped_to_the_peer_by_value(tmp_path, monkeypatch):
+    # The directory alone used to be the whole test, so a model living directly under /tmp --
+    # an ordinary place to put one -- was classified as generated and handed to
+    # replicate_generated_files, which reads the file whole, base64-encodes it and puts it on
+    # an ssh command line. For a multi-gigabyte GGUF that is Studio's memory and the OS
+    # argument limit, instead of the one-sentence "the peer does not have it" preflight.
+    monkeypatch.setattr(ss.tempfile, "gettempdir", lambda: str(tmp_path))
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"x" * 4096)
+    lora = tmp_path / "adapter.gguf"
+    lora.write_bytes(b"x" * 16)
+    template = tmp_path / "unsloth_chat_template_1234.jinja"
+    template.write_text("{{ x }}", encoding = "utf-8")
+
+    out = ss.generated_launch_files([str(model), str(lora), str(template)])
+    assert out == [str(template)]
+
+    # A file that matches the name but is far too big to be a template is not shipped either.
+    huge = tmp_path / "unsloth_chat_template_9999.jinja"
+    huge.write_bytes(b"x" * (ss._GENERATED_MAX_BYTES + 1))
+    assert ss.generated_launch_files([str(huge)]) == []
