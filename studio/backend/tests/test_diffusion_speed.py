@@ -896,7 +896,6 @@ def _stub_matmul_precision(
 
 
 def test_snapshot_restores_torchao_inductor_flags(monkeypatch):
-    # torchao's recommended_inductor_config_setter() flips all of these process-wide; unload must put them back.
     torch = _stub_torch(monkeypatch)
     cfg = _stub_full_inductor_config(torch)
     snap = snapshot_backend_flags()
@@ -926,7 +925,6 @@ def test_snapshot_restores_float32_matmul_precision(monkeypatch):
 
 
 def test_matmul_precision_is_restored_before_tf32(monkeypatch):
-    # On some builds set_float32_matmul_precision also writes matmul.allow_tf32, so the order is a contract.
     torch = _stub_torch(monkeypatch)
     calls: list = []
     _stub_matmul_precision(torch, calls, initial = "highest")

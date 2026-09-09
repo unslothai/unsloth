@@ -541,7 +541,6 @@ def test_nvfp4_te_cast_builds_its_config_through_quiet_config(monkeypatch):
 
 
 def test_int8_and_fp8_dynamic_te_casts_reuse_the_quiet_factory(monkeypatch):
-    """Both torchao text-encoder casts must keep building through _make_quant_config, never a bare constructor."""
     torch = _stub_torch(monkeypatch, cc = (10, 0))
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)

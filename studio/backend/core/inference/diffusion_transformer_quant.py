@@ -972,9 +972,8 @@ def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
 
 # torchao's config handlers call the PROCESS-WIDE ``recommended_inductor_config_setter()`` unless
 # ``set_inductor_config`` is False, and two of its flags change results rather than only speed: coordinate-descent
-# tuning makes the winning kernel, and so the render, differ between processes on one seed, and
-# set_float32_matmul_precision("high") reaches every fp32 op in the pipeline (VAE, norms).
-# UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores the upstream behaviour, for A/B benchmarking only.
+# tuning makes the render differ between processes on one seed, and set_float32_matmul_precision("high") reaches
+# every fp32 op in the pipeline (VAE, norms). UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores it, for A/B benchmarking.
 _TORCHAO_INDUCTOR_CONFIG_ENV = "UNSLOTH_TORCHAO_INDUCTOR_CONFIG"
 
 

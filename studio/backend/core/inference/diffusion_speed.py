@@ -59,10 +59,8 @@ _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel
 
 
 def snapshot_backend_flags() -> Optional[dict]:
-    """Capture the process-wide torch backend flags this layer may mutate, for restore on unload,
-    including the inductor flags and fp32 matmul precision a non-quiet torchao quantize_ would set.
-    None if torch is unavailable. Each flag is read defensively so a build missing one (e.g. no
-    cuda.matmul on CPU/MPS) still captures the rest, instead of leaking a real mutated flag."""
+    """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
+    without torch. Each flag is read defensively: a build missing one still captures the rest."""
     try:
         import torch
     except Exception:  # noqa: BLE001 - no torch -> nothing to snapshot/restore
