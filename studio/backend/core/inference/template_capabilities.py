@@ -60,6 +60,9 @@ class _State:
     # Names bound straight to a field of something else, so `{% set role =
     # message.role %}` still reads as a role check when the comparison uses `role`.
     origins: dict = field(default_factory = dict)
+    # Keys holding a mapping the template built, so `{% for name in by_name %}` is
+    # known to walk its keys rather than its values.
+    mappings: set = field(default_factory = set)
     # Set when the path hit break, so a literal loop stops simulating further items
     # for it. `continue` only ends the current iteration, so it is tracked apart:
     # the path skips the rest of the body but still sees the next item.
@@ -77,6 +80,7 @@ class _State:
             self.constructed.copy(),
             self.consts.copy(),
             self.origins.copy(),
+            self.mappings.copy(),
             self.terminated,
             self.continued,
             self.budget,
@@ -246,6 +250,7 @@ def _signature(state):
         frozenset(state.constructed),
         frozenset((name, repr(value)) for name, value in state.consts.items()),
         frozenset(state.origins.items()),
+        frozenset(state.mappings),
         state.terminated,
         state.continued,
     )
@@ -290,6 +295,22 @@ def _select(paths, member):
         for suffix in paths
         if not suffix or member is _UNKNOWN or suffix[0] in (member, _UNKNOWN)
     }
+
+
+def _empty_slice(node):
+    """`tools[0:0]` renders an empty list whatever the catalog holds."""
+    if not (isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Slice)):
+        return False
+    start, stop = node.arg.start, node.arg.stop
+    start_value = 0 if start is None else (start.value if isinstance(start, nodes.Const) else None)
+    stop_value = stop.value if isinstance(stop, nodes.Const) else None
+    return (
+        isinstance(start_value, int)
+        and isinstance(stop_value, int)
+        and start_value >= 0
+        and stop_value >= 0
+        and stop_value <= start_value
+    )
 
 
 def _template_built(node, state):
@@ -449,6 +470,11 @@ def _raises(node):
         return _raises(node.node)
     if isinstance(node, nodes.Concat):
         return any(_raises(item) for item in node.nodes)
+    if isinstance(node, nodes.Call):
+        # Arguments are evaluated before the call, so one that raises aborts it.
+        return any(_raises(argument) for argument in node.args) or any(
+            _raises(keyword.value) for keyword in node.kwargs
+        )
     return False
 
 
@@ -477,6 +503,8 @@ def _value_aliases(value, state, active):
     if isinstance(value, nodes.Name):
         return {key[1:] for key in state.aliases if key[0] == value.name}
     if isinstance(value, (nodes.Getattr, nodes.Getitem)):
+        if _empty_slice(value):
+            return set()
         if _field(value) == "tool_calls" and not _template_built(value, state):
             return {()}
         return _select(_value_aliases(value.node, state, active), _member(value, state))
@@ -674,6 +702,10 @@ def _bind(
             if isinstance(value, (nodes.Name, nodes.Getattr, nodes.Getitem))
             else None
         )
+        if isinstance(value, nodes.Dict):
+            state.mappings.add(key)
+        else:
+            state.mappings.discard(key)
         if isinstance(value, nodes.Const):
             # `{% set ns.role = 'tool' %}` writes a literal, so the field is the
             # template's own and a role check on it means nothing.
@@ -736,6 +768,13 @@ def _macro_sources(value):
             if arm is not None
             for name in _macro_sources(arm)
         ]
+    if isinstance(value, (nodes.List, nodes.Tuple)):
+        return [name for item in value.items for name in _macro_sources(item)]
+    if isinstance(value, nodes.Getitem):
+        # `{% set render = [show][0] %}`: a lookup table of formatters.
+        return _macro_sources(value.node)
+    if isinstance(value, nodes.Dict):
+        return [name for pair in value.items for name in _macro_sources(pair.value)]
     return []
 
 
@@ -992,8 +1031,11 @@ def _scan_loop(node, state, active, guarded, tail):
             local = parent.copy(scoped = True)
             if value is None:
                 # `{% for key in {'x': tools} %}` walks the keys, not the values, so
-                # nothing under the mapping reaches the target.
-                over_keys = isinstance(node.iter, nodes.Dict)
+                # nothing under the mapping reaches the target. The mapping may have
+                # been given a name first, which `state.mappings` records.
+                over_keys = isinstance(node.iter, nodes.Dict) or (
+                    _reference_key(node.iter) in parent.mappings
+                )
                 _bind_paths(
                     node.target,
                     set()

@@ -1175,3 +1175,44 @@ def test_round_ten_leftovers_now_closed(template, expected):
 )
 def test_round_fifteen_paths(template, expected):
     assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3971892918: a call's arguments are evaluated before the call.
+        ("{{ dict(error=raise_exception('unsupported'), catalog=tools)|tojson }}", False),
+        ("{{ dict(catalog=tools)|tojson }}", True),
+        # 3971892927: a macro selected out of a static collection.
+        (
+            "{% macro show() %}{{ tools|tojson }}{% endmacro %}{% set render=[show][0] %}"
+            "{{ render() }}",
+            True,
+        ),
+        ("{% macro show() %}plain{% endmacro %}{% set render=[show][0] %}{{ render() }}", False),
+        # 3971892936: iterating a mapping walks its keys, even when it was named first.
+        (
+            "{% set by_name={'weather': tools} %}{% for name in by_name %}{{ name }}{% endfor %}",
+            False,
+        ),
+        (
+            "{% set by_name={'weather': tools} %}{% for name in by_name %}"
+            "{{ by_name[name]|tojson }}{% endfor %}",
+            True,
+        ),
+        (
+            "{% set by_name={'w': tools} %}{% set by_name=tools %}{% for v in by_name %}"
+            "{{ v|tojson }}{% endfor %}",
+            True,
+        ),
+        ("{% set c=[tools] %}{% for v in c %}{{ v|tojson }}{% endfor %}", True),
+        # 3971892941: a statically empty slice renders nothing; other slices do not.
+        ("{{ tools[0:0]|tojson }}", False),
+        ("{{ tools[0:1]|tojson }}", True),
+        ("{{ tools[1:]|tojson }}", True),
+        ("{{ tools[:2]|tojson }}", True),
+        ("{% for m in messages[1:] %}{{ m.tool_calls|tojson }}{% endfor %}", True),
+    ],
+)
+def test_round_sixteen_paths(template, expected):
+    assert template_supports_tools(template) is expected
