@@ -23,12 +23,21 @@ SETUP_SH="${1:-$SCRIPT_DIR/../../studio/setup.sh}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# From the pin read to the end of the acting if/elif chain.
-# Stop at the `fi` that closes the escape chain, NOT after the Nth _SKIP_PYTHON_DEPS=false:
-# counting assignments truncates the block as soon as an arm is added, silently.
-awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^    elif \[ -n "\$INSTALLED_VER"/{exit} on{print}' \
+# From the pin read to the end of the acting if/elif chain. That chain now closes out
+# _fast_path_escapes(), the helper BOTH fast-path branches call (the version compare and
+# the UV_OFFLINE rule), so the end anchor is the function's own closing brace at column 0.
+# Stop there and NOT after the Nth _SKIP_PYTHON_DEPS=false: counting assignments truncates
+# the block as soon as an arm is added, silently.
+awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^}$/{exit} on{print}' \
     "$SETUP_SH" > "$WORK/blk.sh"
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: escape block not found in $SETUP_SH" >&2; exit 1; }
+# The end anchor has to be the one that closes the helper, not some later top-level brace:
+# a slice that ran past it would drag in unrelated code and this file would report its
+# syntax errors instead of the escape's behaviour.
+grep -q '^_fast_path_escapes() {$' "$SETUP_SH" \
+    || { echo "FATAL: _fast_path_escapes is no longer a top-level function in $SETUP_SH" >&2; exit 1; }
+grep -q 'INSTALLED_VER' "$WORK/blk.sh" \
+    && { echo "FATAL: extraction ran past the end of _fast_path_escapes" >&2; exit 1; }
 # An extraction that lost any of the three moving parts would make cases below pass vacuously.
 _arms=$(grep -c '_SKIP_PYTHON_DEPS=false' "$WORK/blk.sh")
 [ "$_arms" = "3" ] || { echo "FATAL: expected 3 escape arms, extracted $_arms" >&2; exit 1; }
@@ -171,7 +180,9 @@ check "cpu pin + cpu wheel"    "$(escape "$(make_venv '2.9.1+cpu' yes v)" "https
 # ask both predicates rather than trust them to stay in step.
 PY_STACK="$SCRIPT_DIR/../../studio/install_python_stack.py"
 if [ -f "$PY_STACK" ] && command -v python3 >/dev/null 2>&1; then
-    awk '/^        _setup_known_nonxpu_leaf\(\) \{/{on=1} on{print} on && /^        \}$/{exit}' \
+    # One indent level shallower than it used to be: the predicate lives in a function now,
+    # not in the body of an elif arm.
+    awk '/^    _setup_known_nonxpu_leaf\(\) \{/{on=1} on{print} on && /^    \}$/{exit}' \
         "$WORK/blk.sh" > "$WORK/leaf.sh"
     grep -q 'rocm\[0-9\]' "$WORK/leaf.sh" || { echo "FATAL: predicate not extracted" >&2; exit 1; }
     # shellcheck disable=SC1091

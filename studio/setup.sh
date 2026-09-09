@@ -1878,6 +1878,176 @@ _uv_offline_requested() {
     return 1
 }
 
+_fast_path_escapes() {
+    # Every reason an "up to date" package on disk is still not a working install. Both
+    # callers that can keep the fast path -- the version compare below and the UV_OFFLINE
+    # rule after it -- run this, so an offline skip is held to exactly the bar an online
+    # one is held to. While these lived inline in the version compare alone, an offline
+    # update of a venv below the desktop backend floor (or carrying the anyio/tokenizers
+    # damage, or stranded on a CPU wheel under an XPU pin) reported success and repaired
+    # nothing: only install_python_stack acts on any of it.
+    #
+    # The incomplete-install check is deliberately NOT hoisted here. Both callers already
+    # ask _setup_install_is_verified for themselves, and they report the same answer with
+    # different wording, so one shared copy would have to lose one of the two messages.
+    #
+    # _SKIP_PYTHON_DEPS is set directly: a POSIX sh function shares the caller's variable
+    # scope, so there is nothing to thread back and no way for a caller to forget to.
+
+    # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+    # $_PKG_NAME itself is current; the fast path would otherwise
+    # never reach install_python_stack's anyio repair (#6797).
+    if "$VENV_DIR/bin/python" -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>/dev/null; then
+        substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    fi
+    # Same shape, same reason: a venv installed before the tokenizers pin can
+    # hold a tokenizers the installed transformers rejects at import, which
+    # takes down every `import transformers` and so the whole MLX stack, while
+    # $_PKG_NAME itself is current. Without this the fast path reports "up to
+    # date" and repairs nothing. Ask the metadata, not an import: the import is
+    # what is broken. Any unreadable half exits 1 and changes nothing.
+    if "$VENV_DIR/bin/python" -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>/dev/null; then
+        substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    fi
+    # If the desktop app specifies a minimum required backend version and the installed
+    # package is older than that requirement, force the dependency pass to upgrade it.
+    if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
+        if ! "$VENV_DIR/bin/python" -c "
+import re, sys
+try:
+    from packaging.version import parse as parse_v
+except ImportError:
+    def parse_v(v):
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
+installed = parse_v(sys.argv[1])
+required = parse_v(sys.argv[2])
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
+" "$INSTALLED_VER" "$UNSLOTH_DESKTOP_BACKEND_VERSION" 2>/dev/null; then
+            substep "$_PKG_NAME $INSTALLED_VER < $UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+    # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
+    # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
+    # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
+    # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
+    _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+    # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
+    # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
+    _setup_pin="${_setup_pin%%\#*}"
+    _setup_pin="${_setup_pin%%\?*}"
+    # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
+    while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
+    # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
+    # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
+    # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
+    _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
+    # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
+    # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
+    # only under a pin: the pin is one-shot, so the installed wheel is the only durable
+    # signal -- the same one _ensure_xpu_triton keys on.
+    _setup_pin_ok=false
+    _setup_pin_is_xpu=false
+    for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_setup_pin_tv" ] || continue
+        _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
+        case "$_setup_pin_ver" in
+            *+xpu)
+                _setup_pin_is_xpu=true
+                _setup_pin_maj=${_setup_pin_ver%%.*}
+                _setup_pin_rest=${_setup_pin_ver#*.}
+                _setup_pin_min=${_setup_pin_rest%%.*}
+                case "$_setup_pin_maj$_setup_pin_min" in
+                    *[!0-9]*) ;;
+                    *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
+                       [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
+                esac
+                ;;
+        esac
+        break
+    done
+    # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
+    # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
+    # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
+    # are pytorch_triton_xpu-* / triton_xpu-*.
+    # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
+    # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
+    # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
+    # escaping on one would force a pass every update that changes nothing.
+    _setup_known_nonxpu_leaf() {
+        case "$1" in
+            cpu|gfx[0-9]*) return 0 ;;
+            cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
+            rocm[0-9]*)
+                # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
+                _setup_rocm_rest="${1#rocm}"
+                case "$_setup_rocm_rest" in
+                    *.*.*) return 1 ;;
+                    *.*)
+                        case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
+                        case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
+                        ;;
+                    *[!0-9]*) return 1 ;;
+                esac
+                ;;
+            *) return 1 ;;
+        esac
+        return 0
+    }
+    _setup_pin_known_nonxpu=false
+    _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
+    _setup_generic_triton=false
+    if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
+        for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+            [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+        done
+    fi
+    if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
+        substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
+        substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
+        # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
+        # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
+        substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
+        _SKIP_PYTHON_DEPS=false
+    fi
+    # Explicit, because setup.sh runs under `set -e` and both call sites put this last in
+    # their branch: an arm whose final command happened to be false would abort the update
+    # rather than force a dependency pass. What this function decides, it decides in
+    # _SKIP_PYTHON_DEPS; its exit status carries nothing.
+    return 0
+}
+
 _SKIP_PYTHON_DEPS=false
 _SKIP_VERSION_CHECK=false
 if [ "$_COLAB_NO_VENV" = true ]; then
@@ -1910,47 +2080,6 @@ sys.exit(2 if conflict else (0 if version else 1))
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
-        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
-        # $_PKG_NAME itself is current; the fast path above would otherwise
-        # never reach install_python_stack's anyio repair (#6797).
-        if "$VENV_DIR/bin/python" -c "
-import re, sys
-from importlib.metadata import version, PackageNotFoundError
-try:
-    parts = version('anyio').split('.')
-    major = int(parts[0])
-    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
-except (PackageNotFoundError, ValueError, IndexError):
-    sys.exit(1)
-sys.exit(0 if (major, minor) >= (4, 14) else 1)
-" 2>/dev/null; then
-            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
-            _SKIP_PYTHON_DEPS=false
-        fi
-        # Same shape, same reason: a venv installed before the tokenizers pin can
-        # hold a tokenizers the installed transformers rejects at import, which
-        # takes down every `import transformers` and so the whole MLX stack, while
-        # $_PKG_NAME itself is current. Without this the fast path reports "up to
-        # date" and repairs nothing. Ask the metadata, not an import: the import is
-        # what is broken. Any unreadable half exits 1 and changes nothing.
-        if "$VENV_DIR/bin/python" -c "
-import sys
-from importlib.metadata import PackageNotFoundError, requires, version
-try:
-    from packaging.requirements import Requirement
-    installed = version('tokenizers')
-    windows = [
-        req.specifier
-        for req in (Requirement(raw) for raw in (requires('transformers') or []))
-        if req.name == 'tokenizers' and req.marker is None
-    ]
-except (PackageNotFoundError, ImportError, ValueError, IndexError):
-    sys.exit(1)
-sys.exit(0 if windows and installed not in windows[0] else 1)
-" 2>/dev/null; then
-            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
-            _SKIP_PYTHON_DEPS=false
-        fi
         # An interrupted install leaves $_PKG_NAME current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
@@ -1958,112 +2087,9 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # If the desktop app specifies a minimum required backend version and the installed
-        # package is older than that requirement, force the dependency pass to upgrade it.
-        if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
-            if ! "$VENV_DIR/bin/python" -c "
-import re, sys
-try:
-    from packaging.version import parse as parse_v
-except ImportError:
-    def parse_v(v):
-        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
-        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
-installed = parse_v(sys.argv[1])
-required = parse_v(sys.argv[2])
-sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
-" "$INSTALLED_VER" "$UNSLOTH_DESKTOP_BACKEND_VERSION" 2>/dev/null; then
-                substep "$_PKG_NAME $INSTALLED_VER < $UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..."
-                _SKIP_PYTHON_DEPS=false
-            fi
-        fi
-        # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
-        # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
-        # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
-        # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
-        _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
-        # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
-        # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
-        _setup_pin="${_setup_pin%%\#*}"
-        _setup_pin="${_setup_pin%%\?*}"
-        # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
-        while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
-        # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
-        # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
-        # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
-        _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
-        # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
-        # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
-        # only under a pin: the pin is one-shot, so the installed wheel is the only durable
-        # signal -- the same one _ensure_xpu_triton keys on.
-        _setup_pin_ok=false
-        _setup_pin_is_xpu=false
-        for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
-            [ -f "$_setup_pin_tv" ] || continue
-            _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
-            case "$_setup_pin_ver" in
-                *+xpu)
-                    _setup_pin_is_xpu=true
-                    _setup_pin_maj=${_setup_pin_ver%%.*}
-                    _setup_pin_rest=${_setup_pin_ver#*.}
-                    _setup_pin_min=${_setup_pin_rest%%.*}
-                    case "$_setup_pin_maj$_setup_pin_min" in
-                        *[!0-9]*) ;;
-                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
-                           [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
-                    esac
-                    ;;
-            esac
-            break
-        done
-        # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
-        # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
-        # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
-        # are pytorch_triton_xpu-* / triton_xpu-*.
-        # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
-        # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
-        # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
-        # escaping on one would force a pass every update that changes nothing.
-        _setup_known_nonxpu_leaf() {
-            case "$1" in
-                cpu|gfx[0-9]*) return 0 ;;
-                cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
-                rocm[0-9]*)
-                    # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
-                    _setup_rocm_rest="${1#rocm}"
-                    case "$_setup_rocm_rest" in
-                        *.*.*) return 1 ;;
-                        *.*)
-                            case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
-                            case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
-                            ;;
-                        *[!0-9]*) return 1 ;;
-                    esac
-                    ;;
-                *) return 1 ;;
-            esac
-            return 0
-        }
-        _setup_pin_known_nonxpu=false
-        _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
-        _setup_generic_triton=false
-        if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
-            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
-                [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
-            done
-        fi
-        if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
-            substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
-            _SKIP_PYTHON_DEPS=false
-        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
-            substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
-            _SKIP_PYTHON_DEPS=false
-        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
-            # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
-            # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
-            substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
-            _SKIP_PYTHON_DEPS=false
-        fi
+        # ...and every remaining escape, shared verbatim with the offline rule below so
+        # the two branches can never disagree about what an up-to-date install owes.
+        _fast_path_escapes
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -2075,9 +2101,15 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         # pass would run can only fail. The choice is between a pass that cannot work and
         # keeping what is on disk, and keeping it is only defensible on the same evidence
         # the incomplete-install guard demands -- so ask the same question.
+        #
+        # ...and then the same escapes the up-to-date branch takes. A verified tree is not
+        # the whole bar: the desktop backend floor, the anyio and tokenizers damage and the
+        # XPU pin all describe an install that verifies and still cannot do its job, and a
+        # skip here that ducked them would repair nothing while reporting success.
         if [ -n "$INSTALLED_VER" ] && _uv_offline_requested && _setup_install_is_verified; then
             substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
             _SKIP_PYTHON_DEPS=true
+            _fast_path_escapes
         else
             substep "could not reach PyPI, updating to be safe..."
         fi

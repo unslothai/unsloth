@@ -4962,6 +4962,156 @@ function Test-UvOfflineRequested {
     return @('1', 'true', 'yes', 'on') -contains $value.ToLowerInvariant()
 }
 
+function Invoke-FastPathEscapes {
+    # Every reason an "up to date" package on disk is still not a working install. Both
+    # callers that can keep the fast path -- the version compare below and the UV_OFFLINE
+    # rule after it -- run this, so an offline skip is held to exactly the bar an online one
+    # is held to. While these lived inline in the version compare alone, an offline update
+    # of a venv below the desktop backend floor (or carrying the anyio or tokenizers damage,
+    # or stranded on a CPU wheel under an XPU pin) reported success and repaired nothing:
+    # only the dependency pass acts on any of it.
+    #
+    # Two things deliberately stay out. Test-StudioInstallVerified, because both callers ask
+    # it for themselves and word the same answer differently, so a shared copy would have to
+    # drop one of the two messages. And the AMD/ROCm probe, which now sits after the whole
+    # if/elseif chain gated on $SkipPythonDeps -- exactly where setup.sh has always kept it,
+    # and reaching both branches for the same reason.
+    #
+    # Scope: a plain assignment inside a function creates a LOCAL, which would silently throw
+    # away everything decided here. Rather than $script:-prefix every arm -- one missed prefix
+    # and the escape is a no-op -- the flag is copied in, written unqualified by the arms
+    # exactly as they did inline, and published once on the way out.
+    $SkipPythonDeps = $script:SkipPythonDeps
+
+    # A pre-#6483 install stuck on anyio>=4.14 would skip the repair (#6797), so force it.
+    $_anyioBad = $false
+    try {
+        & python -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>$null
+        if ($LASTEXITCODE -eq 0) { $_anyioBad = $true }
+    } catch {}
+    if ($_anyioBad) {
+        substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
+        $SkipPythonDeps = $false
+    }
+    # Same shape, same reason, and the sibling of the probe setup.sh runs: a venv
+    # installed before the tokenizers pin can hold a tokenizers the installed
+    # transformers rejects at import, which takes down every `import transformers`
+    # and so the whole model stack, while $_PkgName itself is current. Without this
+    # the fast path reports "up to date" and repairs nothing. Ask the metadata, not
+    # an import: the import is what is broken. Any unreadable half exits 1 and
+    # changes nothing.
+    $_tokenizersBad = $false
+    try {
+        & python -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>$null
+        if ($LASTEXITCODE -eq 0) { $_tokenizersBad = $true }
+    } catch {}
+    if ($_tokenizersBad) {
+        substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..." "Cyan"
+        $SkipPythonDeps = $false
+    }
+    # If the desktop app specifies a minimum required backend version and the installed
+    # package is older than that requirement, force the dependency pass to upgrade it.
+    if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
+        $_desktopVerBad = $false
+        try {
+            & python -c "
+import re, sys
+try:
+    from packaging.version import parse as parse_v
+except ImportError:
+    def parse_v(v):
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
+installed = parse_v(sys.argv[1])
+required = parse_v(sys.argv[2])
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
+" "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null
+            if ($LASTEXITCODE -ne 0) { $_desktopVerBad = $true }
+        } catch {}
+        if ($_desktopVerBad) {
+            substep "$_PkgName $InstalledVer < $env:UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..." "Cyan"
+            $SkipPythonDeps = $false
+        }
+    }
+    # ...and the same for an Intel Arc / Data Center GPU, or an up-to-date package on a CPU
+    # wheel stays on CPU torch forever. $SkipPythonDeps is re-tested so an escape taken above
+    # does not read twice. Both escapes below exist to reach the XPU install and its two
+    # remediations, all three gated on $XpuIndexUrl (set only when the resolved leaf is xpu),
+    # so $_xpuIsReachable holds them back where a pin or no-torch mode sends this host
+    # elsewhere and clearing the fast path would install nothing and re-fire forever.
+    $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
+    $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
+    if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
+        # The WHEEL, not the runtime: torch.xpu.is_available() is also false for a supported
+        # +xpu wheel on a wedged driver, and the dependency pass cannot repair a driver, so
+        # keying on it would force a full resolution every update for nothing.
+        if (-not (Test-VenvTorchIsXpuSupported -VenvPath $VenvDir)) {
+            substep "Intel GPU detected but installed PyTorch is not a supported XPU build -- reinstalling XPU PyTorch" "Cyan"
+            $SkipPythonDeps = $false
+        }
+    }
+    # Keyed off the installed wheel as well as the scan: an explicit xpu pin on a host the
+    # scan skips (a mixed NVIDIA + Intel box) still ends up on XPU with $script:IsIntelXpu
+    # false. The bitsandbytes floor and the Triton replacement live in the dependency pass
+    # below, so a venv that reached +xpu without them would fast-path past them forever.
+    if ($SkipPythonDeps -and $_xpuIsReachable -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
+        $_xpuDepsCode = "import importlib.metadata as m; " +
+            "print('BNB=' + next((d.version for d in m.distributions() " +
+            "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
+            "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
+            "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
+        $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
+        if (-not $_xpuDeps.Ok) {
+            # A probe that did not answer says nothing about the venv, and reading that as
+            # "dependencies are current" would fast-path past both remediations forever.
+            # Same direction as an unparseable version below: one extra pass.
+            substep "Intel XPU dependencies could not be read -- running the dependency pass" "Cyan"
+            $SkipPythonDeps = $false
+        } else {
+            $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
+            # An unreadable version is treated as stale, the safe direction: one extra pass,
+            # never a venv left without 4-bit kernels. Trailing suffixes (0.51.0.dev0) are
+            # dropped, not cast.
+            $_bnbNum = ($_bnbVer -replace '[^0-9.].*$', '').TrimEnd('.')
+            $_bnbStale = $true
+            if ($_bnbNum -match '^\d+\.\d+') {
+                try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
+            }
+            $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
+            if ($_bnbStale -or $_tritonWinPresent) {
+                substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
+    }
+
+    $script:SkipPythonDeps = $SkipPythonDeps
+}
+
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
 
@@ -4991,56 +5141,6 @@ sys.exit(2 if conflict else (0 if version else 1))
     } elseif ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
-        # A pre-#6483 install stuck on anyio>=4.14 would skip the repair (#6797), so force it.
-        $_anyioBad = $false
-        try {
-            & python -c "
-import re, sys
-from importlib.metadata import version, PackageNotFoundError
-try:
-    parts = version('anyio').split('.')
-    major = int(parts[0])
-    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
-except (PackageNotFoundError, ValueError, IndexError):
-    sys.exit(1)
-sys.exit(0 if (major, minor) >= (4, 14) else 1)
-" 2>$null
-            if ($LASTEXITCODE -eq 0) { $_anyioBad = $true }
-        } catch {}
-        if ($_anyioBad) {
-            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
-            $SkipPythonDeps = $false
-        }
-        # Same shape, same reason, and the sibling of the probe setup.sh runs: a venv
-        # installed before the tokenizers pin can hold a tokenizers the installed
-        # transformers rejects at import, which takes down every `import transformers`
-        # and so the whole model stack, while $_PkgName itself is current. Without this
-        # the fast path reports "up to date" and repairs nothing. Ask the metadata, not
-        # an import: the import is what is broken. Any unreadable half exits 1 and
-        # changes nothing.
-        $_tokenizersBad = $false
-        try {
-            & python -c "
-import sys
-from importlib.metadata import PackageNotFoundError, requires, version
-try:
-    from packaging.requirements import Requirement
-    installed = version('tokenizers')
-    windows = [
-        req.specifier
-        for req in (Requirement(raw) for raw in (requires('transformers') or []))
-        if req.name == 'tokenizers' and req.marker is None
-    ]
-except (PackageNotFoundError, ImportError, ValueError, IndexError):
-    sys.exit(1)
-sys.exit(0 if windows and installed not in windows[0] else 1)
-" 2>$null
-            if ($LASTEXITCODE -eq 0) { $_tokenizersBad = $true }
-        } catch {}
-        if ($_tokenizersBad) {
-            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..." "Cyan"
-            $SkipPythonDeps = $false
-        }
         # An interrupted install leaves $_PkgName current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
@@ -5049,30 +5149,45 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
-        # If the desktop app specifies a minimum required backend version and the installed
-        # package is older than that requirement, force the dependency pass to upgrade it.
-        if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
-            $_desktopVerBad = $false
-            try {
-                & python -c "
-import re, sys
-try:
-    from packaging.version import parse as parse_v
-except ImportError:
-    def parse_v(v):
-        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
-        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
-installed = parse_v(sys.argv[1])
-required = parse_v(sys.argv[2])
-sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
-" "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null
-                if ($LASTEXITCODE -ne 0) { $_desktopVerBad = $true }
-            } catch {}
-            if ($_desktopVerBad) {
-                substep "$_PkgName $InstalledVer < $env:UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..." "Cyan"
-                $SkipPythonDeps = $false
-            }
+        # ...and every remaining escape, shared verbatim with the offline rule below so the
+        # two branches can never disagree about what an up-to-date install owes.
+        Invoke-FastPathEscapes
+    } elseif ($InstalledVer -and $LatestVer) {
+        substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
+    } elseif (-not $LatestVer) {
+        # PyPI unreachable. Updating to be safe stays the default -- an unreachable PyPI is
+        # usually a blip, and a pass over a warm cache is cheap.
+        #
+        # UV_OFFLINE is the exception, because it is not a blip: the caller has declared there
+        # is no network, uv refuses to reach one, and so every install command that pass would
+        # run can only fail. The choice is between a pass that cannot work and keeping what is
+        # on disk, and keeping it is only defensible on the same evidence the incomplete-install
+        # guard demands -- so ask the same question.
+        #
+        # ...and then the same escapes the up-to-date branch takes. A verified tree is not the
+        # whole bar: the desktop backend floor, the anyio and tokenizers damage and a CPU wheel
+        # under an XPU pin all describe an install that verifies and still cannot do its job,
+        # and a skip here that ducked them would repair nothing while reporting success.
+        if ($InstalledVer -and (Test-UvOfflineRequested) -and (Test-StudioInstallVerified)) {
+            substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
+            $SkipPythonDeps = $true
+            Invoke-FastPathEscapes
+        } else {
+            substep "could not reach PyPI, updating to be safe..."
         }
+    }
+
+    # A current package can still have CPU torch on an AMD host, because nothing above
+    # looks at the wheel's flavour. Placed after the chain and gated on the flag rather
+    # than hoisted into Invoke-FastPathEscapes, so that it covers the UV_OFFLINE branch
+    # too and lands in the same place setup.sh keeps it: there the equivalent block sits
+    # after the whole if/elif chain under `[ "$_SKIP_PYTHON_DEPS" = true ]`, which is what
+    # has always made the POSIX side check both branches. Inside the wrapper rather than
+    # outside it only for tidiness: $SkipPythonDeps is $false whenever the chain is skipped.
+    #
+    # Skipping the probe once the pass is already forced is the point of the gate: it is a
+    # bounded subprocess whose answer could no longer change the outcome.
+    if ($SkipPythonDeps) {
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
@@ -5091,74 +5206,6 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
             }
-        }
-        # ...and the same for an Intel Arc / Data Center GPU, or an up-to-date package on a CPU
-        # wheel stays on CPU torch forever. $SkipPythonDeps is re-tested so an escape taken above
-        # does not read twice. Both escapes below exist to reach the XPU install and its two
-        # remediations, all three gated on $XpuIndexUrl (set only when the resolved leaf is xpu),
-        # so $_xpuIsReachable holds them back where a pin or no-torch mode sends this host
-        # elsewhere and clearing the fast path would install nothing and re-fire forever.
-        $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
-        $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
-        if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
-            # The WHEEL, not the runtime: torch.xpu.is_available() is also false for a supported
-            # +xpu wheel on a wedged driver, and the dependency pass cannot repair a driver, so
-            # keying on it would force a full resolution every update for nothing.
-            if (-not (Test-VenvTorchIsXpuSupported -VenvPath $VenvDir)) {
-                substep "Intel GPU detected but installed PyTorch is not a supported XPU build -- reinstalling XPU PyTorch" "Cyan"
-                $SkipPythonDeps = $false
-            }
-        }
-        # Keyed off the installed wheel as well as the scan: an explicit xpu pin on a host the
-        # scan skips (a mixed NVIDIA + Intel box) still ends up on XPU with $script:IsIntelXpu
-        # false. The bitsandbytes floor and the Triton replacement live in the dependency pass
-        # below, so a venv that reached +xpu without them would fast-path past them forever.
-        if ($SkipPythonDeps -and $_xpuIsReachable -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
-            $_xpuDepsCode = "import importlib.metadata as m; " +
-                "print('BNB=' + next((d.version for d in m.distributions() " +
-                "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
-                "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
-                "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
-            $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
-            if (-not $_xpuDeps.Ok) {
-                # A probe that did not answer says nothing about the venv, and reading that as
-                # "dependencies are current" would fast-path past both remediations forever.
-                # Same direction as an unparseable version below: one extra pass.
-                substep "Intel XPU dependencies could not be read -- running the dependency pass" "Cyan"
-                $SkipPythonDeps = $false
-            } else {
-                $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
-                # An unreadable version is treated as stale, the safe direction: one extra pass,
-                # never a venv left without 4-bit kernels. Trailing suffixes (0.51.0.dev0) are
-                # dropped, not cast.
-                $_bnbNum = ($_bnbVer -replace '[^0-9.].*$', '').TrimEnd('.')
-                $_bnbStale = $true
-                if ($_bnbNum -match '^\d+\.\d+') {
-                    try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
-                }
-                $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
-                if ($_bnbStale -or $_tritonWinPresent) {
-                    substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
-                    $SkipPythonDeps = $false
-                }
-            }
-        }
-    } elseif ($InstalledVer -and $LatestVer) {
-        substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
-    } elseif (-not $LatestVer) {
-        # PyPI unreachable. Updating to be safe stays the default -- an unreachable PyPI is
-        # usually a blip, and a pass over a warm cache is cheap.
-        #
-        # UV_OFFLINE is the exception, because it is not a blip: the caller has declared there
-        # is no network, uv refuses to reach one, and so every install command that pass would
-        # run can only fail. The choice is between a pass that cannot work and keeping what is
-        # on disk, and keeping it is only defensible on the same evidence the incomplete-install
-        # guard demands -- so ask the same question.
-        if ($InstalledVer -and (Test-UvOfflineRequested) -and (Test-StudioInstallVerified)) {
-            substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
-            $SkipPythonDeps = $true
-        } else {
-            substep "could not reach PyPI, updating to be safe..."
         }
     }
 }
