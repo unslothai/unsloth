@@ -706,3 +706,74 @@ test("a cache-reference restart does not forget an edit made before it", async (
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
 });
+
+test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", async () => {
+  useTrainingConfigStore.getState().reset();
+  let calls = 0;
+  setAuthFetchHandler(() => {
+    calls += 1;
+    return Promise.resolve(
+      Response.json({
+        id: "org/reload-model",
+        config: {
+          lora: {
+            lora_r: 8,
+            lora_alpha: 8,
+            target_modules: [...LLAMA_TARGETS],
+          },
+        },
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    );
+  });
+
+  // The shape rehydration leaves behind: CPT active, the pre-CPT values the user
+  // configured persisted, defaults already recorded as applied for this model.
+  useTrainingConfigStore.setState({
+    selectedModel: "org/reload-model",
+    modelDefaultsAppliedFor: "org/reload-model",
+    trainingMethod: "cpt",
+    loraRank: 128,
+    loraAlpha: 32,
+    loraVariant: "rslora",
+    trainingMethodProvenance: {
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: null,
+      datasetFormatBeforeCpt: null,
+      targetModulesBeforeCpt: null,
+      loraRankBeforeCpt: 64,
+      loraAlphaBeforeCpt: 64,
+      loraVariantBeforeCpt: "dora",
+    },
+  });
+
+  useTrainingConfigStore.getState().ensureModelDefaultsLoaded();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (
+      calls > 0 &&
+      !useTrainingConfigStore.getState().isLoadingModelDefaults
+    ) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(calls > 0, "the mount-time defaults request never ran");
+
+  const provenance = useTrainingConfigStore.getState().trainingMethodProvenance;
+  assert.equal(provenance.loraRankBeforeCpt, 64);
+  assert.equal(provenance.loraAlphaBeforeCpt, 64);
+  assert.equal(provenance.loraVariantBeforeCpt, "dora");
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.loraRank, 64);
+  assert.equal(state.loraAlpha, 64);
+  assert.equal(state.loraVariant, "dora");
+});
