@@ -326,14 +326,16 @@ def test_authenticated_list_and_toggle_routes(isolated_skills, monkeypatch):
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     client = TestClient(app)
 
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_AGENT_SKILLS_CACHE", (float("inf"), []))
     response = client.get("/api/skills")
     assert response.status_code == 200
     assert response.json()[0]["name"] == "api-skill"
+    assert inference_routes._AGENT_SKILLS_CACHE == (0.0, [])
     response = client.put("/api/skills/api-skill/enabled", json = {"enabled": False})
     assert response.status_code == 200
     assert response.json()["enabled"] is False
-
-    from routes import inference as inference_routes
 
     monkeypatch.setattr(
         inference_routes, "_AGENT_SKILLS_CACHE", (float("inf"), [{"name": "stale"}])

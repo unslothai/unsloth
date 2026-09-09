@@ -39,9 +39,14 @@ class SkillEnabledRequest(BaseModel):
 @router.get("", response_model = list[SkillRecord])
 def get_skills(current_subject: str = Depends(get_current_subject)) -> list[dict[str, Any]]:
     try:
-        return list_skills()
+        records = list_skills()
     except SkillError as exc:
         raise HTTPException(status_code = 500, detail = "Could not read Agent Skills.") from exc
+    # The client just saw the folders; the next inference scan must not serve an older snapshot.
+    from routes.inference import _invalidate_agent_skills_cache
+
+    _invalidate_agent_skills_cache()
+    return records
 
 
 @router.put("/{name}/enabled", response_model = SkillRecord)
