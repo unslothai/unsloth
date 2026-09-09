@@ -80,6 +80,7 @@ LOCK_CHAIN = (
     "Restore-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
     "Test-StudioCanDefineNativeTypes",
+    "Test-StudioEmitInChildProcess",
     "New-StudioDynamicAssembly",
     "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType",
@@ -1709,28 +1710,37 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 
-def _gate(source: str) -> str:
-    """The capability gate on its own, from whichever of the two scripts is passed."""
+def _one_function(source: str, name: str) -> str:
     match = re.search(
-        r"^(?P<indent>\s*)function Test-StudioCanDefineNativeTypes \{.*?\n(?P=indent)\}\n",
+        rf"^(?P<indent>\s*)function {name} \{{.*?\n(?P=indent)\}}\n",
         source,
         flags = re.DOTALL | re.MULTILINE,
     )
-    assert match is not None, "Test-StudioCanDefineNativeTypes not found"
+    assert match is not None, f"{name} not found"
     return match.group(0)
 
 
-# 0 is "no policy", and only 0 may emit. 1 is the one worth a test of its own: audit sounds
-# like "observe and allow", and for option 19 Dynamic Code Security it is not. Microsoft
-# documents that unsigned System.Reflection.Emit assemblies are ALWAYS blocked when that
-# option is set, that there is no audit mode for it on Windows 10 or Windows 11 before 24H2,
-# and that a blocked dynamic load usually stops or crashes the parent process. Win32_DeviceGuard
-# does not report the option bit, so an active policy of either kind has to send the run down
-# the lexical path. Losing exact resolution is recoverable; a crashed installer is not.
+def _gate(source: str) -> str:
+    """The capability gate plus the child probe it delegates to, from either script."""
+    return "\n".join(
+        _one_function(source, name)
+        for name in ("Test-StudioCanDefineNativeTypes", "Test-StudioEmitInChildProcess")
+    )
+
+
+# Status 0 is "no policy", and it answers without spawning anything. Anything else is a
+# policy whose OPTIONS decide the answer, and Win32_DeviceGuard does not report them:
+# option 19 Dynamic Code Security always blocks unsigned System.Reflection.Emit assemblies
+# and is enforced even in an audit policy before Windows 11 24H2, while an audit policy
+# without it emits perfectly well. So the gate asks a child process rather than guessing,
+# and what these assert is that it delegates rather than deciding.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
-@pytest.mark.parametrize("status,expected", [("0", "True"), ("1", "False"), ("2", "False")])
-def test_only_a_machine_with_no_user_mode_policy_may_emit(script: str, status: str, expected: str):
+@pytest.mark.parametrize("status", ["1", "2"])
+@pytest.mark.parametrize("probe,expected", [("$true", "True"), ("$false", "False")])
+def test_an_active_policy_is_decided_by_the_child_probe(
+    script: str, status: str, probe: str, expected: str
+):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
     result = _run_powershell(
         "\n".join(
@@ -1743,12 +1753,66 @@ def test_only_a_machine_with_no_user_mode_policy_may_emit(script: str, status: s
                 "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
                 f"    [pscustomobject]@{{ UsermodeCodeIntegrityPolicyEnforcementStatus = {status} }}",
                 "}",
+                "$script:ProbeCalls = 0",
+                f"function Test-StudioEmitInChildProcess {{ $script:ProbeCalls++; return {probe} }}",
                 'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
+                'Write-Output "CALLS:$script:ProbeCalls"',
             ]
         )
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "CAN:") == [f"CAN:{expected}"]
+    assert _lines(result, "CALLS:") == ["CALLS:1"]
+
+
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+def test_no_policy_answers_without_spawning_a_probe(script: str):
+    """The probe costs a process. A machine with no policy is the overwhelming majority and
+    must not pay for it."""
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _gate(source),
+                "function Get-CimInstance {",
+                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
+                "    [pscustomobject]@{ UsermodeCodeIntegrityPolicyEnforcementStatus = 0 }",
+                "}",
+                "$script:ProbeCalls = 0",
+                "function Test-StudioEmitInChildProcess { $script:ProbeCalls++; return $false }",
+                'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
+                'Write-Output "CALLS:$script:ProbeCalls"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "CAN:") == ["CAN:True"]
+    assert _lines(result, "CALLS:") == ["CALLS:0"]
+
+
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+def test_the_child_probe_answers_for_real_on_this_host(script: str):
+    """Not a stub: the real probe, spawning a real interpreter. It looks for the host under
+    $PSHOME by its Windows leaf name, so on Linux it correctly finds nothing and refuses,
+    which is the fail-safe direction. What this pins is that it returns a boolean and does
+    not throw, since the gate calls it under ErrorActionPreference Stop.
+    """
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _one_function(source, "Test-StudioEmitInChildProcess"),
+                '$answer = Test-StudioEmitInChildProcess',
+                'Write-Output "TYPE:$($answer.GetType().Name)"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "TYPE:") == ["TYPE:Boolean"]
 
 
 @requires_pwsh
@@ -1796,6 +1860,7 @@ def test_each_import_carries_the_charset_its_declaration_had(method: str, charse
                     "Write-StudioLine",
                     "Write-StudioFinalPathDegraded",
                     "Test-StudioCanDefineNativeTypes",
+    "Test-StudioEmitInChildProcess",
                     "New-StudioDynamicAssembly",
                     "New-StudioEmittedNativeType",
                     "Initialize-StudioFinalPathNativeType",
@@ -1834,6 +1899,7 @@ def test_a_published_type_counts_even_when_creation_threw():
                     "Write-StudioLine",
                     "Write-StudioFinalPathDegraded",
                     "Test-StudioCanDefineNativeTypes",
+    "Test-StudioEmitInChildProcess",
                     "New-StudioDynamicAssembly",
                     "New-StudioEmittedNativeType",
                     "Initialize-StudioFinalPathNativeType",

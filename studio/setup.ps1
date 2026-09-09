@@ -1610,21 +1610,62 @@ function Test-StudioCanDefineNativeTypes {
         $script:StudioCanDefineNativeTypes = $false
         return $false
     }
-    $enforced = $false
+    $active = $false
     try {
         $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
             -ClassName "Win32_DeviceGuard" -ErrorAction Stop
-        # 0 off, 1 audit, 2 enforced. Audit counts too: option 19 Dynamic Code
-        # Security always blocks unsigned System.Reflection.Emit assemblies, it has
-        # no audit mode on Windows 10 or Windows 11 before 24H2, and a blocked
-        # dynamic load usually stops or crashes the parent process. Same reasoning
-        # as install.ps1, which carries the full note.
+        # 0 off, 1 audit, 2 enforced.
         if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
-            $enforced = $true
+            $active = $true
         }
     } catch {}
-    $script:StudioCanDefineNativeTypes = -not $enforced
+    if (-not $active) {
+        $script:StudioCanDefineNativeTypes = $true
+        return $true
+    }
+    # Which policy decides this, and Win32_DeviceGuard does not say. Option 19 Dynamic Code
+    # Security always blocks unsigned System.Reflection.Emit assemblies and is enforced even in
+    # an audit policy before Windows 11 24H2, while an audit policy without it emits fine. So a
+    # child process tries it. Same reasoning as install.ps1, which carries the full note.
+    $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
     return $script:StudioCanDefineNativeTypes
+}
+
+# The same emit, in a process that is allowed to die. A blocked dynamic load usually stops the
+# parent, so this is asked in a child; silence is refusal.
+function Test-StudioEmitInChildProcess {
+    $probe = @'
+try {
+    $name = New-Object System.Reflection.AssemblyName "UnslothStudioEmitProbe"
+    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
+    $assembly = $null
+    try { $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, $access) }
+    catch { $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, $access) }
+    $module = $assembly.DefineDynamicModule("UnslothStudioEmitProbe")
+    $builder = $module.DefineType("UnslothStudioEmitProbe", "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
+    $null = $builder.DefinePInvokeMethod("CloseHandle", "kernel32.dll", "CloseHandle",
+        "Public, Static, HideBySig, PinvokeImpl",
+        [System.Reflection.CallingConventions]::Standard, [bool], @([IntPtr]),
+        [System.Runtime.InteropServices.CallingConvention]::Winapi,
+        [System.Runtime.InteropServices.CharSet]::Ansi)
+    $null = $builder.CreateType()
+    if ("UnslothStudioEmitProbe" -as [type]) { Write-Output "STUDIO_EMIT_OK" }
+} catch {}
+'@
+    # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other way.
+    $hostExe = $null
+    try {
+        $leaf = if ($PSVersionTable.PSEdition -eq "Core") { "pwsh.exe" } else { "powershell.exe" }
+        $candidate = Join-Path $PSHOME $leaf
+        if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate }
+    } catch {}
+    if (-not $hostExe) { return $false }
+    try {
+        $out = & $hostExe -NoProfile -NonInteractive -Command $probe 2>$null
+        return (($out | Out-String) -match "STUDIO_EMIT_OK")
+    } catch {
+        return $false
+    }
 }
 
 function New-StudioDynamicAssembly {

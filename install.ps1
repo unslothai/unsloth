@@ -861,7 +861,9 @@ function Install-UnslothStudio {
     # A machine enforcing user-mode code integrity puts PowerShell in Constrained
     # Language, which is the first check and the one that fires in practice; the
     # Device Guard probe is the belt to that pair of braces, for a policy that
-    # somehow left the language mode alone.
+    # somehow left the language mode alone. When one IS active, the answer comes from
+    # a child process that tries the emit, not from a guess about which options the
+    # policy set.
     $script:StudioCanDefineNativeTypes = $null
     function Test-StudioCanDefineNativeTypes {
         if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
@@ -873,27 +875,69 @@ function Install-UnslothStudio {
         }
         # Absent on a host with no Device Guard at all, which is the common case and
         # is not a reason to refuse: unreadable means unrestricted here.
-        $enforced = $false
+        $active = $false
         try {
             $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
                 -ClassName "Win32_DeviceGuard" -ErrorAction Stop
-            # 0 off, 1 audit, 2 enforced. Audit counts as well, which is not the
-            # obvious reading. Microsoft documents that option 19 Dynamic Code
-            # Security ALWAYS blocks loading unsigned assemblies built with
-            # System.Reflection.Emit, that there is no audit mode for it on
-            # Windows 10 or on Windows 11 before 24H2 (it is "turned on and
-            # enforced even if the policy is in audit mode" there), and that a
-            # blocked dynamic load usually stops or crashes the parent process.
-            # A crash is not something the catch below can recover, and losing
-            # exact path resolution is: so any active user-mode policy sends this
-            # host down the lexical path rather than gambling on the option bit,
-            # which Win32_DeviceGuard does not report.
+            # 0 off, 1 audit, 2 enforced.
             if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
-                $enforced = $true
+                $active = $true
             }
         } catch {}
-        $script:StudioCanDefineNativeTypes = -not $enforced
+        if (-not $active) {
+            $script:StudioCanDefineNativeTypes = $true
+            return $true
+        }
+        # A policy is active, and WHICH policy decides this. Option 19 Dynamic Code
+        # Security always blocks unsigned System.Reflection.Emit assemblies and has no
+        # audit mode on Windows 10 or Windows 11 before 24H2, where it is enforced even
+        # in an audit policy; an audit policy WITHOUT that option emits perfectly well.
+        # Win32_DeviceGuard does not report the option bit, so either guess costs a
+        # population: refusing everything sends every audit-mode machine down the lexical
+        # path, and allowing everything risks the process. Ask the machine instead.
+        $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
         return $script:StudioCanDefineNativeTypes
+    }
+
+    # The same emit, in a process that is allowed to die. Microsoft documents a blocked
+    # dynamic load as usually stopping or crashing the parent, which is precisely why
+    # this is not attempted in-process: a child that vanishes is an answer, and the same
+    # event here would be the installer vanishing. Silence is refusal, so a probe that
+    # cannot be spawned at all lands on the lexical path rather than on optimism.
+    function Test-StudioEmitInChildProcess {
+        $probe = @'
+try {
+    $name = New-Object System.Reflection.AssemblyName "UnslothStudioEmitProbe"
+    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
+    $assembly = $null
+    try { $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, $access) }
+    catch { $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, $access) }
+    $module = $assembly.DefineDynamicModule("UnslothStudioEmitProbe")
+    $builder = $module.DefineType("UnslothStudioEmitProbe", "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
+    $null = $builder.DefinePInvokeMethod("CloseHandle", "kernel32.dll", "CloseHandle",
+        "Public, Static, HideBySig, PinvokeImpl",
+        [System.Reflection.CallingConventions]::Standard, [bool], @([IntPtr]),
+        [System.Runtime.InteropServices.CallingConvention]::Winapi,
+        [System.Runtime.InteropServices.CharSet]::Ansi)
+    $null = $builder.CreateType()
+    if ("UnslothStudioEmitProbe" -as [type]) { Write-Output "STUDIO_EMIT_OK" }
+} catch {}
+'@
+        # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other
+        # way, and the emit that matters is the one this interpreter will make.
+        $hostExe = $null
+        try {
+            $leaf = if ($PSVersionTable.PSEdition -eq "Core") { "pwsh.exe" } else { "powershell.exe" }
+            $candidate = Join-Path $PSHOME $leaf
+            if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate }
+        } catch {}
+        if (-not $hostExe) { return $false }
+        try {
+            $out = & $hostExe -NoProfile -NonInteractive -Command $probe 2>$null
+            return (($out | Out-String) -match "STUDIO_EMIT_OK")
+        } catch {
+            return $false
+        }
     }
 
     function New-StudioDynamicAssembly {
