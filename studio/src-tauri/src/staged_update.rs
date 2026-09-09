@@ -405,6 +405,25 @@ mod tests {
     }
 
     #[test]
+    fn a_retained_desktop_update_bundle_survives_the_cleanup() {
+        // The classic update installs this bundle after the backend step, and it
+        // lives in the same directory as everything cleaned up above.
+        let home = temp_home("bundle");
+        make_runtime(&home, "old");
+        stage_ready(&home);
+        for name in [".desktop-update-bundle", ".desktop-update-bundle.json"] {
+            fs::write(home.join(name), b"bundle").unwrap();
+        }
+
+        reconcile_legacy_at_launch(&home);
+
+        for name in [".desktop-update-bundle", ".desktop-update-bundle.json"] {
+            assert_eq!(fs::read(home.join(name)).unwrap(), b"bundle", "{name}");
+        }
+        cleanup(home);
+    }
+
+    #[test]
     fn a_half_written_stage_is_removed() {
         let home = temp_home("partial-stage");
         make_runtime(&home, "old");
