@@ -68,6 +68,15 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
   assert.match(adapter, /incompleteLabel\(info\?\.reason \?\? fromStatus\)/);
 });
 
+test("a Stop while a model loads arrives as a Stop", () => {
+  // waitForModelReady's rejection is not caught inside run(), so a bare Error would reach
+  // assistant-ui as reason "error" and the turn would replay as a failure, not a Stop.
+  assert.match(
+    adapter,
+    /reject\(abortSignal\.reason \?\? new DOMException\("Aborted", "AbortError"\)\)/,
+  );
+});
+
 test("only a deliberate Stop is replayed as one", () => {
   // Collapsing this back to a constant tells the model a failed turn was stopped.
   assert.match(

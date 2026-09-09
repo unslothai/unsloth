@@ -2112,7 +2112,9 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
       if (abortSignal?.aborted) {
-        reject(new Error("Aborted"));
+        // The real reason, not a bare Error: this rejection leaves the adapter uncaught, and a
+        // Stop that does not arrive as an AbortError is filed as a failed turn (#10428 review).
+        reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
         return;
       }
       if (!useChatRuntimeStore.getState().modelLoading) {
