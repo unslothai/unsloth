@@ -5877,7 +5877,25 @@ function Test-TargetPackageVersion {
 # directory (six.py has no directory at all; pillow's is PIL). A pin whose payload is
 # neither -- nothing recorded either -- reads as stale forever, and then every update
 # deletes and refetches a healthy several-hundred-MB sidecar.
-$SidecarCommonPins = @("huggingface_hub==1.8.0", "hf_xet==1.4.2", "tiktoken")
+# tiktoken is deliberately not a pin. Install-T5Sidecar treats its install as optional (no
+# wheel for the interpreter is a warning, not a failure), so a sidecar without it is a
+# finished sidecar; as a pin it would read stale on every update and be wiped and refetched
+# three times over, for a package the rebuild would fail to add again. Repair-SidecarTiktoken
+# retries it alone instead. Mirrors _SIDECAR_COMMON_PINS in setup.sh.
+$SidecarCommonPins = @("huggingface_hub==1.8.0", "hf_xet==1.4.2")
+
+function Repair-SidecarTiktoken {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [Parameter(Mandatory = $true)][string]$DirName
+    )
+    $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue)
+    if ($present.Count -gt 0) { return }
+    $output = Fast-Install --target $TargetDir --no-deps tiktoken 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
+    }
+}
 
 function Test-SidecarCurrent {
     # One predicate for both shells: install_manifest.py answers, setup.sh asks the same
@@ -5991,16 +6009,19 @@ if ($_NeedT5_530) {
     Install-T5Sidecar -TargetDir $VenvT5_530Dir -Version "5.3.0" -Label "5.3" -DirName ".venv_t5_530" -Reason "for newer model support"
 } else {
     step "transformers" "5.3.0 sidecar current"
+    Repair-SidecarTiktoken -TargetDir $VenvT5_530Dir -DirName ".venv_t5_530"
 }
 if ($_NeedT5_550) {
     Install-T5Sidecar -TargetDir $VenvT5_550Dir -Version "5.5.0" -Label "5.5" -DirName ".venv_t5_550" -Reason "for Gemma 4 support"
 } else {
     step "transformers" "5.5.0 sidecar current"
+    Repair-SidecarTiktoken -TargetDir $VenvT5_550Dir -DirName ".venv_t5_550"
 }
 if ($_NeedT5_510) {
     Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.10.2" -Label "5.10" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
 } else {
     step "transformers" "5.10.2 sidecar current"
+    Repair-SidecarTiktoken -TargetDir $VenvT5_510Dir -DirName ".venv_t5_510"
 }
 $ErrorActionPreference = $script:PrevEAP_T5
 
