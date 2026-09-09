@@ -226,7 +226,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     canExpand: boolean;
   } | null>(null);
   const captionRef = useRef<HTMLDivElement | null>(null);
-  const isPendingImage = !imagePart && status?.type === "running";
+  const isPendingImage = !imagePart && isRunning;
 
   const promptOverflowMeasured = promptOverflow?.prompt === captionPrompt;
   const promptCanExpand = promptOverflowMeasured

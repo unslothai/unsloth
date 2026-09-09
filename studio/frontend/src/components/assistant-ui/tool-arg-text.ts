@@ -59,3 +59,81 @@ export const isToolCallRunning = (
 export const isToolCallCancelled = (
   status?: ToolCallMessagePartStatus,
 ): boolean => status?.type === "incomplete" && status.reason === "cancelled";
+
+export function toolFallbackLabel(status?: ToolCallMessagePartStatus): string {
+  if (isToolCallCancelled(status)) return "Cancelled tool";
+  return isToolCallRunning(status) ? "Using tool" : "Used tool";
+}
+
+export interface WebSearchToolNameState {
+  isRunning: boolean;
+  isFindInPage: boolean;
+  isUrlFetch: boolean;
+  isImageOnly: boolean;
+  foundImages: boolean;
+  displayDomain: string;
+  pattern: string;
+  query: string;
+  imageLabel: string;
+}
+
+// The trigger prefixes these with "Using tool" while the call runs.
+export function webSearchToolName(state: WebSearchToolNameState): string {
+  const {
+    isRunning,
+    isFindInPage,
+    isUrlFetch,
+    isImageOnly,
+    foundImages,
+    displayDomain,
+    pattern,
+    query,
+    imageLabel,
+  } = state;
+
+  if (isFindInPage) {
+    const page = displayDomain || "page";
+    if (isRunning) {
+      return pattern
+        ? `Finding "${pattern}" in ${page}…`
+        : `Searching ${page}…`;
+    }
+    // Neutral: the action carries no match status, so a finished call is not
+    // evidence the pattern was there.
+    return pattern
+      ? `Searched for "${pattern}" in ${page}`
+      : `Searched ${page}`;
+  }
+  if (isUrlFetch) {
+    if (isRunning) return `Reading ${displayDomain || "page"}…`;
+    return displayDomain ? `Read ${displayDomain}` : "Read page";
+  }
+  if (isImageOnly) {
+    if (isRunning) return `Finding images for “${imageLabel}”`;
+    return foundImages
+      ? `Found images for “${imageLabel}”`
+      : `No images for “${imageLabel}”`;
+  }
+  if (!query) return isRunning ? "Searching…" : "Web Search";
+  if (isRunning) return `Searching for "${query}"…`;
+  return imageLabel && foundImages
+    ? `Searched "${query}" · images for ${imageLabel}`
+    : `Searched "${query}"`;
+}
+
+export interface KnowledgeBaseToolNameState {
+  isRunning: boolean;
+  query: string;
+}
+
+export function knowledgeBaseToolName(
+  state: KnowledgeBaseToolNameState,
+): string {
+  const { isRunning, query } = state;
+  if (isRunning) {
+    return query
+      ? `Searching documents for "${query}"…`
+      : "Searching documents…";
+  }
+  return query ? `Searched documents for "${query}"` : "Knowledge search";
+}

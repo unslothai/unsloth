@@ -43,6 +43,7 @@ import {
   isToolCallCancelled,
   isToolCallRunning,
   toolArgText,
+  toolFallbackLabel,
 } from "./tool-arg-text";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
 
@@ -171,11 +172,7 @@ function ToolFallbackTrigger({
   const isCancelled = isToolCallCancelled(status);
 
   const StatusIcon = statusIconMap[statusType];
-  const label = isCancelled
-    ? "Cancelled tool"
-    : isRunning
-      ? "Using tool"
-      : "Used tool";
+  const label = toolFallbackLabel(status);
   const name = toolArgText(toolName);
   const displayName = formatMcpToolName(name, mcpServer) ?? name;
 

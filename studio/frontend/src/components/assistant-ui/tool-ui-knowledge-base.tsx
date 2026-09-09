@@ -14,7 +14,11 @@ import { useToolAwaitingApproval } from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useMemo } from "react";
 import { Badge } from "./badge";
-import { isToolCallRunning, toolArgText } from "./tool-arg-text";
+import {
+  isToolCallRunning,
+  knowledgeBaseToolName,
+  toolArgText,
+} from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -111,7 +115,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
       awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
-        toolName={query ? `Searched documents for "${query}"` : "Knowledge search"}
+        toolName={knowledgeBaseToolName({ isRunning, query })}
         status={status}
         icon={LibraryBigIcon}
       />
