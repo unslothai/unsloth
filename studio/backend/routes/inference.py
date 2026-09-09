@@ -11187,6 +11187,7 @@ def _launch_raises_projector_batch(
     """
     from core.inference.llama_cpp import (
         _extra_args_device,
+        _metal_device_is_paravirtual,
         _mmproj_env_is_audio_only,
         extra_args_disable_mmproj,
     )
@@ -11196,9 +11197,12 @@ def _launch_raises_projector_batch(
     override = _extra_args_device(extras, {"--mmproj", "-mm"})
     if override and Path(override).is_file():
         return True
-    # The vision switch drops the URL and every image-capable inherited path, keeping
-    # only an audio-only file, which is still a non-causal encoder and still floored.
-    if (
+    # An inherited one, under the loader's own two scrubs. The paravirtual guard takes
+    # both variables off the child, so there is no projector left to floor; the vision
+    # switch drops the URL and every image-capable path, keeping only an audio-only
+    # file, which is still a non-causal encoder and still floored. Cached hardware
+    # probe that answers False off darwin, so the panel pays nothing for asking.
+    if not _metal_device_is_paravirtual() and (
         _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
         if disable_vision
         else (

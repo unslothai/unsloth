@@ -3880,3 +3880,64 @@ def test_the_cpu_replay_that_restores_vision_restores_the_floor_too():
     )
     # The restore belongs to the same branch that clears the text-only diagnosis.
     assert ast.parse(src) is not None
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        # Zero micro-batch means "use batch", so this pair is really 4096/4096 and
+        # flooring the literal zero would emit 4096/2048 -- a downgrade wearing a
+        # raise, and the assert back for any chunk between 2049 and 4096 tokens.
+        ({"LLAMA_ARG_BATCH": "4096", "LLAMA_ARG_UBATCH": "0"}, ("4096", "4096")),
+        # Zero with nothing to borrow from still lands on the floor.
+        ({"LLAMA_ARG_UBATCH": "0"}, ("2048", "2048")),
+    ],
+)
+def test_a_zero_micro_batch_means_use_batch_before_it_means_floor(
+    tmp_path, monkeypatch, env, expected
+):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+    for name in ("LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    cmd = _launch(backend, gguf, is_vision = True, mmproj_path = str(mmproj))["cmd"]
+
+    assert cmd[cmd.index("--batch-size") + 1] == expected[0]
+    assert cmd[cmd.index("--ubatch-size") + 1] == expected[1]
+
+
+def test_an_explicit_field_beats_a_larger_environment_batch(tmp_path, monkeypatch):
+    """The field is emitted as a flag and arg.cpp lets a flag overwrite what it read
+    from the environment, so the field is what the launch runs at. Taking the max of
+    both would emit a value the user's own field contradicts."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+    monkeypatch.setenv("LLAMA_ARG_BATCH", "8192")
+    monkeypatch.setenv("LLAMA_ARG_UBATCH", "8192")
+
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = True,
+        mmproj_path = str(mmproj),
+        n_batch = 1024,
+        n_ubatch = 1024,
+    )["cmd"]
+
+    # The field is below the floor, so the floor wins -- but at 2048, not the 8192
+    # the environment would have contributed to a max().
+    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH

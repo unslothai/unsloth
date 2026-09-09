@@ -5600,33 +5600,41 @@ def _mmproj_batch_floor(
     panel and a training-guard verdict cannot describe a child sized differently
     from the one that starts.
 
-    Three things the floor has to respect. A larger first-class field is the user
-    asking for a bigger batch and is kept. So is a larger LLAMA_ARG_BATCH /
-    LLAMA_ARG_UBATCH: the emitted flag beats the environment in llama.cpp, so
-    writing the floor from the field alone would silently downgrade an inherited
-    4096 to 2048 and reinstate the very assert this raises past. And llama.cpp
-    derives ``cparams.n_ubatch = min(n_batch, n_ubatch)``, so a micro-batch above
-    the batch is clamped back down; carry the batch up with it or the raise buys
-    nothing.
+    A floor, never a setting: anything the launch already asked for that is larger
+    survives, including a larger LLAMA_ARG_BATCH / LLAMA_ARG_UBATCH, or the raise
+    would downgrade an inherited 4096 to 2048 and reinstate the very assert it
+    exists to clear. Resolution order is _extra_args_n_ubatch's and llama.cpp's:
+    the field before the environment, because the field is emitted as a flag and
+    arg.cpp lets a flag overwrite what it read from the environment.
+
+    Two llama.cpp normalizations have to happen BEFORE the floor, not after. A zero
+    micro-batch means "use batch", so a 4096/0 pair is really 4096/4096 and
+    flooring the literal zero would emit 4096/2048 -- a downgrade wearing a raise.
+    And ``cparams.n_ubatch = min(n_batch, n_ubatch)`` clamps a micro-batch above
+    its batch, so the batch is carried up with it or the raise buys nothing.
     """
     source_env = os.environ if env is None else env
 
-    def _resolved(value: Optional[int], env_name: str) -> int:
-        best = floor
+    def _requested(value: Optional[int], env_name: str) -> Optional[int]:
+        """What this launch would run at before the floor, None at llama.cpp's default."""
         if value is not None:
-            best = max(best, int(value))
+            return int(value)
         raw = source_env.get(env_name)
         if raw:
             try:
-                best = max(best, int(raw))
+                return int(raw)
             except (TypeError, ValueError):
                 # Unparseable env is what llama.cpp itself ignores, so ignore it here
                 # rather than letting it decide the budget.
                 pass
-        return best
+        return None
 
-    batch = _resolved(n_batch, "LLAMA_ARG_BATCH")
-    ubatch = _resolved(n_ubatch, "LLAMA_ARG_UBATCH")
+    batch = _requested(n_batch, "LLAMA_ARG_BATCH")
+    ubatch = _requested(n_ubatch, "LLAMA_ARG_UBATCH")
+    if ubatch == 0:
+        ubatch = batch
+    batch = max(floor, batch or 0)
+    ubatch = max(floor, ubatch or 0)
     return max(batch, ubatch), ubatch
 
 
