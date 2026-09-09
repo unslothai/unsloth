@@ -22,6 +22,7 @@ import contextlib
 import codecs
 import ctypes
 import functools
+import hashlib
 import json
 import math
 import os
@@ -209,6 +210,8 @@ class _QuarantinedRun:
     lifecycle_closed: bool = False
     boundary_closed: bool = False
     lease_released: bool = False
+    execution_fence_fd: Optional[int] = None
+    execution_fence_released: bool = False
 
 
 _QUARANTINE_LOCK = threading.Lock()
@@ -371,19 +374,38 @@ class _BubblewrapLifecycle:
         self._released = False
         self._unbound_group_proven = False
         self._closed = False
+        self._execution_fence_fd: Optional[int] = None
+
+    def attach_execution_fence(self, descriptor: int) -> None:
+        """Keep the interprocess finalizer lock alive in bubblewrap itself."""
+        if self._execution_fence_fd is not None or self._released:
+            raise ProjectProcessContainmentError(
+                "The project execution fence cannot be replaced after lifecycle setup."
+            )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ProjectExecutionUnavailable("Project execution fence file is unsafe.")
+        self._execution_fence_fd = descriptor
 
     def wrap_argv(self, argv: Sequence[str]) -> list[str]:
         command = list(argv)
         if not command:
             raise ProjectExecutionUnavailable("The bubblewrap command is unavailable.")
-        return [
+        lifecycle_options = [
             command[0],
             "--json-status-fd",
             str(self._status_write),
             "--block-fd",
             str(self._block_read),
-            *command[1:],
         ]
+        if self._execution_fence_fd is not None:
+            # bubblewrap retains --sync-fd in its namespace monitor until every
+            # sandbox process is gone. The inherited flock therefore survives
+            # a Studio owner crash and cannot be reclaimed while the old command
+            # tree remains alive.
+            lifecycle_options.extend(("--sync-fd", str(self._execution_fence_fd)))
+        lifecycle_options.extend(command[1:])
+        return lifecycle_options
 
     def add_popen_options(self, options: dict) -> dict:
         prepared = dict(options)
@@ -394,7 +416,15 @@ class _BubblewrapLifecycle:
         # The retained writer instead leaves the setup child safely blocked;
         # its recorded process group is reaped by startup crash recovery.
         prepared["pass_fds"] = tuple(
-            dict.fromkeys((*passed, self._status_write, self._block_read, self._block_write))
+            dict.fromkeys(
+                (
+                    *passed,
+                    self._status_write,
+                    self._block_read,
+                    self._block_write,
+                    *((self._execution_fence_fd,) if self._execution_fence_fd is not None else ()),
+                )
+            )
         )
         return prepared
 
@@ -1107,6 +1137,7 @@ def _quarantine_run(
     adopted: bool = False,
     after_spawn_done: bool = False,
     lifecycle_bound: bool = False,
+    execution_fence_fd: Optional[int] = None,
 ) -> None:
     run = _QuarantinedRun(
         lease = lease,
@@ -1119,6 +1150,7 @@ def _quarantine_run(
         adopted = adopted,
         after_spawn_done = after_spawn_done,
         lifecycle_bound = lifecycle_bound,
+        execution_fence_fd = execution_fence_fd,
     )
     _register_quarantined_run(run)
 
@@ -1204,6 +1236,11 @@ def _advance_quarantined_run(run: _QuarantinedRun) -> None:
             with contextlib.suppress(Exception):
                 forget_pid(process.pid)
         run.pid_forgotten = True
+    if not run.execution_fence_released:
+        if run.execution_fence_fd is not None:
+            _release_project_execution_fence(run.execution_fence_fd)
+            run.execution_fence_fd = None
+        run.execution_fence_released = True
     if not run.lifecycle_closed:
         run.lifecycle.close()
         run.lifecycle_closed = True
@@ -1321,6 +1358,76 @@ def run_project_python(
     )
 
 
+def _project_execution_fence_path(fence_id: str) -> str:
+    if (
+        not isinstance(fence_id, str)
+        or not fence_id
+        or len(fence_id.encode("utf-8", errors = "strict")) > 1024
+    ):
+        raise AgentWorkspaceError("Project execution fence identity is invalid.")
+    from utils.paths.storage_roots import studio_root  # noqa: PLC0415
+
+    directory = os.path.join(str(studio_root()), "project-execution-fences")
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
+    directory_metadata = os.lstat(directory)
+    if not stat.S_ISDIR(directory_metadata.st_mode) or stat.S_ISLNK(directory_metadata.st_mode):
+        raise ProjectExecutionUnavailable("Project execution fence directory is unsafe.")
+    # Keep independent projects on distinct process-shared lock inodes.
+    digest = hashlib.sha256(fence_id.encode("utf-8")).hexdigest()
+    return os.path.join(directory, f"{digest}.lock")
+
+
+def _acquire_project_execution_fence(
+    fence_id: str, cancel_event: Optional[threading.Event], deadline: float
+) -> int:
+    """Acquire a process-wide finalizer fence until the prior tree is dead."""
+    if os.name != "posix":
+        raise ProjectExecutionUnavailable(
+            "Project execution fencing is unavailable on this platform."
+        )
+    try:
+        import fcntl  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - non-POSIX fails above
+        raise ProjectExecutionUnavailable(
+            "Project execution fencing is unavailable on this platform."
+        ) from exc
+    path = _project_execution_fence_path(fence_id)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ProjectExecutionUnavailable("Project execution fence file is unsafe.")
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Project execution fence wait was cancelled.")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Project execution fence wait exceeded its deadline.")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return descriptor
+            except BlockingIOError:
+                if cancel_event is not None:
+                    cancel_event.wait(min(_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+                else:
+                    time.sleep(min(_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _release_project_execution_fence(descriptor: int) -> None:
+    try:
+        import fcntl  # noqa: PLC0415
+        with contextlib.suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+
+
 def _run_project_process(
     project_id: str,
     command: tuple[str, ...],
@@ -1355,6 +1462,7 @@ def _run_project_process(
     spawn_attempt: Optional[_SpawnAttempt] = None
     spawn_ownership = _SpawnOwnership()
     quarantined = False
+    execution_fence_fd: Optional[int] = None
     adopted = False
     after_spawn_done = False
     lifecycle_bound = False
@@ -1378,7 +1486,18 @@ def _run_project_process(
         if cancel_event is not None and cancel_event.is_set():
             return ProjectProcessResult("cancelled", None, "", 0, False)
 
+        try:
+            execution_fence_fd = _acquire_project_execution_fence(
+                "project:" + project_id, cancel_event, time.monotonic() + 30.0
+            )
+        except InterruptedError:
+            return ProjectProcessResult("cancelled", None, "", 0, False)
+        except TimeoutError as exc:
+            raise ProjectExecutionUnavailable(
+                "A prior command still owns this project's process-tree fence."
+            ) from exc
         lifecycle = _BubblewrapLifecycle()
+        lifecycle.attach_execution_fence(execution_fence_fd)
         if python_source is not None:
             descriptor, scratch_script = tempfile.mkstemp(
                 suffix = ".py",
@@ -1439,7 +1558,9 @@ def _run_project_process(
                 spawn_attempt = spawn_attempt,
                 spawn_ownership = spawn_ownership,
                 scratch_script = scratch_script,
+                execution_fence_fd = execution_fence_fd,
             )
+            execution_fence_fd = None
             quarantined = True
             if cancel_event is not None and cancel_event.is_set():
                 return ProjectProcessResult("cancelled", None, "", 0, False)
@@ -1488,7 +1609,9 @@ def _run_project_process(
                 adopted = adopted or spawn_ownership.adopted,
                 after_spawn_done = after_spawn_done or spawn_ownership.after_spawn_done,
                 lifecycle_bound = lifecycle_bound,
+                execution_fence_fd = execution_fence_fd,
             )
+            execution_fence_fd = None
             try:
                 if lifecycle is None:
                     raise ProjectProcessContainmentError(
@@ -1526,6 +1649,9 @@ def _run_project_process(
                 result_status = "passed" if exit_code == 0 else "failed"
             quarantined = True
         if not quarantined:
+            if execution_fence_fd is not None:
+                _release_project_execution_fence(execution_fence_fd)
+                execution_fence_fd = None
             try:
                 if lifecycle is not None:
                     lifecycle.close()

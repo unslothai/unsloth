@@ -87,6 +87,9 @@ class _LocalLifecycle:
         self.bound = False
         self.instances.append(self)
 
+    def attach_execution_fence(self, descriptor):
+        self.execution_fence_fd = descriptor
+
     def wrap_argv(self, argv):
         return list(argv)
 
@@ -269,6 +272,41 @@ def test_supervisor_bounds_combined_stdout_and_stderr(local_supervisor):
     assert result.truncation_notice
     assert "".join(streamed) == result.output
     assert "".join(streamed).count(result.truncation_notice) == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "Native process fences use POSIX flock")
+def test_execution_fence_excludes_other_processes_and_rejects_unsafe_files(tmp_path):
+    fence_id = "project:fence-test"
+    descriptor = supervisor._acquire_project_execution_fence(fence_id, None, time.monotonic() + 1)
+    try:
+        contender = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import fcntl,os,sys; "
+                "fd=os.open(sys.argv[1], os.O_RDWR); "
+                "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+                supervisor._project_execution_fence_path(fence_id),
+            ],
+            capture_output = True,
+            timeout = 5,
+        )
+        assert contender.returncode != 0
+        assert b"BlockingIOError" in contender.stderr
+        with pytest.raises(TimeoutError):
+            supervisor._acquire_project_execution_fence(fence_id, None, time.monotonic() + 0.02)
+    finally:
+        supervisor._release_project_execution_fence(descriptor)
+    descriptor = supervisor._acquire_project_execution_fence(fence_id, None, time.monotonic() + 1)
+    supervisor._release_project_execution_fence(descriptor)
+    lock = Path(supervisor._project_execution_fence_path(fence_id))
+    lock.unlink()
+    target = tmp_path / "outside-lock"
+    target.write_text("do not touch")
+    lock.symlink_to(target)
+    with pytest.raises(OSError):
+        supervisor._acquire_project_execution_fence(fence_id, None, time.monotonic() + 1)
+    assert target.read_text() == "do not touch"
 
 
 def test_review_preflight_refuses_before_popen_and_releases_ownership(
@@ -746,6 +784,10 @@ def test_reaping_failure_quarantines_process_lease_slot_and_descriptors(
     assert lease_active["value"] is True
     assert boundaries[-1].closed is False
     assert boundaries[-1].slot is True
+    with pytest.raises(TimeoutError):
+        supervisor._acquire_project_execution_fence(
+            "project:" + workspace.project_id, None, time.monotonic() + 0.02
+        )
     assert _LocalLifecycle.instances[-1].closed is False
     cancelled = threading.Event()
     cancelled.set()
@@ -1270,6 +1312,11 @@ def test_native_linux_owner_sigkill_contains_project_command(tmp_path, release_s
                 f"owner did not reach the blocked lifecycle: stdout={stdout!r} stderr={stderr!r}"
             )
 
+        with pytest.raises(TimeoutError):
+            supervisor._acquire_project_execution_fence(
+                "project:owner-crash-project", None, time.monotonic() + 0.02
+            )
+
         os.kill(owner.pid, signal.SIGKILL)
         owner.wait(timeout = 5)
         if release_state == "after":
@@ -1304,6 +1351,10 @@ def test_native_linux_owner_sigkill_contains_project_command(tmp_path, release_s
         # Parent-death signaling can finish cleanup before startup recovery.
         # The reaper reports only processes it killed; either outcome must
         # leave the recorded group gone and remove its recovery record below.
+        recovered_fence = supervisor._acquire_project_execution_fence(
+            "project:owner-crash-project", None, time.monotonic() + 5
+        )
+        supervisor._release_project_execution_fence(recovered_fence)
         assert set(json.loads(reaper.stdout)) <= {recorded_pid}
         group_deadline = time.monotonic() + 5
         while time.monotonic() < group_deadline:
