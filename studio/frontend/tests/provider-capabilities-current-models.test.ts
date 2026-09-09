@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -114,6 +117,104 @@ test("the xhigh -> max alias still wins over the neighbour search", () => {
     clampReasoningEffortToLevels("xhigh", ["low", "medium", "high", "max"]),
     "max",
   );
+});
+
+test("clamping down never lands on thinking-off", () => {
+  // "none" sorts weakest but is the off switch, so the downward search skips it. Mistral
+  // small is the shipped ladder where that bites: none | high has no rung under High.
+  for (const effort of ["minimal", "low", "medium"] as const) {
+    assert.equal(clampReasoningEffortToLevels(effort, ["none", "high"]), "high", effort);
+  }
+  // Every ladder that skips "minimal" hit the same wall one rung up.
+  assert.equal(
+    clampReasoningEffortToLevels("minimal", ["none", "low", "medium", "high"]),
+    "low",
+  );
+  // Asking for off still gets off.
+  assert.equal(clampReasoningEffortToLevels("none", ["none", "high"]), "none");
+  // A ladder with nothing but the off switch has nowhere else to go.
+  assert.equal(clampReasoningEffortToLevels("high", ["none"]), "none");
+});
+
+test("the ladder order a caller passes does not change the clamp", () => {
+  // A local ladder is assembled from a chat-template scan, so nothing type-level keeps it
+  // ascending; the clamp reads scale order rather than array order.
+  const ascending = ["low", "medium", "xhigh"] as const;
+  const descending = ["xhigh", "medium", "low"] as const;
+  for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+    assert.equal(
+      clampReasoningEffortToLevels(effort, descending),
+      clampReasoningEffortToLevels(effort, ascending),
+      effort,
+    );
+  }
+});
+
+test("every shipped effort ladder is ordered weakest first", () => {
+  // The Think menu renders levels in the order the table lists them, and
+  // `fallbackExternalEffort` in chat-adapter reads `reasoningEffortLevels[0]` as the weakest
+  // rung. A table written out of order would quietly break both.
+  const models: Array<[string, string]> = [
+    ["anthropic", "claude-opus-5"],
+    ["anthropic", "claude-opus-4-6"],
+    ["anthropic", "claude-opus-4-5"],
+    ["anthropic", "claude-fable-5"],
+    ["openai", "gpt-5.6-sol"],
+    ["openai", "gpt-5.5-pro"],
+    ["openai", "gpt-5.1-codex-max"],
+    ["openai", "gpt-5.1"],
+    ["openai", "gpt-5"],
+    ["openai", "o3"],
+    ["openai_codex", "gpt-6-astra"],
+    ["gemini", "gemini-2.5-flash-lite"],
+    ["gemini", "gemini-2.5-pro"],
+    ["gemini", "gemini-2.5-flash"],
+    ["gemini", "gemini-3-pro"],
+    ["gemini", "gemini-3-flash"],
+    ["mistral", "magistral-medium-latest"],
+    ["mistral", "mistral-small-latest"],
+    ["openrouter", "openai/gpt-5.5"],
+  ];
+  const scale = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  for (const [provider, model] of models) {
+    const levels = [
+      ...getExternalReasoningCapabilities(provider, model).reasoningEffortLevels,
+    ];
+    const ranks = levels.map((level) => scale.indexOf(level));
+    assert.ok(!ranks.includes(-1), `${model} lists a level off the scale: ${levels}`);
+    assert.deepEqual(
+      ranks,
+      [...ranks].sort((a, b) => a - b),
+      `${model} ladder is not weakest first: ${levels}`,
+    );
+    assert.equal(new Set(levels).size, levels.length, `${model} repeats a level`);
+  }
+});
+
+test("the effort scale matches the backend's _REASONING_EFFORT_SCALE", () => {
+  // provider-capabilities.ts says the two are mirrors; nothing enforced it. The clamp reads
+  // the frontend copy while detect_reasoning_flags builds every local ladder from the backend
+  // one, so a drift would hand the clamp a level it cannot rank.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const frontend = readFileSync(
+    path.join(here, "../src/features/chat/provider-capabilities.ts"),
+    "utf8",
+  );
+  const backend = readFileSync(
+    path.join(here, "../../backend/core/inference/llama_cpp.py"),
+    "utf8",
+  );
+  const frontendScale = frontend
+    .match(/const REASONING_EFFORT_SCALE = \[([\s\S]*?)\] as const/)?.[1]
+    .match(/"([a-z]+)"/g)
+    ?.map((quoted) => quoted.slice(1, -1));
+  const backendScale = backend
+    .match(/^_REASONING_EFFORT_SCALE = \(([^)]*)\)/m)?.[1]
+    .match(/"([a-z]+)"/g)
+    ?.map((quoted) => quoted.slice(1, -1));
+  assert.ok(frontendScale, "frontend REASONING_EFFORT_SCALE not found");
+  assert.ok(backendScale, "backend _REASONING_EFFORT_SCALE not found");
+  assert.deepEqual(frontendScale, backendScale);
 });
 
 test("Astra reasoning does not enable unrelated model families", () => {

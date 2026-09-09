@@ -57,11 +57,19 @@ const REASONING_EFFORT_SCALE = [
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
  *  when only the latter is exposed (Claude 4.6).
  *
- *  A level the model does not offer lands on its nearest neighbour on the scale, not on
+ *  A level the model does not offer lands on the nearest level BELOW it on the scale, not on
  *  `effortLevels[0]`. That fallback was the weakest rung: Qwen3.8-27B ships low | medium |
- *  xhigh, so a chat on High came back as Low. Prefer the nearest level below, so the clamp
- *  never spends more compute than was asked for; only a level under everything on offer
- *  climbs to the weakest rung, which is where it already went. */
+ *  xhigh, so a chat on High came back as Low. Searching downwards means the clamp never
+ *  spends more compute than was asked for; only a level under everything on offer climbs to
+ *  the weakest rung, which is where it already went.
+ *
+ *  "none" is excluded from that search unless it is what was asked for. It sorts weakest, but
+ *  it is the off switch rather than a rung, so treating it as one clamps a thinking request
+ *  onto thinking disabled: on Mistral's none | high a stored Medium resolved to none, and on
+ *  every ladder that skips "minimal" a stored Minimal did the same. That is the failure this
+ *  function exists to prevent, and llama_cpp.py strips "none" from a local ladder for the
+ *  same reason. Falling UP to the weakest real rung is the smaller surprise: the user still
+ *  gets thinking, and the off switch stays where they left it. */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
@@ -85,10 +93,14 @@ export function clampReasoningEffortToLevels(
     const offered = REASONING_EFFORT_SCALE.filter((level) =>
       effortLevels.includes(level),
     );
-    const below = offered.filter(
+    // Only a request for "none" may land on "none"; see the note above.
+    const rungs =
+      candidate === "none" ? offered : offered.filter((level) => level !== "none");
+    const searchable = rungs.length > 0 ? rungs : offered;
+    const below = searchable.filter(
       (level) => REASONING_EFFORT_SCALE.indexOf(level) < rank,
     );
-    const nearest = below.length > 0 ? below[below.length - 1] : offered[0];
+    const nearest = below.length > 0 ? below[below.length - 1] : searchable[0];
     if (nearest !== undefined) {
       return nearest;
     }
