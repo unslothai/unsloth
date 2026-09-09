@@ -89,6 +89,15 @@
       "_CANONICAL_SPEC_MODES": {
         "kind": "assign"
       },
+      "_CARVEOUT_ADVICE_HOST_FRACTION": {
+        "kind": "assign"
+      },
+      "_CARVEOUT_ADVICE_MIN_HOST_GB": {
+        "kind": "assign"
+      },
+      "_CARVEOUT_NOMINAL_SLACK_GB": {
+        "kind": "assign"
+      },
       "_CGROUP_ROOT": {
         "kind": "assign"
       },

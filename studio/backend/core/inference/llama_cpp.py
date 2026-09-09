@@ -30740,6 +30740,23 @@ class LlamaCppBackend:
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
             )
+            # What the wire will actually be allowed to emit: the clamp below caps the
+            # payload at the admitted share, so with eight slots a request may generate
+            # an eighth of the window while a fit reserving the caller's whole cap evicts
+            # history and cuts results that had room. Sizing only -- `payload["max_tokens"]`
+            # keeps its own path, as the final pass does with `_final_fit_max_tokens`.
+            # The re-cost below reassigns `admission_output_allowance` after the fit has
+            # run, so an iteration prices against the previous round's allowance.
+            _iteration_fit_max_tokens = (
+                min(
+                    _iteration_max_tokens
+                    if _iteration_max_tokens is not None
+                    else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR),
+                    admission_output_allowance,
+                )
+                if admission_output_allowance is not None
+                else _iteration_max_tokens
+            )
             _preflight_context_length = None
             _preflight_succeeded = False
             if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -30765,7 +30782,7 @@ class LlamaCppBackend:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
-                        max_tokens = _iteration_max_tokens,
+                        max_tokens = _iteration_fit_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
                                 messages_without_unpriced_media(fitted),
@@ -30821,7 +30838,7 @@ class LlamaCppBackend:
                             recall_budget_tokens = _retrieval_budget(
                                 self._effective_context_length,
                                 # As above: the cap this iteration will actually send.
-                                _iteration_max_tokens,
+                                _iteration_fit_max_tokens,
                                 truncation.get("prompt_tokens_after") or 0,
                                 reply_returns = True,
                             ),
@@ -30970,7 +30987,7 @@ class LlamaCppBackend:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
-                        max_tokens = _iteration_max_tokens,
+                        max_tokens = _iteration_fit_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
                                 messages_without_unpriced_media(fitted),
@@ -31119,7 +31136,7 @@ class LlamaCppBackend:
                     # compact, and pricing a continuation as if it had the whole cap
                     # compacts a turn that had room.
                     _reply_target = prompt_budget(
-                        self._effective_context_length, _iteration_max_tokens
+                        self._effective_context_length, _iteration_fit_max_tokens
                     )
                     if (
                         estimate_messages_tokens_dense(
@@ -32754,7 +32771,7 @@ class LlamaCppBackend:
                     if self._effective_context_length:
                         # This iteration's cap, like every other sizing decision in it.
                         _room_target = prompt_budget(
-                            self._effective_context_length, _iteration_max_tokens
+                            self._effective_context_length, _iteration_fit_max_tokens
                         )
                         # Cheap gate first. The exact count is a template render plus a
                         # tokenizer pass over the whole conversation, and this runs per
@@ -33230,7 +33247,7 @@ class LlamaCppBackend:
                                             # left had the result priced as if 1000 were
                                             # still to come, which reserves room away and can
                                             # starve a read the request had space for.
-                                            _iteration_max_tokens,
+                                            _iteration_fit_max_tokens,
                                             _spent + _pending_args,
                                         ) // (
                                             # Sequentially, call k divides by the calls still to
@@ -33298,7 +33315,7 @@ class LlamaCppBackend:
                                                     # or the rescue is measured against a
                                                     # different request from the one it is
                                                     # rescuing.
-                                                    _iteration_max_tokens,
+                                                    _iteration_fit_max_tokens,
                                                     _spent_after + _pending_args,
                                                 ) // (len(_pending) + 1)
                                                 logger.info(
@@ -33342,7 +33359,7 @@ class LlamaCppBackend:
                                         # allowance on a continuation that has a fraction
                                         # of it left returns a near-zero budget and drops
                                         # recall the request had room for.
-                                        _iteration_max_tokens,
+                                        _iteration_fit_max_tokens,
                                         _spent,
                                         reply_returns = True,
                                     )
@@ -33915,7 +33932,11 @@ class LlamaCppBackend:
                         # The synthesized final answer never returns to the prompt.
                         recall_budget_tokens = _retrieval_budget(
                             self._effective_context_length,
-                            max_tokens,
+                            # The bound the wire is held to, like the fit above: the
+                            # caller's whole cap against an eighth-of-the-window lease
+                            # reserves a reply this request may not write, and the
+                            # recall is what pays for it.
+                            _final_fit_max_tokens,
                             truncation.get("prompt_tokens_after") or 0,
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -34040,7 +34061,9 @@ class LlamaCppBackend:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
-                    max_tokens = max_tokens,
+                    # Priced against the pre-respawn window, as the iteration refit is:
+                    # a new window is not a new reservation.
+                    max_tokens = _final_fit_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
                             messages_without_unpriced_media(fitted), None, self.markup_profile
