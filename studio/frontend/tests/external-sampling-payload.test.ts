@@ -16,12 +16,17 @@ registerBundlerResolver();
 const { getProviderCapabilities } = await import(
   "../src/features/chat/provider-capabilities.ts"
 );
+const { minPSamplingPayload } = await import(
+  "../src/features/chat/lib/min-p-policy.ts"
+);
+import type { MinPMode } from "../src/features/chat/types/runtime.ts";
 
 const PARAMS = {
   temperature: 0.6,
   topP: 0.95,
   topK: 40,
   minP: 0.07,
+  minPMode: "custom" as MinPMode,
   repetitionPenalty: 1.15,
   presencePenalty: 0.3,
 };
@@ -64,20 +69,62 @@ const gatedSpreads = externalBodyLiteral()
   .filter((text) => text.includes("externalCapabilities"));
 
 // Without this, an extraction that matched nothing would pass every assertion vacuously.
-assert.ok(gatedSpreads.length >= 4, `only ${gatedSpreads.length} gated spreads`);
+assert.ok(
+  gatedSpreads.length >= 4,
+  `only ${gatedSpreads.length} gated spreads`,
+);
 
 const buildSamplingFields = new Function(
   "externalCapabilities",
   "params",
+  "externalProvider",
+  "minPSamplingPayload",
   `return Object.assign({}, ${gatedSpreads.join(", ")});`,
 ) as (
   capabilities: unknown,
   params: typeof PARAMS,
+  externalProvider: { providerType: string },
+  payload: typeof minPSamplingPayload,
 ) => Record<string, number>;
 
-function bodyFor(providerType: string): Record<string, number> {
-  return buildSamplingFields(getProviderCapabilities(providerType), PARAMS);
+function bodyFor(
+  providerType: string,
+  params = PARAMS,
+): Record<string, number> {
+  return buildSamplingFields(
+    getProviderCapabilities(providerType),
+    params,
+    { providerType },
+    minPSamplingPayload,
+  );
 }
+
+test("vLLM server default omits Min P while retaining other sampling fields", () => {
+  const custom = bodyFor("vllm");
+  const server = bodyFor("vllm", { ...PARAMS, minPMode: "server-default" });
+  const { min_p, ...other } = custom;
+  assert.equal(min_p, PARAMS.minP);
+  assert.deepEqual(server, other);
+});
+
+test("vLLM explicit zero reaches the payload", () => {
+  assert.equal(bodyFor("vllm", { ...PARAMS, minP: 0 }).min_p, 0);
+});
+
+test("Server default mode does not change other providers", () => {
+  for (const provider of [
+    "openrouter",
+    "llama_cpp",
+    "openai",
+    "custom",
+    "ollama",
+  ]) {
+    assert.deepEqual(
+      bodyFor(provider, { ...PARAMS, minPMode: "server-default" }),
+      bodyFor(provider),
+    );
+  }
+});
 
 for (const providerType of ["vllm", "openrouter", "llama_cpp"]) {
   test(`${providerType} carries the min_p and repetition_penalty the panel offers`, () => {

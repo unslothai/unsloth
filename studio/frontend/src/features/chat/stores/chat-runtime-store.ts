@@ -60,6 +60,7 @@ import {
 } from "../types/runtime";
 import {
   loadChatSettingsWithLegacyImport,
+  normalizeSavedChatSettings,
   sanitizeChatSettings,
   savePersistedChatSettingsPatch,
   savePersistedChatSettingsPatchIfCurrent,
@@ -92,6 +93,7 @@ import {
   hasThreadScopedSettings,
   isThreadOwnedSettingKey,
   isThreadScopedParamKey,
+  normalizeSavedThreadScopedSettings,
   sanitizeThreadScopedSettings,
 } from "../utils/thread-scoped-settings";
 import {
@@ -2480,6 +2482,8 @@ type ChatRuntimeStore = {
     options?: {
       persist?: boolean;
       trackQueuedSettings?: boolean;
+      /** An explicit Min P action fences the pair even when the number did not move. */
+      minPChoiceEdited?: boolean;
       /** These params are the model's defaults, so its remembered settings are laid back over them
        *  even with no checkpoint change; being the model's, they move the installation defaults. */
       fromModelDefaults?: boolean;
@@ -2869,11 +2873,22 @@ function getChangedInferenceParams(
   nextParams: InferenceParams,
   currentParams: InferenceParams,
   bumpVersions = true,
+  minPChoiceEdited = false,
 ): PersistedInferenceParams {
   const changedParams: PersistedInferenceParams = {};
+  // Mode and retained number describe one choice. Fence and persist the pair even
+  // when the user toggles only the mode while a saved numeric value is in flight.
+  const minPChoiceChanged =
+    bumpVersions &&
+    (minPChoiceEdited ||
+      !Object.is(nextParams.minP, currentParams.minP) ||
+      !Object.is(nextParams.minPMode, currentParams.minPMode));
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const nextValue = nextParams[key];
-    if (Object.is(nextValue, currentParams[key])) {
+    if (
+      Object.is(nextValue, currentParams[key]) &&
+      !(minPChoiceChanged && (key === "minP" || key === "minPMode"))
+    ) {
       continue;
     }
     if (bumpVersions) {
@@ -2882,6 +2897,11 @@ function getChangedInferenceParams(
     if (nextValue !== undefined) {
       setInferenceParam(changedParams as InferenceParams, key, nextValue);
     }
+  }
+  // A newly written number always carries its known mode. Recommendations retain
+  // that mode, so the next read cannot mistake a fresh default for legacy intent.
+  if (changedParams.minP !== undefined && nextParams.minPMode !== undefined) {
+    changedParams.minPMode = nextParams.minPMode;
   }
   return changedParams;
 }
@@ -3018,6 +3038,7 @@ function getHydratedCustomPresets(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
 ): Preset[] {
+  settings = normalizeSavedChatSettings(settings);
   return (
     settings.customPresets?.map((preset) => {
       const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
@@ -3168,6 +3189,8 @@ function getHydratedSettingsState(
   state: ChatRuntimeStore,
   versions: SettingsHydrationVersions,
 ): Partial<ChatRuntimeStore> {
+  // A migration's confirming read stays raw for CAS; normalize only on hydration.
+  settings = normalizeSavedChatSettings(settings);
   const nextState: Partial<ChatRuntimeStore> = {};
   const checkpoint = state.params.checkpoint;
   const loadedBeforeHydration = sameCheckpointIdentity(
@@ -4331,10 +4354,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // model's own settings. fromModelDefaults marks the updates memory goes back over.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
       const replayed = checkpointChanged || fromModelDefaults;
+      // Recommendations carry a number, not a mode choice. The live mode can
+      // belong to the open thread; recover its default before model replay.
+      const incomingParams = fromModelDefaults
+        ? { ...params, minPMode: withoutActiveThreadParams(state, params).minPMode }
+        : params;
       const nextParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
-        params,
+        incomingParams,
         params.checkpoint,
         replayed,
         options?.maxTokensCap,
@@ -4350,12 +4378,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nextParams,
         state.params,
         !fromModelDefaults,
+        options?.minPChoiceEdited === true,
       );
-      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
-        state.params,
-        effective,
-        options?.trackQueuedSettings !== false,
-      );
+      const queuedSettingsChanged =
+        options?.minPChoiceEdited === true ||
+        shouldAdvanceQueuedSettingsEpoch(
+          state.params,
+          effective,
+          options?.trackQueuedSettings !== false,
+        );
       const persistingGlobally =
         options?.persist !== false && state.settingsHydrated;
       // A sampling key moved with a chat open belongs to that chat, so it reaches neither the
@@ -4717,6 +4748,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })),
   applyThreadScopedSettings: (threadId, settings) =>
     set((state) => {
+      settings = normalizeSavedThreadScopedSettings(settings);
       // The pending write belongs to the outgoing thread, so it goes out before the swap.
       flushThreadScopedSettingsWrite();
       // Edits made while this chat's snapshot was in flight: keep them and store them on the chat,

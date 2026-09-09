@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import { minPSamplingPayload } from "../lib/min-p-policy";
+import {
+  createMinPRecoveryGuard,
+  invalidateMinPRecoveries,
+  shouldOfferMinPRecovery,
+} from "../lib/min-p-recovery";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -5641,6 +5647,35 @@ export function createOpenAIStreamAdapter(
       // Stop handle for when this conversation is not the visible one, which cancelByThreadId
       // cannot reach. For an external provider the abort IS the stop: no cancel_id is registered.
       runtime.registerThreadServerCancel(threadKey, serverCancel);
+      const recoveryState = useChatRuntimeStore.getState();
+      const minPRecoveryGuard =
+        externalProvider?.providerType === "vllm" &&
+        recoveryState.activeThreadId === (resolvedThreadId ?? null) &&
+        recoveryState.params.checkpoint === params.checkpoint &&
+        recoveryState.params.minP === params.minP &&
+        recoveryState.params.minPMode === params.minPMode
+        ? createMinPRecoveryGuard(
+            () => {
+              const state = useChatRuntimeStore.getState();
+              const connections = useExternalProvidersStore.getState();
+              return [
+                state.activeThreadId,
+                state.params,
+                connections.providers,
+                connections.connectionsEnabled,
+              ];
+            },
+            (check) => {
+              const stopSettings = useChatRuntimeStore.subscribe(check);
+              const stopConnections = useExternalProvidersStore.subscribe(check);
+              return () => {
+                stopSettings();
+                stopConnections();
+              };
+            },
+          )
+        : null;
+      let keepMinPRecovery = false;
       try {
         if (runSignal.aborted) {
           onAbortCancel();
@@ -5897,7 +5932,9 @@ export function createOpenAIStreamAdapter(
                 ? { thread_id: resolvedThreadId }
                 : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
-              ...(externalCapabilities?.minP ? { min_p: params.minP } : {}),
+              ...(externalCapabilities?.minP
+                ? minPSamplingPayload(externalProvider?.providerType, params)
+                : {}),
               ...(externalCapabilities?.repetitionPenalty
                 ? { repetition_penalty: params.repetitionPenalty }
                 : {}),
@@ -7839,7 +7876,40 @@ export function createOpenAIStreamAdapter(
         );
         if (!runSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof GenerationLengthError) {
+          if (
+            minPRecoveryGuard?.isValid() &&
+            shouldOfferMinPRecovery(msg, externalProvider?.providerType, params)
+          ) {
+            keepMinPRecovery = true;
+            const cleanupTimer = setTimeout(
+              () => minPRecoveryGuard.dispose(),
+              8000,
+            );
+            const disposeRecovery = () => {
+              clearTimeout(cleanupTimer);
+              minPRecoveryGuard.dispose();
+            };
+            toast.error("Min P is incompatible with speculative decoding", {
+              description: `This server requires Min P to be disabled. Set it to 0, then retry. ${msg}`,
+              duration: 8000,
+              action: {
+                label: "Set Min P to 0",
+                onClick: () => {
+                  const valid = minPRecoveryGuard.isValid();
+                  disposeRecovery();
+                  if (valid) {
+                    const state = useChatRuntimeStore.getState();
+                    state.setParams(
+                      { ...state.params, minPMode: "custom", minP: 0 },
+                      { minPChoiceEdited: true },
+                    );
+                  }
+                },
+              },
+              onDismiss: disposeRecovery,
+              onAutoClose: disposeRecovery,
+            });
+          } else if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
               // The error already chose between the Max Tokens and Context Length remedies; repeating the
               // Max Tokens advice here overrode that choice in the one place the user reads.
@@ -7966,6 +8036,7 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
+        if (!keepMinPRecovery) minPRecoveryGuard?.dispose();
         // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run left
         // claimed after its stream died would never be recovered.
         releaseLiveGenerationRun(cancelId);
@@ -8023,6 +8094,7 @@ export function createOpenAIStreamAdapter(
   } satisfies ChatModelAdapter;
   return {
     async *run(args) {
+      invalidateMinPRecoveries();
       const preStreamThreadIds = preStreamRunThreadIdsForAdapter(
         args.unstable_threadId,
         useChatRuntimeStore.getState().activeThreadId,
