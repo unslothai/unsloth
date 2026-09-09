@@ -422,7 +422,7 @@ def test_home_is_unreadable_inside_the_sandbox(tmp_path):
     workdir = tmp_path / "session"
     workdir.mkdir()
     canary = Path(os.path.expanduser("~")) / ".unsloth-seatbelt-canary"
-    canary.write_text("UNSLOTH_CANARY_HOME_READABLE")
+    canary.write_text("UNSLOTH_CANARY_HOME_READABLE", encoding = "utf-8")
     try:
         argv = ("/bin/sh", "-c", f"cat {shlex.quote(str(canary))}")
         host = subprocess.run(argv, capture_output = True, text = True, timeout = 60, check = False)
