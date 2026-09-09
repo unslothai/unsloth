@@ -6471,6 +6471,7 @@ exit 0
         }
         # Folding is the LAST resort: copying a line moves the base its relative paths resolve on.
         $_woaKeepFiles = @()
+        $_woaSessionLines = @()
         if ($env:UV_OVERRIDE) {
             foreach ($_woaOvFile in ($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })) {
                 if (-not (Test-Path -LiteralPath $_woaOvFile -PathType Leaf)) { continue }
@@ -6488,7 +6489,7 @@ exit 0
                 foreach ($_woaOvEntry in $_woaOvEntries) {
                     $_woaOvName = ((($_woaOvEntry.Line -split '[\s<>=!~;@\[]', 2)[0]).Trim() -replace '[-_.]+', '-').ToLowerInvariant()
                     if ($_woaOvName -and $_woaOwnNames.ContainsKey($_woaOvName)) { continue }
-                    $WoaOverrideLines += (Resolve-WoaOverrideLine -Line $_woaOvEntry.Line -BaseDir $_woaOvEntry.BaseDir)
+                    $_woaSessionLines += (Resolve-WoaOverrideLine -Line $_woaOvEntry.Line -BaseDir $_woaOvEntry.BaseDir)
                 }
             }
         }
@@ -6496,6 +6497,14 @@ exit 0
         [System.IO.File]::WriteAllLines($WoaOverrides, [string[]]$WoaOverrideLines, (New-Object System.Text.UTF8Encoding($false)))
         $_woaOverrideValue = @(Get-UvSafePath $WoaOverrides)
         foreach ($_woaKeepFile in $_woaKeepFiles) { $_woaOverrideValue += (Get-UvSafePath $_woaKeepFile) }
+        # Folded caller lines go to a per-run file, never the persistent one setup.ps1 restores: their credentials and policy must not outlive this run.
+        $_woaSessionFile = Join-Path (Split-Path -Parent $WoaOverrides) "overrides.session.txt"
+        Remove-Item -LiteralPath $_woaSessionFile -Force -ErrorAction SilentlyContinue
+        if ($_woaSessionLines.Count -gt 0) {
+            [System.IO.File]::WriteAllLines($_woaSessionFile, [string[]]$_woaSessionLines, (New-Object System.Text.UTF8Encoding($false)))
+            $script:WoaSessionOverrides = $_woaSessionFile
+            $_woaOverrideValue += (Get-UvSafePath $_woaSessionFile)
+        }
         # Under `irm | iex` these are the caller's own session variables: snapshotted once here and put back when the installer returns.
         if ($null -eq $script:WoaResolverEnvSaved) {
             $script:WoaResolverEnvSaved = @{
@@ -8949,6 +8958,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
 
 # Under `irm | iex` the script scope IS the caller's session; an earlier value must not leak.
 $script:WoaResolverEnvSaved = $null
+$script:WoaSessionOverrides = $null
 $script:TorchOverridesFile = $null
 try {
     Install-UnslothStudio @args
@@ -8968,5 +8978,9 @@ try {
     if ($script:TorchOverridesFile) {
         Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
         $script:TorchOverridesFile = $null
+    }
+    if ($script:WoaSessionOverrides) {
+        Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue
+        $script:WoaSessionOverrides = $null
     }
 }

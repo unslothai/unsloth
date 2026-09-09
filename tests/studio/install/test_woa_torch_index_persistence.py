@@ -1000,7 +1000,7 @@ class TestCallerResolverConfigurationSurvives:
             "keeps its relative -r and wheel paths resolving"
         )
         assert (
-            "$WoaOverrideLines += (Resolve-WoaOverrideLine" in block
+            "$_woaSessionLines += (Resolve-WoaOverrideLine" in block
         ), "and a conflicting one is folded line by line, rebased as it goes"
         assert "$_woaOwnNames.ContainsKey($_woaOvName)" in block, (
             "minus the packages this file declares -- uv combines override files and "
@@ -1760,18 +1760,22 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
             len("OVERRIDE=") :
         ].split()
         written = managed.read_text(encoding = "utf-8")
+        session = tmp_path / "overrides.session.txt"
         if folded:
-            assert value == [str(managed)], why
+            assert value == [str(managed), str(session)], why
             # The include is FLATTENED as it folds, rebased against its own directory: the only
-            # way a conflict one level down can be removed.
+            # way a conflict one level down can be removed. It lands in the per-run file.
+            folded_text = session.read_text(encoding = "utf-8")
             assert (
-                "idna==3.10" in written
+                "idna==3.10" in folded_text
             ), "the include's own lines did not come across, so folding dropped them"
-            assert "-r " not in written, "an include line copied verbatim would move its base"
-            assert "torch==2.9.0" not in written, "our own declaration still wins"
+            assert "-r " not in folded_text, "an include line copied verbatim would move its base"
+            assert "torch==2.9.0" not in folded_text, "our own declaration still wins"
+            assert "idna" not in written, "the persistent file carries only our own lines"
         else:
             assert value == [str(managed), str(caller)], why
             assert "-r nested.txt" not in written, "nothing was copied, so nothing moved"
+            assert not session.exists(), "nothing folded, so no per-run file"
 
 
 class TestTheRecoveryPrependsRatherThanStandsDown:
@@ -5951,3 +5955,82 @@ class TestThePyPIProvidedHandoverIsExported:
             'Write-Output "[$env:UNSLOTH_WOA_PYPI_PROVIDED]"',
         )
         assert _ps_last(script) == f"[{expected}]", why
+
+
+class TestFoldedCallerOverridesDoNotOutliveTheRun:
+    """A caller file that clashes with one of ours is folded line by line, and those lines were
+    written into woa\\overrides.txt: the file setup.ps1 restores on every fresh-shell update. A
+    credentialed direct URL or a private index policy the caller set once was then on disk for
+    good and applied to every later update. They go to a per-run file instead."""
+
+    @staticmethod
+    def _block() -> str:
+        start = INSTALL_SRC.index("        $_woaOwnNames = @{}")
+        end = INSTALL_SRC.index('$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")', start)
+        return INSTALL_SRC[start : INSTALL_SRC.index("\n", end)]
+
+    def _run(
+        self,
+        tmp_path,
+        caller_lines,
+        stale = None,
+    ):
+        caller = tmp_path / "ov.txt"
+        caller.write_text("\n".join(caller_lines) + "\n", encoding = "utf-8")
+        managed = tmp_path / "overrides.txt"
+        session = tmp_path / "overrides.session.txt"
+        if stale is not None:
+            session.write_text(stale, encoding = "utf-8")
+        script = _script(
+            functions(INSTALL_SRC, "Resolve-WoaOverrideLine", "Get-WoaRequirementEntries"),
+            UV_SAFE_PATH,
+            "$WoaOverrideLines = @('# generated', 'torch>=2.4')",
+            f"$WoaOverrides = '{managed}'",
+            f"$env:UV_OVERRIDE = '{caller}'",
+            self._block(),
+            'Write-Output ("OVERRIDE=" + $env:UV_OVERRIDE)',
+            'Write-Output ("SESSION=" + $script:WoaSessionOverrides)',
+        )
+        out = _ps_ok(script).stdout.splitlines()
+        value = [l for l in out if l.startswith("OVERRIDE=")][-1][len("OVERRIDE=") :].split()
+        recorded = [l for l in out if l.startswith("SESSION=")][-1][len("SESSION=") :]
+        return managed, session, value, recorded
+
+    SECRET = "corp-pkg @ https://user:s3cret@pypi.corp.test/corp_pkg-1.0-py3-none-any.whl"
+
+    @requires_pwsh
+    def test_a_folded_credential_never_reaches_the_persistent_file(self, tmp_path):
+        managed, session, value, recorded = self._run(tmp_path, ["torch==2.9.0", self.SECRET])
+        assert "s3cret" not in managed.read_text(encoding = "utf-8")
+        assert self.SECRET in session.read_text(encoding = "utf-8"), "still applied to this run"
+        assert value == [str(managed), str(session)], "both files reach uv"
+        assert recorded == str(session), "recorded, so the exit path can remove it"
+
+    @requires_pwsh
+    def test_a_stale_per_run_file_is_removed_even_when_nothing_folds(self, tmp_path):
+        managed, session, value, recorded = self._run(
+            tmp_path, ["brotli==1.1.0"], stale = "leftover==1\n"
+        )
+        assert not session.exists(), "an earlier interrupted run's copy would be re-read by uv"
+        assert value[0] == str(managed) and str(session) not in value
+        assert recorded == ""
+
+    def test_the_exit_path_removes_it(self):
+        """Beside the torch overrides file, which is deleted on exit for the same reason."""
+        tail = INSTALL_SRC[INSTALL_SRC.index("try {\n    Install-UnslothStudio @args") :]
+        assert (
+            "Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue"
+            in tail
+        )
+        head = INSTALL_SRC[: INSTALL_SRC.index("try {\n    Install-UnslothStudio @args")]
+        assert head.rstrip().endswith(
+            "$script:WoaSessionOverrides = $null\n$script:TorchOverridesFile = $null"
+        ), "reset before the outer try: under irm | iex an earlier value must not leak"
+
+    def test_setup_restores_only_the_persistent_file(self):
+        body = _function_source(SETUP_SRC, "Restore-WoaResolverEnvironment")
+        assert 'Join-Path $woaDir "overrides.txt"' in body
+        assert (
+            'Remove-Item -LiteralPath (Join-Path $woaDir "overrides.session.txt")' in body
+        ), "an interrupted install's copy is cleared, never restored"
+        assert body.count("overrides.session.txt") == 1, "and referenced nowhere else"

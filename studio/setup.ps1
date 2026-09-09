@@ -4726,6 +4726,8 @@ function Restore-WoaResolverEnvironment {
     $overrides = Join-Path $woaDir "overrides.txt"
     $wheels = Join-Path $woaDir "wheels"
     Remove-Item -LiteralPath (Join-Path $woaDir "overrides.merged.txt") -Force -ErrorAction SilentlyContinue
+    # install.ps1's per-run copy of folded caller lines; an interrupted run must not leave it behind.
+    Remove-Item -LiteralPath (Join-Path $woaDir "overrides.session.txt") -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path -LiteralPath $overrides -PathType Leaf)) {
         if (-not $env:UV_OVERRIDE) {
             substep "windows on arm: $overrides is missing, so the win_arm64 requirement" "Yellow"
