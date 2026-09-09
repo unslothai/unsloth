@@ -114,57 +114,91 @@ function reclaimableBytes(value: number | undefined): number {
 
 /** Keep known host credit; require modelled placement in the requested pool for VRAM. */
 export function resolveReclaimableMemoryCredit(
-  estimate: (Pick<MemoryFitEstimate, "totalBytes" | "gpuBytes"> & {
-    moeOffloadUnmodelled?: boolean;
-  }) | null,
-  residentPool: ReconciledGpuSelection,
-  requestedPool: ReconciledGpuSelection,
-  cpuFallback = false,
-  devices: SystemGpuDevice[] = [],
+	estimate:
+		| (Pick<MemoryFitEstimate, "totalBytes" | "gpuBytes"> & {
+				weightsBytes: number;
+				moeOffloadUnmodelled?: boolean;
+		  })
+		| null,
+	residentPool: ReconciledGpuSelection,
+	requestedPool: ReconciledGpuSelection,
+	{
+		cpuFallback = false,
+		devices = [],
+		gpuPlacementKnown = false,
+		appleUnifiedMemory = false,
+	}: {
+		cpuFallback?: boolean;
+		devices?: SystemGpuDevice[];
+		gpuPlacementKnown?: boolean;
+		appleUnifiedMemory?: boolean;
+	} = {},
 ): { totalBytes: number; gpuBytes: number } {
-  const total = reclaimableBytes(estimate?.totalBytes);
-  const gpu = Math.min(reclaimableBytes(estimate?.gpuBytes), total);
-  const includesResidentPool =
-    !requestedPool.ids?.length ||
-    (residentPool.ids != null &&
-      residentPool.ids.length > 0 &&
-      residentPool.indexKind != null &&
-      residentPool.indexKind === requestedPool.indexKind &&
-      residentPool.ids.every((id) => requestedPool.ids!.includes(id)));
-  // Partial overlap and unmodelled CPU placement cannot establish reclaimed VRAM.
-  const gpuCredit =
-    includesResidentPool && !cpuFallback && !estimate?.moeOffloadUnmodelled
-      ? gpu
-      : 0;
-  const residentDevices = residentPool.ids?.length
-    ? devices.filter((device) =>
-        device.indexKind === residentPool.indexKind &&
-        residentPool.ids!.includes(device.index))
-    : devices;
-  const topologyKnown =
-    residentDevices.length > 0 &&
-    (!residentPool.ids?.length ||
-      (residentPool.indexKind != null &&
-        residentPool.ids.every((id) =>
-          residentDevices.some((device) => device.index === id)))) &&
-    residentDevices.every((device) =>
-      (sharesHostMemory(device) && device.sharedMemoryHostBackedGb == null) ||
-      (Number.isFinite(device.memoryTotalGb) && device.memoryTotalGb > 0));
-  const independentGb = gpuMemoryTotalsGb(
-    residentDevices.map((device) => ({
-      memory_total_gb: device.memoryTotalGb,
-      shared_memory: sharesHostMemory(device),
-      shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
-    })),
-  ).dedicated;
-  // Only bytes beyond all independent capacity are certainly backed by host RAM.
-  const sharedHostCredit = gpuCredit === 0 && topologyKnown
-    ? Math.max(0, gpu - independentGb * 1024 ** 3)
-    : 0;
-  return {
-    totalBytes: total - gpu + gpuCredit + sharedHostCredit,
-    gpuBytes: gpuCredit,
-  };
+	const total = reclaimableBytes(estimate?.totalBytes);
+	const gpu = Math.min(reclaimableBytes(estimate?.gpuBytes), total);
+	if (
+		!estimate ||
+		!Number.isFinite(estimate.weightsBytes) ||
+		estimate.weightsBytes < 0
+	)
+		return { totalBytes: 0, gpuBytes: 0 };
+	const files = Math.min(estimate.weightsBytes, total);
+	const includesResidentPool =
+		!requestedPool.ids?.length ||
+		(residentPool.ids != null &&
+			residentPool.ids.length > 0 &&
+			residentPool.indexKind != null &&
+			residentPool.indexKind === requestedPool.indexKind &&
+			residentPool.ids.every((id) => requestedPool.ids!.includes(id)));
+	const residentDevices = residentPool.ids?.length
+		? devices.filter(
+				(device) =>
+					device.indexKind === residentPool.indexKind &&
+					residentPool.ids!.includes(device.index),
+			)
+		: devices;
+	const topologyKnown =
+		residentDevices.length > 0 &&
+		(!residentPool.ids?.length ||
+			(residentPool.indexKind != null &&
+				residentPool.ids.every((id) =>
+					residentDevices.some((device) => device.index === id),
+				))) &&
+		residentDevices.every(
+			(device) =>
+				(sharesHostMemory(device) && device.sharedMemoryHostBackedGb == null) ||
+				(Number.isFinite(device.memoryTotalGb) && device.memoryTotalGb > 0),
+		);
+	const independentGb = appleUnifiedMemory
+		? 0
+		: gpuMemoryTotalsGb(
+				residentDevices.map((device) => ({
+					memory_total_gb: device.memoryTotalGb,
+					shared_memory: sharesHostMemory(device),
+					shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
+				})),
+			).dedicated;
+	// File-backed pages may already count as available RAM. Their pool split is unknown.
+	const gpuMayUseHost =
+		appleUnifiedMemory ||
+		!topologyKnown ||
+		residentDevices.some(sharesHostMemory);
+	const gpuCredit =
+		includesResidentPool &&
+		gpuPlacementKnown &&
+		!cpuFallback &&
+		!estimate.moeOffloadUnmodelled
+			? Math.max(0, gpu - (gpuMayUseHost ? files : 0))
+			: 0;
+	// Only bytes beyond all independent capacity are certainly backed by host RAM.
+	const sharedHostCredit =
+		gpuCredit === 0 && (appleUnifiedMemory || topologyKnown)
+			? Math.max(0, gpu - independentGb * 1024 ** 3 - files)
+			: 0;
+	return {
+		totalBytes: Math.max(0, total - gpu - files) + gpuCredit + sharedHostCredit,
+		gpuBytes: gpuCredit,
+	};
 }
 
 export interface MemoryFitResult {

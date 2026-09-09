@@ -1760,6 +1760,8 @@ export function ModelConfigPage({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  const mmprojFallbackReason = useChatRuntimeStore((s) => s.mmprojFallbackReason);
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -2506,6 +2508,10 @@ export function ModelConfigPage({
     memoryEstimateRequest &&
     isActiveModel &&
     loadedConfig &&
+    // Requested settings cannot reconstruct a fallback's actual allocations.
+    !loadedCpuFallback &&
+    !specFallbackReason &&
+    !mmprojFallbackReason &&
     residentContext != null
       ? {
           ...memoryEstimateRequest,
@@ -2533,8 +2539,7 @@ export function ModelConfigPage({
         }
       : null;
   const residentEstimate = useMemoryEstimate(residentEstimateRequest);
-  // Settled answers only: a stale or in-flight credit would silence a real warning while the
-  // resident price caught up with a settings change.
+  // Only settled estimates can establish resident credit.
   const reclaimableEstimate =
     residentEstimateRequest &&
     residentEstimate.estimate?.available &&
@@ -2549,8 +2554,17 @@ export function ModelConfigPage({
       ids: runtimeConfig.selectedGpuIds ?? null,
       indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
     },
-    loadedCpuFallback,
-    gpuDevices,
+    {
+      cpuFallback: loadedCpuFallback,
+      devices: gpuDevices,
+      // Fitted placement does not report its final layer count.
+      gpuPlacementKnown:
+        residentEstimateRequest?.gpuMemoryMode === "manual" &&
+        residentEstimateRequest.gpuLayers != null &&
+        residentEstimateRequest.gpuLayers >= 0 &&
+        !loadedLlamaExtraArgs?.length,
+      appleUnifiedMemory: isAppleUnifiedMemory,
+    },
   );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
