@@ -457,6 +457,18 @@ def test_a_direct_safetensors_file_outranks_a_stale_index(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 100
 
 
+def test_an_index_that_names_the_direct_file_is_not_stale(tmp_path):
+    # unsloth/Qwen3.8-27B-NVFP4 ships model.safetensors beside an 0.85 GB MTP head and
+    # its index names both. Reading the direct file as the whole archive drops the head,
+    # so an index that includes the direct file decides instead.
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "model_mtp.safetensors", 50)
+    (tmp_path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model.safetensors", "b": "model_mtp.safetensors"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1050
+
+
 def test_a_direct_pickle_file_outranks_its_own_index(tmp_path):
     _write(tmp_path / "pytorch_model.bin", 100)
     _write(tmp_path / "pytorch_model-00001-of-00001.bin", 1000)

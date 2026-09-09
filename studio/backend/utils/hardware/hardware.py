@@ -5753,7 +5753,12 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
             for path, size in pool.items()
             if path.suffix == ext and _WEIGHT_COUNTER.sub("", path.stem) == base
         }
-        opens = direct or indexed
+        # A stale index names other files and the direct one is opened instead. An index
+        # that names the direct file is not stale: it is saying that file is one part of
+        # the archive, so it decides, and a head stored beside the weights (the MTP file
+        # next to model.safetensors in Qwen's NVFP4 repos) is charged with them.
+        names_the_direct_file = bool(direct) and set(direct) <= set(indexed)
+        opens = indexed if names_the_direct_file else (direct or indexed)
         if opens or counted:
             # Held back: the rest of a spelling is these same weights, never a component.
             candidates.append((opens or counted, bool(opens), {**direct, **all_indexed, **counted}))
