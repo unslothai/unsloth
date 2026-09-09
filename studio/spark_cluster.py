@@ -2391,6 +2391,7 @@ def start_peer_rsync_daemon(
     work_dir = "/tmp/unsloth-provision-" + secrets.token_hex(6)
     config = rsync_daemon_config(modules, peer_ip, port, local_ip, auth_user, work_dir)
     script = daemon_setup_script(config, auth_user, secret, list(modules.values()), work_dir, port)
+
     # Every failure below is cleaned up from here, because the caller has no descriptor to
     # clean up with: an ssh that times out or loses its reply AFTER the peer ran the detached
     # `setsid ... rsync --daemon` left a writable daemon, its credentials file and its temp
@@ -3673,8 +3674,9 @@ def plan_deployment(
             axis = "none" if axis == "single" else axis,
             axis_nodes = axis_nodes,
             expected = expected_gain(axis, axis_nodes, concurrency, prompt_tokens or 512),
-            commands = _serve_commands("layer-split" if chosen == "layer_split" else "single",
-                                       axis_nodes, model),
+            commands = _serve_commands(
+                "layer-split" if chosen == "layer_split" else "single", axis_nodes, model
+            ),
         )
         out["recommendation"] = (out.get("serving") or {}).get("reason", "") or (
             f"One Spark: {size_gib:.1f} GiB fits, and a second copy is not worth its memory "
@@ -4512,7 +4514,11 @@ def peer_home(peer_ip: str, user: str) -> Optional[str]:
 
 
 def _rsync_to_peer(
-    local: str, remote: str, peer_ip: str, user: str, dereference: bool = False
+    local: str,
+    remote: str,
+    peer_ip: str,
+    user: str,
+    dereference: bool = False,
 ) -> Optional[str]:
     """Copy `local` (file or directory) to the absolute `remote` on the peer. Returns an
     error string, or None on success.
@@ -4592,7 +4598,12 @@ def stage_run_inputs(
     return shlex.join(tokens), staged, failed
 
 
-def wait_for_peer_stage(peer_ip: str, user: str, pid_file: str, timeout: int = 3600) -> bool:
+def wait_for_peer_stage(
+    peer_ip: str,
+    user: str,
+    pid_file: str,
+    timeout: int = 3600,
+) -> bool:
     """Block until the detached peer rank has exited, or the timeout.
 
     The local `torchrun` returning says only that RANK 0 finished serialising. Rank 1 is
@@ -4617,7 +4628,11 @@ def wait_for_peer_stage(peer_ip: str, user: str, pid_file: str, timeout: int = 3
 
 
 def collect_stage_outputs(
-    save_dir: str, peer_ip: str, user: str, home: str, ranks: Optional[List[int]] = None
+    save_dir: str,
+    peer_ip: str,
+    user: str,
+    home: str,
+    ranks: Optional[List[int]] = None,
 ) -> Optional[str]:
     """Bring the PEER's own `stageN/` directories back into the local save directory.
 

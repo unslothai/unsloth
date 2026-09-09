@@ -55,7 +55,11 @@ def test_merge_force_reaches_the_merge_and_the_default_still_refuses(merge_mod, 
     monkeypatch.setattr(merge_mod, "plan_merge", lambda root: plan)
     seen = {}
 
-    def _merge(root, out, force = False):
+    def _merge(
+        root,
+        out,
+        force = False,
+    ):
         seen["force"] = force
         return {"n_tensors": 4, "out": out}
 
@@ -72,7 +76,12 @@ def test_merge_force_reaches_the_merge_and_the_default_still_refuses(merge_mod, 
 def test_the_module_parser_carries_force(merge_mod, monkeypatch):
     seen = {}
 
-    def _cmd(root, out, dry_run, force = False):
+    def _cmd(
+        root,
+        out,
+        dry_run,
+        force = False,
+    ):
         seen["force"] = force
         return 0
 
@@ -95,7 +104,14 @@ def test_the_public_merge_and_provision_commands_expose_force():
 def test_serve_rpc_port_survives_the_delegated_parser(cluster, monkeypatch):
     seen = {}
 
-    def _serve(model, port = 8080, rpc_port = None, ctx = 8192, engines = 2, slots = 16):
+    def _serve(
+        model,
+        port = 8080,
+        rpc_port = None,
+        ctx = 8192,
+        engines = 2,
+        slots = 16,
+    ):
         seen.update(model = model, port = port, rpc_port = rpc_port)
         return 0
 
