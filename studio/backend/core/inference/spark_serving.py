@@ -433,6 +433,7 @@ async def ssh_run(
     timeout: float = 20.0,
 ) -> Tuple[int, str, str]:
     """Run one command on the peer without blocking the loop. rc 255 on transport failure."""
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *ssh_argv(peer, remote),
@@ -446,6 +447,18 @@ async def ssh_run(
             err.decode("utf-8", "replace"),
         )
     except (asyncio.TimeoutError, OSError) as exc:
+        # Timing out abandons the child rather than ending it, and an unreachable peer is
+        # exactly when this fires, on a supervisor loop: without the kill and the wait it
+        # leaks one live ssh per probe and then one zombie per probe.
+        if proc is not None:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                await proc.wait()
+            except (OSError, asyncio.CancelledError):
+                pass
         return 255, "", str(exc)
 
 

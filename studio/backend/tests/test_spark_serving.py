@@ -2052,3 +2052,30 @@ def test_load_failed_keeps_a_topology_whose_model_is_still_loaded():
     state.attached_backend = type("B", (), {"is_loaded": False})()
     asyncio.run(state.load_failed())
     assert detached, "kept a topology after the model really went away"
+
+
+def test_ssh_run_kills_and_reaps_a_timed_out_child(monkeypatch):
+    # An unreachable peer times these out on a supervisor loop, so abandoning the child leaks
+    # one live ssh per probe and then one zombie per probe.
+    import asyncio
+
+    killed, waited = [], []
+
+    class _Proc:
+        returncode = None
+        async def communicate(self):
+            await asyncio.sleep(10)
+        def kill(self):
+            killed.append(True)
+        async def wait(self):
+            waited.append(True)
+
+    async def _spawn(*a, **k):
+        return _Proc()
+
+    monkeypatch.setattr(ss.asyncio, "create_subprocess_exec", _spawn)
+    rc, out, err = asyncio.run(ss.ssh_run("peer", "true", timeout = 0.01))
+
+    assert rc == 255
+    assert killed, "timed-out ssh child was never killed"
+    assert waited, "timed-out ssh child was never reaped"
