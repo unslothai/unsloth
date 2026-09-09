@@ -29,7 +29,6 @@ from utils.models.model_config import (
 from utils.hf_cache_settings import active_hf_hub_cache
 from utils.utils import hf_env_offline
 from utils.paths.path_utils import (
-    get_cache_path,
     is_local_path,
     normalize_path,
     resolve_cached_repo_id_case,

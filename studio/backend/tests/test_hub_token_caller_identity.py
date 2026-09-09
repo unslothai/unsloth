@@ -564,9 +564,6 @@ def test_the_chat_template_fallback_follows_the_caller(
     monkeypatch.setattr(
         picker_service, "iter_snapshots_preferring_whole", lambda *_a, **_k: iter(())
     )
-    monkeypatch.setattr(
-        picker_service, "get_cache_path", lambda _n: Path("/cached/repo") if cached else None
-    )
     # The gate asks about THIS template file, not the repo directory: a snapshot holding
     # only weights can serve no template, so refusing it would cost an authorized caller
     # one the Hub would have given it.
@@ -2340,8 +2337,7 @@ def test_a_repo_directory_is_not_a_cached_template(monkeypatch):
     monkeypatch.setattr(
         picker_service, "iter_snapshots_preferring_whole", lambda *_a, **_k: iter(())
     )
-    # The repo directory is here, the template file is not.
-    monkeypatch.setattr(picker_service, "get_cache_path", lambda _n: Path("/cached/repo"))
+    # A snapshot is here, the template file is not.
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: None)
     downloads: list = []
 
