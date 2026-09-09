@@ -100,6 +100,18 @@ def main() -> int:
         print("torch is not installed; cannot probe peer copies.")
         return 2
 
+    if getattr(torch.version, "hip", None) is not None:
+        # ROCm reuses the torch.cuda namespace, so every test below would run and
+        # PASS on AMD hardware, then recommend GGML_CUDA_P2P, which only the CUDA
+        # backend reads. A pass that ends in a no-op instruction is worse than no
+        # answer, so decline instead of measuring hardware this cannot advise on.
+        print(
+            "This is a ROCm/HIP build of torch. GGML_CUDA_P2P is read only by\n"
+            "llama.cpp's CUDA backend, so this probe has no advice to give for AMD\n"
+            "GPUs and does not test them."
+        )
+        return 2
+
     if not (torch.cuda.is_available() and torch.cuda.device_count() >= 2):
         print(
             f"need at least 2 visible CUDA GPUs, found "

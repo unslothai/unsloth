@@ -24132,9 +24132,15 @@ class LlamaCppBackend:
                 # Only when the fabric is NOT confirmed: on a verified NV# pair the
                 # flag is the benchmarked configuration, and warning there would
                 # push users off a working optimisation.
+                # Datacenter boxes are excluded because _apply_datacenter_env warns
+                # about the same variable from its own veto branch; without this the
+                # two fire together on the first load and the helper's keeps firing
+                # on every later one.
                 if (
                     env.get("GGML_CUDA_P2P")
                     and not _cpu_only_zero_offload
+                    and not is_vulkan_backend
+                    and not self._is_datacenter_gpu(gpu_indices)
                     and self._effective_gpu_count(gpu_indices) > 1
                     and not LlamaCppBackend._warned_no_nvlink
                 ):
@@ -24231,11 +24237,16 @@ class LlamaCppBackend:
                         # tensor mode aborts a child with no visible device on its own.
                         self._clear_split_placement_env(env)
                 elif gpu_indices is not None and not is_vulkan_backend:
-                    # When the user picked GPUs by index, align CUDA's ordering with
-                    # the PCI-bus order the picker enumerated, so "GPU 1" in the UI is
-                    # GPU 1 to llama.cpp, not CUDA's FASTEST_FIRST default (#5025).
-                    if gpu_ids:
-                        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+                    # Align CUDA's ordering with the PCI-bus order the picker
+                    # enumerated, so "GPU 1" in the UI is GPU 1 to llama.cpp, not
+                    # CUDA's FASTEST_FIRST default (#5025). Pinned for every mask
+                    # built from gpu_indices, not just an explicit user pick: the
+                    # ids come from the same nvidia-smi enumeration either way, so
+                    # an auto-fit selection needs the same alignment. Without it a
+                    # selection verified as physical [0,1] could launch on [0,2],
+                    # which for the P2P gate means confirming NVLink for one pair
+                    # and running on another (#10613).
+                    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).

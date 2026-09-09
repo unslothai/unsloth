@@ -906,3 +906,36 @@ def test_explicit_p2p_opt_out_does_not_warn_about_corruption(monkeypatch):
     LlamaCppBackend._apply_datacenter_env(env, [0, 1])
     assert "GGML_CUDA_P2P" not in env
     assert not [m for m in seen if "without a confirmed NVLink" in m], seen
+
+
+def test_auto_selected_launch_pins_pci_bus_id(monkeypatch):
+    """The gate verifies nvidia-smi physical ids, so the child's mask has to mean
+    the same devices. CUDA_DEVICE_ORDER was pinned only for an explicit user pick,
+    leaving an auto-fit selection verified as physical [0,1] free to launch on
+    [0,2]: NVLink confirmed for one pair, peer traffic on another (#10613)."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    marker = 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"'
+    idx = src.index("_emit_child_gpu_visibility(\n")
+    before = src[:idx]
+    assert marker in before
+    # The pin must not sit behind the explicit-pick condition.
+    tail = before[before.rindex(marker):]
+    assert "if gpu_ids" not in before[before.rindex("elif gpu_indices is not None"):]
+
+
+def test_datacenter_box_warns_once_not_twice(monkeypatch):
+    """The call-site warning is for hosts that never reach _apply_datacenter_env.
+    A datacenter box reaches it, and its veto branch warns about the same variable,
+    so letting both fire double-warns on the first load."""
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2)
+    )
+    _use_topo(monkeypatch, TOPO_PCIE_2X)
+    assert LlamaCppBackend._is_datacenter_gpu([0, 1]) is True
+    seen = _capture_warnings(monkeypatch)
+    env = {"GGML_CUDA_P2P": "1"}
+    LlamaCppBackend._apply_datacenter_env(env, [0, 1])
+    assert len([m for m in seen if "peer copies stay" in m]) == 1, seen
