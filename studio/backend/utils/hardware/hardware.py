@@ -1259,12 +1259,10 @@ def _torch_reports_another_vendors_runtime() -> bool:
     AMD" -- on a host whose real repair is reinstalling ROCm torch. torch.version.cuda is
     written by the build itself and settles it.
 
-    An import failure is answered from disk, exactly as _torch_reports_a_hip_runtime and
+    An import failure is answered from disk, as _torch_reports_a_hip_runtime and
     _torch_reports_an_xpu_runtime already answer it: torch/version.py records the runtime
-    whether or not the package imports, and returning False there made the untagged-CUDA
-    clearing above inert on the very path it exists for -- a stale recorded ROCm flavor then
-    spoke for a CUDA or XPU wheel, and a closed AMD node replaced the reinstall guidance
-    with group membership that cannot make that wheel use the card.
+    whether or not the package imports. Returning False there made the clearing above inert
+    on the path it exists for, letting a stale ROCm flavor speak for a CUDA or XPU wheel.
     """
     if TORCH_IMPORT_ERROR is not None:
         # A ROCm build records hip and may record cuda besides, so that reading leads here
@@ -2117,32 +2115,23 @@ def _gpu_present_but_unusable_message(
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
-    # A closed device node is not a mismatch, and the reinstall below is the wrong
-    # repair for it: the wheel is correct and no reinstall changes group membership
-    # (#10466). Checked before both branches because either verdict can describe that
-    # host -- an AMD probe that reads sysfs still finds the card, so the installer may
-    # have chosen either a ROCm wheel that cannot open a device or a CPU one.
+    # A closed device node is not a mismatch, and the reinstall below is the wrong repair
+    # for it: the wheel is correct and no reinstall changes group membership (#10466).
+    # Checked before both branches because either verdict can describe that host.
     #
-    # Only when AMD is the card the verdict is ABOUT. On a hybrid host an NVIDIA GPU
-    # can raise the same two reasons while an AMD node happens to be closed, and there
-    # the PyTorch advice below is right and joining the render group repairs nothing.
-    # The vendors are already recorded for the mismatch being reported right now.
-    #
-    # Recording AMD is necessary and not sufficient. CHAT_ONLY_MISMATCH_VENDORS is
-    # qualifying physical inventory, and a supported AMD card qualifies whatever wheel
-    # is installed, so a hybrid host running CUDA torch records both vendors. There the
-    # verdict is about the NVIDIA card, no group changes the CUDA wheel, and the repair
-    # below is the right one. So AMD also has to be what this install targets: it is the
-    # only qualifying vendor, or the venv asked for ROCm, or torch carries a HIP runtime.
+    # Only when AMD is the card the verdict is ABOUT. Recording AMD is necessary but not
+    # sufficient: CHAT_ONLY_MISMATCH_VENDORS is qualifying physical inventory, so a hybrid
+    # host running CUDA torch records both vendors, and there the verdict is about the
+    # NVIDIA card and the reinstall below is right. AMD also has to be what this install
+    # targets: the only qualifying vendor, or the venv asked for ROCm, or torch carries a
+    # HIP runtime.
     vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
-    # Two different questions, and conflating them was the bug. Whether the closed node is
-    # worth MENTIONING is about the hardware: on an AMD-only host it always is. Whether it
+    # Two questions, and conflating them was the bug. Whether the closed node is worth
+    # MENTIONING is about the hardware: on an AMD-only host it always is. Whether it
     # REPLACES the reinstall advice is about the wheel, and only a ROCm one is repaired by
-    # opening a node -- a CUDA- or XPU-tagged build on an AMD-only host raises the same
-    # verdict, and no amount of group membership makes it use the card.
-    # The label the message itself is about to print is the most direct evidence of what
-    # the installed wheel is, and it is the one piece the caller has already resolved; the
-    # two probes answer for the venv, which a passed-in verdict may predate.
+    # opening a node. The label about to be printed is the most direct evidence of what is
+    # installed and the caller has already resolved it; the two probes answer for the venv,
+    # which a passed-in verdict may predate.
     _label = (detail or "").lower()
     # Intent is the LAST resort, because it can outlive the wheel. A venv that recorded a
     # ROCm flavor and then had a CUDA build installed over it still answers yes to

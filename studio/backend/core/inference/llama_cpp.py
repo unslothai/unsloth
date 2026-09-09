@@ -9844,20 +9844,17 @@ class LlamaCppBackend:
             if _metal_capable_host():
                 # Same check as the load site: an Intel Mac wants its real reason.
                 return "this probe reads CUDA and HIP only; Apple Silicon offloads through Metal"
-            # Before the backend branches, because it is the reason underneath BOTH of
-            # them: a render node this user cannot open leaves HIP with no device and
-            # the Vulkan loader with nothing to enumerate, and "the Vulkan probe
-            # reported no device" then sends the user after a driver that is fine
-            # (#10466). A Vulkan binary is asked only about the render node, since it
-            # never opens /dev/kfd and a closed one is not why its probe came back
-            # empty; it keeps its own reason below.
+            # Before the backend branches, because it is the reason underneath BOTH: a
+            # render node this user cannot open leaves HIP with no device and the Vulkan
+            # loader with nothing to enumerate, and "the Vulkan probe reported no device"
+            # then sends the user after a driver that is fine (#10466). A Vulkan binary is
+            # asked only about the render node, never /dev/kfd, and keeps its own reason.
             #
-            # Asked only of a build that can actually drive an AMD card, and only about
-            # the nodes that build opens. _is_vulkan_backend already answers "which
-            # backend does this install defer to", so a CUDA-plus-Vulkan build counts as
-            # CUDA and a CPU-only build as neither; both would otherwise be sent after a
-            # repair that cannot change what they enumerate. An install this probe cannot
-            # read stays eligible, so a detection miss does not lose the #10466 host.
+            # Asked only of a build that can drive an AMD card, and only about the nodes
+            # that build opens: _is_vulkan_backend answers which backend the install defers
+            # to, so a CUDA-plus-Vulkan build counts as CUDA and a CPU-only build as
+            # neither. An install this probe cannot read stays eligible, so a detection
+            # miss does not lose the #10466 host.
             _is_vulkan = LlamaCppBackend._is_vulkan_backend(binary)
             _backends = LlamaCppBackend._installed_ggml_backends(binary)
             _amd_capable = not LlamaCppBackend._backend_lacks_gpu_lib(binary) and (
@@ -9874,15 +9871,12 @@ class LlamaCppBackend:
                 _amd_gpu_count = None
 
             def _post_rocr_device_count() -> "int | None":
-                # ROCr filters the physical list FIRST and renumbers what survives; the HIP
-                # layer then indexes those, as _rocm_visibility_masks_are_stacked records.
-                # So a HIP ordinal has to be judged against the post-ROCr count: on two GPUs
-                # with ROCR_VISIBLE_DEVICES=0, one device survives and HIP ordinal 1 hides
-                # everything, where the physical count of 2 reads it as harmless.
-                #
-                # None when the survivors cannot be counted -- no physical count, or a ROCr
-                # entry this cannot resolve -- which leaves the HIP selector alone, the same
-                # answer an unreadable count already gets.
+                # ROCr filters the physical list FIRST and renumbers what survives, and
+                # the HIP layer indexes those (_rocm_visibility_masks_are_stacked), so a
+                # HIP ordinal is judged against the post-ROCr count: on two GPUs with
+                # ROCR_VISIBLE_DEVICES=0 one survives, and HIP ordinal 1 hides everything
+                # where the physical count of 2 reads it as harmless. None when the
+                # survivors cannot be counted, which leaves the HIP selector alone.
                 if not _rocr_filters:
                     return _amd_gpu_count
                 _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
@@ -9905,8 +9899,8 @@ class LlamaCppBackend:
                     _entry = _entry.strip()
                     if not _entry.isdigit():
                         # AMD documents the UUID form as the literal "GPU-XX"; anything
-                        # else that is not an index is Illegal to ROCr as well, so it ends
-                        # the list at a length this does know.
+                        # else that is not an index is Illegal to ROCr too, so it ends the
+                        # list at a length this does know.
                         return None if _entry.lower().startswith("gpu-") else _survivors
                     _idx = int(_entry)
                     if _idx >= _amd_gpu_count or _idx in _selected:
@@ -9931,11 +9925,10 @@ class LlamaCppBackend:
                 # Nor does a token have to LOOK like a number to end the list. clr takes
                 # `index = atoi(str_id)` and rejects the token unless `str_id` is that
                 # index written back out, so HIP_VISIBLE_DEVICES=garbage (and 0x1, and 00)
-                # terminates on the FIRST token and leaves zero agents, exactly as -1 does.
-                # Asked only for the clr-layer variables: ROCr's own illegal-token rule is
-                # a separate parser and is applied by _is_an_illegal_rocr_selector. A token
-                # carrying a UUID is resolved against the agents instead, which nothing
-                # here can do, so it is left to _cannot_be_resolved rather than judged.
+                # terminates on the FIRST token, exactly as -1 does. Asked only for the
+                # clr-layer variables: ROCr's illegal-token rule is a separate parser, in
+                # _is_an_illegal_rocr_selector, and a UUID token is left to
+                # _cannot_be_resolved since resolving it needs the agents.
                 if strict and not first.lower().startswith("gpu-"):
                     try:
                         _index = int(first)
@@ -9945,10 +9938,9 @@ class LlamaCppBackend:
                         return True
                 # An entry that looks valid can still name nothing: the list stops at the
                 # first index no device answers to, so HIP_VISIBLE_DEVICES=3 on a one-GPU
-                # host exposes zero devices and is exactly the empty probe being explained.
-                # Only ordinals are judged -- a UUID selector is not an index into this
-                # count -- and only against a count that was actually read, since reading
-                # an unknown count as a bound would call every selector here a blocker.
+                # host exposes zero devices, which is the empty probe being explained. Only
+                # ordinals, and only against a count actually read: reading an unknown
+                # count as a bound would call every selector here a blocker.
                 _bound = _amd_gpu_count if count is None else count
                 if not _bound or not first.isdigit():
                     return False

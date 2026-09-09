@@ -1334,28 +1334,30 @@ _PRIVILEGED_GROUPS = frozenset(
 
 
 def _groups_that_own(paths: list) -> tuple:
-    """How to open ``paths``, read from the nodes: ``(joinable, unnamed, no_group, acl)``.
+    """How to open ``paths``, read from the nodes themselves.
 
     "render,video" is not always the right pair, and sometimes no group is the answer at
-    all. Three outcomes, because they need three different repairs:
+    all, so the seven buckets returned each carry a different repair:
 
-    ``joinable``   group names whose membership WOULD open the node -- the group has read
-                   and write on it, so ``usermod -a -G`` is the fix.
-    ``unnamed``    GIDs with no entry in the group database, which is the container case
+    ``joinable``   membership WOULD open it, so ``usermod -a -G`` is the fix.
+    ``unnamed``    GIDs with no entry in the group database, the container case
                    ``docker/run.sh`` documents: ``--group-add`` passes the host's numeric
-                   gids and no name inside matches them. Naming a bare GID to usermod does
-                   NOT work -- shadow 4.13 answers ``group '993' does not exist`` and exits
-                   6 -- so these are reported rather than prescribed.
-    ``no_group``   nodes whose mode denies the group too, e.g. a udev rule leaving one
+                   gids and no name inside matches. usermod refuses a bare GID (shadow
+                   4.13: ``group '993' does not exist``, exit 6), so these are reported.
+    ``no_group``   the mode denies the group too, e.g. a udev rule leaving one
                    ``root:render 0600``. Joining render there changes nothing.
-    ``already``    group names this account is ALREADY in, where the node is nonetheless
-                   shut: a container device cgroup or an LSM is denying it, and usermod
-                   would succeed and change nothing.
-    ``acl``        nodes carrying a POSIX access ACL, where the mode's group bits are the
-                   ACL mask and the real grant is undecidable from a stat.
+    ``acl``        a POSIX access ACL, where the mode's group bits are the ACL mask and
+                   the real grant is undecidable from a stat.
+    ``owned``      this account owns it, and POSIX stops at the owner class once the uid
+                   matches, so no membership opens it however the group bits read.
+    ``privileged`` the owning group grants far more than the GPU, so this is a udev
+                   misconfiguration to report rather than a membership to prescribe.
+    ``already``    this account is ALREADY in the group and the node is still shut: a
+                   container device cgroup or an LSM denies it, and usermod would exit 0
+                   and change nothing.
 
-    Best effort by construction: a node that cannot be stat'd contributes to none of the
-    three rather than raising, since this runs where things are already wrong.
+    Best effort: a node that cannot be stat'd joins no bucket rather than raising, since
+    this runs where things are already wrong.
     """
     joinable, unnamed, no_group, acl, owned, privileged, already = ([], [], [], [], [], [], [])
     try:
@@ -1502,11 +1504,10 @@ def _selector_exposes_every_gpu(
     the open sibling is still reachable, and reading it as a narrowing hands that host the
     group repair in place of the driver diagnosis it needs.
 
-    ``repeat_ends_the_list`` is ROCr's rule and not clr's. RvdFilter terminates on a token
+    ``repeat_ends_the_list`` is ROCr's rule, not clr's: RvdFilter terminates on a token
     that "maps to a device that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0,1
-    surfaces ONE device; clr's parser stops only on a token that is not its own index
-    written back out, so the same value there leaves both. _post_rocr_device_count in
-    llama_cpp.py records the ROCr half of this from the same source.
+    surfaces ONE device, where clr's parser stops only on a token that is not its own index
+    written back out and leaves both. _post_rocr_device_count records the same source.
 
     An unmappable token TERMINATES the list, it does not discard what came before it: clr
     breaks out of the loop having already pushed every device it accepted, so
