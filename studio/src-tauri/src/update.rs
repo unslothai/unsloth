@@ -330,6 +330,12 @@ fn run_update(
     // is synchronous, so the thread-owned Win32 mutex never crosses an await.
     let result = crate::process::with_studio_runtime_launch_guard(|| {
         crate::process::ensure_managed_environment_is_idle(&bin)?;
+        // Under the gate and after the idle scan, so the tree this settles is one
+        // nothing else is holding. A 805-807 rollback the last launch deferred still
+        // names the live runtime as something to undo, and updating on top of that
+        // journal has the next idle launch restoring the pre-update trees over
+        // everything installed here.
+        crate::staged_update::reconcile_before_update(&crate::diagnostics::studio_dir())?;
         let (stdout, stderr) =
             spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
         let threads = stream_output(

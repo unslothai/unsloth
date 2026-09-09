@@ -70,34 +70,85 @@ pub(crate) fn reconcile_legacy_at_launch(home: &Path) {
     }
 }
 
+/// Settle a deferred legacy rollback before an update mutates the live runtime.
+///
+/// `reconcile_legacy_at_launch` leaves the PENDING journal alone when a backend is
+/// still on the tree, which is right at launch and wrong afterwards: a classic
+/// update then installs into the live runtime while a journal still names it as
+/// something to undo, and the next idle launch restores the pre-update trees over
+/// everything the update just did. The update is the last moment the journal can be
+/// settled, and refusing is better than updating a runtime that is about to be
+/// replaced by a stale backup.
+pub(crate) fn reconcile_before_update(home: &Path) -> Result<(), String> {
+    // Nothing a 805-807 update left behind, so nothing to probe for.
+    if !home.join(PREV_DIR).is_dir() && !home.join(STAGE_DIR).exists() {
+        return Ok(());
+    }
+    reconcile_before_update_with(home, live_tree_in_use(home))
+}
+
+fn reconcile_before_update_with(home: &Path, in_use: bool) -> Result<(), String> {
+    // Restarting is the whole fix: an idle launch finishes the rollback by itself,
+    // and the message has to say so, because on POSIX the backend this update would
+    // replace is usually the one holding the tree.
+    const RESTART: &str =
+        "An unfinished background update from an earlier release is still waiting on a \
+         running backend. Quit Unsloth Studio, reopen it, and update again.";
+    if in_use {
+        return Err(RESTART.to_string());
+    }
+    discard_stage(home);
+    roll_back_unconfirmed_with(home, false)?;
+    if home.join(PREV_DIR).join(PENDING_MARKER).is_file() {
+        return Err(RESTART.to_string());
+    }
+    Ok(())
+}
+
 /// A rename, not a delete: `.update-stage` holds a clone of the managed venv and
 /// of every native helper, and unlinking a torch tree here would hold the runtime
 /// gate through the whole of setup, before the window exists. Move it into the
 /// trash namespace a later launch sweeps anyway, and unlink it off that path.
 fn discard_stage(home: &Path) {
+    discard_stage_with(home, |from, to| fs::rename(from, to));
+}
+
+fn discard_stage_with(home: &Path, rename: impl Fn(&Path, &Path) -> std::io::Result<()>) {
     let stage = home.join(STAGE_DIR);
     if !stage.exists() {
         return;
     }
     let trash = trash_path(home, "stage");
-    if fs::rename(&stage, &trash).is_ok() {
+    if rename(&stage, &trash).is_ok() {
         std::thread::spawn(move || {
             let _ = fs::remove_dir_all(trash);
         });
         return;
     }
-    // The rename only fails for something the delete would hit too, and leaving a
-    // stage behind is the one outcome this function exists to prevent.
-    let _ = fs::remove_dir_all(&stage);
+    // Also off the launch path. On Windows the rename fails exactly when a file
+    // inside is still open -- Defender walking the clone it just watched being
+    // written -- and that is the multi-gigabyte tree the background delete exists
+    // for, so unlinking it here would hold the setup hook for as long as the copy
+    // took. Nothing activates a stage any more, so a tree that outlives this call
+    // is inert, and the next launch sweeps whatever this pass did not finish.
+    std::thread::spawn(move || {
+        let _ = fs::remove_dir_all(stage);
+    });
 }
+
+/// Distinct within a launch as well as between launches: a coarse clock can hand
+/// two calls the same nanosecond reading, and the second rename would then land
+/// on the first call's trash directory instead of beside it.
+static TRASH_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn trash_path(home: &Path, label: &str) -> PathBuf {
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let sequence = TRASH_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     home.join(format!(
-        "{ROLLBACK_TRASH_PREFIX}{label}-{}-{suffix}",
+        "{ROLLBACK_TRASH_PREFIX}{label}-{}-{suffix}-{sequence}",
         std::process::id()
     ))
 }
@@ -125,25 +176,35 @@ fn remove_stale_trash(home: &Path) {
     });
 }
 
-fn remove_confirmed_previous(prev: &Path) {
-    if let Ok(entries) = fs::read_dir(prev) {
-        for entry in entries.flatten() {
-            if entry.file_name() == CONFIRMED_MARKER {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                let _ = fs::remove_dir_all(path);
-            } else {
-                let _ = fs::remove_file(path);
-            }
-        }
+/// Quarantine the confirmed backup, then unlink it off that path.
+///
+/// A delete in place would take entries out from under the marker that vouches for
+/// the live runtime, and an interrupted one would leave a `.update-prev` holding
+/// some of the old trees and no confirmation -- which the next launch reads as an
+/// activation nobody confirmed and rolls the live runtime back to. The rename is
+/// the whole decision, and it is atomic.
+fn quarantine_confirmed_previous(home: &Path, prev: PathBuf) {
+    let trash = trash_path(home, "confirmed");
+    if fs::rename(&prev, &trash).is_err() {
+        // Still confirmed, still consistent, and every step here is safe to repeat:
+        // leave the whole thing for the next launch rather than start a delete that
+        // could strand the marker.
+        warn!("[staged-update] could not quarantine the confirmed backup, leaving it for the next launch");
+        return;
     }
-    let _ = fs::remove_file(prev.join(CONFIRMED_MARKER));
-    let _ = fs::remove_dir(prev);
+    std::thread::spawn(move || {
+        let _ = fs::remove_dir_all(trash);
+    });
 }
 
 fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
+    // `live_tree_in_use` reads every pid record in the studio directory and, on
+    // Windows, probes the managed environment for an idle one. An install that
+    // never took a 805-807 update has no `.update-prev` and so nothing to decide,
+    // and it must not pay for that probe at every launch.
+    if !home.join(PREV_DIR).is_dir() {
+        return Ok(());
+    }
     roll_back_unconfirmed_with(home, live_tree_in_use(home))
 }
 
@@ -151,9 +212,8 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     let prev = home.join(PREV_DIR);
     if prev.join(CONFIRMED_MARKER).is_file() {
         // 807 vouched for the runtime that is live now. Keep it and drop the copy,
-        // off the launch path: that copy is a whole superseded runtime. The marker
-        // goes last, so a launch that dies mid-delete simply repeats this one.
-        std::thread::spawn(move || remove_confirmed_previous(&prev));
+        // off the launch path: that copy is a whole superseded runtime.
+        quarantine_confirmed_previous(home, prev);
         return Ok(());
     }
     if prev.join(ROLLED_BACK_MARKER).is_file() {
@@ -443,6 +503,72 @@ mod tests {
     }
 
     #[test]
+    fn a_ready_stage_is_discarded_before_the_rollback_it_would_otherwise_survive() {
+        // 807 crashed mid-swap: the managed venv is the staged one, the sidecars are
+        // not, a PENDING journal names what was displaced, and the stage still holds
+        // the entries the swap never reached.
+        let home = temp_home("ready-stage-and-pending");
+        make_runtime(&home, "old");
+        stage_ready(&home);
+        let stage = home.join(STAGE_DIR);
+        let prev = home.join(PREV_DIR);
+        let previous_entries: Vec<String> = RUNTIME_ENTRIES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        write_marker(&prev.join(PENDING_MARKER), &previous_entries);
+        fs::rename(home.join("unsloth_studio"), prev.join("unsloth_studio")).unwrap();
+        fs::rename(stage.join("unsloth_studio"), home.join("unsloth_studio")).unwrap();
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        assert!(stage.join(".venv_t5_530").exists());
+
+        reconcile_legacy_at_launch(&home);
+
+        // The discard runs first, so the rollback cannot put back three entries and
+        // leave a fourth staged one live beside them.
+        for name in RUNTIME_ENTRIES {
+            assert_eq!(tag(&home, name), "old", "{name}");
+        }
+        assert!(!stage.exists());
+        assert!(!prev.exists());
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_stage_that_cannot_be_renamed_is_still_swept() {
+        let home = temp_home("stage-rename-fails");
+        make_runtime(&home, "old");
+        stage_ready(&home);
+        let stage = home.join(STAGE_DIR);
+
+        // Windows refuses the rename while any file inside is open, which is the one
+        // case the background delete exists for, so the fallback runs off the launch
+        // path too and the stage is gone a moment later rather than on return.
+        discard_stage_with(&home, |_, _| Err(std::io::Error::other("rename refused")));
+
+        wait_gone(&stage);
+        assert!(!stage.exists());
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        cleanup(home);
+    }
+
+    #[test]
+    fn two_trash_names_in_one_launch_never_collide() {
+        let home = temp_home("trash-names");
+
+        let first = trash_path(&home, "stage");
+        let second = trash_path(&home, "stage");
+
+        assert_ne!(first, second);
+        for path in [&first, &second] {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            // Still swept by `remove_stale_trash`, which matches on the prefix alone.
+            assert!(name.starts_with(ROLLBACK_TRASH_PREFIX), "{name}");
+        }
+        cleanup(home);
+    }
+
+    #[test]
     fn a_retained_desktop_update_bundle_survives_the_cleanup() {
         // The classic update installs this bundle after the backend step, and it
         // lives in the same directory as everything cleaned up above.
@@ -621,6 +747,75 @@ mod tests {
         wait_gone(&prev);
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert!(!prev.exists());
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_confirmed_backup_leaves_the_directory_the_moment_it_is_dropped() {
+        let home = temp_home("confirmed-quarantine");
+        make_runtime(&home, "old");
+        stage_ready(&home);
+        activate_by_hand(&home);
+        let prev = home.join(PREV_DIR);
+        write_marker(&prev.join(CONFIRMED_MARKER), &[]);
+
+        roll_back_unconfirmed_with(&home, false).unwrap();
+
+        // Renamed, not emptied: a delete in place would take entries out from under
+        // the confirmation, and an interrupted one would leave a backup with no
+        // marker for the next launch to roll the live runtime back to.
+        assert!(!prev.exists());
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+
+        reconcile_legacy_at_launch(&home);
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_deferred_rollback_is_settled_before_an_update_touches_the_runtime() {
+        let home = temp_home("before-update");
+        make_runtime(&home, "old");
+        stage_ready(&home);
+        activate_by_hand(&home);
+        // The launch found a backend on the tree and left the decision for later.
+        roll_back_unconfirmed_with(&home, true).unwrap();
+        assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
+
+        reconcile_before_update_with(&home, false).unwrap();
+
+        // Settled here, so no later launch can put this backup back over whatever
+        // the update is about to install.
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        assert!(!home.join(PREV_DIR).exists());
+        cleanup(home);
+    }
+
+    #[test]
+    fn an_update_is_refused_while_a_deferred_rollback_cannot_be_settled() {
+        let home = temp_home("before-update-busy");
+        make_runtime(&home, "old");
+        stage_ready(&home);
+        activate_by_hand(&home);
+
+        let error = reconcile_before_update_with(&home, true).unwrap_err();
+
+        // Restarting is what settles it, so the message says that and not a path.
+        assert!(error.contains("Quit Unsloth Studio"), "{error}");
+        // Nothing moved, so the launch after this one still has its decision to make.
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
+        cleanup(home);
+    }
+
+    #[test]
+    fn an_install_that_never_staged_has_nothing_to_settle_before_an_update() {
+        let home = temp_home("before-update-clean");
+        make_runtime(&home, "old");
+
+        reconcile_before_update(&home).unwrap();
+
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
         cleanup(home);
     }
 

@@ -953,10 +953,21 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     # spawned before the scan has run under it.
     update_call = update_source.index("crate::process::with_studio_runtime_launch_guard(")
     update_scan = update_source.index("ensure_managed_environment_is_idle(&bin)", update_call)
-    update_spawn = update_source.index("spawn_update(&bin, &state)", update_scan)
+    # A 805-807 rollback an earlier launch deferred still names the live runtime as
+    # something to undo, so it is settled here rather than after the update has
+    # installed into that runtime.
+    update_legacy = update_source.index("staged_update::reconcile_before_update(", update_scan)
+    update_spawn = update_source.index("spawn_update(&bin, &state)", update_legacy)
     update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
     update_guard_release = update_source.index("\n    });", update_wait)
-    assert update_call < update_scan < update_spawn < update_wait < update_guard_release
+    assert (
+        update_call
+        < update_scan
+        < update_legacy
+        < update_spawn
+        < update_wait
+        < update_guard_release
+    )
 
     # The child inherits the gate on every platform, not just Windows: the POSIX
     # shell holds its own flock around the child, so a CLI that tried to take the
@@ -1059,11 +1070,15 @@ def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
     assert entry < trash < failed < stage < rollback
 
     # The stage is a clone of the managed venv, so the launch renames it and
-    # unlinks it elsewhere rather than blocking the setup hook on the delete.
-    discard = staged_source.index("fn discard_stage(")
-    rename = staged_source.index("fs::rename(&stage, &trash)", discard)
+    # unlinks it elsewhere rather than blocking the setup hook on the delete. The
+    # fallback goes to a thread too: on Windows the rename fails exactly when a file
+    # inside is still open, which is the large tree the background delete exists for.
+    discard = staged_source.index("fn discard_stage_with(")
+    rename = staged_source.index("rename(&stage, &trash)", discard)
     spawn = staged_source.index("std::thread::spawn", rename)
-    assert discard < rename < spawn
+    fallback = staged_source.index("std::thread::spawn", spawn + 1)
+    swept = staged_source.index("fs::remove_dir_all(stage)", fallback)
+    assert discard < rename < spawn < fallback < swept
 
 
 def test_tauri_start_install_rejects_backend_conflicts_before_spawn():
