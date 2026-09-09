@@ -1055,6 +1055,14 @@ _recorded_uv_cache() {
 _UV_MARKER_BOM=$(printf '\357\273\277')
 _UV_MARKER_CR=$(printf '\r')
 
+# Three tiers only: a caller value, --no-cache, then the recorded marker or the Studio
+# cache. There is deliberately NO "use uv's default if it is warm" tier, which is the one
+# install.sh has and this does not, and the asymmetry is the point rather than an omission.
+# install.sh runs before anything is recorded, so it has to look at the default cache to
+# decide; by the time this script runs the decision has already been made and written down,
+# and the CLI injects UV_CACHE_DIR for `unsloth studio update` besides. Adding the tier here
+# would let an update quietly move off the cache the installer chose -- and setup.sh never
+# writes the marker, so nothing would record the move for the run after it.
 if [ -n "${UV_CACHE_DIR:-}" ]; then
     # A caller value wins outright, here as in install.sh and in the CLI.
     :

@@ -653,11 +653,11 @@ _probe_uv_cache_writable() {
     if ! mkdir -p "$_uv_probe_dir" 2>/dev/null \
        || ! _uv_cache_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
         [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
-        unset _uv_cache_probe
+        unset _uv_cache_probe _uv_probe_dir
         return 1
     fi
     rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
+    unset _uv_cache_probe _uv_probe_dir
     return 0
 }
 
