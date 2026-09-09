@@ -145,18 +145,34 @@ export function createGenerationToolRecovery(
   };
   // Seeded from saves: a reload between two completions of one card leaves it in no other lookup.
   const completed = new Map<string, CarriedPart>();
+  /** Most recent finished card a provider gave no id, for a repeated id-less ending. */
+  let lastIdless: CarriedPart | undefined;
   for (const entry of carried) {
     const part = record(entry.part);
     const id = part?.backendToolCallId;
-    if (
-      part?.type === "tool-call" &&
-      part.result !== undefined &&
-      typeof id === "string" &&
-      id
-    ) {
-      completed.set(id, entry);
-    }
+    if (part?.type !== "tool-call" || part.result === undefined) continue;
+    if (typeof id === "string" && id) completed.set(id, entry);
+    else if (id === "") lastIdless = entry;
   }
+  /** A card the previous frontend saved carries its backend id inside toolCallId and nowhere
+   *  else, so a later completion has to recognise it the way the pending lookup already does. */
+  const findCompletedLegacy = (backendId: string) => {
+    if (!backendId) return undefined;
+    for (let i = carried.length - 1; i >= 0; i--) {
+      const part = record(carried[i].part);
+      const id = part?.toolCallId;
+      if (
+        part?.type !== "tool-call" ||
+        part.result === undefined ||
+        part.backendToolCallId !== undefined ||
+        typeof id !== "string"
+      ) {
+        continue;
+      }
+      if (id === backendId || id.startsWith(`${backendId}:`)) return carried[i];
+    }
+    return undefined;
+  };
   const findSavedEntry = (backendId: string, approvalId: unknown) => {
     const matches = savedPending.filter((entry) => {
       const part = record(entry.part);
@@ -248,8 +264,10 @@ export function createGenerationToolRecovery(
       for (const active of pending.values()) entry = active;
     }
     // OpenAI Responses ends a web search twice (placeholder, then citations); a start clears this.
-    if (!entry && event.type === "tool_end" && backendId) {
-      entry = completed.get(backendId);
+    if (!entry && event.type === "tool_end") {
+      entry = backendId
+        ? (completed.get(backendId) ?? findCompletedLegacy(backendId))
+        : lastIdless;
     }
     // Gemini can emit a second completion carrying a generated image.
     if (
@@ -306,6 +324,7 @@ export function createGenerationToolRecovery(
       };
       pending.set(backendId || ` idless:${runId}:${seq}`, entry);
       if (backendId) completed.delete(backendId);
+      else lastIdless = undefined;
       return;
     }
     if (!entry) {
@@ -344,6 +363,7 @@ export function createGenerationToolRecovery(
       }
     }
     if (backendId) completed.set(backendId, entry);
+    else lastIdless = entry;
   };
   // Recovery never reaches the live path's end-of-stream source yield, so rebuild those entries.
   const withSources = <TPart>(parts: TPart[]): TPart[] => {

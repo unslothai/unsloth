@@ -1090,3 +1090,58 @@ test("repeated source ids pair one to one instead of multiplying", () => {
     );
   }
 });
+
+test("a legacy completed card takes its citation result", async () => {
+  const citations = "Title: Docs\nURL: https://docs.unsloth.ai/\nSnippet: g";
+  const legacy = {
+    type: "tool-call",
+    toolCallId: "ws_0:9f1c-legacy-uuid",
+    toolName: "web_search",
+    args: {},
+    argsText: "{}",
+    result: "Searching: unsloth",
+  };
+  const { content } = await recoverRun(
+    [legacy],
+    [{ type: "tool_end", tool_call_id: "ws_0", result: citations }],
+  );
+  const cards = content.filter((part) => part.type === "tool-call");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].result, citations);
+  assert.deepEqual(
+    content.filter((part) => part.type === "source").map((part) => part.url),
+    ["https://docs.unsloth.ai/"],
+  );
+});
+
+test("a repeated id-less ending replaces the card it already finished", async () => {
+  const { content } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "", tool_name: "web_search" },
+      { type: "tool_end", tool_call_id: "", result: "Searching: unsloth" },
+      { type: "tool_end", tool_call_id: "", result: "final answer" },
+    ],
+  );
+  const cards = content.filter((part) => part.type === "tool-call");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].result, "final answer");
+});
+
+test("a divergent reply wins over a view that is only a tool card", () => {
+  const view: Record<string, unknown>[] = [
+    {
+      type: "tool-call",
+      toolCallId: "old:card",
+      toolName: "edit_file",
+      result: "stale",
+    },
+  ];
+  const recovered: Record<string, unknown>[] = [
+    { type: "text", text: "server repaired response" },
+  ];
+  assert.deepEqual(
+    recovery.recoveredContentToImport(view, recovered),
+    recovered,
+  );
+});

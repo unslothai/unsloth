@@ -488,6 +488,11 @@ export function recoveredContentToImport<TContent>(
     if (matches.every((index) => index !== undefined)) {
       return recoveredContent;
     }
+    // An empty projection is a prefix of every reply, so it cannot vouch for one that disagrees:
+    // a view holding only an old card would otherwise graft it onto a repaired body.
+    if (!view.raw && recovered.raw) {
+      return recoveredContent;
+    }
     const spoken = recoveredContent.filter(
       (part) =>
         (part as { type?: string })?.type === "text" ||
