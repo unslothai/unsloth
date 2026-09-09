@@ -2509,16 +2509,35 @@ def test_the_cached_alias_is_looked_up_before_the_literal_name_is_judged(monkeyp
     [
         # httpx lower-cases the host and drops an explicit default port while HF_ENDPOINT
         # keeps its spelling, so comparing the strings denied these mirrors outright.
-        ("https://HF-MIRROR.example", "https://hf-mirror.example/api/models/org/repo/auth-check", True),
-        ("https://mirror.example:443", "https://mirror.example/api/models/org/repo/auth-check", True),
+        (
+            "https://HF-MIRROR.example",
+            "https://hf-mirror.example/api/models/org/repo/auth-check",
+            True,
+        ),
+        (
+            "https://mirror.example:443",
+            "https://mirror.example/api/models/org/repo/auth-check",
+            True,
+        ),
         ("https://mirror.example", "https://mirror.example/api/models/org/repo/auth-check/", True),
         # Still not the target we asked about.
         ("https://mirror.example", "https://mirror.example/login", False),
         ("https://mirror.example", "https://mirror.example/api/models/org/other/auth-check", False),
         # Same path, but a query is where a login hand-off hides.
-        ("https://mirror.example", "https://mirror.example/api/models/org/repo/auth-check?next=login", False),
+        (
+            "https://mirror.example",
+            "https://mirror.example/api/models/org/repo/auth-check?next=login",
+            False,
+        ),
     ],
-    ids = ["uppercase-host", "default-port", "trailing-slash", "login-page", "other-repo", "query-added"],
+    ids = [
+        "uppercase-host",
+        "default-port",
+        "trailing-slash",
+        "login-page",
+        "other-repo",
+        "query-added",
+    ],
 )
 def test_the_probe_compares_targets_not_spellings(monkeypatch, endpoint, final_url, authorized):
     """A 200 only counts when it came from the repo that was asked about, and the client
