@@ -1,3 +1,6 @@
+import { recordExecution, clearExecution } from "../tool-execution-record";
+import { useIsolationStore } from "../tool-isolation";
+import { getAuthSessionEpoch } from "@/features/auth";
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
@@ -3943,6 +3946,8 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      const isolationSessionEpoch = getAuthSessionEpoch();
+      const isolationThread = useChatRuntimeStore.getState().activeThreadId;
       // Before the first await: send() awaits document extraction and initialize() does not await
       // its row write, so the store is no longer a safe reading of the project. Null still wins.
       const creationClaim = unstable_threadId
@@ -6191,6 +6196,17 @@ export function createOpenAIStreamAdapter(
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
+            const prepareIsolationDispatch = () => {
+              const live = useChatRuntimeStore.getState();
+              if (getAuthSessionEpoch() !== isolationSessionEpoch || (live.activeThreadId !== isolationThread && live.activeThreadId !== resolvedThreadId)) {
+                throw new Error("The chat or sign-in session changed. Send the message again.");
+              }
+              if (live.permissionMode !== permissionMode || live.bypassPermissions !== bypassPermissions) {
+                throw new Error("Tool permissions changed while waiting. Send the message again.");
+              }
+              requestPayload.tool_execution_mode = useIsolationStore.getState().mode;
+            };
+            prepareIsolationDispatch();
             if (generationDecision === "pending") {
               const clientTools = (
                 requestPayload as unknown as { tools?: unknown }
@@ -6335,6 +6351,7 @@ export function createOpenAIStreamAdapter(
                       : (runtime.loadedCustomContextLength ??
                         runtime.loadedContextLength ??
                         (params.maxSeqLength || null)),
+                    prepareIsolationDispatch,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
@@ -6497,6 +6514,11 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "tool_execution") {
+                  const liveId = resolveToolPartId((toolEvent.tool_call_id as string) || "");
+                  if (liveId) recordExecution(scopedToolOutputKey(liveId), toolEvent.execution);
+                  continue;
+                }
                 if (toolEvent.type === "tool_output") {
                   // Incremental stdout from a running tool: append to the live store so the card renders it.
                   // The final result arrives via tool_end.
@@ -6589,6 +6611,7 @@ export function createOpenAIStreamAdapter(
                   // "call_0" restarts every response: drop stale live/preserved output under this key, else the
                   // card shows the previous call's.
                   const staleKey = scopedToolOutputKey(id);
+                  clearExecution(staleKey);
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??

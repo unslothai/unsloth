@@ -1,3 +1,5 @@
+import { useIsolationStore } from "./tool-isolation";
+import { IsolationControls } from "./isolation-controls";
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
@@ -131,6 +133,7 @@ export function PermissionModeMenuItems({
           ) : null}
         </DropdownMenuItem>
       ))}
+      <IsolationControls />
     </>
   );
 }
@@ -186,6 +189,7 @@ export function PermissionModeDropdown({
 } = {}) {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const checkingIsolation = useIsolationStore(s => s.checking);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
 
@@ -207,7 +211,7 @@ export function PermissionModeDropdown({
           >
             <ActiveIcon className="size-3.5 shrink-0" strokeWidth={2} />
             <span className="min-w-0 flex-1 truncate text-left">
-              {active.label}
+              {active.label}{permissionMode !== "full" ? ` · ${checkingIsolation ? "Checking" : "Sandbox"}` : ""}
             </span>
             <ChevronDown className="size-3.5 shrink-0 opacity-60" />
           </Button>
@@ -251,6 +255,7 @@ export function PermissionModeComposerPill({
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
+  const checkingIsolation = useIsolationStore(s => s.checking);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
@@ -270,7 +275,7 @@ export function PermissionModeComposerPill({
           <span className="composer-pill-glyph">
             <ActiveIcon className="size-[15px]" strokeWidth={2} />
           </span>
-          <span>{active.label}</span>
+          <span>{active.label}{!fullAccess ? ` · ${checkingIsolation ? "Checking" : "Sandbox"}` : ""}</span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={1.5}

@@ -375,3 +375,5 @@ export {
   generateStudioTtsAudio,
   releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
+
+export { ToolExecutionDetails } from "./tool-execution-record";

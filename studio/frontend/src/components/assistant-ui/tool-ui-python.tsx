@@ -3,6 +3,8 @@
 
 "use client";
 
+import { ToolExecutionDetails } from "@/features/chat";
+
 import { Spinner } from "@/components/ui/spinner";
 
 import { SandboxFiles } from "./sandbox-files-view";
@@ -150,6 +152,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
         status={status}
         icon={CodeIcon}
       />
+      <ToolExecutionDetails toolCallId={toolCallId} />
       {!collapseByDefault && scriptCell}
       <ToolFallbackContent>
         {collapseByDefault && scriptCell}
