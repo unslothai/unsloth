@@ -107,7 +107,8 @@ def _transformers_4x():
 def test_the_error_codes_are_the_same(module, probe, patcher, policy, entry, cache):
     """Drift here would mean one copy calls a block what the other calls a plain failure."""
     codes = getattr(module, "BLOCKED_IMAGE_WINERRORS", None) or getattr(
-        module, "_BLOCKED_IMAGE_WINERRORS")
+        module, "_BLOCKED_IMAGE_WINERRORS"
+    )
     assert set(codes) == {225, 577, 1260}
 
 
@@ -133,9 +134,9 @@ def test_a_transformers_5x_layout_is_corrected_through_its_captured_consumers(
             "blocked extension"
         )
         assert import_utils.BACKENDS_MAPPING["sentencepiece"][0]() is False
-        assert import_utils.BACKENDS_MAPPING["sentencepiece"][1] == "pip install sentencepiece", (
-            "requires_backends must still be able to tell the user how to install it"
-        )
+        assert (
+            import_utils.BACKENDS_MAPPING["sentencepiece"][1] == "pip install sentencepiece"
+        ), "requires_backends must still be able to tell the user how to install it"
     finally:
         sys.modules.pop("fake_consumer", None)
 
@@ -248,9 +249,9 @@ def test_the_studio_copy_does_not_import_unsloth():
     """The reason there are two. Importing unsloth here runs unsloth/__init__.py, whose
     GPU branch pulls torch, Triton, transformers and the model stack into the parent
     process, and can open a competing GPU context on a machine already short of memory."""
-    source = (
-        REPO / "studio" / "backend" / "utils" / "sentencepiece_guard.py"
-    ).read_text(encoding = "utf-8")
+    source = (REPO / "studio" / "backend" / "utils" / "sentencepiece_guard.py").read_text(
+        encoding = "utf-8"
+    )
     assert "import unsloth" not in source
     assert "from unsloth" not in source
     for heavy in ("import torch", "import transformers\n", "import numpy"):

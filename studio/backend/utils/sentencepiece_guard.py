@@ -129,8 +129,7 @@ def tell_transformers_sentencepiece_is_absent(import_utils) -> bool:
     def _sentencepiece_is_absent(*args, **kwargs):
         return False
 
-    _sentencepiece_is_absent.__name__ = getattr(
-        original, "__name__", "is_sentencepiece_available")
+    _sentencepiece_is_absent.__name__ = getattr(original, "__name__", "is_sentencepiece_available")
     import_utils.is_sentencepiece_available = _sentencepiece_is_absent
 
     for module in list(sys.modules.values()):
