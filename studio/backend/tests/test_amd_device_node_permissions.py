@@ -5238,7 +5238,7 @@ def test_a_cache_that_is_readable_and_empty_is_an_answer_not_a_failure(monkeypat
     exits 1 with nothing on stdout. Storing only a non-empty set collapsed them, so a fresh
     container whose cache has not been built read as "cannot enumerate"."""
     _ldconfig_answering(
-        monkeypatch, returncode = 0, stdout = "0 libs found in cache `/etc/ld.so.cache\'\n"
+        monkeypatch, returncode = 0, stdout = "0 libs found in cache `/etc/ld.so.cache'\n"
     )
     assert amd._ld_cache_sonames() == frozenset()
 
@@ -5260,7 +5260,7 @@ def test_a_bare_soname_is_stale_when_the_readable_cache_does_not_carry_it(
     manifest = _bare_soname_manifest(tmp_path, "radeon_icd.json", "libvulkan_radeon.so")
     monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
     _ldconfig_answering(
-        monkeypatch, returncode = 0, stdout = "0 libs found in cache `/etc/ld.so.cache\'\n"
+        monkeypatch, returncode = 0, stdout = "0 libs found in cache `/etc/ld.so.cache'\n"
     )
     assert amd._icd_manifest_is_usable(manifest) is False
 
