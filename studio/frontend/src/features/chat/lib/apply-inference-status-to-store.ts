@@ -528,10 +528,10 @@ export function applyActiveModelStatusToStore(
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     // "server default" control. The rollback re-sends the baseline, so without this a rollback
-    // after a tab reload loses the override.
+    // after a tab reload loses the override. Refresh on every echo: another client
+    // can reload the same model with a different count.
     ...(seedLoadParams &&
-      status.requested_parallel_slots != null &&
-      (prevState.loadedNParallel === null || hydratingExistingModel) && {
+      status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,
       }),
     // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends

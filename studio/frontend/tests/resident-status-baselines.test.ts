@@ -159,3 +159,57 @@ test("speculative defaults still seed on adoption when older backends omit the m
   assert.equal(next.speculativeType, "auto");
   assert.equal(next.loadedSpeculativeType, "auto");
 });
+
+// The slot echo is resolved, so unlike the controls above it only advances the
+// baseline. A blank control must continue to mean server default.
+const slotStart = source.indexOf("    // Baseline only, never the control:");
+const slotEnd = source.indexOf(
+  "    // Per-model: a change underneath this tab",
+  slotStart,
+);
+assert.ok(slotStart >= 0 && slotEnd > slotStart);
+const applySlots = new Function(
+  "prevState",
+  "status",
+  "seedLoadParams",
+  "hydratingExistingModel",
+  `return { ...prevState, ${source.slice(slotStart, slotEnd)} };`,
+) as (
+  previous: typeof loaded & { nParallel: number | null },
+  status: Record<string, unknown>,
+  settled: boolean,
+  changed: boolean,
+) => typeof loaded & { nParallel: number | null };
+
+test("external slot reductions update resident pricing without pinning or replacing controls", () => {
+  for (const nParallel of [null, 2, 8]) {
+    const previous = { ...loaded, nParallel };
+    const echo = { is_gguf: true, requested_parallel_slots: 1 };
+    const next = applySlots(previous, echo, true, false);
+    assert.equal(next.loadedNParallel, 1);
+    assert.equal(selectResidentEstimateSettings(next)?.nParallel, 1);
+    assert.equal(next.nParallel, nParallel);
+    assert.deepEqual(applySlots(next, echo, true, false), next);
+  }
+});
+
+test("slot baselines ignore in-flight loads and absent GGUF echoes", () => {
+  const previous = { ...loaded, nParallel: null };
+  assert.deepEqual(
+    applySlots(previous, { requested_parallel_slots: 1 }, false, false),
+    previous,
+  );
+  assert.deepEqual(
+    applySlots(previous, { is_gguf: true }, true, false),
+    previous,
+  );
+});
+
+test("slotless statuses still clear the baseline without editing the control", () => {
+  const previous = { ...loaded, nParallel: 8 };
+  for (const echo of [{ is_gguf: false }, { requested_parallel_slots: null }]) {
+    const next = applySlots(previous, echo, true, false);
+    assert.equal(next.loadedNParallel, null);
+    assert.equal(next.nParallel, 8);
+  }
+});
