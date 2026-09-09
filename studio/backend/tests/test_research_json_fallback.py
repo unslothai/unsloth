@@ -253,3 +253,64 @@ def test_planning_after_fallback_still_validates_before_saving(monkeypatch, rese
     assert len(sent) == 2
     assert "Return only strict JSON" in sent[1]["messages"][0]["content"]
     assert "response_format" not in sent[1]
+
+
+def test_json_fallback_does_not_restart_the_total_timeout(research_call):
+    research_call.run["config"]["budgets"]["modelTimeoutSeconds"] = 0.4
+    sent = []
+
+    async def serve(request):
+        sent.append(json.loads(request.content))
+        await asyncio.sleep(0.25)
+        return httpx.Response(400, json = _REFUSAL) if len(sent) == 1 else _completion()
+
+    research_call.install(httpx.MockTransport(serve))
+    with pytest.raises(research_runs.ModelWallClockTimeout):
+        research_call.complete()
+    assert len(sent) == 2
+    assert "response_format" not in sent[1]
+    assert research_call.revoked == [1]
+
+
+def test_json_fallback_does_not_refund_transport_retries(monkeypatch, research_call):
+    statuses = iter([500, 400, 500, 500])
+    sent = []
+    delays = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay):
+        delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(research_runs.asyncio, "sleep", sleep)
+
+    def serve(request):
+        sent.append(json.loads(request.content))
+        status = next(statuses)
+        return httpx.Response(status, json = _REFUSAL if status == 400 else {"error": "server"})
+
+    research_call.install(httpx.MockTransport(serve))
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        research_call.complete()
+    assert caught.value.response.status_code == 500
+    assert len(sent) == 4
+    assert ["response_format" in body for body in sent] == [True, True, False, False]
+    assert delays == [1, 2]
+
+
+def test_json_fallback_never_replays_a_started_generation(research_call):
+    sent = []
+
+    def serve(request):
+        sent.append(request)
+        chunk = {"choices": [{"delta": {"content": "partial"}}]}
+        error = {"error": {**_REFUSAL["error"], "message": "late format error"}}
+        return httpx.Response(
+            200, text = f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(error)}\n\ndata: [DONE]\n\n"
+        )
+
+    research_call.install(httpx.MockTransport(serve))
+    with pytest.raises(RuntimeError, match = "late format error"):
+        research_call.complete()
+    assert len(sent) == 1
+    assert research_call.revoked == [1]
