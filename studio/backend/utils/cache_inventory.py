@@ -104,6 +104,15 @@ def _env_dir(name: str) -> Optional[Path]:
         return None
 
 
+def _is_windows() -> bool:
+    """The seam the path-layout branches below test on.
+
+    ``os.name`` cannot be faked for them: pathlib reads it too, so patching it
+    makes Path itself try to build a WindowsPath on a POSIX host.
+    """
+    return os.name == "nt"
+
+
 def _local_app_data() -> Path:
     value = (os.environ.get("LOCALAPPDATA") or "").strip()
     if value:
@@ -113,7 +122,7 @@ def _local_app_data() -> Path:
 
 def _platform_cache_dir(name: str, *, windows_tail: str = "Cache") -> Path:
     """Where a tool that follows platform convention keeps *name*'s cache."""
-    if os.name == "nt":
+    if _is_windows():
         return _local_app_data() / name / windows_tail
     if sys.platform == "darwin":
         return _home() / "Library" / "Caches" / name
@@ -155,6 +164,8 @@ def _pip_configured_dir() -> Optional[Path]:
     Probed once per process. A config file does not change under a running
     backend, and this sits on a read the Resources tab makes.
     """
+    from utils.child_stdio import utf8_child_env
+
     global _pip_configured
     if _pip_configured is not _UNPROBED:
         return _pip_configured  # type: ignore[return-value]
@@ -164,10 +175,13 @@ def _pip_configured_dir() -> Optional[Path]:
             [sys.executable, "-m", "pip", "cache", "dir"],
             capture_output = True,
             text = True,
-            # A cache path can hold non-ASCII, and the default decoder is the
-            # ANSI codepage on Windows or ASCII under a C locale.
+            # The child picks its stdout encoding from the locale, which is the
+            # ANSI codepage on Windows and ASCII under a C locale, so a path
+            # with non-ASCII in it would come back mangled either way. Tell the
+            # child to emit the UTF-8 this decodes, as the other spawns here do.
             encoding = "utf-8",
             errors = "replace",
+            env = utf8_child_env(),
             timeout = 20,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -189,7 +203,7 @@ def _npm_dirs() -> list[Path]:
     configured = _env_dir("npm_config_cache") or _env_dir("NPM_CONFIG_CACHE")
     if configured is not None:
         return [configured / "_cacache"]
-    if os.name == "nt":
+    if _is_windows():
         return [_local_app_data() / "npm-cache" / "_cacache"]
     return [_home() / ".npm" / "_cacache"]
 
@@ -221,21 +235,40 @@ def _hf_hub_dirs() -> list[Path]:
     return [_hf_paths().hub_cache]
 
 
-def _hf_child_dirs(name: str, env_key: str) -> list[Path]:
+def _hf_child_dirs(name: str, configured: Optional[Path]) -> list[Path]:
     # HF reads the variable INSTEAD of <home>/<name>, so these are alternatives.
     # The effective home, not the displayed one: an explicit HF_HUB_CACHE makes
     # the display home the hub's parent, which is somebody else's directory and
     # holds none of these children.
     from utils.hf_cache_settings import effective_cache_home
-    return _first(_env_dir(env_key), effective_cache_home() / name)
+    return _first(configured, effective_cache_home() / name)
+
+
+def _studio_datasets_fallback() -> Optional[Path]:
+    """The Studio cache a dataset load retries in when HF's is not writable."""
+    try:
+        from utils.paths.storage_roots import cache_root
+        return _safe_resolve(cache_root() / "hf-datasets")
+    except Exception as exc:  # noqa: BLE001 - a broken root must not widen the list
+        logger.debug(f"Could not resolve the Studio dataset fallback cache: {exc}")
+        return None
 
 
 def _hf_datasets_dirs() -> list[Path]:
-    return _hf_child_dirs("datasets", "HF_DATASETS_CACHE")
+    configured = _env_dir("HF_DATASETS_CACHE")
+    fallback = _studio_datasets_fallback()
+    if configured is not None and fallback is not None and _safe_resolve(configured) == fallback:
+        # cache_safe._retry_in_studio_cache points HF_DATASETS_CACHE at that
+        # cache for the length of one load, in THIS process, and load_dataset is
+        # writing Arrow files and lock state there while it does. It is not one
+        # of the caches this inventory offers, so a scoped override must not
+        # turn it into a purge root under a load that is still running.
+        configured = None
+    return _hf_child_dirs("datasets", configured)
 
 
 def _hf_assets_dirs() -> list[Path]:
-    return _hf_child_dirs("assets", "HF_ASSETS_CACHE")
+    return _hf_child_dirs("assets", _env_dir("HF_ASSETS_CACHE"))
 
 
 def _hf_xet_dirs() -> list[Path]:
@@ -277,28 +310,59 @@ def _cuda_dirs() -> list[Path]:
     configured = _env_dir("CUDA_CACHE_PATH")
     if configured is not None:
         return [configured]
-    if os.name == "nt":
-        return [_local_app_data() / "NVIDIA" / "ComputeCache"]
+    # The CUDA programming guide's defaults, which follow no shared convention:
+    # ROAMING AppData on Windows, Application Support on macOS, ~/.nv elsewhere.
+    if _is_windows():
+        roaming = (os.environ.get("APPDATA") or "").strip()
+        base = Path(roaming) if roaming else _home() / "AppData" / "Roaming"
+        return [base / "NVIDIA" / "ComputeCache"]
+    if sys.platform == "darwin":
+        return [_home() / "Library" / "Application Support" / "NVIDIA" / "ComputeCache"]
     return [_home() / ".nv" / "ComputeCache"]
 
 
 def _numba_dirs() -> list[Path]:
-    # Unset, numba writes next to the source files it compiles, which is not a
-    # directory of ours to empty.
-    return _first(_env_dir("NUMBA_CACHE_DIR"))
+    # Unset, numba tries __pycache__ next to the source it compiles, which is
+    # not a directory of ours to empty. When that is not writable, which is any
+    # install owned by another account, UserWideCacheLocator falls back to
+    # AppDirs(appname = "numba", appauthor = False).user_cache_dir, and that one
+    # is numba's alone.
+    return _first(_env_dir("NUMBA_CACHE_DIR"), _platform_cache_dir("numba"))
 
 
 def _matplotlib_dirs() -> list[Path]:
-    # MPLCONFIGDIR merges the config dir into the cache dir, so a set value is
-    # cleaned by pattern (see MATPLOTLIB_PATTERNS) instead of being emptied.
-    return _first(_env_dir("MPLCONFIGDIR"), _platform_cache_dir("matplotlib"))
+    """matplotlib.get_cachedir()'s own rules, which are XDG on Linux only.
+
+    _get_config_or_cache_dir takes the XDG branch for linux and freebsd and
+    otherwise uses ~/.matplotlib, with Windows preferring %LOCALAPPDATA%\\matplotlib
+    when that legacy directory does not already exist. The platform convention
+    helper agrees on none of that off Linux.
+    """
+    configured = _env_dir("MPLCONFIGDIR")
+    if configured is not None:
+        return [configured]
+    legacy = _home() / ".matplotlib"
+    if _is_windows():
+        if legacy.is_dir():
+            return [legacy]
+        local = (os.environ.get("LOCALAPPDATA") or "").strip()
+        return [Path(local) / "matplotlib"] if local else [legacy]
+    if sys.platform == "darwin":
+        return [legacy]
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    base = Path(xdg).expanduser() if xdg else _home() / ".cache"
+    return [base / "matplotlib"]
 
 
 MATPLOTLIB_PATTERNS = ("fontlist-*.json", "tex.cache", "ttfcache")
 
 
 def _matplotlib_patterns() -> Optional[tuple[str, ...]]:
-    return MATPLOTLIB_PATTERNS if _env_dir("MPLCONFIGDIR") is not None else None
+    # Only the XDG branch gives matplotlib a cache dir of its own. MPLCONFIGDIR
+    # and the ~/.matplotlib default are both get_configdir() as well, so
+    # matplotlibrc sits beside the font list and only the cache entries may go.
+    merged = _env_dir("MPLCONFIGDIR") is not None or _is_windows() or sys.platform == "darwin"
+    return MATPLOTLIB_PATTERNS if merged else None
 
 
 def _vllm_dirs() -> list[Path]:

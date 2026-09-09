@@ -833,3 +833,122 @@ def test_a_measurement_that_began_before_a_purge_is_not_remembered(
     assert cache_inventory._described(definition, refresh = True)["size_bytes"] == 100
     monkeypatch.setattr(cache_inventory, "describe_cache", real_describe)
     assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 0
+
+
+def test_the_pip_probe_asks_the_child_for_utf8(tmp_path, monkeypatch, isolated_caches):
+    """A redirected child picks its stdout encoding from the locale.
+
+    That is the ANSI codepage on Windows and ASCII under a C locale, so a cache
+    path with non-ASCII in it comes back mangled and resolves to nothing.
+    """
+    import subprocess as real_subprocess
+
+    from utils import cache_inventory as module
+
+    seen = {}
+    configured = tmp_path / "caché-pip"
+    _write(configured / "wheels" / "cached.whl", "p" * 40)
+    monkeypatch.delenv("PIP_CACHE_DIR", raising = False)
+    monkeypatch.setattr(module, "_pip_configured", module._UNPROBED)
+
+    def record(*args, **kwargs):
+        seen.update(kwargs)
+        return real_subprocess.CompletedProcess(args[0], 0, f"{configured}\n", "")
+
+    monkeypatch.setattr(module.subprocess, "run", record)
+    entry = describe_cache(definition_for("pip"))
+
+    assert entry["paths"] == [str(configured)]
+    assert seen["encoding"] == "utf-8"
+    assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_a_scoped_dataset_fallback_override_is_not_a_purge_root(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """cache_safe points HF_DATASETS_CACHE at the Studio cache mid-load.
+
+    load_dataset is writing Arrow files and lock state there for the length of
+    that load, in this process, so a clear that followed the override would
+    delete under a load that is still running.
+    """
+    from utils.paths import storage_roots
+
+    studio_cache = tmp_path / "studio-cache"
+    fallback = studio_cache / "hf-datasets"
+    in_flight = _write(fallback / "squad" / "data.arrow", "d" * 10)
+    stable = _write(isolated_caches / "datasets" / "cached.arrow", "s" * 10)
+    monkeypatch.setattr(storage_roots, "cache_root", lambda: studio_cache)
+    # The override is live, exactly as it is while the fallback load runs.
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(fallback))
+
+    entry = describe_cache(definition_for("hf_datasets"))
+    assert entry["paths"] == [str(isolated_caches / "datasets")]
+    purge_caches(["hf_datasets"])
+    assert in_flight.exists()
+    assert not stable.exists()
+
+
+@pytest.mark.parametrize(
+    "platform,name,expected,patterned",
+    [
+        ("linux", "posix", ".cache/matplotlib", False),
+        ("darwin", "posix", ".matplotlib", True),
+        ("win32", "nt", ".matplotlib", True),
+    ],
+)
+def test_the_matplotlib_cache_is_where_matplotlib_puts_it(
+    tmp_path, monkeypatch, isolated_caches, platform, name, expected, patterned
+):
+    """get_cachedir takes the XDG branch for linux and freebsd only.
+
+    Everywhere else it is ~/.matplotlib, which is get_configdir() as well, so
+    matplotlibrc sits beside the font list and only cache entries may go.
+    """
+    import sys as _sys
+
+    from utils import cache_inventory as module
+
+    monkeypatch.delenv("MPLCONFIGDIR", raising = False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
+    monkeypatch.setattr(_sys, "platform", platform)
+    monkeypatch.setattr(module, "_is_windows", lambda: name == "nt")
+    (tmp_path / ".matplotlib").mkdir(exist_ok = True)
+
+    assert module._matplotlib_dirs() == [tmp_path / expected]
+    assert (module._matplotlib_patterns() is not None) is patterned
+
+
+def test_the_cuda_cache_is_roaming_appdata_on_windows(tmp_path, monkeypatch, isolated_caches):
+    """The CUDA guide's default is %APPDATA%, which is Roaming, not Local."""
+    import sys as _sys
+
+    from utils import cache_inventory as module
+
+    monkeypatch.delenv("CUDA_CACHE_PATH", raising = False)
+    monkeypatch.setattr(module, "_is_windows", lambda: True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    assert module._cuda_dirs() == [tmp_path / "AppData" / "Roaming" / "NVIDIA" / "ComputeCache"]
+
+    monkeypatch.setattr(module, "_is_windows", lambda: False)
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    assert module._cuda_dirs() == [
+        tmp_path / "Library" / "Application Support" / "NVIDIA" / "ComputeCache"
+    ]
+
+
+def test_numbas_user_wide_fallback_cache_is_reported(tmp_path, monkeypatch, isolated_caches):
+    """__pycache__ next to the source is not ours, but the user-wide dir is.
+
+    UserWideCacheLocator takes over whenever the in-tree one cannot write, which
+    is any install owned by another account, and it uses AppDirs(appname =
+    "numba", appauthor = False).user_cache_dir.
+    """
+    monkeypatch.delenv("NUMBA_CACHE_DIR", raising = False)
+    root = tmp_path / "xdg" / "numba"
+    _write(root / "somemodule.nbi", "n" * 30)
+
+    entry = describe_cache(definition_for("numba"))
+    assert entry["paths"] == [str(root)]
+    assert entry["size_bytes"] == 30
