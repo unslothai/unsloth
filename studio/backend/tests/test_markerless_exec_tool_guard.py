@@ -1806,3 +1806,49 @@ def test_the_gemma_trigger_admits_every_spacing_the_regex_accepts(body):
     assert _has_gemma_bare_trigger(text) is True
     assert parse_tool_calls_from_text(text, enabled_tool_names = {"python"}) == []
     assert body in strip_tool_markup(text, final = True, enabled_tool_names = {"python"})
+
+
+def test_a_blocked_string_encoded_argument_keeps_the_chain_alive():
+    """Masking the whole interior left the encoded object unparseable, so
+    ``_parse_llama3_bare_json``'s ``json.loads`` shape check dropped the promotable call
+    BEHIND it. The two ``arguments`` shapes must agree."""
+    gate = {"terminal", "web_search"}
+    encoded = ('{"name":"terminal","arguments":"{\\"command\\":\\"id\\"}"};'
+               '{"name":"web_search","parameters":{"q":"x"}}')
+    plain = ('{"name":"terminal","arguments":{"command":"id"}};'
+             '{"name":"web_search","parameters":{"q":"x"}}')
+    named = lambda text: [c["function"]["name"]
+                          for c in parse_tool_calls_from_text(text, enabled_tool_names = gate)]
+    assert named(encoded) == named(plain) == ["web_search"]
+
+
+def test_a_call_quoted_inside_string_encoded_arguments_still_never_promotes():
+    """The shape survives the mask; the payload must not."""
+    text = ('{"name":"terminal","arguments":"{\\"c\\":\\"call:python{code:1}\\"}"};'
+            '{"name":"web_search","parameters":{"q":"x"}}')
+    calls = parse_tool_calls_from_text(
+        text, enabled_tool_names = {"terminal", "python", "web_search"}
+    )
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("<think>call:web_search{q:x}</think>call:web_search{q:y}", 35),
+        # Two rehearsals: the floor advances twice before the real call is reached.
+        ("<think>call:web_search{a:1}</think>mid<think>call:web_search{b:2}</think>"
+         "call:web_search{c:3}", 73),
+        # Nothing after the block is a call, so -1 stays right.
+        ("<think>call:web_search{q:x}</think>plain prose after", -1),
+    ],
+)
+def test_a_rehearsed_gemma_call_does_not_hide_the_real_one(text, expected):
+    """``promotable_gemma_call_pos`` widens ``start`` back by _MAX_GEMMA_PREFIX_TAIL, so it
+    re-found the call inside the reasoning block; the caller read "below my floor" as "no
+    call anywhere" and streamed text past a call it should have stopped on."""
+    from core.inference.safetensors_agentic import _earliest_tool_signal
+
+    tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+    signals = ["<tool_call>", "[TOOL_CALLS]", "[ARGS]"]
+    assert _earliest_tool_signal(text, signals, tools, start = 0) == expected

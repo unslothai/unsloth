@@ -1562,6 +1562,11 @@
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]"
       },
+      "_escaped_string_content_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
+      },
       "_find_outside_json_strings": {
         "decorators": [],
         "kind": "def",
@@ -1919,7 +1924,7 @@
       "promotable_gemma_call_pos": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, enabled_tool_names, start: int=0"
+        "signature": "text: str, enabled_tool_names, start: int=0, *, floor: int=0"
       },
       "reasoning_cap_spent_message": {
         "decorators": [],

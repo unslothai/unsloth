@@ -4,6 +4,7 @@
     "_blocked_markerless_body_spans": "be264b16a072e0b58ce1c38e5de8c0b6c77ff944aa4b69d0bac4d9b2c28c323d",
     "_consume_mistral_call": "813544e2d389e368c2d6c77f333ae1d07409d9cf0d3bdad8735c116577bcd380",
     "_disabled_gemma_call_end_containing_signal": "c08417f20bd3f6c67d09c63f750894aa02104faef091f31dba29c57e585ac69a",
+    "_escaped_string_content_spans": "90f2e2f10c8322bd126f413564d9a5e075606cbabe25b47596cfcc9156f7213c",
     "_find_outside_json_strings": "cf83e50f5e7308aae25758d71b706f91c87e690bc6fdddb24605671fb67e3788",
     "_first_foreign_tool_signal": "253f37233f0cd47bb9a1f4e2cb04072d1575b1245d5f0a2c0fc7190dfa138354",
     "_first_sentinel": "a5aebe5d9a8bdd81671d6c572517e0e8526d269db1a0fdf92e86c618ce8155e0",

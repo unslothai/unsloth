@@ -245,6 +245,7 @@ def _earliest_tool_signal(
             candidate,
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
             start,
+            floor = floor,
         )
         if gemma >= floor and (best < 0 or gemma < best):
             best = gemma

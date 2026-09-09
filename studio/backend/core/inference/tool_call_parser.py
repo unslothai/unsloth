@@ -732,6 +732,38 @@ def _string_content_spans(text: str, start: int, end: int) -> list:
     return spans
 
 
+def _escaped_string_content_spans(text: str, start: int, end: int) -> list:
+    """Interiors of the string literals inside a BACKSLASH-ESCAPED JSON body.
+
+    ``arguments`` in its JSON-string form holds an object whose quotes are ``\\"``, so
+    ``_string_content_spans`` finds no literals there and the whole interior was masked
+    instead. That left the encoded object unparseable, and ``_parse_llama3_bare_json``'s
+    ``json.loads`` shape check then dropped every call BEHIND it in a ``;`` chain. Same rule
+    as the object form: mask content, never the structure the later scans read.
+
+    A delimiter quote carries exactly one backslash; a quote inside an inner string is
+    written ``\\\\\\"`` and carries three, so the run length is what tells them apart."""
+    spans: list = []
+    open_at = -1
+    i = start
+    while i < end:
+        if text[i] == '"':
+            run = 0
+            k = i - 1
+            while k >= start and text[k] == "\\":
+                run += 1
+                k -= 1
+            if run == 1:
+                if open_at < 0:
+                    open_at = i + 1
+                else:
+                    # Stop before the closing ``\``, so the delimiter survives intact.
+                    spans.append((open_at, i - 1))
+                    open_at = -1
+        i += 1
+    return spans
+
+
 # A wrapper immediately in front makes the call trusted, not markerless; this mask runs before
 # the passes that consume those wrappers.
 _MARKERLESS_TRUSTED_PREFIXES = (
@@ -894,7 +926,11 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             value = _top_level_args_value(probe, probe.index("{"), lead)
             if value is not None:
                 begin, stop, is_string = value
-                inner = [(begin, stop)] if is_string else _string_content_spans(probe, begin, stop)
+                inner = (
+                    _escaped_string_content_spans(probe, begin, stop)
+                    if is_string
+                    else _string_content_spans(probe, begin, stop)
+                )
                 spans.extend((a + shift, b + shift) for a, b in inner)
         cursor = shift + lead
     spans = [(start, end) for start, end in spans if end > start]
@@ -3193,6 +3229,8 @@ def promotable_gemma_call_pos(
     text: str,
     enabled_tool_names,
     start: int = 0,
+    *,
+    floor: int = 0,
 ) -> int:
     """Offset of the first bare ``call:NAME{`` the parser would promote, or -1. Bare Gemma has
     no ``TOOL_XML_SIGNALS`` entry, so without this the streaming detectors miss a mid-prose
@@ -3216,6 +3254,12 @@ def promotable_gemma_call_pos(
         return -1
     names = enabled_tool_names() if callable(enabled_tool_names) else enabled_tool_names
     for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+        # Skip and keep scanning, never give up: the widening above can re-find a call the
+        # caller has already stepped past (one rehearsed inside a ``<think>`` block), and
+        # returning it made the caller treat "below my floor" as "no call anywhere", so a
+        # real call after the block went undetected while streaming.
+        if m.start() < floor:
+            continue
         if _markerless_promotable(m.group(1), names):
             return m.start()
     return -1
