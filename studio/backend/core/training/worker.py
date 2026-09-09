@@ -4313,7 +4313,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
-            success = trainer.prepare_model_for_training(use_lora = False)
+            success = trainer.prepare_model_for_training(
+                use_lora = False,
+                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+            )
 
         if not success or trainer.should_stop:
             if trainer.should_stop:

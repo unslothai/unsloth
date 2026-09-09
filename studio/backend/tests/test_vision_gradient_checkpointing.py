@@ -14,6 +14,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+import ast  # noqa: E402
 import importlib  # noqa: E402
 import types  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
@@ -110,7 +111,7 @@ def run_vision_training(monkeypatch):
     monkeypatch.setattr(tmod, "SFTConfig", _capture_sft_config)
     monkeypatch.setattr(tmod, "is_bfloat16_supported", lambda: False)
 
-    def _run(gradient_checkpointing, *, is_audio_vlm = False):
+    def _run(gradient_checkpointing, *, is_audio_vlm = False, use_lora = True):
         t = tmod.UnslothTrainer()
         t.model = _FakeModel()
         t.tokenizer = types.SimpleNamespace()
@@ -125,7 +126,7 @@ def run_vision_training(monkeypatch):
         )
 
         assert t.prepare_model_for_training(
-            use_lora = True,
+            use_lora = use_lora,
             use_gradient_checkpointing = gradient_checkpointing,
         )
         t._train_worker(
@@ -168,3 +169,35 @@ def test_the_default_path_still_checkpoints(run_vision_training, choice):
     assert seen["config_args"]["gradient_checkpointing"] is True
     assert seen["config_args"]["gradient_checkpointing_kwargs"] == {"use_reentrant": False}
     assert seen["for_training"] == [True]
+
+
+def test_full_finetuning_honours_none_too(run_vision_training):
+    seen = run_vision_training("none", use_lora = False)
+
+    assert seen["config_args"]["gradient_checkpointing"] is False
+    assert "gradient_checkpointing_kwargs" not in seen["config_args"]
+    assert seen["for_training"] == [False]
+
+
+def test_the_worker_forwards_the_setting_on_every_prepare_call():
+    """A branch that omits the argument silently falls back to the "unsloth" default,
+    which is truthy, so the run checkpoints whatever the Memory tab said."""
+    worker = _BACKEND / "core" / "training" / "worker.py"
+    tree = ast.parse(worker.read_text(encoding = "utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", None) == "prepare_model_for_training"
+    ]
+
+    assert len(calls) == 3, f"expected the CPT, LoRA and full-finetuning calls, found {len(calls)}"
+    missing = [
+        node.lineno
+        for node in calls
+        if "use_gradient_checkpointing" not in {k.arg for k in node.keywords if k.arg}
+    ]
+    assert not missing, (
+        f"worker.py lines {missing} prepare a model without forwarding "
+        "gradient_checkpointing; that run ignores the Memory tab and checkpoints anyway"
+    )
