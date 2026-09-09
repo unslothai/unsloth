@@ -1108,7 +1108,41 @@ def existing_install_matches(
     llama dir leaves dictation broken while update reports up to date)."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
-    return installed_tree_is_intact(install_dir, host)
+    if not installed_tree_is_intact(install_dir, host):
+        return False
+    _backfill_slim_pairing_record(install_dir)
+    return True
+
+
+def _backfill_slim_pairing_record(install_dir: Path) -> None:
+    """Record the paired ggml tree on a slim marker written before that key existed.
+
+    existing_install_current_without_plan refuses a slim install whose marker cannot say
+    which llama runtime it hardlinks, so without this an install made before this PR
+    would fetch the release, its manifest and its checksum index on EVERY update rather
+    than once. This is the only place that re-examines a slim install without
+    reinstalling it, and it runs only after the fingerprint and the wiring have just been
+    confirmed, so the tree it writes describes a pairing it verified.
+
+    Added, never corrected: a marker that already names a tree was written by a run that
+    installed against it. Never raises -- the install is already valid, and a read-only
+    marker must not fail setup over a metadata refresh.
+    """
+    marker = load_prebuilt_metadata(install_dir)
+    if not marker or marker.get("install_kind") != "slim":
+        return
+    recorded = marker.get("paired_llama_ggml_tree")
+    if isinstance(recorded, str) and recorded:
+        return
+    tree = installed_paired_runtime_tree()
+    if not tree:
+        return
+    marker["paired_llama_ggml_tree"] = tree
+    # llama's writer, deliberately: same atomic temp-and-replace, same mode and owner
+    # preservation for a shared install, and the same refusal to ever raise. Reused for
+    # the same reason this module already reuses its download-host resolver.
+    if llama._write_marker(metadata_path(install_dir), marker):
+        log(f"existing {COMPONENT} install reused; recorded its paired ggml tree {tree}")
 
 
 def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:

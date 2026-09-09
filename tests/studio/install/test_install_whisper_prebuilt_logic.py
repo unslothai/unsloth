@@ -2427,3 +2427,43 @@ def test_installed_paired_runtime_tree_reads_the_live_llama_marker(monkeypatch):
     for empty in (None, "", 7):
         monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: empty)
         assert M.installed_paired_runtime_tree() is None
+
+
+def test_the_whisper_reuse_path_backfills_the_paired_ggml_tree(tmp_path, monkeypatch):
+    """A slim install made before the tree was recorded would otherwise fetch the
+    release, its manifest and its checksum index on EVERY update rather than once.
+
+    The reuse path is the only place that re-examines a slim install without
+    reinstalling it, and it gets there having just confirmed the fingerprint and the
+    wiring, so it is where the record is caught up."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir, paired_llama_ggml_tree = None)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is False
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    # Reused, not reinstalled: the archive is downloaded exactly once, at install time.
+    assert calls["n"] == 1
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert marker["paired_llama_ggml_tree"] == "ggml-abc"
+    assert _whisper_check(install_dir, host) is True
+
+
+def test_the_whisper_backfill_never_rewrites_a_recorded_tree(tmp_path, monkeypatch):
+    """Added, never corrected: a marker that already names a tree was written by the run
+    that installed against it, and a llama runtime that moved since is exactly what the
+    pre-check is supposed to notice."""
+    install_dir, _host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-def")
+    M._backfill_slim_pairing_record(install_dir)
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert marker["paired_llama_ggml_tree"] == "ggml-abc"
+
+
+def test_a_fat_install_gains_no_pairing_record(tmp_path, monkeypatch):
+    """Only slim bundles hardlink anything, so a fat marker must stay a fat marker."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    M._backfill_slim_pairing_record(install_dir)
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert "paired_llama_ggml_tree" not in marker
