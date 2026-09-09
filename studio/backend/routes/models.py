@@ -3785,7 +3785,13 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
         # chosen: two tagged builds of one quant in two revisions each looked unambiguous alone,
         # and the larger one was priced and revealed for a spelling the loader refuses. Exact
         # keys anywhere still win outright.
-        if not any(ranked[0] for _root, ranked in per_root):
+        if any(ranked[0] for _root, ranked in per_root):
+            # An exact key in ANY revision is used alone across ALL of them: leaving another
+            # revision's label rows in play let a larger tagged build outbid the plain one that
+            # owns the spelling exactly, and the estimate priced weights the loader will not open.
+            for _root, ranked in per_root:
+                ranked[1] = []
+        else:
             from utils.models.model_config import _gguf_variant_key
 
             from hub.utils.gguf import resolve_variant_alias
@@ -5480,6 +5486,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
             key = lambda rev: getattr(rev, "last_modified", 0) or 0,
             reverse = True,
         )
+        per_rev: list[dict[int, list[tuple[str, Path]]]] = []
         for rev in candidate_revisions:
             snapshot = getattr(rev, "snapshot_path", None)
             ranked: dict[int, list[tuple[str, Path]]] = {0: [], 1: []}
@@ -5499,8 +5506,27 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                     continue
                 if p.exists() or p.is_symlink():
                     ranked[rank].append((rel, p))
-            # Exact keys alone when any exist, else the legacy label spelling.
-            matches = ranked[0] or _unambiguous_label_matches(ranked[1])
+            per_rev.append(ranked)
+        # Decided across EVERY revision before any one is returned: the newest revision holding
+        # only the tagged build was locally unambiguous and was revealed for a spelling the plain
+        # build in an older revision owns exactly -- while the loaders open the plain one. Exact
+        # keys anywhere are used alone; otherwise the label rows resolve through the shared rule.
+        if any(ranked[0] for ranked in per_rev):
+            for ranked in per_rev:
+                ranked[1] = []
+        else:
+            from hub.utils.gguf import resolve_variant_alias
+            from utils.models.model_config import _gguf_variant_key
+
+            label_keys = {_gguf_variant_key(rel).lower() for ranked in per_rev for rel, _p in ranked[1]}
+            selected = resolve_variant_alias(sorted(label_keys), want) if label_keys else None
+            for ranked in per_rev:
+                ranked[1] = [
+                    entry for entry in ranked[1]
+                    if selected is not None and _gguf_variant_key(entry[0]).lower() == selected.lower()
+                ]
+        for ranked in per_rev:
+            matches = ranked[0] or ranked[1]
             if matches:
                 # Path-sorted so a sharded quant deterministically yields its first split.
                 return sorted(matches, key = lambda m: m[0].lower())[0][1]

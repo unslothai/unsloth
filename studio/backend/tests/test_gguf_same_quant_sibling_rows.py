@@ -1320,3 +1320,75 @@ def test_the_load_path_default_agrees_with_every_other_resolver():
     # And a real subordinate checkpoint still never enters the contest when a root row exists.
     with_sub = ["distilled/model-Q4_K_M.gguf", "Q4_K_M/model-Q4_K_M-mtp.gguf"]
     assert _default_root_gguf_filename(rows(with_sub)) == "Q4_K_M/model-Q4_K_M-mtp.gguf"
+
+
+def test_deleting_a_tagged_root_beside_a_subordinate_still_purges_the_bare_state(monkeypatch):
+    """Two owners of the bare spelling made the reverse purge give up, so a legacy download's
+    manifest and cancel marker outlived the deleted weights and rebuilt a phantom partial row.
+    The shared rule gives that spelling to the root build; two root owners still keep it."""
+    from hub.services.models import deletion
+
+    class _Repo:
+        def __init__(self, names):
+            self._names = names
+
+    monkeypatch.setattr(
+        deletion, "_repo_file_matches",
+        lambda repo, pred: [(None, None, n) for n in repo._names if pred(n)],
+    )
+    root_beside_subordinate = _Repo(["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"])
+    assert "q4_k_m" in deletion._state_spellings_for_delete(root_beside_subordinate, "model-q4_k_m-mtp")
+    two_roots = _Repo(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"])
+    assert "q4_k_m" not in deletion._state_spellings_for_delete(two_roots, "model-q4_k_m-mtp")
+
+
+def test_the_estimate_uses_an_exact_key_alone_across_every_revision(tmp_path):
+    """An exact key in one revision was skipped past alias resolution, but the other revision's
+    label rows stayed in play and a larger tagged build outbid the plain one that owns the
+    spelling -- pricing weights the loader will not open."""
+    from routes.models import _resolve_quant_gguf
+    import hub.utils.hf_cache_state as cache_state
+    import unittest.mock as mock
+
+    snaps = tmp_path / "hub" / "models--org--repo" / "snapshots"
+    (snaps / "rev1").mkdir(parents = True)
+    (snaps / "rev2").mkdir(parents = True)
+    (snaps / "rev1" / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
+    (snaps / "rev2" / "model-Q4_K_M-mtp.gguf").write_bytes(b"x" * 40)
+    with mock.patch.object(cache_state, "iter_repo_cache_dirs", lambda repo_type, repo_id: [snaps.parent]):
+        path, total = _resolve_quant_gguf("org/repo", "Q4_K_M", False)
+    assert path == str(snaps / "rev1" / "model-Q4_K_M.gguf") and total == 10
+
+
+def test_the_reveal_resolves_the_bare_spelling_across_every_revision(tmp_path, monkeypatch):
+    """The newest revision holding only the tagged build was locally unambiguous and was
+    revealed for a spelling the plain build in an older revision owns exactly -- while the
+    loaders open the plain one. Decided across every revision before any one is returned."""
+    import types
+
+    import routes.models as models_module
+
+    snaps = tmp_path / "snapshots"
+    old, new = snaps / "rev-old", snaps / "rev-new"
+    old.mkdir(parents = True)
+    new.mkdir(parents = True)
+    plain, tagged = old / "model-Q4_K_M.gguf", new / "model-Q4_K_M-mtp.gguf"
+    plain.write_bytes(b"x")
+    tagged.write_bytes(b"x")
+
+    def rev(snapshot, path, modified):
+        return types.SimpleNamespace(
+            snapshot_path = str(snapshot), last_modified = modified,
+            files = [types.SimpleNamespace(file_path = str(path), file_name = path.name)],
+        )
+
+    repo = types.SimpleNamespace(
+        repo_type = "model", repo_id = "org/repo",
+        revisions = [rev(old, plain, 1), rev(new, tagged, 2)],
+    )
+    monkeypatch.setattr(models_module, "_all_hf_cache_scans", lambda: [types.SimpleNamespace(repos = [repo])])
+    assert models_module._resolve_cached_model_path("org/repo", "Q4_K_M") == plain
+    # With the plain build gone the tagged one is the lone owner and still answers.
+    plain.unlink()
+    repo.revisions = [rev(new, tagged, 2)]
+    assert models_module._resolve_cached_model_path("org/repo", "Q4_K_M") == tagged

@@ -301,7 +301,12 @@ def _state_spellings_for_delete(
         for key in keys
         if key == bare or (accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == bare)
     }
-    if owners != {wanted}:
+    # Ownership through the shared resolver, root precedence included: a tagged root beside
+    # ``distilled/model-Q4_K_M`` is two owners, and treating that as "not ours" kept a legacy
+    # download's manifest and marker alive after its weights were deleted -- a phantom partial
+    # row on the next offline refresh. Two ROOT owners still resolve to nothing and still keep it.
+    resolved_owner = resolve_variant_alias(sorted(owners), bare) if owners else None
+    if (resolved_owner or "").lower() != wanted:
         return spellings
     if repo_id and _bare_state_belongs_to_another_build(repo_id, bare, spellings, root):
         return spellings
