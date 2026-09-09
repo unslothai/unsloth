@@ -1481,3 +1481,94 @@ def test_the_progress_scan_matches_main_shards_by_the_resolved_key():
     assert gguf_plan.is_main_gguf_variant_path("gemma-4-31B_q4_0-it.gguf", key) is True
     assert gguf_plan.is_main_gguf_variant_path("gemma-4-31B_q4_0-it.gguf", "q4_0") is False
     assert _progress_matcher_variant(None, "q4_0") == "q4_0"
+
+
+# --------------------------------------------------------------------------------------
+# The progress matcher, the resident check, and the two cached walks that read one revision
+# --------------------------------------------------------------------------------------
+
+
+def test_the_progress_matcher_is_callable_and_matches_the_resolved_build(monkeypatch):
+    """The matcher is a closure handed to ``snapshot_progress_response``; a NameError inside it
+    is swallowed there and reports empty, unmeasured progress. This drives the real closure."""
+    import asyncio
+
+    from hub.services.models import downloads, gguf_variants
+    from hub.services import snapshot_progress
+
+    plans = build_gguf_variant_plans([_Sibling("gemma-4-31B_q4_0-it.gguf", 17)])
+    monkeypatch.setattr(gguf_variants, "gguf_variant_requirements",
+                        lambda repo_id, variant, hf_token = None: plan_for_variant(plans, variant))
+    captured = {}
+
+    async def fake_progress(**kw):
+        captured.update(kw)
+        return {"progress": 0}
+
+    monkeypatch.setattr(snapshot_progress, "snapshot_progress_response", fake_progress)
+    asyncio.run(downloads.get_gguf_download_progress_response("google/gemma-4", "q4_0"))
+    matcher = next(v for k, v in captured.items() if callable(v) and "match" in k)
+    assert matcher("gemma-4-31B_q4_0-it.gguf") is True
+    assert matcher("gemma-4-31B_q4_0-it.gguf", companions = False) is True
+    assert matcher("mmproj-F16.gguf", companions = False) is False
+    assert matcher("mmproj-F16.gguf") is True
+
+
+def test_a_request_for_the_other_root_build_is_not_satisfied_by_the_resident(monkeypatch):
+    """With ``model-Q4_K_M-mtp`` resident, a request for the cached ``model-Q4_K_M-fp16`` was
+    absent from the one-element known_keys, read as a foreign tag, and the repo match alone
+    declared it satisfied -- the wrong checkpoint answered. The local index is consulted first."""
+    import types
+
+    import routes.inference as inf
+    from core.inference import local_model_resolver
+
+    backend = types.SimpleNamespace(
+        is_loaded = True, model_identifier = "org/repo", _openai_advertised_id = "org/repo",
+        hf_variant = "model-Q4_K_M-mtp",
+    )
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inf, "_llama_public_model_id", lambda b: "org/repo")
+    index = {"model-q4_k_m-fp16": "model-Q4_K_M-fp16", "model-q4_k_m-mtp": "model-Q4_K_M-mtp"}
+
+    def resolve(requested, **kw):
+        v = requested.split(":", 1)[1].lower() if ":" in requested else ""
+        return ("/p", index[v], "org/repo") if v in index else None
+
+    monkeypatch.setattr(local_model_resolver, "resolve_local_gguf", resolve)
+    assert inf._loaded_satisfies("org/repo:model-Q4_K_M-fp16") is False
+    assert inf._loaded_satisfies("org/repo:model-Q4_K_M-mtp") is True
+    # A tag that names no build at all still means the repo, as before.
+    assert inf._loaded_satisfies("org/repo:latest") is True
+
+
+def test_cached_load_candidates_resolve_the_spelling_across_every_snapshot(tmp_path, monkeypatch):
+    """A newer revision holding only the tagged build looked unambiguous on its own and was
+    loaded for a spelling the plain build in an older revision owns; two tagged revisions each
+    "won" an alias the shared resolvers refuse."""
+    from core.inference import llama_cpp
+    from utils.models import model_config
+
+    newer = _materialize(tmp_path / "newer", [("model-Q4_K_M-mtp.gguf", 1)])
+    older = _materialize(tmp_path / "older", [("model-Q4_K_M.gguf", 1)])
+    monkeypatch.setattr(model_config, "_iter_hf_cache_snapshots", lambda repo_id: [newer, older])
+    found = [main for _path, main, _shards, _snap in llama_cpp._cached_variant_candidates("org/repo", "Q4_K_M")]
+    assert found == ["model-Q4_K_M.gguf"]
+    other = _materialize(tmp_path / "other", [("model-Q4_K_M-fp16.gguf", 1)])
+    monkeypatch.setattr(model_config, "_iter_hf_cache_snapshots", lambda repo_id: [newer, other])
+    assert list(llama_cpp._cached_variant_candidates("org/repo", "Q4_K_M")) == []
+
+
+def test_the_cached_template_walk_resolves_the_spelling_across_every_snapshot(tmp_path, monkeypatch):
+    """Same shape in the template lookup: the newest revision's tagged build answered a bare
+    spelling the plain build in an older revision owns exactly."""
+    import picker.service as ps
+
+    newer = _materialize(tmp_path / "newer", [("model-Q4_K_M-mtp.gguf", 1)])
+    older = _materialize(tmp_path / "older", [("model-Q4_K_M.gguf", 1)])
+    monkeypatch.setattr(ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older])
+    monkeypatch.setattr(ps, "read_gguf_chat_template", lambda path: f"template-of:{path}")
+    monkeypatch.setattr(ps, "is_anonymous", lambda token: False)
+    monkeypatch.setattr(ps, "is_local_path", lambda name: False)
+    template = ps.read_default_chat_template("org/repo", "tok", gguf_variant = "Q4_K_M")
+    assert template == f"template-of:{older / 'model-Q4_K_M.gguf'}"

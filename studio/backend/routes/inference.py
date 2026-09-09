@@ -8086,9 +8086,23 @@ def _loaded_satisfies(requested: str) -> bool:
             return False
         resident_variant = getattr(llama_backend, "hf_variant", None) or ""
         if not looks_like_quant(variant, known_keys = [resident_variant]):
-            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough. A root
-            # stem counts only when it is the resident build's own identity, not on shape.
-            return True
+            # Not the resident's own identity. Before calling it a foreign tag (":latest",
+            # ":8b" -- the repo alone is enough for those), ask the local index whether it is a
+            # real key: a request for the OTHER root build of the same repo must not read as
+            # "repo matches, satisfied" and be answered by the wrong checkpoint.
+            # Only a spelling SHAPED like a key the lister could mint earns the index lookup; a
+            # request by bare path or an Ollama tag never does, so the recorded-alias short
+            # circuit stays resolver-free for them.
+            hit = None
+            if variant and looks_like_quant(variant, allow_root_stem = True):
+                try:
+                    from core.inference.local_model_resolver import resolve_local_gguf
+
+                    hit = resolve_local_gguf(f"{base}:{variant}", allow_scan = False)
+                except Exception:
+                    hit = None
+            if not (hit and len(hit) > 1 and hit[1]):
+                return True
         return _resident_variant_matches(
             base, variant, getattr(llama_backend, "hf_variant", None) or ""
         )

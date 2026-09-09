@@ -697,66 +697,12 @@ async def get_gguf_download_progress_response(
         # The resolved plan's key, not the request's spelling: a legacy bare request resolves to
         # a lone tagged build whose files key to the qualified name, and matching them against the
         # bare spelling missed every main shard -- so a finished download read as absent and the
-        # manager retired resumable state as gone. Cached, so this costs nothing per poll.
-        requirement = gguf_variants.gguf_variant_requirements(
-            resolved_repo_id,
-            progress_variant,
-            token,
-        )
-        if requirement is not None:
-            return requirement.download_size_bytes, requirement.required_hashes
-        job_key = _download_job_key(resolved_repo_id, progress_variant)
-        job = _registry.get_job(job_key)
-        # getattr, the same way snapshot_progress reads it: a registry without the accessor simply has no recorded root.
-        get_job_metadata = getattr(_registry, "get_job_metadata", None)
-        job_metadata = get_job_metadata(job_key) if callable(get_job_metadata) else None
-        hub_cache = getattr(job_metadata, "hub_cache", None)
-        verdict, manifest = _variant_manifest_decision(
-            resolved_repo_id,
-            progress_variant,
-            # Same scoping rule snapshot_progress applies to its own scan.
-            force_active = job.state in {"running", "cancelling"},
-            active_root = Path(hub_cache) if hub_cache else None,
-        )
-        if manifest is not None:
-            return (
-                sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
-                frozenset(file.sha256 for file in manifest.expected_files if file.sha256),
-            )
-        if verdict == "refused":
-            # A refusal is not a miss: the blob-hash helper reads the DEFAULT cache's manifest with none of
-            # this scoping, so falling through reinstates the hashes just rejected. An empty set degrades to
-            # the per-entry name-based fallback.
-            return (expected_total, frozenset())
-        return (
-            expected_total,
-            gguf_variants.gguf_variant_blob_hashes(
-                resolved_repo_id,
-                progress_variant,
-                token,
-                allow_remote = False,
-            ),
-        )
-
-    def _expected_files_resolver(
-        resolved_repo_id: str, token: Optional[str]
-    ) -> Sequence[download_manifest.ExpectedFile]:
-        """What HF says this variant should contain, paths and declared sizes.
-
-        The only thing that lets a finished variant whose manifest is missing
-        settle terminal instead of staying partial forever, so it has to be the
-        metadata's own file list: a byte tally taken from the shared blobs/ dir
-        cannot tell this quant's bytes from a sibling's. The requirement lookup
-        is cached, and snapshot_progress only calls this once a reading has
-        otherwise passed for complete.
-        """
-        if progress_variant is None:
-            return ()
-        requirement = gguf_variants.gguf_variant_requirements(
-            resolved_repo_id,
-            progress_variant,
-            token,
-        )
+        # manager retired resumable state as gone. The lookup is cached, so this costs nothing
+        # per poll; it fails soft to the request's spelling when there is no plan.
+        try:
+            requirement = gguf_variants.gguf_variant_requirements(repo_id, progress_variant, hf_token)
+        except Exception:
+            requirement = None
         if gguf_plan.is_main_gguf_variant_path(path, _progress_matcher_variant(requirement, progress_variant)):
             return True
         return companions and gguf_plan.is_companion_gguf_path(path)

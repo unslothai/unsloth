@@ -378,8 +378,30 @@ def read_default_chat_template(
             # Resolve within each cached revision, newest first. A revision's sidecar
             # supersedes its own embedded GGUF copy, but must not override a newer
             # revision, so precedence stays per-snapshot rather than global.
-            for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-                template = _chat_template_from_dir(snapshot, gguf_variant)
+            snapshots = list(iter_snapshots_preferring_whole(resolved, gguf_variant))
+            target = gguf_variant
+            if gguf_variant:
+                # The spelling is resolved across EVERY cached revision before any one is read:
+                # a newer revision holding only the tagged build looked unambiguous alone and
+                # returned its template for a spelling the plain build in an older revision owns,
+                # and two tagged revisions returned an arbitrary one for an alias the loaders
+                # refuse. Each snapshot is then asked for the exact key the union decided.
+                from hub.utils.gguf import gguf_variant_key, resolve_variant_alias
+
+                held: dict = {}
+                for snapshot in snapshots:
+                    try:
+                        held[snapshot] = {gguf_variant_key(p.relative_to(snapshot).as_posix()) for p in _iter_ggufs(snapshot)}
+                    except OSError:
+                        held[snapshot] = set()
+                keys = set().union(*held.values()) if held else set()
+                if keys:
+                    target = resolve_variant_alias(sorted(keys), gguf_variant)
+                    # Only the snapshots that HOLD the decided key are asked, so the per-directory
+                    # lookup cannot re-alias the bare spelling onto a tagged file the union rejected.
+                    snapshots = [s for s in snapshots if target is not None and target in held[s]]
+            for snapshot in snapshots:
+                template = _chat_template_from_dir(snapshot, target)
                 if template:
                     return template
         except Exception as exc:

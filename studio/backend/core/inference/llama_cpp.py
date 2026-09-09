@@ -3043,10 +3043,23 @@ def _cached_variant_candidates(
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
     """Yield complete cached variant copies in snapshot preference order."""
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
-            cached_files = _gguf_snapshot_files(snap)
-            matches = _gguf_files_for_variant(cached_files, hf_variant)
+        from utils.models.model_config import _gguf_variant_key, _iter_hf_cache_snapshots
+
+        snapshots = list(_iter_hf_cache_snapshots(repo_id))
+        # Resolved across EVERY snapshot before any one is offered: a newer revision holding only
+        # the tagged build looked unambiguous alone and was loaded for a spelling the plain build
+        # in an older revision owns, and two tagged revisions each "won" an alias the shared
+        # resolvers refuse. The union decides which key the request names; each snapshot then
+        # offers only files of that key.
+        listed = {snap: _gguf_snapshot_files(snap) for snap in snapshots}
+        union = _gguf_files_for_variant([f for files in listed.values() for f in files], hf_variant)
+        target_keys = {_gguf_variant_key(f).lower() for f in union}
+        for snap in snapshots:
+            cached_files = listed[snap]
+            matches = [
+                f for f in _gguf_files_for_variant(cached_files, hf_variant)
+                if _gguf_variant_key(f).lower() in target_keys
+            ]
             if not matches:
                 continue
             main = matches[0]
