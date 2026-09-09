@@ -29,7 +29,10 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 from core.inference.audio_codecs import AudioCodecManager
-from core.inference.runtime_context import runtime_context_length
+from core.inference.runtime_context import (
+    generation_budget_within_context,
+    runtime_context_length,
+)
 from core.inference.message_content import content_to_text
 from core.inference.chat_eos import (
     chat_eos_repair,
@@ -2017,6 +2020,13 @@ class InferenceBackend:
                 use_harmony = self._is_gpt_oss_model(),
             )
 
+            prompt_len = int(inputs["input_ids"].shape[1])
+            # An unset client limit arrives as the whole context window, which no
+            # nonempty prompt can also fit; generate raises rather than truncating.
+            max_new_tokens = generation_budget_within_context(
+                model, prompt_len, max_new_tokens
+            )
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
@@ -2034,7 +2044,6 @@ class InferenceBackend:
                 else tokenizer.pad_token_id,
             )
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
-            prompt_len = int(inputs["input_ids"].shape[1])
             # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
             _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
             timer = GenerationTimer()

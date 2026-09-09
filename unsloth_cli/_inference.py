@@ -29,7 +29,8 @@ _STREAMED_ERROR_PREFIX = "Error: "
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
 # The in-process backends have no "until EOS": generate_chat_response defaults to 256. An
-# unset cap takes what the /v1/chat/completions route hands them for an absent max_tokens.
+# unset cap takes what the /v1/chat/completions route hands them for an absent max_tokens;
+# the backend fits that budget into the context the prompt leaves free.
 _LOCAL_MAX_NEW_TOKENS = 2048
 _MPI_ENV_PAIRS = (
     ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
