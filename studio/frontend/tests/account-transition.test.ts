@@ -7,6 +7,7 @@ import {
   ACCOUNT_CHROME_KEYS,
   ACCOUNT_DATABASES,
   BROWSER_ACCOUNT_KEY,
+  accountDatabaseName,
   browserAccountMarker,
   installAccountTransitionListener,
   normalizeAccountUsername,
@@ -501,5 +502,36 @@ test("unreadable session storage never fails a sign-in", async () => {
   assert.equal(
     await transitionBrowserAccount("bob", "/chat", () => {}, b.browser),
     true,
+  );
+});
+
+test("saved recipes live in a per-account store and are never purged", () => {
+  assert.equal(
+    ACCOUNT_DATABASES.includes("unsloth-data-recipes" as never),
+    false,
+  );
+  const stored = (marker: string | null) => ({ getItem: () => marker });
+  assert.equal(
+    accountDatabaseName("unsloth-data-recipes", stored(null)),
+    "unsloth-data-recipes",
+  );
+  assert.equal(
+    accountDatabaseName("unsloth-data-recipes", stored("unsloth")),
+    "unsloth-data-recipes",
+  );
+  assert.equal(
+    accountDatabaseName(
+      "unsloth-data-recipes",
+      stored("account:owner:unsloth"),
+    ),
+    "unsloth-data-recipes",
+  );
+  assert.equal(
+    accountDatabaseName("unsloth-data-recipes", stored("account:a1:alice")),
+    "unsloth-data-recipes:a1",
+  );
+  assert.equal(
+    accountDatabaseName("unsloth-data-recipes", stored("alice")),
+    "unsloth-data-recipes:alice",
   );
 });

@@ -479,3 +479,27 @@ def test_warm_owner_connections_do_not_resolve_database_again(
 
     monkeypatch.setattr(Path, "resolve", resolve)
     connect().close()
+
+
+def test_a_symlinked_database_resolves_its_path_once(account_home, tmp_path):
+    """A relocated studio.db behind a symlink must not re-resolve on every connection."""
+    studio_db.reset_schema_state_for_tests()
+    db_path = roots.studio_db_path()
+    target = tmp_path / "elsewhere" / "studio.db"
+    target.parent.mkdir(parents = True)
+    db_path.parent.mkdir(parents = True, exist_ok = True)
+    db_path.symlink_to(target)
+    studio_db.get_connection().close()
+    assert db_path in studio_db._schema_ready
+    resolves = []
+    original = Path.resolve
+
+    def counting(self, *args, **kwargs):
+        resolves.append(self)
+        return original(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "resolve", counting)
+        studio_db.get_connection().close()
+    assert db_path not in resolves
+    studio_db.reset_schema_state_for_tests()

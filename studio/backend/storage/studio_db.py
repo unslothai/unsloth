@@ -1262,7 +1262,8 @@ def get_connection(
                 try:
                     _ensure_schema(conn)
                     conn.commit()
-                    _schema_ready.add(schema_path)
+                    # Both spellings, so a symlinked path skips the resolve next time.
+                    _schema_ready.update((schema_path, db_path))
                 except Exception:
                     conn.close()
                     raise

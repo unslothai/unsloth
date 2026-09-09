@@ -542,3 +542,23 @@ def test_a_checkpoint_in_the_accounts_projects_tree_is_loadable_by_that_account(
         run_as(BOB, access.require_model_access, str(checkpoint))
     assert refused.value.status_code == 404
     assert run_as(OWNER, project_workspaces_root) != run_as(ALICE, project_workspaces_root)
+
+
+@pytest.mark.parametrize("repo_id,folder", [("gpt2", "models--gpt2"), ("org/m", "models--org--m")])
+def test_one_segment_hub_ids_follow_their_grant(monkeypatch, tmp_path, repo_id, folder):
+    """The download validator accepts ``repo_name`` alone, so visibility must too."""
+    from utils import hf_cache_settings
+
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [cache])
+    monkeypatch.setattr(access, "repo_is_public", lambda *a: False)
+    weights = cache / folder / "snapshots" / "commit" / "model.safetensors"
+    weights.parent.mkdir(parents = True)
+    weights.write_bytes(b"weights")
+    assert not run_as(BOB, access.model_visible, repo_id)
+    assert not run_as(BOB, access.model_visible, str(weights))
+    run_as(ALICE, access.record_model_grant, repo_id)
+    assert run_as(ALICE, access.model_visible, repo_id)
+    assert run_as(ALICE, access.model_visible, str(weights))
+    assert not run_as(BOB, access.model_visible, repo_id)
+    assert not run_as(BOB, access.model_visible, str(weights))

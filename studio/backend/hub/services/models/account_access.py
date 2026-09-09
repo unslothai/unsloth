@@ -584,7 +584,7 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
         for prefix, repo_type in (("models--", "model"), ("datasets--", "dataset")):
             if part.startswith(prefix):
                 pieces = part[len(prefix) :].split("--")
-                if len(pieces) == 2 and all(pieces):
+                if len(pieces) in (1, 2) and all(pieces):
                     return "/".join(pieces), repo_type
     return None
 
@@ -622,7 +622,7 @@ def model_visible(
         return False
     repo_id = reference.split(":", 1)[0]
     parts = repo_id.split("/")
-    if len(parts) < 2 or not all(parts[:2]):
+    if not all(parts[:2]):
         return False
     repo_id = "/".join(parts[:2])
     return repo_visible(repo_id, repo_type, grants = grants)

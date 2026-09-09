@@ -25,12 +25,9 @@ export const ACCOUNT_CHROME_PREFIXES = [
   "unsloth_web_update_dismissed:",
 ] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
-export const ACCOUNT_SESSION_CHROME_KEYS = new Set([
-  USER_STOPPED_KEY,
-]);
+export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);
+/** Purged on an account change. Durable stores are named per account instead (`accountDatabaseName`). */
 export const ACCOUNT_DATABASES = [
-  "unsloth-data-recipes",
-  "unsloth-data-recipe-executions",
   // Legacy store: its one-shot import would push these threads into the next account.
   "unsloth-chat",
 ] as const;
@@ -57,6 +54,22 @@ export function browserAccountMarker(account: BrowserAccount | string): string {
   return identity.accountId
     ? `${ACCOUNT_ID_MARKER_PREFIX}${identity.accountId}:${username}`
     : username;
+}
+
+/** The owner keeps the historical name; a managed account gets its own store, so a switch never has to delete saved data. */
+export function accountDatabaseName(
+  name: string,
+  storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
+): string {
+  const account = parseAccountMarker(
+    storage?.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
+  );
+  const owner =
+    account.accountId === "owner" ||
+    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT);
+  return owner ? name : `${name}:${account.accountId ?? account.username}`;
 }
 
 type MarkedAccount = { accountId: string | null; username: string };
@@ -99,6 +112,7 @@ function clearAccountSessionStorage(browser: AccountTransitionBrowser): void {
       storage.removeItem(key);
     }
   } catch {
+    // Unreadable session storage never fails a sign-in.
   }
 }
 
@@ -130,7 +144,9 @@ export async function transitionBrowserAccount(
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;
   const changed = !isSameAccount(
-    parseAccountMarker(storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT),
+    parseAccountMarker(
+      storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
+    ),
     parseAccountMarker(marker),
   );
   if (changed) {
@@ -177,7 +193,9 @@ export function installAccountTransitionListener(
     )
       return;
     if (event.storageArea && event.storageArea !== browser.localStorage) return;
-    const previous = parseAccountMarker(event.oldValue ?? OWNER_BROWSER_ACCOUNT);
+    const previous = parseAccountMarker(
+      event.oldValue ?? OWNER_BROWSER_ACCOUNT,
+    );
     if (isSameAccount(previous, parseAccountMarker(event.newValue))) return;
     reloading = true;
     browser.location.reload();
