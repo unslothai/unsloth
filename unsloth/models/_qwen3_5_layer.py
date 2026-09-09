@@ -41,6 +41,9 @@ from ._gated_delta_net import _fast_path_applicable as _gdn_applicable
 __all__ = ["patch_qwen3_5_decoder_layers"]
 
 _COMPILE_OPTIONS = {
+    # Round every bf16 intermediate exactly where eager does (inductor otherwise keeps fused
+    # intermediates in fp32), so the fused regions reproduce the stock path's numbers.
+    "emulate_precision_casts": True,
     "epilogue_fusion": True,
     "max_autotune": False,
     "shape_padding": True,

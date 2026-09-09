@@ -35,6 +35,9 @@ import torch.nn.functional as F
 __all__ = ["patch_gated_delta_net_fast_forward"]
 
 _COMPILE_OPTIONS = {
+    # Round every bf16 intermediate exactly where eager does (inductor otherwise keeps fused
+    # intermediates in fp32), so the fused regions reproduce the stock path's numbers.
+    "emulate_precision_casts": True,
     "epilogue_fusion": True,
     "max_autotune": False,
     "shape_padding": True,
