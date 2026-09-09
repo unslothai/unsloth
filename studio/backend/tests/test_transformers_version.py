@@ -527,14 +527,20 @@ class TestCheckConfigNeeds550:
                 True,
                 id = "higgs_tts_uses_transformers_550-higgs-tts2-architecture",
             ),
-            pytest.param({"model_type": "higgs_audio_v2"}, True, id = "higgs_tts_uses_transformers_550-higgs-tts2-model-type"),
+            pytest.param(
+                {"model_type": "higgs_audio_v2"},
+                True,
+                id = "higgs_tts_uses_transformers_550-higgs-tts2-model-type",
+            ),
             pytest.param(
                 {"architectures": ["HiggsMultimodalQwen3ForConditionalGeneration"]},
                 True,
                 id = "higgs_tts_uses_transformers_550-higgs-tts3-architecture",
             ),
             pytest.param(
-                {"model_type": "higgs_multimodal_qwen3"}, True, id = "higgs_tts_uses_transformers_550-higgs-tts3-model-type"
+                {"model_type": "higgs_multimodal_qwen3"},
+                True,
+                id = "higgs_tts_uses_transformers_550-higgs-tts3-model-type",
             ),
             # mlx-vlm processors that require Transformers 5 select the 5.5 tier.
             pytest.param(
@@ -542,19 +548,29 @@ class TestCheckConfigNeeds550:
                 True,
                 id = "mlx_vlm_v5_processor_config-kimi-k3-architecture",
             ),
-            pytest.param({"model_type": "kimi_k3"}, True, id = "mlx_vlm_v5_processor_config-kimi-k3-model-type"),
+            pytest.param(
+                {"model_type": "kimi_k3"}, True, id = "mlx_vlm_v5_processor_config-kimi-k3-model-type"
+            ),
             pytest.param(
                 {"architectures": ["LocateAnythingForConditionalGeneration"]},
                 True,
                 id = "mlx_vlm_v5_processor_config-locate-anything-architecture",
             ),
-            pytest.param({"model_type": "locateanything"}, True, id = "mlx_vlm_v5_processor_config-locate-anything-model-type"),
+            pytest.param(
+                {"model_type": "locateanything"},
+                True,
+                id = "mlx_vlm_v5_processor_config-locate-anything-model-type",
+            ),
             pytest.param(
                 {"architectures": ["DiffusionGemmaForBlockDiffusion"]},
                 True,
                 id = "mlx_vlm_v5_processor_config-diffusion-gemma-architecture",
             ),
-            pytest.param({"model_type": "diffusion_gemma"}, True, id = "mlx_vlm_v5_processor_config-diffusion-gemma-model-type"),
+            pytest.param(
+                {"model_type": "diffusion_gemma"},
+                True,
+                id = "mlx_vlm_v5_processor_config-diffusion-gemma-model-type",
+            ),
             pytest.param(
                 {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
                 False,
@@ -2350,13 +2366,23 @@ class TestTierFromName:
             pytest.param("meta-llama/Llama-3-8B", None, None, id = "returns_none_for_unknown"),
             pytest.param("google/gemma-4-E2B-it", "550", None, id = "gemma4_returns_550"),
             pytest.param(
-                "google/gemma-4-E2B-it-assistant", "510", "assistant", id = "gemma4_assistant_returns_510"
+                "google/gemma-4-E2B-it-assistant",
+                "510",
+                "assistant",
+                id = "gemma4_assistant_returns_510",
             ),
             pytest.param("unsloth/gemma-4-12b-it", "510", None, id = "gemma4_12b_returns_510"),
             pytest.param("Qwen/Qwen3.5-7B", "530", "qwen3.5", id = "qwen35_returns_530"),
             # The existing substring "ministral-3-" matches the 2512 naming style.
-            pytest.param("mistralai/Ministral-3-8B-Instruct-2512", "530", None, id = "ministral3_returns_530"),
-            pytest.param("Qwen/Qwen3-30B-A3B-Instruct-2507", "530", None, id = "qwen3_moe_substring_returns_530"),
+            pytest.param(
+                "mistralai/Ministral-3-8B-Instruct-2512", "530", None, id = "ministral3_returns_530"
+            ),
+            pytest.param(
+                "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                "530",
+                None,
+                id = "qwen3_moe_substring_returns_530",
+            ),
             # gemma-4-12b matches 510 (checked first), not 550.
             pytest.param("google/gemma-4-12b-it", "510", None, id = "510_beats_550"),
             # gemma-4 matches 550, not 530.
@@ -2365,12 +2391,16 @@ class TestTierFromName:
             pytest.param("Qwen/Qwen3_5-7B", "530", None, id = "qwen3_underscore_5_returns_530"),
             pytest.param("org/Qwen3_Next-14B", "530", None, id = "qwen3_next_underscore_returns_530"),
             pytest.param("google/gemma_4_E2B_it", "550", None, id = "gemma_4_underscore_returns_550"),
-            pytest.param("unsloth/gemma_4_12b_it", "510", None, id = "gemma_4_12b_underscore_returns_510"),
+            pytest.param(
+                "unsloth/gemma_4_12b_it", "510", None, id = "gemma_4_12b_underscore_returns_510"
+            ),
             pytest.param(
                 "meta_llama/Llama_3_8B", None, None, id = "unrelated_underscores_not_promoted"
             ),
             # Qwen3-6B / Qwen3-5B are size names, not the qwen3.6 / qwen3.5 release lines.
-            pytest.param("Qwen/Qwen3-6B-Instruct", None, None, id = "qwen3_hyphen_6_size_not_promoted"),
+            pytest.param(
+                "Qwen/Qwen3-6B-Instruct", None, None, id = "qwen3_hyphen_6_size_not_promoted"
+            ),
             pytest.param("Qwen/Qwen3-5B", None, None, id = "qwen3_hyphen_5_size_not_promoted"),
         ],
     )
@@ -2411,7 +2441,9 @@ class TestLocalConfig530Tier:
                 id = "config_needs_530_qwen3_5_conditional_generation",
             ),
             pytest.param({"model_type": "qwen3_moe"}, True, id = "config_needs_530_qwen3_moe"),
-            pytest.param({"model_type": "glm4_moe_lite"}, True, id = "config_needs_530_glm4_moe_lite"),
+            pytest.param(
+                {"model_type": "glm4_moe_lite"}, True, id = "config_needs_530_glm4_moe_lite"
+            ),
             pytest.param({"model_type": "lfm2_vl"}, True, id = "config_needs_530_lfm2_vl"),
             # Qwen3.5 MoE (Qwen3.5-35B-A3B / 122B-A10B) uses qwen3_5_moe ids.
             pytest.param(
@@ -2428,10 +2460,20 @@ class TestLocalConfig530Tier:
                 id = "config_needs_530_qwen3_next",
             ),
             # Text-tower configs (architectures may be stripped) still need 5.3.0.
-            pytest.param({"model_type": "qwen3_5_text"}, True, id = "config_needs_530_qwen3_5_text_towers_plain"),
-            pytest.param({"model_type": "qwen3_5_moe_text"}, True, id = "config_needs_530_qwen3_5_text_towers_moe"),
+            pytest.param(
+                {"model_type": "qwen3_5_text"},
+                True,
+                id = "config_needs_530_qwen3_5_text_towers_plain",
+            ),
+            pytest.param(
+                {"model_type": "qwen3_5_moe_text"},
+                True,
+                id = "config_needs_530_qwen3_5_text_towers_moe",
+            ),
             # Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0.
-            pytest.param({"model_type": "qwen3"}, False, id = "config_needs_530_plain_qwen3_is_false"),
+            pytest.param(
+                {"model_type": "qwen3"}, False, id = "config_needs_530_plain_qwen3_is_false"
+            ),
         ],
     )
     def test_config_needs_530(self, cfg: dict, expected: bool):
@@ -2441,7 +2483,12 @@ class TestLocalConfig530Tier:
         "folder, cfg, tier",
         [
             # Reported case: a local Qwen3.5 folder routes to 530 via config.json.
-            pytest.param("Qwen3.5-2B", {"model_type": "qwen3_5"}, "530", id = "tier_local_qwen35_config_selects_530"),
+            pytest.param(
+                "Qwen3.5-2B",
+                {"model_type": "qwen3_5"},
+                "530",
+                id = "tier_local_qwen35_config_selects_530",
+            ),
             pytest.param(
                 "my-qwen3-moe",
                 {"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]},
