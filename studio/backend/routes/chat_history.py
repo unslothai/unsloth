@@ -44,6 +44,7 @@ from storage.studio_db import (
     CorruptSettingsError,
     ProjectWorkspaceConflictError,
     ProjectWorkspaceError,
+    ProjectWorkspaceRecordError,
     ProjectWorkspaceUnavailableError,
     build_chat_history_export,
     clear_chat_history,
@@ -1248,6 +1249,16 @@ def patch_project(
                 f"Could not use the selected project folder {exc.path}. Check that it still "
                 "exists and is readable and writable.",
                 event = "chat_history.update_external_workspace_failed",
+                log = logger,
+            ) from exc
+        except ProjectWorkspaceRecordError as exc:
+            raise log_and_http_error(
+                exc,
+                500,
+                f"Could not write to {exc.path}, so the folder this project is moving away "
+                "from could not be recorded and its working directory was left as it was. "
+                "Check that the folder is writable.",
+                event = "chat_history.retire_workspace_record_failed",
                 log = logger,
             ) from exc
         except ProjectWorkspaceConflictError as exc:

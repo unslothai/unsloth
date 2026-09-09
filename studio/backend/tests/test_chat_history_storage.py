@@ -715,6 +715,42 @@ def test_selecting_the_current_workspace_does_not_rotate_its_session(
     assert unchanged["workspaceSessionId"] == project["workspaceSessionId"]
 
 
+def test_a_change_that_cannot_record_the_old_folder_leaves_the_project_alone(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """The record is the only thing that will name the folder being replaced.
+
+    The row carries it until the update, and the update overwrites it. Committing the
+    change with no record written leaves the files with nothing pointing at them: a
+    later delete cannot offer them and a fork's file cards cannot resolve them. So the
+    change is refused instead, and the project stays on the folder it had.
+    """
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    from core.inference import tools
+
+    first = workspace_projects_home / "first folder"
+    first.mkdir()
+    second = workspace_projects_home / "second folder"
+    second.mkdir()
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(first))
+
+    # A file where the records directory belongs fails the write the way an unwritable
+    # or full disk does, without needing either.
+    records = Path(tools._orphan_records_dir())
+    records.parent.mkdir(parents = True, exist_ok = True)
+    records.write_text("not a directory", encoding = "utf-8")
+
+    # OSError, so the assertion is about the refusal and not about the class existing:
+    # the change went through silently before, which is what a regression looks like.
+    with pytest.raises(OSError) as refused:
+        studio_db.set_chat_project_workspace(project["id"], str(second))
+    assert isinstance(refused.value, studio_db.ProjectWorkspaceRecordError)
+
+    unchanged = studio_db.get_chat_project(project["id"])
+    assert unchanged["workspacePath"] == project["workspacePath"]
+    assert unchanged["workspaceSessionId"] == project["workspaceSessionId"]
+
+
 def test_external_workspace_create_rejects_an_existing_project(
     tmp_path, monkeypatch, workspace_projects_home
 ):

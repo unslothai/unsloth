@@ -194,6 +194,19 @@ class ProjectWorkspaceUnavailableError(OSError):
         self.cause = cause
 
 
+class ProjectWorkspaceRecordError(OSError):
+    """Raised when the folder a working-directory change replaces cannot be written down.
+
+    The project row is the only other thing naming that folder and the change is
+    about to overwrite it, so a rotation committed without the record strands the
+    files there.
+    """
+
+    def __init__(self, path: str, cause: BaseException):
+        super().__init__(str(cause))
+        self.path = path
+
+
 class ProjectWorkspaceConflictError(RuntimeError):
     pass
 
@@ -3597,9 +3610,9 @@ def _record_retired_project_workspace(project: dict) -> None:
     retired_workspace = project.get("workspacePath")
     if not retired_session or not retired_workspace:
         return
-    from core.inference.tools import record_orphaned_project
+    from core.inference.tools import _orphan_records_dir, record_orphaned_project
 
-    record_orphaned_project(
+    recorded = record_orphaned_project(
         str(project["id"]),
         str(retired_workspace),
         False,
@@ -3613,6 +3626,11 @@ def _record_retired_project_workspace(project: dict) -> None:
         # the folder was chosen, so the record carries that rather than nothing.
         identity = _project_workspace_identity(project),
     )
+    if not recorded:
+        raise ProjectWorkspaceRecordError(
+            _orphan_records_dir(),
+            OSError("could not record the folder this project is moving away from"),
+        )
 
 
 def _set_chat_project_workspace(
