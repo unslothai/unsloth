@@ -57,6 +57,10 @@ def _studio_guard():
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(DISABLE_SENTENCEPIECE_VARIABLE, raising = False)
+    # The rule declines once transformers is imported, and the test session has imported it.
+    # Removed here so each test states its own starting point; the one test that wants it
+    # present puts it back.
+    monkeypatch.delitem(sys.modules, "transformers", raising = False)
     yield
 
 
@@ -123,6 +127,42 @@ def test_an_already_imported_sentencepiece_is_left_alone(monkeypatch):
     monkeypatch.setitem(sys.modules, "sentencepiece", sentinel)
     assert disable_sentencepiece_on_windows() is False
     assert sys.modules["sentencepiece"] is sentinel
+
+
+def test_it_declines_once_transformers_is_imported(monkeypatch):
+    """Installing it late is worse than not installing it at all.
+
+    transformers reads availability from find_spec during its own import and caches it, so a
+    sentinel added afterwards only makes the two disagree: it reports the package available
+    and the import then fails. Measured on 4.57.6, unsloth/gemma-2-2b-it loads with the rule
+    applied in time and without the rule at all, and raises ModuleNotFoundError with the rule
+    applied afterwards. Whoever imported transformers first keeps the ordinary behaviour.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
+    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
+
+    assert disable_sentencepiece_on_windows() is False
+    assert "sentencepiece" not in sys.modules
+
+    studio = _studio_guard()
+    monkeypatch.setattr(
+        studio,
+        "sys",
+        types.SimpleNamespace(platform = "win32", modules = {"transformers": object()}),
+    )
+    assert studio.disable_sentencepiece_on_windows() is False
+    assert "sentencepiece" not in studio.sys.modules
+
+
+def test_a_sentinel_installed_in_time_survives_a_later_transformers_import(monkeypatch):
+    """The late check must not undo the ordinary case, where the rule ran first and
+    transformers was imported after it."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "sentencepiece", None)
+    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
+    assert disable_sentencepiece_on_windows() is True
+    assert sys.modules["sentencepiece"] is None
 
 
 def test_calling_it_twice_is_stable(monkeypatch):

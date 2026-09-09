@@ -42,7 +42,8 @@ def disable_sentencepiece_on_windows():
     state.
 
     Must run before transformers is imported, which reads availability during its own import.
-    Returns True only when this call is what made it absent.
+    Once transformers is in sys.modules this declines rather than installing a sentinel it has
+    already contradicted. Returns True only when this call is what made it absent.
     """
     if not sentencepiece_should_be_disabled():
         return False
@@ -50,5 +51,10 @@ def disable_sentencepiece_on_windows():
         # Already imported by something earlier, or already disabled by an earlier call.
         # Replacing a live module would break whoever is holding it.
         return sys.modules["sentencepiece"] is None
+    if "transformers" in sys.modules:
+        # Too late, and installing it anyway would be worse than doing nothing: transformers
+        # has already cached "installed", so the sentinel would only make the two disagree and
+        # a tokenizer that loads today would start raising ModuleNotFoundError.
+        return False
     sys.modules["sentencepiece"] = None
     return True

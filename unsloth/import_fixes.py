@@ -6104,8 +6104,10 @@ def disable_sentencepiece_on_windows():
     fallback that imports the slow tokenizer module and reaches its unguarded
     ``import sentencepiece as spm``, which is the loader error this is meant to prevent.
 
-    Must run before transformers is imported, since transformers reads availability during its
-    own import. Returns True only when this call is what made it absent.
+    Must run before transformers is imported, since transformers reads availability during
+    its own import. Once transformers is in sys.modules this declines rather than installing a
+    sentinel it has already contradicted. Returns True only when this call is what made it
+    absent.
     """
     if not sentencepiece_should_be_disabled():
         return False
@@ -6113,6 +6115,13 @@ def disable_sentencepiece_on_windows():
         # Already imported by something earlier, or already disabled by an earlier call.
         # Replacing a live module here would break whoever is holding it.
         return sys.modules["sentencepiece"] is None
+    if "transformers" in sys.modules:
+        # Too late, and installing it anyway would be worse than doing nothing. transformers
+        # has already read availability from find_spec and cached "installed", so the sentinel
+        # would only produce the disagreement described above, and a tokenizer that loads
+        # today would start raising ModuleNotFoundError. Whoever imported transformers first
+        # keeps the ordinary behaviour.
+        return False
     sys.modules["sentencepiece"] = None
     if UNSLOTH_ENABLE_LOGGING:
         logger.info(
