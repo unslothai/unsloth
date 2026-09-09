@@ -9,7 +9,7 @@
       "policy_version": 1,
       "checkpoint_sha256": "d2f80a4a32c7b21bb3f5bda15f6c786802953ab472dc284cae81f3193670dc27",
       "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
-      "filename": "Z-Image-Turbo-NVFP4.pt",
+      "filename": "Z-Image-Turbo-NVFP4-RTN.pt",
       "gptq": false,
       "all_pass": true,
       "num_pairs": 24,
