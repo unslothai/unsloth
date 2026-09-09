@@ -31,6 +31,8 @@ const STORE = read("src/features/chat/stores/chat-runtime-store.ts");
 const CHIP = read("src/features/chat/components/exact-concurrency-chip.tsx");
 const CHAT_PAGE = read("src/features/chat/chat-page.tsx");
 const RUNTIME = read("src/features/chat/hooks/use-chat-model-runtime.ts");
+const ADAPTER = read("src/features/chat/api/chat-adapter.ts");
+const PROVIDER = read("src/features/chat/runtime-provider.tsx");
 
 test("the three reported states map to themselves", () => {
   assert.equal(normalizeExactConcurrency("on"), "on");
@@ -187,6 +189,31 @@ test("without a recompute the chip reads exactly as it did", () => {
   assert.doesNotMatch(exactConcurrencyChip("on")!.title, /re-prefilled/);
   // `off` renders nothing at all, so a recompute there has no chip to annotate.
   assert.equal(exactConcurrencyChip("off", { recomputed: true }), null);
+});
+
+test("the recompute note is persisted with the answer and read back on load", () => {
+  // The map is in memory only; a reload or another tab restores the load's state as `on`,
+  // so the note has to come back from the thread's last answer, and a turn that failed
+  // must not have cleared it first.
+  assert.equal(
+    ADAPTER.match(/preemptRecomputed: sawPreemptRecompute \|\| undefined,/g)?.length,
+    2,
+    "the live and the final metadata both carry it",
+  );
+  assert.doesNotMatch(
+    ADAPTER,
+    /createStreamPublishGate\(\);\s*\/\/[^\n]*\n\s*runtime\.clearPreemptRecompute/,
+    "cleared before the first chunk",
+  );
+  assert.match(
+    ADAPTER,
+    /if \(sawPreemptRecompute\) \{\s*runtime\.notePreemptRecompute\(liveThreadKey\(serverCancel\)\);\s*\} else \{\s*runtime\.clearPreemptRecompute\(liveThreadKey\(serverCancel\)\);/,
+  );
+  assert.match(PROVIDER, /preemptRecomputed: true/);
+  assert.match(
+    PROVIDER,
+    /\?\.preemptRecomputed === true[\s\S]{0,80}store\.notePreemptRecompute\(remoteId\)/,
+  );
 });
 
 test("the chip reads the flag for the conversation on screen", () => {

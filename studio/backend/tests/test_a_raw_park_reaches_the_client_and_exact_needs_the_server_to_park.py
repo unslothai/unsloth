@@ -516,6 +516,25 @@ class TestAutoDoesNotStartAModeItWillReportUnavailable:
         )
         assert why and "LLAMA_ARG_N_CPU_MOE=8" in why
 
+    def test_manual_mode_drops_the_placement_twins_before_the_preflight(self, monkeypatch):
+        # Manual mode scrubs LLAMA_ARG_CPU_MOE / LLAMA_ARG_N_CPU_MOE from the child, so the
+        # preflight must not block on a value the child never gets; an -ot stays.
+        monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
+        inherited = {"LLAMA_ARG_N_CPU_MOE": "8", "LLAMA_ARG_OVERRIDE_TENSOR": "attn=CUDA0"}
+        env = llama_mod._exact_preflight_env(inherited, "manual")
+        assert "LLAMA_ARG_N_CPU_MOE" not in env and env["LLAMA_ARG_OVERRIDE_TENSOR"] == "attn=CUDA0"
+        assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, self._ARGV, env) is None
+        # Any other memory mode hands the variable on, so it blocks.
+        assert llama_mod._exact_auto_blocker(
+            exact.EXACT_AUTO, self._ARGV, llama_mod._exact_preflight_env(inherited, "auto")
+        )
+        cpu = llama_mod._exact_preflight_env({"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"}, "manual")
+        assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, self._ARGV, cpu)
+        # Both launch sites judge the child's environment, not the parent's.
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert source.count("_exact_preflight_env(os.environ, gpu_memory_mode)") == 2
+        assert "contradicting_env(os.environ)" not in source
+
     def test_a_clean_auto_launch_and_every_on_launch_go_ahead(self, monkeypatch):
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
         assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, self._ARGV, {}) is None

@@ -2152,6 +2152,16 @@ def _exact_parking_shortfall_mib(
     return (named, saved, need) if named < need else None
 
 
+def _exact_preflight_env(environ: Mapping[str, str], gpu_memory_mode: Optional[str]) -> dict:
+    """The inherited variables as the child will see them: Manual mode drops the placement
+    twins before launch, so judging the parent's environment blocked `auto` on a value the
+    child never gets."""
+    env = dict(environ)
+    if gpu_memory_mode == "manual":
+        LlamaCppBackend._clear_manual_placement_env(env)
+    return env
+
+
 def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[str]:
     """Why an ``auto`` exact launch should not start the mode at all, else None.
 
@@ -23667,7 +23677,7 @@ class LlamaCppBackend:
                     _exact_blocker = _exact_auto_blocker(
                         _exact_setting,
                         list(cmd) + [str(a) for a in (extra_args or ())],
-                        os.environ,
+                        _exact_preflight_env(os.environ, gpu_memory_mode),
                     )
                     if _exact_blocker is not None:
                         _exact_wanted = False
@@ -23748,7 +23758,7 @@ class LlamaCppBackend:
                     # The user's extras are appended last and win by last-arg, so name the flag ourselves.
                     _exact_conflicts = _exact.contradicting_args(
                         extra_args
-                    ) + _exact.contradicting_env(os.environ)
+                    ) + _exact.contradicting_env(_exact_preflight_env(os.environ, gpu_memory_mode))
                     if _exact_conflicts:
                         self._record_load_warning(
                             "Exact concurrency was requested, but the extra arguments "

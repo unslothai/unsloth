@@ -1065,6 +1065,8 @@ function scheduleGenerationRecovery(
                 if (chunk._admissionStatus === "recomputed") {
                   // Qualifies the resume before it, so the status line stays as it is.
                   useChatRuntimeStore.getState().notePreemptRecompute(threadId);
+                  // Persisted with the message, as the live adapter does.
+                  currentMetadata = { ...currentMetadata, preemptRecomputed: true };
                   continue;
                 }
                 // Queued or paused: the line the live adapter shows, so a follower does
@@ -2039,6 +2041,16 @@ function useStudioRuntimeAdapters(
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
+        // The chip's recompute note is the last answer's, read back from it: the map is
+        // in memory only, and a fresh tab would otherwise show Exact for a re-prefilled answer.
+        if (
+          (lastAssistant?.metadata as Record<string, unknown> | undefined)
+            ?.preemptRecomputed === true
+        ) {
+          store.notePreemptRecompute(remoteId);
+        } else {
+          store.clearPreemptRecompute(remoteId);
+        }
         // Window check applies only when a local GGUF window is known; external
         // providers have loadedContextLength === null. llama.cpp stops at the window, so
         // a saved count past it is stale; MLX runs past it by design, and a thread whose

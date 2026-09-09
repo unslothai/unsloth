@@ -5156,6 +5156,9 @@ export function createOpenAIStreamAdapter(
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      // The server re-prefilled this answer after a park it could not hold: persisted with the
+      // message, so the chip's note survives a reload and follows the thread's last answer.
+      let sawPreemptRecompute = false;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5165,6 +5168,7 @@ export function createOpenAIStreamAdapter(
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
+        preemptRecomputed: sawPreemptRecompute || undefined,
         incomplete: { reason: "cancelled" as const },
         ...generationCustom(),
       });
@@ -6347,8 +6351,6 @@ export function createOpenAIStreamAdapter(
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
-            // A fresh answer has not been re-prefilled yet; the chip's note is per answer.
-            runtime.clearPreemptRecompute(liveThreadKey(serverCancel));
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -6365,6 +6367,7 @@ export function createOpenAIStreamAdapter(
               if (admissionStatus !== undefined) {
                 if (admissionStatus === "recomputed") {
                   // Qualifies the resume before it, so the status line stays as it is.
+                  sawPreemptRecompute = true;
                   runtime.notePreemptRecompute(liveThreadKey(serverCancel));
                   continue;
                 }
@@ -7779,6 +7782,13 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
+        // The chip follows the thread's last answer: cleared only once this one replaces it,
+        // not when the turn started, so a turn that failed leaves the previous note standing.
+        if (sawPreemptRecompute) {
+          runtime.notePreemptRecompute(liveThreadKey(serverCancel));
+        } else {
+          runtime.clearPreemptRecompute(liveThreadKey(serverCancel));
+        }
         yield {
           content: [
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
@@ -7793,6 +7803,7 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
+              preemptRecomputed: sawPreemptRecompute || undefined,
               incomplete: incompleteReason
                 ? { reason: incompleteReason }
                 : undefined,
