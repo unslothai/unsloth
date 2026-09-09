@@ -151,6 +151,9 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 # ordinals are not UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
+                # And insertion order under that, for archives whose rows share a timestamp
+                # the clock was too coarse to separate; without it the merge key runs out.
+                "documentRowid": _row_value(r, "document_rowid"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
         )

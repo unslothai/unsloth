@@ -18,7 +18,11 @@ import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
-import { toolArgText } from "./tool-arg-text";
+import {
+  isToolCallRunning,
+  toolArgText,
+  webSearchToolName,
+} from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -135,7 +139,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       return "";
     }
   })();
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
   const withImages = isSearchImagesToolResult(result);
   const resultText =
     result == null
@@ -160,6 +164,18 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
+  const toolName = webSearchToolName({
+    isRunning,
+    isFindInPage,
+    isUrlFetch,
+    isImageOnly,
+    foundImages,
+    displayDomain,
+    pattern,
+    query,
+    imageLabel,
+  });
+
   return (
     <ToolFallbackRoot
       open={open}
@@ -167,29 +183,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
-        toolName={
-          isFindInPage
-            ? // Neutral: the action carries no match status, so a finished call
-              // is not evidence the pattern was there.
-              pattern
-              ? `Searched for "${pattern}" in ${displayDomain || "page"}`
-              : `Searched ${displayDomain || "page"}`
-            : isUrlFetch
-              ? displayDomain
-                ? `Read ${displayDomain}`
-                : "Read page"
-              : isImageOnly
-                ? isRunning
-                  ? `Finding images for “${imageLabel}”`
-                  : foundImages
-                    ? `Found images for “${imageLabel}”`
-                    : `No images for “${imageLabel}”`
-                : query
-                  ? imageLabel && foundImages
-                    ? `Searched "${query}" · images for ${imageLabel}`
-                    : `Searched "${query}"`
-                  : "Web Search"
-        }
+        toolName={toolName}
         status={status}
         icon={GlobeIcon}
       />
