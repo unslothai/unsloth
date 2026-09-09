@@ -169,7 +169,10 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
     "label, guard",
     [
         # Granite 3.3 aliases the list before branching on it.
-        ("granite_alias", "{%- if tools and not available_tools -%}{{- tools | tojson }}{%- endif -%}"),
+        (
+            "granite_alias",
+            "{%- if tools and not available_tools -%}{{- tools | tojson }}{%- endif -%}",
+        ),
         # Phi-4-mini carries the list on the system message, not as a kwarg.
         (
             "phi4_message_scoped",
@@ -183,12 +186,14 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
         # No guard at all, straight into the loop.
         ("unguarded_loop", "{%- for tool in tools %}{{- tool | tojson }}{%- endfor %}"),
         # An elif arm.
-        ("elif_arm", "{%- if documents %}{{- documents }}{%- elif tools %}{{- tools }}{%- endif %}"),
+        (
+            "elif_arm",
+            "{%- if documents %}{{- documents }}{%- elif tools %}{{- tools }}{%- endif %}",
+        ),
     ],
 )
 def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label, guard):
     from core.inference.llama_cpp import detect_reasoning_flags
-
     flags = detect_reasoning_flags(guard, f"vendor/{label}")
     assert flags["supports_tools"] is True
 
@@ -208,7 +213,6 @@ def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label
 )
 def test_detect_reasoning_flags_does_not_invent_tool_support(label, template):
     from core.inference.llama_cpp import detect_reasoning_flags
-
     flags = detect_reasoning_flags(template, f"vendor/{label}")
     assert flags["supports_tools"] is False
 
