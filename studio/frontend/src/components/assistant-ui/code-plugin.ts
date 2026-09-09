@@ -209,9 +209,8 @@ const shedsClosingRun = (shorter: string, longer: string): boolean =>
   CLOSING_FENCE.test(longer.slice(shorter.length));
 
 export function createCodePlugin(
-  options: CodePluginOptions & { throttle?: boolean } = {},
+  options: CodePluginOptions = {},
 ): CodeHighlighterPlugin {
-  const throttle = options.throttle !== false;
   const defaultThemes: [ThemeInput, ThemeInput] = options.themes ?? [
     "github-light",
     "github-dark",
@@ -542,7 +541,6 @@ export function createCodePlugin(
       }
       const elapsed = monotonicNow() - fence.lastTokenizedAt;
       const grewLargeFence =
-        throttle &&
         fence.result !== null &&
         fence.code.length >= MIN_INCREMENTAL_CHARS &&
         opts.code.length > fence.code.length;

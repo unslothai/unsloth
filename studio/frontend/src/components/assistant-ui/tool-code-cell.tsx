@@ -19,10 +19,7 @@ const SHIKI_THEME = ["github-light", "github-dark"] as [
   "github-light",
   "github-dark",
 ];
-const codePlugin = createCodePlugin({
-  themes: SHIKI_THEME,
-  throttle: false,
-});
+const codePlugin = createCodePlugin({ themes: SHIKI_THEME });
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
 

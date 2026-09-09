@@ -436,24 +436,6 @@ test("re-opening a thread answers every fence from cache", async () => {
   );
 });
 
-test("an unthrottled plugin tokenizes a grown fence immediately", async () => {
-  const plugin = createCodePlugin({ themes: THEMES, throttle: false });
-  const language = "json" as HighlightOptions["language"];
-  const long = `{"values": [${Array.from({ length: 400 }, (_, i) => `"item-${i}"`).join(", ")}`;
-  await highlightOnce(plugin, { code: long, language, themes: THEMES });
-  const grown = `${long}, "tail"`;
-  const next = (await highlightOnce(plugin, {
-    code: grown,
-    language,
-    themes: THEMES,
-  })) as HighlightResult;
-  assert.deepEqual(
-    next.tokens,
-    (await reference(grown, "json")).tokens,
-    "throttle: false must not leave a plain tail on a growing fence",
-  );
-});
-
 test("a single line past the throttle keeps its text and settles exact", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "json" as HighlightOptions["language"];

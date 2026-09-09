@@ -22,8 +22,6 @@ const toolCodeCell = ts.createSourceFile(
 
 test("tool code cells do not import the unbounded @streamdown/code plugin", () => {
   assert.doesNotMatch(source, /from ["']@streamdown\/code["']/);
-  assert.match(source, /from ["']\.\/code-plugin["']/);
-  assert.match(source, /throttle:\s*false/);
 });
 
 function codePluginCalls(): { atModuleScope: boolean }[] {
