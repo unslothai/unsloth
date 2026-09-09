@@ -28356,6 +28356,9 @@ class LlamaCppBackend:
         stripped = _without_subsequence(run_cmd, self._spill_plan_flags)
         if stripped == run_cmd:
             return run_cmd
+        # The drafter drop and the projector pin are NOT undone: both reduce VRAM, the
+        # direction a crashed launch wants, and the flag-off fallback applies the same
+        # pin and drop under a tight budget anyway.
         for flag, value in (getattr(self, "_spill_plan_restore", None) or {}).items():
             if flag not in stripped:
                 continue
