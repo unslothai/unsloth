@@ -488,10 +488,9 @@ export function recoveredContentToImport<TContent>(
     if (matches.every((index) => index !== undefined)) {
       return recoveredContent;
     }
-    // An empty projection is a prefix of every reply, so it cannot vouch for one that disagrees:
-    // a view holding only an old card would otherwise graft it onto a repaired body. Only a
-    // recovered reply that HAS text disagrees; with both sides text-free there is no evidence
-    // either way, and an unmatched view card is a live call the replay has not reached yet.
+    // Only a recovered reply that HAS text disagrees: an empty projection is a prefix of every
+    // reply, and with both text-free an unmatched view card is as likely a call replay has not
+    // reached as a stale one.
     if (!view.raw && recovered.raw) {
       return recoveredContent;
     }

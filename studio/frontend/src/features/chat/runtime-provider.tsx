@@ -903,8 +903,7 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
-    // The save and the finalisation must read ONE rebuild: deriving the names separately reports
-    // the previous publish, or none at all on a turn that settles on its first commit.
+    // Save and finalisation share ONE rebuild: derived apart, the names lag a publish or are empty.
     const rebuild = () =>
       toolRecovery.withSources(
         restoreCarriedPartsFromRaw(
