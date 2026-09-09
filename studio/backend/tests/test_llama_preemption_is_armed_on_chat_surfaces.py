@@ -364,18 +364,10 @@ class TestARawPassthroughIsCountedAndNeverChosen:
         assert [v.gen_id for v in controller.plan_preemptions(needed = 4000)] == ["chat"]
 
     def test_a_streaming_raw_holder_is_measured_at_its_first_data_line(self):
-        """Registered measured before its prefill, the residency sample swallowed its prompt.
-        Only the non-streaming passthrough, with no data line to mark itself at, is."""
+        """Registered unmeasured; the passthrough body marks it at its first data line."""
         import inspect
 
-        # Whitespace folded: the formatter wraps the signature.
         source = " ".join(inspect.getsource(inference).split())
-        arm = source.index(
-            "def _arm_anthropic( reservation, *, raw: bool = False, measured: bool = False"
-        )
-        stream = source.index("_arm_anthropic(reservation, raw = raw)", arm)
-        non_streaming = source.index("_arm_anthropic(reservation, raw = raw, measured = raw)", arm)
-        assert stream < non_streaming
         body = source.index("async def _anthropic_passthrough_stream(")
         assert (
             "_openai_llama_note_raw_measured(llama_backend = llama_backend, gen_id = message_id)"

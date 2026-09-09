@@ -292,15 +292,16 @@ class TestARawHolderIsMeasuredOnceItProduces:
         assert source.count("_raw_measured = False") == 3
         assert source.count("_openai_llama_note_raw_measured(") >= 4  # the def and three calls
 
-    def test_the_non_streaming_raw_requests_are_measured_at_registration(self):
-        # No data line to mark them at, so the charge sat on top of the residency
-        # `/slots` reported for the whole answer.
+    def test_no_raw_request_is_measured_at_registration(self):
+        # Measured before its prefill, a residency sample from before it swallowed the
+        # charge and a missed pause overran the cache. A non-streaming request has no data
+        # line, so it stays counted on top of the residency for its answer: the safer side.
         source = inspect.getsource(inference)
-        assert source.count("measured = True,  # non-streaming") == 1  # the OpenAI passthrough
-        # The Anthropic passthrough serves both: measured only for the non-streaming call.
-        assert source.count("_arm_anthropic(reservation, raw = raw, measured = raw)") == 1
-        helper = inspect.getsource(inference._openai_llama_count_raw_holder)
-        assert "controller.note_measured(gen_id)" in helper
+        assert "measured = True" not in inspect.getsource(inference._openai_llama_count_raw_holder)
+        assert source.count("_arm_anthropic(reservation, raw = raw)") == 2
+        assert "controller.note_measured(gen_id)" not in inspect.getsource(
+            inference._openai_llama_count_raw_holder
+        )
 
     def test_the_helper_reaches_the_controller(self, monkeypatch):
         controller = _controller()

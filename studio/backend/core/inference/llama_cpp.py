@@ -30613,7 +30613,7 @@ class LlamaCppBackend:
                 and not bypass_permissions
                 and permission_mode not in ("auto", "off")
             )
-        ) or bool(continue_final_message and trailing_assistant_text(conversation))
+        ) or bool(continue_final_message and trailing_assistant_resumable(conversation))
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -33288,21 +33288,38 @@ class LlamaCppBackend:
                         # no new case and the model gets a tool result it can read rather
                         # than a stream that stops mid-turn.
                         resolved_provisional_tool_call_ids.add(decision.tool_call_id)
-                        yield {
-                            "type": "tool_end",
-                            "tool_name": decision.tool_name,
-                            "tool_call_id": decision.tool_call_id,
-                            "result": _unservable_text,
-                            "provenance": decision.provenance,
-                        }
-                        _refused_message = {
-                            "role": "tool",
-                            "name": decision.tool_name,
-                            "content": _unservable_text,
-                        }
-                        if decision.tool_call_id:
-                            _refused_message["tool_call_id"] = decision.tool_call_id
-                        conversation.append(_refused_message)
+                        if _parallel_round:
+                            # Its place in the round is still its own: closed and appended
+                            # here, ahead of the calls before it still running, the tool
+                            # messages settled out of the model's order.
+                            _pending_calls.append(
+                                (
+                                    decision,
+                                    None,
+                                    None,
+                                    _unservable_text,
+                                    None,
+                                    ["<not passed>"],
+                                    [False],
+                                    _compact_after_execution,
+                                )
+                            )
+                        else:
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": decision.tool_name,
+                                "tool_call_id": decision.tool_call_id,
+                                "result": _unservable_text,
+                                "provenance": decision.provenance,
+                            }
+                            _refused_message = {
+                                "role": "tool",
+                                "name": decision.tool_name,
+                                "content": _unservable_text,
+                            }
+                            if decision.tool_call_id:
+                                _refused_message["tool_call_id"] = decision.tool_call_id
+                            conversation.append(_refused_message)
                         # The refusal is itself the `tool` message that makes this call's
                         # arguments start rendering, so declining without this leaves the
                         # next generation over the window anyway: observed as an accurate

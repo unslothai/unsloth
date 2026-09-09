@@ -291,6 +291,90 @@ class TestTheLocalGgufLoopOverlapsToo:
             "RESULT<gamma>",
         ], "a result was attached to a call that did not produce it"
 
+    def test_a_refused_call_keeps_its_place_in_the_round(self, monkeypatch):
+        """A call whose arguments put the prompt over the window is refused without running.
+        In a parallel round the refusal used to close and append at once while the calls before
+        it were still deferred, so the tool messages settled B, A against the model's A, B."""
+        payloads: list[dict] = []
+        filler = "go"
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _gguf_round(
+                    [
+                        ("call_a", "web_search", {"query": "alpha"}),
+                        (
+                            "call_b",
+                            "edit_file",
+                            {
+                                "path": "x.html",
+                                "edits": [{"old_string": "", "new_string": "x" * 6000}],
+                            },
+                        ),
+                    ]
+                ),
+                [_gguf_sse({"content": "Final answer."}), _gguf_done()],
+            ],
+            payloads,
+        )
+
+        def _count(messages, *_args, **_kwargs):
+            # The edit's own arguments are what put the prompt over the window: any prompt
+            # in which its call is answered, compacted or not, is far past it.
+            answered_b = any(
+                m.get("role") == "tool" and m.get("tool_call_id") == "call_b" for m in messages
+            )
+            return 100000 if answered_b else 100
+
+        monkeypatch.setattr(backend, "count_chat_tokens", _count)
+        executed: list[str] = []
+
+        def _execute(name, arguments, **_kwargs):
+            executed.append(name)
+            return f"RESULT<{name}>"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": filler}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "edit_file"}},
+                ],
+                max_tokens = 512,
+                max_tool_iterations = 2,
+            )
+        )
+        assert executed == ["web_search"], executed
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e.get("tool_call_id") for e in ends] == ["call_a", "call_b"], ends
+        assert "Nothing was written" in str(ends[1].get("result") or "")
+        tool_msgs = [m for m in payloads[1]["messages"] if m.get("role") == "tool"]
+        assert [m.get("tool_call_id") for m in tool_msgs] == ["call_a", "call_b"], tool_msgs
+
+    def test_the_switch_reaches_this_loop_as_well(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
+        barrier = threading.Barrier(2, timeout = 4)
+
+        def _execute(name, arguments, **_kwargs):
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                return f"ALONE<{arguments.get('query')}>"
+            return f"TOGETHER<{arguments.get('query')}>"
+
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+            ],
+            _execute,
+        )
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert len(ends) == 2
+        assert all("ALONE" in (end.get("result") or "") for end in ends)
+
     def test_a_round_that_repeats_a_call_stays_sequential(self, monkeypatch):
         """The one-shot gate reads state the settle writes, so its round may not overlap."""
         ran: list = []

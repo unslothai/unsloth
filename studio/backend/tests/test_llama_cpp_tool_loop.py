@@ -3433,6 +3433,35 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
+def test_a_reasoning_only_continuation_skips_gguf_rag_autoinject(monkeypatch):
+    """The gate read `trailing_assistant_text`, which is "" for a chat paused inside its
+    thought, so autoinject appended a tool exchange behind the partial and the resume, no
+    longer trailing, sent neither continuation flag and started a fresh answer."""
+    streams = [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("RAG autoinject must not move a resumable partial")
+
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "use docs"},
+                {"role": "assistant", "content": "", "reasoning_content": "Let me think"},
+            ],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            max_tool_iterations = 1,
+            continue_final_message = True,
+            session_id = "sess",
+            rag_scope = {"thread_id": "t1"},
+        )
+    )
+    assert payloads and payloads[0].get("continue_final_message") is True, payloads
+
+
 def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     """Autoinjected retrieval runs before the controller, so history stays empty.
 

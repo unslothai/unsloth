@@ -2640,16 +2640,12 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     return _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state
 
 
-def _openai_llama_count_raw_holder(
-    *,
-    llama_backend,
-    lease,
-    gen_id: str,
-    measured: bool = False,
-) -> None:
+def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None:
     """Register a surface that occupies the cache but cannot be paused: the raw passthrough and
     Responses stream upstream bytes with no generator, and an unseen holder fires the watermark late.
-    `measured` is for a non-streaming request, which has no first data line to mark it at."""
+    Unmeasured until its stream's first data line; a non-streaming request has none and stays
+    unmeasured for its answer, since measured at registration a residency sample from before its
+    prefill swallowed the charge and a missed pause overran the cache."""
     try:
         if not _openai_llama_preemption_will_apply(
             llama_backend, _openai_llama_admission_budget(llama_backend)
@@ -2664,8 +2660,6 @@ def _openai_llama_count_raw_holder(
             tokens = int(getattr(lease, "tokens", 0) or 0),
             state = ParticipantState.STREAMING_RAW,
         )
-        if measured:
-            controller.note_measured(gen_id)
     except Exception:
         # Bookkeeping must never fail a request that is otherwise fine.
         logger.debug("could not count the raw holder", exc_info = True)
@@ -32270,15 +32264,10 @@ async def anthropic_messages(
         )
     )
 
-    def _arm_anthropic(
-        reservation,
-        *,
-        raw: bool = False,
-        measured: bool = False,
-    ) -> None:
+    def _arm_anthropic(reservation, *, raw: bool = False) -> None:
         """Probe first, then arm, both no-ops when preemption cannot apply. ``raw`` is the client-tool
         passthrough: with no generator it never polls the signal, so it must not become a victim.
-        ``measured`` only for its non-streaming call, which has no data line to mark itself at."""
+        Unmeasured: the stream marks itself at its first data line, the non-streaming call never."""
         try:
             get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                 lambda: _anthropic_refresh_residency(
@@ -32293,7 +32282,6 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 lease = reservation.lease_nowait(),
                 gen_id = message_id,
-                measured = measured,
             )
             return
         _anthropic_preempt_policy.bind(
@@ -32524,7 +32512,7 @@ async def anthropic_messages(
             )
             # With the lease in hand, exactly as the streaming wrapper does. Only that wrapper
             # called this, so a non-streaming /v1/messages request ran with no participant.
-            _arm_anthropic(reservation, raw = raw, measured = raw)
+            _arm_anthropic(reservation, raw = raw)
             # Registered only once admitted: a queued request is not holding
             # llama-server, so it has no business blocking a swap.
             monitored = await _tracked_anthropic_non_streaming(coro)
@@ -36169,7 +36157,6 @@ async def _openai_passthrough_non_streaming(
             llama_backend = llama_backend,
             lease = lease,
             gen_id = _raw_gen_id,
-            measured = True,  # non-streaming: no data line to mark it at
         )
         return await _openai_passthrough_non_streaming_upstream(
             llama_backend,
