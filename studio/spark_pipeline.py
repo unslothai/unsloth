@@ -490,6 +490,24 @@ class _Stage:
         # --full-finetune run on this backend. get_base_model() is the PEFT discriminator.
         self.base, self.inner = unwrap_stack(model)
         self.hidden = self.base.config.hidden_size
+        # Set by the caller. These forwards call decoder layers directly, so transformers'
+        # `gradient_checkpointing_enable()` is consulted in a forward never reached here and the
+        # flag alone would be inert: the run would report checkpointing while keeping every
+        # activation, and a shape chosen to fit only with it would OOM.
+        self.grad_checkpoint = False
+
+    def _run_layer(self, layer, h, pos):
+        import torch
+
+        def call(layer, h, pos):
+            out = layer(h, position_embeddings = pos)
+            return out[0] if isinstance(out, tuple) else out
+
+        if self.grad_checkpoint and self.model.training and torch.is_grad_enabled():
+            # use_reentrant=False: the reentrant path drops the grad_fn the p2p-boundary
+            # activation-gradient handoff depends on.
+            return torch.utils.checkpoint.checkpoint(call, layer, h, pos, use_reentrant = False)
+        return call(layer, h, pos)
 
     def forward_chunk(self, ids, hidden, posid, chunk):
         import torch
@@ -498,8 +516,7 @@ class _Stage:
         h = self.inner.embed_tokens(ids) if chunk == 0 else hidden
         pos = self.inner.rotary_emb(h, posid)
         for i in layers:
-            out = self.inner.layers[i](h, position_embeddings = pos)
-            h = out[0] if isinstance(out, tuple) else out
+            h = self._run_layer(self.inner.layers[i], h, pos)
         if chunk != self.n_chunks - 1:
             return h, None
         import torch.nn.functional as F
@@ -522,8 +539,7 @@ class _Stage:
         for layer in self.inner.layers:
             if isinstance(layer, torch.nn.Identity):
                 continue
-            out = layer(h, position_embeddings = pos)
-            h = out[0] if isinstance(out, tuple) else out
+            h = self._run_layer(layer, h, pos)
         if not self.is_last:
             return h, None
         import torch.nn.functional as F
@@ -1706,6 +1722,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # and would be inert; the stage module wraps each layer itself.
         log("gradient checkpointing enabled per decoder layer (use_reentrant=False)")
     elif args.grad_checkpoint:
+        # The legacy stage also calls decoder layers directly, so it wraps each one itself for
+        # the same reason. The transformers flag below is still set, because that backend's
+        # non-layer submodules do go through the model forward.
         base_model = getattr(model, "base_model", model)
         inner_model = getattr(base_model, "model", base_model)
         if hasattr(inner_model, "gradient_checkpointing_enable"):
@@ -1716,7 +1735,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # activation-gradient handoff depends on.
         if hasattr(inner_model, "gradient_checkpointing_kwargs"):
             inner_model.gradient_checkpointing_kwargs = {"use_reentrant": False}
-        log("gradient checkpointing enabled (use_reentrant=False)")
+        log("gradient checkpointing enabled per decoder layer and on the model (use_reentrant=False)")
 
     model.to(device)  # shard-load already placed the base; this catches new adapters
     if not use_cpu:
@@ -1797,6 +1816,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             chunks = my_chunk_ids,
             n_chunks = world * v,
         )
+        stage.grad_checkpoint = bool(args.grad_checkpoint)
         stage.chunk_layers = dict(zip(my_chunk_ids, my_chunks_layers))
         log(
             f"interleaved: v={v}, {world * v} chunks, this rank owns "
@@ -1808,6 +1828,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     else:
         stage = _Stage(model, cfg, rank, world, device, dtype, args.microbatches)
+        stage.grad_checkpoint = bool(args.grad_checkpoint)
     if not use_torch_pp:
         is_loss_rank = stage.is_last
     opt = torch.optim.AdamW(trainable, lr = args.lr)

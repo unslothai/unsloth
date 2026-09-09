@@ -208,3 +208,70 @@ def test_a_stage_refuses_a_batch_longer_than_the_sliding_window() -> None:
         stage(torch.randint(0, 64, (1, 8)))  # at the window, still exact
         with pytest.raises(RuntimeError, match = "sliding window"):
             stage(torch.randint(0, 64, (1, 9)))
+
+
+def test_the_legacy_backend_actually_checkpoints_when_asked() -> None:
+    """`--pp-backend legacy --grad-checkpoint` set the transformers flag and reported success.
+
+    That flag is consulted in the model forward, and the legacy `_Stage` calls decoder layers
+    directly, so it was inert: the run said checkpointing was on and kept every activation, and
+    a shape chosen to fit only with it would OOM. Measured on a 6-layer model, saved tensors and
+    the elements behind them, before the fix and after:
+
+        grad_checkpoint=False   0 checkpoint() calls   241 saved   964927 elements
+        grad_checkpoint=True    0 checkpoint() calls   241 saved   964927 elements   (before)
+        grad_checkpoint=True    6 checkpoint() calls    25 saved    53311 elements   (after)
+
+    The count of saved tensors is the property that matters; the call count alone would pass for
+    an implementation that checkpointed and saved everything anyway.
+    """
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    import torch.utils.checkpoint as torch_checkpoint
+
+    pipeline = _pipeline_module()
+    config = transformers.LlamaConfig(
+        vocab_size = 64, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 6,
+        num_attention_heads = 4, num_key_value_heads = 4, max_position_embeddings = 64,
+    )
+    torch.manual_seed(0)
+    model = transformers.LlamaForCausalLM(config)
+    model.train()
+    model.config._attn_implementation = "eager"
+
+    def measure(grad_checkpoint: bool):
+        calls, saved = [0], [0]
+        real = torch_checkpoint.checkpoint
+
+        def counting(*a, **k):
+            calls[0] += 1
+            return real(*a, **k)
+
+        stage = pipeline._Stage(model, config, 0, 1, "cpu", torch.float32, 1)
+        stage.grad_checkpoint = grad_checkpoint
+        ids = torch.randint(0, 64, (2, 32))
+        posid = torch.arange(32).unsqueeze(0).expand(2, -1)
+
+        def pack(t):
+            saved[0] += 1
+            return t
+
+        torch_checkpoint.checkpoint = counting
+        try:
+            with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+                stage.forward(ids, None, posid)
+        finally:
+            torch_checkpoint.checkpoint = real
+        return calls[0], saved[0]
+
+    off_calls, off_saved = measure(False)
+    on_calls, on_saved = measure(True)
+
+    assert off_calls == 0, "checkpointing ran when it was not asked for"
+    assert on_calls == config.num_hidden_layers, (
+        f"expected one checkpoint per decoder layer, got {on_calls}"
+    )
+    assert on_saved < off_saved / 2, (
+        f"checkpointing saved {on_saved} tensors against {off_saved} without it, "
+        f"which is not a reduction: the option is inert"
+    )
