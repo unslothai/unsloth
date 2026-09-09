@@ -37,7 +37,7 @@ from core.inference.llama_admission import (
     LlamaAdmissionRecostRefused,
     reset_llama_admission_queues,
 )
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import PREEMPT_GAVE_UP_REASON, LlamaCppBackend
 from fastapi.responses import JSONResponse
 
 from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
@@ -432,6 +432,11 @@ class TestARefusedReCostDoesNotAuthoriseTheRequest:
         # Nothing had been shown, so the turn has to say why it stopped rather than
         # render as an empty message.
         assert _shown(events).strip()
+        # The give-up notice, so the client waits for an explicit Continue rather than
+        # auto-continuing a `length` finish into the same full cache.
+        notices = [e for e in events if e.get("type") == "context_truncated"]
+        assert [n.get("reason") for n in notices] == [PREEMPT_GAVE_UP_REASON]
+        assert notices[0]["fits"] is True and notices[0]["dropped_messages"] == 0
 
     def test_a_refused_final_attempt_keeps_the_partial_it_has(self, monkeypatch):
         """The continuation is the growth being refused, so the first answer stands."""

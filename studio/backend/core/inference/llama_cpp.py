@@ -29971,16 +29971,24 @@ class LlamaCppBackend:
                                     _metadata_finish_reason = _fr
 
                                 # The live n_i for THIS chat, the only thing that makes preemption
-                                # act: without it four chats grew to 16354 of a 16384 cache.
-                                _tokens_this_stream += 1
+                                # act: without it four chats grew to 16354 of a 16384 cache. Only a
+                                # frame carrying output: the opener and the finish frame add no
+                                # cell, and a sweep on the finish frame could pick this finished
+                                # request as the victim.
                                 if (
-                                    on_tokens is not None
-                                    and _tokens_this_stream % _TOKEN_REPORT_EVERY == 0
+                                    delta.get("content")
+                                    or delta.get("reasoning_content")
+                                    or delta.get("tool_calls")
                                 ):
-                                    try:
-                                        on_tokens(_tokens_this_stream)
-                                    except Exception:
-                                        pass
+                                    _tokens_this_stream += 1
+                                    if (
+                                        on_tokens is not None
+                                        and _tokens_this_stream % _TOKEN_REPORT_EVERY == 0
+                                    ):
+                                        try:
+                                            on_tokens(_tokens_this_stream)
+                                        except Exception:
+                                            pass
 
                                 # Reasoning/thinking tokens: llama-server
                                 # sends these as "reasoning_content"; wrap
@@ -30109,6 +30117,12 @@ class LlamaCppBackend:
                 )
                 yield from _finish_after_giving_up()
                 return
+            if isinstance(max_tokens, int) and max_tokens > 0:
+                if max_tokens - checkpoint.charged_tokens <= 0:
+                    # The caller's cap is spent: the partial is the answer, and a resume
+                    # would write past the cap by the floor below, once per pause.
+                    yield from _finish_after_giving_up()
+                    return
             resumed_p = yield from _await_resume(preempt_policy, cancel_event)
             if not resumed_p:
                 # The room never came back. Ending here leaves the client the partial it was
@@ -30138,7 +30152,8 @@ class LlamaCppBackend:
             _paused_prefix = cumulative
             _paused_in_thinking = in_thinking
             # `max_tokens` bounds NEW tokens and the resumed attempt starts a fresh count, so
-            # forwarding it lets a chat preempted n times emit (n+1) times its cap.
+            # forwarding it lets a chat preempted n times emit (n+1) times its cap. A spent cap
+            # ended the turn above, so the floor only guards zero.
             resume_max_tokens = max_tokens
             if isinstance(max_tokens, int) and max_tokens > 0:
                 resume_max_tokens = max_tokens - checkpoint.charged_tokens
@@ -30668,6 +30683,9 @@ class LlamaCppBackend:
             yield {"type": "status", "text": ""}
             if not (shown or "").strip():
                 yield {"type": "content", "text": _admission_room_refused_message()}
+            # The same notice a paused chat that gave up sends: the client then waits for an
+            # explicit Continue instead of resubmitting at once into the same full cache.
+            yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
             _meta = _build_metadata_event(
                 _last_attempt.get("usage"), _last_attempt.get("timings"), "length"
             )

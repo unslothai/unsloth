@@ -2424,7 +2424,16 @@ def _openai_llama_speculative_draft_tokens(llama_backend) -> int:
 def _openai_llama_effective_batch_tokens(llama_backend) -> int:
     """--batch-size llama-server prefills in, which the buffer has to hold: the cache fails when the
     NEXT batch does not fit, so a smaller buffer cannot prevent the shrinking-batch retry upstream
-    #24840 throws on. `requested_n_batch` FIRST, the only name the llama.cpp backend answers to."""
+    #24840 throws on. The extras FIRST, since they are appended after the launcher's own flag and
+    win the child's last-wins parse; then `requested_n_batch`, the only name the backend answers to."""
+    from core.inference.llama_server_args import parse_batch_override
+
+    try:
+        passed = parse_batch_override(getattr(llama_backend, "extra_args", None))
+    except Exception:
+        passed = None
+    if passed:
+        return passed
     for attr in (
         "requested_n_batch",
         "_requested_n_batch",
