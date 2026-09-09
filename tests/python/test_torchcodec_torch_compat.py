@@ -1282,6 +1282,55 @@ def test_the_unsuffixed_request_is_bounded_to_the_major():
         assert f",<{int(major) + 1}" in spec, spec
 
 
+def test_no_major_can_kill_the_install_or_emit_an_unparseable_requirement():
+    """The whole point of the digit check is that audio is optional: an unrecognised major has
+    to keep the old spelling rather than take the install down. `isdigit()` alone does not
+    deliver that, because it is true for a wider set of characters than `int()` accepts.
+
+    Two separate gaps, and they fail in different directions:
+
+      - the superscripts are `isdigit()` but not `int()`-able, so `int(cuda_major)` raises
+        ValueError straight out of a helper resolving an OPTIONAL dependency;
+      - the non-ASCII decimal digits are both `isdigit()` and `int()`-able, so they sail past
+        the guard and emit `nvidia-npp>=١٣,<14`, which is not a PEP 440 requirement at all.
+
+    The second one is reachable rather than theoretical: `_cuda_major_for_npp` matches with a
+    str pattern, and `\\d` in a str pattern is every Unicode decimal digit, not `[0-9]`.
+
+    `_hsa_override_gfx_arch` already rejects `"١١.0.0"` for the same reason, so the fix is the
+    idiom already in this file rather than a new one."""
+    from studio.install_python_stack import _npp_requirement
+
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert 'if not re.fullmatch(r"[0-9]+", cuda_major):' in source, (
+        "the major check must be an explicit ASCII digit match, not str.isdigit()"
+    )
+
+    # int()-hostile: must degrade, never raise.
+    for major in ("²", "³", "⁵"):
+        assert major.isdigit(), "fixture is only meaningful if isdigit() accepts it"
+        assert _npp_requirement(major) == f"nvidia-npp-cu{major}"
+
+    # PEP 440-hostile: int()-able, so only an ASCII check keeps them out of a version bound.
+    for major in ("١٣", "۱۳", "१३"):
+        assert major.isdigit() and int(major) == 13
+        spec = _npp_requirement(major)
+        assert not spec.startswith("nvidia-npp>="), (
+            f"{major!r} reached a PEP 440 version bound as {spec!r}"
+        )
+        assert spec == f"nvidia-npp-cu{major}"
+
+    # Every requirement this can emit for a real major must parse. Both majors reach the
+    # helper as a one or two character slice of an ASCII match, so that is the domain.
+    packaging_req = pytest.importorskip("packaging.requirements").Requirement
+    for major in [str(n) for n in range(0, 100)]:
+        packaging_req(_npp_requirement(major))
+
+    # And nothing may raise, whatever arrives.
+    for major in ("", " ", "12.0", "-1", "+13", "13a", "1" * 64, "\U0001d7d9\U0001d7db"):
+        assert isinstance(_npp_requirement(major), str)
+
+
 def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
     """Matching `/cuNNN$` against an authenticated mirror ending `/simple?token=...` skipped
     NPP on a `+cu128` host, so the codec then failed to import without a CUDA toolkit."""

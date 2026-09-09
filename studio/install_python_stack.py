@@ -544,13 +544,20 @@ def _npp_requirement(cuda_major: str) -> str:
     land the empty-payload case this whole function exists to avoid. The bound is load
     bearing, not decoration.
 
-    Both callers derive the major from a `\\d+` match, so the digit check never fires today.
-    It is here because the old spelling was an f-string that could not raise, and an installer
-    that dies resolving an optional audio dependency would be a worse bug than the one this
-    fixes: an unrecognised major keeps the previous behaviour rather than taking the process
-    down.
+    Neither major arrives as anything but ASCII today: both come off a `[:2]` or `[-2:]` slice
+    of a digit match. The check is here because the old spelling was an f-string that could not
+    raise, and an installer that dies resolving an OPTIONAL audio dependency would be a worse
+    bug than the one this fixes, so an unrecognised major keeps the previous behaviour instead.
+
+    `[0-9]+` rather than `str.isdigit()`, for the reason already recorded in
+    _hsa_override_gfx_arch: `isdigit()` and `\\d` both accept non-ASCII digits, and here that
+    leaks in two directions. The superscripts are `isdigit()` but not `int()`-able, so the
+    guard would pass and `int()` would raise out of the next line. The non-ASCII decimal digits
+    are both, so they would sail through to `nvidia-npp>=١٣,<14`, which pip cannot parse as a
+    requirement at all -- and that half is reachable rather than hypothetical, because
+    _cuda_major_for_npp matches with a str pattern, where `\\d` is every Unicode decimal digit.
     """
-    if not cuda_major.isdigit():
+    if not re.fullmatch(r"[0-9]+", cuda_major):
         return f"nvidia-npp-cu{cuda_major}"
     if int(cuda_major) <= _NPP_SUFFIXED_THROUGH_CUDA_MAJOR:
         return f"nvidia-npp-cu{cuda_major}"
