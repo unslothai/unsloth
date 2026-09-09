@@ -67,7 +67,11 @@ function Get-StudioTempArtifacts {
                 Select-Object -ExpandProperty FullName
         }
     }
-    return $found
+    # Comma-wrapped: PowerShell unrolls an empty array to nothing on return, and the
+    # caller casts this into a HashSet whose two-argument constructor rejects null. On a
+    # clean runner with no matching temp files that killed the watcher before it ran even
+    # the positive control.
+    return ,[string[]]$found
 }
 
 function Get-StudioCompilerEvents {
@@ -77,15 +81,32 @@ function Get-StudioCompilerEvents {
     .PARAMETER Since
     The instant the measured action began. Taken before the action rather than
     filtering afterwards by a fixed window, so a slow installer cannot outrun it.
+    .PARAMETER Until
+    The instant it ended. Both ends are needed: a runner is a shared machine, and an
+    unrelated service starting a compiler after the action would otherwise be scored
+    against it.
+
+    This window is the honest bound rather than the process tree the workflow prose
+    describes. 4688 carries the creator's pid, but a compile can be several processes
+    deep and the intermediate pids have exited by the time this reads the log, so an
+    ancestry walk is not reconstructable after the fact. The window is what can be
+    measured; the positive control is what proves it measures anything.
     #>
-    param([Parameter(Mandatory = $true)][datetime]$Since)
+    param(
+        [Parameter(Mandatory = $true)][datetime]$Since,
+        [Parameter(Mandatory = $true)][datetime]$Until
+    )
 
     $events = @()
     try {
+        # Bounded at both ends. Open-ended, a compiler started by something else while the
+        # recursive temp scan was still running counted against the action that had
+        # already finished.
         $events = Get-WinEvent -FilterHashtable @{
             LogName   = 'Security'
             Id        = 4688
             StartTime = $Since
+            EndTime   = $Until
         } -ErrorAction Stop
     } catch [System.Exception] {
         # No matching events is an exception from Get-WinEvent, not an empty set,
@@ -135,7 +156,12 @@ function Invoke-WithCompilerWatch {
 
     $failure = $null
     try {
-        & $Action
+        # Piped to Out-Host, not left on the success stream. The installer action tees its
+        # log, and every one of those lines would otherwise be emitted as function output
+        # ahead of the result hashtable, so the caller's $seen became an object array and
+        # $seen.Compilers failed under Set-StrictMode against the string elements rather
+        # than reporting the measurement.
+        & $Action | Out-Host
     } catch {
         # Recorded and re-thrown by the caller if it cares. The detectors still
         # report, because "the installer died AND spawned a compiler" is a more
@@ -143,10 +169,15 @@ function Invoke-WithCompilerWatch {
         $failure = $_
     }
 
+    # Closed before the temp sweep, not after it: the sweep walks every temp root
+    # recursively and can take seconds, and anything the machine starts during that walk
+    # belongs to nobody's measurement.
+    $until = Get-Date
+    $compilers = @(Get-StudioCompilerEvents -Since $since -Until $until)
+
     $after = Get-StudioTempArtifacts
     $newArtifacts = @($after | Where-Object { -not $before.Contains($_) })
     $newLibraries = @($newArtifacts | Where-Object { $_ -match '\.(dll|cmdline|rsp)$' })
-    $compilers = @(Get-StudioCompilerEvents -Since $since)
 
     $stem = Join-Path $EvidenceRoot $Name
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8

@@ -103,15 +103,25 @@ function Write-StudioLine { param([string]`$Message, `$ForegroundColor) Write-Ho
 `$script:StudioProcessImageWarned = `$false
 $($src -join "`n")
 
+# Snapshot first. A runner is a shared machine, and anything else that wrote a
+# matching name into the shared temp directory in the preceding minute would
+# otherwise be counted as this emission's output and fail the run for it.
+`$temp = [System.IO.Path]::GetTempPath()
+`$patterns = @(".dll", ".cs", ".cmdline", ".err", ".out")
+`$before = @(Get-ChildItem -LiteralPath `$temp -File -ErrorAction SilentlyContinue |
+    Where-Object { `$_.Extension -in `$patterns } | Select-Object -ExpandProperty FullName)
+
 # 1. The type must define without a compiler, on this engine as on 5.1.
 `$defined = Initialize-StudioFinalPathNativeType
 Write-Host "EMIT_OK: `$defined"
 Write-Host "TYPE_PRESENT: `$(`$null -ne ("UnslothStudioFinalPathV3" -as [type]))"
 
-# 2. Nothing may be written to the temporary directory by defining it.
-`$temp = [System.IO.Path]::GetTempPath()
-`$fresh = @(Get-ChildItem -LiteralPath `$temp -File -ErrorAction SilentlyContinue |
-    Where-Object { `$_.LastWriteTime -gt (Get-Date).AddMinutes(-1) -and `$_.Extension -in @(".dll", ".cs", ".cmdline", ".err", ".out") })
+# 2. Nothing may be written to the temporary directory by defining it. Set
+#    difference against the snapshot above, not a recency window: what this asserts
+#    is that emission wrote nothing, and the clock cannot tell those apart.
+`$after = @(Get-ChildItem -LiteralPath `$temp -File -ErrorAction SilentlyContinue |
+    Where-Object { `$_.Extension -in `$patterns } | Select-Object -ExpandProperty FullName)
+`$fresh = @(`$after | Where-Object { `$before -notcontains `$_ })
 Write-Host "TEMP_ARTIFACTS: `$(`$fresh.Count)"
 
 # 3. The dynamic assembly must exist only in memory.

@@ -42,6 +42,9 @@ on:
       - 'studio/src-tauri/src/install.rs'
       - 'studio/src-tauri/src/process.rs'
       - 'tests/studio/test_installer_av_shapes.py'
+      # The watcher implements both detectors. A PR touching only it could disable the
+      # detection without ever running the positive control that would catch that.
+      - '.github/scripts/Watch-ForCompiler.ps1'
       - '.github/workflows/windows-no-compiler-ci.yml'
   push:
     branches: [main]
@@ -160,6 +163,43 @@ jobs:
                      $seen.TempLibraries.Count)
           }
           Write-Host "no compiler, no temporary DLL"
+
+      - name: Require the desktop mode to run without a compiler
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+
+          # --tauri is what the launcher actually passes: install.rs initialises its
+          # argument list with it unconditionally. The step above runs the shell mode
+          # because that is the one that honours a pinned UNSLOTH_STUDIO_HOME, and the
+          # desktop mode refuses it; running only that left a compile reached through a
+          # Tauri-only branch invisible to a job whose whole claim is the desktop shape.
+          # So both modes run, and the home is unpinned here rather than the mode changed.
+          $desktop = {
+              Remove-Item Env:\UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+              & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                  -File "$env:GITHUB_WORKSPACE\install.ps1" --tauri --no-torch *>&1 |
+                  Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install-tauri.log"
+              $exit = $LASTEXITCODE
+              $global:LASTEXITCODE = 0
+              # Not gated on exit 0. A desktop-mode install can decline for reasons that
+              # have nothing to do with this measurement, and the question here is only
+              # whether a compiler ran on the way.
+              Write-Host "install.ps1 --tauri exited $exit"
+          }
+          $seen = Invoke-WithCompilerWatch -Name 'installer-tauri' -Action $desktop `
+              -EvidenceRoot $env:UNSLOTH_EVIDENCE
+
+          if ($seen.Compilers) {
+              $seen.Compilers | ForEach-Object { Write-Host "COMPILER: $_" }
+              throw "the desktop-mode installer spawned $($seen.Compilers.Count) compiler process(es)."
+          }
+          if ($seen.TempLibraries) {
+              $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }
+              throw "the desktop-mode installer left $($seen.TempLibraries.Count) DLL(s) in a temporary directory."
+          }
+          Write-Host "desktop mode: no compiler, no temporary DLL"
 
       - name: Upload evidence
         if: always()
