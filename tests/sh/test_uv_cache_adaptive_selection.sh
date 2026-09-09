@@ -29,6 +29,7 @@
 #   * populated but not writable, root or bucket -> studio; uv aborts on either
 #   * a relative cache-dir               -> resolved against UV_WORKING_DIR before scanning
 #   * a bucket too big for one pipe read -> still warm, pipefail or not
+#   * a caller's set -f                  -> the scan still expands its own globs
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
 set -e
@@ -67,8 +68,8 @@ _SH="${BASH:-/bin/bash}"
 
 # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset), $3 = uv's default cache dir,
 # $4 = "true" to isolate, $5 = UV_WORKING_DIR (also runs from $_TMP/cwd, so a relative $3
-# resolved against the wrong base is visible), $6 = "true" to run under pipefail.
-# Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
+# resolved against the wrong base is visible), $6 = "true" to run under pipefail, $7 = "true"
+# to run under set -f. Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
 _run() {
     _stub_bin=$(mktemp -d)
     printf '#!/bin/sh\ncase "$1 $2" in "cache dir") printf "%%s\\n" "%s" ;; esac\n' \
@@ -76,6 +77,7 @@ _run() {
     chmod +x "$_stub_bin/uv"
     "$_SH" -c "
         [ '${6:-false}' = true ] && set -o pipefail
+        [ '${7:-false}' = true ] && set -f
         STUDIO_HOME='$1'
         _ISOLATE_UV_CACHE='${4:-false}'
         if [ -n '$2' ]; then UV_CACHE_DIR='$2'; export UV_CACHE_DIR; else unset UV_CACHE_DIR; fi
@@ -142,6 +144,12 @@ _denied_bucket="$_TMP/uvdenied"
 mkdir -p "$_denied_bucket/archive-v0" "$_denied_bucket/builds-v0/pkg"
 : > "$_denied_bucket/builds-v0/pkg/wheel.whl"
 chmod 000 "$_denied_bucket/archive-v0"
+# uv mutates interpreter-v4 and simple-v21 as well, so the writability verdict cannot be
+# limited to the five buckets the warmth scan looks at.
+_denied_meta="$_TMP/uvmeta2"
+mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
+: > "$_denied_meta/archive-v0/torch/libtorch.so"
+chmod a-w "$_denied_meta/interpreter-v4"
 # uv prints a relative cache-dir from uv.toml verbatim and resolves it against UV_WORKING_DIR,
 # so a same-named decoy beside the installer must not be what gets scanned.
 mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
@@ -187,9 +195,12 @@ else
     assert_eq "a later bucket is probed too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/m" '' "$_denied_bucket")
     assert_eq "a denied bucket -> studio"     "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/n" '' "$_denied_meta")
+    assert_eq "a denied metadata bucket too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
 fi
 chmod 700 "$_denied_bucket/archive-v0"
-chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9"
+chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
+    "$_denied_meta/interpreter-v4"
 # The probe writes into a directory uv is about to fill, so it has to leave nothing behind.
 _run "$_TMP/g" '' "$_populated" >/dev/null
 assert_eq "write probe cleaned up" "" "$(ls -A "$_populated" | grep 'unsloth-write-probe' || true)"
@@ -205,6 +216,11 @@ assert_eq "big bucket without pipefail" "shared" \
     "$(_run "$_TMP/k" '' "$_big" | cut -d' ' -f1)"
 assert_eq "big bucket under pipefail"   "shared" \
     "$(_run "$_TMP/l" '' "$_big" false '' true | cut -d' ' -f1)"
+
+echo "=== the scan still expands its globs under set -f ==="
+# The globs ARE the scan, so a caller's noglob read every cache as empty.
+assert_eq "populated default under set -f" "shared" \
+    "$(_run "$_TMP/o" '' "$_populated" false '' false true | cut -d' ' -f1)"
 
 echo "=== a CALLER's UV_CACHE_DIR still outranks the selection, untouched ==="
 _out=$(_run "$_TMP/c" "$_TMP/mine" "$_populated")

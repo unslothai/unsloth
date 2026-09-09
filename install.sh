@@ -743,17 +743,32 @@ _configure_uv_cache() {
     # `sudo -E` run leaves -- would fail an install that used to work. -w reads the mode
     # rather than the filesystem, so probe with a real create as the early block does; mktemp
     # because a predictable name in another account's directory can be a planted symlink.
+    # Nested entries are deliberately not probed: that is a full walk of a cache holding
+    # hundreds of thousands of files, and a denied leaf already keeps a warm cache warm
+    # (tests/sh/test_install_uv_cache_root.sh).
     _uv_default_populated=false
     _uv_default_writable=true
     _uv_scan_blocked=false
     if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
-        _uv_probe=$(mktemp "$_uv_default_cache/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
-            || _uv_default_writable=false
-        [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
+        # The globs below are the whole scan, so a caller's set -f would read every cache as
+        # empty. Saved and restored the way _dir_has_entries does.
+        _uv_glob=on
+        case $- in *f*) _uv_glob=off ;; esac
+        set +f
+
+        # The root and EVERY existing bucket, not just the artifact families: uv mutates
+        # interpreter-v4 and simple-v21 too, and a curated list would miss the next one it
+        # adds. An unenterable bucket fails this the same way an unwritable one does.
+        for _uv_probe_dir in "$_uv_default_cache" "$_uv_default_cache"/*; do
+            [ -d "$_uv_probe_dir" ] || continue
+            _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
+                || _uv_default_writable=false
+            [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
+        done
+        unset _uv_probe _uv_probe_dir
+
         # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
         # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
-        # One pass, so the bucket list stays single-sourced; no early exit, because a
-        # bucket AFTER the one holding the artifact is one uv may still have to write.
         for _uv_bucket in \
             "$_uv_default_cache"/archive-* \
             "$_uv_default_cache"/builds-* \
@@ -761,30 +776,27 @@ _configure_uv_cache() {
             "$_uv_default_cache"/wheels-* \
             "$_uv_default_cache"/sdists-*; do
             [ -d "$_uv_bucket" ] || continue
-            # Unreadable is not empty; remembered so the message below says why. It is also
-            # not writable -- uv cannot rename an extracted distribution into a directory it
-            # cannot enter -- so a warm bucket elsewhere must not carry this cache.
+            # Unreadable is not empty; remembered so the message below says why.
             if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
                 _uv_scan_blocked=true
-                _uv_default_writable=false
                 continue
             fi
-            _uv_probe=$(mktemp "$_uv_bucket/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
-                || _uv_default_writable=false
-            [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
-            if [ "$_uv_default_populated" != true ]; then
-                # `|| true`, not `|| _uv_artifact=""`: head closes the pipe after the first
-                # line, so find dies on SIGPIPE on any large bucket, and under pipefail that
-                # becomes the pipeline's status. It says nothing about the path already
-                # captured, and clearing it read a warm cache as empty.
-                _uv_artifact=$(find -L "$_uv_bucket" -type f \
-                    ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
-                    ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-                    -print 2>/dev/null | head -n 1) || true
-                [ -z "$_uv_artifact" ] || _uv_default_populated=true
+            # `|| true`, not `|| _uv_artifact=""`: head closes the pipe after the first line,
+            # so find dies on SIGPIPE on any large bucket, and under pipefail that becomes the
+            # pipeline's status. It says nothing about the path already captured, and clearing
+            # it read a warm cache as empty.
+            _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                ! -name '.unsloth-write-probe.*' \
+                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+                -print 2>/dev/null | head -n 1) || true
+            if [ -n "$_uv_artifact" ]; then
+                _uv_default_populated=true
+                break
             fi
         done
-        unset _uv_probe
+
+        if [ "$_uv_glob" = off ]; then set -f; fi
     fi
 
     if [ "$_uv_default_populated" = true ] && [ "$_uv_default_writable" = true ]; then
