@@ -572,3 +572,29 @@ def test_cache_path_rows_join_the_concurrent_hub_warmup():
         access._hub_probe_targets([path], "model", {access._grant_key("org/m", "model")}) == set()
     )
     assert access._hub_probe_targets([path], "dataset", set()) == set()
+
+
+def test_a_grant_racing_retirement_does_not_recreate_the_workspace(monkeypatch, tmp_path):
+    from core.training import account_jobs
+    from utils.paths import storage_roots
+
+    root = run_as(ALICE, storage_roots.workspace_root)
+    root.mkdir(parents = True)
+    real = account_jobs.account_is_retired
+    fired = []
+
+    def retire_after_check():
+        # The retirement lands between the tombstone check and the directory creation.
+        if not fired:
+            fired.append(True)
+            account_jobs._retired.add(ALICE.account_id)
+            root.rename(root.with_name(root.name + "-deleted-1"))
+            return False
+        return real()
+
+    monkeypatch.setattr(account_jobs, "account_is_retired", retire_after_check)
+    try:
+        run_as(ALICE, access.record_model_grant, "org/secret")
+    finally:
+        account_jobs._retired.discard(ALICE.account_id)
+    assert not root.exists()

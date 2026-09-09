@@ -822,3 +822,66 @@ def test_auth_schema_setup_runs_once_per_database_file(auth_env, tmp_path):
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert "auth_user" in tables and len(storage._auth_schema_ready) == 2
+
+
+def test_a_database_failure_after_retirement_puts_the_roots_back(matrix, monkeypatch):
+    """The auth transaction rolls back on a sqlite error, so the renamed roots must come back too."""
+    import sqlite3
+
+    from routes import accounts as accounts_module
+    from utils.account_context import run_as
+    from utils.paths import storage_roots
+
+    client, _, _ = matrix
+    account = storage.get_account("alice")
+    roots = [
+        run_as(account, root)
+        for root in (
+            storage_roots.workspace_root,
+            storage_roots.project_workspaces_root,
+            storage_roots.tmp_root,
+        )
+    ]
+    for root in roots:
+        root.mkdir(parents = True, exist_ok = True)
+        (root / "private.txt").write_text("keep", encoding = "utf-8")
+    real_get_connection = storage.get_connection
+
+    class Proxy:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args, **kwargs):
+            if "DELETE FROM auth_user" in sql:
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def __enter__(self):
+            return self._conn.__enter__()
+
+        def __exit__(self, *args):
+            return self._conn.__exit__(*args)
+
+    armed = {"on": True}
+    monkeypatch.setattr(
+        storage,
+        "get_connection",
+        lambda: Proxy(real_get_connection()) if armed["on"] else real_get_connection(),
+    )
+    with pytest.raises(sqlite3.OperationalError):
+        storage.delete_account(account.account_id, accounts_module.retire_account_roots)
+    armed["on"] = False
+    assert storage.get_user_record("alice") is not None
+    for root in roots:
+        assert (root / "private.txt").read_text(encoding = "utf-8") == "keep"
+        assert not [p for p in root.parent.iterdir() if "-deleted-" in p.name]
+    response = client.patch(
+        f"/api/accounts/{account.account_id}", headers = headers(), json = {"is_active": True}
+    )
+    assert response.status_code == 200
+    assert (
+        client.delete(f"/api/accounts/{account.account_id}", headers = headers()).status_code == 204
+    )

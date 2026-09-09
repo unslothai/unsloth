@@ -39,8 +39,9 @@ def _account_errors():
         raise HTTPException(status_code = 409, detail = "Username is unavailable")
 
 
-def retire_account_roots(account: AccountContext) -> None:
-    """Signal this account's work, then rename each private root aside; roots may nest, so resolve all first and move children first."""
+def retire_account_roots(account: AccountContext):
+    """Signal this account's work, then rename each private root aside (children first, since roots
+    may nest). Returns a callable that renames them back for a caller whose later step fails."""
     if account.is_owner or account.account_id == "owner":
         raise ValueError("The installation owner cannot be retired")
     active_generations.cancel_all(account.account_id)
@@ -75,6 +76,16 @@ def retire_account_roots(account: AccountContext) -> None:
     }
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     moved: list[tuple[Path, Path]] = []
+
+    def restore() -> None:
+        with storage_roots.root_retirement_lock:
+            for root, destination in reversed(moved):
+                try:
+                    Path.rename(destination, root)
+                except OSError:
+                    pass
+            moved.clear()
+
     # Same lock as ensure_account_dir: the rename never lands between its check and mkdir.
     with storage_roots.root_retirement_lock:
         try:
@@ -91,12 +102,9 @@ def retire_account_roots(account: AccountContext) -> None:
                 moved.append((root, destination))
         except OSError:
             # All or nothing: reactivation restores no roots, so a half-retired account comes back with an empty workspace.
-            for root, destination in reversed(moved):
-                try:
-                    Path.rename(destination, root)
-                except OSError:
-                    pass
+            restore()
             raise
+    return restore
 
 
 @router.get("", response_model = AccountListResponse)

@@ -1536,57 +1536,64 @@ async def _create_openai_video(
         raise _openai_video_error(400, str(exc), param = "input_reference")
 
     backend = get_video_backend()
-    expected_state = None
-    if pin_requested_model:
-        status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
-        if not await asyncio.to_thread(
-            resident_answers_media_request, status, body.model, owner = VIDEO
-        ):
-            raise _openai_video_error(
-                409,
-                VIDEO_MODEL_CHANGED_MSG,
-                code = "model_changed",
-                param = "model",
-            )
-    else:
-        status = await asyncio.to_thread(backend.status)
-    if not status.get("loaded"):
-        raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
-    if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
-    defaults = status.get("defaults") or {}
-    num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
-    try:
-        generate_kwargs = dict(
-            prompt = body.prompt,
-            width = width,
-            height = height,
-            duration_s = seconds,
-            input_reference = reference,
-            video_id = video_id,
-        )
-        if expected_state is not None:
-            generate_kwargs["expected_state"] = expected_state
-        resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
-    except VideoShapeError as exc:
-        raise _openai_video_error(
-            400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
-        )
-    except ValueError as exc:
-        raise _openai_video_error(
-            400, str(exc), param = "input_reference" if reference is not None else None
-        )
-    except RuntimeError as exc:
-        msg = str(exc)
-        if msg == VIDEO_NOT_LOADED_MSG:
+    # A managed caller is authorized against the exact resident state and that state is pinned to
+    # the reservation; on a mismatch re-authorize once and retry, as /video/generate does.
+    pin_state = pin_requested_model or account_access.managed_account()
+    for attempt in range(2):
+        expected_state = None
+        if pin_state:
+            status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
+            if pin_requested_model and not await asyncio.to_thread(
+                resident_answers_media_request, status, body.model, owner = VIDEO
+            ):
+                raise _openai_video_error(
+                    409,
+                    VIDEO_MODEL_CHANGED_MSG,
+                    code = "model_changed",
+                    param = "model",
+                )
+        else:
+            status = await asyncio.to_thread(backend.status)
+        if not status.get("loaded"):
             raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
-        if msg == VIDEO_GENERATION_BUSY_MSG:
-            raise _openai_video_error(409, msg)
-        if msg == VIDEO_MODEL_CHANGED_MSG:
-            raise _openai_video_error(409, msg, code = "model_changed", param = "model")
-        logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Video generation failed.")
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
+        defaults = status.get("defaults") or {}
+        num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
+        try:
+            generate_kwargs = dict(
+                prompt = body.prompt,
+                width = width,
+                height = height,
+                duration_s = seconds,
+                input_reference = reference,
+                video_id = video_id,
+            )
+            if expected_state is not None:
+                generate_kwargs["expected_state"] = expected_state
+            resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
+        except VideoShapeError as exc:
+            raise _openai_video_error(
+                400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
+            )
+        except ValueError as exc:
+            raise _openai_video_error(
+                400, str(exc), param = "input_reference" if reference is not None else None
+            )
+        except RuntimeError as exc:
+            msg = str(exc)
+            if msg == VIDEO_NOT_LOADED_MSG:
+                raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+            if msg == VIDEO_GENERATION_BUSY_MSG:
+                raise _openai_video_error(409, msg)
+            if msg == VIDEO_MODEL_CHANGED_MSG:
+                if attempt == 0:
+                    continue
+                raise _openai_video_error(409, msg, code = "model_changed", param = "model")
+            logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+        break
 
     _note_generation_account()
     reset_media_generation_progress("video")

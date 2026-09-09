@@ -25,6 +25,7 @@ from huggingface_hub import HfApi
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+from utils.paths import storage_roots
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
 from utils.account_context import (
@@ -542,13 +543,21 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
     """Record an authorized download in the initiating account's studio.db, transactionally so simultaneous completions both survive."""
     if not managed_account() or not repo_id:
         return
-    # A late completion must not recreate a retired account's workspace.
     from core.training.account_jobs import account_is_retired
 
     if account_is_retired():
         return
-    path = studio_db_path()
-    path.parent.mkdir(parents = True, exist_ok = True)
+    # Held across the write so a late completion cannot recreate a retired account's workspace.
+    with storage_roots.root_retirement_lock:
+        path = studio_db_path()
+        try:
+            storage_roots.ensure_account_dir(path.parent)
+        except storage_roots.RetiredAccountError:
+            return
+        _write_grant(path, _grant_key(repo_id, repo_type))
+
+
+def _write_grant(path: Path, key: str) -> None:
     with closing(sqlite3.connect(str(path), timeout = 5.0)) as conn, conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS app_settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
@@ -564,7 +573,7 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
         grants = (
             {key for key in prior if isinstance(key, str)} if isinstance(prior, list) else set()
         )
-        grants.add(_grant_key(repo_id, repo_type))
+        grants.add(key)
         conn.execute(
             "INSERT INTO app_settings (key, value_json, updated_at) VALUES ('model_grants', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",

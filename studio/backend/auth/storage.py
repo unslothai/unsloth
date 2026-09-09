@@ -3,6 +3,7 @@
 
 """SQLite storage for auth data (user credentials + JWT secret)."""
 
+import contextlib
 from contextlib import contextmanager
 
 import hashlib
@@ -840,16 +841,21 @@ def delete_account(account_id: str, retire) -> None:
 
     set_account_active(account_id, False)
     conn = get_connection()
+    restore_roots = None
     try:
         with conn:
             conn.execute("BEGIN IMMEDIATE")
             row = _managed_account(conn, account_id)
             _revoke_account_credentials(conn, row)
-            retire(AccountContext(row["account_id"], row["username"], row["role"]))
+            restore_roots = retire(AccountContext(row["account_id"], row["username"], row["role"]))
             conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
-    except (OSError, RuntimeError):
+    except Exception:
+        # The identity survives the rollback, so the roots must come back with it.
+        if restore_roots is not None:
+            restore_roots()
         # An owner request can reactivate between the revocation and this write lock; login must stay disabled anyway.
-        set_account_active(account_id, False)
+        with contextlib.suppress(sqlite3.Error):
+            set_account_active(account_id, False)
         raise
     finally:
         conn.close()
