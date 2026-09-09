@@ -215,6 +215,60 @@ def test_graceful_shutdown_drops_the_record_last(monkeypatch):
     assert order == ["release_socket", "remove_record"]
 
 
+def test_graceful_shutdown_retries_project_quarantine_before_generic_sweep(monkeypatch):
+    from core.agent_workspace import supervisor
+    from utils import process_lifetime
+
+    order = []
+    retry_count = {"value": 0}
+
+    def retry_quarantine():
+        retry_count["value"] += 1
+        order.append(f"project_quarantine_{retry_count['value']}")
+        return 0
+
+    monkeypatch.setattr(supervisor, "retry_quarantined_project_processes", retry_quarantine)
+    monkeypatch.setattr(
+        process_lifetime,
+        "terminate_all",
+        lambda: order.append("generic_sweep") or [],
+    )
+    monkeypatch.setattr(process_lifetime, "clear_breadcrumb", lambda: None)
+    monkeypatch.setattr(run, "_remove_pid_file", lambda: None)
+
+    run._graceful_shutdown()
+
+    assert order == ["project_quarantine_1", "generic_sweep", "project_quarantine_2"]
+
+
+def test_graceful_shutdown_retries_quarantine_even_when_generic_sweep_fails(monkeypatch):
+    from core.agent_workspace import supervisor
+    from utils import process_lifetime
+
+    order = []
+
+    def retry_quarantine():
+        order.append("project_quarantine")
+        return 1
+
+    def failed_sweep():
+        order.append("generic_sweep")
+        raise RuntimeError("sweep failed")
+
+    monkeypatch.setattr(supervisor, "retry_quarantined_project_processes", retry_quarantine)
+    monkeypatch.setattr(process_lifetime, "terminate_all", failed_sweep)
+    monkeypatch.setattr(
+        process_lifetime,
+        "clear_breadcrumb",
+        lambda: pytest.fail("cleared recovery state after a failed sweep"),
+    )
+    monkeypatch.setattr(run, "_remove_pid_file", lambda: None)
+
+    run._graceful_shutdown()
+
+    assert order == ["project_quarantine", "generic_sweep", "project_quarantine"]
+
+
 def test_own_studio_on_port_is_found_without_psutil(tmp_path, monkeypatch):
     # psutil is optional; a listener scan finds nothing without it, so detection
     # must come from our own records or we silently start a duplicate.

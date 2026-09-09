@@ -19,6 +19,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
+from core.agent_workspace import mutation as agent_mutation
 from core.inference import tools
 from core.inference.tools import (
     ALL_TOOLS,
@@ -587,26 +588,15 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         assert not retry.startswith("Error:")
         assert (workdir / "report.py").read_text() == body
 
-    def test_a_failure_at_close_leaves_nothing_either(self, workdir, monkeypatch):
-        # A payload smaller than the io buffer reaches the disk only at close,
-        # where a full disk reports failures for data written earlier. Injected
-        # rather than rlimit'd so it lands there whatever the buffer size.
-        real = os.fdopen
-
-        def failing(fd, *args, **kwargs):
-            handle = real(fd, *args, **kwargs)
-            closed = handle.close
-
-            def close():
-                # CPython releases the descriptor even when the closing flush
-                # fails, so the real failure closes before it raises.
-                closed()
-                raise OSError(28, "No space left on device")
-
-            handle.close = close
-            return handle
-
-        monkeypatch.setattr(os, "fdopen", failing)
+    def test_a_failure_at_flush_leaves_nothing_either(self, workdir, monkeypatch):
+        # The descriptor-relative writer flushes the complete temporary inode
+        # before publication. A delayed storage failure must remove that temp
+        # and leave no target behind.
+        monkeypatch.setattr(
+            agent_mutation.os,
+            "fsync",
+            lambda _descriptor: (_ for _ in ()).throw(OSError(28, "No space left on device")),
+        )
         # As above: the top-level spelling is refused before the write is attempted, so
         # the simulated ENOSPC and its cleanup were never exercised.
         result = execute_tool(
@@ -614,7 +604,6 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
             {"path": "notes.py", "edits": [{"old_string": "", "new_string": "print('hi')\n"}]},
             session_id = "t",
         )
-        monkeypatch.undo()
         assert result.startswith("Error:")
         assert (
             "No space left on device" in result

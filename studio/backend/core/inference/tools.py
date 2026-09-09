@@ -32,6 +32,7 @@ import tempfile
 import contextlib
 import threading
 from contextvars import ContextVar
+from pathlib import Path
 
 # What a truncated result costs besides its body, charged where the cut is decided rather
 # than held back from the room in advance. See its definition for why that matters.
@@ -7391,6 +7392,13 @@ def _session_in_flight(session_id: "str | None"):
                     _sessions_free.notify_all()
 
 
+@contextlib.contextmanager
+def project_workspace_in_flight(project_id: str):
+    """Keep project operations visible to project deletion cleanup."""
+    with _session_in_flight(project_session_id(project_id)):
+        yield
+
+
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
 # Reserved on Windows even as a directory name, and an API caller picks this id.
@@ -7813,6 +7821,29 @@ def _get_project_workdir(session_id: str) -> str | None:
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
     return sandbox_real
+
+
+def _project_execution_id(
+    session_id: "str | None", workdir: str, *, disable_sandbox: bool
+) -> "str | None":
+    """Return the persisted project id for a sandboxed project tool call.
+
+    Root identity, leasing, the mutation slot, and process containment are
+    resolved by the supervisor. This helper only distinguishes a real project
+    session from an ordinary chat whose caller-chosen id shares the prefix.
+    """
+    if disable_sandbox or not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    if _thread_exists(session_id):
+        return None
+    project_workdir = _get_project_workdir(session_id)
+    if project_workdir is None:
+        # A missing row or failed lookup cannot downgrade a project request to
+        # the ordinary conversation command path, which lacks containment.
+        raise RuntimeError("the project workspace is unavailable; the command did not run")
+    if os.path.realpath(project_workdir) != os.path.realpath(workdir):
+        raise RuntimeError("the project workspace changed before execution")
+    return session_id[len(_PROJECT_SESSION_PREFIX) :]
 
 
 # Dropped in every session directory we create. The root can be an existing
@@ -9576,21 +9607,204 @@ def _edit_file_apply_all(
     return after, len(spans), before[first_start:first_end], first_new, first_start, ""
 
 
+def _edit_file_lexical_target(raw_path: str, workdir: str) -> str:
+    """Map model path habits without resolving any project path component."""
+    raw = (raw_path or "").strip()
+    if not raw:
+        raise ValueError("'path' is required")
+    candidate = raw
+    already_inside = False
+    if os.path.isabs(raw):
+        try:
+            root = os.path.abspath(workdir)
+            absolute = os.path.abspath(raw)
+            already_inside = os.path.commonpath((root, absolute)) == root
+        except (OSError, ValueError):
+            already_inside = False
+    if not already_inside:
+        normalized = candidate.replace("\\", "/") if sys.platform == "win32" else candidate
+        for prefix in _MISSING_PATH_PREFIXES:
+            if normalized == prefix or normalized.startswith(prefix + "/"):
+                candidate = normalized[len(prefix) :].lstrip("/")
+                break
+    if not candidate:
+        raise ValueError("'path' is required")
+    return candidate
+
+
+def _edit_file_workspace(session_id: "str | None", workdir: str):
+    """Bind a sandboxed edit to the exact opened conversation or project root."""
+    project_id = _project_execution_id(session_id, workdir, disable_sandbox = False)
+    if project_id is not None:
+        from core.agent_workspace.common import project_workspace
+
+        workspace = project_workspace(project_id)
+        if os.path.realpath(workspace.root) != os.path.realpath(workdir):
+            raise RuntimeError("the project workspace changed before the edit")
+        return workspace
+
+    from core.agent_workspace.common import AgentWorkspaceError, ProjectWorkspace
+
+    root = Path(workdir)
+    try:
+        if root.is_symlink():
+            raise AgentWorkspaceError("Symbolic-link workspace roots are not supported.")
+        before = root.stat(follow_symlinks = False)
+        resolved = root.resolve(strict = True)
+        after = resolved.stat(follow_symlinks = False)
+    except AgentWorkspaceError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise AgentWorkspaceError("The conversation workspace is unavailable.") from exc
+    if not resolved.is_dir() or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise AgentWorkspaceError("The conversation workspace identity changed.")
+    return ProjectWorkspace(
+        project_id = session_id or "_default",
+        root = resolved,
+        kind = "conversation",
+        device_id = int(after.st_dev),
+        file_id = int(after.st_ino),
+    )
+
+
+def _edit_file_confined(
+    *,
+    raw_path: str,
+    edits: list[tuple[str, str, bool]],
+    session_id: "str | None",
+    cancel_event = None,
+) -> str:
+    """Apply an edit through the native no-follow workspace boundary."""
+    from core.agent_workspace.common import AgentWorkspaceError
+    from core.agent_workspace.mutation import ProjectFileMutation
+
+    workdir = _get_workdir(session_id)
+    try:
+        workspace = _edit_file_workspace(session_id, workdir)
+        target = _edit_file_lexical_target(raw_path, workdir)
+        boundary = ProjectFileMutation.open(
+            workspace,
+            target,
+            max_bytes = _EDIT_FILE_MAX_BYTES,
+            cancel_event = cancel_event,
+        )
+    except (AgentWorkspaceError, OSError, RuntimeError, ValueError) as exc:
+        return f"Error: cannot safely open the workspace for this edit: {exc}"
+
+    name = os.path.basename(str(target).replace("\\", os.sep)) or "file"
+    try:
+        if not edits[0][0]:
+            new = edits[0][1]
+            try:
+                payload = new.encode("utf-8")
+                created = boundary.create(payload, 0o666)
+            except UnicodeEncodeError as exc:
+                return f"Error: cannot encode '{name}' as UTF-8: {exc}"
+            except OverflowError:
+                return (
+                    f"Error: the new content for '{name}' is larger than "
+                    f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB."
+                )
+            except (AgentWorkspaceError, OSError, ValueError) as exc:
+                return f"Error: cannot write '{name}': {exc}"
+            if created is None:
+                return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
+            try:
+                data, mode, identity = boundary.read(_EDIT_FILE_MAX_BYTES)
+            except OverflowError:
+                return (
+                    f"Error: '{name}' is larger than "
+                    f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB; edit it with python instead."
+                )
+            except (AgentWorkspaceError, OSError, ValueError):
+                return f"Error: '{name}' already exists and is not a regular file."
+            if data:
+                return (
+                    f"Error: '{name}' already exists. An empty 'old_string' only "
+                    "creates a new file; to change this one, pass the exact text to replace."
+                )
+            try:
+                changed = boundary.replace(payload, expect = b"", mode = mode, identity = identity)
+            except OverflowError:
+                return (
+                    f"Error: the new content for '{name}' is larger than "
+                    f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB."
+                )
+            except (AgentWorkspaceError, OSError, ValueError) as exc:
+                return f"Error: cannot write '{name}': {exc}"
+            if changed is not None:
+                return (
+                    f"Error: '{name}' changed while this edit was being prepared; "
+                    "nothing was written. Read it again and redo the edit."
+                )
+            return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
+
+        try:
+            data, mode, identity = boundary.read(_EDIT_FILE_MAX_BYTES)
+        except FileNotFoundError:
+            return f"Error: '{name}' does not exist. Pass an empty 'old_string' to create it."
+        except OverflowError:
+            return (
+                f"Error: '{name}' is larger than "
+                f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB; edit it with python instead."
+            )
+        except (AgentWorkspaceError, OSError, ValueError) as exc:
+            return f"Error: cannot read '{name}': {exc}"
+        before, newline, bom, error = _edit_file_decode(data, name)
+        if error:
+            return error
+        after, total, first_old, first_new, change_at, error = _edit_file_apply_all(
+            before, edits, name
+        )
+        if error:
+            return error
+        try:
+            payload = (bom + after.replace("\n", newline)).encode("utf-8")
+            changed = boundary.replace(
+                payload,
+                expect = data,
+                mode = mode,
+                identity = identity,
+            )
+        except UnicodeEncodeError as exc:
+            return f"Error: cannot encode '{name}' as UTF-8: {exc}"
+        except OverflowError:
+            return (
+                f"Error: the new content for '{name}' is larger than "
+                f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB."
+            )
+        except (AgentWorkspaceError, OSError, ValueError) as exc:
+            return f"Error: cannot write '{name}': {exc}"
+        if changed is not None:
+            return (
+                f"Error: '{name}' changed while this edit was being prepared; "
+                "nothing was written. Read it again and redo the edit."
+            )
+        return _edit_file_receipt(
+            before,
+            first_old,
+            first_new,
+            name,
+            total,
+            change_at = change_at,
+        )
+    finally:
+        boundary.close()
+
+
 def _edit_file(
     arguments: dict,
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
+    cancel_event = None,
 ) -> str:
     """Replace exact strings in a file. See the notes above."""
     edits, error = _edit_file_parse_edits(arguments.get("edits"))
     if error:
         return error
-    target, error = _edit_file_resolve(
-        str(arguments.get("path") or ""), session_id, disable_sandbox
-    )
-    if error:
-        return error
-    name = os.path.basename(target)
+    raw_path = str(arguments.get("path") or "")
+    if not raw_path.strip():
+        return "Error: 'path' is required."
     # Decided before the no-op check below, not after: both strings empty is the
     # documented way to create __init__.py or .gitkeep, and read as "identical,
     # nothing to change" it was refused, leaving no way to write a zero-byte
@@ -9602,13 +9816,32 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        return _edit_file_create(
-            target,
-            edits[0][1],
-            name,
-            "\n",
-            workdir = None if disable_sandbox else _get_workdir(session_id),
+    else:
+        for index, (old, new, _) in enumerate(edits, 1):
+            if not old:
+                return (
+                    f"Error: edit {index} has an empty 'old_string'. Only a single edit "
+                    "may be empty, and only to create the file."
+                )
+            if old == new:
+                return (
+                    f"Error: edit {index} has identical 'old_string' and 'new_string'; "
+                    "nothing to change."
+                )
+    if not disable_sandbox:
+        return _edit_file_confined(
+            raw_path = raw_path,
+            edits = edits,
+            session_id = session_id,
+            cancel_event = cancel_event,
         )
+
+    target, error = _edit_file_resolve(raw_path, session_id, disable_sandbox)
+    if error:
+        return error
+    name = os.path.basename(target)
+    if not edits[0][0]:
+        return _edit_file_create(target, edits[0][1], name, "\n")
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
@@ -10603,6 +10836,7 @@ def execute_tool(
                     arguments,
                     session_id = session_id,
                     disable_sandbox = disable_sandbox,
+                    cancel_event = cancel_event,
                 ),
                 name,
             )
@@ -16027,6 +16261,54 @@ def _created_file_sentinels(
     return out
 
 
+def _render_supervised_project_result(
+    supervised,
+    *,
+    timeout,
+    workdir: str,
+    spill_dir: "str | None",
+    spill_scope: "str | None",
+    before: dict,
+    session_id: "str | None",
+    call_token: "dict | None",
+) -> str:
+    """Render a supervised result through the existing tool and artifact contract."""
+    truncation_notice = str(getattr(supervised, "truncation_notice", "") or "")
+    if supervised.output_truncated and not truncation_notice:
+        retained_bytes = len((supervised.output or "").encode("utf-8"))
+        truncation_notice = (
+            f"\n[Process produced {supervised.output_bytes} bytes. Only the bounded "
+            f"{retained_bytes}-byte prefix was retained.]\n"
+        )
+    if supervised.status == "timed_out":
+        rendered = _truncate(f"Execution timed out after {timeout} seconds.{truncation_notice}")
+        return rendered + (
+            _created_file_sentinels(workdir, before, None, call_token) if session_id else ""
+        )
+    if supervised.status == "cancelled":
+        return f"Execution cancelled.{truncation_notice}" + (
+            _created_file_sentinels(workdir, before, None, call_token) if session_id else ""
+        )
+
+    result = supervised.output or ""
+    if truncation_notice:
+        if result.endswith(truncation_notice):
+            result = result[: -len(truncation_notice)]
+        result = f"{truncation_notice.strip()}\n{result}"
+    if supervised.exit_code not in (None, 0):
+        result = f"Exit code {supervised.exit_code}:\n{result}"
+    hint = _missing_path_hint(result, workdir)
+    result = _defuse_sentinels(result)
+    result = (
+        _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+        if result.strip()
+        else "(no output)" + hint
+    )
+    if session_id:
+        result += _created_file_sentinels(workdir, before, None, call_token)
+    return result
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -16070,17 +16352,50 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
-    workdir = _get_workdir(session_id)
-    # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
-    # one session by design. Retaining a result in either, under a path the next chat can
-    # list, would leave behind output that existed only in this call's own response. See
-    # `_spill_scope`, which returns None for exactly those cases.
-    spill_scope = _spill_scope(session_id, thread_id)
-    spill_dir = workdir if session_id else None
-    call_token = _call_started(workdir)
-    # Snapshot mtimes to detect new and overwritten files.
-    _before = _snapshot_workdir_files(workdir)
+    workdir = None
+    spill_scope = None
+    spill_dir = None
+    call_token = None
+    _before = {}
     try:
+        workdir = _get_workdir(session_id)
+        project_id = _project_execution_id(
+            session_id,
+            workdir,
+            disable_sandbox = disable_sandbox,
+        )
+        # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
+        # one session by design. Retaining a result in either, under a path the next chat can
+        # list, would leave behind output that existed only in this call's own response. See
+        # `_spill_scope`, which returns None for exactly those cases.
+        spill_scope = _spill_scope(session_id, thread_id)
+        spill_dir = workdir if session_id else None
+        call_token = _call_started(workdir)
+        # Snapshot mtimes to detect new and overwritten files.
+        _before = _snapshot_workdir_files(workdir)
+        if project_id is not None:
+            from core.agent_workspace.supervisor import (
+                MAX_OUTPUT_LIMIT_BYTES,
+                run_project_python,
+            )
+            supervised = run_project_python(
+                project_id,
+                code,
+                timeout_seconds = timeout,
+                output_limit_bytes = MAX_OUTPUT_LIMIT_BYTES,
+                cancel_event = cancel_event,
+                output_callback = output_callback,
+            )
+            return _render_supervised_project_result(
+                supervised,
+                timeout = timeout,
+                workdir = workdir,
+                spill_dir = spill_dir,
+                spill_scope = spill_scope,
+                before = _before,
+                session_id = session_id,
+                call_token = call_token,
+            )
         # In the workdir: Python puts it on sys.path[0], so an earlier call's
         # helper.py stays importable and __file__ resolves inside the sandbox.
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
@@ -16105,19 +16420,22 @@ def _python_exec(
             # replace so non-ASCII output never crashes the read on Windows.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
             env = safe_env,
         )
+        preexec = _bypass_preexec if disable_sandbox else _sandbox_preexec
+        argv = [sys.executable, "-u", tmp_path]
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            popen_kwargs["cwd"] = workdir
+            popen_kwargs["preexec_fn"] = preexec
         else:
+            popen_kwargs["cwd"] = workdir
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
@@ -16246,6 +16564,11 @@ def _bash_exec(
     call_token = None
     try:
         workdir = _get_workdir(session_id)
+        project_id = _project_execution_id(
+            session_id,
+            workdir,
+            disable_sandbox = disable_sandbox,
+        )
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)
         spill_dir = workdir if session_id else None
@@ -16253,6 +16576,29 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
+        if project_id is not None:
+            from core.agent_workspace.supervisor import (
+                MAX_OUTPUT_LIMIT_BYTES,
+                run_project_process,
+            )
+            supervised = run_project_process(
+                project_id,
+                _get_shell_cmd(command),
+                timeout_seconds = timeout,
+                output_limit_bytes = MAX_OUTPUT_LIMIT_BYTES,
+                cancel_event = cancel_event,
+                output_callback = output_callback,
+            )
+            return _render_supervised_project_result(
+                supervised,
+                timeout = timeout,
+                workdir = workdir,
+                spill_dir = spill_dir,
+                spill_scope = spill_scope,
+                before = _before,
+                session_id = session_id,
+                call_token = call_token,
+            )
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
@@ -16263,15 +16609,18 @@ def _bash_exec(
             # thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
             env = safe_env,
         )
+        preexec = _bypass_preexec if disable_sandbox else _sandbox_preexec
+        argv = _get_shell_cmd(command)
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            popen_kwargs["cwd"] = workdir
+            popen_kwargs["preexec_fn"] = preexec
         else:
+            popen_kwargs["cwd"] = workdir
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.

@@ -154,6 +154,7 @@ function readConsts(
 const COERCED: ReadonlyArray<
   readonly [file: string, component: string, props: readonly string[]]
 > = [
+  ["tool-ui-edit-file.tsx", "EditFileToolUIImpl", ["path"]],
   ["tool-ui-python.tsx", "PythonToolUIImpl", ["code"]],
   ["tool-ui-terminal.tsx", "TerminalToolUIImpl", ["command"]],
   ["tool-ui-knowledge-base.tsx", "KnowledgeBaseToolUIImpl", ["query"]],

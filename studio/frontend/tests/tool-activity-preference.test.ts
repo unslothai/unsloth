@@ -477,6 +477,7 @@ test("a card awaiting approval opens above the preference", async () => {
   // the preference. Ask permission mode gates all of these, and each renders the
   // thing being approved -- command, script, query, code -- inside the collapsible.
   for (const file of [
+    "../src/components/assistant-ui/tool-ui-edit-file.tsx",
     "../src/components/assistant-ui/tool-ui-terminal.tsx",
     "../src/components/assistant-ui/tool-ui-python.tsx",
     "../src/components/assistant-ui/tool-ui-web-search.tsx",
