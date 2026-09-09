@@ -881,6 +881,12 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
                 [_exe, "-p"],
                 capture_output = True,
                 text = True,
+                # Named rather than inherited, as every other call here does: the default
+                # is locale.getencoding(), which is ASCII under the C locale a CI runner
+                # or container routinely has, and a library path outside it would then
+                # raise instead of being read.
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 10,
                 **windows_hidden_subprocess_kwargs(),
             )
