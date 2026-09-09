@@ -1496,9 +1496,6 @@ def test_paths_are_stripped_without_eating_dotted_module_names():
     )
 
 
-# ── _quiet_config: torchao must not mutate inductor config ────────────────────
-
-
 class _RecordingConfig:
     """Stands in for a torchao config dataclass: records every kwarg it was built with."""
 
@@ -1527,7 +1524,7 @@ def _stub_torchao_configs(
     tqz.Int8DynamicActivationInt8WeightConfig = int8 or _RecordingConfig
     tqz.Float8DynamicActivationFloat8WeightConfig = fp8 or _RecordingConfig
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
-    # _make_quant_config(fp8) also reaches for these two; give it the older-torchao shape (absent).
+    # _make_quant_config(fp8) also reaches for these two; the older-torchao shape is absent.
     monkeypatch.setitem(sys.modules, "torchao.float8", None)
     monkeypatch.setitem(sys.modules, "torchao.quantization.quantize_", None)
     return tqz
@@ -1548,13 +1545,12 @@ def test_fp8_config_disables_torchao_inductor_config_and_keeps_its_kwargs(monkey
     cfg = tq._make_quant_config(TQ_FP8)
     assert isinstance(cfg, _RecordingConfig)
     assert cfg.set_inductor_config is False
-    # The quiet flag rides along; it does not replace the per-row granularity the fp8 path depends on.
+    # The quiet flag must not displace the per-row granularity the fp8 path depends on.
     assert cfg.kw["granularity"] == "per_row"
 
 
 def test_quiet_config_omits_the_kwarg_when_the_class_does_not_accept_it():
-    """The prototype mx_formats configs (NVFP4, MXFP8) have no set_inductor_config and never call the setter;
-    the helper must construct them untouched rather than raise TypeError."""
+    """The mx_formats configs have no set_inductor_config, so the helper must not raise TypeError on them."""
 
     class _NoKnob:
         def __init__(self, use_triton_kernel = True):
@@ -1587,13 +1583,12 @@ def test_quiet_config_tolerates_an_unintrospectable_class(monkeypatch):
 
     monkeypatch.setattr(tq._inspect, "signature", _boom)
     cfg = tq._quiet_config(_RecordingConfig)
-    # Could not prove the kwarg exists, so the class was built with its own default: today's behaviour, no crash.
+    # The kwarg could not be proven to exist, so the class is built with its own default rather than crashing.
     assert cfg.set_inductor_config is True
 
 
 def test_real_torchao_configs_carry_set_inductor_config_false():
-    """Against the installed torchao: both dynamic-activation configs come back quiet, and building them leaves
-    torch._inductor.config alone (torchao only reads the flag inside quantize_, but the field is the contract)."""
+    """Against the installed torchao: both dynamic-activation configs come back quiet."""
     pytest.importorskip("torchao.quantization")
     torch = pytest.importorskip("torch")
     ic = getattr(getattr(torch, "_inductor", None), "config", None)

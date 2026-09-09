@@ -138,8 +138,7 @@ def test_compile_eligible_requires_bf16_cuda_friendly(monkeypatch):
 def test_snapshot_restore_backend_flags(monkeypatch):
     torch = _stub_torch(monkeypatch)
     snap = snapshot_backend_flags()
-    # Exactly these three: the plain stub torch has no _inductor and no get_float32_matmul_precision, so none of
-    # the inductor / matmul-precision keys appear. Extend _stub_torch and this dict together or not at all.
+    # The plain stub torch has no _inductor and no get_float32_matmul_precision, so none of those keys appear.
     assert snap == {"matmul_tf32": False, "cudnn_tf32": False, "cudnn_benchmark": False}
     # An opt-in max run flips the globals on...
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -856,9 +855,6 @@ def test_linux_and_mac_are_not_asked_about_triton(monkeypatch):
     _clear_runtime_cache()
 
 
-# ── the inductor flags torchao's quantize_ flips are snapshotted and restored ──
-
-
 _TORCHAO_FLAGS = (
     "coordinate_descent_tuning",
     "coordinate_descent_check_all_directions",
@@ -897,8 +893,7 @@ def _stub_matmul_precision(
 
 
 def test_snapshot_restores_torchao_inductor_flags(monkeypatch):
-    # torchao's recommended_inductor_config_setter() (reached by any quantize_ whose config left
-    # set_inductor_config=True) flips all of these process-wide. Unload must put them back.
+    # torchao's recommended_inductor_config_setter() flips all of these process-wide; unload must put them back.
     torch = _stub_torch(monkeypatch)
     cfg = _stub_full_inductor_config(torch)
     snap = snapshot_backend_flags()
@@ -917,8 +912,7 @@ def test_snapshot_restores_torchao_inductor_flags(monkeypatch):
 
 
 def test_snapshot_restores_float32_matmul_precision(monkeypatch):
-    # The same torchao setter calls torch.set_float32_matmul_precision("high"), which reaches every fp32 op in the
-    # pipeline (VAE, norms), not just the quantised Linears.
+    # The same setter calls set_float32_matmul_precision("high"), reaching every fp32 op (VAE, norms) too.
     torch = _stub_torch(monkeypatch)
     calls: list = []
     cell = _stub_matmul_precision(torch, calls, initial = "highest")
@@ -930,8 +924,7 @@ def test_snapshot_restores_float32_matmul_precision(monkeypatch):
 
 
 def test_matmul_precision_is_restored_before_tf32(monkeypatch):
-    # On some torch builds set_float32_matmul_precision also writes matmul.allow_tf32; restoring the precision
-    # AFTER the TF32 booleans would clobber the captured TF32 state, so the order is part of the contract.
+    # On some builds set_float32_matmul_precision also writes matmul.allow_tf32, so the order is a contract.
     torch = _stub_torch(monkeypatch)
     calls: list = []
     _stub_matmul_precision(torch, calls, initial = "highest")
@@ -958,8 +951,7 @@ def test_matmul_precision_is_restored_before_tf32(monkeypatch):
 
 
 def test_snapshot_skips_inductor_flags_a_build_lacks(monkeypatch):
-    # An older inductor with only emulate_precision_casts and no `triton` namespace: the missing keys are absent
-    # and restore does not raise.
+    # An older inductor with only emulate_precision_casts and no `triton` namespace.
     torch = _stub_torch(monkeypatch)
     cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
     snap = snapshot_backend_flags()
@@ -974,9 +966,8 @@ def test_snapshot_skips_inductor_flags_a_build_lacks(monkeypatch):
 
 
 def test_video_snapshot_precedes_transformer_quant():
-    """video.py must snapshot the backend flags BEFORE the torchao transformer quant, which is the first thing in
-    that loader that can mutate them, so a failed load (rolled back through _precommit_globals) and an unload both
-    restore the pre-quant state. A lineno check, so a refactor that moves the snapshot back below the quant fails."""
+    """video.py must snapshot the backend flags BEFORE the torchao transformer quant, so a failed load and an
+    unload both restore the pre-quant state."""
     import ast
     from pathlib import Path
 

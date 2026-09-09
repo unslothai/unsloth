@@ -34,8 +34,7 @@ from typing import Any, Optional
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
-# Runs in the spawned smoke-probe child too, which imports this module and nothing of the backend:
-# torchao gets patched before the probe builds its throwaway int8 Linear. Also stdlib-only at import.
+# Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
 install_torchao_int_mm_patch()
 
 TQ_INT8 = "int8"
@@ -971,16 +970,10 @@ def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
     return True if fast_accum is None else bool(fast_accum)
 
 
-# torchao's config handlers call ``recommended_inductor_config_setter()`` once per quantised Linear when
-# ``set_inductor_config`` is left at its dataclass default of True. That setter is PROCESS-WIDE and permanent:
-# coordinate_descent_tuning, coordinate_descent_check_all_directions, force_fuse_int_mm_with_mul, fx_graph_cache,
-# triton.unique_kernel_names, and torch.set_float32_matmul_precision("high"). Coordinate-descent tuning benchmarks
-# candidate kernel configs at compile time, so the winning kernel, and therefore the render, differs between
-# processes on the same seed (measured on z-image int8 and fp8: max abs 0.83 on the transformer output between
-# two identical processes, bit-identical with the flags left alone). The fp32 matmul precision change reaches
-# every fp32 op in the pipeline (VAE, norms), not just the Linears we quantised. diffusion_speed.py owns the
-# inductor policy; a quantise call must not silently reset it.
-#
+# torchao's config handlers call ``recommended_inductor_config_setter()`` when ``set_inductor_config`` keeps its
+# default of True. That setter is PROCESS-WIDE, and two of its flags change results rather than only speed:
+# coordinate-descent tuning makes the winning kernel, and so the render, differ between processes on one seed,
+# and set_float32_matmul_precision("high") reaches every fp32 op in the pipeline (VAE, norms).
 # UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores the upstream behaviour, for A/B benchmarking only.
 _TORCHAO_INDUCTOR_CONFIG_ENV = "UNSLOTH_TORCHAO_INDUCTOR_CONFIG"
 
@@ -995,12 +988,9 @@ def _torchao_may_set_inductor_config() -> bool:
 
 
 def _quiet_config(cls: Any, **kwargs: Any) -> Any:
-    """Build a torchao config with ``set_inductor_config = False`` when the class accepts it.
-
-    Signature-guarded rather than version-guarded: the kwarg is on every ``torchao.quantization`` config class
-    (int8 / fp8 dynamic activation, int8 / int4 / fp8 weight-only) and on none of the ``prototype.mx_formats``
-    ones, which never call the setter either. Both answers are correct, and a future rename degrades to today's
-    behaviour instead of a TypeError."""
+    """Build a torchao config with ``set_inductor_config = False`` when the class accepts it. Signature-guarded
+    rather than version-guarded: the kwarg is on every ``torchao.quantization`` config class and on none of the
+    ``prototype.mx_formats`` ones, which never call the setter either, so a rename degrades to today's behaviour."""
     if not _torchao_may_set_inductor_config():
         try:
             if "set_inductor_config" in _inspect.signature(cls).parameters:

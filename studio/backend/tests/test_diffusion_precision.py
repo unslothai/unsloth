@@ -82,8 +82,7 @@ def _stub_casters(monkeypatch, recorder):
     dtq.make_filter_fn = lambda min_features, exclude = (), *, require_bf16 = False: (
         lambda module, fqn = "": True
     )
-    # The real helper adds set_inductor_config=False when the class accepts it; the stub configs here take no
-    # kwargs, so a pass-through is the faithful stand-in.
+    # The stub configs here take no kwargs, so a pass-through is the faithful stand-in.
     dtq._quiet_config = lambda cls, **kw: cls(**kw)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
 
@@ -526,12 +525,8 @@ def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
     assert effective_te_quant(None, "qwen-image") is None
 
 
-# ── torchao configs are built quiet (set_inductor_config=False) ───────────────
-
-
 def test_nvfp4_te_cast_builds_its_config_through_quiet_config(monkeypatch):
-    """The prototype NVFP4 config has no set_inductor_config knob, so routing it through _quiet_config must be a
-    no-op that still constructs (the regression risk of the routing is a TypeError, not a wrong flag)."""
+    """NVFP4 has no set_inductor_config knob, so the risk of routing it through _quiet_config is a TypeError."""
     _stub_torch(monkeypatch, cc = (10, 0))
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -547,8 +542,7 @@ def test_nvfp4_te_cast_builds_its_config_through_quiet_config(monkeypatch):
 
 
 def test_int8_and_fp8_dynamic_te_casts_reuse_the_quiet_factory(monkeypatch):
-    """Both torchao text-encoder casts must keep building through _make_quant_config (which is where
-    set_inductor_config=False is applied), never a bare torchao constructor."""
+    """Both torchao text-encoder casts must keep building through _make_quant_config, never a bare constructor."""
     torch = _stub_torch(monkeypatch, cc = (10, 0))
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -562,10 +556,8 @@ def test_int8_and_fp8_dynamic_te_casts_reuse_the_quiet_factory(monkeypatch):
 
 
 def test_no_torchao_config_is_constructed_outside_quiet_config():
-    """AST guard: every torchao ``*WeightConfig(...)`` / ``*WeightOnlyConfig(...)`` call under core/inference and the
-    DiT trainer must be the first argument of ``_quiet_config``. torchao's dataclass default
-    ``set_inductor_config=True`` flips coordinate-descent tuning and the fp32 matmul precision for the whole process
-    (non-deterministic compiled renders across processes), so a bare constructor is the bug this guards against."""
+    """AST guard: every torchao ``*WeightConfig(...)`` / ``*WeightOnlyConfig(...)`` call under core/inference and
+    the DiT trainer must be the first argument of ``_quiet_config``, whose default makes renders differ."""
     import ast
     from pathlib import Path
 

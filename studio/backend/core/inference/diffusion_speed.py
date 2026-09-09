@@ -47,10 +47,7 @@ SPEED_MAX = "max"
 SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
-# torch._inductor.config attributes captured by snapshot_backend_flags, as (attribute, snapshot key). The first is
-# the one this layer sets itself (regional compile). The rest are what torchao's
-# recommended_inductor_config_setter() flips process-wide when a quantize_ call reaches it: we build every torchao
-# config quiet (diffusion_transformer_quant._quiet_config), so these are the safety net, not the primary control.
+# (attribute, snapshot key). All but the first are what torchao's recommended_inductor_config_setter() flips.
 _INDUCTOR_FLAGS = (
     ("emulate_precision_casts", "inductor_emulate_precision_casts"),
     ("coordinate_descent_tuning", "inductor_coordinate_descent_tuning"),
@@ -58,7 +55,6 @@ _INDUCTOR_FLAGS = (
     ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
     ("fx_graph_cache", "inductor_fx_graph_cache"),
 )
-# Nested under torch._inductor.config.triton.
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 
 
@@ -67,8 +63,7 @@ def snapshot_backend_flags() -> Optional[dict]:
     None if torch is unavailable. Each flag is read defensively so a build missing one (e.g. no
     cuda.matmul on CPU/MPS) still captures the rest, instead of leaking a real mutated flag.
 
-    Also captures the inductor flags and the fp32 matmul precision that torchao's quantize_ sets
-    when a config is built with its default ``set_inductor_config=True``; see ``_INDUCTOR_FLAGS``."""
+    Also the inductor flags and fp32 matmul precision a non-quiet torchao quantize_ would set."""
     try:
         import torch
     except Exception:  # noqa: BLE001 - no torch -> nothing to snapshot/restore
@@ -121,8 +116,7 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             except Exception:  # noqa: BLE001 - best-effort per-flag restore
                 pass
 
-    # fp32 matmul precision FIRST: on some builds set_float32_matmul_precision also writes matmul.allow_tf32, so
-    # restoring it after the TF32 booleans would clobber the captured TF32 state.
+    # FIRST: on some builds set_float32_matmul_precision also writes matmul.allow_tf32.
     setter = getattr(torch, "set_float32_matmul_precision", None)
     if state.get("matmul_precision") and callable(setter):
         try:

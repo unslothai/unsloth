@@ -194,8 +194,7 @@ logger = get_logger(__name__)
 # diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
 install_torchao_windows_rocm_stub()
-# Same reason it sits here: torchao must be patched before anything imports it. The patch is a meta path
-# finder, so a torchao imported later (the prequant path never calls quantize_) is covered too.
+# A meta path finder, so a torchao imported later (the prequant path never calls quantize_) is covered too.
 install_torchao_int_mm_patch()
 
 
@@ -4328,9 +4327,8 @@ class DiffusionBackend:
                     and compile_eligible(target, is_gguf = False, family = fam)
                 )
                 # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
-                # The dense transformer quant above ran earlier than this snapshot on purpose: it builds its torchao
-                # configs through _quiet_config (set_inductor_config=False), so it mutates none of these flags, and
-                # keeping the snapshot here leaves it adjacent to the try/finally that restores it on a failed load.
+                # The dense transformer quant above may precede this snapshot: it builds its torchao configs
+                # through _quiet_config (set_inductor_config=False), so it mutates none of these flags.
                 backend_flags_before = snapshot_backend_flags()
                 # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x)
                 attention_engaged = apply_attention_backend(

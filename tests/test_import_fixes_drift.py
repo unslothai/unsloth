@@ -757,17 +757,8 @@ def test_psutil_cpu_freq_shape_and_wiring():
     )
 
 
-# ===========================================================================
-# torchao -- the safe_int_mm __repr__ probe that syncs the device
-# ===========================================================================
-
-
 def _import_torchao_intmm_home():
-    """The module that defines ``safe_int_mm`` in the installed torchao.
-
-    Releases up to 0.18.0 keep it in ``torchao.kernel.intmm``; main moved it to the
-    int8 workflow. The fix covers both, so the tests follow whichever one exists.
-    """
+    """Releases up to 0.18.0 keep ``safe_int_mm`` in ``torchao.kernel.intmm``; main moved it."""
     from unsloth.import_fixes import _TORCHAO_INTMM_MODULES
 
     for name in _TORCHAO_INTMM_MODULES:
@@ -781,12 +772,7 @@ def _import_torchao_intmm_home():
 
 
 def _torchao_intmm_original_source():
-    """Source of the ``safe_int_mm`` this process would run unpatched.
-
-    Importing unsloth installs the fix, so once it has run the function bound
-    on the module is ours; the body upstream ships is then reachable only
-    through ``__unsloth_original__``.
-    """
+    """Once the fix has run, upstream's body is reachable only through ``__unsloth_original__``."""
     pytest.importorskip("torchao")
     intmm = _import_torchao_intmm_home()
     function = intmm.safe_int_mm
@@ -796,13 +782,7 @@ def _torchao_intmm_original_source():
 
 
 def test_torchao_safe_int_mm_still_uses_the_repr_probe():
-    """``fix_torchao_safe_int_mm_repr_probe``: the pathology itself.
-
-    torchao decides "am I being traced?" with ``"FakeTensor" in
-    input.__repr__()``, and a real CUDA tensor's repr formats its values, so
-    it calls ``.item()``: a device sync per eager int8 linear and an outright
-    failure under ``torch.cuda.graph`` capture.
-    """
+    """The pathology itself: a repr that formats the tensor's values, and so calls ``.item()``."""
     source = _torchao_intmm_original_source()
     if "__repr__" not in source:
         pytest.fail(
@@ -814,9 +794,7 @@ def test_torchao_safe_int_mm_still_uses_the_repr_probe():
 
 
 def test_torchao_safe_int_mm_body_matches_the_verified_shape():
-    """The replacement is a FULL copy of torchao 0.17.0's body, so it may only
-    stand in for a body that still matches it. Every landmark that was checked
-    when bit-identity was measured must still be there."""
+    """The replacement is a FULL copy of torchao 0.17.0's body, so every landmark must still be there."""
     from unsloth.import_fixes import _TORCHAO_SAFE_INT_MM_MARKERS
 
     source = _torchao_intmm_original_source()
@@ -831,7 +809,6 @@ def test_torchao_safe_int_mm_body_matches_the_verified_shape():
 
 
 def _patched_torchao_safe_int_mm():
-    """Install the fix and hand back torchao's now-patched ``safe_int_mm``."""
     pytest.importorskip("torchao")
     intmm = _import_torchao_intmm_home()
     from unsloth.import_fixes import (
@@ -856,12 +833,7 @@ def _patched_torchao_safe_int_mm():
 
 
 def test_torchao_intmm_patch_is_bit_identical_on_cpu():
-    """The whole argument for shipping a copied body: same inputs, same bytes out.
-
-    The shapes cover both cuBLAS guards (a good j and k, then a j that is not a nonzero
-    multiple of 8) and the contiguity fix on mat2, which torchao needs because cuBLAS
-    silently returns a wrong answer without it.
-    """
+    """The whole argument for shipping a copied body: same inputs, same bytes out."""
     torch = pytest.importorskip("torch")
     intmm, patched = _patched_torchao_safe_int_mm()
     # int_scaled_matmul resolves the name through module globals, so the rebind must reach it
@@ -887,9 +859,7 @@ def test_torchao_intmm_patch_is_bit_identical_on_cpu():
 
 
 def test_torchao_intmm_patch_is_idempotent():
-    """Calling the fix twice, or letting Studio's copy of it run in the same process, must
-    not stack replacements: both mark the function ``__unsloth_patched__`` and the other
-    recognises it."""
+    """Two runs of the fix, or Studio's copy in the same process, must not stack replacements."""
     import types
 
     from unsloth.import_fixes import (
@@ -932,13 +902,7 @@ def test_torchao_intmm_patch_refuses_an_unrecognised_body():
 
 
 def test_torchao_intmm_patch_covers_a_later_import():
-    """The point of the meta path finder: the int8 prequant path only ``torch.load``s torchao
-    subclasses, so nothing imports torchao until well after ``import unsloth``.
-
-    Runs in a child that has no torchao imported yet, loads import_fixes.py by path (so the
-    fix is exercised without ``import unsloth`` importing torchao first) and checks that
-    ``import torchao.quantization`` comes out patched.
-    """
+    """The point of the finder: the prequant path imports torchao well after ``import unsloth``."""
     if importlib.util.find_spec("torchao") is None:
         pytest.skip("torchao not installed -- nothing to patch.")
     import subprocess
@@ -982,10 +946,7 @@ def test_torchao_intmm_patch_covers_a_later_import():
 
 
 def test_torchao_intmm_finder_covers_both_module_homes(monkeypatch):
-    """``_TorchaoIntmmPatchFinder``: torchao main moved ``safe_int_mm`` from
-    ``torchao.kernel.intmm`` to ``torchao.quantization.quantize_.workflows.int8.kernels``
-    (pytorch/ao#4718) with the probe intact. The finder must wrap the loader for both
-    names and stay silent for anything else, or the next torchao release loses the fix."""
+    """A finder covering only the old name loses the fix once torchao ships pytorch/ao#4718."""
     import importlib.machinery
 
     from unsloth.import_fixes import (
@@ -1014,8 +975,7 @@ def test_torchao_intmm_finder_covers_both_module_homes(monkeypatch):
 
 
 def test_torchao_intmm_installer_patches_the_new_home_when_already_imported(monkeypatch):
-    """``fix_torchao_safe_int_mm_repr_probe`` patches a module that is ALREADY in
-    ``sys.modules`` under the new name, since the finder only sees later imports."""
+    """A module ALREADY in ``sys.modules`` must be patched too: the finder only sees later imports."""
     import types
 
     torch = pytest.importorskip("torch")
@@ -1043,7 +1003,7 @@ def test_torchao_intmm_installer_patches_the_new_home_when_already_imported(monk
     exec(compile(text, filename, "exec"), module.__dict__)
     assert callable(module.safe_int_mm)
 
-    # Isolate: hide every real torchao home so only the stand-in is visible, and drop any finder.
+    # Hide every real torchao home so only the stand-in is visible, and drop any finder.
     for name in _TORCHAO_INTMM_MODULES:
         monkeypatch.delitem(sys.modules, name, raising = False)
     monkeypatch.setitem(sys.modules, module.__name__, module)

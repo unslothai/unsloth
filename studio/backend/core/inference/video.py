@@ -171,9 +171,7 @@ from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
 
-# Every `import diffusers` below is lazy, so this runs first: torchao must be patched before anything
-# imports it. The image backend installs the Windows-ROCm stubs and this module imports it, but the
-# int8 patch is asked for here too so the video path never depends on that import order.
+# Asked for here as well as in the image backend, so the video path never depends on that import order.
 install_torchao_int_mm_patch()
 
 # Load kinds (mirror the image backend): gguf (single-file GGUF DiT + base repo), single_file (safetensors DiT),
@@ -3797,11 +3795,8 @@ class VideoBackend:
         # _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
-        # Snapshot the process-wide backend flags BEFORE the first thing that can mutate them, which is the torchao
-        # transformer quant below (its configs are built quiet, but the snapshot is the safety net if a torchao path
-        # still reaches recommended_inductor_config_setter). Until the state commit hands ownership to
-        # _teardown_state_locked, a failure has to restore these flags itself, so register them for
-        # _rollback_precommit_globals right away.
+        # BEFORE the torchao transformer quant below, the first thing that can mutate them, and registered for
+        # _rollback_precommit_globals right away: until the state commit, a failure must restore them itself.
         backend_flags = snapshot_backend_flags()
         self._precommit_globals = (_load_token, backend_flags)
 
@@ -3952,7 +3947,6 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        # backend_flags was snapshotted (and registered in _precommit_globals) before the transformer quant above.
         # Step cache tri-state: unset/"auto" -> FBCACHE_MIN_STEPS policy (re-checked per generation); "off"/"fbcache"
         # pinned. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)

@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariants for Studio's copy of the torchao ``safe_int_mm`` fix.
-
-``core/inference/diffusion_torchao_patches.py`` replaces torchao's int8 GEMM, whose
-``"FakeTensor" in input.__repr__()`` probe calls ``.item()`` on a real CUDA tensor: a device
-sync per eager int8 linear, and ``cudaErrorStreamCaptureUnsupported`` under
-``torch.cuda.graph``. Three things can rot and none of them raise on their own:
-
-1. a module stops calling ``install_torchao_int_mm_patch()`` and its process silently syncs
-   again (the int8 prequant path never calls ``quantize_``, so nothing else would install it);
-2. the Studio copy and the canonical one in ``unsloth/import_fixes.py`` drift apart, which is
-   how two copies of one patch stop being interchangeable;
-3. the structural gate stops refusing bodies it does not recognise, and the copy starts
-   impersonating a torchao it was never verified against.
-
-Mostly CPU-only ``ast`` work; the last test needs a real torchao and runs the GEMM on CPU.
-"""
+"""Invariants for Studio's copy of the torchao ``safe_int_mm`` fix, none of which raise on their
+own: an entrypoint stops installing the patch, the two copies drift apart, or the structural gate
+stops refusing bodies it does not recognise."""
 
 from __future__ import annotations
 
@@ -41,9 +28,7 @@ _IMPORT_FIXES = _REPO_ROOT / "unsloth" / "import_fixes.py"
 _PATCH_MODULE = _CORE / "inference" / "diffusion_torchao_patches.py"
 _INSTALL = install_torchao_int_mm_patch.__name__  # a rename breaks the import loudly
 
-# Every module that can be the first thing in its process to reach torchao: the image backend,
-# the video backend, the transformer-quant module (also imported alone by the spawned smoke-probe
-# child) and the diffusion trainers' shared entry.
+# Every module that can be the first thing in its process to reach torchao.
 _ENTRYPOINTS = [
     _CORE / "inference" / "diffusion.py",
     _CORE / "inference" / "video.py",
@@ -51,12 +36,11 @@ _ENTRYPOINTS = [
     _CORE / "training" / "diffusion_train_common.py",
 ]
 
-# The three functions that are one implementation living in two files.
+# One implementation living in two files.
 _SHARED_FUNCTIONS = ("_is_fake_tensor", "_make_safe_int_mm", "_patch_torchao_intmm_module")
 
 
 def _install_call_linenos(node) -> list[int]:
-    """Line numbers of every ``install_torchao_int_mm_patch()`` call under ``node``."""
     return [
         c.lineno
         for c in ast.walk(node)
@@ -65,7 +49,6 @@ def _install_call_linenos(node) -> list[int]:
 
 
 def test_all_entrypoints_install_the_patch():
-    """Presence check: torchao is patched by whichever of these a process imports first."""
     for path in _ENTRYPOINTS:
         assert _install_call_linenos(ast.parse(path.read_text(encoding = "utf-8"))), (
             f"{path.relative_to(_BACKEND)} never calls {_INSTALL}() -- torchao's int8 GEMM "
@@ -74,7 +57,6 @@ def test_all_entrypoints_install_the_patch():
 
 
 def _strip_docstrings(node):
-    """Drop every docstring under ``node`` so the comparison is about code only."""
     for child in ast.walk(node):
         body = getattr(child, "body", None)
         if not isinstance(body, list) or not body:
@@ -99,12 +81,7 @@ def _function_dump(path: Path, name: str) -> str:
 
 @pytest.mark.parametrize("name", _SHARED_FUNCTIONS)
 def test_studio_copy_matches_unsloth_import_fixes(name):
-    """The two homes must stay one implementation.
-
-    Compared as ast dumps with docstrings removed, so comments and wording are free to differ
-    per home while the code cannot. Skipped when the checkout has no ``unsloth/`` (Studio ships
-    on its own), which is the only reason this file may be absent.
-    """
+    """Compared as ast dumps with docstrings removed, so wording may differ per home but code may not."""
     if not _IMPORT_FIXES.is_file():
         pytest.skip("unsloth/import_fixes.py is not in this checkout")
     assert _function_dump(_PATCH_MODULE, name) == _function_dump(_IMPORT_FIXES, name), (
@@ -115,7 +92,6 @@ def test_studio_copy_matches_unsloth_import_fixes(name):
 
 
 def _fake_intmm_module(safe_int_mm) -> types.ModuleType:
-    """A stand-in for ``torchao.kernel.intmm`` carrying the names the gate resolves."""
     module = types.ModuleType("torchao_intmm_stand_in")
     module.safe_int_mm = safe_int_mm
     module.out_dtype = lambda *args, **kwargs: None
@@ -124,9 +100,7 @@ def _fake_intmm_module(safe_int_mm) -> types.ModuleType:
 
 
 def test_patch_leaves_an_already_patched_module_alone():
-    """Idempotence, and the reason the two copies do not fight: the Studio module and
-    ``unsloth/import_fixes.py`` both mark their replacement ``__unsloth_patched__``, so the
-    second one to run recognises the first one's work rather than wrapping it."""
+    """Why the two copies do not fight: both mark their replacement ``__unsloth_patched__``."""
 
     def already_patched(input, mat2):
         return None
@@ -139,8 +113,7 @@ def test_patch_leaves_an_already_patched_module_alone():
 
 
 def test_patch_refuses_an_unrecognised_body():
-    """The replacement is a full copy of torchao 0.17.0's body, so it may only stand in for a
-    body that still matches: no cuBLAS dimension guards in the source, no patch."""
+    """The copy may only stand in for a body that still matches: no cuBLAS guards, no patch."""
 
     def rewritten_upstream(input, mat2):
         # None of the markers the gate looks for
@@ -153,9 +126,7 @@ def test_patch_refuses_an_unrecognised_body():
 
 
 def test_finder_answers_for_both_torchao_homes(monkeypatch):
-    """torchao main moved ``safe_int_mm`` into the int8 workflow module (pytorch/ao#4718) with the
-    probe intact, so the finder must wrap both names. The table is also pinned against the
-    canonical copy so the two homes cannot disagree on WHICH modules they cover."""
+    """torchao main moved ``safe_int_mm`` into the int8 workflow module (pytorch/ao#4718), probe intact."""
     import importlib.machinery
     import importlib.util
 
@@ -183,10 +154,7 @@ def test_finder_answers_for_both_torchao_homes(monkeypatch):
     assert finder.find_spec("torchao.kernel.other") is None
 
 def test_real_torchao_int_mm_is_patched_and_bit_identical():
-    """With torchao installed: the patch lands on every binding that matters, and the copy
-    returns exactly what the original returned. The shapes cover both cuBLAS guards (a good j
-    and k, a j that is not a nonzero multiple of 8) and the silent-wrong-answer contiguity fix
-    on mat2."""
+    """The copy returns exactly what the original returned, over shapes covering both cuBLAS guards."""
     pytest.importorskip("torchao")
     torch = pytest.importorskip("torch")
     import importlib

@@ -277,8 +277,7 @@ fix_vllm_lora_tokenizer_module()
 # torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) still imports the old path. Lazy alias, so
 # it costs nothing unless asked for.
 fix_torchao_nf4tensor_move()
-# Best before anything in this process imports torchao, but the finder it installs makes a later
-# import safe too, which is what the diffusion prequant path relies on.
+# The finder it installs also covers a torchao imported later, which the diffusion prequant path relies on.
 fix_torchao_safe_int_mm_repr_probe()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
