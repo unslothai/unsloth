@@ -3,15 +3,15 @@
 
 /** Preserve Studio's existing stored-project/user-system prompt serialization. */
 export function composeProjectSystemPrompt(
-	projectInstructions: string,
-	userSystemPrompt: string,
+  projectInstructions: string,
+  userSystemPrompt: string,
 ): string {
-	return [
-		projectInstructions
-			? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-			: "",
-		userSystemPrompt.trim(),
-	]
-		.filter(Boolean)
-		.join("\n\n");
+  return [
+    projectInstructions
+      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+      : "",
+    userSystemPrompt.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
