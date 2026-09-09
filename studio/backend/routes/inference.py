@@ -2413,7 +2413,7 @@ def _openai_llama_speculative_draft_tokens(llama_backend) -> int:
     return _OPENAI_LLAMA_DEFAULT_SPEC_DRAFT_N_MAX if active else 0
 
 
-def _openai_llama_effective_batch_tokens(llama_backend) -> int:
+def _openai_llama_effective_batch_tokens(llama_backend, env = None) -> int:
     """--batch-size llama-server prefills in, which the buffer has to be able to hold.
 
     The cache fails when the NEXT batch does not fit, not when it is full, and a buffer
@@ -2421,9 +2421,13 @@ def _openai_llama_effective_batch_tokens(llama_backend) -> int:
     shrinking-batch retry upstream #24840 throws on. Falls back to llama.cpp's own default,
     since the unstated case is the common one and zero reserves nothing at all.
 
-    The extras FIRST: they are appended after the launcher's own flag and win the child's
-    last-wins parse, so a pass-through ``--batch-size 8192`` beside a typed 512 runs at
-    8192. Then `requested_n_batch`, the only name the backend answers to.
+    Precedence is the launched command line's, the same order `_extra_args_n_ubatch`
+    resolves in. The extras FIRST: they are appended after the launcher's own flag and win
+    the child's last-wins parse, so a pass-through ``--batch-size 8192`` beside a typed 512
+    runs at 8192. Then `requested_n_batch`, the only name the backend answers to, emitted
+    as a flag and so beating the environment. Then ``LLAMA_ARG_BATCH``, which the child
+    inherits and honours whenever no flag is emitted; without it a host exporting 8192
+    prefills in 8192 and is only reserved 2048.
     """
     from core.inference.llama_server_args import parse_batch_override
 
@@ -2450,6 +2454,13 @@ def _openai_llama_effective_batch_tokens(llama_backend) -> int:
             continue
         if value > 0:
             return value
+    source_env = os.environ if env is None else env
+    try:
+        from_env = int(str(source_env.get("LLAMA_ARG_BATCH") or "").strip())
+    except (TypeError, ValueError):
+        from_env = 0
+    if from_env > 0:
+        return from_env
     return _OPENAI_LLAMA_DEFAULT_N_BATCH
 
 
