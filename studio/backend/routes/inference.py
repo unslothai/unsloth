@@ -4778,8 +4778,8 @@ _roster_failure_logged = False
 # character after them, so one file name can rewrite how the rest of the sentence renders
 # (CVE-2021-42574, "Trojan Source"); U+200B and the joiners split a name into pieces that
 # read as one; ESC is a terminal control sequence in any console or log that echoes the
-# prompt. Only linked folders can carry them -- uploads pass an allowlist at
-# routes/rag.py:_sanitize_filename -- but a linked folder indexes a relative path exactly
+# prompt. Only linked folders can carry them -- routes/rag.py:_sanitize_filename strips
+# them out of an uploaded name -- but a linked folder indexes a relative path exactly
 # as it came off disk, and every byte except "/" and NUL is legal in one.
 #
 # The whitespace-like controls map to a space instead of being dropped, so that a name

@@ -19,11 +19,13 @@ import hashlib
 import hmac
 import json
 import logging
+import ntpath
 import os
 import re
 import secrets
 import sqlite3
 import time
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from typing import Annotated, Iterator
@@ -94,12 +96,13 @@ def _availability(available: bool) -> dict:
     }
 
 
-_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
-
-
 def _sanitize_filename(name: str) -> str:
-    base = os.path.basename(name or "").strip() or "document"
-    base = _SAFE.sub("_", base)
+    # A display label, never a path: the bytes are stored at uploads/<uuid><ext>.
+    base = "".join(
+        " " if ch.isspace() else "" if unicodedata.category(ch) in ("Cc", "Cf") else ch
+        for ch in name or ""
+    )
+    base = re.sub(r"\s+", " ", ntpath.basename(base)).strip() or "document"
     if len(base) <= 200:
         return base
     # Trim the stem, not the extension: _save_upload gates on the extension, so
