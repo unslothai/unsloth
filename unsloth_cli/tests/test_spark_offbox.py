@@ -721,12 +721,20 @@ def _import_loader_utils():
 
     Importing `unsloth.models` runs the accelerator detection, which raises on a CPU-only
     host like the repo test job. The notice cannot be exercised where the package it lives
-    in will not import, so the honest outcome is a skip and not a failure."""
+    in will not import, so the honest outcome is a skip and not a failure.
+
+    ImportError is caught for the same reason and not only NotImplementedError. `torch` being
+    present does not mean `unsloth` will import: `unsloth/_gpu_init.py` raises ImportError when
+    `unsloth_zoo` is missing, so a host with torch installed and unsloth_zoo not failed 37 of
+    these tests instead of skipping them. Both are "the package will not import here", and both
+    read as a skip."""
     pytest.importorskip("torch")
     try:
         from unsloth.models import loader_utils as LU
     except NotImplementedError as exc:
         pytest.skip("unsloth needs a torch accelerator to import: %s" % exc)
+    except ImportError as exc:
+        pytest.skip("unsloth will not import on this host: %s" % exc)
     return LU
 
 

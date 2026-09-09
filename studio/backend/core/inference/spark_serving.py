@@ -618,7 +618,21 @@ def peer_path(path: Path) -> str:
 
 def peer_binary_candidates(local_binary: Optional[str], name: str) -> List[str]:
     """Where ``name`` should be on the peer, most likely first: the local binary's own
-    directory, since the pair is provisioned by rsync and layouts match."""
+    directory, since the pair is provisioned by rsync and layouts match.
+
+    The peer is launched over ssh with no ``LD_LIBRARY_PATH``, so the bundle there has to
+    resolve its own shared objects. The shipped prebuilt does, through an ``$ORIGIN`` RUNPATH,
+    and a bundle rsynced by ``spark provision`` keeps that property. A hand-built llama.cpp
+    whose RUNPATH is an absolute path into its build tree does not, and fails on the peer with
+    "error while loading shared libraries" while working locally, where that path exists.
+
+    Forwarding this process's ``LD_LIBRARY_PATH`` to the peer would NOT be a fix. The peer's
+    layout is not this node's, and an absolute directory that happens to exist on both with a
+    different build in it would shadow the peer's correct libraries and put the two ends of the
+    RPC link on mismatched builds -- the defect `d5d384c` exists to prevent, and one that fails
+    silently as a malformed HELLO rather than loudly. A missing .so is the better failure: it
+    names itself in the peer log. So the limitation is documented and not papered over; build a
+    bundle with a relocatable RUNPATH, or provision it, and the peer resolves it."""
     out: List[str] = []
     if local_binary:
         out.append(peer_path(Path(local_binary).parent) + "/" + name)
