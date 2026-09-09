@@ -7016,7 +7016,13 @@ class LlamaCppBackend:
         """The AGGREGATE park reading, and the legacy fallback only: `requests_preempted` counts
         every request, so it cannot say that THIS stream is the parked one. A build that writes
         the stream notices is read per request instead (`ServerParkNotices`); this is what is
-        left for a swap build predating them, which is silent for the whole park."""
+        left for a swap build predating them, which is silent for the whole park.
+
+        A build known to write the notices, including for a park during prompt processing, is
+        never asked: a stream of its that heard nothing is not parked, and the aggregate reading
+        excused an unrelated stream's stall for as long as somebody else stayed parked."""
+        if getattr(self, "_server_park_notices", False):
+            return False
         try:
             from core.inference.llama_stats import scrape_llama_metrics
 
@@ -23700,6 +23706,7 @@ class LlamaCppBackend:
                             "share the KV cache. Set it to 'on' to fail the load instead."
                         )
                 self._exact_parking_short = None
+                self._server_park_notices = False
                 self._exact_pool_unknown = False
                 if _exact_wanted:
                     # Studio's line contradicts the mode in one place: --parallel 1 skips --kv-unified.
@@ -26070,7 +26077,11 @@ class LlamaCppBackend:
                         _exact_short = (_PREEMPT_RAM_DEFAULT_MIB, 0, 0)
                     self._exact_parking_short = _exact_short
                 # The server's own answer, not the launch's intent. See the helper.
-                _exact_running = self._server_reports_exact_concurrency()
+                _server_props = self._query_server_props() or {}
+                # unslothai/llama.cpp#197 carries the field and writes the per-request notices,
+                # so its silence is never excused from the aggregate reading.
+                self._server_park_notices = "exact_concurrency" in _server_props
+                _exact_running = _server_props.get("exact_concurrency") is True
                 self._exact_concurrency = self._exact_state_after_launch(
                     setting = _exact_setting,
                     env = env,
@@ -30679,8 +30690,9 @@ class LlamaCppBackend:
             counts = self._server_preempt_counts(chunk)
             if counts is None:
                 return None
-            _turn_preempt.clear()
-            _turn_preempt.update(counts)
+            # Summed: each final object counts its own request, and a turn is every request.
+            for _k, _v in counts.items():
+                _turn_preempt[_k] = _turn_preempt.get(_k, 0) + _v
             if counts.get("recomputes") and not _turn_saw_recompute[0]:
                 _turn_saw_recompute[0] = True
                 return {"type": "preempt", "state": "recomputed", "source": "server"}

@@ -20,6 +20,7 @@
 
 import asyncio
 import inspect
+import json
 import time
 from types import SimpleNamespace
 
@@ -36,6 +37,7 @@ from .preempt_fakes import (
     PreemptRecorder,
     RecordingPolicy,
     delta,
+    tool_call_chunk,
     done,
     finish,
     run_tool_loop,
@@ -164,7 +166,7 @@ class TestARecomputeReachesTheClient:
 
     def test_the_tool_loop_carries_the_counters_too(self):
         source = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-        assert "_turn_preempt.update(counts)" in source
+        assert "_turn_preempt[_k] = _turn_preempt.get(_k, 0) + _v" in source
         assert '"preempt": dict(_turn_preempt) or None' in source
 
     def test_the_tool_loop_relays_a_recompute_the_server_only_counted(self, monkeypatch):
@@ -183,6 +185,40 @@ class TestARecomputeReachesTheClient:
         assert recomputed == [{"type": "preempt", "state": "recomputed", "source": "server"}]
         metadata = [e for e in dicts if e.get("type") == "metadata"][-1]
         assert metadata["preempt"] == {"parks": 1, "recomputes": 1}
+
+    def test_a_turn_of_several_requests_sums_their_counters(self, monkeypatch):
+        # Each final object counts its own request; the turn's metadata is every request.
+        signal = preemption_mod.PreemptSignal()
+        first = [
+            tool_call_chunk(),
+            "data: "
+            + json.dumps(
+                {
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                    "preempt": {"parks": 1, "recomputes": 1},
+                }
+            )
+            + "\n",
+            done(),
+        ]
+        second = [delta("x", preempt = {"parks": 0, "recomputes": 0}), finish(), done()]
+        recorder = PreemptRecorder(monkeypatch, [first, second], signal = signal, execute_tool = True)
+        events = run_tool_loop(
+            recorder.backend, signal = signal, policy = RecordingPolicy(), tools = [web_search_tool()]
+        )
+        assert len(recorder.payloads) == 2
+        metadata = [e for e in events if isinstance(e, dict) and e.get("type") == "metadata"][-1]
+        assert metadata["preempt"] == {"parks": 1, "recomputes": 1}
+
+    def test_a_build_that_writes_the_notices_is_never_asked_the_aggregate(self):
+        # A stream that heard nothing on such a build is not parked; the aggregate reading
+        # excused an unrelated stall for as long as somebody else stayed parked.
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._server_park_notices = True
+        assert backend._server_park_grace() is False
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert 'self._server_park_notices = "exact_concurrency" in _server_props' in source
+        assert "self._server_park_notices = False" in source
 
     def test_a_notice_the_server_wrote_is_not_relayed_twice(self, monkeypatch):
         signal = preemption_mod.PreemptSignal()
@@ -1260,7 +1296,7 @@ class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
         # The child keeps the mode after a late shortfall, so the warning, and the `on`
         # refusal, say it runs but cannot hold every park, not that it came up without it.
         spawn = inspect.getsource(LlamaCppBackend.load_model)
-        judged = spawn.index("_exact_running = self._server_reports_exact_concurrency()")
+        judged = spawn.index('_exact_running = _server_props.get("exact_concurrency") is True')
         window = spawn[judged : judged + 6000]
         assert "if _exact_running:" in window
         assert "runs the mode, but it cannot hold every " in window

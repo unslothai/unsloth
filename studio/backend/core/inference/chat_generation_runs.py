@@ -409,7 +409,10 @@ def _minimum_lease_seconds() -> float:
             reason = "not a usable keep-alive cadence",
         )
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
-    return max(1.0, interval) * 3.0
+    # And the park probe: a swap build without the stream notices is asked at most once per
+    # _PARK_PROBE_MIN_INTERVAL_S, so a lease shorter than two of those could settle a healthy
+    # parked run between two probes.
+    return max(max(1.0, interval) * 3.0, 2.0 * _PARK_PROBE_MIN_INTERVAL_S)
 
 
 def _applied_lease_timeout(configured: float) -> float:
