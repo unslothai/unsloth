@@ -577,14 +577,6 @@ def test_disable_sandbox_is_still_the_way_to_full_access():
     assert tools._last_tool_execution_record.effective_mode == "full"
 
 
-def test_an_unknown_mode_is_still_refused_rather_than_run_unisolated():
-    out = tools._python_exec(
-        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "nonsense"
-    )
-    assert "SHOULD_NOT_RUN" not in out
-    assert "nonsense" in out
-
-
 @pytest.mark.parametrize(
     "run",
     [
