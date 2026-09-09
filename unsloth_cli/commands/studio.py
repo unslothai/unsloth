@@ -3231,6 +3231,33 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         pass
 
 
+def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
+    """Name the core pins a current prefetch cached, for the installer's core step.
+
+    The swap after a prefetch is the ordinary update, and its core step asks the index
+    which unsloth and unsloth-zoo are newest before it can notice the wheels are already
+    in the cache. With the index unreachable that step failed under uv and fell through
+    to pip, which on a venv carrying a known constraint conflict (mlx-vlm against the
+    transformers pin on macOS) started a resolution the index it had not got could not
+    finish. Given the pins, the installer retries the core step from the cache with
+    --offline before it falls back to pip. Only a marker written for THIS venv and THIS
+    cache is named: a prefetch that warmed another cache proves nothing about this one.
+    """
+    marker = _studio_prefetch.read_marker(STUDIO_HOME)
+    if marker is None:
+        return env
+    python = _studio_venv_python()
+    cache_dir = ((env or os.environ).get("UV_CACHE_DIR") or "").strip()
+    if python is None or not cache_dir:
+        return env
+    if not _studio_prefetch.marker_is_current(marker, python = str(python), cache_dir = cache_dir):
+        return env
+    pins = _studio_prefetch.prefetched_core_pins(marker)
+    if not pins:
+        return env
+    return {**(env or os.environ), _studio_prefetch.CORE_PINS_ENV: " ".join(pins)}
+
+
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
     """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
     what the install had just fetched."""
@@ -3266,6 +3293,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    env = _with_prefetched_core_pins(env)
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.

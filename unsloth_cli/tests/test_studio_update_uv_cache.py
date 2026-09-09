@@ -885,3 +885,68 @@ def test_files_outside_a_bucket_are_not_warm(tmp_path):
     (cache / "simple-v20" / "index.msgpack").write_bytes(b"\0")
 
     assert studio._uv_cache_has_packages(cache) is False
+
+
+# ── the prefetched core pins ──
+#
+# The swap after a background prefetch is this same update. Its core step asks the index
+# which unsloth and unsloth-zoo are newest before it can notice the wheels are cached, so
+# with the index unreachable it needs to be told what the prefetch already fetched, and
+# only for a marker written for this venv and the cache this run is about to read.
+
+
+def _prefetch_marker(studio, home: Path, cache: Path, venv_python: Path, **extra) -> None:
+    from unsloth_cli import _studio_prefetch
+
+    payload = {
+        "schema": _studio_prefetch.MARKER_SCHEMA,
+        "state": "ready",
+        "backend_version": "2026.9.5",
+        "cache_dir": str(cache),
+        "python": str(venv_python),
+        "core_plan": {"unsloth": "2026.9.5", "unsloth-zoo": "2026.9.4"},
+        "created_at": 0,
+    }
+    payload.update(extra)
+    (home / _studio_prefetch.PREFETCH_DIR_NAME).mkdir(parents = True, exist_ok = True)
+    _studio_prefetch.write_marker(home, payload)
+
+
+def test_a_current_prefetch_names_its_core_pins_for_the_installer(monkeypatch, tmp_path, caches):
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
+    assert seen["env"]["UNSLOTH_PREFETCHED_CORE_PINS"] == "unsloth==2026.9.5 unsloth-zoo==2026.9.4"
+
+
+@pytest.mark.parametrize("mismatch", ["python", "cache", "state", "plan"])
+def test_a_prefetch_that_does_not_describe_this_update_names_nothing(
+    monkeypatch, tmp_path, caches, mismatch
+):
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    extra = {
+        "python": {"python": str(tmp_path / "other" / "python")},
+        "cache": {"cache_dir": str(tmp_path / "other-uv")},
+        "state": {"state": "stale"},
+        "plan": {"state": "noop", "core_plan": {}},
+    }[mismatch]
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python, **extra)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]
+
+
+def test_no_prefetch_at_all_names_nothing(monkeypatch, tmp_path, caches):
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]

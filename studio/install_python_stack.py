@@ -7380,13 +7380,35 @@ def pip_install_try(
     return False
 
 
+def _prefetched_core_pins() -> "tuple[str, ...]":
+    """The `name==version` pins a background prefetch cached, as `unsloth studio update`
+    names them in UNSLOTH_PREFETCHED_CORE_PINS, or nothing.
+
+    Only well-formed pins: the value is a whitespace-separated list, and anything that
+    is not `name==version` (a flag, a bare name) is dropped rather than handed to uv.
+    """
+    raw = os.environ.get("UNSLOTH_PREFETCHED_CORE_PINS", "")
+    return tuple(
+        pin
+        for pin in raw.split()
+        if "==" in pin and not pin.startswith("-") and pin.count("==") == 1
+    )
+
+
 def pip_install(
     label: str,
     *args: str,
     req: Path | None = None,
     constrain: bool = True,
+    offline_pins: "tuple[str, ...] | None" = None,
 ) -> None:
-    """Build and run a pip install command (uses uv when available, falls back to pip)."""
+    """Build and run a pip install command (uses uv when available, falls back to pip).
+
+    *offline_pins*: exact pins a prefetch already put in the uv cache. When the uv
+    install fails, they are installed from the cache with --offline before pip is tried:
+    the swap after a prefetch is meant to work with the index unreachable, and the pip
+    fallback needs the index whenever it has to resolve anything.
+    """
     # Any pip operation can change which torch is installed, so the memoized
     # classification must not outlive it.
     _invalidate_torch_runtime_probe()
@@ -7441,6 +7463,35 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
+            if offline_pins:
+                # The pins were resolved against this cache by the prefetch's dry run and
+                # fetched into it, so uv can satisfy them without the index; the
+                # constraints still apply, so a pin that no longer fits is refused
+                # rather than installed.
+                _safe_print(
+                    _dim(
+                        "   uv could not reach the index; installing the prefetched core packages from the uv cache..."
+                    )
+                )
+                offline_cmd = _build_uv_cmd(("--offline", *offline_pins)) + constraint_args_uv
+                offline_result = subprocess.run(
+                    offline_cmd,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    env = _install_env_for_cmd(offline_cmd),
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                if offline_result.returncode == 0:
+                    if VERBOSE and offline_result.stdout:
+                        _safe_print(_redact_install_output(offline_result.stdout))
+                    return
+                _safe_print(
+                    _red(
+                        "   the prefetched core packages could not be installed from the cache either"
+                    )
+                )
+                if offline_result.stdout:
+                    _safe_print(_redact_install_output(offline_result.stdout))
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
@@ -7792,6 +7843,7 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             unsloth_spec,
             "unsloth-zoo",
+            offline_pins = _prefetched_core_pins(),
         )
 
     if not skip_base:

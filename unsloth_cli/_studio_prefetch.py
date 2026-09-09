@@ -562,6 +562,34 @@ def read_marker(studio_home: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+# The environment variable through which `unsloth studio update` names the core pins a
+# current prefetch cached. install_python_stack.py reads it when the index cannot be
+# reached during the core step and installs those pins from the uv cache with --offline,
+# instead of falling through to a pip resolution that needs the index it has not got.
+CORE_PINS_ENV = "UNSLOTH_PREFETCHED_CORE_PINS"
+
+
+def prefetched_core_pins(marker: Optional[dict]) -> list:
+    """`name==version` for every core package a marker planned, in plan order.
+
+    Empty for a marker that planned nothing (`noop`) or one that is not a marker at all.
+    Callers pair this with marker_is_current: a plan is only worth naming when the
+    cache it was fetched into is the cache the update is about to read.
+    """
+    plan = (marker or {}).get("core_plan") if isinstance(marker, dict) else None
+    if not isinstance(plan, dict):
+        return []
+    pins = []
+    for name, version in plan.items():
+        if not isinstance(name, str) or not isinstance(version, str):
+            continue
+        name, version = name.strip(), version.strip()
+        if not name or not version or any(ch.isspace() for ch in name + version):
+            continue
+        pins.append(f"{name}=={version}")
+    return pins
+
+
 def marker_is_current(
     marker: Optional[dict],
     *,
