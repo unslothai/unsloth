@@ -689,7 +689,13 @@ def amd_kfd_gpu_node_count() -> Optional[int]:
             with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
                 properties = fh.read()
         except (OSError, UnicodeDecodeError):
-            continue
+            # Unknown propagates, exactly as _amd_render_node_exists treats an unreadable
+            # vendor. Skipping the entry would answer with a SMALLER count on a multi-GPU
+            # host where one topology entry is momentarily unreadable, and an understated
+            # bound is the thing this function's own contract says calls a valid selector
+            # a blocker: HIP_VISIBLE_DEVICES=1 against a count of 1 reads as hiding every
+            # device, and the user is sent to clear a mask that hides nothing.
+            return None
         if not re.search(r"\bvendor_id\s+4098\b", properties):
             continue
         _simd = re.search(r"\bsimd_count\s+(\d+)\b", properties)

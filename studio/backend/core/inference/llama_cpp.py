@@ -9915,7 +9915,12 @@ class LlamaCppBackend:
                     _survivors += 1
                 return _survivors
 
-            def _hides_every_device(value: str, count: "int | None" = None) -> bool:
+            def _hides_every_device(
+                value: str,
+                count: "int | None" = None,
+                *,
+                strict: bool = False,
+            ) -> bool:
                 # CUDA and HIP read the list left to right and stop at the first entry
                 # that names no device, so a value that is empty, or whose FIRST entry
                 # is empty or negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still
@@ -9923,6 +9928,21 @@ class LlamaCppBackend:
                 first = value.split(",")[0].strip()
                 if first == "" or first.startswith("-"):
                     return True
+                # Nor does a token have to LOOK like a number to end the list. clr takes
+                # `index = atoi(str_id)` and rejects the token unless `str_id` is that
+                # index written back out, so HIP_VISIBLE_DEVICES=garbage (and 0x1, and 00)
+                # terminates on the FIRST token and leaves zero agents, exactly as -1 does.
+                # Asked only for the clr-layer variables: ROCr's own illegal-token rule is
+                # a separate parser and is applied by _is_an_illegal_rocr_selector. A token
+                # carrying a UUID is resolved against the agents instead, which nothing
+                # here can do, so it is left to _cannot_be_resolved rather than judged.
+                if strict and not first.lower().startswith("gpu-"):
+                    try:
+                        _index = int(first)
+                    except ValueError:
+                        return True
+                    if str(_index) != first:
+                        return True
                 # An entry that looks valid can still name nothing: the list stops at the
                 # first index no device answers to, so HIP_VISIBLE_DEVICES=3 on a one-GPU
                 # host exposes zero devices and is exactly the empty probe being explained.
@@ -9942,7 +9962,10 @@ class LlamaCppBackend:
                 # a blocker would invent a fault, and dropping it silently leaves the user
                 # with no mention of the one variable that may be hiding their card.
                 # Only the UUID form: every other non-index is Illegal to ROCr, which is a
-                # different answer and is decided by _is_an_illegal_rocr_selector.
+                # different answer and is decided by _is_an_illegal_rocr_selector. clr
+                # resolves a UUID too (rocdevice.cpp matches "GPU-" against each agent's
+                # HSA_AMD_AGENT_INFO_UUID), so the HIP layer gets the same answer rather
+                # than a silence that would be a suppression when the UUID names nothing.
                 first = value.split(",")[0].strip()
                 return first.lower().startswith("gpu-")
 
@@ -10016,12 +10039,13 @@ class LlamaCppBackend:
                 if _is_vulkan or not _consulted:
                     continue
                 # ROCr indexes the physical list, the HIP layer indexes ROCr's survivors.
-                _bound = _amd_gpu_count if var == "ROCR_VISIBLE_DEVICES" else _post_rocr_count
-                if _hides_every_device(raw, _bound) or (
-                    var == "ROCR_VISIBLE_DEVICES" and _is_an_illegal_rocr_selector(raw)
+                _rocr = var == "ROCR_VISIBLE_DEVICES"
+                _bound = _amd_gpu_count if _rocr else _post_rocr_count
+                if _hides_every_device(raw, _bound, strict = not _rocr) or (
+                    _rocr and _is_an_illegal_rocr_selector(raw)
                 ):
                     blocking.append(phrase)
-                elif var == "ROCR_VISIBLE_DEVICES" and _cannot_be_resolved(raw):
+                elif _cannot_be_resolved(raw):
                     unresolved.append(phrase)
             mask_note = f" ({', '.join(masks)})" if masks else ""
 

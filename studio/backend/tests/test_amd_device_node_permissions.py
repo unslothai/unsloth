@@ -21,6 +21,7 @@ that had to mknod would need root, which is the one account this bug cannot reac
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import shlex
@@ -988,6 +989,57 @@ def _install_sh_hint(
     return out.stdout
 
 
+def _a_node_a_membership_would_open(tmp_path, *, mode: int = 0o660):
+    """A fixture node whose owning group is one the rule calls JOINABLE, and its name.
+
+    A tmp_path file gets the runner's primary group, and on a root CI runner that group is
+    root -- which both halves deliberately classify as privileged and refuse to prescribe.
+    The arms below then assert the privileged sentence instead of the derivation they are
+    named for, so the group is CHOSEN rather than inherited. root may chgrp to any group;
+    an ordinary account may only use one it belongs to, and skips when every one of those
+    is privileged, since there is no node it could build that would test anything.
+    """
+    import grp
+
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(mode)
+    _candidates = (
+        [_g.gr_gid for _g in grp.getgrall()]
+        if os.geteuid() == 0
+        else [os.getgid(), *os.getgroups()]
+    )
+    for _gid in _candidates:
+        try:
+            _name = grp.getgrgid(_gid).gr_name
+        except KeyError:
+            continue
+        if _gid == 0 or _name in amd._PRIVILEGED_GROUPS:
+            continue
+        try:
+            os.chown(node, -1, _gid)
+        except OSError:
+            continue
+        return node, _name
+    pytest.skip("every group this account can use is one the rule refuses to prescribe")
+
+
+def test_the_group_fixture_never_hands_back_a_group_the_rule_refuses(tmp_path, monkeypatch):
+    """The guard for it, since a fixture that quietly picks a privileged group does not
+    fail -- it makes the arms below assert the wrong sentence, which is how this was
+    found. Standing in for the root runner by making the group this account would
+    otherwise inherit privileged, so the search has to move off it."""
+    import grp
+
+    monkeypatch.setattr(
+        amd,
+        "_PRIVILEGED_GROUPS",
+        frozenset(amd._PRIVILEGED_GROUPS | {grp.getgrgid(os.getgid()).gr_name}),
+    )
+    _node, _group = _a_node_a_membership_would_open(tmp_path)
+    assert _group not in amd._PRIVILEGED_GROUPS
+
+
 def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
     """The shell half of the same item, and the only arm of it that reads a real file:
     the message must name the group that owns the node it just refused. Fails before the
@@ -998,11 +1050,9 @@ def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
     NOT render,video is what makes that comparison mean something."""
     import subprocess
 
-    node = tmp_path / "renderD128"
-    node.write_bytes(b"")
     # 0660, the mode a real render node has: the installer now reads the mode as well as
     # the group, and a default 0644 is a node no membership opens.
-    node.chmod(0o660)
+    node, _group = _a_node_a_membership_would_open(tmp_path)
     owner = subprocess.run(
         ["stat", "-c", "%G", str(node)],
         capture_output = True,
@@ -1595,9 +1645,7 @@ def test_a_node_carrying_an_acl_is_not_answered_with_usermod(monkeypatch, tmp_pa
 def test_the_same_node_without_an_acl_is_still_prescribed_for(monkeypatch, tmp_path):
     """The control: the ordinary node, whose mode bits ARE the group's grant. Without it
     the fix could decline to prescribe anywhere, which removes the repair #10466 needs."""
-    node = tmp_path / "renderD128"
-    node.write_bytes(b"")
-    node.chmod(0o660)
+    node, _group = _a_node_a_membership_would_open(tmp_path)
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
     _not_the_owner = os.getuid() + 1
     monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
@@ -1742,17 +1790,24 @@ def test_a_rocr_ordinal_that_names_a_device_is_still_left_alone(monkeypatch, lin
     assert "visibility mask" not in reason
 
 
-def test_a_uuid_in_the_hip_layer_is_not_reported_as_unresolved(monkeypatch, linux):
-    """And the other boundary: only ROCr accepts a UUID. Reporting one for HIP would send
-    the user after the wrong variable, and HIP's own handling of a non-ordinal entry is a
-    separate question this does not answer."""
+def test_a_uuid_in_the_hip_layer_is_unresolved_rather_than_a_blocker(monkeypatch, linux):
+    """And the other boundary. An earlier revision asserted the opposite here, on the
+    claim that only ROCr accepts a UUID; rocdevice.cpp refutes it, matching a "GPU-" token
+    against each agent's own HSA_AMD_AGENT_INFO_UUID before it falls back to an ordinal.
+    So the token may name a device and may name nothing, exactly as under ROCr, and
+    nothing here can tell which: calling it a blocker invents a fault on a host whose
+    selector is fine, and saying nothing hides the one variable that may be the cause.
+
+    The bound is deliberately known here, since a UUID is not an index into it and must
+    not be judged against it either way."""
     reason = _reason_with_masks(
         monkeypatch,
         {"HIP_VISIBLE_DEVICES": "GPU-4b2c9f1e0a7d3b58"},
         {"hip"},
         gpu_count = 1,
     )
-    assert "cannot resolve" not in reason
+    assert "names a device this cannot resolve" in reason
+    assert "visibility mask is also in force" not in reason
 
 
 def _vulkan_reason_with_open_sibling(monkeypatch, openable: set) -> str:
@@ -1947,9 +2002,7 @@ def test_the_same_node_owned_by_someone_else_is_still_a_group(monkeypatch, tmp_p
     """The control: identical mode, a different owner. The owner class no longer applies,
     the group bits are the grant, and membership IS the repair. Without this the rule
     could be "never prescribe a group", which removes what #10466 asked for."""
-    node = tmp_path / "renderD128"
-    node.write_bytes(b"")
-    node.chmod(0o060)
+    node, _group = _a_node_a_membership_would_open(tmp_path, mode = 0o060)
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
     _not_the_owner = os.getuid() + 1
     monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
@@ -2003,9 +2056,7 @@ def test_the_installer_does_not_dangle_the_group_sentence(tmp_path):
 def test_the_installer_still_offers_the_group_when_there_is_one(tmp_path):
     """The control: a node whose group grants read and write still gets the sentence and
     the command, in one piece."""
-    node = tmp_path / "renderD128"
-    node.write_bytes(b"")
-    node.chmod(0o660)
+    node, _group = _a_node_a_membership_would_open(tmp_path)
     out = _install_sh_hint(str(node))
     assert "Add yourself to the" in out
     assert "usermod -a -G" in out
@@ -2873,9 +2924,7 @@ def test_the_repair_names_the_account_the_access_tests_answered_for(monkeypatch,
 
 def test_the_installer_names_the_account_id_reports(tmp_path):
     """The shell twin: `id -un` is the account the mode tests above answered for."""
-    node = tmp_path / "renderD128"
-    node.write_bytes(b"")
-    node.chmod(0o660)
+    node, _group = _a_node_a_membership_would_open(tmp_path)
     out = _install_sh_hint(str(node), env_user = "root", id_user = "ada")
     # The group is whatever owns a tmp_path file on the runner, so the account is what is
     # asserted -- naming a group here would be asserting about the runner.
@@ -3266,3 +3315,51 @@ def test_the_unnamed_gid_repair_says_to_start_a_new_session(monkeypatch, linux):
     hint = amd.amd_node_permission_hint()
     assert "groupadd -g 993 amdgpu993" in hint
     assert "log out and back in" in hint
+
+
+_KFD_GPU_NODE = "vendor_id 4098\nsimd_count 8\n"
+_KFD_CPU_NODE = "vendor_id 0\nsimd_count 0\n"
+
+
+def _kfd_topology(monkeypatch, entries: dict):
+    """Stub /sys/class/kfd: entry name -> its properties text, or None for unreadable."""
+    monkeypatch.setattr(amd.os, "listdir", lambda _path: list(entries))
+
+    def _open(path, *_a, **_k):
+        _text = entries.get(os.path.basename(os.path.dirname(str(path))))
+        if _text is None:
+            raise OSError("unreadable")
+        return io.StringIO(_text)
+
+    monkeypatch.setattr(amd, "open", _open, raising = False)
+
+
+def test_the_gpu_count_reads_the_topology(monkeypatch):
+    """The control for the arm below, and for the helper itself: the CPU node every KFD
+    topology carries is excluded and the GPU node is counted."""
+    _kfd_topology(monkeypatch, {"0": _KFD_CPU_NODE, "1": _KFD_GPU_NODE})
+    assert amd.amd_kfd_gpu_node_count() == 1
+
+
+def test_an_unreadable_topology_entry_makes_the_whole_count_unknown(monkeypatch):
+    """One entry temporarily unreadable on a two-GPU host used to answer 1 rather than
+    unknown, and an understated bound is what calls a valid selector a blocker: with a
+    count of 1, HIP_VISIBLE_DEVICES=1 reads as hiding every device and the user is told to
+    clear a mask that hides nothing. Unknown bounds nothing, which is the documented
+    contract and what _amd_render_node_exists already does with an unreadable vendor."""
+    _kfd_topology(monkeypatch, {"0": _KFD_GPU_NODE, "1": None, "2": _KFD_GPU_NODE})
+    assert amd.amd_kfd_gpu_node_count() is None
+
+
+def test_an_unusable_hip_selector_is_a_blocker(monkeypatch, linux):
+    """clr's list terminates at the first token it cannot use, and a token does not have
+    to look numeric to be unusable: rocdevice.cpp takes `index = atoi(str_id)` and rejects
+    it unless `str_id` is that index written back out. So HIP_VISIBLE_DEVICES=garbage
+    leaves zero agents exactly as -1 does, and joining the group leaves the probe as empty
+    as it was.
+
+    Fails before the fix, which asked only whether the first token was a digit and let
+    everything else through as "not a filter"."""
+    reason = _reason_with_masks(monkeypatch, {"HIP_VISIBLE_DEVICES": "garbage"}, {"hip"})
+    assert "HIP_VISIBLE_DEVICES='garbage'" in reason
+    assert "visibility mask is also in force" in reason
