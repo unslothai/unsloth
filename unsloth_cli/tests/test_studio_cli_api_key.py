@@ -119,6 +119,7 @@ def test_different_names_keep_separate_keys(studio_home, monkeypatch):
         ("k" * 70 + "A", "k" * 70 + "B"),  # differ only past the 64-char cut
         ("///", "cli"),  # sanitizes to empty, falls back to "cli"
         ("cli", "CLI"),  # collides on APFS / NTFS case folding
+        ("中文", "日本"),  # non-ASCII stems both fold to "_", so only the digest separates them
     ],
 )
 def test_distinct_names_never_share_a_cache_file(studio_home, monkeypatch, first_name, second_name):
@@ -139,7 +140,24 @@ def test_distinct_names_never_share_a_cache_file(studio_home, monkeypatch, first
     assert storage.created == [first_name, second_name]
 
 
-@pytest.mark.parametrize("name", ["cli", "my key", "café", "k" * 200, "..", "-", "x/y"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "cli",
+        "my key",
+        "café",
+        "k" * 200,
+        "..",
+        "-",
+        "x/y",
+        # str.isalnum() is true for these, and each is 4 UTF-8 bytes: slicing to 64
+        # CHARACTERS gave a 282-byte basename, over the 255-BYTE NAME_MAX. The cache
+        # then missed with ENAMETOOLONG on every launch and minted a key each time.
+        "\U0001d7d8" * 64,
+        "中文" * 100,
+        "\U0001f600" * 80,
+    ],
+)
 def test_cache_path_is_a_safe_filename_inside_auth(studio_home, name):
     studio_mod, tmp_path = studio_home
     path = studio_mod._cli_api_key_secret_path(name)

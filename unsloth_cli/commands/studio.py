@@ -692,8 +692,17 @@ def _cli_api_key_secret_path(name: str) -> Path:
     characters and -- on case-insensitive filesystems (APFS, NTFS) -- `cli` and
     `CLI`. Sharing a file means a run asking for one label silently reuses the
     credential minted under another, which also couples their revocation.
+
+    The stem is held to ASCII so 64 characters is also 64 bytes. `str.isalnum()`
+    is true for multibyte alphanumerics, and NAME_MAX is a 255 BYTE limit on ext4
+    / APFS / NTFS, so 64 four-byte characters made a 282-byte basename: every
+    launch then failed to cache with ENAMETOOLONG and minted another key, which is
+    #10595 all over again. Identity lives in the digest, so folding these to `_`
+    costs only readability.
     """
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name).strip("_")
+    safe = "".join(
+        ch if (ch.isascii() and ch.isalnum()) or ch in "-_" else "_" for ch in name
+    ).strip("_")
     if not safe:
         safe = "cli"
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
