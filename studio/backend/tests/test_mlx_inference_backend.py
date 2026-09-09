@@ -4807,3 +4807,78 @@ def test_mlx_reasoning_keeps_an_eos_control_that_closes_a_tool_envelope(monkeypa
     }
     snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 5, 7}, 7)
     assert snapshots[-1].endswith("<|end_message|>")
+
+
+def test_mlx_keeps_a_think_closer_whose_opener_came_from_the_prefill(monkeypatch):
+    """The restored ``<think>`` lives in the PROMPT, not in the generated ids. Judging the
+    stop token on generated text alone found no opener, dropped the ``</think>``, and left
+    the reasoning block open so it swallowed the visible answer."""
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill",
+        lambda *_a, **_k: "<think>",
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "prompt <think>",
+    )
+
+    THINK_CLOSE = 9
+
+    class _Tok:
+        chat_template = "x"
+        all_special_ids = (THINK_CLOSE,)
+        eos_token_id = THINK_CLOSE
+        _IDS = {THINK_CLOSE: "</think>"}
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = False,
+            **_k,
+        ):
+            return "".join(
+                self._IDS.get(i, "reasoning")
+                for i in ids
+                if not (skip_special_tokens and i in self.all_special_ids)
+            )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kw: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kw: None
+
+    def _stream_generate(_model, _tokenizer, **_kw):
+        for tok in (1, THINK_CLOSE):
+            yield SimpleNamespace(token = tok, prompt_tokens = 2, generation_tokens = 1)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "g"})
+    backend._tokenizer = _Tok()
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_with_adapter_control(
+            use_adapter = False,
+            messages = [{"role": "user", "content": "ping"}],
+            tools = [{"function": {"name": "web_search"}}],
+            max_new_tokens = 2,
+        )
+    )
+    final = snapshots[-1]
+    assert final.startswith("<think>"), final
+    assert "</think>" in final, f"the closer was trimmed, leaving the block open: {final!r}"

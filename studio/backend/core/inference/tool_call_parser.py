@@ -697,6 +697,9 @@ def _top_level_args_values(text: str, start: int, end: int) -> list:
                     if k < end and text[k] == "{":
                         stop = _balanced_brace_end(text, k)
                         if stop is None:
+                            # Truncated mid-stream: the body still reaches the healer, so it
+                            # runs to ``end`` rather than going unmasked.
+                            values.append((k + 1, end, False))
                             return values
                         values.append((k + 1, stop, False))
                         i = stop + 1
@@ -706,6 +709,7 @@ def _top_level_args_values(text: str, start: int, end: int) -> list:
                         while stop < end and text[stop] != '"':
                             stop += 2 if text[stop] == "\\" else 1
                         if stop >= end:
+                            values.append((k + 1, end, True))
                             return values
                         values.append((k + 1, stop, True))
                         i = stop + 1
@@ -793,10 +797,12 @@ def _escaped_string_content_spans(text: str, start: int, end: int) -> list:
 
 # A wrapper immediately in front makes the call trusted, not markerless; this mask runs before
 # the passes that consume those wrappers.
+# ``[CALL_ID]`` is NOT one: in the Mistral v11 form it follows the name INSIDE a
+# ``[TOOL_CALLS]`` envelope, which is already trusted here, so on its own it only let
+# ``[CALL_ID] terminal[ARGS]{...}`` borrow a trust no wrapper had granted.
 _MARKERLESS_TRUSTED_PREFIXES = (
     "<|tool_call>",
     "[TOOL_CALLS]",
-    "[CALL_ID]",
     "<tool_call>",
     "<|python_tag|>",
 )
@@ -941,6 +947,19 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
         shift = cursor + len(rest) - len(probe)
         lead = _leading_json_value_end(probe)
         if not lead:
+            # An UNCLOSED leading object still names its call and the healer still parses it,
+            # so an execution body has to stay opaque through EOF; breaking here left the
+            # wrapper quoted inside a truncated ``terminal`` call visible and promotable.
+            if probe.startswith("{") and _markerless_execution_class(
+                _top_level_bare_json_name(probe)
+            ):
+                for begin, stop, is_string in _top_level_args_values(probe, 0, len(probe)):
+                    inner = (
+                        _escaped_string_content_spans(probe, begin, stop)
+                        if is_string
+                        else _string_content_spans(probe, begin, stop)
+                    )
+                    spans.extend((a + shift, b + shift) for a, b in inner)
             break
         # A leading ARRAY is a valid JSON value with no object in it, so ``index`` raised.
         obj = probe.find("{", 0, lead)
@@ -3139,7 +3158,7 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
         i += 1
         while i < n and probe[i] in " \t\r\n":
             i += 1
-        if key == "name" and i < n and probe[i] == '"':
+        if key == "name" and i < n:
             try:
                 value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
@@ -3147,10 +3166,11 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
             # Recorded, not returned: ``json.loads`` keeps the LAST duplicate, so taking the
             # first classified ``{"name":"terminal","name":"web_search",...}`` as blocked and
             # masked the arguments that the parser then promoted web_search with.
-            # A falsey or non-string name stays absent so the ``function`` alias can win,
-            # matching ``obj.get("name") or obj.get("function")``.
-            if isinstance(value, str) and value:
-                name_value = value
+            # A falsey LAST name still OVERWRITES, so the ``function`` alias wins exactly when
+            # it does for ``obj.get("name") or obj.get("function")``; keeping an earlier truthy
+            # name here read ``{"name":"web_search","name":"","function":"terminal"}`` as
+            # web_search and left the terminal body visible.
+            name_value = value if isinstance(value, str) else ""
             i += consumed
             continue
         if key == "function" and function_value is None and i < n and probe[i] == '"':

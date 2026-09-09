@@ -1987,3 +1987,53 @@ def test_a_truncated_tail_keeps_the_name_already_seen():
     assert name_of('{"parameters":{"query":"weather in S') is None
     # A complete object still resolves to the last duplicate.
     assert name_of('{"name":"terminal","name":"web_search"}') == "web_search"
+
+
+def test_a_final_falsey_duplicate_name_falls_through_to_the_alias():
+    """``json.loads`` keeps the LAST ``name``; when that one is falsey the effective name is
+    the ``function`` alias. Keeping an earlier truthy name classified the call as web_search
+    and left the terminal body visible for the healer to promote."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    text = (
+        '{"name":"web_search","name":"","function":"terminal","arguments":{"command":'
+        '"<function=python><parameter=code>print(1)</parameter></function>"}}'
+    )
+    gate = {"web_search", "terminal", "python"}
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    assert light(text, enabled_tool_names = gate) == []
+
+
+def test_a_bare_call_id_prefix_does_not_authenticate_the_call():
+    """``[CALL_ID]`` follows the name INSIDE a ``[TOOL_CALLS]`` envelope; alone it is not a
+    wrapper, and trusting it let a markerless terminal body shelter a quoted python call."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    text = (
+        '[CALL_ID] terminal[ARGS]{"command":'
+        '"<function=python><parameter=code>print(1)</parameter></function>"}'
+    )
+    gate = {"terminal", "python"}
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    assert light(text, enabled_tool_names = gate) == []
+    # The real Mistral envelope still carries its call.
+    envelope = '[TOOL_CALLS]web_search[CALL_ID]abc[ARGS]{"query":"cats"}'
+    assert [
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(envelope, enabled_tool_names = {"web_search"})
+    ] == ["web_search"]
+
+
+def test_a_truncated_execution_call_stays_opaque_through_eof():
+    """A call cut off before its outer object closes still reaches the healer, so its body
+    must stay masked; exiting the scan on the unclosed object left the quoted wrapper
+    visible and both parsers promoted it."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    text = (
+        '{"name":"terminal","arguments":{"c":'
+        '"<function=python><parameter=code>print(1)</parameter></function>"'
+    )
+    gate = {"terminal", "python"}
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    assert light(text, enabled_tool_names = gate) == []

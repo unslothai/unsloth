@@ -3099,7 +3099,10 @@ class MLXInferenceBackend:
                                 # be the closer strict parsing needs.
                                 _whole = native_token_decoder.decode(_ids)
                                 _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
-                                if not closes_an_open_envelope(_whole, _closer):
+                                # With the prefill: a restored ``<think>`` opener lives in the
+                                # PROMPT, so judging the closer on generated ids alone dropped
+                                # the ``</think>`` and left the block open over the answer.
+                                if not closes_an_open_envelope(think_prefix + _whole, _closer):
                                     _ids = _ids[:-1]
                             sampled = native_token_decoder.decode(_ids)
                         else:
