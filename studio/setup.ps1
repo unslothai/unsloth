@@ -1610,16 +1610,24 @@ function Test-StudioCanDefineNativeTypes {
         $script:StudioCanDefineNativeTypes = $false
         return $false
     }
+    # Read-and-zero is the only outcome that skips the probe. A query that threw, returned
+    # nothing, or returned an object without the property is UNKNOWN, and treating unknown as
+    # unrestricted lets option 19 through on a host whose CIM query failed. install.ps1
+    # carries the full note.
+    $known = $false
     $active = $false
     try {
         $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
             -ClassName "Win32_DeviceGuard" -ErrorAction Stop
-        # 0 off, 1 audit, 2 enforced.
-        if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
-            $active = $true
+        # 0 off, 1 audit, 2 enforced. A null property is not a zero.
+        if ($guard -and $null -ne $guard.UsermodeCodeIntegrityPolicyEnforcementStatus) {
+            $known = $true
+            if ([int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
+                $active = $true
+            }
         }
     } catch {}
-    if (-not $active) {
+    if ($known -and -not $active) {
         $script:StudioCanDefineNativeTypes = $true
         return $true
     }
@@ -1634,6 +1642,9 @@ function Test-StudioCanDefineNativeTypes {
 # The same emit, in a process that is allowed to die. A blocked dynamic load usually stops the
 # parent, so this is asked in a child; silence is refusal.
 function Test-StudioEmitInChildProcess {
+    # HostPath is for the tests, which have no policy to trigger the real path and cannot
+    # shadow $PSHOME, since it is read-only. Production never passes it.
+    param([string]$HostPath)
     $probe = @'
 try {
     $name = New-Object System.Reflection.AssemblyName 'UnslothStudioEmitProbe'
@@ -1643,44 +1654,86 @@ try {
     catch { $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, $access) }
     $module = $assembly.DefineDynamicModule('UnslothStudioEmitProbe')
     $builder = $module.DefineType('UnslothStudioEmitProbe', 'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
-    $null = $builder.DefinePInvokeMethod('CloseHandle', 'kernel32.dll', 'CloseHandle',
+    $method = $builder.DefinePInvokeMethod('CloseHandle', 'kernel32.dll', 'CloseHandle',
         'Public, Static, HideBySig, PinvokeImpl',
         [System.Reflection.CallingConventions]::Standard, [bool], @([IntPtr]),
         [System.Runtime.InteropServices.CallingConvention]::Winapi,
         [System.Runtime.InteropServices.CharSet]::Ansi)
+    $method.SetImplementationFlags(
+        $method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
     $null = $builder.CreateType()
-    if ('UnslothStudioEmitProbe' -as [type]) { Write-Output 'STUDIO_EMIT_OK' }
+    if (-not ('UnslothStudioEmitProbe' -as [type])) { exit 1 }
+    Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode)
+    exit 0
 } catch {}
+exit 1
 '@
-    # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other way.
-    $hostExe = $null
-    try {
-        $leaves = if ($PSVersionTable.PSEdition -eq "Core") { @("pwsh.exe", "pwsh") }
-                  else { @("powershell.exe", "powershell") }
-        foreach ($leaf in $leaves) {
-            $candidate = Join-Path $PSHOME $leaf
-            if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate; break }
-        }
-    } catch {}
+    # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other
+    # way, and the emit that matters is the one this interpreter will make. Both
+    # spellings of the leaf, so the function is the same one a non-Windows lane can
+    # execute end to end rather than a Windows-only path nothing tests.
+    $hostExe = $HostPath
+    if (-not $hostExe) {
+        try {
+            $leaves = if ($PSVersionTable.PSEdition -eq "Core") { @("pwsh.exe", "pwsh") }
+                      else { @("powershell.exe", "powershell") }
+            foreach ($leaf in $leaves) {
+                $candidate = Join-Path $PSHOME $leaf
+                if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate; break }
+            }
+        } catch {}
+    }
     if (-not $hostExe) { return $false }
+    # Through a Process object rather than the call operator, for a deadline. The call
+    # operator waits for the child forever, and "forever" is reachable: a security
+    # product inspecting a freshly spawned interpreter, a wedged runtime start, a child
+    # that blocks on shutdown. A probe that exists to keep the installer alive must not
+    # be the thing that hangs it.
+    #
+    # BOTH streams are redirected and drained asynchronously. Draining is what stops a
+    # chatty child filling a pipe and deadlocking against the wait. Redirecting stderr as
+    # well is the difference between a probe that is invisible and one that can write
+    # into the installer's own stderr, which the desktop app reads, and which anything
+    # the child spawns would inherit and hold open.
+    #
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $hostExe
+    $info.Arguments = "-NoProfile -NonInteractive -Command `"$probe`""
+    $info.UseShellExecute = $false
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.CreateNoWindow = $true
+    $child = $null
     try {
-    # SINGLE quotes throughout, and that is load-bearing rather than style. Windows
-    # PowerShell 5.1 binds a native command's arguments the legacy way: it wraps the
-    # value in double quotes and appends the body verbatim, without escaping the double
-    # quotes inside it. The first one inside therefore CLOSES the wrapper, the rest of
-    # the probe is re-split on whitespace, and the child runs
-    # `if (UnslothStudioEmitProbe -as [type])`, a command lookup that throws into the
-    # probe's own catch. The answer would be "no emit here" on every 5.1 host, which is
-    # the interpreter studio/src-tauri/src/install.rs spawns. A body with no double
-    # quote has nothing to lose. Passing the body base64-encoded also fixes it
-    # and is what the documentation suggests, but base64 PowerShell is the shape
-    # this whole change exists to stop resembling, and
-    # tests/studio/test_installer_av_shapes.py rejects it. Verified both ways
-        # with $PSNativeCommandArgumentPassing.
-        $out = & $hostExe -NoProfile -NonInteractive -Command $probe 2>$null
-        return (($out | Out-String) -match "STUDIO_EMIT_OK")
+        $child = [System.Diagnostics.Process]::Start($info)
+        $reader = $child.StandardOutput.ReadToEndAsync()
+        $null = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit(20000)) {
+            try { $child.Kill() } catch {}
+            return $false
+        }
+        # Exit code AND an exact record. A marker followed by a crash is a crash: the
+        # question is whether this machine can emit and live, and a child that printed
+        # and then died has answered no. FullLanguage because an approved script can run
+        # in FullLanguage while a fresh inline command does not, and a child restricted
+        # differently from its parent has measured a different machine.
+        if ($child.ExitCode -ne 0) { return $false }
+        $lines = ($reader.GetAwaiter().GetResult() -split "`r?`n")
+        foreach ($line in $lines) {
+            if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") { return $true }
+        }
+        return $false
     } catch {
         return $false
+    } finally {
+        if ($child) {
+            # The read end goes first. A killed child can leave a grandchild holding the
+            # write end of that pipe, and the pending async read then keeps this process
+            # alive past the deadline it just enforced.
+            try { $child.StandardOutput.Close() } catch {}
+            try { $child.StandardError.Close() } catch {}
+            try { $child.Dispose() } catch {}
+        }
     }
 }
 

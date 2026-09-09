@@ -86,7 +86,7 @@ foreach ($pair in @(@("install.ps1", $installPath), @("studio/setup.ps1", $setup
 # without the native side still gets an answer, and gets told it is inexact.
 $fns = @(
     "Write-StudioLine", "Write-StudioFinalPathDegraded",
-    "Test-StudioCanDefineNativeTypes", "New-StudioDynamicAssembly",
+    "Test-StudioCanDefineNativeTypes", "Test-StudioEmitInChildProcess", "New-StudioDynamicAssembly",
     "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType", "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",

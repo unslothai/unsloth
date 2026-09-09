@@ -1808,6 +1808,76 @@ def test_the_probe_body_carries_no_double_quote(script: str):
     )
 
 
+# The acceptance rules, one child at a time. $PSHOME is an ordinary variable, so a fake host
+# under a temporary one lets each rule be exercised without a policy, a Windows box or luck.
+# Every case here is a way a real child can answer badly: it printed the marker and then died,
+# it ran in a language mode its parent did not, it printed something that merely CONTAINS the
+# marker, or it never returned at all.
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize(
+    "emits,code,expected,label",
+    [
+        ("STUDIO_EMIT_OK FullLanguage", 0, "True", "the good case"),
+        ("STUDIO_EMIT_OK FullLanguage", 23, "False", "marker then a bad exit"),
+        ("STUDIO_EMIT_OK ConstrainedLanguage", 0, "False", "a child restricted differently"),
+        ("NOT_STUDIO_EMIT_OK_FAILURE", 0, "False", "a line that merely contains the marker"),
+        ("", 0, "False", "silence"),
+    ],
+)
+def test_the_probe_only_accepts_a_clean_exact_answer(
+    script: str, emits: str, code: int, expected: str, label: str, tmp_path: Path
+):
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    home = tmp_path / "fakehome"
+    home.mkdir()
+    fake = home / "pwsh"
+    fake.write_text(
+        "#!/bin/sh\n" + (f'echo "{emits}"\n' if emits else "") + f"exit {code}\n",
+        encoding = "utf-8",
+    )
+    fake.chmod(0o755)
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _one_function(source, "Test-StudioEmitInChildProcess"),
+                f'Write-Output "ANSWER:$(Test-StudioEmitInChildProcess -HostPath \'{fake}\')"',
+            ]
+        )
+    )
+    assert result.returncode == 0, f"{label}: {result.stderr}"
+    assert _lines(result, "ANSWER:") == [f"ANSWER:{expected}"], label
+
+
+@requires_pwsh
+def test_a_child_that_never_returns_does_not_hang_the_installer(tmp_path: Path):
+    """The deadline. A probe that exists to keep the installer alive must not be the thing
+    that wedges it, and the call operator waits forever. Reachable in practice through a
+    security product inspecting a freshly spawned interpreter."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    home = tmp_path / "fakehome"
+    home.mkdir()
+    fake = home / "pwsh"
+    fake.write_text("#!/bin/sh\nsleep 600\n", encoding = "utf-8")
+    fake.chmod(0o755)
+    # The wait is bounded in the script; this only has to outlast it.
+    started = time.monotonic()
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _one_function(source, "Test-StudioEmitInChildProcess"),
+                f'Write-Output "ANSWER:$(Test-StudioEmitInChildProcess -HostPath \'{fake}\')"',
+            ]
+        )
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "ANSWER:") == ["ANSWER:False"]
+    assert elapsed < 60, f"the probe took {elapsed:.0f}s, so the deadline is not bounding it"
+
+
 # Legacy is not a curiosity: it is how Windows PowerShell 5.1 ALWAYS binds a native
 # command's arguments, and 5.1 is the interpreter studio/src-tauri/src/install.rs spawns.
 # It wraps the value in quotes and appends the body verbatim without escaping the quotes
@@ -1842,8 +1912,23 @@ def test_the_child_probe_survives_the_5_1_argument_binder(script: str, binding: 
 
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
-def test_an_unreadable_device_guard_does_not_refuse(script: str):
-    """Most machines have no Device Guard provider at all. Unreadable means unrestricted."""
+@pytest.mark.parametrize(
+    "provider,label",
+    [
+        ('throw "no such namespace"', "the query throws"),
+        ("$null", "the query returns nothing"),
+        ("[pscustomobject]@{ Other = 1 }", "the object has no status property"),
+    ],
+)
+def test_an_unreadable_policy_asks_the_probe_rather_than_assuming(
+    script: str, provider: str, label: str
+):
+    """Unknown is not zero.
+
+    Treating an unreadable Device Guard as unrestricted lets exactly one case through: option
+    19 enforced on a host whose CIM query happens to fail, where the documented outcome is a
+    stopped process. The cost of asking anyway is one short-lived child.
+    """
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
     result = _run_powershell(
         "\n".join(
@@ -1852,14 +1937,18 @@ def test_an_unreadable_device_guard_does_not_refuse(script: str):
                 _gate(source),
                 "function Get-CimInstance {",
                 "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
-                '    throw "no such namespace"',
+                f"    {provider}",
                 "}",
+                "$script:ProbeCalls = 0",
+                "function Test-StudioEmitInChildProcess { $script:ProbeCalls++; return $true }",
                 'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
+                'Write-Output "CALLS:$script:ProbeCalls"',
             ]
         )
     )
-    assert result.returncode == 0, result.stderr
-    assert _lines(result, "CAN:") == ["CAN:True"]
+    assert result.returncode == 0, f"{label}: {result.stderr}"
+    assert _lines(result, "CALLS:") == ["CALLS:1"], label
+    assert _lines(result, "CAN:") == ["CAN:True"], label
 
 
 # CharSet is not decoration on an emitted import: it picks the export the runtime looks for
