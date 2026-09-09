@@ -3052,25 +3052,55 @@ def rule_inst_003_peft_torchao(
     return findings
 
 
-def _torchcodec_index_publishes_abi_stable(torch_version: str) -> bool:
-    """Can this torch's wheel index serve torchcodec 0.12+?
+_INDEX_URL_RE = re.compile(r"(?:(?:^|\s)(?:-i|--index-url))(?:\s+|=)(\S+)", re.IGNORECASE)
 
-    The ABI exemption is about loadability. cu128 (Colab) publishes no 0.12+, so a pin
-    that would load is still uninstallable there. Untagged torch is PyPI, which does.
+
+def _primary_index_url(inv: PipInvocation) -> str:
+    """Last `--index-url` / `-i` on this command. pip's last one wins."""
+    found = ""
+    for match in _INDEX_URL_RE.finditer(inv.raw):
+        found = match.group(1).strip("'\"")
+    return found
+
+
+def _index_leaf(url: str) -> str:
+    path = url.split("?", 1)[0].rstrip("/")
+    return path.rsplit("/", 1)[-1].lower() if path else ""
+
+
+def _torchcodec_install_index_publishes_abi_stable(install_cell: str) -> bool:
+    """Can the index used to install torchcodec serve 0.12+?
+
+    Torch's `+cu128` tag is not that index: Colab's resident torch is cu128 even when a
+    later `pip install torchcodec>=0.12` comes from PyPI. An already-installed oracle
+    codec has no install line, so it stays on the ABI rule.
     """
-    tag = str(torch_version or "").partition("+")[2].strip().lower()
-    return tag not in TORCHCODEC_ABI_STABLE_MISSING_INDEXES
+    last: PipInvocation | None = None
+    for inv in unconditional_pip_invocations(install_cell):
+        if inv.action != "install" or _is_dry_run(inv):
+            continue
+        for raw in inv.packages:
+            spec = parse_spec(raw)
+            if spec is not None and _canonical_project(spec.name) == "torchcodec":
+                last = inv
+                break
+    if last is None:
+        return True
+    return _index_leaf(_primary_index_url(last)) not in TORCHCODEC_ABI_STABLE_MISSING_INDEXES
 
 
-def _codec_works_above(torch_floor: str, codec_minor: str) -> bool:
+def _codec_works_above(
+    torch_floor: str, codec_minor: str, *, index_publishes_abi_stable: bool = True
+) -> bool:
     """Is there ANY torch minor at or above `torch_floor` this codec minor can pair with?
 
     A floor is normally too weak to judge, since the row that applies depends on where pip lands,
     but not when every candidate is excluded: `torch>=2.11` with `torchcodec==0.10` fails on 2.11
     and on everything past it, whichever release pip picks."""
-    # Past the table, only the ABI rule can apply, and it needs a codec at or above its floor.
+    # Past the table, only the ABI rule can apply, and it needs a codec at or above its floor
+    # on an index that actually publishes that line.
     if at_least(codec_minor, TORCHCODEC_ABI_STABLE_CODEC):
-        return True
+        return index_publishes_abi_stable
     return any(
         cmp_versions(row, torch_floor) >= 0 and codec_minor in minors
         for row, minors in TORCH_TORCHCODEC.items()
@@ -3100,8 +3130,9 @@ def rule_inst_004_torchcodec_torch(
     codec_clears_abi = at_least(codec_v, TORCHCODEC_ABI_STABLE_CODEC) or (
         not codec_exact and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
     )
+    index_ok = _torchcodec_install_index_publishes_abi_stable(install_cell)
     if at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH) and codec_clears_abi:
-        if _torchcodec_index_publishes_abi_stable(torch_v):
+        if index_ok:
             return findings  # ABI-stable pairing, not locked to one torch minor
         # Index cannot serve 0.12+: fall through to lockstep, or flag past the table.
     t_minor = version_minor(torch_v)
@@ -3118,7 +3149,7 @@ def rule_inst_004_torchcodec_torch(
                     cell = cell_idx,
                     severity = "error",
                     message = f"torch=={torch_v} is on an index that publishes no torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0; torchcodec=={codec_v} cannot be installed there",
-                    hint = f"pin a lockstep torchcodec release this index carries, or use an index that publishes {TORCHCODEC_ABI_STABLE_CODEC}+",
+                    hint = f"use an index that publishes {TORCHCODEC_ABI_STABLE_CODEC}+, or downgrade torch together with a lockstep torchcodec that index carries",
                 )
             )
             return findings
@@ -3139,7 +3170,21 @@ def rule_inst_004_torchcodec_torch(
     if not torch_exact:
         # The row that applies depends on which torch the floor resolves to, unless no release at or
         # above it can take this codec at all, which fails whichever torch pip picks.
-        if codec_exact and not _codec_works_above(t_minor, c_minor):
+        if codec_clears_abi and not index_ok:
+            findings.append(
+                Finding(
+                    rule = "R-INST-004",
+                    file = file,
+                    cell = cell_idx,
+                    severity = "error",
+                    message = f"torch>={torch_v} is on an index that publishes no torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0; torchcodec=={codec_v} cannot be installed there",
+                    hint = f"use an index that publishes {TORCHCODEC_ABI_STABLE_CODEC}+, or downgrade torch together with a lockstep torchcodec that index carries",
+                )
+            )
+            return findings
+        if codec_exact and not _codec_works_above(
+            t_minor, c_minor, index_publishes_abi_stable = index_ok
+        ):
             findings.append(
                 Finding(
                     rule = "R-INST-004",
