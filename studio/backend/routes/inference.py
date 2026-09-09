@@ -2621,10 +2621,12 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             victims = controller.observe(completion_id, generated)
             # A solo chat has nobody to preempt and nobody waiting for its cells, so the
             # round trip can decide nothing there. Admission and the resume wait pass
-            # `force`, so both fresh-read barriers still read.
-            if not victims and controller.contended():
+            # `force`, so both fresh-read barriers still read. Contended, it is read even
+            # after a choice: the reclaim below plans from this reading.
+            if controller.contended():
                 _gguf_refresh_residency(controller)
-                victims = controller.plan_preemptions(needed = 0)
+                if not victims:
+                    victims = controller.plan_preemptions(needed = 0)
             if victims:
                 # Dead residue first: erasing an idle slot costs a future prefix-cache hit,
                 # while pausing costs a live conversation its progress.
