@@ -1919,9 +1919,7 @@ def _cmd_status(benchmark: bool = False) -> int:
                     f"below ~{health['expected_gbps']:.0f} Gb/s per rail."
                 )
             else:
-                print(
-                    f"  MEASURED {health['gbps']:.2f} Gb/s on {rail['ib_device']} -- healthy."
-                )
+                print(f"  MEASURED {health['gbps']:.2f} Gb/s on {rail['ib_device']} -- healthy.")
         if degraded:
             print(f"  {HOTPLUG_NOTE}")
     elif peer_ip:
@@ -2818,12 +2816,25 @@ def model_size_gib(target: str) -> Optional[float]:
 # strings and arrays carry their own length.
 _GGUF_FIXED = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _GGUF_UNPACK = {
-    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
-    6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    6: "<f",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+    12: "<d",
 }
 
 
-def _gguf_read_value(handle, value_type: int, depth: int = 0):
+def _gguf_read_value(
+    handle,
+    value_type: int,
+    depth: int = 0,
+):
     """One GGUF value. Arrays of fixed-width elements are seeked over rather than read: the
     tokenizer arrays are the bulk of the header and none of them is wanted here."""
     if value_type in _GGUF_FIXED:
@@ -3952,7 +3963,9 @@ def _cmd_serve(
         return 0
     peer_ip = peer_ip_for()
     if peer_ip is None:
-        print("  cannot serve across both Sparks: no configured peer rail (run `unsloth spark setup`)")
+        print(
+            "  cannot serve across both Sparks: no configured peer rail (run `unsloth spark setup`)"
+        )
         return 1
     engines = max(1, engines)
 
@@ -4086,10 +4099,7 @@ def _cmd_serve(
     print("")
     print(f"  1. Start {engines} rpc-server(s) on the peer, one per engine:")
     for i in range(engines):
-        print(
-            f"     ssh {peer_ip} '{peer_command} "
-            f"-H 0.0.0.0 -p {rpc_port + i} -c'"
-        )
+        print(f"     ssh {peer_ip} '{peer_command} " f"-H 0.0.0.0 -p {rpc_port + i} -c'")
     print("")
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
     # Resolved on its own: an rpc-server found in a source tree says nothing about where
@@ -4516,9 +4526,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             extra = args.pipeline_args or ""
             if args.grad_checkpoint and "--grad-checkpoint" not in extra:
                 extra = f"{extra} --grad-checkpoint".strip()
-            return _cmd_pipeline(
-                args.layer_split, port = args.master_port, extra = extra, run = args.run
-            )
+            return _cmd_pipeline(args.layer_split, port = args.master_port, extra = extra, run = args.run)
         if not args.script:
             print("train needs --script <train.py>, or --layer-split <model>")
             return 2

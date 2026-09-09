@@ -100,7 +100,9 @@ def test_the_seed_is_set_before_the_model_is_built() -> None:
     source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     seeds = [i for i, line in enumerate(source.splitlines()) if "manual_seed(TRAIN_SEED)" in line]
     build = next(
-        i for i, line in enumerate(source.splitlines()) if "model, cfg, _ = build_stage_model(" in line
+        i
+        for i, line in enumerate(source.splitlines())
+        if "model, cfg, _ = build_stage_model(" in line
     )
     peft = next(i for i, line in enumerate(source.splitlines()) if "get_peft_model(" in line)
     assert seeds, "the run no longer seeds at all"

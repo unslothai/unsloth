@@ -165,14 +165,19 @@ def test_kv_per_user_scales_with_the_context(cluster, tmp_path) -> None:
 # ── which layout `serve` prints ─────────────────────────────────────────────────
 
 
-def _serve_fixture(cluster, monkeypatch, tmp_path, size_gib: float, *, rpc: bool = True):
+def _serve_fixture(
+    cluster,
+    monkeypatch,
+    tmp_path,
+    size_gib: float,
+    *,
+    rpc: bool = True,
+):
     monkeypatch.setattr(cluster, "is_dgx_spark", lambda: True)
     monkeypatch.setattr(cluster, "peer_ip_for", lambda *a, **k: "192.168.200.13")
     server = _write(tmp_path / "bin" / "llama-server", 16)
     monkeypatch.setattr(cluster, "llama_server_binary", lambda: str(server))
-    monkeypatch.setattr(
-        cluster, "model_size_report", lambda target: {"gib": size_gib, "why": ""}
-    )
+    monkeypatch.setattr(cluster, "model_size_report", lambda target: {"gib": size_gib, "why": ""})
     monkeypatch.setattr(
         cluster, "serving_kv_gib_per_user", lambda model, ctx: {"gib": None, "why": "no header"}
     )
@@ -212,7 +217,9 @@ def test_replicas_do_not_require_the_rpc_server(cluster, monkeypatch, tmp_path, 
     assert "INDEPENDENT REPLICAS" in capsys.readouterr().out
 
 
-def test_a_model_that_does_not_fit_still_layer_splits(cluster, monkeypatch, tmp_path, capsys) -> None:
+def test_a_model_that_does_not_fit_still_layer_splits(
+    cluster, monkeypatch, tmp_path, capsys
+) -> None:
     """No regression: the split is the only way to run an oversized model."""
     _serve_fixture(cluster, monkeypatch, tmp_path, 150.0)
     assert cluster._cmd_serve("m.gguf", slots = 16) == 0
@@ -383,7 +390,11 @@ def test_an_unrelated_local_listener_does_not_block_a_split(cluster, monkeypatch
     monkeypatch.setattr(cluster, "llama_bundle_identity", lambda: {"present": True})
     monkeypatch.setattr(cluster, "peer_llama_bundle_identity", lambda ip: {"present": True})
 
-    def probe(host, port, timeout = 2.0):
+    def probe(
+        host,
+        port,
+        timeout = 2.0,
+    ):
         state = "garbled" if host == "127.0.0.1" else "ok"
         version = None if state == "garbled" else (6, 0, 0)
         return {"state": state, "version": version, "host": host}
