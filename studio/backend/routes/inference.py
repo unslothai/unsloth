@@ -2536,12 +2536,16 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # Read BEFORE the scrape, so a chat that parks between the two is left out rather
         # than released against cells this reading never saw and no erase will take.
         parked_before = controller.parked_holders()
+        # Taken before the probe leaves: a holder measured while it is in flight is not
+        # in this sample, and must not be promoted off it.
+        sample_epoch = controller.residency_epoch()
         occupancy = read_slot_occupancy(
             lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
         )
         controller.note_resident(
             None if occupancy is None else occupancy.get("resident"),
             0 if occupancy is None else int(occupancy.get("idle_tokens") or 0),
+            started_at_seq = sample_epoch,
         )
         _gguf_slots_seen["occupancy"] = occupancy
         # Carried with the reading it belongs to: the token path reclaims from a snapshot
@@ -2581,6 +2585,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                 controller.note_resident(
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
+                    started_at_seq = sample_epoch,
                 )
                 # ONLY when every idle slot went: the erase can stop after one, and after a
                 # partial erase the release would hand back commitments whose cells are
@@ -2878,6 +2883,7 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                     # Re-read rather than subtract: each erase can take seconds, during
                     # which a live chat publishes newer samples that `old - freed` would
                     # overwrite with a stale, lower figure.
+                    after_epoch = _controller.residency_epoch()
                     after = read_slot_occupancy(
                         lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
                     )
@@ -2885,6 +2891,7 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                         _controller.note_resident(
                             int(after.get("resident") or 0),
                             int(after.get("idle_tokens") or 0),
+                            started_at_seq = after_epoch,
                         )
                     # And only when every idle slot went, or the release hands out cells
                     # that are still resident -- and only to the holders that were parked

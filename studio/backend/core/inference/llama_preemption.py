@@ -19,6 +19,7 @@ import math
 import sys
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
@@ -481,7 +482,9 @@ class Participant:
     # zero rather than negative when a resumed attempt restarts llama-server's counter.
     generated_seen: int = 0
     # Set by `note_measured`: the charge stays on top of the resident figure until a sample
-    # taken after that call, the first reading that can hold its cells.
+    # STARTED after that call, the first reading that can hold its cells. Compared against
+    # the epoch the probe captured before its HTTP call, since a sample already in flight
+    # returns later while describing a cache from before the prefill.
     measured_at_seq: Optional[int] = None
     # What admission charged and the prompt part of it, kept so a request that starts over
     # (the next of `n` choices) can be put back to them.
@@ -579,6 +582,7 @@ class PreemptionController:
         "_batch_tokens",
         "_resident",
         "_resident_seq",
+        "_resume_tickets",
         "_reclaimable",
         "_residency_probe",
         "_drift_logged_at",
@@ -607,8 +611,14 @@ class PreemptionController:
         # True cells resident from the last GET /slots, None when unreadable. Includes the
         # residue of FINISHED requests, which the ledger cannot see.
         self._resident: Optional[int] = None
-        # Bumped per successful reading, so a holder marked between two can tell them apart.
+        # Bumped per successful reading AND per `note_measured`, so a mark can be ordered
+        # against a probe that was already in flight when it was made.
         self._resident_seq = 0
+        # Resume order, taken BEFORE the room test: gen_id -> tokens it is coming back for,
+        # in the order the waits started. Without it a later, smaller resume books the space
+        # an older one is waiting for and the older one waits out its deadline. The
+        # admission queue keeps the same rule one layer down; see `_unpark_tickets`.
+        self._resume_tickets: "OrderedDict[str, int]" = OrderedDict()
         # Optional: everything works from the ledger alone, less precisely.
         self._residency_probe: Optional[Callable[[], None]] = None
         # Never decreasing: the one figure that moves whenever ANYBODY decodes, where
@@ -688,6 +698,42 @@ class PreemptionController:
         """Drop a finished generation."""
         with self._lock:
             self._participants.pop(gen_id, None)
+            self._resume_tickets.pop(gen_id, None)
+
+    def begin_resume(self, gen_id: str, want: int) -> None:
+        """Take a place in the resume line, before asking whether there is room.
+
+        The order has to exist BEFORE the first room test, or a waiter that does not fit yet
+        is invisible to the smaller ones that do: they book the space one after another and
+        it never gets a turn. Re-taking a place moves this generation to the back, which is
+        what a fresh wait deserves.
+        """
+        with self._lock:
+            self._resume_tickets.pop(gen_id, None)
+            self._resume_tickets[gen_id] = max(0, int(want or 0))
+
+    def end_resume(self, gen_id: str) -> None:
+        """Leave the resume line: granted, given up or cancelled. Idempotent."""
+        with self._lock:
+            self._resume_tickets.pop(gen_id, None)
+
+    def resume_queue_depth(self) -> int:
+        """How many waits are in the resume line."""
+        with self._lock:
+            return len(self._resume_tickets)
+
+    def _resume_reserved_locked(self, gen_id: str) -> int:
+        """Tokens the waits AHEAD of ``gen_id`` are coming back for.
+
+        A caller holding no place is held behind all of them: it has not queued, so it
+        cannot be owed room before somebody who has.
+        """
+        total = 0
+        for queued, want in self._resume_tickets.items():
+            if queued == gen_id:
+                break
+            total += want
+        return total
 
     def _solo_ceiling_locked(self) -> int:
         """The cache less what a lone chat still needs clear to keep running.
@@ -754,12 +800,17 @@ class PreemptionController:
         between could count a DECODING participant's reservation as freed and set a signal
         the admission wait never reads.
 
+        Resume order is honoured here rather than only once a grant lands: the room the
+        waits ahead are owed (`begin_resume`) is held back, so a smaller later resume cannot
+        book the space an older one is still short of. A caller that took no place in line
+        keeps the old arithmetic while the line is empty.
+
         Roll back with `note_resume_failed`, or the booking becomes room nobody is using.
         """
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
                 return True
-            if not self._room_for_locked(gen_id, want):
+            if not self._room_for_locked(gen_id, want, self._resume_reserved_locked(gen_id)):
                 return False
             participant = self._participants.get(gen_id)
             if participant is not None:
@@ -802,8 +853,12 @@ class PreemptionController:
             return 0
         return max(0, int(participant.tokens or 0))
 
-    def _room_for_locked(self, gen_id: str, want: int) -> bool:
-        """The arithmetic behind `room_for`, callable by a holder of the lock."""
+    def _room_for_locked(self, gen_id: str, want: int, reserved: int = 0) -> bool:
+        """The arithmetic behind `room_for`, callable by a holder of the lock.
+
+        ``reserved`` is room the resume waits ahead of this one are owed, held back so a
+        later, smaller resume cannot take it.
+        """
         # `want` REPLACES this generation's own announcement: saying yes here causes the
         # prefill, and a chat that already announced must not be charged twice.
         pending = self._pending_prefill_locked(exclude = gen_id) + max(0, int(want or 0))
@@ -821,10 +876,13 @@ class PreemptionController:
             others = max(others, occupied - self._my_resident_locked(gen_id))
         need = max(0, int(want or 0))
         others = max(0, others)
-        if others + need <= ceiling:
+        reserved = max(0, int(reserved or 0))
+        if others + need + reserved <= ceiling:
             return True
         # Outgrew the shared ceiling: it must run alone, or wait for room nothing can make.
-        if need > ceiling and others == 0:
+        # Not while somebody ahead is owed room: the cache being empty is exactly what that
+        # wait is for, so spending it here is the overtake this reservation exists to stop.
+        if need > ceiling and others == 0 and reserved == 0:
             return need <= self._solo_ceiling_locked()
         return False
 
@@ -881,16 +939,31 @@ class PreemptionController:
         except Exception:
             _log.debug("residency probe failed", exc_info = True)
 
+    def residency_epoch(self) -> int:
+        """The ordering clock, read before a `/slots` probe is sent.
+
+        Hand it back to `note_resident` as ``started_at_seq`` so a sample that was already
+        in flight when a holder called `note_measured` is not mistaken for one taken after
+        its prefill.
+        """
+        with self._lock:
+            return self._resident_seq
+
     def note_resident(
         self,
         resident: Optional[int],
         reclaimable: int = 0,
+        *,
+        started_at_seq: Optional[int] = None,
     ) -> None:
         """The cache as llama-server actually sees it. None means the read failed.
 
         ``reclaimable`` is the part held by IDLE slots: real occupancy, so it counts toward
         the watermark, but it is erased on demand rather than stood in a waiter's way. See
         ``_room_for_locked``.
+
+        ``started_at_seq`` is `residency_epoch()` read before the probe was sent. Without it
+        this reading is treated as taken now, which is what it was before the epoch existed.
         """
         with self._lock:
             if resident is None:
@@ -904,10 +977,16 @@ class PreemptionController:
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
             self._resident_seq += 1
             for participant in self._participants.values():
-                if participant.measured_at_seq is not None:
-                    # This reading was taken after its prefill landed, so it is inside.
-                    participant.measured = True
-                    participant.measured_at_seq = None
+                if participant.measured_at_seq is None:
+                    continue
+                if started_at_seq is not None and participant.measured_at_seq > started_at_seq:
+                    # This sample was already in flight when the mark was made, so it
+                    # describes the cache from before the prefill. Promoting on it drops the
+                    # charge while the cells it covers are missing from the reading too.
+                    continue
+                # Started after its prefill was announced done, so its cells are inside.
+                participant.measured = True
+                participant.measured_at_seq = None
 
     def note_tokens(
         self,
@@ -1142,6 +1221,9 @@ class PreemptionController:
             if self._resident is None or participant.measured:
                 participant.measured = True
             else:
+                # Bumped so the stamp is strictly past any epoch a probe already in flight
+                # captured; a probe that starts after this reads the same value and matches.
+                self._resident_seq += 1
                 participant.measured_at_seq = self._resident_seq
             participant.cells_reclaimed = False
             participant.prefill_done()
@@ -1258,6 +1340,8 @@ class PreemptionController:
         ]
         for gen_id in dead:
             del self._participants[gen_id]
+            # A place in line whose waiter is gone would hold room back forever.
+            self._resume_tickets.pop(gen_id, None)
 
     def _committed_locked(self) -> int:
         self._prune_locked()
@@ -1586,51 +1670,60 @@ class ControllerPreemptionPolicy:
         deadline = started + timeout
         hard_deadline = started + timeout * MAX_RESUME_WAIT_MULTIPLE
         last = self._controller.progress_signature()
-        # Fresh reading before the first question: this grant lets a chat back in carrying
-        # its whole replayed partial.
-        self._controller.refresh_residency()
-        # try_grant_resume, not room_for: the room must be BOOKED at the instant it is
-        # found, or two waiters both find the same space and both take it. Stop is read
-        # before every attempt, since a grant that succeeds at once would otherwise skip it.
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                # Stop pressed during the pause: there is nothing to resume, and the worker
-                # must not sit here waiting for room for a chat nobody is reading.
-                _log.info("llama preemption cancelled-while-paused: gen_id=%s", self._gen_id)
-                return False
-            if self._controller.try_grant_resume(self._gen_id, want):
-                break
+        # The place in line is taken BEFORE the first room test: a wait that does not fit
+        # yet is otherwise invisible to the smaller resumes that do, and they book the
+        # space one after another until this one's deadline ends the turn. Dropped in the
+        # `finally` on every exit, grant included, so a booking is not also held back as
+        # a reservation.
+        self._controller.begin_resume(self._gen_id, want)
+        try:
+            # Fresh reading before the first question: this grant lets a chat back in carrying
+            # its whole replayed partial.
             self._controller.refresh_residency()
-            now = time.monotonic()
-            current = self._controller.progress_signature()
-            # A holder parked on a tool moves nothing, so the signature freezes while a web
-            # search runs. A tool that never returns is caught by `hard_deadline` instead.
-            _snap = self._controller.snapshot()
-            if _snap.parked > 0 or getattr(_snap, "tools_running", 0) > 0:
-                deadline = now + timeout
-            if current != last:
-                # ANY change resets it: the signature covers the whole backend, so "no
-                # progress" claims NOTHING moved, which is what justifies abandoning a turn.
-                deadline = now + timeout
-                last = current
-            if now >= deadline:
-                _log.info(
-                    "llama preemption gave-up: gen_id=%s want=%s (no progress for %ss)",
-                    self._gen_id,
-                    want,
-                    timeout,
-                )
-                return False
-            if now >= hard_deadline:
-                _log.info(
-                    "llama preemption gave-up: gen_id=%s want=%s (still unserved after "
-                    "%ss of a moving cache)",
-                    self._gen_id,
-                    want,
-                    round(now - started, 1),
-                )
-                return False
-            time.sleep(0.1)
+            # try_grant_resume, not room_for: the room must be BOOKED at the instant it is
+            # found, or two waiters both find the same space and both take it. Stop is read
+            # before every attempt, since a grant that succeeds at once would otherwise skip it.
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    # Stop pressed during the pause: there is nothing to resume, and the worker
+                    # must not sit here waiting for room for a chat nobody is reading.
+                    _log.info("llama preemption cancelled-while-paused: gen_id=%s", self._gen_id)
+                    return False
+                if self._controller.try_grant_resume(self._gen_id, want):
+                    break
+                self._controller.refresh_residency()
+                now = time.monotonic()
+                current = self._controller.progress_signature()
+                # A holder parked on a tool moves nothing, so the signature freezes while a web
+                # search runs. A tool that never returns is caught by `hard_deadline` instead.
+                _snap = self._controller.snapshot()
+                if _snap.parked > 0 or getattr(_snap, "tools_running", 0) > 0:
+                    deadline = now + timeout
+                if current != last:
+                    # ANY change resets it: the signature covers the whole backend, so "no
+                    # progress" claims NOTHING moved, which is what justifies abandoning a turn.
+                    deadline = now + timeout
+                    last = current
+                if now >= deadline:
+                    _log.info(
+                        "llama preemption gave-up: gen_id=%s want=%s (no progress for %ss)",
+                        self._gen_id,
+                        want,
+                        timeout,
+                    )
+                    return False
+                if now >= hard_deadline:
+                    _log.info(
+                        "llama preemption gave-up: gen_id=%s want=%s (still unserved after "
+                        "%ss of a moving cache)",
+                        self._gen_id,
+                        want,
+                        round(now - started, 1),
+                    )
+                    return False
+                time.sleep(0.1)
+        finally:
+            self._controller.end_resume(self._gen_id)
         try:
             try:
                 coro = lease.resume_async(
