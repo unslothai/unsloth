@@ -1147,7 +1147,7 @@ class TestAStreamsOwnParkIsTheExcuse:
         source = inspect.getsource(LlamaCppBackend._install_cancel_aware_read)
         assert "notices = _preemption.ServerParkNotices(stall_grace)" in source
         assert "notices.feed(data)" in source
-        assert "parked = notices.excuses_silence()" in source
+        assert "parked = notices is not None and notices.excuses_silence()" in source
         assert "bool(stall_grace())" not in source
 
 
