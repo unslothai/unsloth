@@ -340,8 +340,9 @@ def test_native_command_outcomes_and_output_cap(project, modules, native_linux, 
 
 
 def test_native_task_command_cannot_read_primary_files_host_secrets_or_use_network(
-    project, modules, native_linux, tmp_path
+    project, modules, native_linux, tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("TASK_COMMAND_TEST_SECRET", "fixture-only-secret")
     ctx = context(modules)
     secret = tmp_path / "outside-secret"
     secret.write_text("external-value")
