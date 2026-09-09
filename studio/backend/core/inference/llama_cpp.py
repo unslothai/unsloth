@@ -12751,6 +12751,7 @@ class LlamaCppBackend:
         )
 
     _DEFAULT_N_UBATCH = _DEFAULT_LLAMA_N_UBATCH
+    _MMPROJ_NON_CAUSAL_MIN_BATCH = 2048
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
     # Soft VRAM the modeled terms omit; charged to the fit budget on tight tiers (#6682).
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
@@ -19413,6 +19414,18 @@ class LlamaCppBackend:
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
                 effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                if effective_is_vision:
+                    # Vision encoders use non-causal attention, where llama.cpp requires
+                    # the physical micro-batch to cover the full image-token batch.
+                    n_batch = max(
+                        self._MMPROJ_NON_CAUSAL_MIN_BATCH,
+                        int(n_batch or 0),
+                    )
+                    n_ubatch = max(
+                        self._MMPROJ_NON_CAUSAL_MIN_BATCH,
+                        int(n_ubatch or 0),
+                    )
+                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 if is_vision and not effective_is_vision and not _pv_mmproj_unpinnable:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "

@@ -71,6 +71,7 @@ if "httpx" not in sys.modules:
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _loader_path_var
 
 _REAL_POPEN = subprocess.Popen
+VISION_MMPROJ_MIN_BATCH = "2048"
 
 
 def _write_gguf(path: Path, architecture: str = "llama") -> Path:
@@ -176,6 +177,28 @@ def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
     assert cmd[cmd.index("--top-k") + 1] == "5"
     assert backend.requested_gpu_ids == [0, 1]
     assert backend.gpu_ids == [1]
+
+
+def test_vision_mmproj_defaults_batch_and_ubatch_above_image_tokens(tmp_path):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+
+    result = _launch(
+        backend,
+        gguf,
+        is_vision = True,
+        mmproj_path = str(mmproj),
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--mmproj") + 1] == str(mmproj)
+    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
 
 
 @pytest.mark.parametrize(
