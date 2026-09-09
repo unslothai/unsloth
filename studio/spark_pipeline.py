@@ -131,6 +131,48 @@ LORA_TARGETS_LLAMA = (
 )
 
 
+# The names a config uses to say "this block routes tokens to a subset of experts". Read from
+# the config rather than by walking the modules, because the question is whether routing is
+# CONDITIONAL, which a linear layer's name cannot answer.
+_CONDITIONAL_EXPERT_KEYS = (
+    "num_experts",
+    "num_local_experts",
+    "n_routed_experts",
+    "num_experts_per_tok",
+    "moe_num_experts",
+    "num_experts_per_token",
+)
+
+
+def has_conditional_experts(config) -> bool:
+    """Whether this architecture routes each token to a subset of its experts.
+
+    DDP's default ``find_unused_parameters=False`` promises every parameter takes part in every
+    backward. A sparse MoE breaks that promise by design: an expert that is routed no tokens on
+    this rank in this step produces no gradient, and the NEXT iteration fails with an
+    unfinished reduction rather than continuing. It matters for the DEFAULT path here, not only
+    for a hand-written target list, because Qwen3-style experts name their projections
+    ``gate_proj`` / ``up_proj`` / ``down_proj``, which is exactly what ``lora_target_modules``
+    keeps, so LoRA attaches to every expert.
+
+    Only for the architectures that need it: ``find_unused_parameters=True`` costs an extra
+    traversal of the autograd graph every step, so a dense model must not pay for it."""
+    seen = [config]
+    for name in ("text_config", "llm_config", "decoder"):
+        nested = getattr(config, name, None)
+        if nested is not None:
+            seen.append(nested)
+    for candidate in seen:
+        for key in _CONDITIONAL_EXPERT_KEYS:
+            try:
+                value = int(getattr(candidate, key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 1:
+                return True
+    return False
+
+
 def lora_target_modules(model) -> List[str]:
     """The projection names to attach LoRA to, read off THIS model's decoder layers.
 
@@ -1916,7 +1958,15 @@ def _main_data_parallel(args) -> int:
     no_sync = None
     if mode == "ddp":
         from torch.nn.parallel import DistributedDataParallel
-        model = DistributedDataParallel(model, device_ids = None if use_cpu else [device.index or 0])
+
+        sparse_experts = has_conditional_experts(cfg)
+        if sparse_experts:
+            log("conditional experts: DDP with find_unused_parameters=True")
+        model = DistributedDataParallel(
+            model,
+            device_ids = None if use_cpu else [device.index or 0],
+            find_unused_parameters = sparse_experts,
+        )
         no_sync = model.no_sync
     elif mode == "fsdp":
         try:

@@ -2207,3 +2207,57 @@ def test_a_data_parallel_save_does_not_go_looking_for_a_peer_stage():
     assert is_dp("torchrun x.py --layer-split --save out m") is False
     # Not a substring match: a checkpoint path that merely contains the word must not count.
     assert is_dp("torchrun x.py --save /runs/my--data-parallel-run m") is False
+
+
+def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts():
+    """DDP's default `find_unused_parameters=False` promises every parameter takes part in
+    every backward. A sparse MoE breaks that by design: an expert routed no tokens on this rank
+    produces no gradient, and the NEXT iteration fails with an unfinished reduction. It reaches
+    the DEFAULT path, not just a hand-written target list, because Qwen3-style experts name
+    their projections gate_proj/up_proj/down_proj, which is exactly what `lora_target_modules`
+    keeps. The flag costs an extra autograd traversal every step, so a dense model must not pay
+    for it.
+    """
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    src = Path(__file__).resolve().parents[2] / "studio" / "spark_pipeline.py"
+    text = src.read_text(encoding = "utf-8")
+    tree = ast.parse(text)
+
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_main_data_parallel"
+    )
+    body = ast.get_source_segment(text, fn) or ""
+    assert "find_unused_parameters = sparse_experts" in body, (
+        "the flag must follow the architecture, not be hardcoded either way"
+    )
+
+    helper = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "has_conditional_experts"
+    )
+    keys = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", "") == "_CONDITIONAL_EXPERT_KEYS" for t in n.targets)
+    )
+    namespace: dict = {}
+    exec(compile(ast.Module([keys, helper], []), "<helper>", "exec"), namespace)
+    has_experts = namespace["has_conditional_experts"]
+
+    assert has_experts(SimpleNamespace(num_experts = 128)) is True
+    assert has_experts(SimpleNamespace(n_routed_experts = 64)) is True
+    assert has_experts(SimpleNamespace(num_local_experts = 8)) is True
+    # A dense model, and a config that merely mentions one expert, are not sparse routing.
+    assert has_experts(SimpleNamespace(hidden_size = 4096)) is False
+    assert has_experts(SimpleNamespace(num_experts = 1)) is False
+    assert has_experts(SimpleNamespace(num_experts = None)) is False
+    assert has_experts(SimpleNamespace(num_experts = "many")) is False
+    # A multimodal wrapper keeps the decoder's config nested, and that is where the key lives.
+    assert has_experts(SimpleNamespace(text_config = SimpleNamespace(num_experts = 60))) is True

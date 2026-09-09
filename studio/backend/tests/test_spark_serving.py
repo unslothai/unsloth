@@ -3805,3 +3805,128 @@ def test_our_own_managed_split_is_not_torn_down_by_its_own_rpc_flag(cluster, mon
 
     assert ss.state().peer_process is managed, "the managed split was torn down by its own flag"
     assert ss.state().topology == "layer_split"
+
+
+def test_a_reload_the_route_will_refuse_does_not_stop_the_running_peer(
+    cluster, monkeypatch, tmp_path
+):
+    # The route validates the pass-through args AFTER before_load, "up front so a managed-flag
+    # collision returns 400 before any model work" -- but starting or restarting a peer IS model
+    # work and happens here first. Restoring the topology metadata is not enough for it: a
+    # forced reload stops the peer's rpc-server on the way through, the outgoing llama-server's
+    # RPC allocations die with it, and nothing can put that back, so a request refused with a
+    # 400 took a working split offline.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _calls, started = _patch_remote(monkeypatch)
+
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    managed = ss.state().peer_process
+    assert managed is not None and managed.alive, "a live managed split to protect"
+    topology, reason = ss.state().topology, ss.state().reason
+
+    stopped = []
+    real_stop = ss.PeerProcess.stop
+
+    async def counting_stop(self, timeout = 10.0):
+        stopped.append(self.name)
+        return await real_stop(self, timeout = timeout)
+
+    monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
+
+    # A forced reload whose extras the route will refuse with a 400: --parallel is managed.
+    doomed = _FakeRequest(str(model))
+    doomed.force_reload = True
+    doomed.llama_extra_args = ["--parallel", "32"]
+    out = run(ss.before_load(doomed, 4))
+
+    assert out is doomed, "the request comes back untouched for the route to reject"
+    assert stopped == [], "a request that will be refused must not stop the running peer"
+    assert ss.state().peer_process is managed
+    assert (ss.state().topology, ss.state().reason) == (topology, reason)
+
+
+def test_a_valid_reload_still_restarts_the_peer_for_its_new_client(cluster, monkeypatch, tmp_path):
+    # The counterpart: the guard must not become a way for a forced reload to skip the restart
+    # the rpc-server's one-client-at-a-time contract needs.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _calls, started = _patch_remote(monkeypatch)
+
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert ss.state().peer_process is not None
+    good = _FakeRequest(str(model))
+    good.force_reload = True
+    good.llama_extra_args = ["--lora", str(tmp_path / "a.gguf")]
+    (tmp_path / "a.gguf").write_bytes(b"x")
+    run(ss.before_load(good, 4))
+    assert len(started) == 2, "a valid forced reload still restarts the peer rpc-server"
+
+
+def test_the_supervisor_does_not_repoint_the_router_mid_load(cluster, monkeypatch, tmp_path):
+    # A replacement GGUF gets its new port before the load finishes. Repointing there moved
+    # attached_port, and after_load then read its own matching backend and port as a no-op
+    # reload and returned WITHOUT replacing the peer: the router alternates between the new
+    # primary model and the stale peer model, which is what the replica path exists to prevent.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    backend = _FakeBackend(12345, str(model))
+    run(ss.after_load(backend, 16))
+    state = ss.state()
+    assert state.router is not None and state.attached_port == 12345
+
+    moved = []
+
+    async def record(name, host, port):
+        moved.append((name, host, port))
+
+    state.router.set_backend_address = record
+    backend._port = 23456  # the replacement's port, before its load has finished
+
+    state.load_in_progress = True
+    run(state._repoint_primary(backend))
+    assert moved == [], "the router was repointed while a load was still in progress"
+    assert state.attached_port == 12345
+
+    state.load_in_progress = False
+    run(state._repoint_primary(backend))
+    assert moved == [("main", "127.0.0.1", 23456)], "and it still repoints once the load is done"
+    assert state.attached_port == 23456
+
+
+def test_the_peer_is_searched_for_the_rpc_name_the_local_bundle_resolved(
+    cluster, monkeypatch, tmp_path
+):
+    # rpc_server_binary() resolves the supported legacy name `rpc-server` locally, but the peer
+    # lookup discarded that basename and asked only for `ggml-rpc-server`, so a symmetrically
+    # provisioned peer holding only `rpc-server` was reported missing and every layer split
+    # that needed it fell back to one node.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    legacy = tmp_path / "bin" / "rpc-server"
+    legacy.parent.mkdir(parents = True, exist_ok = True)
+    legacy.write_text("#!/bin/sh\n", encoding = "utf-8")
+    legacy.chmod(0o755)
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: str(legacy))
+
+    _calls, started = _patch_remote(monkeypatch)
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+
+    lookup = next(c for c in _calls if "MISSING" in c)
+    assert "rpc-server" in lookup
+    assert "/rpc-server" in lookup, "the name the local bundle resolved is not being asked for"

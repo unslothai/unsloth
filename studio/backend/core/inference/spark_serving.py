@@ -2332,6 +2332,32 @@ class SparkServing:
         ``inherited_extra_args`` counts as the caller's, not as room for this module."""
         if not enabled():
             return request
+        # The route validates the pass-through args AFTER this runs, "up front so a managed-flag
+        # collision returns 400 before any model work" -- but starting or restarting a peer is
+        # model work, and it happens here, before that. Restoring the topology METADATA on a
+        # rejected replacement is not enough for it: a forced reload of a live split stops the
+        # peer's rpc-server on the way through, the outgoing llama-server's RPC allocations die
+        # with it, and no later step can put that back, so a request refused with a 400 takes a
+        # working split offline. Asked with the route's own validator, so the two cannot
+        # disagree about what is refusable, and a refusal leaves the request and the live split
+        # exactly as they were for the route to reject.
+        # Scoped to a live peer on purpose. With nothing running there is nothing this could
+        # destroy, and refusing early would only duplicate the route's own 400 while changing
+        # the behaviour of every request that carries a managed flag.
+        running_peer = self.peer_process
+        if running_peer is not None and running_peer.alive:
+            try:
+                from core.inference.llama_server_args import validate_extra_args
+
+                validate_extra_args(getattr(request, "llama_extra_args", None))
+            except ValueError:
+                logger.info(
+                    "spark serving: the pass-through args will be refused by the route; "
+                    "leaving the running peer and the current topology alone"
+                )
+                return request
+            except Exception:
+                pass  # not importable, or not a request shape this knows: behave as before
         # What the status surface says right now, kept so a REJECTED replacement can put it
         # back. The route validates after this runs and can raise 400/409 without unloading, so
         # a fall-back here would otherwise overwrite the live split's topology and group
@@ -2615,9 +2641,23 @@ class SparkServing:
             for note in self.preflight.get("notes", []):
                 logger.info("spark serving: preflight: %s", note)
         local_rpc = rpc_server_binary()
-        rc, out, _err = await ssh_run(
-            peer, find_binary_script(peer_binary_candidates(local_rpc, "ggml-rpc-server"))
-        )
+        # Every name this platform would accept, the one the LOCAL bundle actually resolved
+        # first. Hardcoding "ggml-rpc-server" discarded that basename, so a symmetrically
+        # provisioned peer holding only the supported legacy `rpc-server` was reported missing
+        # and every layer split that needed it fell back to one node. The llama-server lookup a
+        # few lines down already passes `Path(argv[0]).name`; this was the one that did not.
+        rpc_names: List[str] = []
+        if local_rpc:
+            rpc_names.append(osp.basename(local_rpc))
+        rpc_names += [n for n in rpc_server_names() if n not in rpc_names]
+        candidates: List[str] = []
+        for rpc_name in rpc_names:
+            candidates += [
+                c
+                for c in peer_binary_candidates(local_rpc, rpc_name)
+                if c not in candidates
+            ]
+        rc, out, _err = await ssh_run(peer, find_binary_script(candidates))
         binary = out.strip().splitlines()[-1] if out.strip() else "MISSING"
         if rc != 0 or binary == "MISSING":
             return _fall_back(
@@ -3053,11 +3093,7 @@ class SparkServing:
                     )
                     await self.detach()
                     return
-                if self.router is not None:
-                    port = getattr(backend, "_port", None)
-                    if port and port != self.attached_port and getattr(backend, "_healthy", False):
-                        await self.router.set_backend_address("main", "127.0.0.1", int(port))
-                        self.attached_port = int(port)
+                await self._repoint_primary(backend)
                 process = self.peer_process
                 if process is not None and not process.alive and process.started_at is not None:
                     if self._relaunch_task is None or self._relaunch_task.done():
@@ -3156,6 +3192,24 @@ class SparkServing:
             self.relaunch_attempts = 0
             self.relaunch_log.append({"at": time.time(), "event": "recovered"})
             return
+
+    async def _repoint_primary(self, backend: Any) -> None:
+        """Follow this node's llama-server to a new port, once its load has finished.
+
+        ``load_in_progress`` for the same reason the unload branch above it has it, and it was
+        only on that one. A replacement GGUF gets its new port BEFORE the load finishes, so this
+        could see the new healthy process mid-load, repoint the primary and move
+        ``attached_port`` -- and ``after_load`` then reads its own matching backend and port as a
+        no-op reload and returns without replacing the peer. The router is left alternating
+        between the new primary model and the stale peer model, which is the exact failure the
+        whole replica path exists to prevent. ``after_load`` rebuilds both sides; this must not
+        race it."""
+        if self.router is None or self.load_in_progress:
+            return
+        port = getattr(backend, "_port", None)
+        if port and port != self.attached_port and getattr(backend, "_healthy", False):
+            await self.router.set_backend_address("main", "127.0.0.1", int(port))
+            self.attached_port = int(port)
 
     def _argv_names_our_peer(self, argv: Sequence[str]) -> bool:
         """Whether an ``--rpc`` in *argv* points at the rpc-server this module launched.
