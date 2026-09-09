@@ -279,7 +279,5 @@ def test_a_mapped_stop_reason_is_not_logged(monkeypatch):
     records = _record_stream_logs(monkeypatch)
     _stop_reason_lines(monkeypatch, "end_turn")
     assert not [
-        message
-        for level, message in records
-        if level == "warning" and "stop_reason" in message
+        message for level, message in records if level == "warning" and "stop_reason" in message
     ], records
