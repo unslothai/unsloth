@@ -18,9 +18,7 @@ type Listener = EventListenerOrEventListenerObject;
 
 interface HookHarnessOptions {
   failCheckAt?: number;
-  holdPreparation?: boolean;
   noUpdateAt?: number;
-  rejectDiscard?: boolean;
   tauri?: boolean;
 }
 
@@ -221,13 +219,7 @@ function createHookReact() {
 
 function hookHarness(
   t: TestContext,
-  {
-    failCheckAt,
-    holdPreparation = false,
-    noUpdateAt,
-    rejectDiscard = false,
-    tauri = true,
-  }: HookHarnessOptions = {},
+  { failCheckAt, noUpdateAt, tauri = true }: HookHarnessOptions = {},
 ) {
   const browser = installBrowserClock();
   const host = createHookReact();
@@ -236,26 +228,15 @@ function hookHarness(
     browser.restore();
   });
   let checks = 0;
-  const initialPreparation = {
-    shell: "pending",
-    backend: "pending",
-    shellProgress: 0,
-  };
   const hook = loadWithStubs<{
     useTauriUpdate: () => UpdateController;
   }>(new URL("../src/hooks/use-tauri-update.ts", import.meta.url), {
     react: host.react,
-    "@/features/training": {
-      isTrainingStartPending: () => false,
-      useTrainingRuntimeStore: { getState: () => ({}) },
-    },
-    "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: tauri },
+    "@/lib/api-base": { isTauri: tauri },
     "@/lib/tauri-diagnostics": {
       copySupportDiagnostics: async () => ({ copied: true }),
     },
     "@/lib/tauri-updater": {
-      adoptStagedUpdate: () => Promise.resolve({}),
-      cancelStagedUpdate: () => Promise.resolve(),
       checkDesktopUpdate: () => {
         checks += 1;
         if (checks === failCheckAt) throw new Error("update check failed");
@@ -266,35 +247,12 @@ function hookHarness(
           rawJson: {},
         });
       },
-      desktopUpdateBundleStatus: () =>
-        holdPreparation
-          ? new Promise(() => {})
-          : Promise.resolve({ downloaded: false }),
-      discardStagedUpdate: () =>
-        rejectDiscard
-          ? Promise.reject(new Error("discard failed"))
-          : Promise.resolve(),
+      desktopUpdateBundleStatus: () => Promise.resolve({ downloaded: false }),
       downloadDesktopUpdate: () => Promise.resolve(),
       installDesktopUpdate: () => Promise.resolve(),
-      stagedUpdateStatus: () => Promise.resolve({ staging: false }),
-      startStagedUpdate: () => Promise.resolve(),
-      waitForDesktopUpdateDownload: () => Promise.resolve(),
+      sameUpdateVersion: () => true,
     },
     "@/lib/toast": { toast: { error: () => undefined } },
-    "@/lib/update-preparation": {
-      INITIAL_PREPARATION: initialPreparation,
-      backendIdle: () => true,
-      desktopDownloadDecision: () => "ready",
-      preparationStatus: (preparation: typeof initialPreparation) =>
-        preparation.shell === "done" && preparation.backend === "skipped"
-          ? "ready"
-          : "preparing",
-      restartPlan: () => "classic",
-      sameUpdateVersion: () => true,
-      settleWithin: async () => null,
-      stagingDecision: () => "skip",
-      waitForBackendIdle: async () => "cancelled",
-    },
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
         if (command === "desktop_update_policy") {
@@ -362,17 +320,16 @@ test("a manual check suppresses only the startup check", async (t) => {
   assert.equal(hook.checks(), 2);
 });
 
-test("a periodic recheck preserves a prepared update", async (t) => {
+test("a periodic recheck keeps an offered update available", async (t) => {
   const hook = hookHarness(t);
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
-  await hook.controller.installUpdate();
-  await settle();
-  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.equal(hook.statusUpdates.at(-1), "available");
 
   hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
   await settle();
-  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.equal(hook.checks(), 2);
+  assert.equal(hook.statusUpdates.at(-1), "available");
 });
 
 test("a failed periodic recheck preserves an untouched offer", async (t) => {
@@ -387,8 +344,8 @@ test("a failed periodic recheck preserves an untouched offer", async (t) => {
   assert.equal(hook.statusUpdates.at(-1), "available");
 });
 
-test("a cleanup failure does not restore a withdrawn offer", async (t) => {
-  const hook = hookHarness(t, { noUpdateAt: 2, rejectDiscard: true });
+test("a withdrawn offer goes back to idle", async (t) => {
+  const hook = hookHarness(t, { noUpdateAt: 2 });
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "available");
@@ -399,30 +356,15 @@ test("a cleanup failure does not restore a withdrawn offer", async (t) => {
   assert.equal(hook.statusUpdates.at(-1), "idle");
 });
 
-test("scheduled checks wait for update preparation", async (t) => {
-  const hook = hookHarness(t, { holdPreparation: true });
-  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
-  await settle();
-  await hook.controller.installUpdate();
-  assert.equal(hook.statusUpdates.at(-1), "preparing");
-
-  hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
-  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
-  hook.browser.fireWindow("focus");
-  await settle();
-  assert.equal(hook.checks(), 1);
-  assert.equal(hook.statusUpdates.at(-1), "preparing");
-});
-
-test("scheduled checks preserve update recovery", async (t) => {
+test("scheduled checks leave a failed install in its error state", async (t) => {
   const hook = hookHarness(t);
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
+  assert.equal(hook.statusUpdates.at(-1), "available");
+
+  // The event listener the classic path registers is what fails here.
   await hook.controller.installUpdate();
   await settle();
-  assert.equal(hook.statusUpdates.at(-1), "ready");
-
-  await hook.controller.installUpdate();
   assert.equal(hook.statusUpdates.at(-1), "error");
 
   hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
