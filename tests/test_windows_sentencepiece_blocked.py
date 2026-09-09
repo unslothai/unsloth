@@ -189,3 +189,27 @@ def test_the_guard_runs_at_import(monkeypatch):
     source = (PACKAGE_ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
     assert "disable_sentencepiece_if_blocked" in source
     assert source.count("_guard_sentencepiece()") == 1
+
+
+def test_the_guard_runs_before_anything_resolves_autotokenizer():
+    """Codex 3964051672, P2. transformers freezes derived state at import, so ordering is
+    the whole fix rather than a detail of it.
+
+    models/auto/tokenization_auto.py evaluates ``is_sentencepiece_available()`` at module
+    scope in 5.x, twice over: once to decide whether to import SentencePieceBackend, and
+    once per sentencepiece-only entry of TOKENIZER_MAPPING_NAMES, as in
+    ``("marian", "MarianTokenizer" if is_sentencepiece_available() else None)``. Those
+    values are materialised at that moment and no later rebinding of the function reaches
+    them, so a guard running after AutoTokenizer resolves leaves a Marian or M2M100 load
+    importing the blocked extension and raising the loader error the guard exists to
+    replace.
+
+    _gpu_init resolves AutoTokenizer on the GPU path, so the guard has to precede it.
+    """
+    source = (PACKAGE_ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
+    guard_at = source.index("_guard_sentencepiece()")
+    gpu_init_at = source.index("from ._gpu_init import")
+    assert guard_at < gpu_init_at, (
+        "the sentencepiece guard must run before _gpu_init resolves AutoTokenizer, or "
+        "TOKENIZER_MAPPING_NAMES is already frozen as available"
+    )

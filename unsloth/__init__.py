@@ -78,6 +78,28 @@ else:
             pass
     del _TRUE, _import_utils, _var, _flag, _const, _modules, _opt_ins, _cached
 
+# Smart App Control blocks _sentencepiece.cp313-win_amd64.pyd by reputation, while
+# transformers decides sentencepiece is available from find_spec and metadata alone, so every
+# path gated on that flag walks into a loader error. See
+# import_fixes.disable_sentencepiece_if_blocked; a no-op off Windows, and a no-op on Windows
+# unless the import really fails.
+#
+# Here rather than at the end of this file, and for the same reason the block above sits here:
+# transformers freezes derived state at import. models/auto/tokenization_auto.py evaluates
+# `if is_sentencepiece_available()` at module scope in 5.x, both for the SentencePieceBackend
+# import and for every sentencepiece-only entry of TOKENIZER_MAPPING_NAMES ("MarianTokenizer"
+# if is_sentencepiece_available() else None, and the same for m2m_100, gpt-sw3, siglip and the
+# rest). _gpu_init resolves AutoTokenizer on the GPU path, so a guard running after it left
+# those values materialised as available, and rebinding the function afterwards cannot reach
+# them: loading a Marian or M2M100 tokenizer still imported the blocked extension and produced
+# the loader error this exists to replace.
+try:
+    from .import_fixes import disable_sentencepiece_if_blocked as _guard_sentencepiece
+    _guard_sentencepiece()
+    del _guard_sentencepiece
+except Exception:
+    pass
+
 # Relax Metal's context-store timeout before MLX modules can initialize Metal; an explicit user
 # value stays authoritative.
 if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -1585,16 +1607,5 @@ try:
     from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
     _fix_dill()
     del _fix_dill
-except Exception:
-    pass
-
-# Smart App Control blocks _sentencepiece.cp313-win_amd64.pyd by reputation, while
-# transformers decides sentencepiece is available from find_spec and metadata alone, so
-# every path gated on that flag walks into a loader error. See
-# import_fixes.disable_sentencepiece_if_blocked; a no-op off Windows.
-try:
-    from .import_fixes import disable_sentencepiece_if_blocked as _guard_sentencepiece
-    _guard_sentencepiece()
-    del _guard_sentencepiece
 except Exception:
     pass
