@@ -6545,3 +6545,43 @@ def test_a_route_the_caller_already_made_is_not_recomputed(tmp_path, monkeypatch
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "route_backend_request", boom)
     assert _check(install_dir, route = route) is True
+
+
+def test_the_profile_sees_an_nvidia_adapter_that_is_present_but_not_usable():
+    """The Intel and ROCm-less AMD routes go to Vulkan only when there is NO NVIDIA
+    adapter at all, so an adapter that appears or goes without ever becoming usable
+    changes the selection while has_usable_nvidia and every other field stay equal."""
+    host = linux_host(has_intel_gpu = True)
+    assert host_profile(host)["has_physical_nvidia"] is False
+    with_adapter = dataclasses.replace(host, has_physical_nvidia = True)
+    assert host_profile(with_adapter)["has_physical_nvidia"] is True
+    assert host_profile(with_adapter) != host_profile(host)
+
+
+def test_the_full_path_holds_a_marker_to_the_runtime_files_it_recorded(tmp_path, monkeypatch):
+    """The Linux and macOS preflights read the executable images; Windows has no such
+    probe, so a truncated llama-server.exe used to keep its fingerprint match on the
+    full path and be reused. The recorded sizes and digests answer on every platform."""
+    install_dir = _current_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "preflight_linux_installed_binaries", lambda *a, **k: None
+    )
+    choice = asset_choice()
+    checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
+    kwargs = dict(
+        llama_tag = "b9001", release_tag = "release-1", choice = choice, approved_checksums = checksums
+    )
+    assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is True
+    server = install_dir / "build" / "bin" / "llama-server"
+    original = server.read_bytes()
+    server.write_bytes(original[: max(1, len(original) // 2)])
+    assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is False
+    server.write_bytes(original)
+    assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is True
+    # A marker from before the record existed is held to the probes alone, as before.
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker.pop("runtime_files", None)
+    marker_path.write_text(json.dumps(marker), encoding = "utf-8")
+    server.write_bytes(original[: max(1, len(original) // 2)])
+    assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is True

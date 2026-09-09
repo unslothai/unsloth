@@ -4,6 +4,7 @@
 
 import importlib.util
 import io
+import contextlib
 import json
 import os
 import sys
@@ -1146,3 +1147,75 @@ def test_the_record_is_written_after_the_swap_not_before() -> None:
     swap = source.index("_swap_into_place(extracted_root, install_dir)")
     record = source.index("record_runtime_verification(install_dir, host, version = final_version")
     assert swap < record
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX modes")
+def test_a_marker_refresh_keeps_the_marker_readable_to_other_users(tmp_path: Path):
+    """NamedTemporaryFile is 0600 and os.replace keeps the source file's mode, so the
+    first runtime-verification refresh used to leave a shared install's marker readable
+    only by whoever ran it, and every other user's update read "nothing installed"."""
+    import stat as _stat
+
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    marker = M.metadata_path(tmp_path)
+    mask = os.umask(0)
+    os.umask(mask)
+    assert _stat.S_IMODE(marker.stat().st_mode) == 0o666 & ~mask
+    marker.chmod(0o664)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert M.load_metadata(tmp_path)["node_version_checked"] == "24.17.0"
+    assert _stat.S_IMODE(marker.stat().st_mode) == 0o664
+
+
+def test_the_pre_lock_record_is_written_under_the_lock_and_only_over_the_marker_it_read(
+    tmp_path: Path, monkeypatch
+):
+    """The pre-lock check in install_prebuilt records the spawns it just paid for. That
+    record is a read-modify-write of the marker, so it takes the install lock for the
+    write and goes ahead only if the marker is still the one it read: a concurrent
+    installer that swapped a new tree in between must keep its own marker."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    held = {"depth": 0, "writes_under_lock": 0}
+    real_lock = M.install_lock
+    real_record = M.record_runtime_verification
+
+    @contextlib.contextmanager
+    def counting_lock(path):
+        with real_lock(path):
+            held["depth"] += 1
+            try:
+                yield
+            finally:
+                held["depth"] -= 1
+
+    def counting_record(*args, **kwargs):
+        assert held["depth"], "the record was written outside the install lock"
+        held["writes_under_lock"] += 1
+        real_record(*args, **kwargs)
+
+    monkeypatch.setattr(M, "install_lock", counting_lock)
+    monkeypatch.setattr(M, "record_runtime_verification", counting_record)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert held["writes_under_lock"] == 1
+    assert M.load_metadata(tmp_path)["node_version_checked"] == "24.17.0"
+
+    # The marker changes hands while the lock is being taken: no record over it.
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+
+    @contextlib.contextmanager
+    def swapping_lock(path):
+        with real_lock(path):
+            M.write_metadata(tmp_path, version = "24.18.0", asset = "z", sha256 = "w")
+            yield
+
+    monkeypatch.setattr(M, "install_lock", swapping_lock)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    after = M.load_metadata(tmp_path)
+    assert after["version"] == "24.18.0"
+    assert "node_version_checked" not in after

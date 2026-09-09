@@ -6589,6 +6589,10 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         # Rosetta) keeps a bundle the loader cannot run, with every other field equal.
         "machine": str(host.machine or "").strip().lower(),
         "has_usable_nvidia": bool(host.has_usable_nvidia),
+        # The Vulkan routes for Intel and ROCm-less AMD hosts are gated on there being
+        # no NVIDIA adapter at all, usable or not, so an adapter that appears or goes
+        # without ever becoming usable changes the selection with every other field equal.
+        "has_physical_nvidia": bool(host.has_physical_nvidia),
         "driver_cuda_version": (
             list(host.driver_cuda_version) if host.driver_cuda_version else None
         ),
@@ -7869,6 +7873,14 @@ def existing_install_matches_choice(
     ext = ".exe" if host.is_windows else ""
     for binary in ("llama-server", "llama-quantize"):
         if not (runtime_dir / f"{binary}{ext}").exists():
+            return False
+    # The sizes and digests the install recorded, when it recorded them. The Linux and
+    # macOS preflights below read the executable images; Windows has no such probe, so
+    # a truncated llama-server.exe kept its fingerprint match and was reused. Only a
+    # marker that carries the record is held to it: an older one takes the probes alone.
+    recorded_files = metadata.get("runtime_files")
+    if isinstance(recorded_files, dict) and recorded_files:
+        if not _runtime_files_match(install_dir, host, metadata):
             return False
     if host.is_linux:
         try:

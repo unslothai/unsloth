@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import platform
 import random
 import shutil
@@ -676,6 +677,10 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
     """
     destination = metadata_path(install_dir)
     destination.parent.mkdir(parents = True, exist_ok = True)
+    try:
+        original_mode: int | None = stat.S_IMODE(destination.stat().st_mode)
+    except OSError:
+        original_mode = None
     # newline left at the default, as write_text had it: the marker's bytes must not
     # change spelling on Windows just because the writer moved.
     handle = tempfile.NamedTemporaryFile(
@@ -691,6 +696,18 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
             handle.write(json.dumps(payload, indent = 2) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        # NamedTemporaryFile is 0600 and os.replace keeps the source file's mode, so
+        # without this a refresh left a shared install's marker readable only by whoever
+        # ran it, and every other user's update read "nothing installed". An existing
+        # marker keeps its mode; a new one gets what write_text would have given it.
+        if original_mode is None:
+            mask = os.umask(0)
+            os.umask(mask)
+            original_mode = 0o666 & ~mask
+        try:
+            os.chmod(tmp_path, original_mode)
+        except OSError:
+            pass
         atomic_replace_from_tempfile(tmp_path, destination)
         tmp_path = None
     finally:
@@ -821,12 +838,37 @@ def _recorded_runtime_matches(install_dir: Path, host: HostInfo, meta: dict, ver
     return host.is_windows or os.access(node_binary_path(install_dir, host), os.X_OK)
 
 
+def _record_runtime_verification_under_lock(
+    install_dir: Path, host: HostInfo, meta: dict, *, version: str, npm_major: int
+) -> None:
+    """record_runtime_verification for a caller that does not hold the install lock.
+
+    The record is a read-modify-write of the marker, and the pre-lock check in
+    install_prebuilt is exactly where another installer can be mid-swap: it reads the
+    old marker, the other process swaps a new tree into place, and the old version and
+    checksum are written over the new tree's marker. So the write takes the lock and
+    goes ahead only if the marker is still the one that was read. Never raises: a
+    record that could not be written costs the two spawns again next time.
+    """
+    try:
+        with install_lock(install_lock_path(install_dir)):
+            current = load_metadata(install_dir)
+            if current is None:
+                return
+            if any(current.get(key) != meta.get(key) for key in ("version", "sha256", "asset")):
+                return
+            record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def existing_install_matches(
     install_dir: Path,
     host: HostInfo,
     *,
     version: str,
     expected_sha: str | None = None,
+    under_lock: bool = False,
 ) -> bool:
     """True iff the on-disk install is exactly this version, runs, and (when
     expected_sha is given) was recorded with that digest, so a non-pinned or
@@ -848,8 +890,14 @@ def existing_install_matches(
     npm_major = installed_npm_major(install_dir, host)
     if npm_major is None or npm_major < NPM_MIN_MAJOR:
         return False
-    # The spawns just answered, so the next run does not have to ask again.
-    record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
+    # The spawns just answered, so the next run does not have to ask again. Written
+    # under the install lock either way: the caller's, or one taken here for the write.
+    if under_lock:
+        record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
+    else:
+        _record_runtime_verification_under_lock(
+            install_dir, host, meta, version = version, npm_major = npm_major
+        )
     return True
 
 
@@ -978,7 +1026,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         if (
             not force
             and may_keep
-            and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
+            and existing_install_matches(
+                install_dir, host, version = version, expected_sha = pin, under_lock = True
+            )
         ):
             log(f"existing Node install already matches v{version}; nothing to do")
             return EXIT_SUCCESS

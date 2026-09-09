@@ -4,6 +4,7 @@
 
 import importlib.util
 import io
+import contextlib
 import json
 import sys
 import tarfile
@@ -2742,3 +2743,82 @@ def test_both_setup_scripts_report_the_kept_install_as_kept():
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert token in source
     assert kept in source
+
+
+def test_whisper_a_release_pin_does_not_excuse_a_wrong_upstream_pin(tmp_path, monkeypatch):
+    """The full path refuses a pinned release whose bundle targets another upstream
+    version, so the shortcut checks the upstream pin whether or not the release is
+    pinned too."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        M.llama,
+        "_download_host_latest_release_tag",
+        lambda _repo: pytest.fail("a pinned tag names the answer outright"),
+    )
+    assert (
+        _whisper_check(
+            install_dir, host, published_release_tag = RELEASE_TAG, whisper_tag = UPSTREAM_TAG
+        )
+        is True
+    )
+    assert (
+        _whisper_check(install_dir, host, published_release_tag = RELEASE_TAG, whisper_tag = "v1.0.0")
+        is False
+    )
+
+
+def test_an_unreachable_lookup_keeps_a_cpu_install_asked_for_with_cpu_fallback(
+    tmp_path, monkeypatch, capsys
+):
+    """--cpu-fallback is a backend request (resolve_backend makes it "cpu"), and the
+    intact check compares the marker's backend against it, so a kept CPU tree honours
+    the flag exactly as --backend cpu does; treating it as an explicit release request
+    turned a recoverable offline update into a failure."""
+    install_dir, _host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+    rc, output = _cli_install(capsys, install_dir, "--cpu-fallback")
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_GREP in output
+    assert calls["n"] == 1
+
+
+def test_the_whisper_backfill_is_written_under_the_install_lock(tmp_path, monkeypatch):
+    """The backfill is a read-modify-write of the marker. Outside the lock it raced a
+    concurrent installer swapping in a new release: old marker read, tree replaced, old
+    fields written over the new marker. The pre-lock keep now takes the lock, re-checks
+    the install and only then writes."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir, paired_llama_ggml_tree = None)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    held = {"depth": 0, "writes_under_lock": 0, "writes_outside": 0}
+    real_lock = M.install_lock
+
+    @contextlib.contextmanager
+    def counting_lock(path):
+        with real_lock(path):
+            held["depth"] += 1
+            try:
+                yield
+            finally:
+                held["depth"] -= 1
+
+    real_backfill = M._backfill_slim_pairing_record
+
+    def counting_backfill(directory):
+        if held["depth"]:
+            held["writes_under_lock"] += 1
+        else:
+            held["writes_outside"] += 1
+        real_backfill(directory)
+
+    monkeypatch.setattr(M, "install_lock", counting_lock)
+    monkeypatch.setattr(M, "_backfill_slim_pairing_record", counting_backfill)
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+    assert held == {"depth": 0, "writes_under_lock": 1, "writes_outside": 0}
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert marker["paired_llama_ggml_tree"] == "ggml-abc"
+    # Nothing left to settle: the second keep takes no lock for a write.
+    held["writes_under_lock"] = 0
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert held["writes_under_lock"] == 0 and held["writes_outside"] == 0

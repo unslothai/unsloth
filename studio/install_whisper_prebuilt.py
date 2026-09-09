@@ -1111,10 +1111,27 @@ def existing_install_matches(
     llama dir leaves dictation broken while update reports up to date)."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
-    if not installed_tree_is_intact(install_dir, host):
+    return installed_tree_is_intact(install_dir, host)
+
+
+def kept_install_needs_settling(install_dir: Path) -> bool:
+    """Whether settle_kept_install has anything to write: a slim marker with no tree."""
+    marker = load_prebuilt_metadata(install_dir)
+    if not marker or marker.get("install_kind") != "slim":
         return False
+    recorded = marker.get("paired_llama_ggml_tree")
+    return not (isinstance(recorded, str) and recorded)
+
+
+def settle_kept_install(install_dir: Path) -> None:
+    """core.install_selected_prebuilt's hook for a kept install, called under the lock.
+
+    The backfill is a read-modify-write of the marker. Done from existing_install_matches
+    it ran once BEFORE the lock, where another installer swapping in a new release
+    between the read and the replace would have had its fresh marker overwritten with
+    the old release's fields plus the backfilled tree.
+    """
     _backfill_slim_pairing_record(install_dir)
-    return True
 
 
 def _backfill_slim_pairing_record(install_dir: Path) -> None:
@@ -1562,18 +1579,22 @@ def existing_install_current_without_plan(
     recorded_release = str(marker.get("release_tag"))
     pinned = (published_release_tag or "").strip()
     requested = (whisper_tag or "latest").strip().lower()
+    if requested not in ("", "latest"):
+        # An upstream version pin, checked whether or not the release is pinned too: the
+        # full path refuses a pinned release whose bundle targets another upstream
+        # version (_bundle_matches_whisper_tag), so a marker matching the release pin
+        # alone is not the install this run asked for. Unlike llama's fork, this one
+        # publishes several packaging revisions of one upstream tag (v1.9.2-unsloth.17,
+        # .18, ...) and _release_plan_for_host takes the newest that matches, so with no
+        # release pin the marker's upstream_tag rules out a wrong pin but cannot answer
+        # alone: the install is current only when it is also the release the HEAD below
+        # names.
+        if str(marker.get("upstream_tag") or "") != whisper_tag.strip():
+            return False
     if pinned:
         if pinned != recorded_release:
             return False
     else:
-        if requested not in ("", "latest"):
-            # An upstream version pin. Unlike llama's fork, this one publishes several
-            # packaging revisions of one upstream tag (v1.9.2-unsloth.17, .18, ...) and
-            # _release_plan_for_host takes the newest that matches, so the marker's own
-            # upstream_tag rules out a wrong pin but cannot answer alone: the install is
-            # current only when it is also the release the HEAD below names.
-            if str(marker.get("upstream_tag") or "") != whisper_tag.strip():
-                return False
         if not llama._download_host_resolve_enabled():
             return False
         try:
@@ -1650,10 +1671,11 @@ def install_prebuilt(
         # host, so counting them would take this path away from all of them. A different
         # --published-repo or --backend needs no clause either, because
         # _existing_install_is_intact compares the marker's own recorded repo and backend
-        # against this run's.
+        # against this run's -- and --cpu-fallback is a backend request too
+        # (resolve_backend makes it "cpu"), so a kept CPU tree honours it exactly as an
+        # explicit --backend cpu does, and an offline update with one is recoverable.
         explicit_release_request = (
             force
-            or cpu_fallback
             or bool((published_release_tag or "").strip())
             or (whisper_tag or "latest").strip().lower() not in ("", "latest")
         )
