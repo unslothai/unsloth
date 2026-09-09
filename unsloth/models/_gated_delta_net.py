@@ -25,9 +25,8 @@ output projection follow unchanged.
 
 Training path only (`cache_params is None`). Anything else, a LoRA-wrapped projection, a
 fused causal-conv1d being available, or an unexpected module layout, falls back to the
-original forward. `UNSLOTH_DISABLE_GDN_FAST_FORWARD=1` turns it off.
+original forward.
 """
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -157,8 +156,6 @@ def _gated_delta_net_fast_forward(self, hidden_states, cache_params = None, atte
 def patch_gated_delta_net_fast_forward(model):
     """Install the compiled input projection on every Qwen3.5 GatedDeltaNet class in `model`.
     Returns the number of layers that will take the fast path."""
-    if os.environ.get("UNSLOTH_DISABLE_GDN_FAST_FORWARD", "0") == "1":
-        return 0
     n = 0
     for module in model.modules():
         cls = type(module)
