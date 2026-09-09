@@ -83,6 +83,7 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     settled_snapshot_device_memory,
 )
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -170,6 +171,9 @@ from utils.hardware import clear_gpu_cache
 from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
+
+# Asked for here as well as in the image backend, so the video path never depends on that import order.
+install_torchao_int_mm_patch()
 
 # Load kinds (mirror the image backend): gguf (single-file GGUF DiT + base repo), single_file (safetensors DiT),
 # pipeline (full diffusers repo)
@@ -3799,6 +3803,10 @@ class VideoBackend:
         # _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
+        # Before the transformer quant, the first mutator; until the state commit a failure restores them itself.
+        backend_flags = snapshot_backend_flags()
+        self._precommit_globals = (_load_token, backend_flags)
+
         # dense transformer quant (opt-in, pipeline-kind only): torchao-quantise the dense bf16 DiT in place onto the
         # low-precision tensor cores. CUDA + bf16 only, best-effort. Quant must precede compile (eager is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
@@ -3946,10 +3954,6 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        backend_flags = snapshot_backend_flags()
-        # Until the state commit hands ownership to _teardown_state_locked, a failure has to restore these process-wide
-        # flags itself. Registered BEFORE the first mutation, as above.
-        self._precommit_globals = (_load_token, backend_flags)
         # Step cache tri-state: unset/"auto" -> FBCACHE_MIN_STEPS policy (re-checked per generation); "off"/"fbcache"
         # pinned. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
