@@ -98,6 +98,8 @@ ICON_FETCH_CEILING = 64 * 1024
 # prebuilt installers log; setup.sh CONSUMES that and prints its own line, so the log a
 # user (and this harness) sees carries these instead.
 NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
+# What --local installs from the checkout on every pass, so its RECORD moving is expected.
+LOCAL_CORE = frozenset({"unsloth", "unsloth-zoo", "unsloth_zoo"})
 
 DIST_LIST = (
     "import importlib.metadata as m, json; "
@@ -422,6 +424,10 @@ def run_update(
         rc = completed.returncode
     finally:
         seconds = time.time() - started
+        # Read before anything is done to it: a proxy that died during the run journalled
+        # nothing after its death, and a client whose CONNECT was refused by a dead
+        # listener looks, in that journal, like one that made no connection at all.
+        proxy_died = process.poll() is not None
         settled = _settle_journal(log_path)
         process.terminate()
         try:
@@ -429,6 +435,10 @@ def run_update(
         except subprocess.TimeoutExpired:  # pragma: no cover - a wedged tunnel
             process.kill()
     (directory / "update.log").write_text(text, encoding = "utf-8")
+    assert not proxy_died, (
+        f"{label}: the measurement proxy exited (code {process.returncode}) before the update "
+        "finished; its journal is incomplete and proves nothing about connections"
+    )
     assert settled, (
         f"{label}: the update finished while a proxy worker was still between accept and "
         "its journal record; the journal is incomplete and proves nothing about connections"
@@ -496,7 +506,13 @@ def snapshot(venv_python: pathlib.Path) -> dict:
         text = True,
         timeout = 300,
     )
-    state["dist_records"] = json.loads(records.stdout or "[]")
+    # The two packages --local installs from the checkout are reinstalled on every pass
+    # (a local directory is never "already satisfied"), so their RECORD moving is the
+    # harness's own doing, not the update's; their mtime and size are not compared.
+    state["dist_records"] = [
+        [name, version, None, None] if name in LOCAL_CORE else [name, version, mtime, size]
+        for name, version, mtime, size in json.loads(records.stdout or "[]")
+    ]
 
     manifest_path = venv / "unsloth_install_manifest.json"
     manifest = None
@@ -731,16 +747,10 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
     assert untouched == [], (
         "a pass with no evidence redid work on already-valid components: " + ", ".join(untouched)
     )
-    # Names and versions cannot see a reinstall at the same version; the RECORD mtime can.
-    # --local reinstalls the checkout's own two packages on every pass (a local directory
-    # is never "already satisfied"), so those are expected to move; nothing else may.
-    local_core = {"unsloth", "unsloth-zoo", "unsloth_zoo"}
+    # Names and versions cannot see a reinstall at the same version; the RECORD mtime can
+    # (the snapshot already leaves out the two packages --local reinstalls by design).
     was = {tuple(record) for record in before["dist_records"]}
-    moved = sorted(
-        record[0]
-        for record in after["dist_records"]
-        if tuple(record) not in was and record[0] not in local_core
-    )
+    moved = sorted(record[0] for record in after["dist_records"] if tuple(record) not in was)
     assert moved == [], "a pass with no evidence reinstalled: " + ", ".join(moved)
 
 
@@ -844,9 +854,14 @@ def test_the_install_is_left_working(install, settled):
     after = snapshot(install)
     assert after["distributions"] == before["distributions"]
     assert after["manifest"] is not None
+    verify_env = {**os.environ, "HOME": str(_home()), "USERPROFILE": str(_home())}
+    # The same root the measured runs used: under UNSLOTH_IDEMPOTENCY_STUDIO_HOME the
+    # install lives outside HOME, and the CLI would otherwise verify a default root.
+    if os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME"):
+        verify_env["UNSLOTH_STUDIO_HOME"] = os.environ["UNSLOTH_IDEMPOTENCY_STUDIO_HOME"]
     verify = subprocess.run(
         [str(install), "-I", "-X", "utf8", "-m", "unsloth_cli", "studio", "verify-install"],
-        env = {**os.environ, "HOME": str(_home()), "USERPROFILE": str(_home())},
+        env = verify_env,
         capture_output = True,
         text = True,
         timeout = 600,
