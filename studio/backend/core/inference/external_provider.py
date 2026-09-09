@@ -2528,7 +2528,6 @@ class ExternalProviderClient:
         # Anthropic stop_reason -> OpenAI finish_reason. `pause_turn` maps to
         # None so the UI doesn't treat a paused server-tool turn as final.
         # `refusal` -> "content_filter" (closest match).
-        # `model_context_window_exceeded` is a truncation, not a completed answer.
         # https://platform.claude.com/docs/en/api/messages#response-stop-reason
         _finish_reason_map: dict[str, Optional[str]] = {
             "end_turn": "stop",
@@ -3198,6 +3197,15 @@ class ExternalProviderClient:
                                 # message_stop but we skip emitting a
                                 # finish_reason="stop" chunk that would truncate
                                 # the rendered message in the UI.
+                                # The `stop` default below reports an unmapped reason as a
+                                # finished answer, hiding a truncating one added upstream.
+                                if stop_reason not in _finish_reason_map:
+                                    logger.warning(
+                                        "Unmapped Anthropic stop_reason %r (model=%s); "
+                                        "reporting the turn as finished",
+                                        stop_reason,
+                                        model,
+                                    )
                                 mapped = _finish_reason_map.get(stop_reason, "stop")
                                 # Streaming refusal: emit a visible notice plus an
                                 # out-of-band _toolEvent so the frontend can prune
