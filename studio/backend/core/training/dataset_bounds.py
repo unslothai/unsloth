@@ -18,45 +18,34 @@ import re
 import tempfile
 from typing import Any, Optional
 
-# Deliberately loose: rows are consumed by things that never produce a step (the
-# eval split carved off the train set, rows train_on_responses_only drops when the
-# response template is missing). Running short only means re-reading the subset,
-# but that repeats rows, and 4x is still orders of magnitude under the datasets
-# this exists for.
+# Deliberately loose: rows are consumed by things that never produce a step (the eval split, rows
+# train_on_responses_only drops when the response template is missing), and running short only
+# re-reads the subset; 4x is still orders of magnitude under the datasets this exists for.
 MAX_STEPS_ROW_SLACK = 4
 # Below this a subset is small enough to skew a run for no meaningful saving.
 MIN_MAX_STEPS_ROWS = 1024
-# Launchers that advertise a data-parallel process count. Read as env because this
-# module is torch-free and the bound is computed before any process group exists, so
-# torch.distributed cannot be asked: at bound time it is almost never initialised.
-# The MPI names routes/inference.py reads, plus the torchrun ones it does not, and a
-# looser test: it pairs each size with its rank partner because it refuses requests;
-# sizing a row bound only needs a bare size. Annotated per variable, several of which
-# are widely miscited.
+# Read as env because this module is torch-free and the bound is computed before any process group
+# exists, so torch.distributed cannot be asked. A bare size is enough here, unlike
+# routes/inference.py, which pairs each size with its rank partner because it refuses requests.
 WORLD_SIZE_ENV_VARS = (
     "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed. NOT set by any MPI
     "LOCAL_WORLD_SIZE",  # torchrun's --nproc-per-node; it sets WORLD_SIZE too
     "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend, which is CUDA-only
-    "OMPI_COMM_WORLD_SIZE",  # Open MPI / prterun, alongside OMPI_COMM_WORLD_RANK
+    "OMPI_COMM_WORLD_SIZE",
     "PMI_SIZE",  # MPICH and Intel MPI via Hydra; srun only under --mpi=pmi2
     "PMIX_SIZE",  # nothing sets this: PMIx answers job size through PMIx_Get
     "MPI_WORLD_SIZE",  # likewise undocumented in every MPI checked
     "MV2_COMM_WORLD_SIZE",  # MVAPICH2, and only under its mpirun_rsh launcher
 )
-# An mlx.launch world size that is not a number in the env: of its five backends only
-# NCCL (CUDA) exports MLX_WORLD_SIZE; ring and JACCL export a path to a JSON file whose
-# outer list has one entry per rank, and that length is the world size. Without these
-# two an mlx.launch reads as one process, and under-counting recycles rows -- so the
-# Apple path, the only one MLX training runs on, would keep the bug this fixes.
+# Of mlx.launch's five backends only NCCL exports MLX_WORLD_SIZE; ring and JACCL export a path to
+# a JSON file whose outer list has one entry per rank.
 WORLD_SIZE_ENV_FILES = (
     "MLX_HOSTFILE",  # ring backend: a path to [["ip:port", ...], ...], one per rank
     "MLX_IBV_DEVICES",  # jaccl backend: a path to the N x N RDMA matrix, one row per rank
 )
-# A hostfile is a few hundred bytes per rank. Read a bounded prefix so a wrong path
-# (an env var pointed at something enormous) cannot pull a file into memory; a
-# truncated read fails to parse as JSON and is discarded, which is the safe answer.
+# Read a bounded prefix so a wrong path cannot pull an enormous file into memory; a truncated read
+# fails to parse as JSON and is discarded.
 MAX_WORLD_SIZE_FILE_BYTES = 1 << 20
-# Written into a run's output directory at its first start; read back on resume.
 # Its absence is the signal that a checkpoint predates the bound.
 ROW_BOUND_MARKER_FILE = "unsloth_row_bound.json"
 # transformers writes checkpoint-<global_step> and nothing else under that prefix.
@@ -111,10 +100,8 @@ def world_size_from_rank_files(environ: Any = None) -> int:
             if value.lstrip()[:1] in ("[", "{"):
                 payload = json.loads(value[:MAX_WORLD_SIZE_FILE_BYTES])
             elif os.path.isfile(value):
-                # Binary, so the cap really is bytes: a text read() counts
-                # CHARACTERS, so 4-byte codepoints would pull 4x the cap off disk.
-                # json.loads takes bytes; non-UTF-8 raises UnicodeDecodeError (a
-                # ValueError), caught below.
+                # Binary, so the cap really is bytes: a text read() counts CHARACTERS, and json.loads takes bytes
+                # anyway.
                 with open(value, "rb") as handle:
                     payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
             else:

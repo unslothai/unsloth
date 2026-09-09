@@ -19,8 +19,7 @@ export type LastLocalModelLoad = {
 };
 
 const API_PATH = "/api/settings/last-local-model";
-// Pre-backend installs kept the record here; still read so an upgrade does not
-// forget the model.
+// Pre-backend installs kept the record here; still read so an upgrade does not forget the model.
 const LEGACY_STORAGE_KEY = "unsloth.last-local-model-load.v1";
 
 function isLastLocalModelKind(value: unknown): value is LastLocalModelKind {
@@ -140,11 +139,10 @@ export async function readLastLocalModelLoad(
             ? legacy.pendingSync
             : legacy.loadedAt > backendLoadedAt)
         ) {
-          // A local record the backend has not seen: a PUT dropped at teardown
-          // (pendingSync) or a pre-upgrade bundle's write. Re-sync it with its
-          // original stamp, even on an identity match, so the backend stamp
-          // advances past older dropped writes elsewhere. An unstamped backend
-          // record gives no order, so only a pending shadow may outrank it.
+          // A local record the backend has not seen: a PUT dropped at teardown (pendingSync) or a
+          // pre-upgrade bundle's write. Re-sync it with its original stamp, even on an identity match, so
+          // the backend stamp advances past older dropped writes elsewhere. An unstamped backend record
+          // gives no order, so only a pending shadow may outrank it.
           recordLastLocalModelLoad({
             ...legacy.record,
             loadedAt: legacy.loadedAt,
@@ -181,8 +179,8 @@ export function recordLastLocalModelLoad(input: {
   }
   const loadedAt =
     typeof input.loadedAt === "number" ? input.loadedAt : Date.now();
-  // Shadow write first, synchronously: a fetch pending at teardown is dropped
-  // without running either callback. Also covers a pre-route backend's 404.
+  // Shadow write first, synchronously: a fetch pending at teardown is dropped without running
+  // either callback. Also covers a pre-route backend's 404.
   writeLegacyRecord(record, true, loadedAt);
   authFetch(API_PATH, {
     method: "PUT",
@@ -203,8 +201,8 @@ export function recordLastLocalModelLoad(input: {
       if (!res.ok) {
         return;
       }
-      // Adopt the server's answer: it may have clamped or rejected this
-      // write, and the shadow must mirror what is stored.
+      // Adopt the server's answer: it may have clamped or rejected this write, and the shadow must
+      // mirror what is stored.
       let serverRecord: LastLocalModelLoad | null = null;
       let serverLoadedAt: number | null = null;
       try {
@@ -232,9 +230,8 @@ export function recordLastLocalModelLoad(input: {
       } catch {
         // Pre-loaded_at backend or opaque response: fall back to our stamp.
       }
-      // Clear only this write's marker: a newer load may have replaced the
-      // shadow mid-flight, even a reload of the same model, so the stamp must
-      // match too.
+      // Clear only this write's marker: a newer load may have replaced the shadow mid-flight, even a
+      // reload of the same model, so the stamp must match too.
       const legacy = readLegacyEntry();
       if (
         !legacy?.pendingSync ||

@@ -28,6 +28,7 @@ FRONTEND = REPO / "studio/frontend/src"
 MODULE = BACKEND / "utils/release_notes.py"
 BODIES = Path(__file__).parent / "fixtures/release_bodies"
 PANEL = FRONTEND / "components/update/release-notes-panel.tsx"
+NOTES_LAYOUT = FRONTEND / "components/update/update-notes-layout.ts"
 NOTES_HOOK = FRONTEND / "hooks/use-release-notes.ts"
 PREVIEW = FRONTEND / "lib/release-notes-preview.ts"
 CODE_SPANS = FRONTEND / "lib/markdown-code-spans.ts"
@@ -36,6 +37,339 @@ LIST_COLUMNS = FRONTEND / "lib/markdown-list-columns.ts"
 INLINE_COMMENTS = FRONTEND / "lib/markdown-inline-comments.ts"
 WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
+
+
+# An apostrophe in JSX text is prose, not the start of a string: "We're ready"
+# in a banner's copy would otherwise run a scanner to the next apostrophe or off
+# the end of the file, and a copy edit would fail these tests. The frontend is
+# formatted to double quotes, so nothing here is delimited with `'`.
+# A set of characters, not a string: `"" in '"`'` is true for a substring, and
+# a trailing comma leaves an empty argument to test.
+_QUOTES = frozenset('"`')
+
+_CALL = re.compile(r"[A-Za-z_$][\w$]*\(")
+
+_IMPORTANT = re.compile(r"^!|!$")
+
+
+def _split_variants(token: str) -> tuple[tuple[str, ...], str]:
+    """A Tailwind class token as (variants, utility), split on top-level colons.
+
+    Depth-aware, because an arbitrary value may carry its own brackets and its
+    own colon: `has-[[data-slot=update-release-notes]]:min-h-[calc(...)]`.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in token:
+        if char in "[(":
+            depth += 1
+        elif char in "])":
+            depth -= 1
+        if char == ":" and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    # `!min-h-0` and `min-h-0!` are `min-h-0`, at a weight that beats the floor.
+    # Left as written, an important rule would slip past a prohibition on the
+    # plain one while overriding it. The frontend already writes them, in
+    # `app/routes/__root.tsx` among others.
+    return tuple(parts[:-1]), _IMPORTANT.sub("", parts[-1])
+
+
+def _tokens(source: str) -> list[tuple[tuple[str, ...], str]]:
+    """Every class token in `source`, as (variants, utility)."""
+    return [_split_variants(token) for token in re.findall(r"""[^\s"'`]+""", source)]
+
+
+def _applies(source: str, utility: str, *variants: str) -> bool:
+    """Is `utility` written anywhere in `source` under at least `variants`?
+
+    Token-wise, not as a substring. These assertions used to name a run of
+    classes verbatim, so gating a rule (`max-[383px]:has-[...]:min-h-[calc]`)
+    or inserting an unrelated one beside it read as the rule being gone, and
+    #10229 went red on four of them while every rule it named was still there.
+    A utility is the last top-level segment, so a longer utility that merely
+    ends with this one does not count, and variant order is Tailwind's business
+    rather than this test's.
+
+    Name no variants and this asks whether the utility is there under any gate
+    or none, which is what a check for a rule's *absence* wants. A check that a
+    rule is in force needs `_only_under`.
+    """
+    for token_variants, token_utility in _tokens(source):
+        if token_utility == utility and set(variants) <= set(token_variants):
+            return True
+    return False
+
+
+def _only_under(source: str, utility: str, *variants: str) -> bool:
+    """Is `utility` written at least once, and every time under exactly these?
+
+    What a positive layout guarantee needs, and neither half of it is a subset
+    test. An extra gate narrows when the rule is in force, so a floor written
+    `md:has-[...]:min-h-[...]` leaves every width from 384px to the `md`
+    breakpoint with none, the narrow override having stopped at 383px. A
+    second, ungated copy widens it the other way, back to the reserved empty
+    height the gate was added to stop. Both leave the utility present, so both
+    pass an existence check.
+
+    Named with no variants, this is "written, and never gated": an ungated
+    `shrink-0` is the whole guarantee when there are no notes, and
+    `max-[383px]:shrink-0` would satisfy an existence check while leaving the
+    card squeezable at every width but one.
+    """
+    found = False
+    for token_variants, token_utility in _tokens(source):
+        if token_utility != utility:
+            continue
+        if set(token_variants) != set(variants):
+            return False
+        found = True
+    return found
+
+
+def _class_const(source: str, name: str) -> str:
+    """The class string of an exported `const NAME = "..."`.
+
+    Comments blanked and anchored on the `export`, like the banner extractors:
+    an old declaration left commented out above the live one would otherwise
+    answer for it, and a stale copy that still reads correctly is exactly how a
+    regression in the live one goes unnoticed.
+    """
+    match = re.search(
+        rf'export const {re.escape(name)}\s*=\s*\n?\s*"([^"]*)"', _without_comments(source)
+    )
+    assert match, f"{name} is not an exported class constant"
+    return match.group(1)
+
+
+_COMMENT_SPAN = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def _without_comments(source: str) -> str:
+    """`source` with every comment blanked, each index left where it was.
+
+    Blanked rather than removed so that the offsets the scanners hand around
+    stay valid. Both forms, and before any scan, for two reasons. Prose is not
+    code: an apostrophe in `// notes don't shrink` would open a string literal
+    that never closes, and a `}` written in a block comment would unbalance the
+    tag. Prose is not classes either: the comment beside these very rules says
+    "shrink-0 keeps the compact card at its natural height", so in block form
+    it would satisfy the assertion that the class is there after the class
+    itself had been deleted.
+    """
+    out = list(source)
+    index = 0
+    while index < len(source):
+        char = source[index]
+        # A literal first: `bg-[url(https://example.com/a.svg)]` is a class, and
+        # blanking from its `//` would eat the rest of the line and its quote.
+        if char in _QUOTES:
+            index = _skip_literal(source, index)
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            end = len(source) if end == -1 else end
+        elif source.startswith("/*", index):
+            end = source.find("*/", index)
+            assert end != -1, "unterminated block comment"
+            end += 2
+        else:
+            index += 1
+            continue
+        for blank in range(index, end):
+            if out[blank] != "\n":
+                out[blank] = " "
+        index = end
+    return "".join(out)
+
+
+def _skip_literal(source: str, at: int) -> int:
+    """The index just past the string or template literal opening at `at`."""
+    quote = source[at]
+    index = at + 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+            continue
+        if source[index] == quote:
+            return index + 1
+        index += 1
+    raise AssertionError(f"unterminated {quote} literal")
+
+
+def _tag_end(source: str, start: int, at: int) -> int | None:
+    """The end of the tag opening at `start`, if `at` is one of its attributes.
+
+    `None` when it is not, which is how a `<` that opens no tag is rejected.
+    Brackets and string literals are tracked, so the `>` of an inline arrow
+    (`onClick={() => go()}`) does not end the tag early and a comparison inside
+    an attribute expression (`disabled={count < limit}`) runs out of depth.
+    """
+    depth = 0
+    index = start + 1
+    reached = False
+    while index < len(source):
+        if index == at:
+            reached = depth == 0
+        char = source[index]
+        if char in _QUOTES:
+            index = _skip_literal(source, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == ">" and depth == 0:
+            return index if reached else None
+        index += 1
+    return None
+
+
+def _opening_tag(source: str, at: int) -> tuple[int, int]:
+    """The bounds of the JSX opening tag whose attributes include index `at`.
+
+    Not simply the nearest `<` before it: an attribute expression may hold one
+    of its own, as `disabled={count < limit}` does, and starting the scan there
+    runs into an unmatched brace. Candidates are tried from the nearest
+    outwards and one is accepted only if the tag it opens actually reaches `at`
+    with the tag still open and at depth zero.
+
+    Both ends are returned so that attributes can be searched over the whole
+    tag rather than the part before some other attribute, which is an order
+    dependency of exactly the kind this file is being fixed for.
+    """
+    start = at
+    while True:
+        try:
+            start = source.rindex("<", 0, start)
+        except ValueError:
+            raise AssertionError("no JSX opening tag encloses this attribute") from None
+        end = _tag_end(source, start, at)
+        if end is not None:
+            return start, end
+
+
+def _class_on_testid(source: str, testid: str) -> str:
+    """The literal class string of the element carrying `data-testid=testid`.
+
+    Anchored on the attribute that names the element rather than on a run of
+    its classes. An anchor built from classes cannot survive one of them being
+    inserted or reordered, which is the failure this file is being fixed for,
+    and it fails by raising rather than by reporting a missing rule.
+    """
+    clean = _without_comments(source)
+    start, end = _opening_tag(clean, clean.index(f'data-testid="{testid}"'))
+    return _class_value(clean[start:end], testid)
+
+
+def _class_value(tag: str, what: str) -> str:
+    """Every class named by the `className` of `tag`, joined.
+
+    A literal today. Wrapping one in the `cn()` this file already uses renders
+    the same DOM, so it has to read the same rather than being skipped, which
+    would have taken the next element's classes instead and reported every rule
+    on this one as missing.
+    """
+    key = "className="
+    assert key in tag, f"{what} carries no className"
+    at = tag.index(key) + len(key)
+    if tag[at] == '"':
+        return tag[at + 1 : _skip_literal(tag, at) - 1]
+    assert tag[at] == "{", f"{what}'s className is neither a literal nor an expression"
+    return _always_rendered(tag[at + 1 : _balanced(tag, at) - 1])
+
+
+def _arguments(call: str) -> list[str]:
+    """The arguments of a call, split on its top-level commas."""
+    at = call.index("(")
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    index = at
+    while index < len(call):
+        char = call[index]
+        if char in _QUOTES:
+            end = _skip_literal(call, index)
+            current.append(call[index:end])
+            index = end
+            continue
+        if char in "([{":
+            depth += 1
+            if depth == 1:
+                index += 1
+                continue
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                break
+        elif char == "," and depth == 1:
+            parts.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+    return parts
+
+
+def _always_rendered(expression: str) -> str:
+    """The classes `expression` renders in every state, joined.
+
+    Only an argument that is a bare literal. `cn(open && "x")` renders `x`
+    sometimes and a rule the card must always carry is not satisfied by
+    sometimes; written against a constant, `cn(false && "x")` renders it never,
+    while the text of the class sits there in the file either way. Reading the
+    literals out of the whole expression would call all three the same.
+    """
+    text = expression.strip()
+    if text[:1] in _QUOTES and _skip_literal(text, 0) == len(text):
+        return text[1:-1]
+    if "(" not in text:
+        return ""
+    literals = []
+    for argument in _arguments(text):
+        part = argument.strip()
+        if part[:1] in _QUOTES and _skip_literal(part, 0) == len(part):
+            literals.append(part[1:-1])
+        elif _CALL.match(part) and _balanced(part, part.index("(")) == len(part):
+            # Grouping the arguments in a nested `cn()` renders the same
+            # classes, so it has to read the same rather than as none at all.
+            literals.append(_always_rendered(part))
+    return " ".join(literals)
+
+
+def _balanced(source: str, at: int) -> int:
+    """The index just past the bracket group opening at `at`."""
+    depth = 0
+    index = at
+    while index < len(source):
+        char = source[index]
+        if char in _QUOTES:
+            index = _skip_literal(source, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    raise AssertionError("unbalanced brackets")
+
+
+def _assert_classes(class_string: str, *rules: str) -> None:
+    """Every one of `rules` is its own class in `class_string`."""
+    present = set(class_string.split())
+    missing = [rule for rule in rules if rule not in present]
+    assert not missing, f"{missing} missing from {class_string!r}"
+
 
 # The scanners are the frontend half of the contract the parser implements, so they are
 # run rather than read. Node strips the types and nothing imports a package: no install.
@@ -705,9 +1039,10 @@ def test_panel_is_scrollable_and_shows_only_the_stripped_notes():
 
 def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     src = PANEL.read_text(encoding = "utf-8")
+    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
     # Lighter than the card behind it, rather than a darker inset.
-    assert "dark:bg-white/[0.06]" in src
+    assert "dark:bg-white/[0.06]" in layout
     # Streamdown's mt-6 clips the first heading against the scroller edge.
     assert "[&>*>*:first-child]:mt-0" in src
     # Shared utility: thumb hidden until the notes are hovered.
@@ -747,19 +1082,21 @@ def test_preview_highlights_the_leading_sentence():
     assert "SENTENCE_BREAK" in preview and "(?=" in preview
 
     panel = PANEL.read_text(encoding = "utf-8")
-    assert '<span className="font-medium text-foreground">{item.lead}</span>' in panel
+    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
+    assert "UPDATE_NOTES_LEAD_CLASS" in panel
+    assert '"font-medium text-foreground"' in layout
     assert "item.rest" in panel
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
-def test_update_popup_is_wider_than_the_other_overlays(banner):
-    """Sized for three same-size buttons on one row. Width moved from the shared
-    stack onto each overlay, so this does not widen the other overlays."""
+def test_update_popups_share_the_notes_width(banner):
+    """Every update popup uses the same width for its notes and action rows."""
     assert "max-w-[448px]" in banner.read_text(encoding = "utf-8")
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert "max-w-[400px]" not in provider, "stack must not cap overlay width"
     llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding = "utf-8")
-    assert "max-w-[400px]" in llama, "unrelated overlays keep their width"
+    assert "max-w-[448px]" in llama
+    assert "max-w-[400px]" not in llama
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
@@ -1081,13 +1418,43 @@ def test_notes_repair_the_shared_previews_width_reset():
 def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so the card must not scroll."""
     src = banner.read_text(encoding = "utf-8")
-    assert "flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden" in src
-    assert 'className="min-h-0 flex-1"' in src
+    # The painted surface: capped, clipping, and able to give up height itself
+    # so that the region inside it is the one that scrolls.
+    _assert_classes(
+        _card_surface(src),
+        "flex",
+        "max-h-[calc(100dvh_-_2rem)]",
+        "min-h-0",
+        "flex-col",
+        "overflow-hidden",
+    )
+    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
+    _assert_classes(
+        _class_const(layout, "UPDATE_NOTES_ROOT_CLASS"),
+        "flex",
+        "min-h-0",
+        "flex-1",
+        "flex-col",
+        "overflow-hidden",
+    )
     panel = PANEL.read_text(encoding = "utf-8")
-    assert "max-h-64 min-h-0 flex-1 overflow-y-auto" in panel
+    assert "UPDATE_NOTES_EXPANDED_SCROLL_CLASS" in panel
+    _assert_classes(
+        _class_const(layout, "UPDATE_NOTES_EXPANDED_SCROLL_CLASS"),
+        "max-h-64",
+        "min-h-0",
+        "flex-1",
+        "overflow-y-auto",
+    )
     # The collapsed summary scrolls too: without it the bullets were painted
     # over the row of buttons once the card's slot for them got small.
-    assert "min-h-0 flex-1 space-y-1 overflow-y-auto" in panel
+    _assert_classes(
+        _class_on_testid(panel, "update-release-notes-summary"),
+        "min-h-0",
+        "flex-1",
+        "space-y-1",
+        "overflow-y-auto",
+    )
 
 
 def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
@@ -1279,9 +1646,124 @@ def test_code_span_closers_ignore_backslashes():
 _SCALED_FLOOR_WEB = "min-h-[calc(109px+80px*var(--ui-font-scale,1))]"
 # Below 384px the action pair wraps onto its own row and the card needs a
 # whole extra one: 259px at the 20px setting where the wide card needs 209.
-_NARROW_FLOOR_WEB = "max-[383px]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
+# Named as the utility alone and asserted under `max-[383px]` through
+# `_applies`, because the floor also carries a `has-[...]` gate since #10229
+# and a run of variants has no fixed order.
+_NARROW_FLOOR_WEB = "min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
 _SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
-_NARROW_FLOOR_TAURI = "max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+_NARROW_FLOOR_TAURI = "min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+_NARROW = "max-[383px]"
+# A floor only has to exist while there are notes to give up, and gating it is
+# what stopped the card reserving height it painted nothing into (#10229). So
+# the guarantee under test is a pair: floored while the notes panel is there,
+# and not squeezable at all while it is not.
+_NOTES_GATE = "has-[[data-slot=update-release-notes]]"
+
+
+_BANNER_ROOT = re.compile(r'data-testid="(?:web|tauri)-update-banner"')
+
+
+def _unpositioned_branch(text: str) -> str:
+    """The `: ...` arm of `positioned ? ... : ...`.
+
+    The two arms are two different elements: `positioned` is the standalone
+    banner, and the rail-facing card is the alternative. Reading both at once
+    would let a rule move from the card to the standalone banner and still
+    satisfy a check about the card. Split at the colon at bracket depth zero
+    and outside any literal, so a Tailwind variant in the first arm
+    (`dark:bg-card`) is not mistaken for the separator.
+
+    Ternary nesting is counted, not just brackets. A ternary inside the first
+    arm has a colon of its own at the same bracket depth, and taking that one
+    returns the tail of the `positioned` arm as though it were the card, so
+    every floor could be asserted against the wrong element.
+    """
+    index = text.index("?", text.index("positioned")) + 1
+    pending = 1
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char in _QUOTES:
+            index = _skip_literal(text, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "?" and depth == 0 and text[index + 1 : index + 2] not in (".", "?"):
+            pending += 1
+        elif char == ":" and depth == 0 and text[index - 1] != "?":
+            pending -= 1
+            if pending == 0:
+                return text[index + 1 :]
+        index += 1
+    raise AssertionError("the positioned card has no unpositioned branch")
+
+
+def _card_slot(source: str) -> str:
+    """The rail-facing root of an update card, comments stripped.
+
+    Not one string literal: the root is a `cn()` of several, so an assertion
+    anchored on the first of them cannot see the floor at all. Anchored on the
+    `data-testid` that names the card, so no class has to keep its place for
+    the root to be found, and narrowed to the branch the overlay rail actually
+    renders. Comments go because both files name the very classes under test in
+    prose beside them, and a rule that a comment can satisfy is not tested.
+    """
+    clean = _without_comments(source)
+    match = _BANNER_ROOT.search(clean)
+    assert match, "the update card has lost its data-testid"
+    start, end = _opening_tag(clean, match.start())
+    key = "className={cn("
+    tag = clean[start:end]
+    assert key in tag, "the card's root no longer builds its classes with cn()"
+    # The classes it always renders, not the text of the branch: a floor put
+    # behind a constant is still written in the file while reaching no DOM.
+    return _always_rendered(_unpositioned_branch(clean[start + tag.index(key) : end]))
+
+
+def _card_surface(source: str) -> str:
+    """The painted surface: the class string of the card's first child.
+
+    Bounded to that child rather than taken as the next literal `className` in
+    the file, which is the dismiss button's the moment the surface writes its
+    own classes through `cn()` instead.
+    """
+    clean = _without_comments(source)
+    match = _BANNER_ROOT.search(clean)
+    assert match, "the update card has lost its data-testid"
+    _, end = _opening_tag(clean, match.start())
+    child = clean.index("<", end)
+    # A fragment emits no element, so it is not the surface and its `<` is not
+    # the surface's. Wrapping the card in one changes no rendered class.
+    while clean[child + 1] == ">":
+        child = clean.index("<", child + 2)
+    start, child_end = _opening_tag(clean, child + 1)
+    return _class_value(clean[start:child_end], "the painted surface")
+
+
+def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
+    """The card keeps room for its header and buttons, in both of its states."""
+    # Read off the rail-facing root, so a floor written on some inner box, or
+    # on the standalone `positioned` banner, does not answer for this one.
+    root = _card_slot(source)
+    # `_only_under` and not an existence check, in all four: a floor that gains
+    # a gate stops applying over part of its range, and one that gains an
+    # ungated twin reserves the empty height the gate was added to stop.
+    assert _only_under(
+        root, scaled, _NOTES_GATE
+    ), f"the {card} card's floor is fixed, ungated, or gated more than its notes"
+    assert _only_under(
+        root, narrow, _NOTES_GATE, _NARROW
+    ), f"the {card} card's floor misses the narrow card's extra button row"
+    # With no notes rendered there is no floor, so this is what holds the row.
+    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
+    assert _only_under(
+        root, "shrink", _NOTES_GATE
+    ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
+    assert not _applies(
+        root, "min-h-0"
+    ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
 
 
 def _corner_rails(provider: str) -> list[str]:
@@ -1300,6 +1782,81 @@ def _capped_rails(provider: str) -> int:
     them, so the gutter is not spent on the cards. See overlay-shadow-gutter.
     """
     return sum(1 for rail in _corner_rails(provider) if "max-h-[calc(100dvh_-_8px)]" in rail)
+
+
+def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
+    """The floor assertions are only as strong as these, so they are tested.
+
+    A matcher that quietly says yes is how this file went wrong the first time:
+    the checks read as layout guarantees and were substring searches.
+    """
+    gated = "max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(1px+2px)]"
+    assert _split_variants(gated) == (
+        ("max-[383px]", "has-[[data-slot=update-release-notes]]"),
+        "min-h-[calc(1px+2px)]",
+    ), "a bracketed variant's own colon splits the token"
+    # A variant that is asked for must be there, and the rest may be in any order.
+    assert _applies(gated, "min-h-[calc(1px+2px)]", "max-[383px]")
+    assert _applies(gated, "min-h-[calc(1px+2px)]", "max-[383px]", "has-[[data-slot=x]]") is False
+    assert _applies("min-h-[calc(1px+2px)]", "min-h-[calc(1px+2px)]", "max-[383px]") is False
+    # A utility is the whole last segment, not a suffix of one.
+    assert _applies("min-h-0", "h-0") is False
+    # And a gate cannot answer for a rule that has to hold everywhere.
+    assert _applies("md:shrink-0", "shrink-0"), "the absence check must see a gated rule"
+    assert _only_under("md:shrink-0", "shrink-0") is False
+    assert _only_under("flex shrink-0 flex-col", "shrink-0")
+    # A positive guarantee takes the gates it names and no others, in either
+    # direction: one more narrows where the rule holds, and an ungated twin
+    # widens it back over the state the gate exists to exclude.
+    assert _only_under("has-[x]:min-h-4", "min-h-4", "has-[x]")
+    assert _only_under("md:has-[x]:min-h-4", "min-h-4", "has-[x]") is False
+    assert _only_under("has-[x]:min-h-4 min-h-4", "min-h-4", "has-[x]") is False
+    assert _only_under("flex", "min-h-4", "has-[x]") is False, "absent is not satisfied"
+    # An important rule is the same rule, at a weight that beats the floor, so
+    # it cannot slip past a prohibition on the plain one.
+    for important in ("!min-h-0", "min-h-0!"):
+        assert _split_variants(important)[1] == "min-h-0"
+        assert _applies(important, "min-h-0"), f"{important} escapes the prohibition"
+
+
+def test_the_class_anchors_do_not_depend_on_any_order():
+    """An anchor that needs an attribute or a branch to keep its place is the
+    same brittleness one level up, so both are read structurally."""
+    # An arrow function's `>` does not end the opening tag, and the attribute
+    # is found on either side of the one that names the element.
+    # A comparison inside an attribute expression is not the element's start.
+    for tag in (
+        '<ul className="a b" data-testid="x" onClick={() => go()}>',
+        '<ul onClick={() => go()} data-testid="x" className="a b">',
+        '<ul disabled={count < limit} className="a b" data-testid="x">',
+        '<ul disabled={count < limit} data-testid="x" className="a b">',
+    ):
+        assert _class_on_testid(tag, "x") == "a b", tag
+    # The two arms of the ternary are two different elements. A variant in the
+    # first arm does not read as the separator, and only the second is returned.
+    branch = _unpositioned_branch('positioned ? "fixed dark:bg-card" : cn("rail shrink-0")')
+    assert "rail" in branch and "fixed" not in branch
+    # A class expression renders the same DOM as a literal and must read the
+    # same, but only what it renders in every state. A rule the card must
+    # always carry is not satisfied by one that renders sometimes, and a
+    # constant guard renders it never while leaving the text in the file.
+    assert _class_value('<div className="a b">', "x") == "a b"
+    assert _class_value('<div className={cn("a b")}>', "x") == "a b"
+    assert _class_value('<div className={cn("a b", open && "c")}>', "x").split() == ["a", "b"]
+    assert _class_value('<div className={cn(false && "a", "b")}>', "x").split() == ["b"]
+    assert _class_value('<div className={cn(open ? "a" : "z", "b")}>', "x").split() == ["b"]
+    # Comments are neither code nor classes. Prose can hold an apostrophe or an
+    # unmatched brace, and the banners' own comment names `shrink-0`.
+    for comment in ("// notes don't shrink", "/* an unmatched } is prose */"):
+        tag = f'<ul {comment}\n className="a b" data-testid="x">'
+        assert _class_on_testid(tag, "x") == "a b", comment
+    blanked = _without_comments("/* shrink-0 */ flex")
+    assert blanked.split() == ["flex"], "a class named in prose still reads as a class"
+    assert len(blanked) == len("/* shrink-0 */ flex"), "blanking a comment moved every later index"
+    # A `//` inside a literal is a URL, not a comment, so the rest of the line
+    # and its closing quote survive.
+    url = '"bg-[url(https://example.com/a.svg)] flex" // gone'
+    assert _without_comments(url).rstrip() == '"bg-[url(https://example.com/a.svg)] flex"'
 
 
 def test_the_overlay_stack_fits_the_viewport():
@@ -1323,8 +1880,7 @@ def test_the_overlay_stack_fits_the_viewport():
     # The update card cannot: its header and buttons are fixed and only its
     # notes yield, so it floors instead.
     web = WEB_BANNER.read_text(encoding = "utf-8")
-    assert _SCALED_FLOOR_WEB in web, "the floor is fixed, so it is wrong at other type sizes"
-    assert _NARROW_FLOOR_WEB in web, "the floor misses the narrow card's extra button row"
+    _assert_floored(web, _SCALED_FLOOR_WEB, _NARROW_FLOOR_WEB, "browser")
     # Those floors can add up to more than the cap at a large type size, so the
     # rail scrolls. Without this the overflow lands below the bottom of the
     # screen with no way to reach it.
@@ -1337,8 +1893,7 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert len(_corner_rails(provider)) == 2, "both rails sit in the bottom-right corner"
     assert _capped_rails(provider) == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
-    assert _SCALED_FLOOR_TAURI in tauri, "the floor is fixed, so it is wrong at other type sizes"
-    assert _NARROW_FLOOR_TAURI in tauri, "the floor misses the narrow card's extra button row"
+    _assert_floored(tauri, _SCALED_FLOOR_TAURI, _NARROW_FLOOR_TAURI, "desktop")
 
 
 def test_the_rail_offset_is_not_computed():

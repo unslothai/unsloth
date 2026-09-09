@@ -117,8 +117,8 @@ def test_visible_text_holds_unclosed_think():
 
 
 def test_visible_text_holds_partial_think_prefix():
-    # Streams are cumulative, so the opening tag can arrive as "<", "<thi",
-    # then "<think>". Hold possible tag prefixes until they are disambiguated.
+    # Streams are cumulative, so the opening tag can arrive as "<", "<thi", then "<think>". Hold
+    # possible tag prefixes until they are disambiguated.
     assert visible_text("<", show_thinking = False) == ""
     assert visible_text("<thi", show_thinking = False) == ""
     assert visible_text("done.<thi", show_thinking = False) == "done."
@@ -290,8 +290,7 @@ def test_you_prompt_matches_readline_backend(monkeypatch):
     assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
     assert chatmod._you_prompt(colors = False) == "\nYou: "
 
-    # Windows: no readline module at all; the console's own line editing
-    # handles backspace, so plain ANSI color (no markers) is safe.
+    # Windows: no readline module at all; the console's own line editing handles backspace, so plain ANSI color is safe.
     monkeypatch.setitem(sys.modules, "readline", None)
     assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
     assert chatmod._you_prompt(colors = False) == "\nYou: "
@@ -445,13 +444,13 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         },
         # An embedding/CLIP repo carries task None like any chat repo; can_chat separates them.
         {"repo_id": "org/Embedder", "task": None, "capabilities": {"can_chat": False}},
-        # An untrusted diffusion repo carries no task either, and its pipeline root has no
-        # config for can_chat to read, so only its own flag keeps it out of chat.
+        # An untrusted diffusion repo carries no task either, and its pipeline root has no config for
+        # can_chat to read, so only its own flag keeps it out of chat.
         {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
-    # The real variant lister, not a stub: it decides these labels and picks the load target,
-    # so a stub tests the plumbing and none of the answer. Pulls neither torch nor fastapi, and
-    # syspath_prepend is undone after the test, so the suite keeps its no-server-import property.
+    # The real variant lister, not a stub: it decides these labels and picks the load target, so a stub
+    # tests the plumbing and none of the answer. Pulls neither torch nor fastapi, and syspath_prepend
+    # is undone after the test.
     monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
     monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (gguf_rows, model_rows))
 
@@ -860,8 +859,8 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
-    # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1:
-    # discovery tries each loopback address and returns the one that answers.
+    # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1: discovery tries each
+    # loopback address and returns the one that answers.
     import socket
     import urllib.request
 
@@ -1460,12 +1459,14 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
+    # 0 is the "no context requested" sentinel: a server that also asked for nothing
+    # reuses the resident model instead of relaunching it at the CLI's own number.
     assert loads == [
         (
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 4096,
+                "max_seq_length": 0,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -1518,7 +1519,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 2048,
+                "max_seq_length": 0,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -1529,6 +1530,50 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
     ]
     assert streams[0][0] == [{"role": "user", "content": "hello"}]
     assert closed == [True]
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_local_load_forwards_the_unrequested_context_sentinel(monkeypatch, command):
+    """No server: the sentinel reaches the loader, so each backend picks its own window.
+
+    GGUF and MLX read the trained window from the checkpoint; the transformers backend has
+    no window to read and falls back to 2048.
+    """
+    from unsloth_cli.commands import inference as infermod
+
+    module, app, argv = {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+    loads = []
+
+    class _FakeBackend:
+        def stream(self, *a, **k):
+            return iter(["answer"])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module,
+        "load_chat_backend",
+        lambda model, **kwargs: (loads.append(kwargs["max_seq_length"]), _FakeBackend())[1],
+    )
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(app, argv, input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert loads == [0]
+
+    loads.clear()
+    result = CliRunner().invoke(app, [*argv, "--max-seq-length", "8192"], input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert loads == [8192]
 
 
 def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
@@ -2319,8 +2364,8 @@ def test_catalog_drops_an_export_with_no_loadable_payload(monkeypatch, tmp_path)
     (whole / "adapter_model.safetensors").write_bytes(b"\0" * 2048)
 
     monkeypatch.setattr(cat, "_path_can_chat", lambda *a, **k: None)
-    # Warm the real hub.* chain BEFORE shadowing utils.models: _local_dir_holds_a_payload
-    # imports through it, and a stub package would break that import rather than the test.
+    # Warm the real hub.* chain BEFORE shadowing utils.models: _local_dir_holds_a_payload imports
+    # through it, and a stub package would break that import rather than the test.
     assert cat._local_dir_holds_a_payload(whole) is True
     assert cat._local_dir_holds_a_payload(broken) is False
 
@@ -2408,6 +2453,136 @@ def test_catalog_local_gguf_folder_picks_the_preferred_quant(monkeypatch, tmp_pa
     assert entries and entries[0].model.endswith("mymodel-Q4_K_M.gguf"), entries[0].model
 
 
+def test_catalog_loose_gguf_file_rows_load_their_own_file(monkeypatch, tmp_path):
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    ling = folder / "Ling-3.0-tiny-Uncensored-Abliterated.f16.gguf"
+    minimax = folder / "MiniMax-H3-ref2va-curve-zs05-Q8_0.gguf"
+    for file in (ling, minimax):
+        file.write_bytes(b"GGUF" + b"\0" * 4096)
+    multi = tmp_path / "multi"
+    multi.mkdir()
+    (multi / "mymodel-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 4096)
+    (multi / "mymodel-F16.gguf").write_bytes(b"GGUF" + b"\0" * 4096 * 4)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(ling), row(minimax), row(multi)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    loads = {e.name: e.model for e in cat.local_folder_entries()}
+    assert loads == {
+        ling.stem: str(ling),
+        minimax.stem: str(minimax),
+        "multi": str(multi / "mymodel-Q4_K_M.gguf"),
+    }
+
+
+def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_path):
+    """Loose shards are listed one row each; resolving them to the first is what lets
+    _dedup_key, which keys on the inode, offer a split family as a single pick."""
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    shards = [folder / f"BigModel-Q4_K_M-0000{n}-of-00003.gguf" for n in (1, 2, 3)]
+    for shard in shards:
+        shard.write_bytes(b"GGUF" + b"\0" * 4096)
+    # An unrelated single-file GGUF beside them: no shard may resolve to it, and it stays itself.
+    loose = folder / "Unrelated-F16.gguf"
+    loose.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
+    # Three digits is not the loader's -NNNNN-of-NNNNN, so detect_gguf_model opens each of these
+    # as its own model and collapsing them would be the wrong-file pick this fix removes.
+    unsplit = [folder / f"Other-00{n}-of-003.gguf" for n in (1, 2, 3)]
+    for file in unsplit:
+        file.write_bytes(b"GGUF" + b"\0" * 4096)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    listed = [*shards, loose, *unsplit]
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(p) for p in listed])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    loads = {e.name: e.model for e in cat.local_folder_entries()}
+    assert loads == {
+        **{shard.stem: str(shards[0]) for shard in shards},
+        **{file.stem: str(file) for file in unsplit},
+        loose.stem: str(loose),
+    }
+
+    for source in ("trained_entries", "exported_entries", "cached_entries"):
+        monkeypatch.setattr(cat, source, list)
+    assert sorted(e.model for e in cat.list_chat_models()) == sorted(
+        [str(shards[0]), str(loose), *(str(file) for file in unsplit)]
+    )
+
+
+def test_catalog_drops_loose_gguf_companions(monkeypatch, tmp_path):
+    """A vision repo copied into models/ lists its projector as its own scan row.
+
+    _local_dir_holds_a_payload already requires a main GGUF inside a DIRECTORY, so this is the
+    same rule; without it the picker offers a projector that detect_gguf_model refuses.
+    """
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    model = folder / "gemma-3-4b-it-UD-Q4_K_XL.gguf"
+    model.write_bytes(b"GGUF" + b"\0" * 4096)
+    companions = [folder / n for n in ("mmproj-F16.gguf", "mtp-gemma-3-4b-it.gguf")]
+    for companion in companions:
+        # Bigger, so a folder-wide resolve would have preferred one of them.
+        companion.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(model), *map(row, companions)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    assert {e.name: e.model for e in cat.local_folder_entries()} == {model.stem: str(model)}
+
+
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
     """A LoRA resolved by bare repo id takes the REMOTE branch of
     get_base_model_from_lora_identifier, which downloads adapter_config.json with no
@@ -2446,8 +2621,8 @@ QUANT_LAYOUTS = [
     ([("Q4_K_M/Tiny-Q4_K_M.gguf", 16), ("Q8_0/Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
     # A split quant is ONE thing to pick. The glob listed every shard as its own label.
     ([(f"Tiny-Q4_K_M-0000{n}-of-00003.gguf", 16) for n in (1, 2, 3)], "Q4_K_M"),
-    # The case the host decides: fnmatch normcases on Windows and not on Linux or macOS, so
-    # "*.gguf" found this file on one platform only and the cache read differently per machine.
+    # The case the host decides: fnmatch normcases on Windows and not on Linux or macOS, so "*.gguf"
+    # found this file on one platform only and the cache read differently per machine.
     ([("Tiny-Q8_0.GGUF", 16)], "Q8_0"),
     ([("Tiny-Q4_K_M.gguf", 16), ("mmproj-F16.gguf", 16)], "Q4_K_M"),
 ]

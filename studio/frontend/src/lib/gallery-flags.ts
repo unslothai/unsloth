@@ -12,7 +12,7 @@
 export const GALLERY_CHANGED_EVENT = "unsloth:gallery-changed";
 
 /** Which gallery a change landed in. */
-export type GalleryKind = "images" | "videos";
+export type GalleryKind = "images" | "videos" | "audio";
 
 /**
  * Announce that a gallery changed from OUTSIDE the page that owns it. Both pages are mounted

@@ -24,13 +24,16 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
 
 
-# No arch gate here, deliberately. has_blackwell_gpu() skipped flash-attn when upstream
-# published no sm_100+ wheels (#5420), then became the bug once it did, denying B200 hosts
-# a working wheel (#6961). An arch gate encodes a snapshot of what upstream ships and goes
-# stale silently both ways; the callers' post-install import check catches a wheel that
-# will not load whatever the cause.
+# No arch gate here, deliberately: has_blackwell_gpu() skipped flash-attn while upstream shipped
+# no sm_100+ wheels (#5420), then became the bug once it did (#6961). A gate encodes a snapshot of
+# what upstream ships and goes stale silently both ways; the post-install import check catches a
+# wheel that will not load whatever the cause.
 
 
+# No arch gate, deliberately: has_blackwell_gpu() skipped flash-attn before sm_100+ wheels existed (#5420) and became
+# the bug once they did (#6961). The import check catches a bad wheel.
+# #6961 was B200 hosts denied a working wheel, and an arch gate encodes a snapshot of what upstream ships and goes stale
+# silently both ways.
 def wheel_platform_tag() -> str | None:
     """pip platform tag for this host, or None where nothing we resolve is published.
 
@@ -81,10 +84,9 @@ def probe_torch_wheel_env(
                     "print(json.dumps({"
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
                     "'torch_mm': torch_mm, "
-                    # Full release + full CUDA version: xFormers publishes one wheel per
-                    # exact torch PATCH and per CUDA MINOR (cu126 and cu128 are different
-                    # builds of the same version string), so 'torch_mm' / 'cuda_major'
-                    # cannot pick between them.
+                    # xFormers publishes one wheel per exact torch PATCH and per CUDA MINOR, so 'torch_mm' /
+                    # 'cuda_major' cannot pick between them.
+                    # Full release + full CUDA version: cu126 and cu128 are different builds of the same version string.
                     "'torch_version': str(torch.__version__), "
                     "'cuda_version': str(torch.version.cuda) if torch.version.cuda else '', "
                     "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
@@ -116,18 +118,13 @@ def probe_torch_wheel_env(
     return env
 
 
-# torch 2.11 and 2.12 ship no native prebuilt wheels for flash-attn /
-# causal-conv1d / mamba-ssm, but the torch2.10 CUDA wheels load and pass each
-# project's own suite on both (B200, py3.12, torch 2.12.1+cu130: causal-conv1d
-# 9412 passed / 3888 skipped / 0 failed, mamba tests/ops 20 passed, flash-attn
-# splitkv+qkvpacked 848 passed; pass/fail/skip counts and the failing test-ID
-# sets are identical to a torch 2.10 control). Reuse them so a 2.11 / 2.12
-# install still gets prebuilt accelerators instead of building from source.
-#
-# The window is bounded, not open ended: torch broke extension ABI between 2.9
-# and 2.10, and the torch2.9 flash-attn .so raises "undefined symbol" on torch
-# 2.10 and on 2.12 alike. A wheel cannot skip a torch minor backwards, so every
-# new key here must be measured against the real wheels before it is added.
+# torch 2.11/2.12 ship no native prebuilt flash-attn / causal-conv1d / mamba-ssm wheels, but the
+# torch2.10 CUDA wheels load and pass each project's own suite on both, so they are reused. The
+# window is bounded, not open ended: torch broke extension ABI between 2.9 and 2.10, so every new
+# key here must be measured against the real wheels before it is added.
+# Measured on B200, py3.12, torch 2.12.1+cu130: causal-conv1d 9412 passed / 3888 skipped / 0 failed, mamba tests/ops 20
+# passed, flash-attn splitkv+qkvpacked 848 passed, identical to a torch 2.10 control. The torch2.9 flash-attn .so raises
+# "undefined symbol" on torch 2.10 and 2.12 alike.
 _PREBUILT_WHEEL_TORCH_MM = {"2.11": "2.10", "2.12": "2.10"}
 
 
@@ -156,58 +153,23 @@ def direct_wheel_url(
     return f"{release_base_url}/{release_tag}/{filename}"
 
 
+# xformers/_C is linked against ONE exact (torch, CUDA) pair, and a mismatch is only a log
+# warning, so the import "succeeds" with memory-efficient attention silently gone. PyPI publishes
+# one win_amd64 flavour whose CUDA family churns across releases, which is why this resolves an
+# exact download.pytorch.org URL instead of pinning a version. Keyed on the `torch` field of
+# cpp_lib.json, not `cuda`, which is the NVCC toolkit version and does not separate flavours.
+# Rows are exact, never interpolated: the extension ABI does not survive a torch minor bump, and
+# an unlisted pair means "install nothing", the safe answer. cu118/cu121/cu124 are absent because
+# they stop before the cp39-abi3 switch at 0.0.31, so one filename template cannot name them.
+# The PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128 (0.0.32), cu130 (0.0.33) and cu128 again
+# (0.0.33.post1 onward); download.pytorch.org's cu126 0.0.34 also reports 1208, so only the `torch` field
+# ("2.10.0+cu128") separates flavours. Every row was HEAD-verified live, e.g.
+# cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}. Keying on the CUDA MINOR is stricter
+# than the ABI needs (cu126 and cu128 both link libcudart.so.12; only a major bump changes it), but it names a real
+# directory, so torch 2.10.0+cu129 on Linux resolves to nothing. torch 2.11+ maps to 0.0.35, compiled against 2.10.0 and
+# compatible with any later version since xFormers moved to the stable API/ABI in 0.0.34. Keep in step with
+# $script:XformersWheelVersions in install.ps1 and the matrix in tests/python/test_windows_xformers_wheel_match.py.
 # ── xFormers ──────────────────────────────────────────────────────────────────
-# xformers/_C.pyd (_C.so on Linux) is linked against ONE exact (torch, CUDA) pair.
-# Loaded beside any other pair torch.ops.load_library raises, and xformers/_cpp_lib.py
-# turns that into a log warning rather than an error -- so the import "succeeds" and
-# memory-efficient attention, SwiGLU and the sparse ops are silently gone. PyPI publishes
-# exactly one win_amd64 flavour, and today that is the CUDA-12.8 one (0.0.34's win_amd64
-# cpp_lib.json reads torch 2.10.0+cu128), which is why `pip install xformers` next to a
-# cu130 torch reports "xFormers was built for PyTorch 2.10.0+cu128 with CUDA 1208 (you
-# have 2.10.0+cu130)". WHICH flavour that is is not stable and must not be assumed: across
-# releases the PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128
-# (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward). That churn is the
-# argument for resolving a URL rather than pinning a version.
-#
-# Note also that cpp_lib.json's `cuda` is the NVCC TOOLKIT version, not torch's CUDA
-# family: download.pytorch.org's cu126 0.0.34 also reports 1208. Only the `torch` field
-# ("2.10.0+cu128") separates the flavours, which is the field this resolver keys on and
-# the field xFormers' own error message does not lead with.
-#
-# download.pytorch.org publishes one wheel per (CUDA family, torch patch), so resolve
-# the exact URL instead. torch release -> {CUDA family: xFormers version}. Every row was
-# HEAD-verified live and its xformers/cpp_lib.json read back, e.g.
-# cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}.
-#
-# Rows are exact, never interpolated: xFormers' extension ABI does not survive a torch
-# minor bump (unlike the flash-attn window above, which was measured), and no cu130 build
-# exists for torch <= 2.8. An unlisted pair means "install nothing", the safe answer.
-#
-# cu118 / cu121 / cu124 are absent for a different reason, and not because those families
-# publish nothing on Windows -- they do, e.g. cu124/xformers-0.0.28.post1-cp312-cp312-
-# win_amd64.whl is live. They all stop BEFORE the cp39-abi3 switch at 0.0.31, so their
-# wheels are one file per interpreter and the single filename template below cannot name
-# them; expressing those rows needs a per-interpreter gate here and a second one in
-# install.ps1, for CUDA families no supported torch install pulls any more.
-#
-# Two deliberate over-approximations, recorded so nobody "fixes" them by interpolating:
-#
-# * Keying on the CUDA MINOR is stricter than the ABI needs. The cu126 and cu128 _C.so
-#   have identical undefined-symbol sets and both link libcudart.so.12, so either loads
-#   against either runtime; only a MAJOR bump changes the interface (cu130 links
-#   libcudart.so.13). The minor is in the key because it names a real directory on
-#   download.pytorch.org, so an exact hit guarantees the URL exists. The cost is that a
-#   family with no row of its own resolves to nothing even when a sibling would work --
-#   torch 2.10.0+cu129 on Linux is the live example.
-# * torch 2.11+ maps to 0.0.35, which is compiled against 2.10.0 and works there by
-#   design rather than by luck: xFormers moved to the PyTorch stable API/ABI in 0.0.34,
-#   and its notes state that "binary builds targeting PyTorch 2.10+ will be compatible
-#   with any later version". So one 0.0.35 row per CUDA family covers every later torch,
-#   and the rows below are exact only up to 2.10.0, where upstream still shipped an
-#   exact-pinned wheel per torch release.
-#
-# Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in
-# tests/python/test_windows_xformers_wheel_match.py.
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
 
@@ -225,11 +187,10 @@ def pytorch_wheel_index_base_url() -> str:
 
 
 _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
-    # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
-    # switch, so it publishes one wheel per interpreter and stops at cp312, and Unsloth's
-    # default interpreter is 3.13. Supporting it would mean a per-interpreter gate here
-    # and a second one in install.ps1 for a four-year-old torch that resolves to nothing
-    # on the default install anyway.
+    # torch 2.7.0 is deliberately absent: it predates the stable-ABI switch, so it ships one wheel per interpreter and
+    # stops at cp312, while Unsloth's default interpreter is 3.13.
+    # Supporting it would mean a per-interpreter gate here and a second one in install.ps1, for a torch that resolves to
+    # nothing on the default install anyway (xFormers 0.0.30).
     "2.7.1": {"cu126": "0.0.31.post1", "cu128": "0.0.31.post1"},
     "2.8.0": {"cu126": "0.0.32.post2", "cu128": "0.0.32.post2", "cu129": "0.0.32.post2"},
     "2.9.0": {"cu126": "0.0.33.post1", "cu128": "0.0.33.post1", "cu130": "0.0.33.post1"},
@@ -243,43 +204,28 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     "2.13.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
 }
 
-# The stable-ABI floor and what serves it: every torch STRICTLY ABOVE this maps to this
-# release, per CUDA family. Exact rows above still win, so a future exact-pinned wheel
-# displaces the fallback for its own release.
-#
-# An exact-key table alone refuses the patch releases: 2.10.1, 2.11.1 and 2.12.1 are all
-# supported resident builds this file names elsewhere, and each of them missed and left
-# Unsloth on native attention. Enumerating patches is not an option -- they are published
-# after this code ships -- and 0.0.35 is compiled against 2.10.0 by design, with upstream
-# stating that "binary builds targeting PyTorch 2.10+ will be compatible with any later
-# version". So above 2.10.0 the answer is known without a table.
-#
-# Still bounded, not open-ended in the other direction: below the floor there is no stable
-# ABI and an unlisted pair must keep resolving to nothing rather than guessing.
+# The stable-ABI floor and what serves it: every torch STRICTLY ABOVE this maps to this release,
+# per CUDA family, with exact rows above still winning. An exact-key table alone refused the patch
+# releases (2.10.1, 2.11.1, 2.12.1), which cannot be enumerated because they ship after this code;
+# 0.0.35 targets 2.10.0 and upstream states later versions stay compatible. Below the floor there
+# is no stable ABI, so an unlisted pair must keep resolving to nothing.
 _XFORMERS_STABLE_ABI_FLOOR: tuple[int, ...] = (2, 10, 0)
 _XFORMERS_STABLE_ABI_VERSIONS = {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"}
 
-# The interpreter tag in the wheel FILENAME, which xFormers has changed twice: 0.0.30 and
-# earlier ship one wheel per cpXY (and stop at cp312), 0.0.31..0.0.34 ship a single
-# cp39-abi3 wheel, and 0.0.35 switched to py39-none. That last switch is a PACKAGING
-# change, not an architectural one: 0.0.35's setup.py drops py_limited_api=True and
-# force-tags the wheel through a custom bdist_wheel, on the grounds that the extension
-# never bound the CPython ABI in the first place -- it is loaded by
-# torch.ops.load_library, and its _C.so defines no PyInit and references no Py* symbol.
-# The wheel still carries a per-CUDA _C.pyd; it just dropped the bundled flash_attn_3
-# kernels, which is the whole 103 MB -> 2.6 MB difference. Verified by reading the WHEEL
-# metadata, setup.py and the extension's symbol table out of each.
-#
-# Ranges, not an open-ended floor: guessing the tag for an unreleased version is how a
-# resolver starts emitting URLs that 404, so an unknown release resolves to nothing until
-# somebody checks the real filename.
+# The interpreter tag in the wheel FILENAME, which xFormers has changed twice: 0.0.30 and earlier ship one wheel per
+# cpXY (and stop at cp312), 0.0.31..0.0.34 ship a single cp39-abi3 wheel, and 0.0.35 switched to py39-none. That last
+# switch is a PACKAGING change, not an architectural one: 0.0.35's setup.py drops py_limited_api=True and force-tags the
+# wheel through a custom bdist_wheel, since the extension is loaded by torch.ops.load_library and its _C.so defines no
+# PyInit. The wheel still carries a per-CUDA _C.pyd; it just dropped the bundled flash_attn_3 kernels, the whole 103 MB
+# -> 2.6 MB difference. Ranges, not an open-ended floor: an unknown release resolves to nothing until somebody checks
+# the real filename.
 _XFORMERS_FILENAME_PYTHON_TAGS: tuple[tuple[tuple[int, ...], tuple[int, ...], str], ...] = (
     ((0, 0, 31), (0, 0, 34), "cp39-abi3"),
     ((0, 0, 35), (0, 0, 35), "py39-none"),
 )
 
-# platform_tag from wheel_platform_tag() -> the leaf in the wheel filename. aarch64 and
-# macOS are absent because download.pytorch.org publishes no xFormers wheel for them.
+# platform_tag from wheel_platform_tag() -> the leaf in the wheel filename.
+# aarch64 and macOS are absent because download.pytorch.org publishes no xFormers wheel for them.
 _XFORMERS_PLATFORM_LEAVES = {
     "linux_x86_64": "manylinux_2_28_x86_64",
     "win_amd64": "win_amd64",
@@ -415,12 +361,11 @@ def redact_url_credentials(url: str) -> str:
 
 def flash_attn_package_version(torch_mm: str) -> str | None:
     if torch_mm == "2.10":
-        # Newest flash-attn release still carrying the full torch2.10 asset
-        # matrix (cu12 + cu13, cp312 + cp313, x86_64 + aarch64). Do not bump
-        # this to "the latest release": v2.8.3 publishes only cu13/cp312 for
-        # torch2.10 and v2.8.3.post1 dropped every torch2.10 asset, so both
-        # 404 most users back to a source build, and post1's newest tag is
-        # torch2.9, which will not load here at all.
+        # Newest flash-attn release still carrying the full torch2.10 asset matrix. Do not bump to "the
+        # latest release": v2.8.3 publishes only cu13/cp312 for torch2.10 and v2.8.3.post1 dropped every
+        # torch2.10 asset, 404ing most users into a source build.
+        # The full matrix is cu12 + cu13, cp312 + cp313, x86_64 + aarch64, and post1's newest tag is torch2.9, which
+        # will not load here at all.
         return "2.8.1"
     try:
         major, minor = (int(part) for part in torch_mm.split(".", 1))

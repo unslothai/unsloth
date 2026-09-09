@@ -22,11 +22,8 @@ const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
 // The caller kills only this wrapper, so a wedged oxlint has to die here or it is orphaned.
-// It gets the caller's budget minus what this process spent, on the same monotonic basis.
 const OXLINT_DEFAULT_BUDGET_MS = 30_000;
-// Covers the spawn, which precedes this process, plus its own wind-down.
 const OXLINT_BUDGET_MARGIN_MS = 2_000;
-// Below this, starting oxlint would only hand the caller's kill an orphan.
 const OXLINT_MIN_TIMEOUT_MS = 1_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 

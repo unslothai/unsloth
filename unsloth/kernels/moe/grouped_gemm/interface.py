@@ -33,17 +33,15 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
-# Precompute TMA support to avoid graph breaks
-# TMA requires both:
-# 1. NVIDIA GPU with capability >= 9 (Hopper+)
-# 2. Triton version with TMA API (make_tensor_descriptor or _experimental_make_tensor_descriptor)
+# Precompute TMA support to avoid graph breaks: it needs an NVIDIA GPU with capability >= 9
+# (Hopper+) and a triton with the TMA API (make_tensor_descriptor).
 def _check_tma_support():
     if DEVICE_TYPE in ("xpu", "hip"):
         return False
     import triton.language as tl
 
     gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
-    # Support both old experimental and new stable API names
+    # Support both the old experimental and the new stable API names.
     triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -52,7 +50,7 @@ def _check_tma_support():
 
 _SUPPORTS_TMA = _check_tma_support()
 
-# Check if triton.set_allocator is available (Triton 3.0+)
+# triton.set_allocator is Triton 3.0+.
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
 
 
@@ -124,7 +122,7 @@ def grouped_gemm_forward(
     fuse_mul_post: bool = False,
     # Autotuning -- overrides manual kernel params when True
     autotune: bool = False,
-    # Kernel tuning params (must be tuned, else poor performance)
+    # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -133,9 +131,8 @@ def grouped_gemm_forward(
     use_tma_load_w: bool = False,
     use_tma_load_x: bool = False,
     use_tma_store: bool = False,
-    # software pipelining; no effect until loop is re-written
+    # Software pipelining; no effect until the loop is re-written.
     flatten: bool = True,
-    # debugging
     debug: bool = False,
 ) -> torch.Tensor:
     """
@@ -175,7 +172,7 @@ def grouped_gemm_forward(
     assert not (permute_y and use_tma_store), "Cannot use both TMA store and permute_y"
 
     if use_tma_load_x:
-        # TMA load for activations, TMA gather only supported on Blackwell+
+        # TMA load for activations; TMA gather is Blackwell+ only.
         assert not permute_x, "Cannot use both use_tma_load_x and permute_x"
 
     use_tma = use_tma_load_w or use_tma_load_x or use_tma_store
@@ -186,7 +183,7 @@ def grouped_gemm_forward(
         use_tma_store = False
 
     if use_tma or autotune:
-        # Respect global persistent allocator if set
+        # Respect the global persistent allocator if set.
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
@@ -197,7 +194,6 @@ def grouped_gemm_forward(
     if W.ndim == 3:
         num_experts = W.shape[0]
         N = W.shape[1]
-        # K = W.shape[2]
     else:
         num_experts = m_sizes.shape[0]
         N = W.shape[0] // num_experts
@@ -244,8 +240,6 @@ def grouped_gemm_forward(
             print(f"DEBUG::GROUPED_GEMM {topk_weights.tolist()} {gather_indices.tolist()}")
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
-    # if total_tokens == 0 or N == 0:
-    #     return y
 
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
@@ -253,8 +247,6 @@ def grouped_gemm_forward(
         return (NUM_SMS,)
 
     if not autotune:
-        # BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
-        # BLOCK_SIZE_N = min(N, BLOCK_SIZE_N)
         pass
 
     if debug:
@@ -264,22 +256,18 @@ def grouped_gemm_forward(
         print(f"DEBUG::GROUPED_GEMM {m_sizes.tolist()} {(gather_indices // topk).tolist()}")
 
     kernel_args = {
-        # Inputs
         "x_ptr": X,
         "w_ptr": W,
         "m_sizes_ptr": m_sizes,
         "gather_indices_ptr": gather_indices,
         "topk_weights_ptr": topk_weights,
-        # Output
         "y_ptr": y,
-        # Problem shapes
         "NUM_TOKENS": num_tokens,
         "NUM_EXPERTS": num_experts,
         "TOPK": topk,
         "N": N,
         "K": K,
         "NUM_SMS": NUM_SMS,
-        # Gather / Scatter
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
         # TopK weight merging
@@ -365,9 +353,9 @@ def grouped_gemm_dX(
     assert m_sizes.ndim == 1
 
     # Preconditions
+    # Preconditions
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
-    # Note that this is flipped from the forward pass
-    # If we permuted y in the forward, we need to permute on load in the backward
+    # Flipped from the forward pass: a y permuted in the forward must be permuted on load in the backward.
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_store), "Cannot use both TMA store and permute_x"
 
@@ -379,11 +367,10 @@ def grouped_gemm_dX(
         use_tma_store = False
 
     if use_tma or autotune:
-        # Respect global persistent allocator if set
+        # Respect the global persistent allocator if set.
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
-                # print(f"DEBUG::GROUPED_GEMM alloc_fn {size=} {alignment=} {stream=}")
                 return torch.empty(size, device = "cuda", dtype = torch.int8)
 
             triton.set_allocator(alloc_fn)
@@ -400,13 +387,12 @@ def grouped_gemm_dX(
 
     M_total, N_grad = dY.shape
     N_total, K = W.shape
-    # N = N_total // num_experts
     assert N_grad == N, f"Grad_output N ({N_grad}) must match weight N ({N})"
 
     assert M_total % topk == 0, f"M_total ({M_total}) must be divisible by topk ({topk})"
     num_tokens = M_total // topk
 
-    # the kernel only reads gather_indices under permute_x / permute_y, so it stays optional otherwise
+    # The kernel only reads gather_indices under permute_x / permute_y, so it stays optional otherwise.
     if permute_x or permute_y:
         assert (
             gather_indices is not None
@@ -414,19 +400,17 @@ def grouped_gemm_dX(
     total_tokens = gather_indices.shape[0] if gather_indices is not None else M_total
     assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
-    # Note that the output shape is [NUM_TOKENS * TOPK, K] even when `permute_x` is True since we need to accumulate gradients across all experts chosen by the token.
-    # This will be done in a post-processing step reduction step.
+    # The output shape stays [NUM_TOKENS * TOPK, K] even under permute_x, since gradients must
+    # accumulate across all experts a token chose; reduced in a post-processing step.
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count  # if not debug else 1
+    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
     def grid(META):
         return (NUM_SMS,)
 
     if not autotune:
-        # BLOCK_SIZE_N = min(N_grad, BLOCK_SIZE_N)
-        # BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
         pass
 
     if debug:
@@ -436,23 +420,20 @@ def grouped_gemm_dX(
         print(f"DEBUG::GROUPED_GEMM {m_sizes.tolist()}")
 
     kernel_args = {
-        # Inputs
         "dY_ptr": dY,
         "w_ptr": W,
         "gather_indices_ptr": gather_indices,
         "m_sizes_ptr": m_sizes,
-        # Output
         "dX_ptr": dX,
-        # Problem sizes
         "NUM_EXPERTS": num_experts,
         "NUM_TOKENS": num_tokens,
         "TOPK": topk,
         "N": N,
         "K": K,
         "NUM_SMS": NUM_SMS,
-        # Gather / Scatter
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
+        # Loop pipelining
         "FLATTEN": flatten,
     }
     if not autotune:
@@ -529,7 +510,6 @@ def grouped_gemm_dW(
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
 
-    # Preconditions
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_load_x), "Cannot use both TMA load and permute_x"
@@ -542,7 +522,7 @@ def grouped_gemm_dW(
         use_tma_store = False
 
     if use_tma or autotune:
-        # Respect global persistent allocator if set
+        # Respect the global persistent allocator if set.
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
@@ -566,7 +546,6 @@ def grouped_gemm_dW(
         num_tokens = total_tokens // topk
 
     num_experts = m_sizes.shape[0]
-    # Get dimensions
     _, K = X.shape
     M_grad, N = dY.shape
 
@@ -575,8 +554,6 @@ def grouped_gemm_dW(
     dW = torch.zeros((num_experts, N, K), device = X.device, dtype = X.dtype)
 
     if not autotune:
-        # BLOCK_SIZE_N = min(N, BLOCK_SIZE_N)
-        # BLOCK_SIZE_K = min(K, BLOCK_SIZE_K)
         pass
 
     def grid(META):
@@ -603,24 +580,19 @@ def grouped_gemm_dW(
             m_start += m_sizes[i]
 
     kernel_args = {
-        # Inputs
         "x_ptr": X,
         "dY_ptr": dY,
         "m_sizes_ptr": m_sizes,
         "gather_indices_ptr": gather_indices,
-        # Output
         "dW_ptr": dW,
-        # Problem sizes
         "NUM_TOKENS": num_tokens,
         "TOPK": topk,
         "NUM_EXPERTS": num_experts,
         "N": N,
         "K": K,
         "NUM_SMS": NUM_SMS,
-        # Gather / Scatter
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        # Loop pipelining
         "FLATTEN": flatten,
     }
 
@@ -683,7 +655,7 @@ class GroupedGemm(torch.autograd.Function):
         ctx.dX_only = dX_only
         ctx.dW_only = dW_only
 
-        # NOTE: we don't save topk_weights for backward since we do not support training with fused_mul
+        # topk_weights is not saved for backward: training with fused_mul is unsupported.
         ctx.save_for_backward(X, W, m_sizes, gather_indices)
 
         fwd_config = {}
@@ -707,7 +679,7 @@ class GroupedGemm(torch.autograd.Function):
             permute_x = permute_x,
             permute_y = permute_y,
             fuse_mul_post = fuse_mul_post,
-            # Autotune -- this will override the manual kernel config if true
+            # Autotune overrides the manual kernel config when true.
             autotune = autotune,
             # Manual kernel config
             **fwd_config,
@@ -760,7 +732,7 @@ class GroupedGemm(torch.autograd.Function):
                 topk = topk,
                 permute_x = permute_x,
                 permute_y = permute_y,
-                # Autotune -- this will override the manual kernel config if true
+                # Autotune overrides the manual kernel config when true.
                 autotune = autotune,
                 # Manual kernel config
                 **bwd_dW_config,
@@ -788,7 +760,7 @@ class GroupedGemm(torch.autograd.Function):
                 topk = topk,
                 permute_x = permute_x,
                 permute_y = permute_y,
-                # Autotune -- this will override the manual kernel config if true
+                # Autotune overrides the manual kernel config when true.
                 autotune = autotune,
                 # Manual kernel config
                 **bwd_dX_config,
@@ -802,19 +774,19 @@ class GroupedGemm(torch.autograd.Function):
         return (
             dX,
             dW,
-            None,  # m_sizes
-            None,  # gather_indices
-            None,  # topk
-            None,  # permute_x
-            None,  # permute_y
-            None,  # topk_weights
-            None,  # fuse_mul_post
-            None,  # kernel_config_fwd
-            None,  # kernel_config_bwd_dX
-            None,  # kernel_config_bwd_dW
-            None,  # autotune
-            None,  # dX_only
-            None,  # dW_only
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
 
 
@@ -895,7 +867,6 @@ def grouped_gemm(
     kernel_config_bwd_dW: KernelConfigBackward_dW = None,
     autotune: bool = False,
     is_first_gemm: bool = True,
-    # Only for debugging
     dX_only: bool = False,
     dW_only: bool = False,
 ):

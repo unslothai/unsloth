@@ -76,8 +76,8 @@ def site(tmp_path, monkeypatch):
     d = tmp_path / "site-packages"
     d.mkdir()
     monkeypatch.syspath_prepend(str(d))
-    # sys.path alone is not enough: the real environment's distributions would
-    # still be discovered and could contribute findings of their own.
+    # sys.path alone is not enough: the real environment's distributions would still be discovered
+    # and could contribute findings of their own.
     import importlib.metadata as md
 
     real = md.distributions
@@ -167,28 +167,25 @@ def test_a_deleted_file_is_reported(site):
 
 
 def test_deletion_is_seen_whatever_Distribution_files_does(site):
-    # Distribution.files is not a usable basis for this check, and it is not
-    # consistent either: newer CPython filters out entries whose file is gone
-    # (so a deletion becomes invisible), older CPython lists them but with a
-    # path that does not exist. Which one you get depends on the interpreter,
-    # and this project supports >= 3.9, so pinning one behaviour would make the
-    # test fail on the other. RECORD is parsed directly instead, which reports
-    # the deletion on every version.
+    # Distribution.files is not a usable basis for this check and is not consistent either: newer
+    # CPython filters out entries whose file is gone, older CPython lists them with a path that
+    # does not exist. This project supports >= 3.9, so RECORD is parsed directly instead and the
+    # deletion is reported on every version.
     import importlib.metadata as md
 
     _make_dist(site, "gamma", {"gamma/a.py": b"a\n", "gamma/b.py": b"bb\n"})
     (site / "gamma" / "b.py").unlink()
     stale = [f for f in (md.distribution("gamma").files or []) if str(f) == "gamma/b.py"]
-    # Either it was dropped, or it is listed and locate() does not resolve.
-    # Both mean files() cannot tell you the file is gone.
+    # Either it was dropped, or it is listed and locate() does not resolve; both mean files()
+    # cannot tell you the file is gone.
     assert not stale or not stale[0].locate().exists()
     assert any("gamma/b.py is missing" in f for f in _deps().damaged_installed_files())
 
 
 def test_a_file_larger_than_recorded_is_not_damage(site):
-    # Two distributions claiming one path: descript-audio-codec ships a
-    # top-level tests/__init__.py that another package overwrites. Flagging that
-    # would block updates on a perfectly healthy install.
+    # Two distributions claiming one path: descript-audio-codec ships a top-level
+    # tests/__init__.py that another package overwrites, and flagging that would block updates on
+    # a healthy install.
     _make_dist(
         site,
         "delta",
@@ -199,11 +196,10 @@ def test_a_file_larger_than_recorded_is_not_damage(site):
 
 
 def test_a_shared_file_shorter_than_recorded_is_not_damage(site):
-    # The mirror of the case above. Two distributions claiming one path is a
-    # packaging collision, and whichever copy landed is the one on disk, so its
-    # size says nothing about either RECORD -- in either direction. Only the
-    # larger direction was excluded, so a collision that overwrote with a
-    # shorter file was reported as corruption and blocked every update.
+    # The mirror of the case above: whichever copy landed is the one on disk, so its size says
+    # nothing about either RECORD in either direction. Only the larger direction was excluded, so
+    # a collision that overwrote with a shorter file was reported as corruption and blocked every
+    # update.
     _make_dist(
         site, "iota", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 900}
     )
@@ -221,10 +217,9 @@ def test_a_singly_owned_short_file_is_still_damage(site):
 
 
 def test_the_scan_is_limited_to_this_interpreters_site_packages(monkeypatch, tmp_path):
-    # distributions() searches every sys.path entry, so a damaged distribution
-    # reachable only through an inherited PYTHONPATH failed every update while
-    # sitting outside the installation, where neither printed repair command can
-    # reach it. Only --no-verify broke the loop.
+    # distributions() searches every sys.path entry, so a damaged distribution reachable only
+    # through an inherited PYTHONPATH failed every update while sitting outside the installation,
+    # where neither printed repair command can reach it. Only --no-verify broke the loop.
     external = tmp_path / "elsewhere"
     (external / "ext-1.0.dist-info").mkdir(parents = True)
     (external / "ext").mkdir()
@@ -248,8 +243,8 @@ def test_the_scan_is_limited_to_this_interpreters_site_packages(monkeypatch, tmp
 
 
 def test_a_deleted_shared_file_is_still_reported(site):
-    # Multiple ownership makes the recorded SIZES ambiguous; it cannot explain
-    # the file being gone. Skipping shared paths outright hid real deletions.
+    # Multiple ownership makes the recorded SIZES ambiguous; it cannot explain the file being gone,
+    # and skipping shared paths outright hid real deletions.
     _make_dist(site, "mu", {"shared/x.py": b"hello\n"}, record_sizes = {"shared/x.py": 10})
     _make_dist(site, "nu", {}, record_sizes = {})
     (site / "nu-1.0.dist-info" / "RECORD").write_text(
@@ -262,8 +257,8 @@ def test_a_deleted_shared_file_is_still_reported(site):
 
 
 def test_a_row_without_a_recorded_size_is_still_checked(site):
-    # The size field is optional and real wheels leave it blank. Dropping those
-    # rows meant a deleted file was never reported.
+    # The size field is optional and real wheels leave it blank; dropping those rows meant a
+    # deleted file was never reported.
     _make_dist(site, "xi", {"xi/__init__.py": b"y\n"})
     (site / "xi-1.0.dist-info" / "RECORD").write_text("xi/__init__.py,,\n")
     (site / "xi" / "__init__.py").unlink()
@@ -272,8 +267,8 @@ def test_a_row_without_a_recorded_size_is_still_checked(site):
 
 
 def test_a_directory_standing_in_for_a_module_is_damage(site):
-    # An empty directory is commonly 4096 bytes on POSIX, so it sails past the
-    # shrinkage test while importing as something other than the recorded module.
+    # An empty directory is commonly 4096 bytes on POSIX, so it sails past the shrinkage test while
+    # importing as something other than the recorded module.
     _make_dist(site, "omicron", {}, record_sizes = {})
     (site / "omicron-1.0.dist-info" / "RECORD").write_text("omicron/mod.py,sha256=x,10\n")
     (site / "omicron" / "mod.py").mkdir(parents = True)
@@ -282,8 +277,8 @@ def test_a_directory_standing_in_for_a_module_is_damage(site):
 
 
 def test_installer_owned_metadata_is_ignored(site):
-    # .dist-info files are rewritten in place and drift from the size recorded
-    # inside themselves; two real distributions did exactly that.
+    # .dist-info files are rewritten in place and drift from the size recorded inside themselves;
+    # two real distributions did exactly that.
     _make_dist(site, "epsilon", {"epsilon/__init__.py": b"e\n"})
     info = site / "epsilon-1.0.dist-info"
     (info / "RECORD").write_text(
@@ -308,11 +303,10 @@ def test_findings_are_capped(site):
 
 
 def test_findings_are_capped_when_the_files_are_deleted(site):
-    # Truncation and deletion take different branches, and only truncation was
-    # covered. A wiped package -- `rm -rf` on a venv's torch, the shape a user
-    # actually hits -- takes the deletion branch, so an uncapped one floods the
-    # caller with a line per RECORD entry (~11.8k for torch), each of which the
-    # desktop updater turns into its own IPC event.
+    # Truncation and deletion take different branches and only truncation was covered. A wiped
+    # package (`rm -rf` on a venv's torch, the shape users hit) takes the deletion branch, so an
+    # uncapped one floods the caller with a line per RECORD entry, about 11.8k for torch, each of
+    # which the desktop updater turns into its own IPC event.
     files = {f"theta/m{i}.py": b"x" * 500 for i in range(40)}
     _make_dist(site, "theta", files)
     for rel in files:
@@ -416,8 +410,8 @@ def test_a_damaged_tree_exits_nonzero_and_names_the_files(monkeypatch, capsys):
 
 
 def test_a_foreign_cli_stays_quiet(monkeypatch):
-    # A pip-installed CLI can drive an update into a venv it does not live in;
-    # its own file list would describe the wrong tree, so it must not accuse.
+    # A pip-installed CLI can drive an update into a venv it does not live in; its own file list
+    # would describe the wrong tree, so it must not accuse.
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: True)
 
@@ -429,11 +423,10 @@ def test_a_foreign_cli_stays_quiet(monkeypatch):
 
 
 def test_a_system_python_is_not_treated_as_the_managed_venv(monkeypatch, tmp_path):
-    # Colab has no Unsloth venv: studio/setup.sh installs the backend into the
-    # system Python on purpose. Distro-packaged RECORDs there list files the
-    # distro never installed (PEP 627), so running the file check would accuse
-    # the distro of damaging Unsloth. Reproduced on Ubuntu system Python, which
-    # reports an apt-owned `markdown-it-py: ../scripts/markdown-it is missing`.
+    # Colab has no Unsloth venv: studio/setup.sh installs the backend into the system Python on
+    # purpose, and distro-packaged RECORDs there list files the distro never installed (PEP 627),
+    # so the file check would accuse the distro of damaging Unsloth. Reproduced on Ubuntu system
+    # Python, which reports an apt-owned `markdown-it-py: ../scripts/markdown-it is missing`.
     prefix = tmp_path / "usr"
     prefix.mkdir()
     monkeypatch.setattr(sys, "prefix", str(prefix))
@@ -474,10 +467,9 @@ def test_update_exposes_verify_defaulting_on():
 
 
 def test_the_verify_help_does_not_promise_an_import_check():
-    # The scan compares RECORD entries against the filesystem and imports
-    # nothing, so it cannot see same-size corruption or an intact but
-    # incompatible package. Saying it checks that the backend still imports
-    # promises a stronger guarantee than it delivers.
+    # The scan compares RECORD entries against the filesystem and imports nothing, so it cannot see
+    # same-size corruption or an intact but incompatible package. Saying it checks that the
+    # backend still imports promises more than it delivers.
     import inspect
 
     opt = inspect.signature(_studio().update).parameters["verify"].default
@@ -524,9 +516,9 @@ def test_no_verify_skips_the_check(monkeypatch):
 
 
 def test_a_tauri_update_is_verified_too(monkeypatch):
-    # The Tauri path returns before the shortcut refresh, so a check placed
-    # after that return would silently not run for desktop-initiated updates,
-    # the one flow where the user never sees a terminal.
+    # The Tauri path returns before the shortcut refresh, so a check placed after that return would
+    # silently not run for desktop-initiated updates, the one flow where the user never sees a
+    # terminal.
     verified = []
     monkeypatch.setenv("UNSLOTH_TAURI_UPDATE", "1")
     result = _run_update(monkeypatch, [], verified)
@@ -542,10 +534,9 @@ def test_a_tauri_update_is_verified_too(monkeypatch):
     ],
 )
 def test_a_custom_root_is_carried_into_the_reinstall_command(monkeypatch, capsys, system, expected):
-    # The CLI shim is a bare symlink and _ensure_studio_env_exported only sets
-    # os.environ for this process, so the shell that runs the printed command
-    # has no UNSLOTH_STUDIO_HOME. Unqualified, it would build a fresh
-    # ~/.unsloth/studio and leave the damaged custom root broken.
+    # The CLI shim is a bare symlink and _ensure_studio_env_exported only sets os.environ for this
+    # process, so the shell running the printed command has no UNSLOTH_STUDIO_HOME; unqualified,
+    # it would build a fresh ~/.unsloth/studio and leave the damaged custom root broken.
     import platform as _platform
     import typer
 
@@ -587,9 +578,9 @@ def test_a_root_with_spaces_is_quoted(monkeypatch, capsys):
     ],
 )
 def test_a_no_torch_install_keeps_that_mode_in_the_reinstall(monkeypatch, capsys, system, expected):
-    # install.sh derives SKIP_TORCH from its flag or UNSLOTH_NO_TORCH only, so
-    # following the plain command on a GGUF-only install pulls the whole PyTorch
-    # stack -- multiple GB the user deliberately opted out of.
+    # install.sh derives SKIP_TORCH from its flag or UNSLOTH_NO_TORCH only, so following the plain
+    # command on a GGUF-only install pulls the whole PyTorch stack, multiple GB the user opted out
+    # of.
     import platform as _platform
     import typer
 
@@ -598,9 +589,9 @@ def test_a_no_torch_install_keeps_that_mode_in_the_reinstall(monkeypatch, capsys
     monkeypatch.setattr(
         studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
     )
-    # The stub records what root it was asked for: the manifest and marker live
-    # in the venv, and an earlier attempt at this passed STUDIO_HOME, which is
-    # one directory too high, so it read None and never fired in production.
+    # The stub records what root it was asked for: the manifest and marker live in the venv, and an
+    # earlier attempt passed STUDIO_HOME, one directory too high, so it read None and never fired
+    # in production.
     seen = {}
 
     def _module(*a, **k):
@@ -621,9 +612,9 @@ def test_a_no_torch_install_keeps_that_mode_in_the_reinstall(monkeypatch, capsys
 
 @pytest.mark.parametrize("recorded", [False, None])
 def test_an_unrecorded_or_torch_install_does_not_gain_the_flag(monkeypatch, capsys, recorded):
-    # recorded_no_torch() returns None when nothing recorded the mode, and its
-    # contract is that None is not False. Adding the flag on a guess would leave
-    # a torch install without torch, so the flag is added only on an explicit True.
+    # recorded_no_torch() returns None when nothing recorded the mode, and its contract is that
+    # None is not False: adding the flag on a guess would leave a torch install without torch, so
+    # it is added only on an explicit True.
     import platform as _platform
     import typer
 
@@ -662,13 +653,11 @@ def test_the_default_root_keeps_the_plain_command(monkeypatch, capsys):
 
 
 def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, capsys):
-    # install_python_stack installs the current requirement sets and prunes
-    # nothing, and the installer never recreates the venv, so damage in an
-    # orphan from an older release survives the reinstall it recommends and
-    # would report the same failure forever. The scan is deliberately not
-    # scoped to Unsloth's dependency closure: under-including there would let
-    # real damage through, which is the failure this whole check exists to
-    # catch. So the message has to carry the fallback instead.
+    # install_python_stack installs the current requirement sets and prunes nothing, and the
+    # installer never recreates the venv, so damage in an orphan from an older release survives the
+    # reinstall it recommends and would report the same failure forever. The scan is deliberately
+    # not scoped to Unsloth's dependency closure, since under-including would let real damage
+    # through, so the message carries the fallback instead.
     import typer
 
     studio = _studio()
@@ -683,11 +672,11 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
     err = capsys.readouterr().err
     assert "still listed after that" in err
     assert "--force-reinstall" in err
-    # Without --no-deps, pip resolves the damaged package's graph and
-    # --force-reinstall can swap the pinned CUDA/ROCm torch build.
+    # Without --no-deps, pip resolves the damaged package's graph and --force-reinstall can swap
+    # the pinned CUDA/ROCm torch build.
     assert "--no-deps" in err
-    # A bare name would let --force-reinstall upgrade the orphan rather than
-    # repair it, which --no-deps does not prevent.
+    # A bare name would let --force-reinstall upgrade the orphan rather than repair it, which
+    # --no-deps does not prevent.
     assert "<package>==<installed version>" in err
     assert "--no-verify" in err
 
@@ -700,8 +689,7 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
     ],
 )
 def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, exe, expected):
-    # Custom roots with spaces are supported, so an unquoted sys.executable
-    # would split into several shell tokens and the command would not run.
+    # Custom roots with spaces are supported, so an unquoted sys.executable would split into several shell tokens.
     import platform as _platform
     import typer
 
@@ -723,10 +711,10 @@ def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, 
 
 
 def test_a_shared_top_level_test_tree_is_not_damage(site):
-    # Reported as `einx: test/conftest.py is missing`. einx and torchao both
-    # ship it, and install_python_stack.py force-reinstalls torchao every
-    # update, so pip removes the file and the pinned torchao does not ship it.
-    # Nothing imports another project's fixtures, and no reinstall repairs it.
+    # Reported as `einx: test/conftest.py is missing`. einx and torchao both ship it and
+    # install_python_stack.py force-reinstalls torchao every update, so pip removes the file and
+    # the pinned torchao does not ship it. Nothing imports another project's fixtures, and no
+    # reinstall repairs it.
     _make_dist(site, "einx", {"einx/__init__.py": b"e\n"})
     (site / "einx-1.0.dist-info" / "RECORD").write_text(
         "einx/__init__.py,sha256=x,2\ntest/conftest.py,sha256=x,20650\n"
@@ -735,9 +723,9 @@ def test_a_shared_top_level_test_tree_is_not_damage(site):
 
 
 def test_an_installer_rewritten_lockfile_is_not_damage(site):
-    # Reported as `package-lock.json is 27225 bytes, expected 28473`.
-    # setup.ps1/setup.sh run `npm install` inside the installed tree, and npm
-    # dedupes hoisted entries under legacy-peer-deps, shrinking the file.
+    # Reported as `package-lock.json is 27225 bytes, expected 28473`: setup.ps1/setup.sh run `npm
+    # install` inside the installed tree, and npm dedupes hoisted entries under legacy-peer-deps,
+    # shrinking the file.
     lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
     _make_dist(
         site,
@@ -749,8 +737,8 @@ def test_an_installer_rewritten_lockfile_is_not_damage(site):
 
 
 def test_a_deleted_installer_rewritten_file_is_still_damage(site):
-    # Only the SIZE of these drifts, because npm rewrites the lockfile in place.
-    # It never deletes it, so a missing one is real damage and must be reported.
+    # Only the SIZE of these drifts, because npm rewrites the lockfile in place. It never deletes
+    # it, so a missing one is real damage and must be reported.
     lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
     _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", lock: b"L" * 100})
     (site / lock).unlink()
@@ -759,8 +747,8 @@ def test_a_deleted_installer_rewritten_file_is_still_damage(site):
 
 
 def test_a_shared_top_level_scripts_tree_is_not_damage(site):
-    # unsloth_zoo ships a top-level scripts/, the same squatted-namespace shape
-    # as einx's test/. It has no __init__.py, so nothing imports it.
+    # unsloth_zoo ships a top-level scripts/, the same squatted-namespace shape as einx's test/. It
+    # has no __init__.py, so nothing imports it.
     _make_dist(site, "upsilon", {"upsilon/__init__.py": b"u\n"})
     (site / "upsilon-1.0.dist-info" / "RECORD").write_text(
         "upsilon/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
@@ -769,8 +757,8 @@ def test_a_shared_top_level_scripts_tree_is_not_damage(site):
 
 
 def test_a_package_owned_tests_subdirectory_is_still_checked(site):
-    # Only the shared top-level namespace is exempt; a tests/ tree inside a
-    # package is that package's alone, so a deletion there is real.
+    # Only the shared top-level namespace is exempt; a tests/ tree inside a package is that
+    # package's alone, so a deletion there is real.
     _make_dist(site, "rho", {"rho/tests/helper.py": b"h\n"})
     (site / "rho" / "tests" / "helper.py").unlink()
     found = _deps().damaged_installed_files()
@@ -800,8 +788,8 @@ def test_runtime_damage_still_fails_when_ignored_rows_are_present(site):
 
 
 def test_ignored_rows_do_not_consume_the_finding_budget(site):
-    # Filtering happens while RECORD is read, so harmless rows cannot crowd a
-    # real one off a capped list. Unfiltered, these 40 fill limit = 3.
+    # Filtering happens while RECORD is read, so harmless rows cannot crowd a real one off a capped
+    # list; unfiltered, these 40 fill limit = 3.
     files = {f"test/t{i}.py": b"x" for i in range(40)}
     files["tau/__init__.py"] = b"t\n"
     _make_dist(site, "tau", files)
@@ -812,11 +800,10 @@ def test_ignored_rows_do_not_consume_the_finding_budget(site):
 
 
 def test_our_own_shared_top_level_trees_are_exempt_too(site):
-    # Reported as `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429`
-    # on an install that was already current, so the update failed on every
-    # retry. 11429 is the size in the 2026.8.5 wheel, which shipped a top-level
-    # tests/ that any other wheel using that name overwrites. Squatting the
-    # namespace does not make it ours, and nothing imports it at runtime.
+    # Reported as `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429` on an install that
+    # was already current, so the update failed on every retry. 11429 is the size in the 2026.8.5
+    # wheel, which shipped a top-level tests/ that any other wheel using that name overwrites;
+    # squatting the namespace does not make it ours, and nothing imports it at runtime.
     conftest = "tests/conftest.py"
     _make_dist(
         site,
@@ -828,9 +815,9 @@ def test_our_own_shared_top_level_trees_are_exempt_too(site):
 
 
 def test_two_distributions_claiming_one_shared_path(site):
-    # The real shape: a third party also ships tests/conftest.py and lands last,
-    # so the bytes on disk match its RECORD and are shorter than unsloth_zoo's.
-    # Neither the drift nor the deletion can affect startup.
+    # The real shape: a third party also ships tests/conftest.py and lands last, so the bytes on
+    # disk match its RECORD and are shorter than unsloth_zoo's. Neither the drift nor the deletion
+    # can affect startup.
     rel = "tests/conftest.py"
     _make_dist(site, "unsloth_zoo", {rel: b"u" * 11429})
     _make_dist(site, "upsilon", {rel: b"c" * 8107})
@@ -841,8 +828,8 @@ def test_two_distributions_claiming_one_shared_path(site):
 
 
 def test_our_own_shared_top_level_trees_may_also_vanish(site):
-    # Same path, deleted rather than overwritten: the einx shape, but claimed by
-    # a distribution of ours. No reinstall repairs it either.
+    # Same path, deleted rather than overwritten: the einx shape, but claimed by a distribution of
+    # ours. No reinstall repairs it either.
     _make_dist(site, "unsloth_zoo", {"unsloth_zoo/__init__.py": b"z\n"})
     (site / "unsloth_zoo-1.0.dist-info" / "RECORD").write_text(
         "unsloth_zoo/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
@@ -851,8 +838,8 @@ def test_our_own_shared_top_level_trees_may_also_vanish(site):
 
 
 def test_our_own_runtime_trees_are_still_checked(site):
-    # The exemption is scoped to the shared roots. Everything Unsloth actually
-    # imports lives outside them and must still fail an update when damaged.
+    # The exemption is scoped to the shared roots; everything Unsloth actually imports lives
+    # outside them and must still fail an update when damaged.
     _make_dist(
         site,
         "unsloth_zoo",

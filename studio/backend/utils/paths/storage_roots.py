@@ -166,7 +166,7 @@ def _windows_documents_dir() -> Path | None:
     if os.name != "nt":
         return None
     try:
-        import winreg  # Windows-only, and absent from some stripped builds.
+        import winreg
     except ImportError:
         return None
     try:
@@ -325,17 +325,68 @@ def ollama_model_dirs() -> list[Path]:
     return _existing_dirs(candidates, resolve = False)
 
 
+def _hermes_native_home() -> Path:
+    """Hermes' platform-native home, ignoring HERMES_HOME."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _hermes_root() -> Path:
+    """The Hermes root a download hangs off, mirroring its own resolution.
+
+    HERMES_HOME under the native home (the normal and profile layouts) still
+    means the native home; a ``<root>/profiles/<name>`` path elsewhere means
+    ``<root>``; anything else IS the root (Docker / custom deployments).
+    """
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    native = _hermes_native_home()
+    if not env_home:
+        return native
+    env_path = Path(env_home)
+    try:
+        env_path.resolve().relative_to(native.resolve())
+        return native
+    except (OSError, ValueError):
+        pass
+    if env_path.parent.name == "profiles":
+        return env_path.parent.parent
+    return env_path
+
+
+def hermes_model_dirs() -> list[Path]:
+    """Return Hermes model directories that exist on disk.
+
+    Hermes Desktop's one-click GGUF downloads land in ``<root>/models``. That is
+    machine-scoped upstream, never profile-scoped -- a 20 GB GGUF is a machine
+    asset and every profile shares the one server that runs it -- so it hangs off
+    the root, not off HERMES_HOME when that names a profile.
+
+    The native root is scanned as well, because ``unsloth start hermes`` points
+    HERMES_HOME at a throwaway session dir while the user's real downloads stay
+    under the native home; scanning only the resolved root would lose them for the
+    duration of a session Studio launched itself.
+    """
+    return _existing_dirs(
+        [_hermes_root() / "models", _hermes_native_home() / "models"],
+        resolve = False,
+    )
+
+
 def well_known_model_dirs() -> list[Path]:
     """Return directories commonly used by other local LLM tools.
 
     Backs the folder browser's quick-pick chips. Returns only paths that
     exist on disk, so the UI never shows dead chips. Order reflects rough
-    likelihood of models being there -- LM Studio and Ollama first, then
-    generic fallbacks.
+    likelihood of models being there -- LM Studio, Ollama and Hermes first,
+    then generic fallbacks.
     """
     candidates: list[str | Path] = []
     candidates.extend(lmstudio_model_dirs())
     candidates.extend(ollama_model_dirs())
+    candidates.extend(hermes_model_dirs())
 
     # HF hub cache root, separate from the explicit HF cache chip.
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
@@ -361,21 +412,18 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
-        # unsloth_zoo defaults this to a bare relative name, which resolves
-        # against the CWD, and the Windows launcher runs Unsloth with
-        # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
-        # Must be set before unsloth_zoo.compiler imports: it reads the value
-        # at import time and puts it on sys.path.
+        # unsloth_zoo defaults this to a bare relative name.
+        # It resolves against the CWD and the Windows launcher runs Unsloth with WorkingDirectory=%USERPROFILE%, so the
+        # cache landed in the user home. Must be set before unsloth_zoo.compiler imports: it reads the value at import
+        # time and puts it on sys.path.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
-        # Blank counts as unset: an inherited KEY= would otherwise pin the
-        # cache to "", which puts an empty entry on sys.path and sends the
-        # compiler to the system temp directory instead.
+        # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
+        # sys.path and sends the compiler to the system temp directory instead.
         if not (os.environ.get(key) or "").strip():
             os.environ[key] = value
-            # Best-effort: a non-writable custom HF_HOME must not crash startup;
-            # HF surfaces a clear error at download time instead.
+            # Best-effort: a non-writable custom HF_HOME must not crash startup
             try:
                 created = True
                 try:
@@ -496,10 +544,9 @@ def resolve_under_root(
 
 
 def default_run_dir_name(model_name: str) -> str:
-    # Folder-safe run name for an auto-created output dir. Repo ids keep their
-    # namespace (org/model -> org_model); local paths (incl. G:\dir\model)
-    # collapse to their final component so an absolute source can't escape
-    # outputs_root. Length-capped to stay under the filesystem name limit.
+    # Repo ids keep their namespace while local paths collapse to their final component, so an absolute source cannot
+    # escape outputs_root; length-capped to the filesystem name limit.
+    # Repo ids keep their namespace (org/model -> org_model).
     raw = str(model_name or "").strip()
     is_path = (
         "\\" in raw

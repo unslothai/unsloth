@@ -877,6 +877,66 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert status["loaded"] is False
 
 
+def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, monkeypatch):
+    """Video shares the image path's whole-model offload lifecycle, and its weights are larger,
+    so the same host-allocator retention applies. Reclaim once per successful generation, only
+    under the 'model' policy, and only after progress has been cleared."""
+    from core.inference import video as video_mod
+
+    trace = []
+    monkeypatch.setattr(
+        video_mod,
+        "reclaim_offload_host_memory",
+        lambda policy, logger = None: trace.append(policy) or True,
+    )
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    for policy in ("none", "group", "streaming", "sequential", "model"):
+        backend._state = dataclasses.replace(backend._state, offload_policy = policy)
+        backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
+    assert trace == ["none", "group", "streaming", "sequential", "model"]
+
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: None)
+    assert [diffusion_memory.reclaim_offload_host_memory(p) for p in trace] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+
+    # Progress must already be idle: the trim can block for a few hundred ms.
+    assert backend.generate_progress()["active"] is False
+
+
+def test_a_stop_during_the_reclaim_cannot_be_answered_true(fake_runtime, tmp_path, monkeypatch):
+    """The trim blocks for a few hundred ms after the last is_set() check, so a Stop landing in
+    that window used to be told it succeeded while the clip was still returned and persisted.
+    The event must be deregistered before the trim, under the lock cancel_generate takes."""
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = dataclasses.replace(backend._state, offload_policy = "model")
+
+    answered = []
+
+    def stop_midway(policy, logger = None):
+        # Press Stop while the stubbed blocking trim runs.
+        answered.append(backend.cancel_generate())
+        return True
+
+    monkeypatch.setattr(video_mod, "reclaim_offload_host_memory", stop_midway)
+
+    result = backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
+    assert result["mp4_bytes"] == b"MP4"
+    assert answered == [False], "cancel_generate answered true for a clip that was still persisted"
+
+
 def test_load_holds_generate_lock_across_placement(fake_runtime, tmp_path, monkeypatch):
     # The video load must hold _generate_lock across GPU placement so an unload -- which barriers on that lock -- cannot
     # hand the GPU away mid-move. unload() must block until placement releases it, and the superseded load then aborts.
@@ -1358,6 +1418,58 @@ def test_generate_progress_derives_total_steps_and_fraction(fake_runtime):
     gen = backend.generate_progress()
     assert gen["total"] == 20 and gen["total_steps"] == 20
     assert gen["step"] == 5 and gen["fraction"] == 0.25
+
+
+@pytest.mark.parametrize(
+    "video, error, total, expected",
+    [
+        (
+            {"id": "clip-1"},
+            None,
+            12,
+            {
+                "phase": "completed",
+                "percent": 100,
+                "step": 12,
+                "total_steps": 12,
+                "video_id": "clip-1",
+            },
+        ),
+        (
+            None,
+            "negative_prompt is not supported by this family.",
+            0,
+            {
+                "phase": "failed",
+                "percent": 0,
+                "step": 0,
+                "total_steps": 0,
+                "error": "negative_prompt is not supported by this family.",
+            },
+        ),
+    ],
+)
+def test_finish_generate_job_logs_each_terminal_outcome_once(
+    fake_runtime, monkeypatch, video, error, total, expected
+):
+    import core.inference.video as video_mod
+
+    events = []
+
+    class _Recorder:
+        def info(self, event, **fields):
+            events.append((event, fields))
+
+    monkeypatch.setattr(video_mod, "logger", _Recorder())
+    backend = VideoBackend()
+    token = object()
+    backend._generate_job_token = token
+    backend._generate_job_active = True
+
+    backend._finish_generate_job(job_token = token, video = video, error = error, total = total)
+    backend._finish_generate_job(job_token = token, video = video, error = error, total = total)
+
+    assert events == [("video_generation_progress", expected)]
 
 
 def test_failed_background_generate_retains_terminal_error(fake_runtime, tmp_path, monkeypatch):
@@ -8993,3 +9105,78 @@ def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, mon
     assert (
         progress["error"] == VIDEO_CANCELLED_MSG
     ), f"a direct call reported {progress['error']!r} instead of the cancellation sentinel"
+
+
+def test_cuda_graph_is_a_per_family_opt_in():
+    from core.inference.video_families import detect_video_family
+
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None and h3.name == "minimax-h3"
+    assert h3.supports_cuda_graph is True
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and wan.name == "wan2.2-ti2v-5b"
+    assert wan.supports_cuda_graph is False
+
+
+def test_every_rebuilt_speed_target_carries_the_backend():
+    """The CUDA-graph arm refuses ROCm by target.backend, which ROCm reports as device "cuda"."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    rebuilt = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "apply_speed_optims":
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Call) and getattr(arg.func, "attr", None) == "SimpleNamespace":
+                rebuilt.append(arg)
+    assert rebuilt
+    for call in rebuilt:
+        fields = {kw.arg for kw in call.keywords}
+        assert "backend" in fields, f"video.py:{call.lineno} target lacks backend: {sorted(fields)}"
+
+
+class _GraphHandle:
+    """Stands in for a captured denoiser graph: only reset() matters to generate()."""
+
+    def __init__(self):
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
+        return self
+
+
+def test_h3_generate_oom_drops_the_graphs_before_raising(fake_runtime):
+    """H3 is the one video family that captures graphs; an OOM must not leave them pinned."""
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    handle = _GraphHandle()
+    pipe._unsloth_cuda_graphs = (handle,)
+
+    def _oom(_n):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 1.70 GiB")
+
+    pipe.scheduler.on_step = _oom
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert handle.resets == 1, "the graphs stayed pinned across the raise"
+
+
+def test_h3_generate_non_oom_error_leaves_the_graphs_alone(fake_runtime):
+    """Only an OOM justifies throwing away working graphs; a bad shape does not."""
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    handle = _GraphHandle()
+    pipe._unsloth_cuda_graphs = (handle,)
+
+    def _boom(_n):
+        raise RuntimeError("shape mismatch")
+
+    pipe.scheduler.on_step = _boom
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert handle.resets == 0

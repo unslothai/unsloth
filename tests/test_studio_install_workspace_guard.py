@@ -47,8 +47,7 @@ def _extract_create_studio_shortcuts() -> str:
     raise AssertionError("could not slice create_studio_shortcuts from install.sh")
 
 
-# Stub the rollback helper with a move. The directory predicate is extracted
-# from install.sh because it controls whether the guard runs.
+# Stub the rollback helper with a move.
 _INSTALL_GUARD_STUBS = (
     'substep() { :; }\n_start_studio_venv_replacement() {\n    mv -- "$1" "$1.replaced"\n}\n'
 )
@@ -289,7 +288,6 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
         'Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"' in block
     ), "setup.ps1 must guard the prebuilt llama.cpp path with Assert-StudioOwnedOrAbsent"
     guard_idx = block.index("Assert-StudioOwnedOrAbsent -Path $LlamaCppDir")
-    # Anchor on the actual command-array entry, not the why-comment mention.
     helper_idx = block.index('"$PSScriptRoot\\install_llama_prebuilt.py"')
     assert (
         guard_idx < helper_idx
@@ -298,8 +296,8 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
 
 def test_setup_ps1_adopts_existing_whisper_prebuilt_marker():
     text = SETUP_PS1.read_text(encoding = "utf-8")
-    # The marker scan lives in Get-StudioAdoptableState; Test-StudioOwnedAdoptable
-    # is the boolean view of it.
+    # The marker scan lives in Get-StudioAdoptableState; Test-StudioOwnedAdoptable is the boolean
+    # view of it.
     helper_start = text.index("function Get-StudioAdoptableState")
     helper_end = text.index("function Assert-StudioOwnedOrAbsent", helper_start)
     helper = text[helper_start:helper_end]
@@ -415,8 +413,8 @@ def test_setup_helpers_gate_on_canonical_custom_root():
 
     ps_src = SETUP_PS1.read_text(encoding = "utf-8")
     ps_idx = ps_src.index("function Assert-StudioOwnedOrAbsent")
-    # To the end of the function, not a fixed width, which a new parameter or
-    # comment would push the assertions below out of.
+    # To the end of the function, not a fixed width, which a new parameter or comment would push the assertions below
+    # out of.
     ps_func = ps_src[ps_idx:].split("\nfunction ", 1)[0]
     assert (
         "$StudioHomeIsCustom -and" in ps_func
@@ -429,9 +427,7 @@ def test_setup_helpers_gate_on_canonical_custom_root():
 def test_setup_ps1_inplace_git_sync_marks_studio_owned():
     """setup.ps1 in-place git-sync branch must Mark-StudioOwned after a successful sync."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
-    # Three-state probe so an ACL-denied tree stops instead of cloning over it.
     inplace_idx = src.index('if ($llamaGitState -eq "Present") {')
-    # The in-place branch ends just before the temp-dir clone branch.
     clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
     inplace_block = src[inplace_idx:clone_idx]
     assert (
@@ -447,6 +443,7 @@ def test_setup_ps1_inplace_git_sync_asserts_studio_owned_before_mutation():
     src = SETUP_PS1.read_text(encoding = "utf-8")
     # Three-state probe so an ACL-denied tree stops instead of cloning over it.
     inplace_idx = src.index('if ($llamaGitState -eq "Present") {')
+    # The in-place branch ends just before the temp-dir clone branch.
     clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
     inplace_block = src[inplace_idx:clone_idx]
     assert (
@@ -576,7 +573,7 @@ def test_health_endpoint_exposes_studio_root_id_not_raw_path():
     main_py = REPO_ROOT / "studio" / "backend" / "main.py"
     src = main_py.read_text(encoding = "utf-8")
     health_idx = src.index('@app.get("/api/health")')
-    # Slice up to the next top-level @app. so a growing body stays in scope.
+    # Slice up to the next top-level @app.
     next_app_idx = src.find("\n@app.", health_idx + 1)
     if next_app_idx == -1:
         next_app_idx = len(src)
@@ -620,7 +617,6 @@ def test_tauri_preflight_scrubs_studio_home_env():
     commands = (REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs").read_text(
         encoding = "utf-8"
     )
-    # Expect 2 scrubs in preflight (run_cli_probe + probe_cli_capability), 1 in commands.
     assert (
         preflight.count('cmd.env_remove("UNSLOTH_STUDIO_HOME")') >= 2
     ), "preflight must scrub UNSLOTH_STUDIO_HOME in both run_cli_probe and probe_cli_capability"
@@ -630,6 +626,7 @@ def test_tauri_preflight_scrubs_studio_home_env():
     assert (
         'cmd.env_remove("UNSLOTH_STUDIO_HOME")' in commands
     ), "commands.rs check_install_status must scrub UNSLOTH_STUDIO_HOME"
+    # Expect 2 scrubs in preflight (run_cli_probe + probe_cli_capability), 1 in commands.
     assert (
         'cmd.env_remove("STUDIO_HOME")' in commands
     ), "commands.rs check_install_status must scrub STUDIO_HOME"
@@ -658,8 +655,8 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
     assert (
         urandom_idx < py_fallback_idx
     ), "/dev/urandom must be tried before the python3 secrets fallback"
-    # Reusing an existing id only when it is valid is what makes re-runs
-    # idempotent -- and keeps a pre-planted value out of the launcher.
+    # Reusing an existing id only when it is valid is what makes re-runs idempotent -- and keeps a pre-planted value out
+    # of the launcher.
     assert (
         '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")' in block
     ), "install.sh must reuse an existing id only after validating it"
@@ -765,8 +762,6 @@ def test_install_sh_id_publish_adopts_the_winner_of_a_race(tmp_path):
     incumbent = "a" * 64
     id_file.write_text(incumbent, encoding = "utf-8")
 
-    # Replicate the publish step with the guard removed, so only the publication
-    # primitive decides the outcome: a clobbering mv would overwrite the incumbent.
     publish = (
         _install_id_helpers() + f'_css_id_file="{id_file}"\n'
         '_css_id_tmp="$_css_id_file.$$.tmp"\n'
@@ -800,6 +795,7 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
     id_file.write_text("", encoding = "utf-8")
     fresh = "c" * 64
 
+    # Replicate the publish step with the guard removed, so only the publication primitive decides the outcome:
     publish = (
         _install_id_helpers() + f'_css_id_file="{id_file}"\n'
         f'_css_new_id="{fresh}"\n'
@@ -1142,9 +1138,7 @@ def test_install_ps1_publishes_the_id_without_clobbering():
     assert (
         "[System.IO.File]::Move($_idTmp, $_studioIdFile)" in block
     ), "install.ps1 must use the two-arg File.Move, which throws when the destination exists"
-    # -Force may only appear AFTER the no-clobber attempt, as the branch that
-    # replaces a blank incumbent. As the primary publish it would clobber an id
-    # the desktop app may already have handed to a running backend.
+    # -Force may only appear AFTER the no-clobber attempt, as the branch that replaces a blank incumbent.
     _force = "Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force"
     assert block.index("[System.IO.File]::Move($_idTmp, $_studioIdFile)") < block.index(
         _force
@@ -1280,14 +1274,11 @@ def test_main_py_read_studio_install_id_validates_hex_and_handles_missing(tmp_pa
     root = tmp_path / "studio"
     (root / "share").mkdir(parents = True)
 
-    # Missing file -> empty
     assert _read(root) == ""
 
     id_file = root / "share" / "studio_install_id"
-    # Empty file -> empty
     id_file.write_text("")
     assert _read(root) == ""
-    # Non-hex content -> empty
     id_file.write_text("not-a-hex-id-just-text-padded-to-64-chars-zzzzzzzzzzzzzzzzzzzzzz")
     assert _read(root) == ""
     # Uppercase hex -> empty (must be lowercase)
@@ -1375,8 +1366,8 @@ def test_install_sh_root_id_pass_does_not_mutate_user_data_dir(tmp_path):
     heredoc_body_end = src.index("LAUNCHER_EOF\n", heredoc_start)
     template = src[heredoc_body_start:heredoc_body_end]
     launcher_path = tmp_path / "launch.sh"
-    # template comes out of install.sh, so it carries whatever non-ASCII that
-    # file holds and cp1252 cannot encode it back out.
+    # template comes out of install.sh, so it carries whatever non-ASCII that file holds and cp1252 cannot encode it
+    # back out.
     launcher_path.write_text(template, encoding = "utf-8")
     # sed order: root-id first, then data-dir.
     weird_data_dir = "/tmp/with-@@STUDIO_ROOT_ID@@/share"
@@ -1729,9 +1720,8 @@ def test_dir_has_entries_still_answers_no_for_a_searchable_empty_dir(tmp_path):
         empty.chmod(0o700)
 
 
-# Measured against uv 0.12.1, the version install.sh pins: uv creates only into a
-# path that is absent or an empty directory, every other shape is EEXIST. The
-# predicate has to agree, or the repair loop continues for the shapes it misses.
+# Measured against uv 0.12.1, the version install.sh pins: uv creates only into a path that is absent or an empty
+# directory, every other shape is EEXIST.
 _UV_REFUSES = [
     ("occupied real dir", "fulldir", True),
     ("regular file", "plainfile", True),

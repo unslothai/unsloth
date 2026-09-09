@@ -141,8 +141,7 @@ async def cancel_oauth(
     _provider(provider_id)
     try:
         flow = codex_auth.get_flow(provider_id, flow_id)
-        # Closing a loopback server can wait for an in-flight callback. Do not
-        # hold the credential guard while waiting for that handler to finish.
+        # Closing a loopback server can wait for an in-flight callback.
         await codex_auth.cancel_flow(flow.id)
         async with codex_auth.provider_oauth_write_guard(provider_id):
             with current_credential_write(credential):
@@ -179,11 +178,10 @@ async def list_subscription_models(
             provider_id, token, account_id, force = refresh
         )
     except (codex_auth.CodexAuthError, codex_client.CodexReauthorizationError) as exc:
-        # resolve_access has already marked the connection as needing reauthorization, so
-        # say so in the answer rather than through a 401: the client's authFetch reads
-        # every 401 as an expired Unsloth session, refreshes it and retries, and the retry
-        # would come back as a plain curated list with the connection looking healthy.
-        # A source the picker does not treat as authoritative carries the signal instead.
+        # Say it in the answer rather than through a 401: the client's authFetch reads every 401 as an expired Unsloth
+        # session and retries, and the retry looks healthy.
+        # resolve_access has already marked the connection as needing reauthorization, so a source the picker does not
+        # treat as authoritative carries the signal instead.
         logger.info(
             "openai_codex.model_list_reauthorization_required",
             provider_id = provider_id,

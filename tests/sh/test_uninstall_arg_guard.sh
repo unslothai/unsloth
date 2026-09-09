@@ -7,9 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SOURCE_UNINSTALL_SH="$SCRIPT_DIR/../../scripts/uninstall.sh"
-PASS=0
-FAIL=0
 BODY_MARKER="__UNSLOTH_TEST_BODY_REACHED__"
 
 _TMP_ROOT=$(mktemp -d)
@@ -31,7 +30,6 @@ XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"
 
-ok()   { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 nope() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 check() {

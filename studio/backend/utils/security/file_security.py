@@ -197,9 +197,9 @@ def _indexed_shard_paths(
                     cache_dir = active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
-                continue  # definitively absent, not an error
+                continue
             except Exception:
-                inconclusive = True  # transient: an index that might exist could not be read
+                inconclusive = True
                 continue
             try:
                 weight_map = (json.loads(open(index_path, encoding = "utf-8-sig").read()) or {}).get(
@@ -231,7 +231,7 @@ class FileSecurityDecision:
 
     model_name: str
     blocked: bool
-    unsafe_files: list = field(default_factory = list)  # [{"path", "level"}]
+    unsafe_files: list = field(default_factory = list)
     reason: str = ""
 
     def response_payload(self) -> dict:
@@ -321,7 +321,7 @@ def _fetch_security_status(
                 timeout = timeout,
             )
             return getattr(info, "security_repo_status", None)
-        except Exception as exc:  # network/offline/gated/404/unsupported-client
+        except Exception as exc:
             last_exc = exc
             if attempt == 0:
                 continue
@@ -354,7 +354,7 @@ def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
         import json
         modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError):
-        return roots  # no / invalid modules.json -> only declared load roots apply
+        return roots
     for module in modules if isinstance(modules, list) else ():
         if not isinstance(module, dict):
             continue
@@ -410,7 +410,8 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
         if joined != snapshot_norm and not joined.startswith(snapshot_norm + os.sep):
             raise OSError(f"weight index escapes the snapshot: {index_path}")
         shard_path = Path(joined)
-        # Case-SENSITIVE, mirroring load_state_dict's own endswith(".safetensors"): payload.SAFETENSORS falls to torch.load.
+        # Case-SENSITIVE, mirroring load_state_dict's own endswith(".safetensors"): payload.SAFETENSORS falls to
+        # torch.load.
         if not shard_path.name.endswith(".safetensors") and shard_path.is_file():
             shards.append(shard_path)
     return shards
@@ -447,10 +448,11 @@ def _cached_pickle_weight_files(snapshot: Path, load_subdirs = ()) -> list:
             entries = [p for p in root.iterdir() if p.is_file()]
         except OSError:
             if root == snapshot:
-                raise  # top-level unreadable -> fail closed
-            continue  # unreadable module subdir: nothing loadable to attest here
-        # Safetensors alternatives the loader would actually resolve (never a bare name-fold, which fails
-        # OPEN). A base pickle is replaced only by a base safetensors; model.safetensors outranks both indexes.
+                raise
+            continue
+        # Safetensors alternatives the loader would actually resolve
+        # Never a bare name-fold, which fails OPEN. A base pickle is replaced only by a base safetensors, and
+        # model.safetensors outranks both indexes.
         has_direct_base_safetensors = _loader_resolves(root, "model.safetensors")
         has_base_safetensors = has_direct_base_safetensors or _loader_resolves(
             root, "model.safetensors.index.json"
@@ -464,8 +466,10 @@ def _cached_pickle_weight_files(snapshot: Path, load_subdirs = ()) -> list:
             if not has_alternative:
                 _add(path)
         # A torch weight index makes from_pretrained load nested shards iterdir never sees, torch.loading
-        # any not ending in .safetensors. Probe the canonical index name with the loader's own lookup so
-        # an oddly-cased artifact it would never open does not block. model.safetensors wins over both.
+        # Probe the canonical index name with the loader's own lookup so an oddly-cased artifact it would never open
+        # does not block. model.safetensors wins over both.
+        # any not ending in .safetensors, so probe the canonical index name with the loader's own lookup
+        # (an oddly-cased artifact it would never open must not block). model.safetensors wins over both.
         for index_name in _TORCH_INDEX_FILES:
             if not _loader_resolves(root, index_name):
                 continue
@@ -637,13 +641,13 @@ def evaluate_file_security(
                 load_subdirs = load_subdirs,
             )
 
-    # Block a non-``safe`` flagged file scoped to the load-path RCE vector (root-level,
-    # code-executing). Not gated on ``scansDone`` (often false even when clean). Unknown levels fail
-    # closed. Subdir pickles and inert formats are not loaded by from_pretrained and do not block; an
-    # unavailable status is fail-open only for an unresolved remote ref.
+    # Block a non-``safe`` flagged file scoped to the load-path RCE vector
+    # Not gated on ``scansDone`` (often false even when clean), and unknown levels fail closed. Subdir pickles and inert
+    # formats are not loaded by from_pretrained and do not block; an unavailable status is fail-open only for an
+    # unresolved remote ref.
     unsafe = []
-    skipped = []  # flagged, but not a load-path RCE vector (subdir artifact / inert)
-    maybe_shard = []  # flagged subdir pickle: a load vector ONLY if a root index lists it
+    skipped = []
+    maybe_shard = []
     for entry in status.get("filesWithIssues") or []:
         if not isinstance(entry, dict):
             continue
@@ -659,7 +663,7 @@ def evaluate_file_security(
             # Inert formats cannot execute on load; source code is the consent gate's domain (auto_map).
             skipped.append({"path": path, "level": level})
         elif "/" not in load_rel:
-            unsafe.append({"path": path, "level": level})  # root pickle -> load vector
+            unsafe.append({"path": path, "level": level})
         else:
             # Subdir pickle: deserialized only if a weight index references it.
             maybe_shard.append({"path": path, "level": level, "norm": norm})

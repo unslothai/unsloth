@@ -237,17 +237,16 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
         json.dumps(bundle, separators = (",", ":")),
     )
     if previous and previous.get("account_id") != bundle.get("account_id"):
-        # Rebound to a different ChatGPT account, whose plan lists different slugs. No
-        # later request is guaranteed to notice: the picker only refreshes while its form
-        # is open, and the chat gate only refetches a catalog it does not already have.
-        # Imported here because the client module imports this one at load time.
+        # Rebound to a different ChatGPT account, whose plan lists different slugs. No later request is guaranteed to
+        # notice: the picker only refreshes while its form is open, and the chat gate only refetches a catalog it does
+        # not already have. Imported here because the client module imports this one at load time.
         from core.inference.openai_codex_client import (
             forget_subscription_models,
             mark_subscription_catalog_stale,
         )
         forget_subscription_models(provider_id)
-        # The emptiness here is deliberate, not a cold start: until this account's own
-        # catalog is read, the saved models still describe the previous one.
+        # deliberate, not a cold start: until this account's catalog is read, the saved models still describe the
+        # previous one
         mark_subscription_catalog_stale(provider_id)
 
 
@@ -290,8 +289,8 @@ def auth_status(provider_id: str) -> str:
     bundle = load_oauth_bundle(provider_id)
     if not bundle:
         return "disconnected"
-    # An expired access token is still usable after refresh. Only a permanent
-    # refresh rejection should ask the user to reconnect.
+    # An expired access token is still usable after refresh. Only a permanent refresh rejection should ask the user to
+    # reconnect.
     return "reauthorization_required" if bundle.get("reauthorization_required") else "connected"
 
 
@@ -427,11 +426,11 @@ async def _start_browser_flow(
             break
         except OSError:
             continue
-    # The callback URL must match the verifier exchange even when no listener
-    # can bind. Manual completion remains valid with the canonical URL.
+    # The callback URL must match the verifier exchange even when no listener can bind. Manual completion remains valid
+    # with the canonical URL.
     callback_port = bound_port or OPENAI_CODEX_LOOPBACK_PORTS[0]
-    # OpenAI registers localhost redirect URIs; the listener itself remains
-    # pinned to 127.0.0.1 so it can never accept non-loopback traffic.
+    # OpenAI registers localhost redirect URIs; the listener itself remains pinned to 127.0.0.1 so it can never accept
+    # non-loopback traffic.
     flow.redirect_uri = f"http://localhost:{callback_port}{OPENAI_CODEX_CALLBACK_PATH}"
     flow.authorization_url = (
         OPENAI_CODEX_AUTHORIZE_URL
@@ -694,10 +693,9 @@ def delete_oauth_bundle(provider_id: str) -> None:
         credential_secrets.OPENAI_CODEX_OAUTH_KIND,
         provider_id,
     )
-    # Disconnecting erases the account identity that a later save would be compared
-    # against, so the next authorization cannot tell it is a different account. The saved
-    # models outlive the bundle, so mark them unproven now rather than letting them read
-    # as cold-start evidence under whoever connects next.
+    # Disconnecting erases the account identity that a later save would be compared against, so the next authorization
+    # cannot tell it is a different account. The saved models outlive the bundle, so mark them unproven now rather than
+    # letting them read as cold-start evidence under whoever connects next.
     from core.inference.openai_codex_client import mark_subscription_catalog_stale
 
     mark_subscription_catalog_stale(provider_id)
@@ -784,8 +782,8 @@ async def _persist_terminal_flow(flow: OAuthFlow) -> None:
         async with provider_oauth_write_guard(flow.provider_id):
             set_oauth_flow_marker_status(flow.provider_id, flow.marker, flow.status, flow.message)
     except CodexAuthError:
-        # Keep the originating worker's terminal state even if another credential
-        # write holds the cross-worker lock long enough for this best-effort update.
+        # Keep the originating worker's terminal state even if another credential write holds the cross-worker lock long
+        # enough for this best-effort update.
         return
 
 
@@ -865,8 +863,7 @@ async def resolve_access(
         if not force_refresh and bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS:
             return bundle["access_token"], bundle["account_id"]
 
-        # Multiple Unsloth workers may share the installation DB. Serialize with
-        # disconnect/delete and re-read so a completed refresh is reused.
+        # multiple workers may share the installation DB
         async with provider_oauth_write_guard(provider_id):
             bundle = load_oauth_bundle(provider_id)
             if not bundle:
@@ -899,9 +896,9 @@ async def resolve_access(
                 raise CodexAuthError("ChatGPT connection was disconnected during refresh.")
             if current.get("refresh_token") != previous_refresh_token:
                 return current["access_token"], current["account_id"]
-            # A refresh rotates credentials, it does not rebind the connection, so the
-            # record of which account the saved models were proven for carries over.
-            # _validate_token_payload only knows about the token fields.
+            # a refresh rotates credentials without rebinding the connection
+            # A refresh rotates credentials, it does not rebind the connection, so the record of which account the saved
+            # models were proven for carries over. _validate_token_payload only knows about the token fields.
             proof = current.get("catalog_account_id")
             if proof is not None and refreshed.get("account_id") == current.get("account_id"):
                 refreshed["catalog_account_id"] = proof

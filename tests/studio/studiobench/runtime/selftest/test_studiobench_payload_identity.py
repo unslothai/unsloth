@@ -455,15 +455,14 @@ def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
     )
 
 
+# The two fixture axes. `--stream-tail-chars` and `--corpus-dollars` change what the last turn
+# STREAMS, and neither moves `corpus_hash` (which covers the frozen units on disk and the
+# generator's parameters) or a `cell_id`. They are on `IDENTITY_AXES` for the same reason the
+# tier is: without that, a resume under a changed fixture skips cells measured against a
+# different film and the payload silently becomes one ladder built from two.
+
+
 # ── the two fixture axes ────────────────────────────────────────────────────────────────────
-#
-# `--stream-tail-chars` and `--corpus-dollars` change what the last turn STREAMS, and neither of
-# them moves `corpus_hash`, which covers the frozen units on disk and the generator's parameters.
-# Nor does either move a `cell_id`. They are on `IDENTITY_AXES` for the same reason the tier is:
-# without that, a resume under a changed fixture skips cells measured against a different film and
-# the payload silently becomes one ladder built from two.
-
-
 def _fixture_payload(tmp_path, name, session, **fixture):
     paths = Paths.under(tmp_path / name)
     _record(
@@ -710,21 +709,19 @@ def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_f
         assert ("stream_tail_chars" if "--stream-tail-chars" in flags else "corpus_dollars") in (
             message
         )
-        # The refusal has to say WHY an axis the payload never mentions is a difference, or the
-        # reader's next move is to go looking for a key that was never going to be there.
+        # The refusal has to say WHY an axis the payload never mentions is a difference, or the reader's
+        # next move is to go looking for a key that was never going to be there.
         assert "predates this axis" in message
 
 
+# The measurement-mode axis. `--click-probe` runs a full `page.click`, a real mouse click, a
+# dispatch, a focus and a hover over the thread BEFORE the film starts, and the flag's own help
+# text says it 'makes the cell's timings incomparable with a cell that did not run it'. The cell
+# then carries a `composer_click_ms` measured on a composer all those paths have been through,
+# and a `click_attribution` block a cell without the flag lacks. None of that moves the cell id.
+
+
 # ── the measurement-mode axis ───────────────────────────────────────────────────────────────
-#
-# `--click-probe` runs a full `page.click`, a real mouse click, a dispatch, a focus and a hover
-# over the thread BEFORE the film starts, and the tool's own help text for the flag says it "makes
-# the cell's timings incomparable with a cell that did not run it". The cell then carries a
-# `composer_click_ms` measured on a composer all of those paths have already been through, and a
-# `click_attribution` block a cell without the flag does not have at all. None of that moves the
-# cell id, so it is on `IDENTITY_AXES` for the same reason the tier is.
-
-
 def test_resuming_after_toggling_the_click_probe_is_refused(tmp_path):
     """REGRESSION. Both directions, because either one produces the same mixed ladder.
 
@@ -935,8 +932,8 @@ def test_the_report_a_mode_change_would_have_produced(tmp_path):
     changed_mode = score_payload(_payload("changed", "base").payload_jsonl, [10_000])
 
     # Same mode: the retry reuses the cell id, so the crash is superseded and never reaches the
-    # ladder. Change the mode and the same crash is a cell of its own, first at its rung, and it
-    # is what the report prints -- over a rung the run being reported measured cleanly.
+    # ladder. Change the mode and the same crash is a cell of its own, first at its rung, and it is
+    # what the report prints, over a rung the run being reported measured cleanly.
     assert "died at 10K" not in (same_mode.rungs[0].incomplete_reason or "")
     assert "died at 10K" in (changed_mode.rungs[0].incomplete_reason or "")
 
@@ -1008,15 +1005,13 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
     assert payload["header"]["studio_ref"] == "main"
 
 
+# The injection axis. `--inject-stream-cost-ms` burns a known amount of main-thread time per SSE
+# chunk on the TREATMENT arm, so a treatment cell recorded with it is not the same reading as one
+# recorded without, and `cell_id` carries the rung, the arm and the repetition and nothing that
+# could tell.
+
+
 # ── the injection axis ──────────────────────────────────────────────────────────────────────
-#
-# `--inject-stream-cost-ms` burns a known amount of main-thread time per SSE chunk on the TREATMENT
-# arm, so a treatment cell recorded with it is not the same reading as one recorded without it --
-# and `cell_id` carries the rung, the arm and the repetition and nothing that could tell. It is on
-# `IDENTITY_AXES` for the same reason the two fixture axes above are, and for a larger perturbation
-# than either of them makes.
-
-
 def _injected_payload(tmp_path, name, session, **fixture):
     paths = Paths.under(tmp_path / name)
     _record(
@@ -1131,19 +1126,17 @@ def test_an_unchanged_injection_resumes(tmp_path):
     assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
 
 
-# ── the external probe axis ─────────────────────────────────────────────────────────────────
-#
-# `SBENCH_EXTRA_INIT_SCRIPT` installs a caller's own init script into the page, and the run says so
-# in its log: "this run carries an external probe and is NOT a clean measurement of the build".
-# What it cannot end in is a wrong number, because `refuse_if_probed` reads EVERY `run_meta` in the
-# file and every scoring entry point calls it. It is on `IDENTITY_AXES` for what that refusal
-# costs: the refusal is whole-file and the payload is append-only, so a resume that toggles the
-# probe takes the cells recorded before it down with it, and nothing here can put them back.
-#
-# It is also the axis most easily toggled by accident. The other four are typed on the command
-# line every time; this one is an environment variable, and a variable that is still set is
-# indistinguishable from one that was never set until the run is over.
+# The external probe axis. `SBENCH_EXTRA_INIT_SCRIPT` installs a caller's own init script into the
+# page, and the run's log says 'this run carries an external probe and is NOT a clean measurement
+# of the build'. It cannot end in a wrong number, because `refuse_if_probed` reads EVERY
+# `run_meta` and every scoring entry point calls it; it is on `IDENTITY_AXES` for what that
+# refusal costs, since the refusal is whole-file and the payload append-only, so a resume that
+# toggles the probe takes the cells recorded before it down with it.
+# It is also the axis most easily toggled by accident: the other four are typed on the command
+# line every time, while a variable that is still set is indistinguishable from one that was
+# never set until the run is over.
 
+# ── the external probe axis ─────────────────────────────────────────────────────────────────
 PROBE = "probes/paint_counter.js"
 
 

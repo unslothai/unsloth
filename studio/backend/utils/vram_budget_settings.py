@@ -45,8 +45,8 @@ VRAM_FRACTION_DECIMALS = 3
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, Any]] = {}
-# Bumped on every write: a read that began before it must not cache its stale
-# value, or the new budget would appear to revert for the rest of the TTL.
+# Bumped on every write: a read that began before it must not cache its stale value, or the new
+# budget appears to revert for the rest of the TTL.
 _generation: dict[str, int] = {}
 
 # Retries converge; the bound only stops a write storm spinning here forever.
@@ -90,12 +90,11 @@ def coerce_fraction(value: Any) -> Optional[float]:
         # bool is an int subclass, and True would otherwise read as 1.0.
         return None
     try:
-        fraction = float(value)  # None -> TypeError, "" / "  " -> ValueError
+        fraction = float(value)
     except (TypeError, ValueError):
         return None
-    # Two-sided on purpose: NaN loses every comparison, so this rejects it; the
-    # one-sided form would let NaN through and NaN every per-GPU budget. Mirrors
-    # _parse_mem_fraction_env.
+    # Two-sided on purpose: NaN loses every comparison, so this rejects it; the one-sided form would let
+    # NaN through and NaN every per-GPU budget. Mirrors _parse_mem_fraction_env.
     if not VRAM_FRACTION_MIN <= fraction <= VRAM_FRACTION_MAX:
         return None
     return round(fraction, VRAM_FRACTION_DECIMALS)

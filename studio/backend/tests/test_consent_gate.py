@@ -882,7 +882,11 @@ class TestStructuredFindingsForDialog:
         monkeypatch.setattr(
             models_route,
             "_model_config_inspection_target",
-            lambda name, prefer_local, path: inspection_calls.append((name, prefer_local, path))
+            # Takes the caller's token too now: an anonymous caller is sent back to the
+            # bare repo id rather than a cached snapshot it never authorized.
+            lambda name, prefer_local, path, hf_token = None: inspection_calls.append(
+                (name, prefer_local, path)
+            )
             or snapshot,
         )
         monkeypatch.setattr(

@@ -10,6 +10,25 @@ export type ParentLinkedMessage = {
 
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
+// Rows in storage order. A null is a root only after a recorded parent; earlier it chains.
+export function createParentResolver(): (
+  message: ParentLinkedMessage,
+) => string | null {
+  let previousId: string | null = null;
+  let sawRecordedParent = false;
+  return (message) => {
+    const inferred =
+      message.parentId === undefined ||
+      (message.parentId === null && !sawRecordedParent);
+    const parentId = inferred ? previousId : message.parentId;
+    if (message.parentId != null) {
+      sawRecordedParent = true;
+    }
+    previousId = message.id;
+    return parentId ?? null;
+  };
+}
+
 export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   messages: T[],
 ): T[] {
@@ -28,11 +47,10 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
 
   const byId = new Map<string, T>();
   const parentOf = new Map<string, string | null>();
-  let previousId: string | null = null;
+  const resolveParent = createParentResolver();
   for (const message of sorted) {
     byId.set(message.id, message);
-    parentOf.set(message.id, message.parentId ?? previousId);
-    previousId = message.id;
+    parentOf.set(message.id, resolveParent(message));
   }
 
   const chain: T[] = [];

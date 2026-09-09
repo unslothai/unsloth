@@ -155,8 +155,6 @@ _left_pad_of = HELPERS["calculate_pad_tokens_in_prompt"]
 
 
 # ---------------------------------------------------------------------------
-# Stub model
-# ---------------------------------------------------------------------------
 
 
 class _Model(torch.nn.Module):
@@ -182,8 +180,8 @@ class _Model(torch.nn.Module):
         self.hidden_states = hidden_states
         self.calls = []
         if degraded:
-            # what _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py
-            # leaves behind when it could not get hidden states out of the model
+            # What _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py leaves behind when it could
+            # not get hidden states out of the model.
             self._unsloth_grpo_hidden_states_forward_wrapped = True
             self._unsloth_grpo_hidden_states_warning_issued = True
 
@@ -284,8 +282,6 @@ def _packed_block_source():
 
 
 # ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 
 
 def _batch():
@@ -371,8 +367,6 @@ def _reference_logprobs(model, input_ids, max_left_pad):
     return out[:, -width:]
 
 
-# ---------------------------------------------------------------------------
-# Tests
 # ---------------------------------------------------------------------------
 
 

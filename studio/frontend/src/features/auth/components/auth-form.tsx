@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { apiUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
@@ -12,6 +13,11 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
 import { refreshSession } from "../api";
+import {
+  deadlineFromStatus,
+  formatCountdown,
+  hasExpired,
+} from "../bootstrap-deadline";
 
 // Bootstrap credentials injected into index.html by the backend (only present
 // while default admin must_change_password is true)
@@ -37,6 +43,7 @@ type AuthMode = "login" | "change-password";
 type AuthStatusResponse = {
   initialized: boolean;
   requires_password_change: boolean;
+  bootstrap_deadline_seconds?: number | null;
 };
 
 type TokenResponse = {
@@ -75,6 +82,7 @@ type AuthFormProps = {
 const HIDDEN_LOGIN_USERNAME = "unsloth";
 
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
@@ -88,7 +96,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
+
+  useEffect(() => {
+    if (deadlineAt === null) {
+      return;
+    }
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [deadlineAt]);
 
   useEffect(() => {
     let canceled = false;
@@ -104,6 +122,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         if (!canceled) {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
+          // One clock sample for both: nowMs is otherwise still the mount time
+          // until the first tick, which adds the request duration to the figure
+          // and renders a 0 from the server as "shuts down in 0 seconds".
+          const sampledNow = Date.now();
+          setNowMs(sampledNow);
+          setDeadlineAt(
+            deadlineFromStatus(result.bootstrap_deadline_seconds, sampledNow),
+          );
 
           // Server truth wins; keep localStorage in sync both ways.
           if (result.requires_password_change !== mustChangePassword()) {
@@ -157,8 +183,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   useEffect(() => {
     if (statusLoading || reloadReadySent.current) return;
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [statusLoading]);
+    signalReady();
+  }, [statusLoading, signalReady]);
 
   // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {
@@ -330,6 +356,24 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
         <p className="text-muted-foreground">{subtitle}</p>
       </div>
+      {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
+      {deadlineAt !== null && (
+        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
+          {hasExpired(deadlineAt - nowMs) ? (
+            <>
+              This instance is shutting down: it was reachable on the network
+              and its default password was never changed.
+            </>
+          ) : (
+            <>
+              This instance is reachable on the network and still uses its
+              default password, so it shuts down in{" "}
+              {formatCountdown(deadlineAt - nowMs)}. Setting a password here
+              keeps it running.
+            </>
+          )}
+        </p>
+      )}
       <form className="space-y-5" onSubmit={handleSubmit}>
         {isLoginMode && (
           <div className="space-y-2">

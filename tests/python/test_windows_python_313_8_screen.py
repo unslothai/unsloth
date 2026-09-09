@@ -93,8 +93,8 @@ $result = Remove-SkippedPython ({candidate})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
 """
-    # The whole verdict is the single RESULT line this script prints, so a pwsh that
-    # aborts at startup would read as a screen that reached the opposite conclusion.
+    # The whole verdict is the single RESULT line this script prints, so a pwsh that aborts at startup would read as a
+    # screen that reached the opposite conclusion.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -121,8 +121,8 @@ def test_nothing_found_stays_nothing(tmp_path):
 
 
 def test_an_unreadable_interpreter_is_not_treated_as_bad(tmp_path):
-    # A probe that cannot run is not evidence of a bad version, and refusing it
-    # would send a working machine down the install path for no reason.
+    # A probe that cannot run is not evidence of a bad version, and refusing it would send a working machine down the
+    # install path for no reason.
     missing = tmp_path / "does-not-exist"
     skip_block, screen_block = _blocks()
     script = f"""
@@ -169,8 +169,6 @@ def test_the_resolver_is_screened_at_every_entry_point():
 # `return (Find-CompatiblePython)`. Screening every candidate as it is
 # enumerated is what makes those safe, and is also what lets the resolver carry
 # on to its next minor instead of giving up on the machine.
-
-
 def _every_version_match_screens_the_patch() -> list[str]:
     body = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
     lines = body.splitlines()
@@ -201,12 +199,11 @@ def test_every_enumerated_candidate_is_screened():
     )
 
 
-# The launcher below is a /bin/sh script. Windows has no shebang and no PATHEXT
-# entry for an extensionless file, so `Get-Command py` does not find it and the
-# resolver reports "none" whatever the versions are -- which would make the
-# negative case pass for the wrong reason. The PowerShell under test is the same
-# text on every platform, and pwsh runs it here, so these three cases run on
-# POSIX and the rest of the file still covers Windows.
+# The launcher below is a /bin/sh script.
+# Windows has no shebang and no PATHEXT entry for an extensionless file, so `Get-Command py` does not find it and the
+# resolver reports "none" whatever the versions are -- which would make the negative case pass for the wrong reason.
+# The PowerShell under test is the same text on every platform, and pwsh runs it here, so these three cases run on POSIX
+# and the rest of the file still covers Windows.
 _POSIX_LAUNCHER_ONLY = pytest.mark.skipif(
     os.name == "nt", reason = "the fake py launcher is a /bin/sh script"
 )
@@ -245,8 +242,7 @@ def _resolve(tmp_path: Path, versions: dict[str, str]) -> str:
     root = tmp_path / "bin"
     _fake_launcher(root, versions)
     skip_block, screen_block = _blocks()
-    # Hoisted for the same reason as _blocks: a backslash in an f-string
-    # expression does not parse before 3.12.
+    # Hoisted for the same reason as _blocks: a backslash in an f-string expression does not parse before 3.12.
     conda_block = _extract(r"    function Test-IsCondaPython \{.*?\n    \}")
     tag_block = _extract(r"    function Get-PythonPlatformTag \{.*?\n    \}")
     resolver_block = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
@@ -266,8 +262,8 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    # The caller scrapes the resolver's chosen minor out of stdout; a crashed pwsh
-    # leaves nothing to scrape and would fail as if Find-CompatiblePython went silent.
+    # The caller scrapes the resolver's chosen minor out of stdout; a crashed pwsh leaves nothing to scrape and would
+    # fail as if Find-CompatiblePython went silent.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -281,9 +277,8 @@ else {{ Write-Output "RESULT: $($found.Version)" }}
 
 @_POSIX_LAUNCHER_ONLY
 def test_the_resolver_falls_through_to_the_next_minor(tmp_path):
-    # The offline/locked-down case: 3.13.8 and a healthy 3.12 both installed and
-    # nothing installable. Ending the search on the 3.13 would leave the caller
-    # with a Python that cannot import torch; refusing it outright would fail a
+    # The offline/locked-down case: 3.13.8 and a healthy 3.12 both installed and nothing installable. Ending the search
+    # on the 3.13 would leave the caller with a Python that cannot import torch; refusing it outright would fail a
     # machine that has a perfectly good interpreter one entry down the list.
     assert _resolve(tmp_path, {"3.13": "3.13.8", "3.12": "3.12.11"}) == "3.12"
 
@@ -331,8 +326,8 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    # -NoTorch must leave 3.13.8 in place, and dying before the RESULT line is printed
-    # is indistinguishable here from the screen having removed it.
+    # -NoTorch must leave 3.13.8 in place, and dying before the RESULT line is printed is indistinguishable here from
+    # the screen having removed it.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,

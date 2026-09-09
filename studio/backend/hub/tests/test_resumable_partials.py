@@ -71,8 +71,6 @@ def _patched_writer(module):
 
 
 # ---------------------------------------------------------------------------------------------
-# When it engages
-# ---------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -207,6 +205,7 @@ def test_each_cache_root_is_judged_on_its_own_filesystem(tmp_path, monkeypatch):
     local_root.mkdir()
     network_root.mkdir()
     # Past the version gate, so the filesystem is what is left to decide.
+    # And out through the public entry point, past the version gate.
     monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
     monkeypatch.setattr(rp, "_hub_is_patchable", lambda: True)
     monkeypatch.setattr(
@@ -354,7 +353,6 @@ def test_an_unrunnable_probe_travels_up_rather_than_answering(tmp_path, monkeypa
     with pytest.raises(rp._ProbeUnavailable):
         rp._exclusion_is_provable()
 
-    # And out through the public entry point, past the version gate.
     monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
     monkeypatch.setattr(rp, "_hub_is_patchable", lambda: True)
     with pytest.raises(rp._ProbeUnavailable):
@@ -390,14 +388,12 @@ def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
     assert hf_cache_state.hf_partials_are_resumable() is True
 
     monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: False)
-    # No cache at this layer any more: the verdict follows the filesystem, and a result kept
-    # against the path alone outlives a remount at the same name.
+    # No cache at this layer any more: the verdict follows the filesystem, and a result kept against the
+    # path alone outlives a remount at the same name.
     assert hf_cache_state.hf_partials_are_resumable() is False
     hf_cache_state.invalidate_partial_resumability()
 
 
-# ---------------------------------------------------------------------------------------------
-# What it does once it has
 # ---------------------------------------------------------------------------------------------
 
 
@@ -466,10 +462,8 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
     partial = tmp_path / "abc.incomplete"
     partial.write_bytes(b"poison" * 100)
 
-    # Only the planted file reads as somebody else's: owning one for real needs root, and the
-    # fresh partial that replaces it has to still be ours or the test proves nothing about the
-    # retry. Keyed on which open it is rather than on the inode, since a filesystem is free to
-    # hand the replacement the inode the unlinked file just released.
+    # Only the planted file reads as somebody else's, and the fresh partial replacing it has to still
+    # be ours; keyed on which open it is, since a filesystem may reuse the released inode.
     real_fstat = os.fstat
     opens: list[int] = []
 
@@ -818,8 +812,6 @@ def test_patching_twice_keeps_one_layer(monkeypatch):
     assert module._download_to_tmp_and_move is first
 
 
-# ---------------------------------------------------------------------------------------------
-# The capability the UI reads
 # ---------------------------------------------------------------------------------------------
 
 

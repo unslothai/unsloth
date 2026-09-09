@@ -54,6 +54,13 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
+    find: {
+      label: "ページ内検索",
+      previous: "前の一致",
+      next: "次の一致",
+      close: "検索を閉じる",
+      truncated: "このページは長すぎるため、全体を検索できません。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ja = {
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       actions: {
+        findInPage: {
+          label: "ページ内検索",
+          description: "このページ内のテキストを検索します",
+        },
         openSettings: {
           label: "設定を開く",
           description: "設定ダイアログを開きます",
@@ -484,6 +495,13 @@ export const ja = {
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
+        sttDeviceLabel: "読み込み先",
+        sttDeviceAuto: "GPU（利用できる場合）",
+        sttDeviceCpu: "CPU メモリ",
+        sttDeviceAutoDescription:
+          "GPU があれば GPU を、なければ CPU を使用します。",
+        sttDeviceCpuDescription:
+          "モデルをシステムメモリに保持します。文字起こしは遅くなりますが、GPU メモリを使いません。",
         sttModelSearchPlaceholder: "モデルを検索",
         sttModelSearching: "Hugging Face を検索中…",
         sttModelValidating: "Whisper との互換性を確認中…",
@@ -818,6 +836,16 @@ export const ja = {
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
       },
+      repairInstall: {
+        label: "インストールを修復",
+        description:
+          "管理環境に対してインストーラーを再実行します。GPU が検出されない場合やアプリが起動しない場合に使用します。",
+        action: "インストールを修復",
+        confirmTitle: "このインストールを修復しますか？",
+        confirmDescription:
+          "サーバーを停止してインストーラーを再実行し、このマシンの GPU に合わせて PyTorch を再インストールします。チャットと設定は保持されます。数分かかる場合があります。",
+        confirmAction: "今すぐ修復",
+      },
       resetPreferences: {
         sectionTitle: "危険ゾーン",
         label: "すべてのローカル設定をリセット",
@@ -876,7 +904,11 @@ export const ja = {
         currentStreak: "現在の連続日数",
         longestStreak: "最長の連続日数",
         activityTitle: "トークンの推移",
-        activityDescription: "直近{weeks}で{total}",
+        activityDescription: {
+          daily: "直近{weeks}で{total}",
+          weekly: "ピーク週 {total} · 直近{weeks}",
+          cumulative: "直近{weeks}で累計{total}",
+        },
         mode: {
           daily: "日次",
           weekly: "週次",
@@ -1067,6 +1099,8 @@ export const ja = {
         currentLoad: "現在の負荷",
         free: "{value} 空き",
         noGpu: "認識できる GPU がありません",
+        gpuUnusable: "GPU を利用できません",
+        gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
       },
       gpu: {
         title: "GPU デバイス",
@@ -1076,6 +1110,12 @@ export const ja = {
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
+        noUsableGpu: "このマシンの GPU はいずれも PyTorch から利用できません。",
+        mismatchCpuBuild:
+          "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
+        mismatchUnavailable:
+          "PyTorch ({version}) は下の GPU を初期化できないため、利用できません。GPU ドライバーを確認するか、インストールを修復してください。",
+        unusableDevice: "利用不可",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1196,11 +1236,12 @@ export const ja = {
       description:
         "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
       intro:
-        "は Claude Code、Codex、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+        "は Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
       readDocs: "ドキュメントを読む",
       copy: "コピー",
       copied: "コピーしました",
       commandBuilder: "コマンドビルダー",
+      commandShell: "すべてのコマンドに使用するシェル",
       agent: "コーディングエージェント",
       model: "モデル",
       searchModels: "GGUF モデルを検索...",
@@ -1218,9 +1259,8 @@ export const ja = {
       docs: "ドキュメント",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1461,6 +1501,8 @@ export const ja = {
       archivedImagesDescription: "アーカイブした画像を表示・管理します。",
       archivedVideos: "アーカイブ済み動画",
       archivedVideosDescription: "アーカイブした動画を表示・管理します。",
+      archivedAudio: "アーカイブした音声",
+      archivedAudioDescription: "アーカイブした音声クリップを表示・管理します。",
       manageAction: "管理",
       manageChats: "チャットを管理",
       manageChatsDescription:
@@ -1639,7 +1681,7 @@ export const ja = {
         desktopCheckingDescription: "通常は数秒で完了します。",
         desktopAvailable: "デスクトップアプリ {version} を利用できます",
         desktopAvailableDescription:
-          "今すぐアップデートすると、バックグラウンドで準備されます。作業を続けたまま、準備ができたら再起動してください。",
+          "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
           "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
         desktopManualInstall:
@@ -1650,19 +1692,11 @@ export const ja = {
         desktopCurrent: "デスクトップアプリは最新です",
         desktopCurrentDescription:
           "Unsloth は今後も自動的にアップデートを確認します。",
-        desktopPreparingDescription: "アップデートをバックグラウンドで準備しています。作業を続けられます。",
-        desktopReadyToRestartDescription:
-          "準備が完了しました。再起動するとアップデートのインストールが完了します。",
-        desktopReadyToInstallDescription:
-          "アプリのアップデートをダウンロードしました。インストールするにはバックエンドのアップデートを完了してください。",
         checkForUpdates: "アップデートを確認",
         checkAgain: "もう一度確認",
         retryCheck: "再試行",
         checking: "確認中...",
-        preparing: "準備中...",
         updateNow: "今すぐアップデート",
-        restartToUpdate: "再起動して更新",
-        finishUpdate: "アップデートを完了",
         openReleasePage: "リリースページを開く",
         unknownInstall: "Unsloth がどのようにインストールされたか検出できませんでした。インストーラーまたは PyPI インストールの場合は、上記のコマンドを使用してください。",
         localCheckout:
@@ -1799,6 +1833,7 @@ export const ja = {
       sourceHfCache: "HF キャッシュ",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "カスタムフォルダ",
       sourceLocalModel: "ローカルモデル",
       scanningLocal: "ローカルモデルをスキャン中…",
@@ -2066,6 +2101,7 @@ export const ja = {
       memoryEfficient: "メモリ効率化",
       weightDecomposed: "重み分解",
       notSupportedAppleSilicon: "Apple Silicon ではサポートされていません",
+      doraNeedsVisionLayersOff: "DoRA を使うにはビジョンレイヤーの学習をオフにしてください",
       optimization: "最適化",
       schedule: "スケジュール",
       memory: "メモリ",

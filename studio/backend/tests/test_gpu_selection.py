@@ -41,6 +41,38 @@ async def _inline_to_thread(func, /, *args, **kwargs):
     return func(*args, **kwargs)
 
 
+def _load_model(
+    inference_route,
+    request,
+    *,
+    slots = 1,
+):
+    """Call the load route with a request scope carrying ``slots`` llama-server slots."""
+    scope = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = slots)))
+    return inference_route._load_model_impl(request, scope, current_subject = "test-user")
+
+
+def _gguf_model_config(**overrides):
+    """The GGUF model row the load route reads, with per-test overrides."""
+    return SimpleNamespace(
+        **{
+            "is_gguf": True,
+            "is_lora": False,
+            "gguf_hf_repo": None,
+            "gguf_file": "/tmp/test.gguf",
+            "gguf_mmproj_file": None,
+            "gguf_variant": None,
+            "identifier": "unsloth/test.gguf",
+            "display_name": "unsloth/test.gguf",
+            "is_vision": False,
+            "is_audio": False,
+            "audio_type": None,
+            "has_audio_input": False,
+            **overrides,
+        }
+    )
+
+
 def _fake_unsloth_attention_modules(resolver):
     unsloth_module = ModuleType("unsloth")
     models_module = ModuleType("unsloth.models")
@@ -553,14 +585,24 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertEqual(get_device_map(None), "sequential")
             self.assertEqual(get_device_map([0]), "sequential")
-            self.assertEqual(get_device_map([0, 1]), "balanced")
+            self.assertEqual(get_device_map([0, 1]), "unsloth_balanced")
 
     def test_get_device_map_uses_all_inherited_visible_gpus_for_uuid_masks(self):
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
         ):
-            self.assertEqual(get_device_map(None), "balanced")
+            self.assertEqual(get_device_map(None), "unsloth_balanced")
+
+    def test_xpu_keeps_balanced_because_the_unsloth_planner_is_cuda_only(self):
+        """The planner falls back to "sequential" off CUDA, which would undo the shard."""
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+            self.assertEqual(get_device_map([0, 1]), "balanced")
+
+    def test_a_single_gpu_never_asks_for_a_plan(self):
+        for device in (DeviceType.CUDA, DeviceType.XPU):
+            with patch("utils.hardware.hardware.get_device", return_value = device):
+                self.assertEqual(get_device_map([0]), "sequential")
 
     def test_get_offloaded_device_map_entries_returns_only_cpu_and_disk(self):
         model = SimpleNamespace(
@@ -1050,20 +1092,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         def _fake_resolve(ids, is_vulkan = False):
             raise ValueError("SENTINEL requested GPUs are outside the parent-visible set")
@@ -1085,17 +1114,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("SENTINEL", exc_info.exception.detail)
@@ -1107,20 +1126,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [99])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         with (
             patch.object(
@@ -1154,17 +1160,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("Vulkan GPU ordinal(s) [99]", exc_info.exception.detail)
@@ -1251,20 +1247,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         with (
             patch.object(
@@ -1290,17 +1273,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids", exc_info.exception.detail.lower())
@@ -1314,20 +1287,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
         fake_backend = SimpleNamespace(
             is_loaded = False,
             model_identifier = None,
@@ -1348,15 +1308,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
@@ -1369,19 +1321,10 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/diffusion.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
+        model_config = _gguf_model_config(
             gguf_file = "/tmp/diffusion.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
             identifier = "unsloth/diffusion.gguf",
             display_name = "unsloth/diffusion.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         fake_backend = SimpleNamespace(
             is_loaded = False,
@@ -1408,15 +1351,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("no defined mapping", exc_info.exception.detail)
 
@@ -1430,21 +1365,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config(gguf_mtp_file = None)
         acquired = []
         # Make [0, 1] invalid on any host (a duplicate id is rejected everywhere): the point is the ORDER, validation before the handoff.
         request.gpu_ids = [0, 0]
@@ -1461,17 +1382,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", lambda owner, register = None: acquired.append(owner)),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertEqual(acquired, [])  # no CHAT handoff before the doomed load errored
 
@@ -1486,19 +1397,12 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
+        model_config = _gguf_model_config(
             gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
             gguf_file = None,
-            gguf_mmproj_file = None,
             gguf_variant = "Q4_K_M",
             identifier = "unsloth/Qwen3-4B-GGUF",
             display_name = "Qwen3-4B",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         acquired = []
         with (
@@ -1515,17 +1419,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", lambda *a, **k: acquired.append(a[0])),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 409)
         self.assertIn("download", exc_info.exception.detail.lower())
         self.assertEqual(acquired, [])  # nothing evicted for a load that cannot start
@@ -1541,19 +1435,12 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
+        model_config = _gguf_model_config(
             gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
             gguf_file = None,
-            gguf_mmproj_file = None,
             gguf_variant = "Q4_K_M",
             identifier = "unsloth/Qwen3-4B-GGUF",
             display_name = "Qwen3-4B",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         marked = []
 
@@ -1578,17 +1465,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", _acquire),
         ):
             with self.assertRaises(HTTPException):
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(marked, [True])
         # The marker is scoped to the request: it must not outlive the failed load.
         self.assertFalse(llama_cpp.chat_load_active())
@@ -1737,17 +1614,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
@@ -1808,17 +1675,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("UUID/MIG", exc_info.exception.detail)
@@ -2298,3 +2155,155 @@ class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
             self.assertEqual(src, "safetensors")
             mock_load.assert_not_called()
             mock_local.assert_not_called()
+
+
+class TestDeviceMapAcrossPlatformsAndAccelerators(_GpuCacheResetMixin, unittest.TestCase):
+    """The full [Windows, Linux, WSL, Mac] x [NVIDIA, AMD, Intel, Apple, CPU] product.
+
+    Two claims: the answer is something the loader can read, and it does not vary by
+    operating system. An OS-dependent answer would move a user's placement when they
+    moved the same box between Linux and WSL.
+
+    The AMD row is the one to read carefully. Studio reports a ROCm card as
+    DeviceType.CUDA, and unsloth maps its "hip" device type to DEVICE_TYPE_TORCH
+    "cuda", so AMD takes the NVIDIA branch and the planner runs there.
+    """
+
+    # sys.platform, os.name, platform.system(), platform.release()
+    OSES = {
+        "Linux": ("linux", "posix", "Linux", "6.8.0-generic"),
+        "WSL": ("linux", "posix", "Linux", "5.15.0-microsoft-standard-WSL2"),
+        "Windows": ("win32", "nt", "Windows", "10"),
+        "Mac": ("darwin", "posix", "Darwin", "23.5.0"),
+    }
+    ACCELERATORS = {
+        "NVIDIA": (DeviceType.CUDA, "unsloth_balanced"),
+        "AMD (ROCm)": (DeviceType.CUDA, "unsloth_balanced"),
+        "Intel (XPU)": (DeviceType.XPU, "balanced"),
+        "Apple (MLX)": (DeviceType.MLX, "sequential"),
+        "CPU only": (DeviceType.CPU, "sequential"),
+    }
+    READABLE = {"sequential", "balanced", "unsloth_balanced"}
+
+    def _answer(self, os_key, device, gpu_ids):
+        platform_name, os_name, system, release = self.OSES[os_key]
+        with (
+            patch.object(sys, "platform", platform_name),
+            patch.object(os, "name", os_name),
+            patch("platform.system", return_value = system),
+            patch("platform.release", return_value = release),
+            patch("utils.hardware.hardware.get_device", return_value = device),
+        ):
+            return get_device_map(gpu_ids)
+
+    def test_every_cell_of_the_product(self):
+        for os_key in self.OSES:
+            for label, (device, multi_answer) in self.ACCELERATORS.items():
+                for gpu_ids, want in (
+                    ([0], "sequential"),
+                    ([0, 1], multi_answer),
+                    (list(range(8)), multi_answer),
+                ):
+                    with self.subTest(os = os_key, accelerator = label, gpus = len(gpu_ids)):
+                        got = self._answer(os_key, device, gpu_ids)
+                        self.assertEqual(got, want)
+                        self.assertIn(got, self.READABLE)
+
+    def test_the_answer_does_not_depend_on_the_operating_system(self):
+        for label, (device, _) in self.ACCELERATORS.items():
+            for gpu_ids in ([0], [0, 1], list(range(8))):
+                answers = {self._answer(key, device, gpu_ids) for key in self.OSES}
+                with self.subTest(accelerator = label, gpus = len(gpu_ids)):
+                    self.assertEqual(
+                        len(answers),
+                        1,
+                        f"{label} with {len(gpu_ids)} GPU(s) answered {answers} across "
+                        "operating systems; the placement must not move with the OS",
+                    )
+
+
+class TestTheCudaMapNamesItsFallback(_GpuCacheResetMixin, unittest.TestCase):
+    """CUDA asks for `"unsloth_balanced"`, not `"unsloth"`.
+
+    The planner declines several shapes -- a full finetune, an explicit `auto_model` with
+    no `_model_mapping`, a Falcon-H1 checkpoint missing the mamba exclusions -- and plain
+    `"unsloth"` falls back to `"sequential"`, which is not a shard: `get_max_memory` gives
+    cuda:0 its whole free budget, so `infer_auto_device_map` fills it first. On
+    `unsloth/Qwen2.5-7B-Instruct` in bf16 across two cards:
+
+        8 GiB each   sequential {'0': 14, '1': 18}   balanced {'0': 13, '1': 19}
+        16 GiB each  sequential {'0': 1}             balanced {'0': 13, '1': 19}
+
+    At 16 GiB the weights fit on one card, so sequential puts them all there with nothing
+    left for optimizer state. Naming the fallback covers every declined shape, including
+    ones Studio cannot detect and ones unsloth adds later.
+    """
+
+    def test_multi_gpu_cuda_names_the_balanced_fallback(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertEqual(get_device_map([0, 1]), "unsloth_balanced")
+
+    def test_the_plain_sentinel_is_not_used(self):
+        # "unsloth" alone falls back to "sequential" on every veto path, which is the bug.
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertNotEqual(get_device_map([0, 1]), "unsloth")
+
+    def test_xpu_keeps_plain_balanced(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+            self.assertEqual(get_device_map([0, 1]), "balanced")
+
+    def test_a_single_gpu_never_asks_for_a_plan(self):
+        for device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.CPU):
+            with patch("utils.hardware.hardware.get_device", return_value = device):
+                self.assertEqual(get_device_map([0]), "sequential")
+
+
+class TestTheFallbackNameIsOneUnslothResolves(unittest.TestCase):
+    """The string Studio emits has to be one unsloth's resolver knows.
+
+    A typo, or a rename on the unsloth side, would reach transformers as an unrecognised
+    device_map and raise "the value needs to be a device name ... but found X". Read from
+    the loader rather than repeated here, so the two cannot drift apart.
+
+    Parsed rather than imported: `import unsloth` needs unsloth_zoo, which the backend
+    test environment does not install, and skipping there would leave the one place the
+    two sides are compared unrun in CI.
+    """
+
+    def _planned_device_maps(self):
+        import ast
+
+        source = None
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(here, "..", "..", "..", "unsloth", "models", "loader_utils.py")
+        if os.path.exists(candidate):
+            source = open(candidate, encoding = "utf-8").read()
+        else:
+            # An installed Studio: find_spec locates the package without executing it.
+            import importlib.util
+
+            spec = importlib.util.find_spec("unsloth")
+            locations = list(getattr(spec, "submodule_search_locations", None) or [])
+            for location in locations:
+                installed = os.path.join(location, "models", "loader_utils.py")
+                if os.path.exists(installed):
+                    source = open(installed, encoding = "utf-8").read()
+                    break
+        self.assertIsNotNone(source, "loader_utils.py not found; the comparison cannot be made")
+
+        namespace = {}
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
+                "UNSLOTH_DEVICE_MAP",
+                "UNSLOTH_BALANCED_DEVICE_MAP",
+                "_PLANNED_DEVICE_MAPS",
+            ):
+                exec(ast.get_source_segment(source, node), namespace)
+        return namespace["_PLANNED_DEVICE_MAPS"]
+
+    def test_the_cuda_answer_is_a_planned_map_unsloth_accepts(self):
+        planned = self._planned_device_maps()
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            answer = get_device_map([0, 1])
+        self.assertIn(answer, planned)
+        self.assertEqual(planned[answer], "balanced")

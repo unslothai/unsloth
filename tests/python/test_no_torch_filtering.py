@@ -13,13 +13,11 @@ from unittest import mock
 
 import pytest
 
-# Add the studio directory so install_python_stack is importable.
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
 import install_python_stack as ips
 
-# Paths to the REAL requirements files
 REQ_ROOT = Path(__file__).resolve().parents[2] / "studio" / "backend" / "requirements"
 EXTRAS_TXT = REQ_ROOT / "extras.txt"
 EXTRAS_NO_DEPS_TXT = REQ_ROOT / "extras-no-deps.txt"
@@ -159,7 +157,6 @@ class TestFilterRequirements:
             numpy
         """,
         )
-        # Filter Windows packages, then NO_TORCH packages.
         intermediate = ips._filter_requirements(req, ips.WINDOWS_SKIP_PACKAGES)
         result = ips._filter_requirements(Path(intermediate), ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
@@ -226,10 +223,9 @@ class TestRealRequirementsFiltering:
             pytest.skip("extras-no-deps.txt not found in repo")
         self._created = []
         yield
-        # Only what this test made. These land in the REAL requirements directory, and
-        # the previous version deleted everything that appeared since its own snapshot,
-        # so under pytest-xdist one test's teardown removed a file another worker was
-        # still reading and that test failed with FileNotFoundError.
+        # Only what this test made. These land in the REAL requirements directory, and the previous version deleted
+        # everything that appeared since its own snapshot, so under pytest-xdist one test's teardown removed a file
+        # another worker was still reading and that test failed with FileNotFoundError.
         for path in self._created:
             Path(path).unlink(missing_ok = True)
 
@@ -250,13 +246,11 @@ class TestRealRequirementsFiltering:
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
-        # Every NO_TORCH skip package present in extras.txt must be gone.
         for pkg in ips.NO_TORCH_SKIP_PACKAGES:
             assert not any(
                 l.lower().startswith(pkg) for l in filtered
             ), f"{pkg} should be removed from extras.txt"
 
-        # Everything else must remain.
         expected = [
             l
             for l in original
@@ -495,8 +489,6 @@ class TestInstallPythonStackSubprocessMock:
         prefix = f".{Path(filename).stem}-filtered-"
         return any("-r" in cmd and prefix in cmd for cmd in cmds)
 
-    # -- NO_TORCH=True, IS_MACOS=True (Intel Mac scenario) --
-
     def test_no_torch_macos_skips_overrides(self):
         """With NO_TORCH=True, overrides.txt pip_install must NOT be called."""
         cmds = self._capture_install(no_torch = True, is_macos = True, is_windows = False)
@@ -527,8 +519,6 @@ class TestInstallPythonStackSubprocessMock:
         ) or self._cmds_contain_filtered_file(cmds, "extras-no-deps.txt")
         assert has_extras_nd, "extras-no-deps.txt (or its filtered temp) should be called"
 
-    # -- IS_WINDOWS=True + NO_TORCH=True (stacked) --
-
     def test_windows_no_torch_skips_overrides(self):
         """Windows+NO_TORCH: overrides.txt must be skipped."""
         cmds = self._capture_install(no_torch = True, is_macos = False, is_windows = True)
@@ -542,8 +532,6 @@ class TestInstallPythonStackSubprocessMock:
         assert not self._cmds_contain_file(
             cmds, "triton-kernels.txt"
         ), "triton-kernels.txt should be skipped on Windows"
-
-    # -- Normal Linux path (NO_TORCH=False, IS_MACOS=False, IS_WINDOWS=False) --
 
     def test_normal_linux_includes_overrides(self):
         """Normal Linux: torchao override step runs (via --reinstall, not overrides.txt)."""
@@ -573,8 +561,6 @@ class TestInstallPythonStackSubprocessMock:
             cmds, "extras-no-deps.txt"
         ), "extras-no-deps.txt should be called on normal Linux"
 
-    # -- Windows-only (NO_TORCH=False) to verify triton is still skipped --
-
     def test_windows_only_skips_triton(self):
         """Windows (without NO_TORCH): triton still skipped."""
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = True)
@@ -588,8 +574,6 @@ class TestInstallPythonStackSubprocessMock:
         assert any(
             "--reinstall" in cmd for cmd in cmds
         ), "overrides step (--reinstall) should be called on Windows when NO_TORCH=False"
-
-    # -- Update path (skip_base=False) to verify no-torch mode is durable --
 
     def test_update_path_intel_macos_still_skips_overrides(self):
         """Update path (no SKIP_STUDIO_BASE): overrides still skipped on Intel Mac."""
@@ -610,7 +594,6 @@ class TestInstallPythonStackSubprocessMock:
         ), "triton-kernels.txt should be skipped on macOS even via studio update"
 
     # -- The harness above must not write the venv it is running in --
-
     def test_the_harness_never_writes_the_running_venv_root(self):
         """install_python_stack() drops, marks and rewrites the manifest for real here.
 
@@ -636,8 +619,8 @@ class TestInstallPythonStackSubprocessMock:
             f"the installer harness wrote {real_root}, which every worker in this run "
             "shares; give install_manifest.venv_root a contained root instead"
         )
-        # Non-vacuous: the writes must have landed somewhere, or an install that returned
-        # early and wrote nothing at all would pass this too.
+        # Non-vacuous: the writes must have landed somewhere, or an install that returned early and wrote nothing at all
+        # would pass this too.
         contained = ips.install_manifest.venv_root()
         assert contained != real_root, "venv_root was never contained"
         assert (contained / ips.install_manifest.MANIFEST_NAME).is_file(), (
@@ -790,7 +773,6 @@ class TestInstallShNoTorchFlag:
         )
         assert "HINT_PRINTED" in result.stdout, "CPU hint should print"
 
-        # With SKIP_TORCH=true, hint should NOT print
         script2 = script.replace("SKIP_TORCH=false", "SKIP_TORCH=true")
         result2 = subprocess.run(
             ["bash", "-c", script2],

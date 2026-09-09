@@ -9,7 +9,8 @@
 # Verified locally end-to-end against this branch:
 #   - python -m build produces unsloth-<version>-py3-none-any.whl in 13s
 #   - wheel content sanity passes:
-#       lockfile shipped, frontend dist shipped,
+#       frontend dist shipped, and none of the pre-build tree with it:
+#       no package-lock, no frontend public, no frontend src,
 #       no node_modules in wheel, no bun.lock in wheel,
 #       main bundle has unstable_Provider hits=1 (assistant-ui internals only).
 #   - Unsloth backend imports cleanly from the installed wheel with the
@@ -21,6 +22,10 @@ on:
   pull_request:
     paths:
       - 'pyproject.toml'
+      - 'MANIFEST.in'
+      # Required: the publish guard reads build.sh, so a PR reverting the upload
+      # glob must not skip this workflow.
+      - 'build.sh'
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
@@ -29,6 +34,8 @@ on:
     branches: [main]
     paths:
       - 'pyproject.toml'
+      - 'MANIFEST.in'
+      - 'build.sh'
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
@@ -96,7 +103,12 @@ jobs:
           with zipfile.ZipFile(w) as z:
               n = z.namelist()
               checks = {
-                "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                # The lockfile used to be asserted PRESENT. It is a build input for
+                # `npm ci` above, not something an installed Unsloth reads, so it now
+                # has to be absent along with the rest of the pre-build tree.
+                "no package-lock":       not any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                "no frontend public":    not any("studio/frontend/public/" in s for s in n),
+                "no frontend src":       not any("studio/frontend/src/"    in s for s in n),
                 "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
                 "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
                 "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
@@ -117,6 +129,186 @@ jobs:
               for k, v in checks.items():
                   print(f"  [{'PASS' if v else 'FAIL'}] {k}")
               sys.exit(0 if all(checks.values()) else 1)
+          PY
+
+      - name: Publishing path uploads the wheel only
+        # #10202 set the publish glob to dist/*.whl; 2026.9.2 shipped an 86.6MB
+        # sdist anyway. build.sh must still BUILD the sdist for --verify-dist, so
+        # only the upload glob is asserted here.
+        run: |
+          python - <<'PY'
+          import re, shlex, sys
+
+          # twine upload takes `dist [dist ...]`, so every positional counts. Flags
+          # are skipped by name, not by position; -s/--sign is store_true, and
+          # listing it here swallowed the sdist after it.
+          VALUED_FLAGS = {
+              "-r", "--repository", "--repository-url", "--sign-with",
+              "-i", "--identity", "-u", "--username", "-p", "--password",
+              "-c", "--comment", "--config-file", "--cert", "--client-cert",
+          }
+
+          OPERATORS = {"|", "||", "&&", ";", "&"}
+
+          def segments(line):
+              """One token list per command on the line, split on control operators.
+
+              `twine upload dist/*.whl && twine upload dist/*.tar.gz` publishes
+              both, so stopping at the first operator is not enough.
+              """
+              try:
+                  toks = shlex.split(line, comments=True)
+              except ValueError:
+                  # Unbalanced quoting: refuse rather than wave it through.
+                  return None
+              out, current = [], []
+              for t in toks:
+                  if t in OPERATORS:
+                      out.append(current)
+                      current = []
+                      continue
+                  current.append(t)
+              out.append(current)
+              return out
+
+          def upload_args(seg):
+              """twine's positional arguments, or None when seg is not an upload."""
+              head = list(seg)
+              # `TWINE_USERNAME=__token__ twine upload ...` still runs twine: an
+              # assignment prefix is not the command.
+              while head and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", head[0], re.S):
+                  head = head[1:]
+              if head[:3] == ["python", "-m", "twine"] or (
+                  head and re.fullmatch(r"python[0-9.]*", head[0]) and head[1:3] == ["-m", "twine"]
+              ):
+                  head = head[3:]
+              elif head[:1] == ["twine"]:
+                  head = head[1:]
+              else:
+                  return None
+              if head[:1] != ["upload"]:
+                  return None
+              out, skip = [], False
+              for t in head[1:]:
+                  if skip:
+                      skip = False
+                      continue
+                  # Redirections are shell syntax, not artifacts; `>twine.log`
+                  # arrives as one token.
+                  redirect = re.match(r"^\d*(?:>>|>&|>|<<?|&>)(.*)$", t)
+                  if redirect:
+                      # Bare operator: its target is the next token.
+                      skip = not redirect.group(1)
+                      continue
+                  if t.startswith("-"):
+                      skip = t in VALUED_FLAGS
+                      continue
+                  out.append(t)
+              return out
+
+          def executable_lines(text):
+              """build.sh lines the shell would actually run.
+
+              Usage text inside a heredoc names `twine upload dist/*.whl` too, and
+              counting it lets a build.sh with no publish line report PASS.
+              """
+              out, terminator, dash = [], None, False
+              for line in text.splitlines():
+                  if terminator is not None:
+                      # Bash closes <<WORD on an EXACT match only; <<-WORD strips
+                      # leading TABS, not spaces, before comparing.
+                      candidate = line.lstrip("\t") if dash else line
+                      if candidate == terminator:
+                          terminator = None
+                      continue
+                  # The delimiter is a shell WORD, so `<<'PUBLISH-USAGE'` opens a
+                  # heredoc. Unquoted it must still start with a letter, or
+                  # `$((1<<2))` opens one too; the lookbehind excludes `<<<`.
+                  opened = re.search(
+                      r"(?<!<)<<(-?)\s*(?:'([^']*)'|\"([^\"]*)\"|\\?([A-Za-z_][A-Za-z0-9_.-]*))",
+                      line,
+                  )
+                  if opened:
+                      dash = bool(opened.group(1))
+                      terminator = next(g for g in opened.groups()[1:] if g is not None)
+                      continue
+                  if line.lstrip().startswith("#"):
+                      continue
+                  out.append(line)
+              return out
+
+          src = open("build.sh").read()
+          lines = executable_lines(src)
+          uploads = []
+          unreadable = False
+          for line in lines:
+              parts = segments(line)
+              if parts is None:
+                  unreadable = True
+                  continue
+              # A segment counts only when twine IS the command, so the no-op
+              # `: twine upload dist/*.whl` is not an upload.
+              for seg in parts:
+                  args = upload_args(seg)
+                  if args is not None:
+                      uploads.extend(args)
+          print(f"twine upload targets in build.sh: {uploads}")
+          if unreadable:
+              print("FAIL: could not parse a twine upload line in build.sh")
+              sys.exit(1)
+          if not uploads:
+              print("FAIL: build.sh has no twine upload line; has the release path moved?")
+              sys.exit(1)
+          bad = [u for u in uploads if not u.endswith(".whl")]
+          if bad:
+              print(f"FAIL: build.sh would upload non-wheel artifacts: {bad}")
+              print("Publishing an sdist costs ~86MB of a 10GB project limit for an")
+              print("artifact nothing installs; the wheel is py3-none-any.")
+              sys.exit(1)
+          print("PASS: build.sh uploads wheels only")
+          PY
+
+      - name: No test suites in wheel or sdist
+        # tests/security/fixtures embeds a real supply-chain IOC literal, which got
+        # the published sdist flagged by antivirus vendors (discussion #9577).
+        #
+        # Both artifacts: `python -m build` builds the wheel FROM the sdist, so a
+        # test suite reaching one reaches the other.
+        run: |
+          python - <<'PY'
+          import glob, sys, tarfile, zipfile
+
+          def is_test(path):
+              return "tests" in path.strip("/").split("/")
+
+          def report(label, names):
+              offenders = sorted(n for n in names if is_test(n))
+              ioc = sorted(n for n in names if "malicious_" in n)
+              print(f"{label}: {len(offenders)} test paths, {len(ioc)} IOC fixtures")
+              for n in offenders[:20]:
+                  print(f"    {n}")
+              if len(offenders) > 20:
+                  print(f"    ... and {len(offenders) - 20} more")
+              for n in ioc:
+                  print(f"    IOC {n}")
+              return not offenders and not ioc
+
+          ok = True
+          wheels = glob.glob("dist/unsloth-*.whl")
+          sdists = glob.glob("dist/unsloth-*.tar.gz")
+          if not wheels or not sdists:
+              print("FAIL: expected one wheel and one sdist in dist/")
+              sys.exit(2)
+          with zipfile.ZipFile(wheels[0]) as z:
+              ok &= report(f"wheel {wheels[0]}", z.namelist())
+          with tarfile.open(sdists[0]) as t:
+              # Every sdist member carries an "unsloth-<version>/" prefix.
+              ok &= report(
+                  f"sdist {sdists[0]}",
+                  [n.split("/", 1)[1] for n in t.getnames() if "/" in n],
+              )
+          print("PASS" if ok else "FAIL: test files are being shipped")
+          sys.exit(0 if ok else 1)
           PY
 
       - name: Unsloth backend import smoke

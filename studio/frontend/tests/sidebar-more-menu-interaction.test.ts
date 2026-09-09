@@ -2,14 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 test("the sidebar More flyout previews on hover and pins on click", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
 
   assert.match(source, /const \[moreHoverOpen, setMoreHoverOpen\] = useState\(false\)/);
   assert.match(source, /const \[morePinnedOpen, setMorePinnedOpen\] = useState\(false\)/);

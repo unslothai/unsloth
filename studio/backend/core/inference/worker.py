@@ -157,6 +157,17 @@ def _clean_token(value: str | None) -> str | None:
     return value if value and value.strip() else None
 
 
+def _config_hf_token(config: dict) -> str | bool | None:
+    if config.get("anonymous_hf_access"):
+        return False
+    return _clean_token(config.get("hf_token"))
+
+
+def _apply_worker_hf_token_environment(config: dict) -> None:
+    from hub.utils.hf_tokens import apply_token_to_child_env
+    apply_token_to_child_env(os.environ, _config_hf_token(config))
+
+
 def _build_model_config(config: dict):
     """Build a ModelConfig from the config dict."""
     from utils.models import ModelConfig
@@ -164,7 +175,7 @@ def _build_model_config(config: dict):
     model_name = config["model_name"]
     mc = ModelConfig.from_identifier(
         model_id = model_name,
-        hf_token = _clean_token(config.get("hf_token")),
+        hf_token = _config_hf_token(config),
         gguf_variant = config.get("gguf_variant"),
     )
     if not mc:
@@ -386,7 +397,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     try:
         mc = _build_model_config(config)
 
-        hf_token = _clean_token(config.get("hf_token"))
+        hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
         # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
@@ -466,6 +477,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": config.get("resolved_gpu_ids"),
             }
+            if config.get("audio_codec_path") is not None:
+                load_kwargs["audio_codec_path"] = config["audio_codec_path"]
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
@@ -492,12 +505,24 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            try:
-                _context_length = _entry.get("context_length")
-                if _context_length is not None:
-                    model_info["context_length"] = int(_context_length)
-            except Exception as _ctx_exc:
-                logger.warning("context_length forward failed: %s", _ctx_exc)
+            # The whole group: the parent reports all four and can recompute none of
+            # them once the worker holds the model.
+            for _ctx_field in (
+                "context_length",
+                "native_context_length",
+                "max_context_length",
+                "requested_context_length",
+            ):
+                try:
+                    _ctx_value = _entry.get(_ctx_field)
+                    if _ctx_value is not None:
+                        model_info[_ctx_field] = int(_ctx_value)
+                except Exception as _ctx_exc:
+                    logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
+            # Tri-state, so it is forwarded as it is rather than coerced: None means the
+            # backend does not answer, which is not the same as a confirmed False.
+            if _entry.get("context_length_enforced") is not None:
+                model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
             # Backend post-load audio classification outranks pre-load config.
             model_info.update(
                 {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
@@ -528,6 +553,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "format_type": _tpl_info.get("format_type", "generic"),
                         "template_name": _tpl_info.get("template_name"),
                         "special_tokens": _tpl_info.get("special_tokens", {}) or {},
+                        # The IMAGE-turn body; the whitelist is the only way out.
+                        "processor_template": _tpl_info.get("processor_template"),
+                        "renders_image": _tpl_info.get("renders_image"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
@@ -698,7 +726,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         try:
             for cumulative_text in generator:
-                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                # cancel_event is an mp.Event - checked instantly, no queue polling.
                 if cancel_event.is_set():
                     logger.info("Generation cancelled for request %s", request_id)
                     break
@@ -739,6 +767,52 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
                 "stack": traceback.format_exc(limit = 20),
             },
         )
+
+
+def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
+    """Count prompt tokens for the loaded model and reply with the total."""
+    try:
+        count = backend.count_chat_tokens(
+            cmd.get("messages") or [],
+            cmd.get("system_prompt") or "",
+            tools = cmd.get("tools"),
+            enable_thinking = cmd.get("enable_thinking"),
+            reasoning_effort = cmd.get("reasoning_effort"),
+            preserve_thinking = cmd.get("preserve_thinking"),
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "count_tokens_response",
+                "request_id": cmd.get("request_id"),
+                "error": str(exc),
+            },
+        )
+        return
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            # Echoed so the dispatcher can address the caller's mailbox; an unaddressed
+            # reply is dropped and the caller waits out its timeout.
+            "request_id": cmd.get("request_id"),
+            "input_tokens": int(count),
+            "model": backend.active_model_name,
+        },
+    )
+
+
+def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
+    """Answer a count this backend cannot serve; dropping it costs the caller its timeout."""
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            "request_id": cmd.get("request_id"),
+            "error": "Counting is not supported on the transformers backend.",
+        },
+    )
 
 
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
@@ -984,6 +1058,8 @@ def run_inference_process(
             here, so a generate still queued behind a cancelled one is skipped rather
             than run — the cancel survives the queue handoff.
     """
+    # Apply request credentials before a Hugging Face import snapshots the environment.
+    _apply_worker_hf_token_environment(config)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
 
@@ -1053,14 +1129,25 @@ def run_inference_process(
 
     _native_audio_worker = is_native_audio_model(model_name)
 
-    # ── 0. MLX fast-path — skip torch/transformers ──
+    # Before detect_hardware(), whose probe would leave a CUDA context here; the route
+    # skips the arbiter on the basis that this load reserves none.
+    if _native_audio_worker:
+        from core.inference.audio_device import (
+            audio_device_forces_cpu,
+            mask_accelerators_for_cpu_audio,
+        )
+        if audio_device_forces_cpu(config.get("audio_device")):
+            mask_accelerators_for_cpu_audio(os.environ)
+            logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)
+
+    # ── 0. MLX fast-path - skip torch/transformers ──
     _ensure_backend_on_path()
 
     if is_apple_silicon():
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name, config.get("hf_token") or None)
+            _activate_transformers_version(model_name, _config_hf_token(config))
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -1166,6 +1253,8 @@ def run_inference_process(
                             ),
                         },
                     )
+                elif cmd_type == "count_tokens":
+                    _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -1231,16 +1320,10 @@ def run_inference_process(
 
     # ── Windows: check Triton availability ──
     # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── Stub torchao on Windows ROCm before ANY transformers import ──
     # Must precede every path that pulls transformers, not just the ML imports in section 2:
@@ -1260,7 +1343,7 @@ def run_inference_process(
     _ensure_backend_on_path()
     from utils.transformers_version import _remote_lora_base, _resolve_base_model
 
-    _hf_token = _clean_token(config.get("hf_token"))
+    _hf_token = _config_hf_token(config)
     _lora_base = None
     _local_adapter_cfg = Path(model_name) / "adapter_config.json"
     if _local_adapter_cfg.is_file():
@@ -1367,7 +1450,12 @@ def run_inference_process(
 
     # ── 3. Create inference backend and load initial model ──
     try:
-        backend = InferenceBackend()
+        # Native audio picks its device in __init__, so the preference goes there.
+        backend = (
+            InferenceBackend(device_preference = config.get("audio_device"))
+            if _native_audio_worker
+            else InferenceBackend()
+        )
 
         _send_response(
             resp_queue,
@@ -1423,6 +1511,9 @@ def run_inference_process(
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "count_tokens":
+                _decline_count_tokens(cmd, resp_queue)
 
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)

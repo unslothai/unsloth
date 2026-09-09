@@ -50,8 +50,8 @@ from typing import Any, Iterable, Mapping, Sequence
 from ..scoring.schema import Measure
 from .manifest import ArmOutcome, ArmStatus
 
-#: The named mechanisms this ladder can remove. A step must name mechanisms from this set, so a
-#: typo becomes an error rather than a new, unexplained row in the report.
+#: The named mechanisms this ladder can remove. A step must name mechanisms from this set, so a typo
+#: becomes an error rather than a new, unexplained row in the report.
 MECHANISMS: tuple[str, ...] = (
     "paint_raster",
     "offscreen_style_layout",
@@ -365,8 +365,8 @@ def differences(
         and result.sum_of_steps
     ):
         result.residual_ms = float(result.total.value) - float(result.sum_of_steps.value)
-        # This is an arithmetic identity, not an empirical claim: the interior terms cancel. A
-        # non-zero residual here means a bug in this function, not a finding about the app.
+        # An arithmetic identity, not an empirical claim: the interior terms cancel, so a non-zero residual
+        # means a bug in this function, not a finding about the app.
         result.identity_holds = abs(result.residual_ms) < 1e-9
         result.identity_note = (
             "top minus floor equals the sum of the adjacent differences, identically, because the "
@@ -495,14 +495,14 @@ def interaction_terms(
     return terms
 
 
-# ---------------------------------------------------------------------------------------
 # the two declared routes
+
 # ---------------------------------------------------------------------------------------
 
 _SHIPPING: frozenset[str] = frozenset()
 
-#: Route 1 walks down the rendering pipeline first: stop painting, then stop laying out
-#: off-screen, then stop occupying layout at all, and only then touch the observers and React.
+#: Route 1 walks down the rendering pipeline first: stop painting, then stop laying out off-screen,
+#: then stop occupying layout at all, and only then touch the observers and React.
 ROUTE_VISUAL_FIRST = LadderRoute(
     route_id = "visual_first",
     name = "paint, then off-screen layout, then geometry, then observers, then React",
@@ -546,9 +546,9 @@ ROUTE_VISUAL_FIRST = LadderRoute(
     ),
 )
 
-#: Route 2 reaches the identical floor from the other end: kill the observers and React first,
-#: then walk down the rendering pipeline. If the mechanisms are additive both routes report the
-#: same per-mechanism numbers. Where they do not, that gap is the interaction term.
+#: Route 2 reaches the identical floor from the other end: kill the observers and React first, then
+#: walk down the rendering pipeline. If the mechanisms are additive both routes report the same
+#: per-mechanism numbers; where they do not, that gap is the interaction term.
 ROUTE_SCHEDULER_FIRST = LadderRoute(
     route_id = "scheduler_first",
     name = "observers, then React, then paint, then off-screen layout, then geometry",

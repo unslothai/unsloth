@@ -80,8 +80,8 @@ def _run_notarization_step(
     fake_bin.mkdir(exist_ok = True)
     log = tmp_path / "commands.log"
     log.write_text("", encoding = "utf-8")
-    # Record the full argv so the assertions below read the flags the step
-    # actually passed, not the text of the YAML that produced them.
+    # Record the full argv so the assertions below read the flags the step actually passed, not the text of the YAML
+    # that produced them.
     _write_fake_command(
         fake_bin / "xcrun",
         """
@@ -152,9 +152,8 @@ def test_notarization_step_runs_after_the_macos_build_and_before_staging():
     step = _step(workflow, "Notarize final macOS disk image")
     assert step["if"] == "matrix.platform == 'macos-latest'"
     assert step["env"]["ARTIFACT_PATHS"] == "${{ steps.build_macos.outputs.artifactPaths }}"
-    # notarytool's own --timeout only caps the polling, so the step still needs
-    # a backstop or a stalled upload holds the serial matrix until GitHub's 6h
-    # job limit.
+    # notarytool's own --timeout only caps the polling, so the step still needs a backstop or a stalled upload holds the
+    # serial matrix until GitHub's 6h job limit.
     assert isinstance(step["timeout-minutes"], int)
 
     names = _step_names(workflow)
@@ -230,8 +229,8 @@ def test_submission_carries_every_credential_and_a_bounded_wait(tmp_path):
     _, commands = _run_notarization_step(_workflow(), tmp_path)
     submit = next(line for line in commands if line.startswith("xcrun notarytool submit"))
     fields = submit.split()
-    # Without --wait the submission returns before Apple has a verdict and the
-    # staple would race it; --timeout then bounds that wait.
+    # Without --wait the submission returns before Apple has a verdict and the staple would race it;
+    # --timeout then bounds that wait.
     for flag in ("--apple-id", "--password", "--team-id", "--wait", "--timeout"):
         assert flag in fields, submit
     assert fields[fields.index("--timeout") + 1] != "--wait"

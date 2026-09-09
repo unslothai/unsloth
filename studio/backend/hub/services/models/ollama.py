@@ -48,10 +48,39 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.model",
         "application/vnd.ollama.image.projector",
-        # License text does not affect model behavior and does not need to be
-        # carried into llama.cpp.
+        # License text does not affect model behavior and does not need to be carried into llama.cpp.
         "application/vnd.ollama.image.license",
     }
+)
+
+# Modelfile metadata nearly every pulled model carries. llama.cpp uses the GGUF's own template
+# and defaults instead, so none of it reaches the load and none of it should hide the row.
+# `image.adapter` is deliberately absent: it changes the weights.
+_OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.ollama.image.template",
+        "application/vnd.ollama.image.params",
+        "application/vnd.ollama.image.system",
+        "application/vnd.ollama.image.messages",
+        "application/vnd.ollama.image.prompt",
+    }
+)
+
+# Layers the load drops without changing what it returns. `image.draft` only feeds
+# speculative decoding, which is output-equivalent by construction, so losing it costs
+# speed and nothing else; `image.embed` has been deprecated since ollama 0.1.2 and
+# ollama's own load ignores it too.
+_OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.ollama.image.draft",
+        "application/vnd.ollama.image.embed",
+    }
+)
+
+_OLLAMA_ADMITTED_LAYER_MEDIA_TYPES = (
+    _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES
+    | _OLLAMA_METADATA_LAYER_MEDIA_TYPES
+    | _OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES
 )
 
 _OLLAMA_MATERIALIZE_LOCKS: dict[str, threading.Lock] = {}
@@ -80,7 +109,7 @@ def is_ollama_manifest_ref(ref: str) -> bool:
 
 
 def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ...]:
-    """Layer types whose behavior the direct llama.cpp load cannot preserve."""
+    """Layer types that would make the row describe something the load cannot deliver."""
     unsupported: set[str] = set()
     for layer in layers:
         if not isinstance(layer, dict):
@@ -89,7 +118,7 @@ def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ..
         media_type = layer.get("mediaType")
         if not isinstance(media_type, str) or not media_type:
             unsupported.add("<missing mediaType>")
-        elif media_type not in _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES:
+        elif media_type not in _OLLAMA_ADMITTED_LAYER_MEDIA_TYPES:
             unsupported.add(media_type)
     return tuple(sorted(unsupported))
 
@@ -149,8 +178,8 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     if _ensure_writable_dir(primary) is not None:
         return primary
 
-    # Namespace by a hash of the ollama_dir so two different Ollama roots
-    # don't collide. This is a cache path, not a security boundary.
+    # Namespace by a hash of the ollama_dir so two different Ollama roots do not collide. A cache path,
+    # not a security boundary.
     try:
         digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except (OSError, RuntimeError):
@@ -192,8 +221,7 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         logger.debug("Could not resolve Ollama blob %s: %s", target, e)
         return None
 
-    # Skip if the link already points at the same blob. Use samefile, not size:
-    # `ollama pull` can swap a tag to a same-sized blob, leaving a stale link.
+    # samefile, not size: `ollama pull` can swap a tag to a same-sized blob, leaving a stale link.
     try:
         if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
             return str(link_path)

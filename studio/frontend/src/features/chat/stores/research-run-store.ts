@@ -182,13 +182,13 @@ export function researchPhaseTitle(phase: ResearchPhase | undefined): string {
 }
 
 /** Rows for one model call are keyed by its callId so the phase bracket and any streamed
- * reasoning for that call land on the same activity. */
+ *  reasoning for that call land on the same activity. */
 function phaseActivityId(attempt: number, callId: string): string {
   return `reasoning-${attempt}-${callId}`;
 }
 
-/** What the run is doing right now, for the collapsed card: the live activity, qualified by
- * the latest thing it has produced so a long call still shows movement. */
+/** What the run is doing right now, for the collapsed card: the live activity, qualified by the
+ *  latest thing it has produced so a long call still shows movement. */
 export function runningResearchActivityTitle(
   activities: ResearchActivity[] | undefined,
 ): string | null {
@@ -207,13 +207,13 @@ export function stepResultDetail(sourceCount: number, action?: string): string {
   if (sourceCount > 0) {
     return `${sourceCount} ${sourceCount === 1 ? "source" : "sources"} found`;
   }
-  // A fetch records an excerpt of one page and never collects sources, so a count would read
-  // as a failure. A search that returns nothing is a real outcome, not a styled success.
+  // A fetch records an excerpt of one page and never collects sources, so a count would read as a
+  // failure. A search that returns nothing is a real outcome, not a styled success.
   return action === "fetch" ? "Page read" : "No usable results";
 }
 
-/** Header summary. Counts are omitted until they exist, so a run that has not searched yet
- * reads as the work it is doing rather than "0 sources · 0 actions". */
+/** Header summary. Counts are omitted until they exist, so a run that has not searched yet reads
+ *  as the work it is doing rather than "0 sources, 0 actions". */
 export function researchProgressSummary(
   run: ResearchRun,
   elapsed: string,
@@ -267,9 +267,8 @@ function reduceActivity(
 ): ResearchActivity[] {
   const next = [...activities];
   const attempt = event.data.attempt ?? 0;
-  // A retry deletes the old attempt's step rows while its events survive, and
-  // the stream attaches the live snapshot to replayed history, so run.steps
-  // only describes its own attempt.
+  // A retry deletes the old attempt's step rows while its events survive, and the stream attaches
+  // the live snapshot to replayed history, so run.steps only describes its own attempt.
   const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);
 
   // runs recorded before phase events carry no phase.ended, so close their rows as before.
@@ -318,8 +317,8 @@ function reduceActivity(
       return next;
     }
     if (existingIndex >= 0) return next;
-    // phase.ended is best-effort (_note_phase swallows append failures), so a new phase also
-    // closes the previous one; otherwise a dropped end leaves that row spinning all run.
+    // phase.ended is best-effort (_note_phase swallows append failures), so a new phase also closes
+    // the previous one; otherwise a dropped end leaves that row spinning all run.
     const stale = findLastActivityIndex(
       next,
       (activity) =>
@@ -641,9 +640,8 @@ export const useResearchRunStore = create<ResearchRunState>((set) => ({
         state.planReviewByRunId[run.id],
         run,
       );
-      // Claimed means spent: a finished run is the chat's one research. A run still going
-      // keeps the toggle lit (it is what is happening) and a stopped one can be re-pointed,
-      // so neither takes the toggle away.
+      // Claimed means spent: a finished run is the chat's one research. A run still going keeps the
+      // toggle lit and a stopped one can be re-pointed, so neither takes the toggle away.
       const claimed = shouldBecomeLatest
         ? run.status === "completed" || run.status === "failed"
         : Boolean(state.claimedThreadIds[run.threadId]);
@@ -961,7 +959,7 @@ export function beginExternalResearchFollow(
 }
 
 /** Yield the run each time the store applies something to it, until it settles or *signal*
- * aborts. Independent of the event stream, so a slow consumer cannot stall ingestion. */
+ *  aborts. Independent of the event stream, so a slow consumer cannot stall ingestion. */
 export async function* watchResearchRun(
   runId: string,
   options: { signal?: AbortSignal } = {},

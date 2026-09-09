@@ -45,7 +45,7 @@ def _copy_package(staging: Path) -> None:
     target.parent.mkdir(parents = True, exist_ok = True)
     shutil.copytree(PKG, target, ignore = shutil.ignore_patterns(*EXCLUDE_DIRS, "*.pyc", "*.pyo"))
     # `tests` and `tests/studio` must be importable packages inside the archive, and they are not
-    # packages in the repository -- the harnesses there are standalone scripts.
+    # packages in the repository: the harnesses there are standalone scripts.
     for pkg_dir in (staging / "tests", staging / "tests" / "studio"):
         init = pkg_dir / "__init__.py"
         if not init.exists():
@@ -86,8 +86,8 @@ def build(out: Path = DEFAULT_OUT, compressed: bool = True) -> Path:
             "artifact ships a benchmark with no content."
         )
 
-    # A __main__.py at the archive root is what `python foo.pyz` executes. It re-exports the
-    # package's CLI rather than duplicating it.
+    # A __main__.py at the archive root is what `python foo.pyz` executes. It re-exports the package's
+    # CLI rather than duplicating it.
     (staging / "__main__.py").write_text(
         "import sys\n"
         "from tests.studio.studiobench.__main__ import main\n"

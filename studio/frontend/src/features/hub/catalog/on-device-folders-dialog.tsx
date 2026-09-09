@@ -38,7 +38,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
-  DownloadCircle01Icon,
+  Download01Icon,
   FileSearchIcon,
   FolderAddIcon,
   FolderExportIcon,
@@ -276,7 +276,7 @@ export function OnDeviceFoldersDialog({
             <div className="rounded-[14px] border border-border/70 bg-muted/20 p-3">
               <div className="mb-2 flex items-center gap-2 text-ui-12 font-medium text-foreground">
                 <HugeiconsIcon
-                  icon={DownloadCircle01Icon}
+                  icon={Download01Icon}
                   strokeWidth={1.75}
                   className="size-3.5 text-muted-foreground"
                 />

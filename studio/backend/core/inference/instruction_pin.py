@@ -37,17 +37,16 @@ import re
 
 from core.inference.context_window import estimate_messages_tokens_dense, group_turns
 
-# 80 characters: someone who typed a paragraph wrote an instruction. Nothing inspects
-# meaning or keywords, which are the heuristics a user trips by accident.
+# 80 characters: someone who typed a paragraph wrote an instruction. Nothing inspects meaning or keywords, which are the
+# heuristics a user trips by accident.
 INSTRUCTION_MIN_CHARS = int(os.environ.get("ROLLING_INSTRUCTION_MIN_CHARS", "80"))
 PIN_GROUPS = int(os.environ.get("ROLLING_INSTRUCTION_PIN_GROUPS", "0"))
 PIN_MAX_TOKENS = int(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_TOKENS", "1024"))
-# ... and never more than this share of the prompt budget, so the pin stays a minority of
-# the window on a small model as well as a large one.
+# ... and never more than this share of the prompt budget, so the pin stays a minority of the window on a small model as
+# well as a large one.
 PIN_MAX_FRACTION = float(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_FRACTION", "0.10"))
 
-# A pure REJECT list: it can only stop something being treated as an instruction, never
-# promote one.
+# A pure REJECT list: it can only stop something being treated as an instruction, never promote one.
 _CONTINUATIONS = frozenset(
     {
         "continue",
@@ -84,14 +83,15 @@ _CONTINUATIONS = frozenset(
         "then",
     }
 )
-# U+2026 and U+2025 as well as the ASCII spellings: keyboards autocorrect "..." to one
-# ellipsis character, so `continue…` matched nothing and recall searched for "continue".
+# keyboards autocorrect "..." to U+2026, so `continue...` matched nothing and recall searched for "continue"
+# U+2026 and U+2025 as well as the ASCII spellings: keyboards autocorrect "..." to one ellipsis character, so
+# `continue…` matched nothing and recall searched for "continue".
 _PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—\u2025\u2026]+")
 
-# "Anaphoric" as a closed list rather than a word count: words that cannot name the
-# subject of a request. "what about it" has nothing to search for; "review billing" names
-# its own subject and keeps its retrieval slots. Negation is left out on purpose, as in
-# `store._ARCHIVE_STOPWORDS`: a missed anchor is cheaper than a wrong one.
+# A closed list, not a word count: words that cannot name a request's subject "Anaphoric" as a closed list rather than a
+# word count: words that cannot name the subject of a request. "what about it" has nothing to search for; "review
+# billing" names its own subject and keeps its retrieval slots. Negation is left out, as in `store._ARCHIVE_STOPWORDS`:
+# a missed anchor is cheaper than a wrong one.
 _FUNCTION_WORDS = frozenset(
     """
 a about all also am an and another any anything are as at be been being both but by can
@@ -187,7 +187,6 @@ def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
     # Short AND anaphoric: "what is ZQXVARA123?" names something and stays the query.
     words = normalised.split()
     if not words:
-        # Punctuation only ("???"): nothing survives tokenisation, so the query is empty.
         return True
     return all(word in _FUNCTION_WORDS or word in _CONTINUATIONS for word in words)
 
@@ -210,8 +209,9 @@ def _protected_cost(turns: list[list[dict]], index: int) -> int:
     small instruction its pin over tokens the pin never keeps -- which is the case the pin
     exists for, since an agent run is exactly where the filler follow-up appears.
     """
-    # Dense: 4 chars per token undercharges CJK and emoji ~2x, so a 1056-token turn was
-    # charged 276 and cleared a 1024 ceiling. Over-charging only refuses the pin.
+    # 4 chars per token undercharges CJK and emoji ~2x; over-charging only refuses the pin
+    # Dense: 4 chars per token undercharges CJK and emoji ~2x, so a 1056-token turn was charged 276 and cleared a 1024
+    # ceiling. Over-charging only refuses the pin.
     return estimate_messages_tokens_dense(turns[index])
 
 
@@ -246,8 +246,9 @@ def pinned_instruction_ids(
         return set()
 
     turns = group_turns(messages)
-    # The newest user group is already protected by the window, and the inline recall path
-    # replaces that message with a new dict, so its id would go stale anyway.
+    # the newest user group is already window-protected
+    # The newest user group is already protected by the window, and the inline recall path replaces that message with a
+    # new dict, so its id would go stale anyway.
     newest_user = next(
         (
             index

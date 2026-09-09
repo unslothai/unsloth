@@ -28,17 +28,12 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
     "unsloth/bge-small-en-v1.5",
     "unsloth/bge-small-en-v1.5-GGUF",
 }
-# Local copies do not always retain the repo id. Keep a narrow basename
-# fallback for Unsloth's static default embedder only; configured custom repos
-# remain exact-match-only.
+# Local copies do not always retain the repo id.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
-# Curated dictation checkpoints (STT, never chat), hidden from the chat
-# inventory and pickers: Transformers safetensors repos (unsloth/whisper-*) and
-# their GGUF companions (unslothai/whisper-*-GGUF). Custom checkpoints are caught
-# by config below, but the GGUF companions carry a raw .bin (no config.json), so
-# they must be listed here by id or they leak into chat pickers. The Qwen3-ASR
-# GGUFs are listed for the same reason: llama.cpp will happily load one as a
-# chat model, where it only answers with transcripts.
+# Curated dictation checkpoints (STT, never chat), hidden from chat inventory and pickers. The
+# GGUF companions carry a raw .bin with no config.json, so config sniffing cannot catch them and
+# they must be listed by id; the Qwen3-ASR GGUFs likewise, since llama.cpp loads one as a chat
+# model that only answers with transcripts.
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
         "unsloth/whisper-tiny",
@@ -57,11 +52,10 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
 
-# Curated Audio-page TTS checkpoints. Unlike the STT set these stay VISIBLE -- the Audio
-# page is where they belong -- but a chat turn on one comes back as synthesized speech,
-# so they must not be chat-loadable. Config sniffing cannot catch them (Orpheus and
-# OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries
-# no tokenizer_config for the codec probe, so the ids answer for those.
+# Curated Audio-page TTS checkpoints, which stay VISIBLE but must not be chat-loadable: a chat
+# turn on one comes back as synthesized speech. Listed by id because config sniffing cannot catch
+# them (Orpheus/OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion
+# carries no tokenizer_config for the codec probe.
 _CURATED_TTS_REPO_IDS = frozenset(
     {
         "unsloth/orpheus-3b-0.1-ft",
@@ -215,16 +209,13 @@ def is_hidden_model(*values: str | None) -> bool:
             continue
         low = v.lower()
         if _HF_REPO_ID_RE.match(v):
-            # A repo id ("owner/name"): match the hidden set exactly. It is
-            # never a filesystem path, so skip the path/filename checks.
+            # A repo id ("owner/name"): match the hidden set exactly.
             if low in hidden_repo_ids:
                 return True
             continue
-        # Anything else is treated as a filesystem path (the cached snapshot
-        # path, or a local model id). Match the probe by its exact filename and
-        # any configured local-path embedder by exact resolved path. Split on
-        # both separators so a Windows-style path ("...\\stories260K.gguf") is
-        # matched even when this runs on a POSIX interpreter (and vice versa).
+        # Split on both separators so a Windows-style path is matched on a POSIX interpreter and vice versa.
+        # Anything else is a filesystem path: the probe is matched by its exact filename (stories260K.gguf) and a
+        # configured local-path embedder by exact resolved path.
         if low.replace("\\", "/").rsplit("/", 1)[-1] == _PROBE_FILENAME:
             return True
         if _path_basename_is_default_embedder(v):

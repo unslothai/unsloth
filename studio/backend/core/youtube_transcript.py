@@ -41,8 +41,7 @@ _TIMEOUT = httpx.Timeout(20.0)
 # Captions are text; a 4 MB track is already an outlier for a very long video.
 _MAX_CAPTION_BYTES = 4 * 1024 * 1024
 _MAX_PLAYER_BYTES = 4 * 1024 * 1024
-# Roughly 25k tokens. A three hour video's captions run past 200k characters, which
-# would swallow the model's context window on its own.
+# Roughly 25k tokens: a three hour video's captions would swallow the model's context window on their own.
 _MAX_TRANSCRIPT_CHARS = 100_000
 # Timedtext normally answers 200, but a hop is re-validated rather than refused.
 _MAX_CAPTION_REDIRECTS = 3
@@ -201,8 +200,8 @@ def _select_track(
         base = wanted.split("-")[0]
         for want_generated in (False, True):
             candidates = [t for t in tracks if (t.get("kind") == "asr") is want_generated]
-            # exact locale before the base-language fallback: a pt-BR request must not
-            # take a pt-PT track just because it is listed first
+            # exact locale before the base-language fallback: a pt-BR request must not take a pt-PT track just
+            # because it is listed first
             for matches_wanted in (
                 lambda code: code == wanted,
                 lambda code: code.split("-")[0] == base,
@@ -257,8 +256,8 @@ async def _fetch_track_text(client: httpx.AsyncClient, base_url: str) -> str:
 
     body = b""
     for _ in range(_MAX_CAPTION_REDIRECTS + 1):
-        # Redirects are followed by hand so the host allowlist covers every hop, not
-        # just the URL the player response handed us.
+        # Redirects are followed by hand so the host allowlist covers every hop, not just the URL the player
+        # response handed us.
         async with client.stream(
             "GET", url, headers = {"User-Agent": _USER_AGENT}, follow_redirects = False
         ) as response:

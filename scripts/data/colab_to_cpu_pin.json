@@ -1,5 +1,7 @@
 {
   "_comment": "Maps Colab GPU runtime pinned wheels to CPU equivalents for ubuntu-latest CI smoke jobs. The Colab GPU image ships +cu128 builds that won't install on a CPU-only runner; this map either rewrites the spec to a CPU wheel from https://download.pytorch.org/whl/cpu or falls back to module-spoof for packages with no CPU build.",
+  "python_version": "3.13",
+  "_python_version_comment": "The interpreter the freeze beside this file was captured on. Colab rotated 3.12 to 3.13 and the freeze was refreshed, but notebooks-ci.yml stayed pinned to 3.12, so the seed install was resolving a 3.13 environment against a 3.12 runner and audioop-lts (a backport of the stdlib module 3.13 removed, hence Requires-Python >=3.13) could never resolve. That failed the bulk install on every single run and dropped the job into a 682-pin one-at-a-time fallback that spent the whole 25 minute cap. Recorded here so the workflow can assert on it instead of drifting again the next time Colab rotates.",
   "rewrite": {
     "torch": {
       "from_local_version": "+cu128",
@@ -17,7 +19,14 @@
   "module_spoof": {
     "torchcodec": "no CPU wheel published; smoke job sys.modules-stubs torchcodec before importing unsloth"
   },
+  "_skip_comment": "Two kinds. The nvidia-*/triton entries are CUDA runtime wheels a CPU runner cannot use. The rest are sdist-only packages whose builds need system libraries the hosted image does not carry (ipopt, dbus-1, cmake, gdal-config, cairo, R), so they cannot install on any interpreter and only ever cost build time. Observed failing in the 2026-08-31 scheduled run.",
   "skip": [
+    "cyipopt",
+    "dbus-python",
+    "dlib",
+    "gdal",
+    "libcugraph-cu12",
+    "libcuvs-cu12",
     "nvidia-cublas-cu12",
     "nvidia-cuda-cupti-cu12",
     "nvidia-cuda-nvrtc-cu12",
@@ -31,6 +40,32 @@
     "nvidia-nccl-cu12",
     "nvidia-nvjitlink-cu12",
     "nvidia-nvtx-cu12",
+    "psycopg2",
+    "pycairo",
+    "pygobject",
+    "pylibcugraph-cu12",
+    "python-apt",
+    "rpy2",
     "triton"
-  ]
+  ],
+  "no_binary": [
+    "antlr4-python3-runtime",
+    "community",
+    "cufflinks",
+    "editdistance",
+    "glob2",
+    "gym",
+    "imutils",
+    "jieba",
+    "lazr.restfulclient",
+    "lazr.uri",
+    "matplotlib-venn",
+    "moviepy",
+    "promise",
+    "pydotplus",
+    "pyspark",
+    "python-louvain",
+    "wadllib"
+  ],
+  "_no_binary_comment": "Passed to pip as --no-binary, which overrides --only-binary=:all: per package. Without it the bulk resolve fails on the first of these and every run falls into the per-pin path, which is the failure this whole job kept hitting. Derived by asking PyPI, for every pin in the freeze, whether it publishes a wheel COMPATIBLE with the pinned interpreter and manylinux x86_64, not merely whether a wheel exists: editdistance ships wheels but none for cp313, and checking only for existence missed it. 18 pins have no usable wheel; psycopg2 is in skip because it needs pg_config and cannot build here, the other 17 are pure Python or build in seconds. Re-derive after any Colab rotation."
 }

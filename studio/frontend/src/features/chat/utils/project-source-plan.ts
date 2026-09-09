@@ -20,13 +20,10 @@ function modelLabel(thread: ProjectSourceThread): string | undefined {
   return label || undefined;
 }
 
-/**
- * Which half of a compare this is. listStoredChatThreads sorts by updatedAt, so
- * arrival order is whichever half answered last: naming by index alone would
- * swap the two names between saves of one pair. modelType carries the pane, so
- * only a thread missing it falls back to position. The LoRA compare gets the
- * words the compare header uses, since "base" beats "1" in a filename.
- */
+/** Which half of a compare this is. listStoredChatThreads sorts by updatedAt, so arrival order is
+ *  whichever half answered last: naming by index alone would swap the two names between saves.
+ *  modelType carries the pane, so only a thread missing it falls back to position. The LoRA
+ *  compare gets the compare header's words, since "base" beats "1" in a filename. */
 function paneLabel(thread: ProjectSourceThread, index: number): string {
   if (thread.modelType === "base") return "base";
   if (thread.modelType === "lora") return "fine-tuned";
@@ -35,12 +32,9 @@ function paneLabel(thread: ProjectSourceThread, index: number): string {
   return String(index + 1);
 }
 
-/**
- * What a "Save to project sources" click uploads. A compare pair is two models
- * answering the same prompt and both halves carry the row's single title, so
- * name each after its model: the sources panel lists a document by filename and
- * nothing else would tell the two apart.
- */
+/** What a "Save to project sources" click uploads. A compare pair is two models answering the same
+ *  prompt and both halves carry the row's single title, so name each after its model: the sources
+ *  panel lists a document by filename and nothing else would tell the two apart. */
 export function planChatItemSources(
   item: { id: string; title: string; type: string },
   threads: readonly ProjectSourceThread[],
@@ -57,8 +51,7 @@ export function planChatItemSources(
   const uses = new Map<string, number>();
   for (const { label } of named) uses.set(label, (uses.get(label) ?? 0) + 1);
   return named.map(({ thread, label, side }) => {
-    // Only a colliding half carries a side, so two different models keep the
-    // plain "<title> - <model>" name.
+    // Only a colliding half carries a side, so two different models keep the plain "<title> - <model>" name.
     const suffix = (uses.get(label) ?? 0) > 1 ? ` - ${side}` : "";
     return { id: thread.id, title: `${item.title} - ${label}${suffix}` };
   });

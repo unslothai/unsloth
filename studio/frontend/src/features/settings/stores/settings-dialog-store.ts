@@ -32,7 +32,7 @@ export type SettingsScrollTarget =
   | "chat-canvas-network";
 
 /** Which archive the Data tab should open straight into. */
-export type ArchivedShelf = "chats" | "images" | "videos";
+export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
@@ -55,7 +55,7 @@ interface SettingsDialogState {
   archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
-  openArchivedMedia: (shelf: "images" | "videos") => void;
+  openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
   consumeArchivedChatsRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;

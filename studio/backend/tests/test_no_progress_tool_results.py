@@ -32,6 +32,7 @@ if _BACKEND_DIR not in sys.path:
 
 import core.inference.llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import _MAX_IDENTICAL_TOOL_RESULTS, LlamaCppBackend
+import core.inference.llama_cpp as _lc
 
 _TRUNCATION_NOTICE = "(truncated to 0 chars for the model; showing lines 1-11 of 63.)"
 
@@ -315,7 +316,6 @@ def test_distinct_calls_answered_with_the_same_acknowledgement_are_left_alone(mo
 
 def _starve_the_budget(monkeypatch):
     """Force every result budget under _MIN_USEFUL_RESULT_TOKENS, as a tight window does."""
-    import core.inference.llama_cpp as _lc  # noqa: PLC0415
     monkeypatch.setattr(_lc, "tool_result_budget", lambda *_a, **_k: 0)
 
 
@@ -451,7 +451,6 @@ def test_a_resumed_turn_prices_its_tool_result_by_what_is_left(monkeypatch):
     """
 
     caps: list[object] = []
-    import core.inference.llama_cpp as _lc  # noqa: PLC0415
 
     real_budget = _lc.tool_result_budget
 
@@ -495,7 +494,6 @@ def test_a_resumed_turn_sizes_its_recall_by_what_is_left(monkeypatch):
     """
 
     caps: list[object] = []
-    import core.inference.llama_cpp as _lc  # noqa: PLC0415
 
     real_budget = _lc._retrieval_budget
 

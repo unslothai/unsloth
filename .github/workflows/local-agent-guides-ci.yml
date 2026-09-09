@@ -150,7 +150,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
         opencode_channel: [stable]
         include:
           # OpenClaw needs Node 24; everything else is happy on 22.
@@ -392,12 +392,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
         include:
           - agent: openclaw
             node: '24'
             best_effort: true
           - agent: hermes
+            best_effort: true
+          # dsh has no resume: turn 2 is a fresh session that re-reads hello.py.
+          - agent: dsh
             best_effort: true
     env:
       # gemma-4-E4B served as a flat GGUF file (cache size tracks the .gguf 1:1,

@@ -28,9 +28,7 @@ from typing import Optional
 _STUB_SENTINEL = object()
 
 
-# Metaclass for stub types so isinstance(x, StubClass) returns False instead of
-# raising TypeError -- peft's lora/torchao.py does isinstance() against torchao
-# types, which fails if those names resolve to stub modules rather than types.
+# isinstance() against a stub module raises TypeError; peft's lora/torchao.py needs it to return False.
 class _StubTypeMeta(type):
     def __instancecheck__(cls, instance):
         return False
@@ -122,6 +120,7 @@ _HIP_LINE_RE = re.compile(r"^hip\s*(?::[^=]*)?=\s*(.+?)\s*$", re.MULTILINE)
 
 def _version_is_rocm_tagged() -> Optional[bool]:
     """Whether the installed wheel's version carries a rocm tag. None if unreadable."""
+    # Neither on-disk signal was readable, so importing is the only way left.
     try:
         from importlib.metadata import version
         return "rocm" in version("torch").lower()
@@ -177,7 +176,6 @@ def torch_is_rocm() -> bool:
     verdict = _installed_torch_is_rocm()
     if verdict is not None:
         return verdict
-    # Neither on-disk signal was readable, so importing is the only way left.
     try:
         import torch
     except Exception:

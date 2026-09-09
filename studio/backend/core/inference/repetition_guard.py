@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import math
 
-# Below this, a fragment is too short to judge. A sentence cut mid-word can trivially
-# repeat a few tokens and is legitimately continued.
+# Below this, a fragment is too short to judge. A sentence cut mid-word can trivially repeat a few tokens and is
+# legitimately continued.
 MIN_FRAGMENT_LENGTH = 400
 
-# Length of the exact-repeat window. A verbatim repeat this long is well beyond ordinary
-# reuse of phrasing, citations, headings or boilerplate.
+# Length of the exact-repeat window. A verbatim repeat this long is well beyond ordinary reuse of phrasing, citations,
+# headings or boilerplate.
 _REPEAT_WINDOW = 60
 
 # A window repeating at least this many times is a signal even in a short fragment.
@@ -34,9 +34,9 @@ _MIN_REPEAT_COUNT = 5
 # The share of the fragment repeated windows must cover before it counts as dominated.
 _DOMINANCE_RATIO = 0.5
 
-# Ceiling on distinct windows held while scanning. Every fragment a context window can
-# actually produce stays well under this, so the judgement is unchanged in practice; it
-# exists so the scan cannot grow with an arbitrarily long input.
+# ceiling so the scan cannot grow with an arbitrarily long input
+# Ceiling on distinct windows held while scanning. Every fragment a context window can actually produce stays well under
+# this, so the judgement is unchanged in practice; it exists so the scan cannot grow with an arbitrarily long input.
 _MAX_TRACKED_WINDOWS = 100_000
 
 
@@ -56,13 +56,16 @@ def is_repetition_dominated(text: str) -> bool:
         return True
     # Sliding exact-repeat windows, for echoes that do not align to line boundaries.
     needed = max(_MIN_REPEAT_COUNT, math.ceil(length * _DOMINANCE_RATIO / _REPEAT_WINDOW))
-    # Keyed by HASH, not by the window itself. Retaining the 60-character slices meant one
-    # entry per starting offset, so an 800,000-character fragment held roughly 180 MB of
-    # substrings alive purely to decide whether to send one more continuation.
+    # keyed by HASH: retaining the 60-char slices held ~180 MB for an 800,000-character fragment
+    # Keyed by HASH, not by the window itself. Retaining the 60-character slices meant one entry per starting offset, so
+    # an 800,000-character fragment held roughly 180 MB of substrings alive purely to decide whether to send one more
+    # continuation.
     counts: dict[int, int] = {}
-    # Occurrences must not overlap, or a single run of one character counts as many. A
-    # 64-character rule inside a 400-character answer yields five overlapping 60-character
-    # windows and tripped the threshold at 16 percent coverage, abandoning a valid answer.
+    # occurrences must not overlap, else one repeated character counts as many (a 64-char rule tripped the threshold at
+    # 16% coverage)
+    # Occurrences must not overlap, or a single run of one character counts as many. A 64-character rule inside a
+    # 400-character answer yields five overlapping 60-character windows and tripped the threshold at 16 percent
+    # coverage, abandoning a valid answer.
     covered_to: dict[int, int] = {}
     # Where each hash was first seen, so a hash collision cannot be counted as a repeat.
     first_at: dict[int, int] = {}
@@ -72,14 +75,12 @@ def is_repetition_dominated(text: str) -> bool:
             continue
         first = first_at.get(key)
         if first is None:
-            # Bounded even for a fragment far larger than any window can hold. Past the
-            # cap, known windows keep counting and new ones are ignored, which can only
-            # fail open -- the direction this guard already errs in.
+            # Bounded even for a fragment far larger than any window can hold. Past the cap, known windows keep counting
+            # and new ones are ignored, which can only fail open -- the direction this guard already errs in.
             if len(first_at) >= _MAX_TRACKED_WINDOWS:
                 continue
             first_at[key] = index
         elif text[first : first + _REPEAT_WINDOW] != text[index : index + _REPEAT_WINDOW]:
-            # Two different windows, one hash. Not a repeat.
             continue
         seen = counts.get(key, 0) + 1
         if seen >= needed:

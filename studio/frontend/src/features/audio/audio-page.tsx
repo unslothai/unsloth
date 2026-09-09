@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Audio page: Generate (TTS via the main inference slot) and Transcribe (STT
-// via the dictation sidecar). Training lives on the Train page. The page stays
-// mounted across tab switches (see __root.tsx), so `active` gates polling,
-// popovers and the recorder rather than lifecycle.
+// The Audio page: Generate (TTS via the main inference slot) and Transcribe (STT via the
+// dictation sidecar). The page stays mounted across tab switches (see __root.tsx), so `active`
+// gates polling, popovers and the recorder rather than lifecycle.
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
+  Archive02Icon,
   AudioWave01Icon,
   Copy01Icon,
   Delete02Icon,
@@ -29,7 +29,6 @@ import {
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,6 +36,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { usePlatformStore } from "@/config/env";
@@ -78,15 +79,18 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { useSettingsDialogStore } from "@/features/settings";
 import {
   isTrackingSttDownload,
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -97,29 +101,33 @@ import {
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
-  getAudioDownloadPlan,
   generateAudio,
+  getAudioDownloadPlan,
   listAudioGallery,
+  setAudioClipFlags,
 } from "./api";
 import {
   type AudioBusy,
+  type AudioGenerationPhase,
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_SECONDS,
+  MOSS_TTS_DEFAULT_SECONDS,
+  MOSS_TTS_FRAMES_PER_SECOND,
+  MOSS_TTS_MAX_FRAMES,
   type SttDownloadedArtifact,
+  audioGenerationPresentation,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  isGgufTtsTarget,
   isTtsAudioType,
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
-  MOSS_TTS_DEFAULT_SECONDS,
-  MOSS_TTS_FRAMES_PER_SECOND,
-  MOSS_TTS_MAX_FRAMES,
-  MINIMAX_MUSIC_DEFAULT_SECONDS,
-  MINIMAX_MUSIC_FRAMES_PER_SECOND,
-  MINIMAX_MUSIC_MAX_SECONDS,
   minimaxMusicFramesForSeconds,
-  mossTtsMaxFrames,
   mossTtsFramesForSeconds,
+  mossTtsMaxFrames,
   nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
@@ -127,10 +135,10 @@ import {
   resolveSttResidency,
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
-  trainedTtsCheckpointIsLoadable,
-  trainedTtsCheckpointIsRunnableOnMac,
   sttDownloadedArtifacts,
   sttSelectionReady,
+  trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
 } from "./audio-page-policy";
 import {
   audioCapabilityLine,
@@ -151,8 +159,8 @@ const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
   transcribe: audioModelsForTask("stt"),
 };
 
-/** What to call a model on screen. A Hub repo is its id; a checkpoint trained here
- *  is an output directory, and the full path in a toast reads as a bug. */
+/** What to call a model on screen. A Hub repo is its id; a checkpoint trained here is an output
+ *  directory, and the full path in a toast reads as a bug. */
 function audioModelLabel(id: string): string {
   if (!/^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(id)) return id;
   const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
@@ -172,23 +180,23 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 const PAGE_SIZE = 50;
-// Mirrors the STT sidecar's own limits (_MAX_AUDIO_SECONDS, STT_AUDIO_B64_MAX_CHARS), so a
-// recording is stopped at the boundary rather than uploaded and refused.
+// The list route clamps a page to 200, so asking for more silently gets 200 back.
+const MAX_PAGE_SIZE = 200;
+// Mirrors the STT sidecar's own limits, so a recording is stopped at the boundary rather than uploaded and refused.
+// The two it mirrors are _MAX_AUDIO_SECONDS and STT_AUDIO_B64_MAX_CHARS.
 const RECORDING_MAX_SECONDS = 30 * 60;
-// STT_AUDIO_RAW_MAX_BYTES in utils/upload_limits.py. A larger client cap let a dense codec
-// build a recording the raw route then refused with 413.
+// STT_AUDIO_RAW_MAX_BYTES in utils/upload_limits.py. A larger client cap let a dense codec build
+// a recording the raw route then refused with 413.
 const RECORDING_MAX_BYTES = 25 * 1024 * 1024;
 const RECORDING_CHUNK_MS = 1000;
 const TTS_MAX_TOKENS = 8192;
-// Max tokens caps the OUTPUT, and the prompt's own tokens sit in the same context window, so
-// loading at exactly TTS_MAX_TOKENS made the advertised maximum unreachable for any nonempty
-// prompt. Load with room for both.
+// Max tokens caps the OUTPUT and the prompt's own tokens sit in the same context window, so
+// loading at exactly TTS_MAX_TOKENS made the advertised maximum unreachable.
 const TTS_PROMPT_CONTEXT_RESERVE = 2048;
 // WAV clips run a few MB a minute; 64 MB keeps a healthy scrollback resident.
 const CLIP_BLOB_BUDGET_BYTES = 64 * 1024 * 1024;
 
-// Module scope so a tab switch re-renders the gallery instantly (the page stays mounted, but a
-// remount after an unlikely unmount still reuses fetched clips).
+// Module scope so a tab switch re-renders the gallery instantly.
 const galleryCache: {
   clips: AudioGalleryClip[];
   hasMore: boolean;
@@ -238,19 +246,21 @@ function Field({
   );
 }
 
-/** Per-row actions for a history clip, in a dots menu so rows keep one line.
- *  Mirrors the model rows' MoreVertical pattern. */
+/** Per-row actions for a history clip, in a dots menu so rows keep one line. Mirrors the model
+ *  rows' MoreVertical pattern. */
 function ClipRowMenu({
   clip,
   onDownload,
   onCopyPrompt,
   onUseAsText,
+  onArchive,
   onDelete,
 }: {
   clip: AudioGalleryClip;
   onDownload: () => void;
   onCopyPrompt: () => void;
   onUseAsText: () => void;
+  onArchive: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -260,8 +270,8 @@ function ClipRowMenu({
           type="button"
           onClick={(event) => event.stopPropagation()}
           aria-label={`Actions for ${clip.prompt || "clip"}`}
-          // Hidden until the row is hovered or the menu is open, so a long list
-          // stays quiet; keyboard focus reveals it too.
+          // Hidden until the row is hovered or the menu is open, so a long list stays quiet; keyboard
+          // focus reveals it too.
           className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 transition-colors hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 dark:hover:bg-white/10"
         >
           <HugeiconsIcon
@@ -283,6 +293,10 @@ function ClipRowMenu({
         <DropdownMenuItem onSelect={onDownload}>
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
           Download WAV
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onArchive}>
+          <HugeiconsIcon icon={Archive02Icon} className="size-4" />
+          Archive
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={onDelete}>
@@ -315,17 +329,27 @@ export function AudioPage({
   const [busy, setBusy] = useState<AudioBusy>(null);
   const busyRef = useRef<AudioBusy>(busy);
   busyRef.current = busy;
+  const [generationPhase, setGenerationPhase] =
+    useState<AudioGenerationPhase>(null);
+  const generationPhaseRef = useRef<AudioGenerationPhase>(generationPhase);
+  const updateGenerationPhase = useCallback(
+    (nextPhase: AudioGenerationPhase) => {
+      generationPhaseRef.current = nextPhase;
+      setGenerationPhase(nextPhase);
+    },
+    [],
+  );
+  const generationPresentation = audioGenerationPresentation(generationPhase);
 
-  // --- TTS (main inference slot) -----------------------------------------
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
   const [prompt, setPrompt] = useState("");
   const [audioInstructions, setAudioInstructions] = useState("");
   const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);
   // Sending temperature unconditionally puts it in the request's model_fields_set, which the
-  // backend reads as an explicit client override and which then beats the per-model
-  // recommendation (Spark-TTS wants 0.8, OuteTTS 0.4). Only send it once the user has moved
-  // the slider, so an untouched page gets the model's own sampling.
+  // backend reads as an explicit client override that beats the per-model recommendation, so
+  // only send it once the user has moved the slider.
+  // Spark-TTS wants 0.8, OuteTTS 0.4, so only send it once the user has moved the slider.
   const [temperatureEdited, setTemperatureEdited] = useState(false);
   const handleTemperatureChange = useCallback((value: number) => {
     setTemperatureEdited(true);
@@ -339,6 +363,12 @@ export function AudioPage({
     MINIMAX_MUSIC_DEFAULT_SECONDS,
   );
   const generateAbort = useRef<AbortController | null>(null);
+  const handleStopGeneration = useCallback(() => {
+    const controller = generateAbort.current;
+    if (!controller || controller.signal.aborted) return;
+    updateGenerationPhase("stopping");
+    controller.abort();
+  }, [updateGenerationPhase]);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
   const pendingRoutedTtsPick = useRef<{
@@ -347,6 +377,7 @@ export function AudioPage({
     loadId?: string | null;
     audioType?: string | null;
     remoteCodeApproval?: RemoteCodeApproval;
+    isGguf?: boolean | null;
   } | null>(null);
   const ttsStatusRefreshGeneration = useRef(0);
   const ttsLoadGeneration = useRef(0);
@@ -360,7 +391,6 @@ export function AudioPage({
     requestStarted: boolean;
   } | null>(null);
 
-  // --- STT (dictation sidecar) -------------------------------------------
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
   const [sttLoadedEngine, setSttLoadedEngine] = useState<
@@ -374,16 +404,14 @@ export function AudioPage({
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
-  /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN origin
-   *  (`-H 0.0.0.0`) is not a secure context, so navigator.mediaDevices is undefined.
-   *  Same check the chat composer gates its microphone on. */
+  /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN origin is not a secure
+   *  context, so navigator.mediaDevices is undefined. Same check the chat composer uses. */
   const recordingSupported = useMemo(
     () => StudioModelDictationAdapter.isSupported(),
     [],
   );
-  /** Audio the server produced that the gallery is not showing yet: either it could not
-   *  be persisted at all, or it was persisted and this refresh missed it. Kept so the
-   *  generation is playable either way. Cleared once its real clip lands. */
+  /** Audio the server produced that the gallery is not showing yet: either it could not be
+   *  persisted, or this refresh missed it. Kept so the generation is playable either way. */
   const [fallbackClip, setFallbackClip] = useState<{
     url: string;
     prompt: string;
@@ -406,15 +434,11 @@ export function AudioPage({
   const sttStatusRefreshGeneration = useRef(0);
   const sttLoadGeneration = useRef(0);
   const sttLoadingGeneration = useRef<number | null>(null);
-  // Residency is not ownership: the activation resync adopts whatever a sidecar already
-  // holds, including a model chat dictation loaded, and that must survive a mode switch.
-  // The identity, not a boolean: another surface can replace the sidecar's model while
-  // Audio is inactive, and a bare flag then claimed that replacement too, so Eject
-  // unloaded a model this page never loaded. Keyed on the model alone, deliberately: a
-  // "gguf" pick on a host without whisper-server is served by the Transformers fallback
-  // and comes back resident under that engine, so comparing the REQUESTED engine never
-  // matched and leaked the sidecar instead. The registry keeps one model resident, so the
-  // model id identifies it; the unload call resolves the serving engine server-side.
+  // Residency is not ownership: the activation resync adopts whatever a sidecar already holds,
+  // including a model chat dictation loaded. The identity, not a boolean, since another
+  // surface can replace the sidecar's model while Audio is inactive and a bare flag would claim
+  // that too. Keyed on the model alone, since a "gguf" pick without whisper-server comes back
+  // resident under the Transformers fallback.
   const sttLoadedByThisPage = useRef<string | null>(null);
   const sttLoadAbort = useRef<AbortController | null>(null);
   const deferredSttLoad = useRef<{
@@ -431,6 +455,7 @@ export function AudioPage({
     loadId?: string | null;
     audioType?: string | null;
     remoteCodeApproval?: RemoteCodeApproval;
+    isGguf?: boolean | null;
     generation: number;
   } | null>(null);
   const stagedTtsLoadDeferred = useRef(false);
@@ -444,8 +469,8 @@ export function AudioPage({
     recordStreamRef.current = null;
   }, []);
   const stopAndDiscardRecording = useCallback(() => {
-    // Also invalidates a getUserMedia request that has not resolved yet. Its
-    // eventual stream is stopped before a MediaRecorder can be created.
+    // Also invalidates a getUserMedia request that has not resolved yet; its eventual stream is
+    // stopped before a MediaRecorder can be created.
     micRequestGeneration.current += 1;
     micPendingGeneration.current = null;
     setMicRequestPending(false);
@@ -459,7 +484,6 @@ export function AudioPage({
     stopRecordStream();
   }, [stopRecordStream]);
 
-  // --- Gallery ------------------------------------------------------------
   const [clips, setClips] = useState<AudioGalleryClip[]>(galleryCache.clips);
   const [hasMore, setHasMore] = useState(galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -494,6 +518,11 @@ export function AudioPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_audio_advanced_open",
   );
+  // Read at load time; the handler below ejects so a change takes effect.
+  const [audioDevice, setAudioDeviceState] = usePersistedChoice(
+    "unsloth_audio_device",
+    "auto",
+  );
 
   const refreshStatus = useCallback(async () => {
     const generation = ++ttsStatusRefreshGeneration.current;
@@ -503,8 +532,8 @@ export function AudioPage({
       setStatus(next);
     } catch {
       if (generation !== ttsStatusRefreshGeneration.current) return;
-      // Do not leave Generate enabled against residency the backend can no
-      // longer confirm. A later refresh adopts the recovered runtime.
+      // Do not leave Generate enabled against residency the backend can no longer confirm. A later
+      // refresh adopts the recovered runtime.
       setStatus(null);
     }
   }, []);
@@ -571,8 +600,8 @@ export function AudioPage({
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
         engineForRepo: sttEngineForRepoId,
       });
-      // Shared sidecar: an adopted model strands the previous pick's transcript
-      // under it. null is the 5-minute idle unload, which must not delete it.
+      // Shared sidecar: an adopted model strands the previous pick's transcript under it. null is the
+      // 5-minute idle unload, which must not delete it.
       if (reconciled !== null && reconciled !== selectedSttRepoRef.current)
         clearTranscript();
       selectedSttRepoRef.current = reconciled;
@@ -614,11 +643,9 @@ export function AudioPage({
       forget();
       return;
     }
-    // Forget only once the sidecar is actually released: clearing first left a failed
-    // unload with the model in VRAM, no selection, and no Eject to retry with.
-    // Scoped to the model this page claimed: `owned` was decided here, and another
-    // surface can switch the same engine before the request lands, so an unscoped
-    // unload would tear down a model this page never owned.
+    // Forget only once the sidecar is actually released: clearing first left a failed unload with the
+    // model in VRAM and no Eject to retry with. Scoped to the model this page claimed, since
+    // another surface can switch the same engine before the request lands.
     await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
@@ -635,8 +662,8 @@ export function AudioPage({
     const load = (async () => {
       try {
         const fetched = await fetchClipObjectUrl(clip.url);
-        // A delete can finish while protected bytes are in flight. Do not revive its
-        // cache entry after the row is already gone.
+        // A delete can finish while protected bytes are in flight. Do not revive its cache entry after
+        // the row is already gone.
         if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) {
           URL.revokeObjectURL(fetched.url);
           return;
@@ -662,18 +689,28 @@ export function AudioPage({
   }, []);
 
   const refreshGallery = useCallback(
-    async (removedId?: string): Promise<AudioGalleryClip[]> => {
+    async (
+      removedId?: string,
+      windowSize = PAGE_SIZE,
+    ): Promise<AudioGalleryClip[]> => {
       const generation = ++galleryRefreshGeneration.current;
+      const wanted = Math.max(PAGE_SIZE, windowSize);
+      const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
-        const page = await listAudioGallery(0, PAGE_SIZE);
+        const page = await listAudioGallery(0, asked);
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
-        const { clips: merged, stitched } = mergeGalleryPage(
-          page.audio,
-          galleryCache.clips,
-          removedId,
-          page.has_more,
-        );
+        // A window past the route's cap cannot be covered in one page, and stitching the old scrollback
+        // back on keeps a cursor that starts BELOW it, stranding whatever was restored.
+        const { clips: merged, stitched } =
+          wanted > asked
+            ? { clips: [...page.audio], stitched: false }
+            : mergeGalleryPage(
+                page.audio,
+                galleryCache.clips,
+                removedId,
+                page.has_more,
+              );
         galleryCache.clips = merged;
         // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
         if (!stitched) {
@@ -685,9 +722,8 @@ export function AudioPage({
         }
         setClips(merged);
         setHasMore(galleryCache.hasMore);
-        // The response audio was kept only until its record showed up. Left mounted, deleting
-        // the now-visible clip made the "saved, waiting for the gallery" copy reappear from a
-        // stale data URL as though the delete had not happened.
+        // The response audio was kept only until its record showed up: left mounted, deleting the
+        // now-visible clip made the "saved, waiting for the gallery" copy reappear.
         if (
           fallbackClipRef.current &&
           galleryCache.selectedId &&
@@ -724,18 +760,19 @@ export function AudioPage({
   );
 
   const loadMore = useCallback(async () => {
-    // Repeated scroll events near the bottom would otherwise each fire with the
-    // same offset and append the same page, duplicating clips and React keys.
+    // Repeated scroll events near the bottom would otherwise each fire with the same offset and
+    // append the same page, duplicating clips and React keys.
     if (loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     const refreshGeneration = galleryRefreshGeneration.current;
+    const cursor = galleryCache.nextCursor;
     try {
-      const page = await listAudioGallery(
-        0,
-        PAGE_SIZE,
-        galleryCache.nextCursor,
-      );
-      if (refreshGeneration !== galleryRefreshGeneration.current) return;
+      const page = await listAudioGallery(0, PAGE_SIZE, cursor);
+      if (
+        refreshGeneration !== galleryRefreshGeneration.current ||
+        cursor !== galleryCache.nextCursor
+      )
+        return;
       galleryCache.nextCursor =
         page.next_before_mtime !== null && page.next_before_id !== null
           ? { mtime: page.next_before_mtime, id: page.next_before_id }
@@ -761,7 +798,7 @@ export function AudioPage({
     if (initialReadySent.current) {
       void refreshStatus();
       void refreshSttStatus();
-      void refreshGallery();
+      void refreshGallery(undefined, galleryCache.clips.length);
       return;
     }
     let cancelled = false;
@@ -791,9 +828,8 @@ export function AudioPage({
     refreshSttStatus,
   ]);
 
-  // Activation alone is not enough: the loaded-models indicator can eject the TTS model
-  // out from under a page that stays active, leaving Generate enabled against an empty
-  // slot. Same reason Images and Video listen here.
+  // Activation alone is not enough: the loaded-models indicator can eject the TTS model out from
+  // under a page that stays active, leaving Generate enabled against an empty slot.
   useEffect(() => {
     if (!active) return;
     return subscribeModelLifecycle(({ runtime, loading }) => {
@@ -803,15 +839,29 @@ export function AudioPage({
     });
   }, [active, refreshStatus, refreshSttStatus]);
 
+  useEffect(() => {
+    if (!active) return;
+    const refreshWhenVisible = () => {
+      if (document.hidden) return;
+      void refreshGallery(undefined, galleryCache.clips.length);
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [active, refreshGallery]);
+
   // The selected clip needs its bytes before the player can play it.
   useEffect(() => {
     const clip = clips.find((c) => c.id === selectedId);
     if (clip) void ensureClipSrc(clip);
   }, [clips, selectedId, ensureClipSrc]);
 
-  /** `keepFallback` is for the one case where the id is not in `clips` yet: the server
-   *  persisted the clip but this refresh missed it, so the response audio has to stay
-   *  mounted or the player falls through to the empty state. */
+  /** `keepFallback` is for the one case where the id is not in `clips` yet: the server persisted the
+   *  clip but this refresh missed it, so the response audio has to stay mounted or the player
+   *  falls through to the empty state. */
   const selectClip = useCallback(
     (id: string, keepFallback = false) => {
       galleryCache.selectedId = id;
@@ -823,23 +873,23 @@ export function AudioPage({
     [ensureClipSrc],
   );
 
-  // --- Model selection ----------------------------------------------------
 
   const loadTtsModel = useCallback(
     async (
       repoId: string,
       ggufFilename?: string | null,
-      // Where the weights actually are. A row cached in a NON-ACTIVE HF cache is loadable
-      // only by its snapshot path, which the picker supplies as meta.loadId; sending the
-      // display repo id instead failed offline, or re-downloaded into the active cache.
-      // Chat threads the same field (chat-page.tsx).
+      // Where the weights actually are: a row cached in a NON-ACTIVE HF cache is loadable only by its
+      // snapshot path, which the picker supplies as meta.loadId, and sending the display repo id
+      // instead failed offline or re-downloaded into the active cache. Chat threads the same field
+      // (chat-page.tsx).
       loadId?: string | null,
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,
+      // The catalog's answer: the ids alone miss a GGUF repo that does not spell it.
+      isGguf?: boolean | null,
     ) => {
-      // A routed pick that arrives while a previous load is still tearing down would
-      // otherwise be dropped here, and the route effect has already cleared ?model=, so
-      // nothing retries it. Remembered and replayed from the finally below instead.
+      // A routed pick arriving while a previous load is still tearing down would otherwise be dropped,
+      // and the route effect has already cleared ?model=, so replay it from the finally below.
       if (ttsLoadInFlight.current || busyRef.current === "generating") {
         pendingRoutedTtsPick.current = {
           repoId,
@@ -847,16 +897,16 @@ export function AudioPage({
           loadId,
           audioType,
           remoteCodeApproval,
+          isGguf,
         };
         return;
       }
-      // A load stops every chat on the shared llama-server, so ask the way Chat does
-      // instead of dead-ending on the backend's 409. Claimed before the await: a routed
-      // pick arriving while the dialog is open must queue, not start a second load.
+      // A load stops every chat on the shared llama-server, so ask the way Chat does instead of
+      // dead-ending on the backend's 409. Claimed before the await: a routed pick arriving while
+      // the dialog is open must queue.
       ttsLoadInFlight.current = true;
-      // Chat's gate, held across the question and the load. Without it a queue can
-      // materialize while the dialog is open, outside the snapshot the answer was given
-      // for, and a generation started in that window brings the 409 back.
+      // Chat's gate, held across the question and the load. Without it a queue can materialize while
+      // the dialog is open, outside the snapshot the answer was given for.
       const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
       if (lifecycleLease === null) {
         ttsLoadInFlight.current = false;
@@ -874,9 +924,8 @@ export function AudioPage({
         pendingRoutedTtsPick.current = null;
         return;
       }
-      // The page can go away while the dialog is open. pendingTtsLoad is still null then,
-      // so the deactivation effect has nothing to abort and a hidden load would replace
-      // the model the now-visible page is using. Queue it for the activation replay.
+      // The page can go away while the dialog is open, and pendingTtsLoad is still null then, so the
+      // deactivation effect has nothing to abort. Queue it for the activation replay.
       if (!activeRef.current) {
         releaseLifecycle();
         ttsLoadInFlight.current = false;
@@ -886,6 +935,7 @@ export function AudioPage({
           loadId,
           audioType,
           remoteCodeApproval,
+          isGguf,
         };
         return;
       }
@@ -895,10 +945,9 @@ export function AudioPage({
       const pending = {
         generation,
         repoId,
-        // What the request actually sent. Cancelling under the display id works only when
-        // the load target is a standard HF cache snapshot, because the backend can map
-        // models--org--name back to a repo id; a pinned directory elsewhere does not match
-        // and _cancel_scoped_load_attempt then refuses, leaving the load running.
+        // What the request actually sent. Cancelling under the display id works only when the load target
+        // is a standard HF cache snapshot; a pinned directory elsewhere does not match and
+        // _cancel_scoped_load_attempt then refuses.
         loadTarget: loadId || repoId,
         loadRequestId,
         controller,
@@ -935,6 +984,8 @@ export function AudioPage({
             );
           if (controller.signal.aborted || !isCurrent()) return;
         }
+        const wantsCpu = audioDevice === "cpu";
+        const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -947,17 +998,27 @@ export function AudioPage({
             gguf_variant: ggufFilename ?? null,
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+            audio_device: wantsCpu ? "cpu" : "auto",
+            // GGUF ignores audio_device: llama.cpp offloads unless told not to.
+            // An absent speculative_type resolves to "auto", which may attach a GPU
+            // drafter, and the backend then evicts image/video for a CPU load.
+            ...(wantsCpu && isGgufLoad
+              ? // biome-ignore lint/style/useNamingConvention: API schema
+                {
+                  gpu_memory_mode: "manual" as const,
+                  gpu_layers: 0,
+                  speculative_type: "off" as const,
+                }
+              : {}),
           },
           {
             signal: controller.signal,
             runtime: "tts",
             onRequestStart: () => {
               pending.requestStarted = true;
-              // Queued prompts would otherwise start on the model this load replaces.
-              // Only once /load is actually going out: loadModel returns without sending
-              // when a stored token is invalid and the user picks replace or dismisses
-              // the warning, and cancelling earlier threw away accepted sends and queued
-              // prompts for a swap that never happened.
+              // Queued prompts would otherwise start on the model this load replaces. Only once /load is
+              // actually going out: loadModel returns without sending when a stored token is invalid, and
+              // cancelling earlier threw away accepted sends for a swap that never happened.
               cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
               requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             },
@@ -968,6 +1029,17 @@ export function AudioPage({
           toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
           });
+          // Only the native runtime and GGUF can be held in RAM.
+          if (
+            wantsCpu &&
+            !isGgufLoad &&
+            !usesNativeAudioRuntime(repoId, res.audio_type)
+          ) {
+            toast.info(
+              "This model does not support CPU RAM yet, so it loaded on the GPU.",
+              { duration: 6000 },
+            );
+          }
         } else {
           toast.error(`${repoId} loaded but is not a supported TTS model.`, {
             id: toastId,
@@ -991,22 +1063,21 @@ export function AudioPage({
         releaseLifecycle();
         busyRef.current = null;
         setBusy(null);
-        // Only while Audio is visible. Replaying unconditionally started a load with
-        // activeRef already false, and since the deactivation effect had run it never saw
-        // that attempt to cancel it, so a hidden page could replace the model Chat had
-        // loaded. The pick stays queued instead and the activation effect replays it.
+        // Only while Audio is visible: replaying unconditionally started a load with activeRef already
+        // false, which the deactivation effect never saw to cancel, so a hidden page could replace
+        // the model Chat had loaded.
         if (activeRef.current) replayQueuedTtsPick();
       }
     },
-    [refreshStatus],
+    [refreshStatus, audioDevice],
   );
 
-  // Stage uncached Hub GGUFs through the shared manager so Audio gets the same
-  // progress, cancellation, resume and disk preflight behavior as Chat/Images/Video.
+  // Stage uncached Hub GGUFs through the shared manager so Audio gets the same progress,
+  // cancellation, resume and disk preflight as Chat/Images/Video.
   const loadTtsModelRef = useRef(loadTtsModel);
   loadTtsModelRef.current = loadTtsModel;
-  /** Start a pick that lost the race with a load still settling. Visible pages only:
-   *  a load started while hidden outlives the deactivation effect that would cancel it. */
+  /** Start a pick that lost the race with a load still settling. Visible pages only: a load started
+   *  while hidden outlives the deactivation effect that would cancel it. */
   const replayQueuedTtsPick = useCallback(() => {
     const queued = pendingRoutedTtsPick.current;
     if (!queued) return;
@@ -1017,6 +1088,7 @@ export function AudioPage({
       queued.loadId,
       queued.audioType,
       queued.remoteCodeApproval,
+      queued.isGguf,
     );
   }, []);
   const invalidatePendingStagedTts = useCallback(() => {
@@ -1035,7 +1107,9 @@ export function AudioPage({
         if (nextMode === "transcribe") invalidatePendingTtsSelection();
         return true;
       }
-      if (!canTransitionAudioMode(busyRef.current)) {
+      if (
+        !canTransitionAudioMode(busyRef.current, generationPhaseRef.current)
+      ) {
         toast.info(
           "Wait for the active audio task to finish before switching modes.",
         );
@@ -1043,14 +1117,13 @@ export function AudioPage({
       }
 
       if (nextMode === "transcribe") invalidatePendingTtsSelection();
-      if (busyRef.current === "generating") generateAbort.current?.abort();
+      if (busyRef.current === "generating") handleStopGeneration();
       stopAndDiscardRecording();
       setMode(nextMode);
       // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
       if (mode === "transcribe") {
-        // Resolves to whether the sidecar is actually gone. Swallowing the rejection made
-        // a failed unload look like a successful release, so the speech load went ahead
-        // with the dictation model still resident, which OOMs a device that fits one.
+        // Resolves to whether the sidecar is actually gone: swallowing the rejection made a failed unload
+        // look like a release, so the speech load went ahead with the dictation model and OOMed.
         const release = releaseTranscribeSelection().then(
           () => true,
           (error) => {
@@ -1062,15 +1135,14 @@ export function AudioPage({
             return false;
           },
         );
-        // Recorded so a TTS load can wait for the teardown: allocating while the sidecar
-        // still holds its model is what OOMs a device that fits either one alone.
+        // Recorded so a TTS load can wait for the teardown: allocating while the sidecar still holds its
+        // model is what OOMs a device that fits either one alone.
         pendingTranscribeRelease.current = release;
         void release.then((released) => {
           if (pendingTranscribeRelease.current !== release) return;
           pendingTranscribeRelease.current = null;
-          // The sidecar is still holding its model, so the page must not sit in Speak
-          // claiming otherwise: back to Transcribe, where Eject can retry the unload.
-          // Only if nothing has moved on since, so a user who switched again wins.
+          // The sidecar is still holding its model, so the page must not sit in Speak claiming otherwise:
+          // back to Transcribe, where Eject can retry. Only if nothing has moved on since.
           if (!released && modeRef.current === "speak") setMode("transcribe");
         });
       }
@@ -1078,6 +1150,7 @@ export function AudioPage({
     },
     [
       invalidatePendingTtsSelection,
+      handleStopGeneration,
       mode,
       releaseTranscribeSelection,
       stopAndDiscardRecording,
@@ -1099,8 +1172,8 @@ export function AudioPage({
         stagedTtsLoadDeferred.current = false;
         return;
       }
-      // Audio stays mounted across tabs. Loading from a hidden page would evict
-      // the visible page's model; likewise, wait for an active generation to end.
+      // Audio stays mounted across tabs, so loading from a hidden page would evict the visible page's
+      // model; likewise, wait for an active generation to end.
       if (!active || busyRef.current !== null) {
         stagedTtsLoadDeferred.current = true;
         return;
@@ -1112,6 +1185,7 @@ export function AudioPage({
         pending.loadId,
         pending.audioType,
         pending.remoteCodeApproval,
+        pending.isGguf,
       );
     },
   });
@@ -1138,6 +1212,7 @@ export function AudioPage({
       pending.loadId,
       pending.audioType,
       pending.remoteCodeApproval,
+      pending.isGguf,
     );
   }, [active, busy]);
 
@@ -1187,10 +1262,9 @@ export function AudioPage({
         }
       }
 
-      // Hub TTS picks use the same managed path as Chat. Native models can also
-      // depend on a second codec repository, so the selected repo's downloaded
-      // badge is not enough: the cache-aware backend plan owns every missing
-      // checkpoint, config and companion file before model loading begins.
+      // Hub TTS picks use the same managed path as Chat. Native models can also depend on a second
+      // codec repository, so the selected repo's downloaded badge is not enough: the cache-aware
+      // backend plan owns every missing file.
       if (meta.source === "hub" && !ggufFilename) {
         let plan;
         try {
@@ -1207,6 +1281,7 @@ export function AudioPage({
               meta.loadId,
               meta.audioType,
               remoteCodeApproval,
+              meta.isGguf,
             );
             return;
           }
@@ -1226,6 +1301,7 @@ export function AudioPage({
             loadId: meta.loadId,
             audioType: meta.audioType,
             remoteCodeApproval,
+            isGguf: meta.isGguf,
             generation,
           };
           stageTtsDownload(
@@ -1252,6 +1328,7 @@ export function AudioPage({
           loadId: meta.loadId,
           audioType: meta.audioType,
           remoteCodeApproval,
+          isGguf: meta.isGguf,
           generation,
         };
         stageTtsDownload([
@@ -1265,14 +1342,15 @@ export function AudioPage({
         return;
       }
 
-      // A cached/local/direct pick supersedes any staged auto-load. The manager
-      // may keep downloading globally, but its old completion cannot load here.
+      // A cached/local/direct pick supersedes any staged auto-load: the manager may keep downloading
+      // globally, but its old completion cannot load here.
       void loadTtsModelRef.current(
         repoId,
         ggufFilename,
         meta.loadId,
         meta.audioType,
         remoteCodeApproval,
+        meta.isGguf,
       );
     },
     [stageTtsDownload],
@@ -1294,10 +1372,9 @@ export function AudioPage({
         selectedSttRepoRef.current === repoId;
 
       setBusy("loading");
-      // Ownership is claimed only once the requested model is actually resident. Claiming it
-      // up front meant a cancelled or failed download left the flag set while the backend kept
-      // the previous resident model, so leaving Transcribe then unloaded another surface's
-      // model. A failure leaves the previous value alone, which is what it should be.
+      // Ownership is claimed only once the requested model is actually resident: claiming it up front
+      // meant a cancelled download left the flag set while the backend kept the previous model, so
+      // leaving Transcribe unloaded another surface's model.
       const toastId = toast.loading(`Preparing ${sidecarKey}…`);
       try {
         try {
@@ -1307,25 +1384,22 @@ export function AudioPage({
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
           await startSttDownload(sidecarKey, hfApiToken(getHfToken()), engine);
-          // STT owns its specialized transfer, but the existing mirror gives
-          // it the same global Downloads row, progress and Cancel action as
-          // every other Unsloth model download. Do not reset an adopted row.
+          // STT owns its specialized transfer, but the existing mirror gives it the same global Downloads
+          // row, progress and Cancel as every other model download. Do not reset an adopted row.
           if (!isTrackingSttDownload(sidecarKey, engine)) {
             trackSttDownload(sidecarKey, {
-              // Audio owns the final load through its active/selection
-              // generation guards. The Voice-settings mirror must not warm a
-              // stale sidecar behind those guards when this transfer lands.
+              // Audio owns the final load through its active/selection generation guards, so the
+              // Voice-settings mirror must not warm a stale sidecar behind those guards.
               warmSelectedVoiceModelOnComplete: false,
               engine,
               repoId,
             });
           }
-          // The shared Downloads panel now owns transfer progress. Keep this
-          // toast for the short model-load phase after the bytes land.
+          // The shared Downloads panel now owns transfer progress; keep this toast for the short model-load
+          // phase after the bytes land.
           toast.dismiss(toastId);
-          // A completed download may outlive this page or selection. Re-check
-          // ownership around every await so an old pick cannot replace a newer
-          // sidecar when its poll finally finishes.
+          // A completed download may outlive this page or selection, so re-check ownership around every
+          // await or an old pick could replace a newer sidecar.
           for (;;) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
             if (!isCurrent()) return;
@@ -1336,9 +1410,8 @@ export function AudioPage({
             if (!isCurrent()) return;
             const block = sttEngineStatusFor(stt, sidecarKey, engine);
             const download = block?.download;
-            // Cancel comes from the shared Downloads row. It is terminal for
-            // this preparation attempt, not permission to try loading a
-            // partial checkpoint.
+            // Cancel comes from the shared Downloads row. It is terminal for this preparation attempt, not
+            // permission to load a partial checkpoint.
             if (download?.cancelled) return;
             if (download?.error) throw new Error(download.error);
             if (!download?.downloading) break;
@@ -1378,9 +1451,8 @@ export function AudioPage({
     [refreshSttStatus],
   );
 
-  // A hidden page may let the shared download continue, but it must not load
-  // the sidecar. Returning to the same still-selected repo resumes preparation
-  // once; a different selection/eject clears this deferred ownership.
+  // A hidden page may let the shared download continue, but it must not load the sidecar. Returning
+  // to the same still-selected repo resumes preparation once; a different selection clears it.
   useEffect(() => {
     if (!active) {
       ttsPickGeneration.current += 1;
@@ -1420,8 +1492,8 @@ export function AudioPage({
       return;
     }
 
-    // A pick queued behind a settling load, held back because the page went away before
-    // the load finished. Now that Audio is visible again the attempt is cancellable.
+    // A pick queued behind a settling load, held back because the page went away before the load
+    // finished. Now that Audio is visible again the attempt is cancellable.
     replayQueuedTtsPick();
 
     const deferred = deferredSttLoad.current;
@@ -1440,9 +1512,8 @@ export function AudioPage({
             deferred.sidecarKey,
             deferred.engine,
           )?.download;
-          // `model` is null once the download thread has stopped, so a cancellation the
-          // user made while this page was hidden matched nothing here and the deferred
-          // load restarted the whole multi-GB download.
+          // `model` is null once the download thread has stopped, so a cancellation made while this page
+          // was hidden matched nothing here and the deferred load restarted the whole download.
           if (
             download?.cancelled &&
             (download.model ?? download.cancelled_model) === deferred.sidecarKey
@@ -1468,8 +1539,8 @@ export function AudioPage({
   const handleModelSelect = useCallback(
     async (id: string, meta: ModelSelectorChangeMeta) => {
       if (busyRef.current !== null) return;
-      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or
-      // every community ASR repo would load into the TTS slot.
+      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or every community ASR
+      // repo would load into the TTS slot.
       const task = resolveAudioPickTask(audioTaskFor(id), meta.pipelineTag);
       const musicPick =
         task !== "stt" && isMusicGenerationModel(id, meta.audioType);
@@ -1485,9 +1556,8 @@ export function AudioPage({
           return;
         }
       }
-      // Selecting a different artifact while recording is a lifecycle change
-      // even when it stays in Transcribe mode; never let the old capture submit
-      // against a sidecar that this pick is replacing.
+      // Selecting a different artifact while recording is a lifecycle change even in Transcribe mode;
+      // never let the old capture submit against a sidecar this pick is replacing.
       stopAndDiscardRecording();
       deferredSttLoad.current = null;
       if (task === "stt") {
@@ -1506,8 +1576,11 @@ export function AudioPage({
       if (!transitionMode("speak")) return;
       // Serialize against a Transcribe release started by that transition.
       const releaseInFlight = pendingTranscribeRelease.current;
-      // A release that failed leaves the sidecar resident, so do not stack a speech model
-      // on top of it. Back to Transcribe, where Eject can retry the unload.
+      // A release that failed leaves the sidecar resident, so do not stack a speech model on top of
+      // it. Back to Transcribe, where Eject can retry.
+      // Claimed before the await below, not after: the button only disables on `busy`, so a slow release
+      // let several clicks through, each resuming into its own generateAudio while generateAbort
+      // tracked only the last.
       if (releaseInFlight && !(await releaseInFlight)) {
         setMode("transcribe");
         return;
@@ -1515,10 +1588,7 @@ export function AudioPage({
       if (ttsPickGeneration.current !== selectionGeneration) return;
       const exactGguf = exactGgufLoadSelector(meta);
       const isGguf = Boolean(
-        meta.isGguf ||
-          exactGguf ||
-          /(?:^|[-/])gguf(?:$|[-/])/i.test(id) ||
-          id.toLowerCase().endsWith(".gguf"),
+        meta.isGguf || isGgufTtsTarget({ repoId: id, ggufFilename: exactGguf }),
       );
       const ggufSibling = isGguf ? null : ggufSiblingFor(id);
       const nativeRuntime =
@@ -1543,9 +1613,8 @@ export function AudioPage({
           `Loading the GGUF build of ${id}. MLX has no text-to-speech decoder, so the safetensors build cannot generate on this Mac.`,
           { duration: 7000 },
         );
-        // Resolving the sibling is part of the model load lifecycle. Reserve
-        // the slot so Generate cannot run the old resident model and then be
-        // evicted by this inspection's eventual completion.
+        // Resolving the sibling is part of the model load lifecycle. Reserve the slot so Generate cannot
+        // run the old resident model and then be evicted by this inspection's completion.
         ttsInspectionGeneration.current = selectionGeneration;
         busyRef.current = "loading";
         setBusy("loading");
@@ -1623,8 +1692,7 @@ export function AudioPage({
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
-      // A task with no model is a mode intent from Settings; without it the page keeps
-      // whatever mode it was left in.
+      // A task with no model is a mode intent from Settings; without it the page keeps whatever mode it was left in.
       const task = routeSearch.task;
       if (!task) return;
       const intended =
@@ -1636,8 +1704,8 @@ export function AudioPage({
     }
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}`;
     if (handledRouteModel.current === key) return;
-    // The persistent Audio page may still be finishing hidden work. Keep the
-    // handoff in the URL and retry it when that work releases the lifecycle.
+    // The persistent Audio page may still be finishing hidden work, so keep the handoff in the URL
+    // and retry it when that work releases the lifecycle.
     if (busyRef.current !== null) return;
     handledRouteModel.current = key;
     handleModelSelect(wanted, {
@@ -1647,8 +1715,8 @@ export function AudioPage({
       ggufVariant: routeSearch.ggufQuant ?? undefined,
       loadId: routeSearch.loadId ?? undefined,
       audioType: routeSearch.audioType ?? undefined,
-      // Chat-to-Audio routing cannot preserve the inventory flag, so stage the
-      // exact forwarded GGUF. An already-cached job completes immediately.
+      // Chat-to-Audio routing cannot preserve the inventory flag, so stage the exact forwarded GGUF.
+      // An already-cached job completes immediately.
       isDownloaded: routeSearch.loadId
         ? true
         : routeSearch.quant
@@ -1672,7 +1740,6 @@ export function AudioPage({
     transitionMode,
   ]);
 
-  // --- Speak --------------------------------------------------------------
 
   const ttsLoaded = Boolean(
     status?.active_model &&
@@ -1691,8 +1758,8 @@ export function AudioPage({
       return;
     }
 
-    // Eject also owns unresolved permission requests. Invalidating here makes
-    // their eventual streams self-discard instead of recording for an old STT pick.
+    // Eject also owns unresolved permission requests. Invalidating here makes their eventual streams
+    // self-discard instead of recording for an old STT pick.
     stopAndDiscardRecording();
 
     if (mode === "transcribe") {
@@ -1730,8 +1797,8 @@ export function AudioPage({
     const activeModel = status?.active_model;
     if (!activeModel) return;
 
-    // Chat's gate, taken before the question so a queue cannot materialize while the
-    // dialog is open and then be stopped by the blanket queue stop below.
+    // Chat's gate, taken before the question so a queue cannot materialize while the dialog is open
+    // and then be stopped by the blanket queue stop.
     const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
     if (lifecycleLease === null) {
       toast.info("Wait for the current model to finish loading.");
@@ -1742,9 +1809,9 @@ export function AudioPage({
     setBusy("unloading");
     void (async () => {
       try {
-        // Ejecting stops every chat on the shared llama-server. Unforced, the backend
-        // refused with a 409 the user could only read. Nothing is torn down until the
-        // answer is in, so declining leaves the page as it was.
+        // Ejecting stops every chat on the shared llama-server, and unforced the backend refused with a
+        // 409 the user could only read. Nothing is torn down until the answer is in, so declining
+        // leaves the page as it was.
         const stopDecision = await confirmStopRunningChatsIfNeeded(
           "Unloading the model",
           "unload",
@@ -1754,8 +1821,8 @@ export function AudioPage({
           return;
         }
 
-        // An old managed completion must not immediately replace the model the
-        // user just ejected. The global download may continue for later use.
+        // An old managed completion must not immediately replace the model the user just ejected. The
+        // global download may continue for later use.
         invalidatePendingStagedTts();
         stageTtsDownload([]);
 
@@ -1799,20 +1866,18 @@ export function AudioPage({
   const handleGenerate = useCallback(async () => {
     const text = prompt.trim();
     if (!text) return;
-    // Same gate the TTS load path uses. Switching straight from Transcribe with a speech
-    // model already resident needs no load, so nothing else waits for the sidecar
-    // teardown, and generating beside a dictation model OOMs a device that fits either
-    // one alone. A release that failed leaves it resident, so go back to Transcribe,
-    // where Eject can retry the unload.
-    // Claimed before the await below, not after: the button only disables on `busy`, so
-    // a slow release let several clicks through and each resumed into its own
-    // generateAudio while generateAbort tracked only the last, and either finally
-    // cleared the busy state out from under the other.
+    // Same gate the TTS load path uses: switching straight from Transcribe with a speech model
+    // already resident needs no load, so nothing else waits for the sidecar teardown, and
+    // generating beside a dictation model OOMs a device that fits either alone. Claimed before
+    // the await below, since the button only disables on `busy` and a slow release let several
+    // clicks each resume into their own generateAudio.
     if (busyRef.current) return;
     busyRef.current = "generating";
     setBusy("generating");
+    updateGenerationPhase("preparing");
     const releaseInFlight = pendingTranscribeRelease.current;
     if (releaseInFlight && !(await releaseInFlight)) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       setMode("transcribe");
@@ -1820,6 +1885,7 @@ export function AudioPage({
     }
     const instructions = audioInstructions.trim();
     if (musicGeneration && !instructions) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       toast.error("Add a music description for MiniMax Music 3.");
@@ -1828,6 +1894,7 @@ export function AudioPage({
     const language = audioLanguage.trim();
     const controller = new AbortController();
     generateAbort.current = controller;
+    updateGenerationPhase("generating");
     try {
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
@@ -1844,6 +1911,7 @@ export function AudioPage({
           : {}),
         signal: controller.signal,
       });
+      updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(
         generated.clip_id,
@@ -1853,11 +1921,9 @@ export function AudioPage({
         setFallbackClip(null);
         selectClip(generatedClip.id);
       } else if (generated.clip_id) {
-        // The server did persist it; only this refresh missed it (refreshGallery swallows a
-        // transient failure and returns the stale cache). Select the id so a later refresh
-        // shows the real record, but keep the response audio too: selectedClip resolves
-        // against `clips`, so an id that is not there yet would render the empty state and
-        // strand a generation the user just paid for.
+        // The server did persist it; only this refresh missed it. Select the id so a later refresh shows
+        // the real record, but keep the response audio too: selectedClip resolves against `clips`,
+        // so an id that is not there yet would render the empty state.
         setFallbackClip({
           url: `data:audio/wav;base64,${generated.audio.data}`,
           prompt: text,
@@ -1866,9 +1932,8 @@ export function AudioPage({
         });
         selectClip(generated.clip_id, true);
       } else {
-        // Gallery persistence is best-effort server-side, so a full or unwritable
-        // disk still returns the audio. Play it from the response rather than
-        // dropping an expensive generation on the floor.
+        // Gallery persistence is best-effort server-side, so a full disk still returns the audio. Play it
+        // from the response rather than dropping an expensive generation.
         galleryCache.selectedId = null;
         setSelectedId(null);
         setFallbackClip({
@@ -1880,6 +1945,7 @@ export function AudioPage({
       }
     } catch (error) {
       if (!controller.signal.aborted) {
+        updateGenerationPhase("finishing");
         toast.error(
           error instanceof Error ? error.message : "Audio generation failed.",
         );
@@ -1887,6 +1953,7 @@ export function AudioPage({
       }
     } finally {
       generateAbort.current = null;
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       if (activeRef.current && modeRef.current === "speak")
@@ -1904,6 +1971,7 @@ export function AudioPage({
     instructionsKind,
     temperature,
     temperatureEdited,
+    updateGenerationPhase,
     maxTokens,
     refreshGallery,
     refreshStatus,
@@ -1911,16 +1979,10 @@ export function AudioPage({
     selectClip,
   ]);
 
-  const handleStopGeneration = useCallback(() => {
-    generateAbort.current?.abort();
-  }, []);
-
-  // Only unmount aborts. RootLayout keeps this page mounted precisely so leaving
-  // the tab does not cancel synthesis, and the clip is persisted server-side, so
-  // it is still waiting in the gallery on return.
+  // Only unmount aborts. RootLayout keeps this page mounted precisely so leaving the tab does not
+  // cancel synthesis, and the clip is persisted server-side.
   useEffect(() => () => generateAbort.current?.abort(), []);
 
-  // --- Transcribe ---------------------------------------------------------
 
   const runTranscription = useCallback(
     async (blob: Blob, name: string) => {
@@ -1997,9 +2059,8 @@ export function AudioPage({
       }
       recordStreamRef.current = stream;
       const recorder = createAudioRecorder(stream);
-      // WAV is uncompressed, so on the PCM path the byte cap is reached long
-      // before the 30 minute one. Express it as a duration the timer below
-      // already enforces, rather than letting the upload be refused.
+      // WAV is uncompressed, so on the PCM path the byte cap is reached long before the 30 minute one.
+      // Express it as a duration the timer below already enforces.
       const maxSeconds =
         recorder instanceof PcmRecorder
           ? Math.min(
@@ -2010,9 +2071,8 @@ export function AudioPage({
       const chunks: Blob[] = [];
       let recordedBytes = 0;
       let limitHit: "duration" | "size" | null = null;
-      // The sidecar rejects anything past 30 minutes, and a timeslice keeps the chunks in
-      // our array rather than inside the browser, so an over-long recording can be stopped
-      // at the limit instead of being buffered whole and refused after the upload.
+      // The sidecar rejects anything past 30 minutes, and a timeslice keeps the chunks in our array
+      // rather than inside the browser, so an over-long recording can be stopped at the limit.
       const stopAtLimit = (reason: "duration" | "size") => {
         if (limitHit) return;
         limitHit = reason;
@@ -2033,8 +2093,7 @@ export function AudioPage({
       );
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) {
-          // Stop before appending the chunk that crosses the limit, so what is uploaded is
-          // always inside it rather than one chunk over.
+          // Stop before appending the chunk that crosses the limit, so what is uploaded is always inside it.
           if (recordedBytes + event.data.size > RECORDING_MAX_BYTES) {
             stopAtLimit("size");
             return;
@@ -2056,14 +2115,13 @@ export function AudioPage({
         if (!discard && blob.size > 0) void runTranscription(blob, "Recording");
       });
       recorderRef.current = recorder;
-      // A timeslice is what makes the byte cap observable: with none, some browsers hold
-      // the whole recording internally and only emit it on stop.
+      // A timeslice is what makes the byte cap observable: with none, some browsers hold the whole
+      // recording internally and only emit it on stop.
       recorder.start(RECORDING_CHUNK_MS);
       setIsRecording(true);
     } catch {
-      // getUserMedia may have succeeded even if MediaRecorder construction or
-      // start failed. Release that acquired stream instead of leaving the mic
-      // live with no recorder UI capable of stopping it.
+      // getUserMedia may have succeeded even if MediaRecorder construction failed, so release that
+      // stream instead of leaving the mic live with no recorder UI to stop it.
       recorderRef.current = null;
       setIsRecording(false);
       stopRecordStream();
@@ -2083,9 +2141,8 @@ export function AudioPage({
     }
   }, [isRecording, runTranscription, stopRecordStream]);
 
-  // Release the microphone on unmount AND whenever the page goes inactive: the
-  // page stays mounted across tab switches, so unmount alone left a hidden
-  // recorder capturing until the user came back and stopped it.
+  // Release the microphone on unmount AND whenever the page goes inactive: the page stays mounted
+  // across tab switches, so unmount alone left a hidden recorder capturing.
   useEffect(() => {
     if (!active) {
       stopAndDiscardRecording();
@@ -2119,30 +2176,30 @@ export function AudioPage({
     anchor.href = url;
     anchor.download = `${(transcribedName ?? "transcript").replace(/\.[^.]+$/, "")}.txt`;
     anchor.click();
-    // Deferred like the gallery download below: browsers that resolve the synthetic
-    // navigation asynchronously were left with a revoked URL and no file.
+    // Deferred like the gallery download below: browsers that resolve the synthetic navigation
+    // asynchronously were left with a revoked URL and no file.
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }, [transcript, transcribedName]);
 
-  // --- Gallery actions ----------------------------------------------------
+
+  const dropClip = useCallback((id: string) => {
+    galleryCache.srcById.delete(id);
+    setSrcById(galleryCache.srcById.toRecord());
+    // Drop the row now, as the clear-all path does: refreshGallery swallows a failed GET and returns
+    // the cache without setClips, leaving the row up against an already-revoked URL.
+    galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
+    setClips(galleryCache.clips);
+    if (galleryCache.selectedId === id) {
+      galleryCache.selectedId = null;
+      setSelectedId(null);
+    }
+  }, []);
 
   const handleDeleteClip = useCallback(
     async (id: string) => {
       try {
         await deleteAudioClip(id);
-        galleryCache.srcById.delete(id);
-        setSrcById(galleryCache.srcById.toRecord());
-        // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
-        // GET and returns the cache without calling setClips, which left the deleted clip
-        // on screen against an object URL that has already been revoked.
-        galleryCache.clips = galleryCache.clips.filter(
-          (clip) => clip.id !== id,
-        );
-        setClips(galleryCache.clips);
-        if (galleryCache.selectedId === id) {
-          galleryCache.selectedId = null;
-          setSelectedId(null);
-        }
+        dropClip(id);
         await refreshGallery(id);
       } catch (error) {
         toast.error(
@@ -2150,6 +2207,46 @@ export function AudioPage({
         );
       }
     },
+    [dropClip, refreshGallery],
+  );
+
+  const handleArchiveClip = useCallback(
+    async (id: string) => {
+      try {
+        await setAudioClipFlags(id, { archived: true });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not archive the clip.",
+        );
+        return;
+      }
+      dropClip(id);
+      await refreshGallery(id);
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("audio");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived audio in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropClip, refreshGallery],
+  );
+
+  // This page stays mounted across route changes, so a restore from the Settings archive would not
+  // reach History until a reload. Refresh the loaded window, not just the first page: a clip
+  // re-enters at its own age.
+  useEffect(
+    () =>
+      subscribeGalleryChanged("audio", () => {
+        void refreshGallery(undefined, galleryCache.clips.length);
+      }),
     [refreshGallery],
   );
 
@@ -2158,12 +2255,11 @@ export function AudioPage({
       await clearAudioGallery();
       galleryCache.srcById.clear();
       galleryCache.selectedId = null;
-      // Drop the cached list first: refreshGallery merges the fetched page into it, so an
-      // empty page would otherwise leave every cleared row on screen.
+      // Drop the cached list first: refreshGallery merges the fetched page into it, so an empty page
+      // would leave every cleared row on screen.
       galleryCache.clips = [];
-      // React state too, not just the cache: refreshGallery swallows a failed GET and
-      // returns the cache without calling setClips, which left every cleared row rendered
-      // against a revoked object URL until some later refresh.
+      // React state too, not just the cache: refreshGallery swallows a failed GET and returns the cache
+      // without calling setClips, which left cleared rows rendered against a revoked URL.
       setClips([]);
       setSrcById({});
       setSelectedId(null);
@@ -2212,9 +2308,8 @@ export function AudioPage({
     } catch {
       toast.error("Could not download the clip.");
     } finally {
-      // A history-row download does not need to become resident playback state.
-      // Revoke it after the browser has consumed the synthetic click instead of
-      // bypassing the persistent gallery cache's 64 MB budget.
+      // A history-row download does not need to become resident playback state, so revoke it after the
+      // browser has consumed the synthetic click rather than bypassing the 64 MB cache budget.
       if (temporaryUrl) {
         const url = temporaryUrl;
         window.setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -2231,9 +2326,8 @@ export function AudioPage({
     }
   }, []);
 
-  // Trained TTS checkpoints. A scan row carries no modality until the backend tags
-  // it, so without this the Audio page offers only catalog models and a checkpoint
-  // you just fine-tuned here is unreachable.
+  // Trained TTS checkpoints. A scan row carries no modality until the backend tags it, so without
+  // this a checkpoint you just fine-tuned here is unreachable.
   const [trainedTtsModels, setTrainedTtsModels] = useState<ModelOption[]>([]);
   useEffect(() => {
     if (!active) return;
@@ -2243,8 +2337,8 @@ export function AudioPage({
         if (cancelled) return;
         setTrainedTtsModels(
           res.loras
-            // Merged native speech checkpoints bypass MLX through the portable
-            // audio worker. Other safetensors exports still need a GGUF build on Mac.
+            // Merged native speech checkpoints bypass MLX through the portable audio worker. Other
+            // safetensors exports still need a GGUF build on Mac.
             .filter(
               (lora) =>
                 !isMac ||
@@ -2253,9 +2347,8 @@ export function AudioPage({
                   lora.export_type,
                 ),
             )
-            // The GGUF flag matters: GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has
-            // no CSM decoder, so a csm LoRA exported to GGUF fails at load. Without it the
-            // wider Transformers list answered and the row was offered anyway.
+            // The GGUF flag matters: GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has no CSM
+            // decoder, so a csm LoRA exported to GGUF fails at load.
             .filter((lora) =>
               isTtsAudioType(lora.audio_type, lora.export_type === "gguf"),
             )
@@ -2282,7 +2375,6 @@ export function AudioPage({
     };
   }, [active, isMac]);
 
-  // --- Render -------------------------------------------------------------
 
   const selectedClip = clips.find((c) => c.id === selectedId) ?? null;
   const selectedClipSrc = selectedClip ? srcById[selectedClip.id] : undefined;
@@ -2335,8 +2427,8 @@ export function AudioPage({
 
   return (
     <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      {/* Keep the tabs centered over the preview region at every width. The model rail
-          holds at 408px when space permits and shrinks only to preserve the controls. */}
+      {/* Keep the tabs centered over the preview at every width. The model rail holds at 408px when
+          space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div className="pointer-events-none flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60">
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
@@ -2360,8 +2452,8 @@ export function AudioPage({
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
               task={HUB_TASKS_BY_MODE[mode]}
               catalog={AUDIO_CATALOG}
-              // TTS/ASR come from the checkpoint's own tokenizer, not a curated
-              // recipe, so any publisher's audio repo loads here.
+              // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
+              // audio repo loads here.
               communityModelPolicy="search-only"
               placeholder="Select audio model"
               open={active && selectorOpen}
@@ -2408,8 +2500,8 @@ export function AudioPage({
           </div>
         </div>
       </div>
-      {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and
-          Video: side by side, the 408px rail plus a usable preview needs more width than that. */}
+      {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
+          side by side, the 408px rail plus a usable preview needs more width. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           <div
@@ -2423,8 +2515,7 @@ export function AudioPage({
               settingsFadeClass,
             )}
           >
-            {/* Same heading treatment as the Images and Video Create panes, so
-                  the media panes stay level (#7986). */}
+            {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
             <div className="mb-2 grid gap-1.5">
               <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 <HugeiconsIcon
@@ -2523,6 +2614,47 @@ export function AudioPage({
                     />
                   </Field>
                 ) : null}
+                {/* Field inlined: its label needs a form control to point
+                    at, and PillTabs is a tablist with its own name. */}
+                <div className="grid gap-1.5">
+                  <span className="text-ui-13 font-medium text-foreground">
+                    Load model into
+                  </span>
+                  <PillTabs
+                    ariaLabel="Load model into"
+                    value={audioDevice === "cpu" ? "cpu" : "auto"}
+                    // The eject below applies the change and cannot interrupt a load.
+                    disabled={busy !== null || isRecording}
+                    onValueChange={(value) => {
+                      const next = value === "cpu" ? "cpu" : "auto";
+                      if (next === audioDevice) return;
+                      // MiniMax needs CUDA, and the backend's refusal cannot save a
+                      // model already ejected here.
+                      if (next === "cpu" && status?.audio_type === "minimax_music3") {
+                        toast.info(
+                          "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
+                        );
+                        return;
+                      }
+                      setAudioDeviceState(next);
+                      if (ttsLoaded) handleEject();
+                    }}
+                    fit={true}
+                    className="h-[30px] self-start [&>button]:h-[30px] [&>button]:px-6"
+                    tabs={[
+                      { value: "auto", label: "GPU when available" },
+                      { value: "cpu", label: "CPU RAM" },
+                    ]}
+                  />
+                  {/* Phrased as what the next load will do, not as the resident
+                      model's state: a model loaded by another tab or client can
+                      be on the other device, and status does not report it. */}
+                  <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                    {audioDevice === "cpu"
+                      ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
+                      : "New loads use the GPU when there is one, and the CPU otherwise."}
+                  </p>
+                </div>
                 <AdvancedDisclosure
                   open={advancedOpen}
                   onOpenChange={setAdvancedOpen}
@@ -2642,30 +2774,52 @@ export function AudioPage({
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
             <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={
-                  busy === "generating" ? handleStopGeneration : handleGenerate
-                }
-                disabled={
-                  busy === "generating"
-                    ? false
-                    : busy !== null ||
-                      !ttsLoaded ||
-                      !prompt.trim() ||
-                      (musicGeneration && !audioInstructions.trim())
-                }
-                variant={busy === "generating" ? "destructive" : "default"}
-              >
-                {busy === "generating" ? (
+              <div className="flex w-full max-w-sm flex-col gap-2">
+                {busy === "generating" && generationPresentation ? (
                   <>
-                    <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
-                    Stop
+                    <output
+                      aria-live="polite"
+                      aria-atomic="true"
+                      className="text-center text-ui-12 text-muted-foreground"
+                    >
+                      {generationPresentation.status}
+                    </output>
+                    <Progress
+                      indeterminate
+                      aria-label="Audio task in progress"
+                      className="h-1.5"
+                    />
                   </>
-                ) : (
-                  "Generate"
-                )}
-              </Button>
+                ) : null}
+                <Button
+                  className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={
+                    generationPresentation?.canStop
+                      ? handleStopGeneration
+                      : handleGenerate
+                  }
+                  disabled={
+                    generationPresentation
+                      ? !generationPresentation.canStop
+                      : busy !== null ||
+                        !ttsLoaded ||
+                        !prompt.trim() ||
+                        (musicGeneration && !audioInstructions.trim())
+                  }
+                  variant={
+                    generationPresentation?.canStop ? "destructive" : "default"
+                  }
+                >
+                  {generationPresentation?.canStop ? (
+                    <>
+                      <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+                      Stop
+                    </>
+                  ) : (
+                    (generationPresentation?.actionLabel ?? "Generate")
+                  )}
+                </Button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -2734,9 +2888,8 @@ export function AudioPage({
                     <p className="line-clamp-2 text-ui-13 text-muted-foreground">
                       {selectedClip.prompt}
                     </p>
-                    {/* Auth-protected bytes, so mount a fresh player only once this clip's
-                        object URL exists. Reusing one media element while src is empty or
-                        changing left History switches showing stale/broken controls. */}
+                    {/* Auth-protected bytes, so mount a fresh player only once this clip's object URL exists: reusing
+                        one media element while src is changing left History switches showing broken controls. */}
                     {selectedClipSrc ? (
                       <audio
                         key={selectedClip.id}
@@ -2883,6 +3036,7 @@ export function AudioPage({
                           onUseAsText={() => {
                             if (transitionMode("speak")) setPrompt(clip.prompt);
                           }}
+                          onArchive={() => void handleArchiveClip(clip.id)}
                           onDelete={() => void handleDeleteClip(clip.id)}
                         />
                       </div>

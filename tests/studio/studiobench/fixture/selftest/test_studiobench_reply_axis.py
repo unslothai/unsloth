@@ -77,8 +77,8 @@ def test_the_tail_override_moves_the_reply_and_not_the_thread(corpus: Corpus):
     for tail in (24_000, 96_000):
         plan = plan_rung(corpus, "100K", stream_tail_chars = tail)
         assert abs(plan.streamed_chars - tail) < tail * 0.1, (tail, plan.streamed_chars)
-        # Within a few percent: the seeded prefix is trimmed to compensate, so the cell measures
-        # a different SPLIT of the same total rather than a bigger thread.
+        # Within a few percent: the seeded prefix is trimmed to compensate, so the cell measures a different
+        # SPLIT of the same total rather than a bigger thread.
         assert abs(plan.total_chars - base.total_chars) < base.total_chars * 0.05, (
             tail,
             plan.total_chars,
@@ -133,10 +133,10 @@ def test_dollars_reach_the_streamed_turn_and_nothing_else(corpus: Corpus):
     plain = plan_rung(corpus, "100K", stream_tail_chars = 24_000)
     salted = plan_rung(corpus, "100K", stream_tail_chars = 24_000, dollars = True)
     assert _streamed_text(salted).count("$") > _streamed_text(plain).count("$")
-    # The seeded prefix is rendered once at mount and never re-preprocessed, so dollars there
-    # would change the corpus without changing what the per-frame path is asked to do. v2's own
-    # math is expected there; what must not appear is anything THIS added, so the prefix has to
-    # be byte-identical with the flag on and off.
+    # The seeded prefix is rendered once at mount and never re-preprocessed, so dollars there would
+    # change the corpus without changing what the per-frame path is asked to do. v2's own math is
+    # expected; what must not appear is anything THIS added, so the prefix has to be byte-identical
+    # with the flag on and off.
     assert [(u.reasoning, u.content) for u in salted.seeded_units] == [
         (u.reasoning, u.content) for u in plain.seeded_units
     ]
@@ -233,8 +233,7 @@ class _FakeKeyboard:
     def press(self, key: str) -> None:
         self.pressed.append(key)
         if key == "Enter" and "one more" in self._page.filled:
-            # Sending the throwaway turn starts a generation, which is what the own-turn path
-            # then waits for and stops.
+            # Sending the throwaway turn starts a generation, which is what the own-turn path then waits for and stops.
             self._page.running = True
 
 
@@ -314,8 +313,8 @@ def test_stop_refuses_to_truncate_the_cell_s_own_reply():
     from studiobench.scene.actions import stop_generation
 
     page = _FakePage(running = True)
-    # 200 ms: too small to hold the throwaway turn at all, so the drain wait is zero and the
-    # refusal below is the one this test is about rather than the budget check beside it.
+    # 200 ms: too small to hold the throwaway turn at all, so the drain wait is zero and the refusal
+    # below is the one this test is about rather than the budget check beside it.
     result = stop_generation(_stop_ctx(page, budget_ms = 200))
 
     assert result.ran is False, "a stop that would truncate the measured reply must not run"

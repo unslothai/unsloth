@@ -24,12 +24,11 @@ import secrets
 import threading
 from typing import Optional
 
-# Generous ceiling so a user can deliberate; cancellation (stop button /
-# disconnect) still breaks the wait early via ``cancel_event``.
+# Generous ceiling so a user can deliberate; the stop button or a disconnect still breaks the wait
+# early via cancel_event.
 _DECISION_TIMEOUT = 3600.0
 
-# Fed to the model as the tool result when the user denies a call, so it
-# can adapt and keep responding instead of the turn ending abruptly.
+# Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
 _lock = threading.Lock()

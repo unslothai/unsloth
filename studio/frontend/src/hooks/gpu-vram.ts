@@ -128,7 +128,7 @@ export interface MemoryCapacityDevice {
 /** Whether this device's memory is a view into host RAM rather than beside it.
  *  The one question capacity cares about; the two flags are how the backend
  *  happens to report it on two platforms. */
-function sharesHostMemory(device: {
+export function sharesHostMemory(device: {
   sharedMemory?: boolean;
   unifiedMemory?: boolean;
 }): boolean {
@@ -428,6 +428,42 @@ export interface FreeVramDevice {
    *  shared_memory: false`, and summing its window into the DEDICATED free total
    *  counts memory that is already inside the host's RAM. */
   unifiedMemory?: boolean;
+}
+
+/** Reserve still unmet before unloading; per-device reclaimed amounts are unknown. */
+export function aggregateVramReserveDeficitGb(
+	devices: FreeVramDevice[],
+	fraction: number,
+): number {
+	let independent = 0;
+	let shared: number | undefined;
+	for (const device of devices) {
+		const total = device.memoryTotalGb ?? 0;
+		const free = device.memoryFreeGb ?? 0;
+		if (
+			!Number.isFinite(total) ||
+			total <= 0 ||
+			!Number.isFinite(free) ||
+			free < 0
+		)
+			continue;
+		const reserve = total - usableFreeVramGb(total, total, fraction);
+		const deficit = Math.max(0, reserve - free);
+		const hostBacked = device.sharedMemoryHostBackedGb;
+		if (
+			sharesHostMemory(device) &&
+			(hostBacked == null ||
+				!Number.isFinite(hostBacked) ||
+				hostBacked < 0 ||
+				hostBacked >= total)
+		) {
+			// One pool becomes usable as soon as any of its views clears its reserve.
+			shared = Math.min(shared ?? deficit, deficit);
+		} else {
+			independent += deficit;
+		}
+	}
+	return independent + (shared ?? 0);
 }
 
 /**
