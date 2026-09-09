@@ -86,7 +86,9 @@ class SimulatedModel:
         from core.agent_workspace.task_runtime import _admission
 
         # Exercise the real one-slot admission queue with two parent workers.
-        backend = SimpleNamespace(base_url = "test-single-slot", effective_parallel_slots = 1, context_length = 16384)
+        backend = SimpleNamespace(
+            base_url = "test-single-slot", effective_parallel_slots = 1, context_length = 16384
+        )
         async with _admission(backend, self.context):
             self.turn += 1
             self.reserved += 1024
