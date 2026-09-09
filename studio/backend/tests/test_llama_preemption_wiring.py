@@ -126,7 +126,7 @@ class TestAFinishedChatStopsCounting:
         )
         lease = reservation.lease_nowait()
         controller.register("holder", lease = lease, tokens = 4096)
-        assert controller.snapshot().winner is None, "nobody is crowned any more"
+        assert not hasattr(controller.snapshot(), "winner"), "nobody is crowned any more"
         assert controller.committed_tokens() == 4096
         lease.release()
         controller.unregister("holder")

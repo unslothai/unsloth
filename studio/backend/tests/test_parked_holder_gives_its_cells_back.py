@@ -96,18 +96,6 @@ class TestTheLedger:
         assert c.note_state("q", ParticipantState.TOOLS_RUNNING) is True
         assert c.note_state("q", ParticipantState.TOOLS_RUNNING) is False, "no change, no report"
 
-    def test_a_parked_winner_gives_up_its_epoch(self):
-        c = _controller()
-        c.register("w", tokens = 5000)
-        c.note_tokens("w", 5000)
-        c.register("v", tokens = 3000)
-        c.note_tokens("v", 3000)
-        # Crowned as the leader of the current epoch.
-        c._epoch_winner = "w"
-        assert c.snapshot().winner == "w"
-        c.note_state("w", ParticipantState.PARKED_ON_TOOL)
-        assert c.snapshot().winner != "w"
-
     def test_the_reclaim_also_hands_back_the_admission_commitment(self):
         class _Lease:
             def __init__(self):

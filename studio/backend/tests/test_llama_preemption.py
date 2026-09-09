@@ -412,7 +412,9 @@ class TestNobodyIsExemptFromEviction:
         _register(controller, "a", 9000)
         _register(controller, "b", 6000)
         controller.plan_preemptions()
-        assert controller.snapshot().winner is None
+        # The field and the state behind it are gone, not merely empty.
+        assert not hasattr(controller.snapshot(), "winner")
+        assert not hasattr(controller, "_epoch_winner")
 
     def test_the_sweep_takes_everyone_when_the_room_demands_it(self):
         """The worst case must remain reachable: all but one can stop."""
