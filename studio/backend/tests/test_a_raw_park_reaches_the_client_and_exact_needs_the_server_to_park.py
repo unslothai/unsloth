@@ -210,6 +210,13 @@ class TestARecomputeReachesTheClient:
         metadata = [e for e in events if isinstance(e, dict) and e.get("type") == "metadata"][-1]
         assert metadata["preempt"] == {"parks": 1, "recomputes": 1}
 
+    def test_a_stream_of_a_server_that_does_not_park_scans_no_notices(self):
+        # The tracker's tail scan runs on every read; with no park grace no notice can come.
+        source = " ".join(inspect.getsource(LlamaCppBackend._install_cancel_aware_read).split())
+        assert "ServerParkNotices(stall_grace) if stall_grace is not None else None" in source
+        assert "if notices is not None: notices.feed(data)" in source
+        assert "parked = notices is not None and notices.excuses_silence()" in source
+
     def test_a_build_that_writes_the_notices_is_never_asked_the_aggregate(self):
         # A stream that heard nothing on such a build is not parked; the aggregate reading
         # excused an unrelated stall for as long as somebody else stayed parked.

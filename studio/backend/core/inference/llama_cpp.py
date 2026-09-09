@@ -29378,8 +29378,9 @@ class LlamaCppBackend:
         if preempt_event is not None:
             cancel_event = _interrupt_event(cancel_event, preempt_event)
         # One per stream: `max_keepalive_connections = 0`, so the connections wrapped below serve
-        # this request only.
-        notices = _preemption.ServerParkNotices(stall_grace)
+        # this request only. None where the server does not park: no notice can come, and the
+        # tail scan on every read is not free.
+        notices = _preemption.ServerParkNotices(stall_grace) if stall_grace is not None else None
 
         def _live_read_timeout() -> Optional[float]:
             if response is None:
@@ -29428,7 +29429,7 @@ class LlamaCppBackend:
                         grace_left = crossed_at + _SERVER_PARK_STALL_CAP_S - now
                         if grace_left <= 0:
                             return None
-                        parked = notices.excuses_silence()
+                        parked = notices is not None and notices.excuses_silence()
                         if not parked:
                             return None
                         logger.info(
@@ -29461,7 +29462,8 @@ class LlamaCppBackend:
                                 raise
                             continue  # slow but alive: keep reading
                         # This stream's own notices, before anything above it parses a line.
-                        notices.feed(data)
+                        if notices is not None:
+                            notices.feed(data)
                         return data
 
                 stream.read = read
