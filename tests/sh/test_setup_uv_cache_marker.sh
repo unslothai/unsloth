@@ -89,6 +89,26 @@ run() {  # run <shell> <state> <input> <no-cache-state> <no-cache> <studio home>
     "$1" "$PROBE" "$2" "$3" "$4" "$5" "$6"
 }
 
+# The same probe under the options setup.sh actually sets on line 5. Every case here runs
+# the selector under a bare `sh`/`bash`, which is a weaker shell than the one that ships:
+# `set -o pipefail` turns a SIGPIPE inside a command substitution into a failed pipeline,
+# and that is the difference between reading a real cache as warm and refetching it.
+run_strict() {  # run_strict <state> <input> <no-cache-state> <no-cache> <studio home>
+    bash -e -u -o pipefail "$PROBE" "$1" "$2" "$3" "$4" "$5"
+}
+
+# A bucket with more file names in it than a 64K pipe can hold. Built once, outside the
+# per-shell loop, because `touch`ing it twice is the only slow thing in this file.
+# `find ... -print | head -n 1` reads THIS cache as cold under pipefail: head has its
+# answer after one line and exits, find is killed writing the rest, and the pipeline's
+# non-zero status sends the match to `|| _uvw_hit=""`. Every other fixture here is a
+# handful of files, which is exactly why the suite stayed green while `unsloth studio
+# update` walked away from warm caches on real machines.
+BIG="$WORK/big cache/uv"
+mkdir -p "$BIG/archive-v0/pkg"
+awk -v d="$BIG/archive-v0/pkg" 'BEGIN { for (i = 0; i < 4000; i++)
+    printf "%s/wheel_payload_%05d.whl%c", d, i, 0 }' | xargs -0 touch
+
 echo "=== test_setup_uv_cache_marker ==="
 for shell in sh bash; do
     command -v "$shell" >/dev/null 2>&1 || continue
@@ -137,6 +157,17 @@ for shell in sh bash; do
         assert_eq "$shell: $bucket counts as package data" \
             "$BUCKET_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
     done
+
+    # ...and one that is warm by thousands of files rather than by one. Under the shell
+    # setup.sh really runs, the old `-print | head -n 1` scan answered "cold" for this and
+    # sent the update to an empty Studio cache to refetch every wheel it already had.
+    record "$HOME_DIR" "$BIG\\n"
+    assert_eq "$shell: a cache too big for one pipe buffer is still warm" \
+        "$BIG" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+    if [ "$shell" = bash ]; then
+        assert_eq "$shell: ...under setup.sh's own set -euo pipefail too" \
+            "$BIG" "$(run_strict unset "" unset "" "$HOME_DIR")"
+    fi
 
     # A relative record names a different directory in each phase and there is nothing
     # here to resolve it against, so it is declined rather than guessed at.

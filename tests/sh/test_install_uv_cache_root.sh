@@ -44,6 +44,11 @@ printf '%s\n' "$HELPERS" > "$PROBE"
 cat >> "$PROBE" <<'PROBE'
 step() { printf 'message=%s\n' "$2"; }
 C_WARN=""
+# install.sh's own top-level initialisation of the rollback state, verbatim. The probe used
+# to lean on unset reading as empty, which is only true while nothing runs it under `set -u`.
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
 case "$1" in
     unset) unset UV_CACHE_DIR ;;
     value) UV_CACHE_DIR=$2 ;;
@@ -94,6 +99,20 @@ run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, 
         bad "$_shell: $_label (expected [$_wanted], got [$_actual])"
     fi
 }
+
+# A bucket holding more file names than a 64K pipe can carry, built once because
+# `touch`ing 4000 paths is the only slow thing in this file. `find ... -print | head -n 1`
+# answers "cold" for THIS cache in any shell with `set -o pipefail` on: head has its answer
+# after one line and exits, find is killed writing the rest, and the failed pipeline routes
+# a match already in hand into `|| _uv_artifact=""`. Every other fixture here is a handful
+# of files, so the pipe never fills and the defect cannot show. install.sh is `#!/bin/sh`
+# with `set -e` and no pipefail, so it never lost a match -- studio/setup.sh runs the same
+# scan under `set -euo pipefail` and did. The scans are meant to agree; pinning the big case
+# in both suites is what keeps them agreeing after the next option change.
+BIG_CACHE="$WORK/big shared cache/uv"
+mkdir -p "$BIG_CACHE/archive-v0/pkg"
+awk -v d="$BIG_CACHE/archive-v0/pkg" 'BEGIN { for (i = 0; i < 4000; i++)
+    printf "%s/wheel_payload_%05d.whl%c", d, i, 0 }' | xargs -0 touch
 
 echo "=== test_install_uv_cache_root ==="
 for shell in sh bash; do
@@ -211,6 +230,22 @@ for shell in sh bash; do
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
         "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
+
+    run_case "$shell" "a bucket too big for one pipe buffer is still shared" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$BIG_CACHE" "$BIG_CACHE" shared \
+        "reusing existing shared cache ($BIG_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+
+    # And under the strictest option set any caller could impose on this helper. The word
+    # splitting is deliberate: run_case invokes "$_shell" unquoted precisely so a shell can
+    # be named with its options. Only bash, because `-o pipefail` is what is being pinned
+    # and dash has no such option to set.
+    if [ "$shell" = bash ]; then
+        run_case "bash -e -u -o pipefail" "a big shared cache survives set -euo pipefail" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$BIG_CACHE" "$BIG_CACHE" shared \
+            "reusing existing shared cache ($BIG_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+            "$STUDIO_CACHE"
+    fi
 
     # `find` needs -L to descend a symlink; Get-ChildItem -Recurse already does.
     LINK_CACHE="$CASE/symlinked bucket/uv"

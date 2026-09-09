@@ -1018,10 +1018,18 @@ _uv_cache_warm() {
         # Unreadable is not empty, but it is also not proof of warmth.
         [ -r "$_uvw_bucket" ] && [ -x "$_uvw_bucket" ] || continue
         # -L: a bucket can be a symlink to another disk, as Get-ChildItem -Recurse follows.
+        # -print -quit, never `-print ... | head -n 1`: this script runs under `set -o
+        # pipefail` (line 5), so on any bucket big enough to fill the 64K pipe buffer --
+        # which is every cache that actually holds wheels -- head exits on the first match,
+        # find dies of SIGPIPE, pipefail reports the pipeline as failed and `|| _uvw_hit=""`
+        # throws away a match that was already in hand. The warm shared cache then reads as
+        # cold, the update walks away from it, and every Torch and CUDA wheel is refetched.
+        # -quit stops find at the first hit inside find itself, so there is no pipe to break
+        # and no second process to fork; it is the idiom the rest of this file already uses.
         _uvw_hit=$(find -L "$_uvw_bucket" -type f \
             ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
             ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-            -print 2>/dev/null | head -n 1) || _uvw_hit=""
+            -print -quit 2>/dev/null) || _uvw_hit=""
         if [ -n "$_uvw_hit" ]; then
             unset _uvw_bucket _uvw_hit
             return 0

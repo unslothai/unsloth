@@ -767,10 +767,19 @@ _configure_uv_cache() {
                 _uv_scan_blocked=true
                 continue
             fi
+            # -print -quit, not `-print ... | head -n 1`: head exits on the first match and
+            # find then dies of SIGPIPE on a bucket large enough to fill the 64K pipe buffer,
+            # which is every cache with wheels in it. This script is `#!/bin/sh` with `set -e`
+            # and never turns on pipefail, so today the pipeline still reports head's own 0 and
+            # the match survives -- but the identical line in studio/setup.sh runs under
+            # `set -o pipefail` and did lose it, reading a warm shared cache as cold. The three
+            # scanners are meant to answer alike; one of them being one `set -o` away from
+            # answering differently is not a difference worth keeping. -quit also stops the walk
+            # inside find, so a huge shared cache is not enumerated just to prove it is not empty.
             _uv_artifact=$(find -L "$_uv_bucket" -type f \
                 ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
                 ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-                -print 2>/dev/null | head -n 1) || _uv_artifact=""
+                -print -quit 2>/dev/null) || _uv_artifact=""
             if [ -n "$_uv_artifact" ]; then
                 _uv_default_populated=true
                 break
