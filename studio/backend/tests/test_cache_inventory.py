@@ -659,3 +659,116 @@ def test_purging_a_hub_cache_invalidates_the_hugging_face_scans(tmp_path, isolat
     _write(tmp_path / "uv" / "wheel.whl", "w" * 10)
     purge_caches(["uv"])
     assert inventory_scan.hf_cache_scans_epoch() == steady
+
+
+def test_a_pattern_limited_cache_nested_in_another_root_is_sheltered(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """MPLCONFIGDIR keeps matplotlibrc, so a broader clear must not take it.
+
+    Its own clear is pattern-limited for exactly that reason. Nothing stops a
+    variable from putting it inside another cache, and emptying the outer root
+    would delete the configuration the narrower clear was written to keep.
+    """
+    uv = tmp_path / "uv"
+    config = uv / "matplotlib"
+    _write(uv / "wheels" / "wheel.whl", "w" * 10)
+    kept = _write(config / "matplotlibrc", "backend: Agg")
+    fonts = _write(config / "fontlist-v390.json", "[]" * 10)
+    monkeypatch.setenv("MPLCONFIGDIR", str(config))
+
+    described = describe_cache(definition_for("uv"))
+    assert described["purgeable"] is False
+    assert "matplotlib cache" in (described["blocked_reason"] or "")
+    result = purge_caches(["uv"])
+    assert kept.exists()
+    assert result["freed_bytes"] == 0
+
+    # ...and its own clear still takes the cache files and leaves the config.
+    purge_caches(["matplotlib"])
+    assert kept.exists()
+    assert not fonts.exists()
+
+
+def test_a_cache_home_left_behind_is_protected_but_never_purged(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """Only the ACTIVE Hugging Face home is a purge root.
+
+    The history the other homes come from is appended to by an endpoint an API
+    key may call, while the purge endpoint refuses one, so resolving purge roots
+    through it would let a caller that cannot delete pick what a later clear
+    deletes.
+    """
+    from utils import hf_cache_settings
+
+    previous = tmp_path / "old-home"
+    theirs = _write(previous / "assets" / "someone-elses.bin", "d" * 10)
+    _write(previous / "hub" / "models--org--model" / "blob", "m" * 10)
+    mine = _write(isolated_caches / "assets" / "asset.bin", "a" * 10)
+    monkeypatch.setattr(
+        hf_cache_settings, "known_hf_cache_homes", lambda: [isolated_caches, previous]
+    )
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "known_hf_hub_caches",
+        lambda: [isolated_caches / "hub", previous / "hub"],
+    )
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
+
+    assets = describe_cache(definition_for("hf_assets"))
+    assert assets["paths"] == [str(isolated_caches / "assets")]
+    hub = describe_cache(definition_for("hf_hub"))
+    assert hub["paths"] == [str(isolated_caches / "hub")]
+
+    purge_caches(["hf_assets", "hf_hub"])
+    assert not mine.exists()
+    assert theirs.exists()
+
+    # ...and a home that was left behind is still refused outright.
+    with pytest.raises(CachePurgeRefused):
+        assert_purgeable_root(previous)
+
+
+def test_the_pip_cache_is_the_one_pip_reports(tmp_path, monkeypatch, isolated_caches):
+    """pip.conf can move the cache and Studio's fallback pip calls honour it.
+
+    They do not pass --isolated, so the platform default is the wrong answer
+    whenever cache-dir is configured. pip is asked for its own.
+    """
+    import subprocess as real_subprocess
+
+    from utils import cache_inventory as module
+
+    configured = tmp_path / "corp-pip-cache"
+    _write(configured / "wheels" / "cached.whl", "p" * 40)
+    monkeypatch.delenv("PIP_CACHE_DIR", raising = False)
+    monkeypatch.setattr(module, "_pip_configured", module._UNPROBED)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *a, **k: real_subprocess.CompletedProcess(a[0], 0, f"{configured}\n", ""),
+    )
+
+    entry = describe_cache(definition_for("pip"))
+    assert entry["paths"] == [str(configured)]
+    assert entry["size_bytes"] == 40
+
+
+def test_the_pip_probe_runs_once_and_survives_a_failure(tmp_path, monkeypatch, isolated_caches):
+    from utils import cache_inventory as module
+
+    calls = []
+    monkeypatch.delenv("PIP_CACHE_DIR", raising = False)
+    monkeypatch.setattr(module, "_pip_configured", module._UNPROBED)
+
+    def explode(*args, **kwargs):
+        calls.append(args)
+        raise OSError("no pip here")
+
+    monkeypatch.setattr(module.subprocess, "run", explode)
+    assert module._pip_configured_dir() is None
+    assert module._pip_configured_dir() is None
+    assert len(calls) == 1
+    # ...and the platform default still answers, so the row does not vanish.
+    assert module._pip_dirs() == [tmp_path / "xdg" / "pip"]

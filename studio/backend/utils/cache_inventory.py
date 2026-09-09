@@ -19,8 +19,9 @@ The rules a purge obeys, in the order they are checked:
   studio home, studio.db, projects, models, datasets, outputs, exports, auth,
   the Hugging Face cache HOME (which holds the token), or a managed asset home
   such as DATA_DESIGNER_HOME.
-* The root must not contain an opt-in cache belonging to another key, which is
-  only ever cleared when it is asked for by name.
+* The root must not contain another key's root whose own clear is narrower than
+  emptying it: an opt-in cache, or a pattern-limited one that keeps the files
+  which are not cache. Either is only ever cleared when it is asked for by name.
 * The root is emptied, never removed, so nothing recreates it at the wrong
   place with the wrong permissions.
 * A symlink inside the root is unlinked, never followed, and a directory whose
@@ -33,6 +34,7 @@ import fnmatch
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -136,8 +138,45 @@ def _uv_dirs() -> list[Path]:
     return _first(_env_dir("UV_CACHE_DIR"), _platform_cache_dir("uv"))
 
 
+_UNPROBED = object()
+_pip_configured: object = _UNPROBED
+
+
+def _pip_configured_dir() -> Optional[Path]:
+    """pip's effective cache directory, asked of pip itself.
+
+    ``cache-dir`` in pip.conf moves the cache, and the fallback pip commands in
+    core/training/worker.py and utils/wheel_utils.py do not pass --isolated, so
+    they honour it. Reimplementing pip's five config kinds, their per-platform
+    and legacy locations, and the way PIP_CONFIG_FILE suppresses the user file
+    would give this install a second, weaker answer; ``pip cache dir`` is the
+    first-hand one.
+
+    Probed once per process. A config file does not change under a running
+    backend, and this sits on a read the Resources tab makes.
+    """
+    global _pip_configured
+    if _pip_configured is not _UNPROBED:
+        return _pip_configured  # type: ignore[return-value]
+    _pip_configured = None
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "pip", "cache", "dir"],
+            capture_output = True,
+            text = True,
+            timeout = 20,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        logger.debug(f"Could not ask pip for its cache directory: {exc}")
+        return None
+    reported = done.stdout.strip() if done.returncode == 0 else ""
+    if reported:
+        _pip_configured = Path(reported).expanduser()
+    return _pip_configured  # type: ignore[return-value]
+
+
 def _pip_dirs() -> list[Path]:
-    return _first(_env_dir("PIP_CACHE_DIR"), _platform_cache_dir("pip"))
+    return _first(_env_dir("PIP_CACHE_DIR"), _pip_configured_dir(), _platform_cache_dir("pip"))
 
 
 def _npm_dirs() -> list[Path]:
@@ -161,20 +200,26 @@ def _hf_paths():
 
 
 def _hf_homes() -> list[Path]:
+    """Every cache home this install has been pointed at, for PROTECTION only.
+
+    Never for deletion. The history behind it is appended to by
+    ``PUT /api/settings/hugging-face-cache``, which an API key may call, while
+    the purge endpoint refuses one. Resolving a purge root through it would let
+    a caller that cannot delete choose what a later clear deletes, which is the
+    one thing the key-not-path rule at the top of this module exists to stop.
+    Protecting more locations than are cleared is safe in that direction.
+    """
     from utils.hf_cache_settings import known_hf_cache_homes
     return list(known_hf_cache_homes())
 
 
 def _hf_hub_dirs() -> list[Path]:
-    from utils.hf_cache_settings import known_hf_hub_caches
-    return list(known_hf_hub_caches())
+    return [_hf_paths().hub_cache]
 
 
 def _hf_child_dirs(name: str, env_key: str) -> list[Path]:
-    configured = _env_dir(env_key)
-    dirs = [configured] if configured is not None else []
-    dirs.extend(home / name for home in _hf_homes())
-    return dirs
+    # HF reads the variable INSTEAD of <home>/<name>, so these are alternatives.
+    return _first(_env_dir(env_key), _hf_paths().cache_home / name)
 
 
 def _hf_datasets_dirs() -> list[Path]:
@@ -186,9 +231,7 @@ def _hf_assets_dirs() -> list[Path]:
 
 
 def _hf_xet_dirs() -> list[Path]:
-    dirs = [_hf_paths().xet_cache]
-    dirs.extend(home / "xet" for home in _hf_homes())
-    return dirs
+    return [_hf_paths().xet_cache]
 
 
 def _torch_inductor_dirs() -> list[Path]:
@@ -310,7 +353,7 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
         # than letting the others carry it through.
         protected = protected_paths()
         trees = protected_trees()
-        keep = opt_in_roots("unsloth_compiled")
+        keep = sheltered_roots("unsloth_compiled")
         for directory, dedicated in _cleanable_cache_dirs():
             if not dedicated:
                 # Only generated module files are touched there, never the
@@ -555,24 +598,37 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
-def opt_in_roots(exclude_key: Optional[str] = None) -> set[Path]:
-    """Resolved roots of the caches that are only ever cleared when asked for.
+def sheltered_roots(exclude_key: Optional[str] = None) -> dict[Path, str]:
+    """Resolved roots another key's clear must not empty, mapped to why.
+
+    Two kinds, and the reason is the same either way: their own clear is
+    narrower than emptying the directory, so a clear that swallows them whole
+    takes something that clear was written to keep.
 
     An opt-in cache costs a re-download, or a running job, so it is never swept
-    up by a bulk clear. Nothing stops a variable from putting one INSIDE another
-    cache (``UNSLOTH_COMPILE_LOCATION=/cache/uv/compiled`` under
-    ``UV_CACHE_DIR=/cache/uv``), and emptying the outer root would then delete it
-    anyway. The key being cleared is excluded, so asking for a cache by name
-    still clears it.
+    up by a bulk clear. A pattern-limited root holds configuration next to the
+    cache files (``MPLCONFIGDIR`` keeps matplotlibrc beside the font list), and
+    only the matching entries are ever removed from it.
+
+    Nothing stops a variable from putting either INSIDE another cache
+    (``MPLCONFIGDIR=/cache/uv/matplotlib`` under ``UV_CACHE_DIR=/cache/uv``),
+    and emptying the outer root would then delete it anyway. The key being
+    cleared is excluded, so asking for a cache by name still clears it.
     """
-    roots: set[Path] = set()
+    roots: dict[Path, str] = {}
     for definition in CACHE_DEFINITIONS:
-        if not definition.opt_in or definition.key == exclude_key:
+        if definition.key == exclude_key:
+            continue
+        if definition.opt_in:
+            reason = "the opt-in cache"
+        elif _patterns_for(definition) is not None:
+            reason = f"the {definition.key} cache"
+        else:
             continue
         for root in _resolve_roots(definition):
             resolved = _safe_resolve(root)
             if resolved is not None:
-                roots.add(resolved)
+                roots.setdefault(resolved, reason)
     return roots
 
 
@@ -581,7 +637,7 @@ def assert_purgeable_root(
     *,
     protected: Optional[set[Path]] = None,
     trees: Optional[set[Path]] = None,
-    keep: Optional[set[Path]] = None,
+    keep: Optional[dict[Path, str]] = None,
 ) -> Path:
     """Return the real path of *root*, or raise if emptying it is not allowed.
 
@@ -620,10 +676,10 @@ def assert_purgeable_root(
             raise CachePurgeRefused(
                 f"Refusing to empty {resolved}: it sits inside the protected folder {tree}"
             )
-    for reserved in () if keep is None else keep:
+    for reserved, kind in ({} if keep is None else keep).items():
         if resolved == reserved or _is_within(reserved, resolved):
             raise CachePurgeRefused(
-                f"Refusing to empty {resolved}: it holds the opt-in cache {reserved}, "
+                f"Refusing to empty {resolved}: it holds {kind} {reserved}, "
                 "which is only ever cleared when it is asked for by name"
             )
     return resolved
@@ -761,7 +817,7 @@ def describe_cache(definition: CacheDefinition) -> dict:
     if roots and definition.custom_purge is None:
         protected = protected_paths()
         trees = protected_trees()
-        keep = opt_in_roots(definition.key)
+        keep = sheltered_roots(definition.key)
         measurable = []
         for root in roots:
             try:
@@ -934,7 +990,7 @@ def purge_cache(key: str) -> dict:
     patterns = _patterns_for(definition)
     protected = protected_paths()
     trees = protected_trees()
-    keep = opt_in_roots(definition.key)
+    keep = sheltered_roots(definition.key)
     for root in _resolve_roots(definition):
         try:
             root_outcome = empty_cache_root(
