@@ -3955,9 +3955,9 @@ def test_the_plan_prices_the_context_the_extras_actually_ask_for(cluster, monkey
     request.llama_extra_args = ["--ctx-size", "131072", "-ctk", "q8_0", "--cache-type-v", "q4_0"]
     run(ss.before_load(request, 4))
 
-    assert priced == [(131072, "q8_0", "q4_0")], (
-        "the plan priced the request's fields, not what the load will run with"
-    )
+    assert priced == [
+        (131072, "q8_0", "q4_0")
+    ], "the plan priced the request's fields, not what the load will run with"
 
 
 def test_the_cache_types_are_read_from_the_environment_and_apart(cluster, monkeypatch, tmp_path):
@@ -4036,7 +4036,6 @@ def test_a_local_directory_of_gguf_variants_is_sized_not_skipped(tmp_path):
 
 def osp_basename(path: str) -> str:
     import os.path
-
     return os.path.basename(str(path))
 
 
