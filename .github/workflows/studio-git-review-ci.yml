@@ -61,13 +61,16 @@ jobs:
           git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$LIFECYCLE_REVISION"
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$LIFECYCLE_REVISION"
 
-      # Compose #10577 to verify shared tool locks and native Windows untracked reads.
+      # Compose #10577 and #10636 to verify shared locks and native untracked reads.
       - name: Compose the secure command prerequisite
         if: matrix.variant == 'secure-tools'
         shell: bash
         env:
-          SECURE_TOOLS_REVISION: d79c53fdba726fec0b27dc4385667ba3798be277
+          EDIT_REVISION: a5d144019bb585e246d0752c11d325807d0bfb19
+          SECURE_TOOLS_REVISION: 9d25a218f4dc335a952b8817588a0d023479c6de
         run: |
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$EDIT_REVISION"
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$EDIT_REVISION"
           git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$SECURE_TOOLS_REVISION"
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-commit --no-ff "$SECURE_TOOLS_REVISION"
 
