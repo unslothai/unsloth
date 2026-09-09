@@ -11,10 +11,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
-PASS=0
-FAIL=0
-
 # Extract _previous_torch_pin and its dependency _torch_release_in_window.
 _FUNC_FILE=$(mktemp)
 {
@@ -25,15 +23,6 @@ _FUNC_FILE=$(mktemp)
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 unset UNSLOTH_TORCH_UPGRADE
 
