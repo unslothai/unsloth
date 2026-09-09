@@ -2322,16 +2322,14 @@ class TestFitOffRetryClearsPolicyActivity:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
+        # Whitespace-normalised: a formatter may rewrap any of these, and pinning the
+        # wrapping made pre-commit.ci's reflow look like a behaviour change.
         # The managed half is no longer bare bool(_mem_managed): a DirectIO pair a
         # later mmap shadows changes nothing the child can observe, so it does not
-        # count as activity either. The non-managed half is what the retry reuses,
-        # and that is what this pins.
-        assert (
-            "self._memory_policy_active = (\n"
-            "                    _mem_managed_is_effective or _mem_policy_touched_extras\n"
-            "                )" in src
-        )
-        assert "self._memory_policy_extras_touched = _mem_policy_touched_extras" in src
+        # count as activity either. The non-managed half is what the retry reuses.
+        flat = "".join(src.split())
+        assert "self._memory_policy_active=_mem_managed_is_effectiveor_mem_policy_touched_extras" in flat
+        assert "self._memory_policy_extras_touched=_mem_policy_touched_extras" in flat
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
         assert branch != -1
         end = src.find("return False", branch)
@@ -2710,7 +2708,6 @@ class TestTheLaunchProbesVulkanWhenDioDependsOnIt:
         arm = arm[: arm.index("fit_active =")]
         compact = "".join(arm.split())
         assert "probe_vulkan=_mem_should_mlockor_mem_probe_for_dio" in compact
-        assert "_mem_probe_for_dio = _mem_dio_possible and _mem_no_reserve" in src
 
     def test_the_probe_gate_and_the_flags_read_one_snapshot(self):
         """Gating the probe on its own read of the toggles lets a save landing in
@@ -2802,11 +2799,9 @@ class TestAnExplicitLoaderChoiceIsNotAStandingReload:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        arm = src[src.index("self._memory_dio_applicable = managed_dio_applies(") :]
-        arm = arm[: arm.index("self._fit_load_mode_flags = (")]
-        compact = "".join(arm.split())
-        assert "managed_dio_applies(" in compact
-        assert "and_mem_dio_survives_chain" in compact
+        flat = "".join(src.split())
+        assert "self._memory_dio_applicable=(managed_dio_applies(" in flat
+        assert "and_mem_dio_survives_chain" in flat
         survives = src[src.index("_mem_dio_survives_chain = resolve_effective_direct_io(") :]
         survives = survives[: survives.index("self._memory_dio_applicable")]
         assert "[*MANAGED_DIO_FLAGS,*_load_mode_managed,*_mem_extras]" in "".join(survives.split())
@@ -2988,8 +2983,9 @@ class TestAShadowedPairIsNotPolicyActivity:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        assert "_mem_managed_is_effective = bool(_mem_managed) and (" in src
-        assert "tuple(_mem_managed) != MANAGED_DIO_FLAGS or _mem_dio_survives_chain" in src
+        flat = "".join(src.split())
+        assert "_mem_managed_is_effective=bool(_mem_managed)and(" in flat
+        assert "tuple(_mem_managed)!=MANAGED_DIO_FLAGSor_mem_dio_survives_chain" in flat
 
     def test_the_survival_answer_is_computed_once_for_both_readers(self):
         """The reload comparator and the activity record must not answer the same
@@ -3044,28 +3040,38 @@ class TestTheArchRetryRestoresBeforeStripping:
         assert src.count("self._memory_dio_applicable,") == 3
 
 
-class TestAnUnlookedPlacementIsNotSettled:
-    """With no-reserve off the Vulkan probe is skipped, so the placement answer is
-    the conservative host-resident one. Recording that as "not applicable" let a
-    later save read as already satisfied and never apply the policy."""
+class TestThePlacementAnswerIsAlwaysLookedUp:
+    """The applicability record is this launch's placement, and a LATER save is
+    compared against it. Gating the probe on the toggle made the record mean "we
+    did not look", and repairing that from outside either missed a real change or
+    demanded a reload for a placement the probe never decided (--device cpu,
+    -ngl 0, a manual partial count). Probe once instead; it costs a subprocess,
+    and only on a Windows Vulkan build that understands --load-mode."""
 
-    def test_the_launch_treats_an_unlooked_vulkan_placement_as_possibly_owed(self):
+    def test_the_probe_is_not_gated_on_the_toggle(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        assert (
-            "_mem_dio_placement_unlooked = bool(\n"
-            "                    _mem_dio_possible and is_vulkan_backend "
-            "and not _mem_probe_for_dio\n                )" in src
-        )
-        arm = src[src.index("self._memory_dio_applicable = managed_dio_applies(") :]
-        arm = arm[: arm.index("self._fit_load_mode_flags = (")]
-        compact = "".join(arm.split())
-        assert "_mem_gpu_offload_confirmedor_mem_dio_placement_unlooked" in compact
-        # Still gated on the deference and the shadowing, so it cannot ask for a
-        # reload that would change nothing.
-        assert "and_mem_dio_survives_chain" in compact
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mem_probe_for_dio=_mem_dio_possible" in flat
+        assert "_mem_probe_for_dio=_mem_dio_possibleand_mem_no_reserve" not in flat
+
+    def test_there_is_no_unlooked_fallback_left(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mem_dio_placement_unlooked" not in flat
+        assert "gpu_offload_confirmed=_mem_gpu_offload_confirmed," in flat
+
+    def test_a_definitively_host_resident_placement_needs_no_reload(self, monkeypatch):
+        """--device cpu / -ngl 0 / a partial count answer host-resident without the
+        probe, so the confirmation is False and no save may demand a reload."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+        assert memory_state_satisfies_settings((False, False), False, True, False, False)
 
 
 class TestAnUnansweredVulkanProbeDeclines:

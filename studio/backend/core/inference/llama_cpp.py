@@ -23394,7 +23394,14 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     gpu_offload_confirmed = True,
                 )
-                _mem_probe_for_dio = _mem_dio_possible and _mem_no_reserve
+                # NOT gated on the toggle. The answer is recorded as this launch's
+                # placement and a LATER save is compared against it, so gating the probe
+                # on the toggle made the record mean "we did not look", and repairing
+                # that from the outside either missed a real change or demanded a reload
+                # for a placement the probe never decided (--device cpu, -ngl 0, a manual
+                # partial count). Probing costs one subprocess, and only on Windows
+                # Vulkan builds that understand --load-mode.
+                _mem_probe_for_dio = _mem_dio_possible
                 _mem_host_resident = self._weights_in_host_memory(
                     fully_gpu_offloaded = fully_gpu_offloaded,
                     gpu_memory_mode = gpu_memory_mode,
@@ -23519,22 +23526,10 @@ class LlamaCppBackend:
                     [*MANAGED_DIO_FLAGS, *_load_mode_managed, *_mem_extras],
                     _fit_load_mode_env_view,
                 )
-                # "We did not look" is not "not applicable". With no-reserve off the
-                # Vulkan probe is skipped, so the placement answer is the conservative
-                # host-resident one; recording that as settled let a LATER save read as
-                # already satisfied and never apply the policy at all. Treat an unlooked
-                # placement as possibly owed, so the save asks for the relaunch that does
-                # probe and settles it either way. The env deference and the shadowing
-                # check still apply, so this cannot ask for a reload that changes nothing.
-                _mem_dio_placement_unlooked = bool(
-                    _mem_dio_possible and is_vulkan_backend and not _mem_probe_for_dio
-                )
                 self._memory_dio_applicable = (
                     managed_dio_applies(
                         supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                        gpu_offload_confirmed = (
-                            _mem_gpu_offload_confirmed or _mem_dio_placement_unlooked
-                        ),
+                        gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                         env = _fit_load_mode_env_view,
                     )
                     and _mem_dio_survives_chain
