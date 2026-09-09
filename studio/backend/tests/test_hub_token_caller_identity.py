@@ -999,24 +999,33 @@ def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monk
 
 
 def test_an_anonymous_caller_does_not_read_a_cached_chat_template(monkeypatch):
-    """The snapshot walk returns a private repo's raw template with no Hub call."""
-    walked = {"n": 0}
+    """The snapshot walk returns a private repo's raw template with no Hub call.
 
-    def _snapshots(*_a, **_k):
-        walked["n"] += 1
-        return [Path("/nonexistent-snapshot")]
-
-    monkeypatch.setattr(picker_service, "iter_snapshots_preferring_whole", _snapshots)
+    The walk itself runs for everyone: it reads our own disk, which is not the leak, and
+    ordering it first is what keeps an uncached repo off the wire. Handing the template
+    back is what is gated.
+    """
+    monkeypatch.setattr(
+        picker_service, "iter_snapshots_preferring_whole", lambda *_a, **_k: [Path("/snap")]
+    )
     monkeypatch.setattr(picker_service, "_chat_template_from_dir", lambda *_a, **_k: "TEMPLATE")
 
     assert picker_service.read_default_chat_template("org/private", None) == "TEMPLATE"
-    assert walked["n"] == 1
 
-    picker_service.read_default_chat_template("org/private", False)
-    assert walked["n"] == 1, "the anonymous caller walked the cached snapshots"
-    _counting_probe(monkeypatch, False)
-    picker_service.read_default_chat_template("org/private", "hf_dummy")
-    assert walked["n"] == 1, "an unverified token walked the cached snapshots"
+    assert (
+        picker_service.read_default_chat_template("org/private", False) != "TEMPLATE"
+    ), "the anonymous caller was handed the cached template"
+    probes = _counting_probe(monkeypatch, False)
+    assert (
+        picker_service.read_default_chat_template("org/private", "hf_dummy") != "TEMPLATE"
+    ), "an unverified token was handed the cached template"
+
+    # Nothing cached: there is no disk-backed answer to protect, so no probe is warranted.
+    monkeypatch.setattr(picker_service, "_chat_template_from_dir", lambda *_a, **_k: None)
+    hf_tokens.reset_repo_access_cache()
+    probes["n"] = 0
+    picker_service.read_default_chat_template("org/uncached", "hf_dummy")
+    assert probes["n"] == 0, "an uncached repo still cost the caller a probe"
 
 
 def test_the_config_inspection_target_still_uses_the_cache_for_the_ambient_caller():

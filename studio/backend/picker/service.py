@@ -367,17 +367,23 @@ def read_default_chat_template(
 
     # The walk returns a private repo's raw template without asking the Hub, so a denied
     # caller goes to the Hub and is refused there. A UI session keeps the cache.
-    if cache_reads_authorized(hf_token, repo_id = resolved):
-        try:
-            # Resolve within each cached revision, newest first. A revision's sidecar
-            # supersedes its own embedded GGUF copy, but must not override a newer
-            # revision, so precedence stays per-snapshot rather than global.
-            for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-                template = _chat_template_from_dir(snapshot, gguf_variant)
-                if template:
-                    return template
-        except Exception as exc:
-            logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+    # Walk first, authorize the answer: the walk is local, and with nothing cached there is
+    # no disk-backed answer to protect, so probing would spend up to the probe timeout to
+    # decide a question that no longer has a subject. Same order as the per-file gate below.
+    cached_template = None
+    try:
+        # Resolve within each cached revision, newest first. A revision's sidecar
+        # supersedes its own embedded GGUF copy, but must not override a newer
+        # revision, so precedence stays per-snapshot rather than global.
+        for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
+            cached_template = _chat_template_from_dir(snapshot, gguf_variant)
+            if cached_template:
+                break
+    except Exception as exc:
+        logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+        cached_template = None
+    if cached_template and cache_reads_authorized(hf_token, repo_id = resolved):
+        return cached_template
 
     if hf_env_offline() and not cache_reads_authorized(hf_token, repo_id = resolved):
         # Offline, hf_hub_download serves the cached copy without checking the credential,
