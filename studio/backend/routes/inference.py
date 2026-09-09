@@ -14103,6 +14103,34 @@ async def _load_model_impl(
     # down would have rejected this request. Nothing here has side effects yet.
     _raise_if_admitted_by_a_previous_session()
 
+    def _record_the_admitting_generation() -> None:
+        """Pin the lifecycle that admitted this load onto the context.
+
+        The checks above are points in time; this is what the BACKENDS read. Without it
+        they call process_lifecycle_generation() on entry, which for a load that sat in
+        preflight across a restart is the NEW session's number, so old work stamps
+        itself as belonging to a session that never asked for it. The context is copied
+        into the worker by asyncio.to_thread, so the stamp survives the hop.
+
+        A request with no usable stamp records nothing, and every reader then falls back
+        to the live generation exactly as before.
+        """
+        from collections.abc import Mapping
+
+        from utils.process_lifetime import process_lifecycle_generation, set_admitting_generation
+
+        _scope = getattr(fastapi_request, "scope", None)
+        _admitted = (
+            _scope.get("unsloth_process_generation") if isinstance(_scope, Mapping) else None
+        )
+        if not isinstance(_admitted, int) or isinstance(_admitted, bool):
+            # No ASGI stamp (an internal caller). The generation now is still a better
+            # anchor than one read after a preflight that may span a restart.
+            _admitted = process_lifecycle_generation()
+        set_admitting_generation(_admitted)
+
+    _record_the_admitting_generation()
+
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")

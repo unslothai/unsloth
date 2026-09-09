@@ -18523,9 +18523,11 @@ class LlamaCppBackend:
         # The process-wide equivalent, for the same reason. Only _begin_server_lifecycle
         # advances the per-instance one, and a helper load owns a backend that never
         # gets it, so an embedded second session would otherwise release this load.
-        from utils.process_lifetime import process_lifecycle_generation
+        # admitting_generation(), not the live value: a load that sat in preflight
+        # across an embedded restart would otherwise stamp itself with the new session.
+        from utils.process_lifetime import admitting_generation
 
-        _process_generation = process_lifecycle_generation()
+        _process_generation = admitting_generation()
         self._load_process_generation = _process_generation
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.

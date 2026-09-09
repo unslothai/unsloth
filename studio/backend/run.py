@@ -3073,9 +3073,11 @@ def run_server(
         app.state.suppress_bootstrap_injection = True
         app.state.bootstrap_password = None
 
-    from cloudflare_tunnel import open_studio_tunnel_lifecycle
-
-    open_studio_tunnel_lifecycle()
+    # NOT opened here. The reopen block below waits for a previous shutdown, and that
+    # shutdown's Cloudflare step legitimately still owns the lifecycle while we wait --
+    # so a tunnel armed before the wait is closed by it, leaving _accepting_starts false
+    # with nothing left to arm it again and every tunnel start in this session refused.
+    # It is opened inside the transition instead, once this session owns the lifecycle.
 
     # Run server in a daemon thread with explicit new_event_loop() +
     # run_until_complete() (not asyncio.run) so nest_asyncio's patches don't
@@ -3196,6 +3198,15 @@ def run_server(
             begin_load_lifecycle()
     except Exception as e:
         logger.warning("Could not reset llama-server shutdown state: %s", e)
+
+    # After the transition, never before it. The generation has advanced by now, so an
+    # old shutdown still walking its steps finds its Cloudflare step superseded and
+    # skips it; if it closed the tunnel while we were waiting, this arms it again.
+    # Outside the try above on purpose: an import failure there must not silently cost
+    # this session its tunnel, and a failure here is not "llama-server shutdown state".
+    from cloudflare_tunnel import open_studio_tunnel_lifecycle
+
+    open_studio_tunnel_lifecycle()
 
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread

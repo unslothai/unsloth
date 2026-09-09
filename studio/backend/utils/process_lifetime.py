@@ -25,6 +25,7 @@ Stdlib only.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import signal
 import sys
@@ -42,6 +43,10 @@ _JobObjectExtendedLimitInformation = 9
 # never reject it because init's start time never changes. Guarded at both ends: nothing below this is recorded, and
 # nothing below this is signalled.
 _LOWEST_SIGNALABLE_PID = 2
+
+# Distinguishes "no record for this pid" from "a record whose identity is None", which
+# is a real state: a pid whose start time could not be read is tracked without one.
+_NO_RECORD = object()
 
 
 def is_signalable_pid(pid: object) -> bool:
@@ -1050,6 +1055,35 @@ def lifecycle_transition() -> "threading.RLock":
     return _transition_lock
 
 
+# The generation that ADMITTED the work running on this context, as opposed to whatever
+# generation happens to be current when it finally reaches a backend. A load can sit in
+# preflight (a download, a long async probe) across an embedded restart, and a backend
+# that reads the live value there stamps old work as belonging to the new session.
+#
+# A ContextVar rather than a parameter: the spawn signatures are stubbed in a dozen
+# tests, and this has to cross `asyncio.to_thread`, which copies the context into the
+# worker thread. Unset means "no admission recorded", and every reader falls back to the
+# live generation, which is exactly the behaviour that existed before.
+_admitting_generation: "contextvars.ContextVar[Optional[int]]" = contextvars.ContextVar(
+    "unsloth_admitting_generation", default = None
+)
+
+
+def set_admitting_generation(generation: "Optional[int]") -> None:
+    """Record the lifecycle that admitted the work on this context."""
+    if generation is not None and (not isinstance(generation, int) or isinstance(generation, bool)):
+        return  # only a real stamp, never a truthy stand-in
+    _admitting_generation.set(generation)
+
+
+def admitting_generation() -> int:
+    """The generation that admitted this work, or the live one if none was recorded."""
+    recorded = _admitting_generation.get()
+    if recorded is None:
+        return process_lifecycle_generation()
+    return recorded
+
+
 def process_lifecycle_generation() -> int:
     with _generation_lock:
         return _lifecycle_generation
@@ -1135,14 +1169,25 @@ def terminate_all(timeout: float = 5.0, sweep_generation: "Optional[int]" = None
     with _record_lock:
         tracked = list(_tracked_pids.items())
     for pid, identity in tracked:
+        # Check and consume under ONE hold. Split, an old sweep could read the
+        # generation, lose the lock, and have the pid recycled and re-adopted by the new
+        # lifecycle before it popped -- deleting the record that had just been created
+        # for a DIFFERENT process. The identity mismatch then stopped it signalling, so
+        # nothing died, but the new child was left in no record at all: absent from the
+        # breadcrumb and from every later sweep, which is how it ends up orphaned.
         with _record_lock:
             adopted_in = _adoption_generation.get(pid)
-        # Belongs to a lifecycle that started after the shutdown running this sweep.
-        # Left tracked as well as unsignalled: it is a live child, and its own session
-        # still needs the handle on it.
-        if sweeping_for is not None and adopted_in is not None and adopted_in > sweeping_for:
-            continue
-        with _record_lock:
+            # Belongs to a lifecycle that started after the shutdown running this sweep.
+            # Left tracked as well as unsignalled: it is a live child, and its own
+            # session still needs the handle on it.
+            if sweeping_for is not None and adopted_in is not None and adopted_in > sweeping_for:
+                continue
+            # Still the record we snapshotted? A re-adoption in the meantime replaced it
+            # with another process's, and consuming that one loses the only handle on a
+            # child this sweep has no business touching. Absent means another sweep
+            # already took it.
+            if _tracked_pids.get(pid, _NO_RECORD) != identity:
+                continue
             _tracked_pids.pop(pid, None)
             _adoption_generation.pop(pid, None)
             pgid = _tracked_pgids.pop(pid, None)

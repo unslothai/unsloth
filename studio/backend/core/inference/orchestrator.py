@@ -1543,12 +1543,16 @@ class InferenceOrchestrator:
 
         from utils.hf_xet_fallback import DownloadStallError
 
-        from utils.process_lifetime import process_lifecycle_generation
+        from utils.process_lifetime import admitting_generation
 
         # Captured at admission, compared at the spawn: a preview or helper load can
         # still be running when an embedded host starts its second session, and the
         # latch alone would be clear again by the time it gets there.
-        load_process_generation = process_lifecycle_generation()
+        # admitting_generation(), not the live value: this call can be reached long
+        # after the request was admitted (a download, a long preflight), and reading the
+        # current generation here would stamp old work with the RESTARTED session's
+        # number. Falls back to the live value when nothing recorded a stamp.
+        load_process_generation = admitting_generation()
 
         model_name = config.identifier
         # On the instance rather than a _spawn_subprocess argument: the signature is

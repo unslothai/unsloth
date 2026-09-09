@@ -3155,22 +3155,34 @@ def test_a_helper_backend_load_carries_the_process_generation():
     or every instance compares None and only the boolean applies.
     """
     import ast
-    import textwrap
     from pathlib import Path
 
     src = (
         Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
     ).read_text(encoding = "utf-8")
-    fn = next(
+    fn = _fn_named(src, "load_model")
+    # By AST, and accepting either source of the number. What matters is that the
+    # instance carries ONE, captured here; which call supplies it is the separate
+    # contract pinned by test_both_backends_read_the_admitting_generation_not_the_live_one.
+    # (This read `"process_lifecycle_generation()" in body` and broke the moment the
+    # capture moved to admitting_generation, without anything being wrong.)
+    captures = [
         n
-        for n in ast.walk(ast.parse(src))
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_model"
-    )
-    body = textwrap.dedent(ast.get_source_segment(src, fn) or "")
-    assert "process_lifecycle_generation()" in body, (
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Call)
+        and getattr(n.value.func, "id", None)
+        in {"admitting_generation", "process_lifecycle_generation"}
+    ]
+    assert captures, (
         "load_model does not capture the process generation, so a stale load is "
         "released by an embedded restart"
     )
+    assert any(
+        any(getattr(t, "attr", None) == "_load_process_generation" for t in n.targets)
+        or any(getattr(t, "id", None) == "_process_generation" for t in n.targets)
+        for n in captures
+    ), "the captured generation is never carried on the instance"
 
 
 def test_the_previous_uvicorn_thread_is_joined_before_the_latches_clear():
@@ -4064,3 +4076,173 @@ def test_the_transition_lock_survives_a_fork():
     ), "_reset_after_fork left the inherited transition lock in place"
     with pl.lifecycle_transition():
         pass
+
+
+def test_the_sweep_does_not_consume_a_record_a_restart_replaced():
+    """PID reuse during the overlap the scoped sweep now allows.
+
+    The gap is between reading a pid's adoption generation and removing its record.
+    Split across two lock holds, a recycled pid re-adopted by the NEW lifecycle in that
+    window is read as old (so not skipped) and then popped -- deleting the record that
+    had just been created for a DIFFERENT process. The identity mismatch stops the sweep
+    signalling it, so nothing dies, but that child is now in no record at all: out of the
+    breadcrumb and out of every later sweep, which is how it ends up orphaned.
+
+    Driven by instrumenting the lock rather than by racing threads, because the window
+    is a few instructions wide. The injection fires when the hold that reads the
+    generation is released, which on the fixed code is the same hold that does the
+    removal -- so there is no longer a point at which it can land.
+    """
+    from utils import process_lifetime as pl
+
+    pid = 4242424
+    old_generation = pl.process_lifecycle_generation()
+    real_lock = pl._record_lock
+
+    class _LockThatLetsARestartIn:
+        """A real lock that re-adopts the pid when the second hold is released."""
+
+        def __init__(self):
+            self.exits = 0
+
+        def acquire(self, *a, **kw):
+            return real_lock.acquire(*a, **kw)
+
+        def release(self):
+            return real_lock.release()
+
+        def __enter__(self):
+            real_lock.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self.exits += 1
+            fire = self.exits == 2
+            real_lock.release()
+            if fire:
+                # The restart: a new lifecycle recycles this pid and adopts it.
+                pl.begin_process_lifecycle()
+                with real_lock:
+                    pl._tracked_pids[pid] = "new-identity"
+                    pl._adoption_generation[pid] = pl._lifecycle_generation
+            return False
+
+    with real_lock:
+        pl._tracked_pids[pid] = "old-identity"
+        pl._adoption_generation[pid] = old_generation
+
+    instrumented = _LockThatLetsARestartIn()
+    pl._record_lock = instrumented
+    try:
+        pl.terminate_all(timeout = 0.1, sweep_generation = old_generation)
+    finally:
+        pl._record_lock = real_lock
+
+    assert instrumented.exits >= 2, "the sweep never reached the instrumented hold"
+    with real_lock:
+        still_tracked = pl._tracked_pids.get(pid)
+        still_stamped = pl._adoption_generation.get(pid)
+        pl._tracked_pids.pop(pid, None)
+        pl._adoption_generation.pop(pid, None)
+        pl._tracked_pgids.pop(pid, None)
+
+    assert still_tracked == "new-identity", (
+        "the old sweep consumed the record the restart had just created for a recycled "
+        f"pid; that child is now in no record at all (tracked={still_tracked!r})"
+    )
+    assert still_stamped is not None, "the adoption generation went with it"
+
+
+def test_the_tunnel_is_armed_after_the_lifecycle_transition():
+    """Armed before the restart's wait, the tunnel is closed by the shutdown being
+    waited on -- which still legitimately owns the lifecycle at that moment, so the
+    supersede check does not save it. _accepting_starts is then false with nothing left
+    to arm it, and every tunnel start in the new session is refused.
+    """
+    import ast
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    fn = _fn_named(run_py, "run_server")
+    opens = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "open_studio_tunnel_lifecycle"
+    ]
+    assert opens, "run_server no longer arms the tunnel"
+    transition = _run_server_call_lines("begin_process_lifecycle")
+    serve = _run_server_call_lines("start", owner = "thread")
+    assert min(opens) > transition, (
+        "the tunnel is armed before the lifecycle transition, so a shutdown this "
+        "restart is waiting on closes it and nothing arms it again"
+    )
+    assert min(opens) < serve, "the tunnel is armed after the server starts serving"
+
+
+def test_the_admitting_generation_survives_a_restart_under_the_work():
+    """A load can sit in preflight across an embedded restart. Read live at the backend,
+    the generation is the NEW session's, so old work stamps itself as belonging to a
+    session that never asked for it.
+    """
+    from utils import process_lifetime as pl
+
+    admitted = pl.process_lifecycle_generation()
+    pl.set_admitting_generation(admitted)
+    pl.begin_process_lifecycle()  # the restart lands mid-preflight
+
+    assert pl.process_lifecycle_generation() != admitted, "the restart did not advance"
+    assert pl.admitting_generation() == admitted, (
+        "the backend would read the restarted session's generation for work the "
+        "previous session admitted"
+    )
+    # And that stamp is what makes the guard refuse the stale work.
+    assert pl.is_process_shutting_down(pl.admitting_generation()) is True
+
+    pl.set_admitting_generation(None)
+    assert pl.admitting_generation() == pl.process_lifecycle_generation(), (
+        "with nothing recorded it must fall back to the live generation, which is the "
+        "behaviour that existed before"
+    )
+
+
+def test_a_bogus_admission_stamp_is_ignored():
+    """Only a real stamp decides. A truthy stand-in compares unequal to every
+    generation and would refuse loads that have nothing wrong with them.
+    """
+    from utils import process_lifetime as pl
+
+    live = pl.process_lifecycle_generation()
+    for bogus in (True, False, "3", 3.0, object()):
+        pl.set_admitting_generation(bogus)
+        assert pl.admitting_generation() == live, f"{bogus!r} was accepted as a stamp"
+
+
+def test_both_backends_read_the_admitting_generation_not_the_live_one():
+    """The whole point of the stamp is that the backends stop reading the clock."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "core" / "inference"
+    for filename, func in (("orchestrator.py", "load_model"), ("llama_cpp.py", "load_model")):
+        src = (root / filename).read_text(encoding = "utf-8")
+        fn = _fn_named(src, func)
+        assigns = [
+            n
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Assign)
+            and isinstance(n.value, ast.Call)
+            and getattr(n.value.func, "id", None)
+            in {"admitting_generation", "process_lifecycle_generation"}
+            and any(
+                (getattr(t, "id", None) or getattr(t, "attr", None) or "").endswith(
+                    ("process_generation", "_load_process_generation")
+                )
+                for t in n.targets
+            )
+        ]
+        assert assigns, f"{filename}:{func} no longer captures a process generation"
+        used = {getattr(n.value.func, "id", None) for n in assigns}
+        assert used == {"admitting_generation"}, (
+            f"{filename}:{func} still reads the live generation ({sorted(used)}); work "
+            "admitted before a restart would be stamped with the session after it"
+        )

@@ -983,6 +983,11 @@ def _process_shutdown_latch_is_clear():
 
     def _reopen():
         process_lifetime.begin_process_lifecycle()
+        # And the admission stamp. It lives on the context, not the call, so a test that
+        # records one leaves it set for every test that follows on this thread -- which
+        # would pin them all to a generation that has since moved and make their spawn
+        # guards answer from a session that ended.
+        process_lifetime.set_admitting_generation(None)
         # The ROUTE latch too. Any test that exercises _graceful_shutdown reaches
         # cancel_pending_loads, which sets it, and only run_server clears it -- so one
         # such test cancels every load admitted by every test that follows it. That is
