@@ -45,7 +45,3 @@ av<16
 # linker. 48.0.1 is the newest release with a universal2 wheel. Lift when
 # cryptography ships an x86_64-capable macOS wheel again.
 cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"
-# sqlfluff 3.x (data-designer-engine 0.5.4 requires sqlfluff<4) pins click<=8.3.0. Without
-# this line the data-designer pass installed click 8.3.0 and the next resolving step put
-# 8.5.0 back, on every update, and no update ever left the closure satisfied.
-click<=8.3.0
