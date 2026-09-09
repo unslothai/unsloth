@@ -2875,3 +2875,39 @@ class TestThePlacementProbes:
             LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda binary = None: backends)
         )
         assert LlamaCppBackend._build_offers_gpu_backend("llama-server") is offers
+
+
+class TestEveryDeviceSetChangeReAsks:
+    """A rung that changes the effective device set changes the placement, and the
+    pair is a question about placement. Both the reactive arch retry and the
+    proactive arch gate narrow onto discrete cards; only the reactive one used to
+    re-ask, so an APU-plus-dGPU host stayed on the resident mmap path."""
+
+    @staticmethod
+    def _src():
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_the_proactive_gate_re_asks(self):
+        src = self._src()
+        arm = src[src.index("_launch_pinned_ids = list(_survivors)") :]
+        arm = arm[: arm.index("_did_fit_retry") if "_did_fit_retry" in arm else len(arm)]
+        assert "self._refresh_dio_for_devices(" in arm
+        assert "gpu_indices = _survivors," in arm
+
+    def test_all_three_moving_rungs_use_one_refresh(self):
+        """Asking the live and the forced-on answers apart is how one of them went
+        stale three times, so they are taken together or not at all."""
+        src = self._src()
+        assert src.count("self._refresh_dio_for_devices(") == 2  # gate + fit-off retry
+        # the arch-crash rung asks the confirmation directly, to strip rather than add
+        assert src.count("self._managed_dio_for_confirmed_offload(") == 3
+
+    def test_the_refresh_updates_both_answers(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._refresh_dio_for_devices)
+        assert "self._memory_dio_applicable = bool(ask(hypothetical_env, forced_on = True))" in src
+        assert "return ask(live_env, forced_on = False)" in src

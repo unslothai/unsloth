@@ -8418,6 +8418,17 @@ class LlamaCppBackend:
         logger.info("Model Memory: dropping the managed --load-mode dio; %s", reason)
         return stripped
 
+    def _refresh_dio_for_devices(self, ask, *, live_env, hypothetical_env) -> list[str]:
+        """Re-ask the DirectIO question for a device set that just changed.
+
+        Returns the pair to append for THIS child, and updates the applicability
+        record, which is the forced-on answer a later save is compared against.
+        Every rung that moves the effective device set needs both, and asking them
+        apart is how one of them went stale three times.
+        """
+        self._memory_dio_applicable = bool(ask(hypothetical_env, forced_on = True))
+        return ask(live_env, forced_on = False)
+
     def _managed_dio_for_confirmed_offload(
         self,
         extra_args,
@@ -24233,6 +24244,42 @@ class LlamaCppBackend:
                         _child_gpu_physical_ids = tuple(int(i) for i in _survivors)
                         # Narrower than any pin above, so it replaces it.
                         _launch_pinned_ids = list(_survivors)
+                        # The DirectIO decision was taken against the UNNARROWED set,
+                        # where an unsupported unified-memory APU answers host-resident
+                        # for the whole launch. This gate is what removes it, so the
+                        # child can be a confirmed discrete full offload after all, and
+                        # nothing downstream re-asked: the reactive retry has this, the
+                        # proactive one did not. Same helper, same rule.
+                        _gate_dio = self._refresh_dio_for_devices(
+                            lambda env_view, forced_on: (
+                                self._managed_dio_for_confirmed_offload(
+                                    extra_args,
+                                    server_caps = server_caps,
+                                    binary = binary,
+                                    gpu_indices = _survivors,
+                                    detected_gpus = _detected_gpus,
+                                    is_vulkan_backend = is_vulkan_backend,
+                                    requested_load_mode = _resolved_load_mode,
+                                    env_view = env_view,
+                                    settings = (
+                                        (_mem_keep_resident, True) if forced_on else _mem_settings
+                                    ),
+                                )
+                            ),
+                            live_env = _fit_load_mode_env_view,
+                            hypothetical_env = _mem_env_view_no_reserve,
+                        )
+                        if _gate_dio and not self._memory_dio_flags:
+                            cmd = [*cmd, *_gate_dio]
+                            self._memory_dio_flags = list(_gate_dio)
+                            self._memory_policy_active = True
+                            self._record_memory_state(cmd, env)
+                            logger.info(
+                                "Model Memory: applying %s; the arch gate pins this "
+                                "launch to discrete GPU(s) %s.",
+                                " ".join(_gate_dio),
+                                _survivors,
+                            )
                         # And the carve-out advice with it: upstream priced the
                         # UNNARROWED set, which _rocm_selected_pool_mib declines on a
                         # mixed host, so a model outgrowing the surviving APU's
@@ -24754,29 +24801,27 @@ class LlamaCppBackend:
                                 # fitted attempt read as host-resident, and that is the
                                 # verdict this retry just overturned. Appended, so the
                                 # last-wins parse still leaves a hand-typed flag on top.
-                                def _retry_dio_for(pair, env_view):
-                                    return self._managed_dio_for_confirmed_offload(
-                                        extra_args,
-                                        server_caps = server_caps,
-                                        binary = binary,
-                                        gpu_indices = gpu_indices,
-                                        detected_gpus = _detected_gpus,
-                                        is_vulkan_backend = is_vulkan_backend,
-                                        requested_load_mode = _resolved_load_mode,
-                                        env_view = env_view,
-                                        settings = pair,
-                                    )
-
-                                # The placement this retry just proved is the one a LATER
-                                # save is compared against, so refresh the forced-on
-                                # answer too. With no-reserve off the live call emits
-                                # nothing and only this line moves.
-                                self._memory_dio_applicable = bool(
-                                    _retry_dio_for(
-                                        (_mem_keep_resident, True), _mem_env_view_no_reserve
-                                    )
+                                _retry_dio = self._refresh_dio_for_devices(
+                                    lambda env_view, forced_on: (
+                                        self._managed_dio_for_confirmed_offload(
+                                            extra_args,
+                                            server_caps = server_caps,
+                                            binary = binary,
+                                            gpu_indices = gpu_indices,
+                                            detected_gpus = _detected_gpus,
+                                            is_vulkan_backend = is_vulkan_backend,
+                                            requested_load_mode = _resolved_load_mode,
+                                            env_view = env_view,
+                                            settings = (
+                                                (_mem_keep_resident, True)
+                                                if forced_on
+                                                else _mem_settings
+                                            ),
+                                        )
+                                    ),
+                                    live_env = _fit_load_mode_env_view,
+                                    hypothetical_env = _mem_env_view_no_reserve,
                                 )
-                                _retry_dio = _retry_dio_for(_mem_settings, _fit_load_mode_env_view)
                                 if _retry_dio and not self._memory_dio_flags:
                                     run_cmd = [*run_cmd, *_retry_dio]
                                     self._memory_dio_flags = list(_retry_dio)
