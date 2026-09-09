@@ -9250,7 +9250,11 @@ class LlamaCppBackend:
         return any(not kind.startswith("IDENTITY") for kind in kinds)
 
     @classmethod
-    def _p2p_veto_reason(cls, gpu_indices = None, launch_order_pinned = False) -> Optional[str]:
+    def _p2p_veto_reason(
+        cls,
+        gpu_indices = None,
+        launch_order_pinned = False,
+    ) -> Optional[str]:
         """Total, fail-closed wrapper around _p2p_veto_reason_inner. Every helper
         below already catches, but that is their property and not this call's, and
         losing the tuning beats an exception escaping into load_model and failing
@@ -9262,7 +9266,11 @@ class LlamaCppBackend:
             return f"the peer-fabric check could not complete ({type(e).__name__})"
 
     @classmethod
-    def _p2p_veto_reason_inner(cls, gpu_indices = None, launch_order_pinned = False) -> Optional[str]:
+    def _p2p_veto_reason_inner(
+        cls,
+        gpu_indices = None,
+        launch_order_pinned = False,
+    ) -> Optional[str]:
         """Why GGML_CUDA_P2P must NOT be set for this selection, or None once a
         working NVLink fabric is confirmed for every selected pair.
 
@@ -9331,10 +9339,7 @@ class LlamaCppBackend:
             # for an auto-fit selection the child reads them in FASTEST_FIRST order
             # and [0,1] here can be [0,2] there. Refuse rather than confirm NVLink
             # for a pair that is not the one about to run (#10613).
-            if not (
-                launch_order_pinned
-                or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
-            ):
+            if not (launch_order_pinned or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"):
                 return _pcie(
                     "the child's device order is not pinned to PCI_BUS_ID, so the "
                     "verified GPUs may not be the ones it runs on; set "

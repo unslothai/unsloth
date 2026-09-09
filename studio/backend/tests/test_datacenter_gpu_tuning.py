@@ -937,7 +937,7 @@ def test_auto_fit_launch_does_not_rewrite_an_inherited_device_order(monkeypatch)
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)
-    branch = src[src.index("elif gpu_indices is not None and not is_vulkan_backend"):]
+    branch = src[src.index("elif gpu_indices is not None and not is_vulkan_backend") :]
     branch = branch[: branch.index("_launch_pinned_ids")]
     pin = 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"'
     assert pin in branch
