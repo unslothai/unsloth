@@ -301,10 +301,12 @@ function Install-UnslothStudio {
     $script:WoaTorchAudio = $false
 
     # Wheels PyPI has no win_arm64 build of; anything it does build is taken from PyPI instead.
+    # pyarrow 25.0.1 (cp311-cp314) and sqlite-vec 0.1.9, built from their release tags on a
+    # windows-11-arm runner; index.txt lists the wheels. Set UNSLOTH_WOA_WHEELHOUSE to override.
     $script:WoaWheelhouse = if ($env:UNSLOTH_WOA_WHEELHOUSE) {
         $env:UNSLOTH_WOA_WHEELHOUSE.Trim().TrimEnd('/')
     } else {
-        "https://huggingface.co/unsloth/windows-arm64-wheels/resolve/main"
+        "https://huggingface.co/danielhanchen/unsloth-blackwell-docker/resolve/main/windows-arm64-wheels"
     }
     # AVAILABLE, not missing: a name absent here is EXCLUDED on ARM64 by the drop list below.
     $script:WoaPyPIProvided = @{}

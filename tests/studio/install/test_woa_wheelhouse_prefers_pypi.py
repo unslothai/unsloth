@@ -115,7 +115,7 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
 # the whole suite green. It is load bearing twice over. It is the only source for the pyarrow
 # that gates the native path, so a typo silently sends every Windows on ARM host back to the
 # emulated x64 stack, and it is fetched over the network, so a wrong host is a wrong download.
-DEFAULT_WHEELHOUSE = "https://huggingface.co/unsloth/windows-arm64-wheels/resolve/main"
+DEFAULT_WHEELHOUSE = "https://huggingface.co/danielhanchen/unsloth-blackwell-docker/resolve/main/windows-arm64-wheels"
 
 PWSH = shutil.which("pwsh")
 requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
@@ -132,11 +132,14 @@ def test_the_default_wheelhouse_url_is_exactly_this(source):
     assert DEFAULT_WHEELHOUSE in _wheelhouse_assignment(source)
 
 
-def test_the_default_is_an_https_resolve_url_under_our_own_org(source):
+def test_the_default_is_an_https_resolve_url_on_hugging_face(source):
     """`resolve/main` serves the file; a plain repo URL serves an HTML page, which the
     staging code would happily save as a .whl."""
-    assert DEFAULT_WHEELHOUSE.startswith("https://huggingface.co/unsloth/")
-    assert DEFAULT_WHEELHOUSE.endswith("/resolve/main")
+    # Hosted on Hugging Face, as `resolve/main` URLs so a wheel is a plain download; the
+    # wheelhouse is a folder of a repo we own, so the path may continue past `resolve/main`.
+    assert DEFAULT_WHEELHOUSE.startswith("https://huggingface.co/danielhanchen/")
+    assert "/resolve/main" in DEFAULT_WHEELHOUSE
+    assert not DEFAULT_WHEELHOUSE.endswith("/"), "Join-UrlPath adds the slash"
 
 
 @requires_pwsh
