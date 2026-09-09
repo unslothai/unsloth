@@ -29,6 +29,20 @@ an isolated one instead, which is how it is run locally against a scratch instal
 
     UNSLOTH_IDEMPOTENCY_E2E=1 UNSLOTH_IDEMPOTENCY_HOME=/path/to/fake/home pytest ...
 
+Two update modes are measured, because they take different paths and only one of them
+is the flow a desktop user gets:
+
+  * `studio update` (no --local) is the desktop flow. When the installed version equals
+    PyPI's latest it takes setup.sh's fast path, skips the dependency pass entirely, and
+    the prebuilt pre-checks answer from their markers. This is where the byte counts are
+    asserted. It only runs when the two versions do agree; otherwise a "no-op" update
+    would legitimately be an upgrade, so those cases skip themselves rather than measure
+    an upgrade and call it idempotency.
+  * `studio update --local` reinstalls from the checkout, so the dependency pass always
+    runs. That is what exercises the per-step skips, and it is asserted from the LOG:
+    with a warm uv cache a full pass also downloads nothing, so bytes cannot tell a skip
+    from a re-resolve there. Both are checked; neither alone is enough.
+
 The fault-injection cases DAMAGE that install and expect the update to repair exactly
 the damaged part. They restore what they broke, but a failure mid-case can leave the
 install in the damaged state, so never point this at an install you care about.
@@ -52,6 +66,10 @@ E2E = os.environ.get("UNSLOTH_IDEMPOTENCY_E2E") == "1"
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 PROXY = pathlib.Path(__file__).resolve().parent / "idempotency_proxy.py"
 IS_WINDOWS = sys.platform == "win32"
+# Where each run's update log and proxy journal are kept. Under pytest's tmp dir by
+# default, which a passing run discards; point UNSLOTH_IDEMPOTENCY_ARTIFACTS at a real
+# directory to keep them (CI uploads them, and a failure is unreadable without them).
+ARTIFACTS = os.environ.get("UNSLOTH_IDEMPOTENCY_ARTIFACTS", "")
 
 # Hosts a no-op update must not touch at all. pypi.org and github.com are listed
 # separately because a version check and a "what is the latest release" HEAD are both
@@ -61,12 +79,18 @@ PAYLOAD_HOSTS = (
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
     "nodejs.org",
-    "raw.githubusercontent.com",
 )
+# NOT raw.githubusercontent.com. install.sh's desktop-shortcut refresh falls back to
+# downloading rounded-512.png from it when it cannot find the icon in the installed
+# frontend, which is the case for an editable --local install with no built frontend.
+# ~8 KB, and it does not happen for the wheel installs users have -- but a bound keeps
+# it from quietly becoming something bigger.
+ICON_FETCH_CEILING = 64 * 1024
 
-# What the installers print when they decline to do work. All three prebuilts share the
-# "already matches" substring, which setup.sh and setup.ps1 also grep for.
-NO_WORK_MARKERS = ("dependencies up to date", "already matches")
+# What the installers print when they decline to do work. "already matches" is what the
+# prebuilt installers log; setup.sh CONSUMES that and prints its own line, so the log a
+# user (and this harness) sees carries these instead.
+NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
 
 DIST_LIST = (
     "import importlib.metadata as m, json; "
@@ -90,6 +114,30 @@ def _studio_home() -> pathlib.Path:
 def _venv_python() -> pathlib.Path:
     venv = _studio_home() / "unsloth_studio"
     return venv / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
+
+
+def _installed_version(venv_python: pathlib.Path) -> str:
+    probe = subprocess.run(
+        [
+            str(venv_python),
+            "-I",
+            "-c",
+            "import importlib.metadata as m; print(m.version('unsloth'))",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    return probe.stdout.strip()
+
+
+def _pypi_latest() -> str:
+    import urllib.request
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/unsloth/json", timeout = 60) as fh:
+            return json.load(fh)["info"]["version"]
+    except Exception:  # noqa: BLE001 - no answer means do not run the non-local cases
+        return ""
 
 
 @pytest.fixture(scope = "session")
@@ -194,7 +242,7 @@ def run_update(
     deny_hosts: str = "",
 ) -> ProxyRun:
     """One `unsloth studio update`, through the proxy, timed and logged."""
-    directory = tmp_path / label
+    directory = (pathlib.Path(ARTIFACTS) if ARTIFACTS else tmp_path) / label
     directory.mkdir(parents = True, exist_ok = True)
     extra = ["--refuse"] if refuse else (["--deny-hosts", deny_hosts] if deny_hosts else [])
     process, url, log_path = _start_proxy(directory, *extra)
@@ -202,6 +250,27 @@ def run_update(
     # matter, and a hand-built environment here fails in ways that look like the product.
     env = dict(os.environ)
     env.pop("UNSLOTH_IDEMPOTENCY_E2E", None)
+    # The venv pytest runs in is not the venv under test. Anything that would point the
+    # child at this interpreter's environment has to go, or the update resolves against
+    # the wrong cache, the wrong constraints, or the wrong site-packages -- and then
+    # measures whatever that produced.
+    for leaked in (
+        "VIRTUAL_ENV",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "UV_CACHE_DIR",
+        "UV_PYTHON",
+        "UV_CONSTRAINT",
+        "UV_CONFIG_FILE",
+        "PIP_CONSTRAINT",
+        "PIP_CONFIG_FILE",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "UNSLOTH_STUDIO_HOME",
+        "STUDIO_HOME",
+    ):
+        env.pop(leaked, None)
     env.update(
         HOME = str(_home()),
         USERPROFILE = str(_home()),
@@ -352,6 +421,15 @@ def diff(before: dict, after: dict) -> list[str]:
 
 
 @pytest.fixture(scope = "session")
+def desktop_path(install) -> bool:
+    """Whether the non-local cases can run at all: they can only measure a no-op when
+    the installed version is the one PyPI would hand back."""
+    installed, latest = _installed_version(install), _pypi_latest()
+    print(f"[idempotency] installed={installed!r} pypi={latest!r}", flush = True)
+    return bool(installed) and installed == latest
+
+
+@pytest.fixture(scope = "session")
 def settled(install, tmp_path_factory):
     """One update, so whatever the install left half-decided is decided. Everything
     below measures the update AFTER this one."""
@@ -372,56 +450,86 @@ def test_a_second_update_changes_nothing_on_disk(install, settled):
     )
 
 
-def test_a_second_update_downloads_nothing(install, settled):
+def test_a_second_update_downloads_no_payload(install, settled):
     """The measurement the timings cannot make: a fast run and a run that refetched
     three release manifests look the same on a warm cache."""
     directory, _ = settled
     run = run_update(directory, "run3-network")
     assert run.rc == 0, run.log[-8000:]
     for host in PAYLOAD_HOSTS:
-        assert (
-            run.bytes_from(host) == 0
-        ), f"{host} served {run.bytes_from(host)} bytes: {run.report()}"
-    # A version check and the "what is the latest release" HEADs are allowed, and are
-    # what the prebuilt fast paths spend instead of a full release listing.
-    assert run.connections_to("pypi.org") <= 1, run.report()
-    assert run.connections_to("github.com") <= 4, run.report()
+        assert run.bytes_from(host) == 0, (
+            f"{host} served {run.bytes_from(host)} bytes to an update with nothing to "
+            f"do: {run.report()}"
+        )
 
 
-def test_a_second_update_says_it_did_nothing(install, settled):
-    """The disk and the network agree; the log has to as well, because a silent skip
-    and a silent failure to notice work are indistinguishable to a user."""
+def test_a_second_local_update_reuses_everything_it_can(install, settled):
+    """--local is the CI and developer path. It always runs the dependency pass on
+    purpose (a checkout can change in ways no requirements digest sees), so what it
+    demonstrates is the rest: the pip bootstrap skip, all three sidecars answering
+    "current" without a rebuild, and both prebuilts answering from their markers."""
     directory, _ = settled
-    run = run_update(directory, "run4-log")
+    run = run_update(directory, "run4-local", local = True)
     assert run.rc == 0, run.log[-8000:]
+    assert "(satisfied, skipped)" in run.log, (
+        "the pip bootstrap reinstalled pip on a venv that already had one:\n" + run.log[-8000:]
+    )
+    assert run.log.count("sidecar current") == 3, (
+        "a settled transformers sidecar was rebuilt:\n" + run.log[-8000:]
+    )
+    assert "prebuilt up to date" in run.log, run.log[-8000:]
+    assert "falling back to source build" not in run.log
+    for host in PAYLOAD_HOSTS:
+        assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
+
+
+def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_path):
+    """No --local: the flow the desktop app and the Repair button run. Its whole cost on
+    a settled install should be one version check and the prebuilt HEADs."""
+    if not desktop_path:
+        pytest.skip("installed version is not PyPI's latest; a no-op update is an upgrade")
+    directory, before = settled
+    run = run_update(directory, "run5-desktop", local = False)
+    assert run.rc == 0, run.log[-8000:]
+    for host in PAYLOAD_HOSTS:
+        assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
+    assert run.bytes_from("raw.githubusercontent.com") <= ICON_FETCH_CEILING, run.report()
     for marker in NO_WORK_MARKERS:
         assert marker in run.log, f"{marker!r} missing from a no-op update:\n{run.log[-8000:]}"
-    assert "falling back to source build" not in run.log
+    # One version check, and one "what is the latest release" HEAD per prebuilt. The
+    # bound is what stops this quietly becoming a full release listing again.
+    assert run.connections_to("pypi.org") <= 2, run.report()
+    assert run.connections_to("github.com") <= 6, run.report()
+    # The other half of the prebuilt claim: the release itself is never listed. Both of
+    # these carried traffic on every update before the marker checks, and both are where
+    # the 13-63 s macOS re-validation went.
+    assert run.connections_to("api.github.com") == 0, run.report()
+    assert run.connections_to("release-assets.githubusercontent.com") == 0, run.report()
+    assert diff(before, snapshot(install)) == []
 
 
 # ── offline ──
 
 
-def test_a_no_op_update_needs_no_network_at_all(install, settled):
-    """UV_OFFLINE plus a proxy that 403s everything. Every attempt is still recorded,
-    so this asserts zero CONNECTIONS, not merely zero bytes."""
+def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settled):
+    """UV_OFFLINE plus a proxy that 403s everything. Every attempt is still recorded, so
+    this asserts zero SUCCESSFUL connections, not merely zero bytes.
+
+    Non-local only, and not because --local is uninteresting: --local re-overlays
+    `unsloth-zoo @ git+main` on every run by design, so it cannot complete without a
+    network on any branch of this code, and a run that fails mid-pass leaves no manifest
+    behind. The flow a user is in on a plane is this one.
+
+    Without the rule this PR adds, an unreachable PyPI means "update to be safe", which
+    offline can only fail: the pass starts, the first git requirement 403s, and the
+    update exits non-zero on an install that was already complete.
+    """
     directory, before = settled
-    run = run_update(directory, "run5-offline", offline = True, refuse = True)
+    run = run_update(directory, "run6-offline", local = False, offline = True, refuse = True)
     assert run.rc == 0, (
         "an update with nothing to do failed offline. That is the state a user on a "
         f"plane, or behind a corporate proxy, is in:\n{run.log[-8000:]}"
     )
-    assert run.connections == run.refused, run.report()
-    assert diff(before, snapshot(install)) == []
-
-
-def test_the_non_local_path_keeps_a_verified_install_when_pypi_is_unreachable(install, settled):
-    """The rule added for exactly this: without --local, an unreachable PyPI means
-    "update to be safe", which offline can only fail. UV_OFFLINE says the caller knows
-    there is no network, so a verified install is kept instead."""
-    directory, before = settled
-    run = run_update(directory, "run6-offline-nonlocal", local = False, offline = True, refuse = True)
-    assert run.rc == 0, run.log[-8000:]
     assert "keeping the verified install" in run.log, run.log[-8000:]
     assert run.connections == run.refused, run.report()
     assert diff(before, snapshot(install)) == []
@@ -496,9 +604,22 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
     assert after["manifest"] is not None, "the pass did not rewrite the manifest"
 
 
-def test_a_damaged_llama_binary_reinstalls_llama(install, settled):
+def test_a_damaged_llama_binary_makes_the_marker_check_decline(install, settled):
+    """The pre-check answers "current" from hashes of the runtime binaries, so a damaged
+    one has to send the update back to the release it was skipping.
+
+    Measured on the network rather than in the log, because the log line the fast path
+    produces is consumed by setup.sh and reprinted identically either way: reaching
+    release-assets.githubusercontent.com at all means the release was listed, which is
+    exactly the work the marker check exists to avoid.
+
+    It asserts a DECLINE, not a repair. A truncated llama-server is not replaced by the
+    full path either -- its own check is the marker fingerprint plus a tree walk, and it
+    has never hashed the binaries. That is unchanged by this PR: the pre-check refuses to
+    answer, and what happens next is what happened before.
+    """
     directory, before = settled
-    candidates = sorted((_home() / ".unsloth").glob("llama.cpp/**/llama-quantize*"))
+    candidates = sorted((_home() / ".unsloth").glob("llama.cpp/**/llama-server*"))
     victim = next((p for p in candidates if p.is_file() and p.stat().st_size > 1024), None)
     if victim is None:
         pytest.skip("no llama.cpp prebuilt in this install")
@@ -508,37 +629,37 @@ def test_a_damaged_llama_binary_reinstalls_llama(install, settled):
     try:
         run = run_update(directory, "fault-llama", local = True)
         assert run.rc == 0, run.log[-8000:]
-        after = snapshot(install)
-        assert after["binaries"] != before["binaries"], "the truncated binary was not replaced"
-        assert victim.stat().st_size == len(saved), "llama.cpp was not reinstalled whole"
+        assert run.connections_to("release-assets.githubusercontent.com") > 0, (
+            "a damaged runtime binary was still answered from the marker: " + run.report()
+        )
     finally:
-        if victim.is_file() and victim.stat().st_size != len(saved):
-            victim.write_bytes(saved)
-            victim.chmod(mode)
+        victim.write_bytes(saved)
+        victim.chmod(mode)
+    assert snapshot(install)["distributions"] == before["distributions"]
 
 
-def test_an_edited_requirements_file_runs_that_step(install, settled):
-    """The installed copy of studio.txt is what the digest is taken from, so editing it
-    is the same signal a released requirements change is."""
-    directory, before = settled
-    installed_req = next(
-        (p for p in (install.parent.parent).rglob("requirements/studio.txt") if p.is_file()),
-        None,
-    )
-    if installed_req is None:
-        pytest.skip("no installed requirements tree")
-    saved = installed_req.read_bytes()
-    installed_req.write_bytes(saved + b"\n# idempotency harness\n")
-    try:
-        run = run_update(directory, "fault-requirements", local = True)
-        assert run.rc == 0, run.log[-8000:]
-        assert "studio deps" in run.log
-    finally:
-        installed_req.write_bytes(saved)
-    after = snapshot(install)
-    assert (
-        after["distributions"] == before["distributions"]
-    ), "re-running one step changed the resolved packages"
+def test_the_manifest_records_the_evidence_the_next_run_needs(install, settled):
+    """Every skip is conditional on this. A pass that finished but recorded nothing is
+    not a bug anyone would notice until the NEXT update quietly redoes everything -- or,
+    worse, skips on a key it happens to find and cannot check.
+
+    Not a test that an edited requirements file re-runs its step: --local, which is what
+    this harness and CI install with, never skips anything (a checkout can change in ways
+    no requirements digest sees), so there would be nothing to observe. That gate is
+    covered by tests/studio/install/test_dependency_pass_skips.py.
+    """
+    _directory, before = settled
+    manifest = before["manifest"]
+    assert manifest is not None, "the install finished without a manifest"
+    inputs = manifest.get("pass_inputs")
+    assert isinstance(inputs, dict) and inputs, "no pass_inputs recorded"
+    assert all(isinstance(v, str) and len(v) == 64 for v in inputs.values()), inputs
+    steps = manifest.get("step_results")
+    assert isinstance(steps, dict) and steps, "no step_results recorded"
+    # The keys a later run gates on, spelled the same way it will look them up.
+    for key in ("studio.txt", "base.txt"):
+        assert key in inputs, f"{key} is not in {sorted(inputs)}"
+    assert manifest.get("installer_python_tag"), manifest.keys()
 
 
 def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled):
@@ -565,11 +686,22 @@ def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled)
     )
 
 
-def test_the_scratch_install_is_left_where_it_was_found(install, settled):
-    """Runs last. Every case above restores what it broke; this is the assertion that
-    they all did."""
+def test_the_install_is_left_working(install, settled):
+    """Runs last. The fault cases legitimately move mtimes -- a rebuilt sidecar is a
+    rebuilt sidecar -- so this asserts what has to be true anyway: the same packages are
+    installed, and the install reports itself complete."""
     _directory, before = settled
-    assert diff(before, snapshot(install)) == []
+    after = snapshot(install)
+    assert after["distributions"] == before["distributions"]
+    assert after["manifest"] is not None
+    verify = subprocess.run(
+        [str(install), "-I", "-X", "utf8", "-m", "unsloth_cli", "studio", "verify-install"],
+        env = {**os.environ, "HOME": str(_home()), "USERPROFILE": str(_home())},
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert verify.returncode == 0, verify.stdout + verify.stderr
 
 
 def test_the_harness_measures_a_real_proxy(tmp_path):
