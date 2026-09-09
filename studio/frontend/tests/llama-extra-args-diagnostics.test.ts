@@ -2,9 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import type { LlamaFlagCatalog } from "../src/features/model-picker/api/llama-flags.ts";
 import {
   diagnoseExtraArgs,
@@ -13,6 +11,8 @@ import {
   parseExtraArgs,
   sanitizeStoredExtraArgs,
 } from "../src/features/model-picker/model-config/llama-extra-args.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 // The row is the backend's judgement shown early. Where these disagree, the panel
 // accepts an argument the load then refuses, or warns about one that works.
@@ -581,15 +581,7 @@ test("what the quoting makes of an argument counts on Windows", () => {
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 
-const pageSource = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/model-picker/components/model-config-page.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+const pageSource = readSrc("features/model-picker/components/model-config-page.tsx");
 
 test("the row stores argv tokens, not the typed string", () => {
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
@@ -675,15 +667,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
 });
 
 test("a config that never read the stored value is not sent as a clear", () => {
-  const overrides = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/model-overrides.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const overrides = readSrc("features/model-picker/api/model-overrides.ts").replace(/\s+/g, " ");
   // The route preserves llama_extra_args when omitted, which is what kept CLI-set
   // flags alive while this panel had no control. Sending [] for a config that never
   // loaded them would wipe them on the first save.
@@ -694,12 +678,7 @@ test("a config that never read the stored value is not sent as a clear", () => {
 });
 
 test("the load sends the flags only once they are known", () => {
-  const composer = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const composer = readSrc("features/chat/shared-composer.tsx").replace(/\s+/g, " ");
   assert.match(
     composer,
     /ownConfig\.llamaExtraArgs !== undefined \? .* \{ llama_extra_args: ownConfig\.llamaExtraArgs \?\? \[\] \} : \{\}/,
@@ -710,15 +689,7 @@ test("the panel's own Load goes through the runtime, which sends them too", () =
   // Found by loading a model from the panel and reading the emitted command: the
   // flags were in the config and absent from the argv, because this hook is the
   // path the Load button takes and it built the payload field by field.
-  const runtime = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   assert.match(
     runtime,
     /const loadLlamaExtraArgs = pendingLoadConfig\?\.llamaExtraArgs/,
@@ -803,15 +774,7 @@ test("hydration asks under the keys the load path uses", () => {
 });
 
 test("a rollback restores the previous model with its arguments", () => {
-  const runtime = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   // By the time this runs the TARGET is resident, so an omitted field inherits
   // across models, which the route refuses, and the previous model would come back
   // without the arguments it had been running.
@@ -861,15 +824,7 @@ test("a hydrated list is judged even when the row cannot be", () => {
 });
 
 test("the runtime preflight is sized with the arguments the load sends", () => {
-  const runtime = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   // A --ctx-size or cache override changes the memory /validate estimates. During
   // training an approval it did not size for means unloading the resident model and
   // having /load refuse the target, which is a rollback the user never asked for.
@@ -884,15 +839,7 @@ test("the runtime preflight is sized with the arguments the load sends", () => {
 });
 
 test("a catalogue read from the previous binary is discarded", () => {
-  const flagsApi = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/llama-flags.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
   // A switch that completes mid-request must not have the old build's flags written
   // back, and the next caller must not be handed that same promise.
   assert.match(flagsApi, /catalogGeneration \+= 1;/);
@@ -1305,15 +1252,7 @@ test("the attached spelling is refused wherever it is judged", () => {
 });
 
 test("the managed answer is invalidated with the catalogue", () => {
-  const flagsApi = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/llama-flags.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
   // Its denylist is Unsloth's own, but it carries defaultParallelSlots beside it and
   // that is the EFFECTIVE count: a build without --kv-unified serves one slot however
   // many are configured. Updating llama.cpp from the banner left a tab that had
@@ -1404,15 +1343,7 @@ test("a quoted value that begins with a hyphen is a value, not a flag", () => {
 });
 
 test("a managed answer from the previous binary is never published", () => {
-  const flagsApi = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/llama-flags.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
   // Clearing the cache is not enough on its own: a managed request already on the
   // wire when llama.cpp is replaced would resolve afterwards and put the old
   // build's defaultParallelSlots back, where it would stay for the session. The

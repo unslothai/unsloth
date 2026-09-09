@@ -16,21 +16,15 @@
 // reading the source, since the node suite has no DOM to mount into.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { clampToViewport } from "../src/features/loaded-models/use-drag-position.ts";
 
-const SOURCE = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/loaded-models/use-drag-position.ts",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const USE_DRAG_POSITION = readSrc("features/loaded-models/use-drag-position.ts");
+
+const SOURCE = readSrc("features/loaded-models/use-drag-position.ts");
 
 const CARD = { width: 268, height: 160 };
 const LAPTOP = { width: 1280, height: 800 };
@@ -167,31 +161,14 @@ test("the drag captures the pointer", () => {
 // leave a stale flag for the pill, and the pill's click always reads its own
 // press. Verified in a real browser: dragging by the grip, collapsing, and
 // clicking the pill once reopens the card.
-const INDICATOR = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+const INDICATOR = readSrc("features/loaded-models/loaded-models-indicator.tsx");
 
 test("every drag handle goes through startDrag, which resets the sentinel", () => {
-  const HOOK = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/loaded-models/use-drag-position.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
   // The reset lives in startDrag's body, so it runs for the pill and the grip
   // alike. Move it out and a stale flag becomes reachable.
-  const startDrag = HOOK.slice(
-    HOOK.indexOf("const startDrag = useCallback("),
-    HOOK.indexOf("// One paint per frame"),
+  const startDrag = USE_DRAG_POSITION.slice(
+    USE_DRAG_POSITION.indexOf("const startDrag = useCallback("),
+    USE_DRAG_POSITION.indexOf("// One paint per frame"),
   );
   assert.match(startDrag, /movedRef\.current = false;/);
   // Both handles, so neither can start a drag without arming that reset.
@@ -213,25 +190,16 @@ test("only the pill consumes the sentinel, since only it has a click", () => {
 // large monitor, and going back to that monitor left the card where the laptop
 // had put it. Only a landed drag is stored; the read path clamps anyway.
 test("only a drag persists a position, never a reclamp", () => {
-  const HOOK = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/loaded-models/use-drag-position.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
-  const settleAt = HOOK.indexOf("const settle = useCallback(");
-  const settle = HOOK.slice(
+  const settleAt = USE_DRAG_POSITION.indexOf("const settle = useCallback(");
+  const settle = USE_DRAG_POSITION.slice(
     settleAt,
-    HOOK.indexOf("}, [applyPending, storageKey]);", settleAt),
+    USE_DRAG_POSITION.indexOf("}, [applyPending, storageKey]);", settleAt),
   );
   assert.match(settle, /store\(storageKey, landed\)/);
   // The old shape: an effect on `position`, which every reclamp also changed.
-  assert.doesNotMatch(HOOK, /useEffect\(\(\) => \{\s*if \(pressing\) return;\s*store\(/);
+  assert.doesNotMatch(USE_DRAG_POSITION, /useEffect\(\(\) => \{\s*if \(pressing\) return;\s*store\(/);
   assert.equal(
-    HOOK.split("store(storageKey").length - 1,
+    USE_DRAG_POSITION.split("store(storageKey").length - 1,
     1,
     "one write, in settle",
   );

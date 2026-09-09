@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrcAsync } from "./helpers/kit.ts";
 
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 const { store: localStorage } = installLocalStorageFake();
@@ -85,12 +84,8 @@ test("the model disclaimer is hidden by default", () => {
 });
 
 test("a saved payload without the model disclaimer key defaults to hidden", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/stores/chat-preferences-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  const source = await readSrcAsync(
+    "features/chat/stores/chat-preferences-store.ts",
   );
   assert.match(source, MISSING_DISCLAIMER_DEFAULT_PATTERN);
 });

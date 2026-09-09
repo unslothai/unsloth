@@ -7,11 +7,9 @@
 // extra-arguments diagnostics that name the control a typed flag duplicates.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -114,15 +112,7 @@ test("the four take part in the editor's identity", () => {
 test("a record only claims the new schema version when it carries one", () => {
   // toStoredConfig stamps the OLDEST version that understands every field
   // present, so an older client can still rewrite a record it fully knows.
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/model-config/per-model-config.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/model-picker/model-config/per-model-config.ts");
   assert.match(source, /const STORAGE_SCHEMA_VERSION = 5;/);
   assert.match(source, /const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;/);
   assert.match(source, /hasServerTuning\s*\n?\s*\?\s*STORAGE_SCHEMA_VERSION/);
