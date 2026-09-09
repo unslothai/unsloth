@@ -36,24 +36,25 @@ import { toast } from "@/lib/toast";
 import {
   deleteChatProject,
   renameChatProject,
-  setChatProjectWorkspace,
   useChatProjects,
   useChatRuntimeStore,
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
-import {
-  consumeNativePathToken,
-  pickNativeProjectWorkspace,
-  useNativePathLeasesSupported,
-} from "@/features/native-intents";
+import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import {
+  chooseProjectWorkspace,
+  revealProjectWorkspace,
+  switchToManagedWorkspace,
+} from "./utils/project-workspace-actions";
 import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
+  FolderOpenIcon,
   PinIcon,
   PinOffIcon,
   Search01Icon,
@@ -336,42 +337,14 @@ export function ProjectsPage() {
     }
   }
 
-  async function chooseProjectWorkspace(project: ProjectRecord) {
+  async function updateWorkspace(
+    project: ProjectRecord,
+    action: (projectId: string) => Promise<unknown>,
+  ) {
     if (workspaceUpdatingId) return;
     setWorkspaceUpdatingId(project.id);
     try {
-      const selected = await pickNativeProjectWorkspace();
-      if (!selected) return;
-      const lease = await consumeNativePathToken(
-        selected.token,
-        "set-project-workspace",
-      );
-      await setChatProjectWorkspace(project.id, {
-        kind: "external",
-        nativePathLease: lease.nativePathLease,
-      });
-      toast.success("Working directory updated", {
-        description: selected.path,
-      });
-    } catch (error) {
-      toast.error("Couldn't update the working directory", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setWorkspaceUpdatingId(null);
-    }
-  }
-
-  async function switchToManagedWorkspace(project: ProjectRecord) {
-    if (workspaceUpdatingId) return;
-    setWorkspaceUpdatingId(project.id);
-    try {
-      await setChatProjectWorkspace(project.id, { kind: "managed" });
-      toast.success("Using an Unsloth managed folder");
-    } catch (error) {
-      toast.error("Couldn't update the working directory", {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      await action(project.id);
     } finally {
       setWorkspaceUpdatingId(null);
     }
@@ -721,7 +694,9 @@ export function ProjectsPage() {
                       <>
                         <DropdownMenuItem
                           disabled={workspaceUpdatingId !== null}
-                          onSelect={() => void chooseProjectWorkspace(project)}
+                          onSelect={() =>
+                            void updateWorkspace(project, chooseProjectWorkspace)
+                          }
                         >
                           <HugeiconsIcon
                             icon={FolderAddIcon}
@@ -737,7 +712,9 @@ export function ProjectsPage() {
                         {project.workspaceKind === "external" ? (
                           <DropdownMenuItem
                             disabled={workspaceUpdatingId !== null}
-                            onSelect={() => void switchToManagedWorkspace(project)}
+                            onSelect={() =>
+                              void updateWorkspace(project, switchToManagedWorkspace)
+                            }
                           >
                             <HugeiconsIcon
                               icon={Folder02Icon}
@@ -748,6 +725,19 @@ export function ProjectsPage() {
                           </DropdownMenuItem>
                         ) : null}
                       </>
+                    ) : null}
+                    {isTauri ? (
+                      <DropdownMenuItem
+                        title="Open the folder this project's tool calls read and write"
+                        onSelect={() => void revealProjectWorkspace(project)}
+                      >
+                        <HugeiconsIcon
+                          icon={FolderOpenIcon}
+                          strokeWidth={1.75}
+                          className="size-icon"
+                        />
+                        <span>Open project folder</span>
+                      </DropdownMenuItem>
                     ) : null}
                     <DropdownMenuItem
                       onSelect={(e) => {
