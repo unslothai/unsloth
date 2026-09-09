@@ -726,22 +726,17 @@ def test_the_snapshot_carries_the_cache_estimator_as_a_callable(tmp_path, monkey
     assert off["inputs"]["kv_bytes_at"] is None
 
 
-def test_a_caller_nkvo_cache_is_host_ram_the_planner_admits_against(tmp_path, monkeypatch):
-    """-nkvo puts the WHOLE cache in host RAM whatever the layer placement says
-    (llama-kv-cache.cpp upgrades a layer's buffer type only inside `if (offload)`),
-    and it is the largest host term there is. The unpriced sum carried the drafter,
-    the checkpoints, the prompt cache and a pinned projector but not this, so the
-    planner booked the cache as VRAM it no longer had to find and never as RAM it
-    now needed, then took --load-mode none against a pool the cache was already in."""
+def test_a_caller_nkvo_cache_is_charged_once_on_the_plans_host_side(tmp_path, monkeypatch):
+    """-nkvo puts the WHOLE cache in host RAM. The planner charges it on the plan's
+    host side (kv_on_host reaches the refusal and the --cache-ram clamp), so the
+    seam must not also take it off the pool: taken twice, a viable spill was
+    refused and a pageable load kept on a box that held it."""
     _cmd, _b, plain = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
     _cmd, _b, forced = _launch_with(
         tmp_path, monkeypatch, Plan(reason = "declined"), extra_args = ["-nkvo"]
     )
-    kv = forced["inputs"]["kv_cache_bytes"]
-    assert kv > 0
-    assert (
-        forced["inputs"]["host_ram_unpriced_bytes"] - plain["inputs"]["host_ram_unpriced_bytes"]
-    ) == kv
+    assert forced["inputs"]["kv_cache_bytes"] > 0
+    assert forced["inputs"]["host_ram_unpriced_bytes"] == plain["inputs"]["host_ram_unpriced_bytes"]
 
 
 def test_a_projector_already_on_the_cpu_is_host_ram_the_planner_admits_against(

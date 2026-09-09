@@ -22158,6 +22158,11 @@ class LlamaCppBackend:
                         "ctx_compute_per_device": (
                             _cc_bytes(_spill_ctx, _spill_n_gpus) // _spill_n_gpus
                         ),
+                        # The same term at any context, for the rungs the ladder
+                        # tries below the requested one.
+                        "ctx_compute_at": (
+                            lambda _c, _n = _spill_n_gpus: _cc_bytes(int(_c), _n) // _n
+                        ),
                         # An engaging draft turns the trailing nextn/MTP blocks from
                         # skipped bytes into resident ones in the TARGET's load, so
                         # charge them back. Any engaged draft counts: load_mtp comes
@@ -22578,19 +22583,9 @@ class LlamaCppBackend:
                         # backend buffer: the same bytes the fit's own footprint
                         # charges as mmproj_pinned_bytes below.
                         + int(_mmproj_pinned_bytes or 0)
-                        + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0)
-                        # A caller's -nkvo puts the WHOLE cache in host RAM
-                        # (llama-kv-cache.cpp upgrades a layer's buffer type only inside
-                        # `if (offload)`), so it is the largest host term of the lot and
-                        # the plan carries none of it: the planner books the cache as
-                        # VRAM it no longer has to find, never as RAM it now needs.
-                        # Resolved off the same view _planned_tensor_spill reads, so the
-                        # pool it admits against and the kv_on_host it is told agree.
-                        + (
-                            max(0, _kv_bytes(_spill_ctx))
-                            if not _kv_offload_from_args(extra_args, env = os.environ)
-                            else 0
-                        ),
+                        + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0),
+                        # A caller's -nkvo cache is charged by the planner itself, on
+                        # the plan's host side (kv_on_host), not taken off the pool here.
                     )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
@@ -28529,7 +28524,17 @@ class LlamaCppBackend:
         # #67 was calibrated on. Applied last, after the projector's surcharge has been
         # handed to the planner as its own term, so moving the projector cannot dip
         # the reserve under the floor. Absent from the snapshot means no floor.
-        overhead_per_device = max(overhead_per_device, int(inputs.get("reserve_floor_bytes") or 0))
+        _reserve_floor = int(inputs.get("reserve_floor_bytes") or 0)
+        # The compute term above was priced at the requested context; the ladder
+        # re-prices it per rung through the same closure, floored the same way.
+        _cc_at = inputs.get("ctx_compute_at")
+        _flat_no_cc = overhead_per_device - int(inputs.get("ctx_compute_per_device") or 0)
+        overhead_bytes_at = (
+            (lambda _c, _f = _flat_no_cc, _cc = _cc_at: max(_f + int(_cc(_c)), _reserve_floor))
+            if callable(_cc_at)
+            else None
+        )
+        overhead_per_device = max(overhead_per_device, _reserve_floor)
 
         decode_threads = _spilled_decode_threads(
             inputs.get("n_threads"),
@@ -28552,6 +28557,7 @@ class LlamaCppBackend:
             kv_layer_weights = list(inputs.get("kv_layer_weights") or ()),
             opts = PlanOptions(
                 overhead_bytes_per_device = max(0, overhead_per_device),
+                overhead_bytes_at = overhead_bytes_at,
                 # The heavier planned axis, after the extras and the environment,
                 # the same type the KV reserve budgets. Under two bytes an element
                 # the cache is quantised and the planner prices it so; the f16
