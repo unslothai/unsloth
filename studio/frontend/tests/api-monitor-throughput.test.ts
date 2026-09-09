@@ -91,6 +91,25 @@ test("context usage falls back to the latest known request when idle", () => {
   assert.equal(stats.contextUsage, 0.58);
 });
 
+test("a running request without usage never inherits an older completed request's percentage", () => {
+  const stats = computeStats([
+    queuedEntry({ id: "running", status: "running", context_usage: null, updated_at: 1_000_060 }),
+    queuedEntry({ id: "finished", context_usage: 0.95, updated_at: 1_000_050 }),
+  ]);
+  assert.equal(stats.active, 1);
+  assert.equal(stats.contextUsage, null);
+});
+
+test("unknown context and lifecycle traffic do not invent a percentage", () => {
+  for (const context_usage of [null, NaN, Infinity]) {
+    assert.equal(computeStats([queuedEntry({ context_usage })]).contextUsage, null);
+  }
+  assert.equal(computeStats([
+    queuedEntry({ kind: "lifecycle", status: "running", context_usage: 0.99 }),
+  ]).contextUsage, null);
+  assert.equal(computeStats([]).contextUsage, null);
+});
+
 test("context usage is clamped before it reaches the live monitor", () => {
   const stats = computeStats([
     queuedEntry({ context_usage: 1.4 }),

@@ -94,6 +94,8 @@ class LocalDatasetsResponse(BaseModel):
 class CachedDatasetItem(BaseModel):
     repo_id: str
     size_bytes: int = 0
+    # epoch seconds; unset when no cache path had a readable mtime
+    last_modified: Optional[float] = None
     cache_path: Optional[str] = None
     load_cache_path: Optional[str] = None
     processed_cache: bool = False

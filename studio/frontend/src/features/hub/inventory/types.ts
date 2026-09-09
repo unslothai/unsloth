@@ -10,12 +10,6 @@ export type ModelInventoryFormat =
   | "adapter"
   | "checkpoint"
   | "unknown";
-export type ModelInventoryRuntime =
-  | "llama_cpp"
-  | "transformers"
-  | "adapter"
-  | "unknown";
-
 export interface ModelInventoryCapabilities {
   canTrain: boolean;
   canChat: boolean;
@@ -30,6 +24,7 @@ export interface InventoryHint {
   kind: InventoryHintKind;
   repoId: string;
   bytes?: number;
+  startedAt?: number;
   createdAt?: number;
 }
 
@@ -42,12 +37,12 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
   loadCachePath?: string | null;
+  /** last changed time as epoch milliseconds. */
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
@@ -58,6 +53,7 @@ export interface CachedInventoryRow {
   pipelineTag?: string | null;
   // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;
+  audioType?: string | null;
   // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
   // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
@@ -85,7 +81,6 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   baseModel?: string | null;
@@ -94,6 +89,8 @@ export interface LocalInventoryRow {
   adapterType?: string | null;
   trainingMethod?: string | null;
   task?: string | null;
+  audioType?: string | null;
+  /** last changed time as epoch milliseconds. */
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;

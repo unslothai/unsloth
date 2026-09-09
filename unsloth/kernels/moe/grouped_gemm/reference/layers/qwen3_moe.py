@@ -44,7 +44,7 @@ class GroupedGEMMResult:
     intermediate: torch.Tensor
     second_gemm: torch.Tensor
     hidden_states_unpermute: torch.Tensor
-    hidden_states: torch.Tensor  # final output
+    hidden_states: torch.Tensor
 
 
 class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
@@ -70,10 +70,8 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
             config.moe_intermediate_size,
         )
 
-        # gating
         self.gate = torch.nn.Parameter(gate)
 
-        # experts
         self.gate_up_proj = torch.nn.Parameter(gate_up_proj, requires_grad = True)
         self.down_proj = torch.nn.Parameter(down_proj, requires_grad = True)
         self.act_fn = ACT2FN[config.hidden_act]
@@ -157,8 +155,8 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
         router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
 
-        # Token counts per expert + gather indices (token->expert order).
-        # Auxiliary structs; not recorded in the autograd graph.
+        # Token counts per expert plus gather indices (token to expert order): auxiliary structs, not
+        # recorded in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
@@ -167,7 +165,6 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         hidden_states = permute(hidden_states, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
-        # Start expert computation
         first_gemm = torch_grouped_gemm(
             X = hidden_states, W = self.gate_up_proj, m_sizes = token_counts_by_expert
         )
@@ -274,13 +271,13 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
-        # Token counts per expert + gather indices (token->expert order).
-        # Auxiliary structs; not recorded in the autograd graph.
+        # Token counts per expert plus gather indices (token to expert order): auxiliary structs, not
+        # recorded in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
-        # When permute_x is set, the permute fuses into the first gemm prologue
+        # With permute_x set, the permute fuses into the first gemm's prologue.
         if not self.permute_x:
             hidden_states = permute(hidden_states, gather_indices, self.top_k)
         # Start expert computation

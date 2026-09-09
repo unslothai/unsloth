@@ -17,6 +17,23 @@ libdir="$appdir/usr/lib"
 [[ -d "$libdir" ]] || { echo "AppDir has no usr/lib: $appdir" >&2; exit 1; }
 command -v patchelf >/dev/null || { echo "patchelf is required" >&2; exit 1; }
 
+asset_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+for asset in UnslothSafeEmoji.ttf UnslothSafeEmoji.LICENSE unsloth-appimage-fonts.conf; do
+  [[ -f "$asset_dir/$asset" ]] || {
+    echo "Complete AppImage asset is missing: $asset_dir/$asset" >&2
+    exit 1
+  }
+done
+install -D -m 644 \
+  "$asset_dir/UnslothSafeEmoji.ttf" \
+  "$appdir/usr/share/unsloth/fonts/UnslothSafeEmoji.ttf"
+install -D -m 644 \
+  "$asset_dir/UnslothSafeEmoji.LICENSE" \
+  "$appdir/usr/share/doc/unsloth-safe-emoji/copyright"
+install -D -m 644 \
+  "$asset_dir/unsloth-appimage-fonts.conf" \
+  "$appdir/usr/etc/fonts/unsloth-appimage.conf"
+
 # Remove host-coupled libraries after all input plugins deploy their dependencies.
 host_patterns=(
   'ld-linux*.so*' 'libc.so*' 'libm.so*' 'libdl.so*' 'libpthread.so*'

@@ -22,7 +22,7 @@
 # and asserting the machine is clean -- that is the teardown for the whole job,
 # so nothing needing Unsloth installed may follow it.
 
-name: Mac Studio UI + API + Update + Inference CI
+name: Mac Unsloth UI + API + Update + Inference CI
 
 on:
   pull_request:
@@ -36,6 +36,7 @@ on:
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -81,6 +82,7 @@ on:
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -290,6 +292,15 @@ jobs:
               open(path, "w").write(patched)
               print(f"pipeTransport.js: patched JSON.parse calls in {path}")
           PY
+
+      - name: Composer icon alignment
+        timeout-minutes: 5
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            python scripts/lockfile_supply_chain_audit.py
+            npm ci --prefix studio/frontend --ignore-scripts --no-fund --no-audit
+          fi
+          python tests/studio/playwright_composer_icons.py chromium webkit
 
       - name: Reset auth + boot Unsloth
         run: |
@@ -711,10 +722,23 @@ jobs:
         # curl already caps itself at --max-time 600; +2 for process overhead.
         timeout-minutes: 12
         run: |
+          # speculative_type=off and n_parallel=1 are what make the determinism
+          # assertion in the next step answerable. llama-server's README: "the
+          # logits are not guaranteed to be bit-for-bit identical for different
+          # batch" sizes. A non-MTP GGUF otherwise takes the --spec-default branch,
+          # which is live n-gram drafting, not the absence of a drafter: the server
+          # logs "draft acceptance = 0.46875 (30 accepted / 64 generated)". Its
+          # draft pool is built from text the server has already seen, so the FIRST
+          # turn-1 request after a load drafts nothing and decodes one token at a
+          # time while every later one verifies a ~32-token draft in one batch, and
+          # check(runner(), runner()) always compares the cold replay against a warm
+          # one. n_parallel=1 also drops --kv-unified, whose shared-pool occupancy is
+          # a second input to the batch. The other phases of this workflow keep both
+          # defaults, so the shipped path stays covered.
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
             --max-time 600 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048,\"speculative_type\":\"off\",\"n_parallel\":1}" \
             | jq '{status, display_name, is_gguf, context_length}'
 
       - name: Multi-turn determinism via OpenAI + Anthropic SDKs
@@ -962,6 +986,10 @@ jobs:
                   headers = {
                       "Authorization": f"Bearer {KEY}",
                       "Content-Type": "application/json",
+                      # The tool loop's frames, and the confirm gate's prompt, only
+                      # go to a caller that asks, as the Studio UI does. Ask, so this
+                      # probe exercises the same path a user takes.
+                      "X-Unsloth-Events": "1",
                   },
               )
               for attempt in range(retries + 1):
@@ -1741,6 +1769,7 @@ jobs:
             logs/uninstall.log
             logs/install.log
             logs/playwright
+            logs/playwright-composer-icons
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_update_banner

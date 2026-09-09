@@ -283,8 +283,12 @@ for (const declaration of ["recommendedMeta", "recommendedVramMap"]) {
     assert.ok(estimatorAt >= 0, `${declaration} no longer estimates VRAM at all`);
     assert.ok(curatedAt < estimatorAt, "the QLoRA estimator runs first");
     // A task load puts the whole pipeline on one device, and torch is not the GGUF backend's
-    // inventory, so the budget is the load-scoped one the list's own fit filter uses.
-    assert.match(text, /artifactBudget\(loadScopedGpu\(gpu, Boolean\(task\)\)\)/);
+    // inventory, so the budget is the load-scoped one the list's own fit filter uses. Inline or
+    // via a local, as long as what reaches artifactBudget went through loadScopedGpu(gpu, ...).
+    assert.match(
+      text,
+      /artifactBudget\(loadScopedGpu\(gpu, Boolean\(task\)\)\)|rowGpu = loadScopedGpu\(gpu, Boolean\(task\)\);[\s\S]{0,400}artifactBudget\(rowGpu\)/,
+    );
   });
 }
 
@@ -306,10 +310,19 @@ test("every list that judges a row against the device asks the same helper", () 
 });
 
 test("GGUF rows keep the inference backend's budget", () => {
-  // They load through llama.cpp, so its inventory is the right one for them.
+  // They load through llama.cpp, so its inventory is the right one for them, load-scoped the way
+  // the quant rows and the fit filter scope it: a task load lands on ONE device, and judging the
+  // parent by the multi-GPU sum let a downloaded media row read as safe over oom variants.
   assert.match(
     declarationText("recommendedMeta"),
-    /exceedsSize\(sizeBytes, inferenceGpu\)/,
+    /ggufRowFit\(sizeBytes, rowInferenceGpu\)/,
+  );
+  // And it is the inventory of the runtime that PLACES the row, not of its file format: an
+  // Images or Video GGUF goes to torch, which on a Vulkan chat build is a different device set
+  // than llama.cpp reports.
+  assert.match(
+    declarationText("recommendedMeta"),
+    /rowInferenceGpu = diffusionLoad\n\s*\? rowGpu\n\s*: loadScopedGpu\(inferenceGpu, Boolean\(task\)\)/,
   );
 });
 

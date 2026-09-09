@@ -7,11 +7,9 @@
 // extra-arguments diagnostics that name the control a typed flag duplicates.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -19,8 +17,10 @@ const {
   CACHE_RAM_MAX,
   CACHE_RAM_MIN,
   CTX_CHECKPOINTS_MAX,
+  DEFAULT_PER_MODEL_CONFIG,
   LOAD_MODES,
   canonicalizeLoadMode,
+  isDefaultConfig,
   normalizeCacheRam,
   normalizeCtxCheckpoints,
   normalizePerModelConfig,
@@ -112,15 +112,7 @@ test("the four take part in the editor's identity", () => {
 test("a record only claims the new schema version when it carries one", () => {
   // toStoredConfig stamps the OLDEST version that understands every field
   // present, so an older client can still rewrite a record it fully knows.
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/model-config/per-model-config.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/model-picker/model-config/per-model-config.ts");
   assert.match(source, /const STORAGE_SCHEMA_VERSION = 5;/);
   assert.match(source, /const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;/);
   assert.match(source, /hasServerTuning\s*\n?\s*\?\s*STORAGE_SCHEMA_VERSION/);
@@ -196,5 +188,29 @@ test("the load mode is reported as removed, not as winning, under Model Memory",
   assert.ok(
     messages.some((message) => /removed/.test(message)),
     messages.join(" "),
+  );
+});
+
+test("a config whose only change is one of the four is not read as default", () => {
+  // savePerModelConfig DELETES an entry it judges default, so a tuning-only save
+  // never reached storage: Run settings reported that defaults were kept and
+  // unticked Remember, while the server row it had just mirrored held the value.
+  for (const patch of [
+    { loadMode: "mmap" },
+    { specDraftCacheDtype: "q8_0", speculativeType: "dspark" },
+    { ctxCheckpoints: 0 },
+    { ctxCheckpoints: 64 },
+    { cacheRam: 0 },
+    { cacheRam: -1 },
+  ]) {
+    const config = normalizePerModelConfig({
+      ...DEFAULT_PER_MODEL_CONFIG,
+      ...patch,
+    });
+    assert.equal(isDefaultConfig(config), false, JSON.stringify(patch));
+  }
+  assert.equal(
+    isDefaultConfig(normalizePerModelConfig({ ...DEFAULT_PER_MODEL_CONFIG })),
+    true,
   );
 });

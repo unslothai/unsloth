@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createSegmentedAssistantText } from "../src/features/chat/utils/incremental-assistant-content.ts";
@@ -15,6 +14,8 @@ import {
   createTrailingPlaceholderWatch,
   stripTrailingTemplatePlaceholder,
 } from "../src/features/chat/utils/trailing-template-placeholder.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 /**
  * Complexity tests, not timing tests: they count the characters the scans look
@@ -363,10 +364,7 @@ test("the whole per-arrival path is linear in the reply length", () => {
 
 // ------------------------------------------------------------ source pins ---
 
-const ADAPTER = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
 /** Drop comments, so a commented-out call cannot satisfy a search. */
 function withoutComments(source: string): string {
@@ -452,7 +450,7 @@ const FLAG_NEXT_TO_APPEND =
   /streamedChars \+= reasoning\.length \+ delta\.length;\s*producedReplyText = true;/;
 
 /** The adapter between two anchors, without its comments. */
-function regionOf(from: string, to: string, maxChars = 60_000): string {
+function regionOf(from: string, to: string, maxChars = 75_000): string {
   const start = ADAPTER.indexOf(from);
   assert.notEqual(start, -1, `"${from}" is gone; this test needs rewriting`);
   const end = ADAPTER.indexOf(to, start);
@@ -602,8 +600,14 @@ test("the trailing strip runs on the finished reply, not on every arrival", () =
     true,
     "the strip must sit after the SSE loop, not inside it",
   );
+  // Pinned as a prefix, deliberately. What this test is about is WHERE the final
+  // build sits relative to the strip, not how the merge is spelled, and pinning the
+  // closing parens made it fail the first time an argument was added to
+  // `mergeContinuation` even though the ordering it guards was untouched. A pin that
+  // breaks on unrelated edits gets "fixed" by re-pinning, and one of those days it
+  // gets re-pinned past a real reordering.
   const finalBuild = source.indexOf(
-    "buildAssistantContent(mergeContinuation(cumulativeText))",
+    "buildAssistantContent(mergeContinuation(cumulativeText",
     strip,
   );
   assert.equal(

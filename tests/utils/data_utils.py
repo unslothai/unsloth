@@ -87,7 +87,6 @@ def format_summary(stats: dict, precision: int = 6) -> str:
         if isinstance(value, float):
             formatted_value = f"{value:.{precision}f}"
         elif isinstance(value, (tuple, list)):
-            # Format each element in tuples or lists (e.g., the shape)
             formatted_value = ", ".join(str(v) for v in value)
             formatted_value = (
                 f"({formatted_value})" if isinstance(value, tuple) else f"[{formatted_value}]"

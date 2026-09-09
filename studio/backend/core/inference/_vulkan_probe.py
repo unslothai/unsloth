@@ -51,14 +51,14 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
             return flags, names
         dev_count = base.ggml_backend_reg_dev_count(reg)
     except Exception:
-        # Best-effort: any failure degrades to "discrete"/"unnamed" so the
-        # memory readings still get through instead of crashing the probe.
+        # Best-effort: any failure degrades to "discrete"/"unnamed" so the memory readings still get through instead of
+        # crashing the probe.
         return flags, names
 
-    # Bound outside the type-detection try above: a ggml-base without the
-    # description symbol (older/custom build) must degrade to unnamed devices,
-    # not abort before the iGPU flags are read (which would count an iGPU's
-    # shared RAM as VRAM).
+    # bound outside the try above: a ggml-base without the description symbol must degrade to unnamed
+    # Bound outside the type-detection try above: a ggml-base without the description symbol (older/custom build) must
+    # degrade to unnamed devices, not abort before the iGPU flags are read (which would count an iGPU's shared RAM as
+    # VRAM).
     name_functions = []
     for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
         try:
@@ -98,17 +98,15 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
-    # Device names can be non-ASCII (localized drivers); the platform-default
-    # stdout encoding (e.g. cp1252) would raise on them and lose the whole
-    # inventory. The reader decodes UTF-8 with the same error mode.
+    # Device names can be non-ASCII (localized drivers); the platform-default stdout encoding (e.g. cp1252) would raise
+    # on them and lose the whole inventory. The reader decodes UTF-8 with the same error mode.
     try:
         sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
     except Exception:
         pass
 
-    # Hold add_dll_directory's handle for the rest of main() (the documented
-    # idiom) so bindir stays on the search path while the sibling ggml DLLs
-    # resolve below.
+    # Hold add_dll_directory's handle for the rest of main() (the documented idiom) so bindir stays on the search path
+    # while the sibling ggml DLLs resolve below.
     _dll_dir = None
     if sys.platform == "win32":
         base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
@@ -129,8 +127,8 @@ def main() -> int:
                 return os.path.join(directory, entry)
         return None
 
-    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr
-    # falls back to 0 where the flag doesn't exist (Windows CDLL ignores mode).
+    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr falls back to 0 where the flag doesn't
+    # exist (Windows CDLL ignores mode).
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
     base_path = _find_lib(bindir, base_name)
     vk_path = _find_lib(bindir, vk_name)

@@ -75,6 +75,20 @@ def test_url_regex_skips_api_host_but_matches_real_url():
     assert m.group(0) == "https://brave-mountain-river-clouds.trycloudflare.com"
 
 
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("localhost", "http://localhost:8080"),
+        ("127.0.0.1", "http://127.0.0.1:8080"),
+        ("::1", "http://[::1]:8080"),
+        ("fe80::1234%eth0", "http://[fe80::1234%25eth0]:8080"),
+        ("fe80::1234%12", "http://[fe80::1234%2512]:8080"),
+    ],
+)
+def test_origin_url_brackets_ipv6_hosts(host, expected):
+    assert ct._origin_url(host, 8080) == expected
+
+
 # ── asset mapping ────────────────────────────────────────────────────
 
 
@@ -874,6 +888,7 @@ def test_start_studio_tunnel_drops_url_that_is_not_publicly_reachable(monkeypatc
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
             attempts.append(protocol)
@@ -904,9 +919,11 @@ def test_start_studio_tunnel_returns_url_once_probe_passes(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
             self.protocol = protocol
+            self.origin_host = origin_host
 
         def start(self):
             self.url = "https://words.trycloudflare.com"
@@ -925,8 +942,9 @@ def test_start_studio_tunnel_returns_url_once_probe_passes(monkeypatch):
     monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
     monkeypatch.setattr(ct, "verify_public_url", _probe)
     try:
-        assert ct.start_studio_tunnel(8080) == "https://words.trycloudflare.com"
+        assert ct.start_studio_tunnel(8080, origin_host = "::1") == "https://words.trycloudflare.com"
         assert probed == ["https://words.trycloudflare.com"]
+        assert ct._active_tunnel.origin_host == "::1"
     finally:
         ct.stop_studio_tunnel()
 
@@ -994,6 +1012,7 @@ def test_start_studio_tunnel_registers_before_wait(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
 
@@ -1026,6 +1045,7 @@ def test_start_studio_tunnel_clears_and_stops_on_no_url(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
 
@@ -1052,6 +1072,7 @@ def test_start_studio_tunnel_returns_url(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
 
@@ -1083,6 +1104,7 @@ def test_start_studio_tunnel_falls_back_to_http2(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.protocol = protocol
             self.url = None
@@ -1119,6 +1141,7 @@ def test_start_studio_tunnel_no_retry_when_shutdown_between_attempts(monkeypatch
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
             attempts.append(protocol)
@@ -1150,6 +1173,7 @@ def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
             attempts.append(protocol)
@@ -1180,6 +1204,7 @@ def test_start_studio_tunnel_both_protocols_fail_registration(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
             attempts.append(protocol)
@@ -1212,6 +1237,7 @@ def test_start_studio_tunnel_aborts_retry_on_concurrent_shutdown(monkeypatch):
             port,
             binary,
             protocol = None,
+            origin_host = "localhost",
         ):
             self.url = None
             attempts.append(protocol)
@@ -1288,6 +1314,7 @@ def test_verify_global_reachability_marks_private_address_unreachable():
     ns = {
         "_public_reachable": None,
         "_stdout_color_ok": lambda: False,
+        "is_wildcard_host": lambda _host: False,
         "_url_host": lambda host: host,
         "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
     }

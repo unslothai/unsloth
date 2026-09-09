@@ -27,7 +27,35 @@ export interface GenerateAudioOptions {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  audio_instructions?: string;
+  audio_language?: string;
+  seed?: number;
   signal?: AbortSignal;
+}
+
+export interface AudioDownloadPlan {
+  entries: {
+    repo_id: string;
+    files: string[];
+    bytes: number;
+    gguf_filename: string | null;
+    checkpoint?: boolean;
+  }[];
+  total_bytes: number;
+  required_bytes?: number;
+  checkpoint_bytes?: number;
+}
+
+export async function getAudioDownloadPlan(
+  modelPath: string,
+  hfToken?: string,
+): Promise<AudioDownloadPlan> {
+  const response = await authFetch("/api/inference/audio/download-plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_path: modelPath, hf_token: hfToken }),
+  });
+  return parseJson<AudioDownloadPlan>(response);
 }
 
 export async function generateAudio(
@@ -57,6 +85,7 @@ export interface AudioGalleryClip {
   sample_rate: number;
   duration_s: number;
   created_at: string;
+  archived?: boolean;
 }
 
 export interface AudioGalleryListResponse {
@@ -70,14 +99,30 @@ export async function listAudioGallery(
   offset: number,
   limit: number,
   before?: { mtime: number; id: string } | null,
+  archived = false,
 ): Promise<AudioGalleryListResponse> {
   const cursor = before
     ? `&before_mtime=${encodeURIComponent(before.mtime)}&before_id=${encodeURIComponent(before.id)}`
     : "";
   const response = await authFetch(
-    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}${cursor}`,
+    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}&archived=${archived}${cursor}`,
   );
   return parseJson<AudioGalleryListResponse>(response);
+}
+
+export async function setAudioClipFlags(
+  id: string,
+  flags: { archived?: boolean },
+): Promise<AudioGalleryClip> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    },
+  );
+  return parseJson<AudioGalleryClip>(response);
 }
 
 export async function deleteAudioClip(id: string): Promise<void> {

@@ -207,7 +207,7 @@ pub(crate) fn read_expected_studio_root_id() -> Option<String> {
     parse_studio_root_id(&raw)
 }
 
-/// Returns the managed Studio root ID, creating it when absent.
+/// Returns the managed Unsloth root ID, creating it when absent.
 /// Desktop installs skip the installer step that normally creates it.
 pub(crate) fn ensure_managed_studio_root_id() -> Result<String, String> {
     #[cfg(test)]
@@ -252,7 +252,7 @@ fn ensure_studio_root_id_at_with_blank_observer(
         .parent()
         .ok_or_else(|| format!("desktop ownership id path {} has no parent", path.display()))?;
 
-    // Do not create the share directory before Studio is installed.
+    // Do not create the share directory before Unsloth is installed.
     if !create_when_missing && !path.exists() {
         return Ok(None);
     }

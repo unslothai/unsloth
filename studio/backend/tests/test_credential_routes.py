@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import asyncio
 import importlib.util
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -24,6 +25,18 @@ from models.providers import (
     ProviderTestRequest,
     ProviderUpdate,
 )
+
+
+def _provider(**overrides):
+    """A provider creation payload, with per-test overrides."""
+    return ProviderCreate(
+        **{
+            "provider_type": "openai_codex",
+            "display_name": "ChatGPT subscription",
+            "models": ["gpt-5.4"],
+            **overrides,
+        }
+    )
 
 
 def _load_route_module(module_name: str, path: Path):
@@ -150,10 +163,91 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
     assert providers_db.get_provider(created.id) is None
 
 
+def test_endpoint_and_saved_key_update_is_atomic_for_independent_readers(monkeypatch):
+    """A reader on another connection sees one complete provider bundle.
+
+    The writer is paused after changing the endpoint but before replacing the
+    encrypted key.  This is the inverse interleaving that previously exposed the
+    new route with the old key.  The reader uses normal storage calls, each with
+    its own SQLite connection, so process-local route locks cannot make it pass.
+    """
+    provider_id = "atomic-provider"
+    old_base_url = "http://127.0.0.1:7770/v1"
+    new_base_url = "http://127.0.0.1:8880/v1"
+    providers_db.create_provider(
+        id = provider_id,
+        provider_type = "custom",
+        display_name = "Atomic TTS",
+        base_url = old_base_url,
+        models = ["kokoro"],
+    )
+    credential_secrets.save_provider_api_key(provider_id, "old-secret")
+    monkeypatch.setattr(
+        providers_route,
+        "resolve_provider_api_key_or_400",
+        lambda *_args, **_kwargs: "new-secret",
+    )
+
+    between_row_and_key = threading.Event()
+    finish_key_write = threading.Event()
+    original_save = credential_secrets.save_provider_api_key
+
+    def _paused_save(
+        saved_provider_id: str,
+        api_key: str,
+        *,
+        connection = None,
+    ) -> None:
+        assert connection is not None
+        between_row_and_key.set()
+        assert finish_key_write.wait(timeout = 5)
+        original_save(saved_provider_id, api_key, connection = connection)
+
+    monkeypatch.setattr(credential_secrets, "save_provider_api_key", _paused_save)
+    failures: list[BaseException] = []
+
+    def _update() -> None:
+        try:
+            asyncio.run(
+                providers_route.update_provider_config(
+                    provider_id,
+                    ProviderUpdate(
+                        base_url = new_base_url,
+                        encrypted_api_key = "replacement-envelope",
+                    ),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    writer = threading.Thread(target = _update)
+    writer.start()
+    try:
+        assert between_row_and_key.wait(timeout = 5)
+        observed_during_write = (
+            providers_db.get_provider(provider_id)["base_url"],
+            credential_secrets.get_provider_api_key(provider_id),
+        )
+    finally:
+        finish_key_write.set()
+        writer.join(timeout = 5)
+
+    assert not writer.is_alive()
+    assert failures == []
+    observed_after_commit = (
+        providers_db.get_provider(provider_id)["base_url"],
+        credential_secrets.get_provider_api_key(provider_id),
+    )
+    assert observed_during_write == (old_base_url, "old-secret")
+    assert observed_after_commit == (new_base_url, "new-secret")
+
+
 def test_custom_max_output_tokens_create_update_and_clear():
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
+            _provider(
                 provider_type = "custom",
                 display_name = "Custom",
                 base_url = "https://example.com/v1",
@@ -359,10 +453,10 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
     )
     original_save = credential_secrets.save_provider_api_key
 
-    def fail_replacement(provider_id: str, api_key: str):
+    def fail_replacement(provider_id: str, api_key: str, **kwargs):
         if api_key == "sk-replacement":
             raise RuntimeError("simulated credential write failure")
-        original_save(provider_id, api_key)
+        original_save(provider_id, api_key, **kwargs)
 
     monkeypatch.setattr(credential_secrets, "save_provider_api_key", fail_replacement)
     with pytest.raises(RuntimeError, match = "credential write failure"):
@@ -457,6 +551,21 @@ def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch
     monkeypatch.setattr(key_exchange, "decrypt_api_key", lambda value: f"explicit:{value}")
     assert (
         providers_route.resolve_provider_api_key_or_400("provider-1", "ciphertext")
+        == "explicit:ciphertext"
+    )
+    assert (
+        providers_route.resolve_provider_api_key_or_400(
+            "provider-1", "ciphertext", prefer_saved_key = True
+        )
+        == "saved"
+    )
+    assert (
+        providers_route.resolve_provider_api_key_or_400(
+            "provider-1",
+            "ciphertext",
+            allow_saved_key = False,
+            prefer_saved_key = True,
+        )
         == "explicit:ciphertext"
     )
 
@@ -635,11 +744,7 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -691,11 +796,7 @@ def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -732,11 +833,7 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
     listed = "gpt-5.7-nova"
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -806,11 +903,7 @@ def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -861,11 +954,7 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
     listed = "gpt-5.7-nova"
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -947,11 +1036,7 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1005,11 +1090,7 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
     listed = "gpt-5-codex-max"  # dynamic: carried by the plan, absent from the seed
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1118,11 +1199,7 @@ def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1156,11 +1233,7 @@ def test_deleting_a_codex_connection_releases_its_plan_catalog():
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1239,11 +1312,7 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
     listed = "gpt-5-codex-max"  # dynamic: carried by the plan, absent from the seed
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "Original name",
-                models = ["gpt-5.4"],
-            ),
+            _provider(display_name = "Original name"),
             credential = ("alice", None),
             via_api_key = False,
         )

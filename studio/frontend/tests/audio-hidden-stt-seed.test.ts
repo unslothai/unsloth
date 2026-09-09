@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -10,12 +9,10 @@ import {
   taskPickerRowMatches,
 } from "../src/features/model-picker/components/model-selector/audio-picker-policy.ts";
 
-const pickerSource = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/pickers.tsx",
-    import.meta.url,
-  ),
-  "utf8",
+import { readSrc } from "./helpers/kit.ts";
+
+const pickerSource = readSrc(
+  "features/model-picker/components/model-selector/pickers.tsx",
 );
 
 const row = {

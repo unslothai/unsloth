@@ -12,13 +12,9 @@
 // which the node suite cannot mount.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-function source(path: string): string {
-  return readFileSync(fileURLToPath(new URL(`../src/${path}`, import.meta.url)), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
 
 const PAGES = [
   ["images", "features/images/images-page.tsx", "getDiffusionStatus", "unloadDiffusionModel"],
@@ -27,7 +23,7 @@ const PAGES = [
 
 for (const [name, path, read, unload] of PAGES) {
   test(`the ${name} page lets only the newest status read write`, () => {
-    const page = source(path);
+    const page = readSrc(path);
     assert.match(page, /const statusTicket = useRef\(0\);/);
     assert.match(
       page,
@@ -53,7 +49,7 @@ for (const [name, path, read, unload] of PAGES) {
   });
 
   test(`the ${name} page claims its ticket before awaiting, not after`, () => {
-    const page = source(path);
+    const page = readSrc(path);
     // Claiming after the await would hand every read the newest ticket and
     // defeat the whole thing.
     assert.match(page, /const ticket = \+\+statusTicket\.current;\s*\n\s*try \{/);

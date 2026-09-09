@@ -32,11 +32,12 @@ def test_current_generation_model_ids_reach_the_picker():
     }
     for provider, model_ids in live.items():
         registry = PROVIDER_REGISTRY[provider]
-        allow = registry["model_id_allowlist"]
+        allow = registry.get("model_id_allowlist")
         deny = registry.get("model_id_denylist")
         deny_exact = registry.get("model_id_deny_exact") or ()
         for model_id in model_ids:
-            assert allow.match(model_id), f"{provider}: {model_id} not allowlisted"
+            if allow is not None:
+                assert allow.match(model_id), f"{provider}: {model_id} not allowlisted"
             assert not (deny and deny.search(model_id)), f"{provider}: {model_id} denylisted"
             assert model_id not in deny_exact, f"{provider}: {model_id} denied exactly"
 

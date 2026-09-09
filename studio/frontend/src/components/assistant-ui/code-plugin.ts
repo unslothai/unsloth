@@ -61,7 +61,12 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
-const normalizeLanguage = (language: string): BundledLanguage => {
+/**
+ * The fence tag as Shiki will see it: lower-cased, aliases resolved. Exported so that anything
+ * keying a per-grammar cache uses the same identity `highlight` does -- `py` and `Python` are one
+ * grammar here, and two keys anywhere else means the same grammar is warmed twice.
+ */
+export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];
   return alias ?? (key as BundledLanguage);
@@ -73,6 +78,21 @@ const normalizeLanguage = (language: string): BundledLanguage => {
 // text, keeping the 250 ms plain-tail cadence.
 export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
+// Shiki's own tokenizer guard is a wall clock: a line that takes longer than
+// `tokenizeTimeLimit` (default 500 ms) is abandoned part-way and the rest of it
+// is emitted as one uncoloured token. Dual themes are two passes with two
+// separate budgets, and only the first pays to compile the grammar's regexes,
+// so a loaded machine drops the light theme to plain and keeps the dark one
+// correct -- for the same line, in the same result. Committed lines are never
+// re-tokenized, so that half-plain line is then cached for the life of the
+// fence. Bound the work by line length instead: same protection against a
+// minified blob (~120 ms at this length, growing quadratically past it, which
+// is VS Code's `editor.maxTokenizationLineLength` default for the same reason),
+// but the output depends on the source rather than on the host.
+export const TOKENIZE_LIMITS = {
+  tokenizeTimeLimit: 0,
+  tokenizeMaxLineLength: 20_000,
+} as const;
 // An unvirtualized thread mounts every fence. Bound both their count and source
 // size; token data measured roughly 30 bytes per source character.
 const MAX_FENCES = 512;
@@ -147,6 +167,33 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
   offset === 0
     ? line
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
+
+// ADJACENT-TOKEN COALESCING: TRIED, MEASURED AT ZERO, REMOVED.
+//
+// The renderer emits one <span> per themed token, so a fence's span census is
+// its token census, and Shiki splits on GRAMMAR boundaries rather than on
+// rendered appearance. Merging runs of adjacent tokens whose rendered style is
+// byte-identical looked like a pure reduction with no gating at all: no
+// viewport state machine, nothing a reader could do to push a fence back into a
+// more expensive shape.
+//
+// It buys exactly nothing. Running the whole studiobench corpus, 728 fences and
+// 1,335,897 code characters, through this component's own Shiki configuration:
+//
+//   dual        tokens 537013 -> merged 537013   0.0% fewer
+//   darkonly    tokens 535981 -> merged 535981   0.0% fewer
+//
+// and the 100K rung's 99 assembled fences, 180,902 characters, 72550 -> 72550
+// dual, 72408 -> 72408 dark only, 62098 -> 62098 light only. Not one adjacent
+// pair in half a million shares a rendered style, in any theme mode. Shiki
+// already emits maximally coalesced tokens. No timing was run on it, because a
+// mechanism that removes no spans cannot make anything faster.
+//
+// The implementation is not kept. Carrying a runtime-flippable flag through the
+// fence cache for a measured-zero benefit only adds a way for a cached result
+// to disagree with the flag that produced it. Run
+// `node scripts/coal-span-census.mjs <markdown>` from studio/frontend to check
+// the census on any thread rather than taking these numbers on trust.
 
 // Markdown reports a closing fence as body until it recognizes it, so that
 // line is all a fence can lose: up to three spaces, one run of backticks or
@@ -301,6 +348,7 @@ export function createCodePlugin(
         lang,
         themes,
         grammarState: fence.state,
+        ...TOKENIZE_LIMITS,
       });
 
     // Commit every newly completed line.
@@ -314,6 +362,9 @@ export function createCodePlugin(
       const completed = tokenizeFrom(
         code.slice(fence.committedLength, completedEnd),
       );
+      // Coalesced ONCE, here, as the line is committed. A committed line is
+      // never re-tokenized, so this is paid once per line for the life of the
+      // fence and every later render of it reads the reduced array.
       for (const line of completed.tokens) {
         fence.lines.push(shiftLine(line, fence.committedLength));
       }
@@ -327,7 +378,7 @@ export function createCodePlugin(
     const liveResult = tokenizeFrom(live);
     fence.meta = stripTokens(liveResult);
     fence.liveTokens = shiftLine(
-      liveResult.tokens[0] ?? [],
+      liveResult.tokens[0] ?? ([] as unknown as TokenLine),
       fence.committedLength,
     );
     fence.lastTokenizedAt = monotonicNow();
@@ -362,7 +413,7 @@ export function createCodePlugin(
     try {
       result = tokenize(fence, highlighter, code, language, themes);
     } catch (error) {
-      console.error("[Studio Code] Failed to highlight code:", error);
+      console.error("[Unsloth Code] Failed to highlight code:", error);
       resetFence(fence);
       // A fence that never produced tokens has no anchor to match on, so a
       // block that keeps failing would strand a new one on every render.
@@ -417,7 +468,7 @@ export function createCodePlugin(
         resume(highlighter);
       })
       .catch((error) => {
-        console.error("[Studio Code] Failed to highlight code:", error);
+        console.error("[Unsloth Code] Failed to highlight code:", error);
         highlighters.delete(key);
         // Failed callbacks must not pin fences or fire after a later retry.
         for (const waiting of fences) {

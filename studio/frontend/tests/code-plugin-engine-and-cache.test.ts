@@ -21,7 +21,6 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import type {
   HighlightOptions,
@@ -32,14 +31,16 @@ import type {
 import { createHighlighter } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import {
+  createCodePlugin,
+  TOKENIZE_LIMITS,
+} from "../src/components/assistant-ui/code-plugin.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
 
-const PLUGIN_SOURCE = readFileSync(
-  new URL("../src/components/assistant-ui/code-plugin.ts", import.meta.url),
-  "utf8",
-);
+const PLUGIN_SOURCE = readSrc("components/assistant-ui/code-plugin.ts");
 
 const highlightOnce = (
   plugin: ReturnType<typeof createCodePlugin>,
@@ -201,6 +202,8 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
     highlighter.codeToTokens(code, {
       lang: "html",
       themes: { light: "github-light", dark: "github-dark" },
+      // Same tokenizer limits as the plugin, so neither side can degrade.
+      ...TOKENIZE_LIMITS,
     }).tokens;
 
   const settle = () => new Promise((r) => setTimeout(r, 260));

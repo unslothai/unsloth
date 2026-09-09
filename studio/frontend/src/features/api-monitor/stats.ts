@@ -17,7 +17,7 @@ export interface MonitorStats {
   /** Slowest finished request, for spotting a pathological call. */
   maxDurationMs: number | null;
   totalTokens: number;
-  /** Share of the context used by the busiest running request, else the latest known request. */
+  /** Highest reported running usage; while idle, the latest reported request. */
   contextUsage: number | null;
   /** Share of finished requests that failed, 0-1. Null when nothing finished. */
   errorRate: number | null;
@@ -129,7 +129,9 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
     avgDurationMs: durationCount > 0 ? durationSum / durationCount : null,
     maxDurationMs,
     totalTokens,
-    contextUsage: activeContextUsage ?? latestContextUsage,
+    // Completed-request usage must not stand in for a running request whose
+    // backend has not reported tokens yet (many only report at completion).
+    contextUsage: active > 0 ? activeContextUsage : latestContextUsage,
     errorRate: finished > 0 ? errors / finished : null,
     tokensPerSecond:
       generatedDurationMs > 0

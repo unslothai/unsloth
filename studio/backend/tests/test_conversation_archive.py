@@ -4,6 +4,7 @@
 """The archive behind rolling-context compaction: what it keeps, and what it must not touch."""
 
 import copy
+import json
 import os
 import sys
 
@@ -15,6 +16,21 @@ from core.rag import config, conversation_archive, retrieval, store  # noqa: E40
 from storage import rag_db  # noqa: E402
 
 THREAD = "thread-abc"
+
+
+def _assistant_call(
+    name,
+    arguments,
+    *,
+    id = "c1",
+    content = "",
+):
+    """An assistant turn whose only content is one function tool call."""
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [{"id": id, "function": {"name": name, "arguments": arguments}}],
+    }
 
 
 def _turn(question, answer):
@@ -87,6 +103,24 @@ def _archive(
 @pytest.fixture
 def conn(rag_home, rag_conn, stub_embeddings):
     return rag_conn
+
+
+def _tool_part(
+    *,
+    type = "tool-call",
+    toolCallId = "c1",
+    toolName = "terminal",
+    command = "ls",
+    result = "main.py readme.md",
+):
+    """One stored tool-invocation content part, with per-test overrides."""
+    return {
+        "type": type,
+        "toolCallId": toolCallId,
+        "toolName": toolName,
+        "args": {"command": command},
+        "result": result,
+    }
 
 
 def test_evicted_turns_are_archived_under_the_conversation_scope(conn):
@@ -372,16 +406,12 @@ def test_the_reply_that_FOLLOWS_a_forced_recall_is_still_archived(conn):
     """
     evicted = [
         {"role": "user", "content": "what was the passphrase"},
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "conv_recall_1",
-                    "function": {"name": "search_conversation", "arguments": '{"query": "pass"}'},
-                }
-            ],
-        },
+        _assistant_call(
+            "search_conversation",
+            '{"query": "pass"}',
+            id = "conv_recall_1",
+            content = None,
+        ),
         {"role": "tool", "tool_call_id": "conv_recall_1", "content": "<chunk>RETRIEVED</chunk>"},
         {"role": "assistant", "content": "The passphrase you set earlier was SWORDFISH-42."},
     ]
@@ -536,16 +566,7 @@ def test_a_search_the_MODEL_asked_for_is_not_archived_as_new_history():
     from core.rag import conversation_archive as archive
 
     recalled = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_0",
-                    "function": {"name": "search_conversation", "arguments": '{"query":"pass"}'},
-                }
-            ],
-        },
+        _assistant_call("search_conversation", '{"query":"pass"}', id = "call_0"),
         {"role": "tool", "tool_call_id": "call_0", "content": "<chunk>RETRIEVEDPASSAGE</chunk>"},
         {"role": "assistant", "content": "It was ZQXVARA123."},
     ]
@@ -587,16 +608,7 @@ def test_swapping_the_tool_retires_the_archived_call():
 
     archived = archive.render_turn(
         [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "c1",
-                        "function": {"name": "terminal", "arguments": '{"cmd":"ls -la /srv"}'},
-                    }
-                ],
-            },
+            _assistant_call("terminal", '{"cmd":"ls -la /srv"}'),
             {"role": "tool", "tool_call_id": "c1", "content": "total 12"},
         ]
     )
@@ -605,16 +617,7 @@ def test_swapping_the_tool_retires_the_archived_call():
         return [
             archive._normalise(archive._probe_text(message))
             for message in [
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "c1",
-                            "function": {"name": tool, "arguments": '{"cmd":"ls -la /srv"}'},
-                        }
-                    ],
-                },
+                _assistant_call(tool, '{"cmd":"ls -la /srv"}'),
                 {"role": "tool", "tool_call_id": "c1", "content": "total 12"},
             ]
         ]
@@ -863,13 +866,7 @@ def test_a_tool_turn_with_BOTH_text_and_a_call_stays_on_its_branch(conn):
     """
     request_shape = [
         {"role": "user", "content": "check the log"},
-        {
-            "role": "assistant",
-            "content": "I will read it now",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"cmd":"cat log"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"cmd":"cat log"}', content = "I will read it now"),
         {"role": "tool", "tool_call_id": "c1", "content": "log contents here"},
     ]
     archived = conversation_archive.render_turn(request_shape)
@@ -971,13 +968,7 @@ def test_a_long_multi_line_tool_result_stays_on_its_branch(conn):
     """
     body = "opening line TOOLWALL-6060\n" + ("filler output line\n" * 400) + "trailing line"
     group = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"cmd": "cat log"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"cmd": "cat log"}'),
         {"role": "tool", "tool_call_id": "c1", "content": body},
     ]
     text = conversation_archive.render_turn(group)
@@ -1041,16 +1032,7 @@ def test_the_branch_transcript_carries_request_shaped_tool_calls(conn):
     archived tool turn and filters the whole exchange out as rolled back.
     """
     branch = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "function": {"name": "terminal", "arguments": '{"cmd": "ls TOOLARG-7777"}'},
-                }
-            ],
-        },
+        _assistant_call("terminal", '{"cmd": "ls TOOLARG-7777"}', id = "call_1"),
         {"role": "tool", "tool_call_id": "call_1", "content": "TOOLARG-7777 listed"},
     ]
     _archive(branch, thread_id = "tool-branch-thread")
@@ -1256,13 +1238,7 @@ def test_an_archived_tool_turn_survives_the_branch_filter(conn):
             "threadId": "tool-thread",
             "role": "assistant",
             "content": [
-                {
-                    "type": "tool-call",
-                    "toolCallId": "c1",
-                    "toolName": "terminal",
-                    "args": {"command": "alembic upgrade head"},
-                    "result": "migration applied cleanly",
-                }
+                _tool_part(command = "alembic upgrade head", result = "migration applied cleanly")
             ],
             "createdAt": 2,
         }
@@ -1428,13 +1404,7 @@ def test_a_tool_exchange_archived_mid_request_is_recallable(conn):
     _save_thread(thread_id, request_branch, append = True)
 
     tool_exchange = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "grep", "arguments": '{"q": "deploy"}'}}
-            ],
-        },
+        _assistant_call("grep", '{"q": "deploy"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "config/deploy.yml: token ZQX-5150"},
     ]
     assert conversation_archive.archive_turns(thread_id, tool_exchange) == 1
@@ -1493,13 +1463,10 @@ def test_a_tool_call_message_is_exempt_from_the_character_anchors(conn):
             {
                 "role": "assistant",
                 "content": [
-                    {
-                        "type": "tool-call",
-                        "toolCallId": "c1",
-                        "toolName": "terminal",
-                        "args": {"command": "alembic upgrade head"},
-                        "result": "migration applied cleanly",
-                    }
+                    _tool_part(
+                        command = "alembic upgrade head",
+                        result = "migration applied cleanly",
+                    )
                 ],
             }
         ]
@@ -2096,6 +2063,258 @@ def test_a_re_embed_that_stops_partway_does_not_reorder_a_legacy_archive(conn, m
     assert quoted == ["1", "2", "3", "4", "5"], quoted
 
 
+def test_a_legacy_archive_written_in_one_clock_tick_is_still_ordered(conn, monkeypatch):
+    """The same reorder as the test above, with the clock tie forced instead of hoped for.
+
+    That test only reaches the bug when the rows carry DISTINCT timestamps, a property of
+    the host clock: Windows advances it about every 15.6 ms, so a compaction there stamps
+    the whole conversation alike and the failure lands on one CI leg as a different
+    permutation every run. With the ordinal NULL and `created_at` equal the key is spent,
+    and a stable `sorted` quotes the turns in RELEVANCE order under an oldest-first header.
+    """
+    from core.rag import embeddings
+
+    # One tick for every row, which is what a coarse system clock does to the archive.
+    monkeypatch.setattr(store, "_now", lambda: "2026-01-01T00:00:00+00:00")
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    turns = [_turn(f"turn {n} about pelicans", f"STATEMENT{n} about pelicans") for n in range(1, 6)]
+    history = [dict(message) for turn in turns for message in turn]
+    _save_thread(THREAD, history, append = True)
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 5
+    scope = store.conversation_archive_scope(THREAD)
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+    # The premise: nothing above insertion order can separate these rows any more.
+    stamps = {
+        row["created_at"]
+        for row in conn.execute("SELECT created_at FROM documents WHERE scope=?", (scope,))
+    }
+    assert stamps == {"2026-01-01T00:00:00+00:00"}, stamps
+
+    identity["name"] = "st:model-b"
+    real_add = store.add_chunks
+    calls = {"n": 0}
+
+    def add_chunks_until_the_disk_fills(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("database or disk is full")
+        return real_add(*args, **kwargs)
+
+    monkeypatch.setattr(store, "add_chunks", add_chunks_until_the_disk_fills)
+    conversation_archive.archive_turns(THREAD, [dict(m) for m in history])
+    monkeypatch.setattr(store, "add_chunks", real_add)
+
+    _text, sources = conversation_archive.recall(THREAD, "pelicans", top_k = 5)
+    quoted = [source["text"].split("STATEMENT")[1][0] for source in sources]
+    assert quoted == ["1", "2", "3", "4", "5"], quoted
+
+
+def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monkeypatch):
+    """Tied documents must GROUP, because `chunk_index` is a position inside one of them.
+
+    Same clock tie as the test above, but with turns long enough to span several chunks.
+    Ranked above the document, `chunk_index` sorts every document's chunk 0 ahead of any
+    document's chunk 1, so two three-chunk turns come back A0, B0, A1, B1, A2, B2 and each
+    is quoted through the middle of the other.
+    """
+    monkeypatch.setattr(config, "CHUNK_TOKENS", 30)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    monkeypatch.setattr(store, "_now", lambda: "2026-01-01T00:00:00+00:00")
+
+    def _long_turn(tag):
+        return _turn(
+            f"turn {tag} about pelicans",
+            f"{tag}HEAD pelicans at the opening "
+            + " ".join(f"w{index}" for index in range(25))
+            + f" {tag}TAIL pelicans at the closing "
+            + " ".join(f"z{index}" for index in range(25)),
+        )
+
+    history = [dict(message) for tag in ("AAA", "BBB") for message in _long_turn(tag)]
+    _save_thread(THREAD, history, append = True)
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 2
+    scope = store.conversation_archive_scope(THREAD)
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+    # The premise takes both halves: one timestamp for both documents, more than one chunk
+    # each, or the interleave has nothing to interleave.
+    assert {
+        row["created_at"]
+        for row in conn.execute("SELECT created_at FROM documents WHERE scope=?", (scope,))
+    } == {"2026-01-01T00:00:00+00:00"}
+    per_document = [
+        row["n"]
+        for row in conn.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE scope=? GROUP BY document_id", (scope,)
+        )
+    ]
+    assert min(per_document) > 1, per_document
+
+    _text, sources = conversation_archive.recall(THREAD, "pelicans", top_k = 8)
+
+    # Each turn is quoted in one unbroken run, and the run that was archived first leads.
+    documents = [source["documentId"] for source in sources]
+    runs = [
+        document
+        for index, document in enumerate(documents)
+        if index == 0 or documents[index - 1] != document
+    ]
+    assert len(runs) == len(set(documents)) == 2, documents
+    # And inside a run the pieces are still in writing order.
+    for document in runs:
+        indexes = [s["chunkIndex"] for s in sources if s["documentId"] == document]
+        assert indexes == sorted(indexes), (document, indexes)
+    assert "AAAHEAD" in sources[0]["text"], sources[0]["text"]
+
+
+def test_the_sql_candidate_order_agrees_with_the_python_recall_order(conn):
+    """The two orderings are written twice, in two languages, so pin them to each other.
+
+    `store.search_lexical`'s ordered clauses and `_conversation_order` cannot share an
+    implementation across the SQL boundary, and drift is not cosmetic: the SQL runs under a
+    LIMIT and CHOOSES the candidates, so a disagreement silently deletes the turns the two
+    ends disagree about.
+
+    Asserted WITHIN each BM25 score, since the SQL sorts by relevance first and the recall
+    key deliberately has no relevance component: relevance decides which turns are eligible,
+    the archive decides the order among them. Document ids are assigned so that sorting by
+    them REVERSES conversation order, or the test would pass on the draw. The archive is
+    mixed on purpose (numbered and legacy turns, a shared timestamp and a distinct one,
+    single- and multi-chunk documents) so every component of the key is exercised.
+    """
+    import types
+
+    scope = store.conversation_archive_scope(THREAD)
+    plan = [
+        # (ordinal, created_at, chunk count). Two legacy rows tied on one clock tick, then
+        # a legacy row the clock could separate, then two numbered rows tied to each other.
+        (None, "2026-01-01T00:00:00+00:00", 3),
+        (None, "2026-01-01T00:00:00+00:00", 2),
+        (None, "2026-01-02T00:00:00+00:00", 1),
+        (7, "2026-01-03T00:00:00+00:00", 2),
+        (8, "2026-01-03T00:00:00+00:00", 2),
+    ]
+    for position, (ordinal, created, count) in enumerate(plan):
+        # Descending ids against ascending conversation order: id order is exactly wrong.
+        document_id = f"{len(plan) - position:04d}-turn"
+        store.create_document(
+            conn,
+            scope = scope,
+            thread_id = THREAD,
+            filename = "earlier turn",
+            sha256 = f"h{position}",
+            status = "completed",
+            embedding_model = "m",
+            archive_messages = 2,
+            archive_ordinal = ordinal,
+            document_id = document_id,
+            created_at = created,
+            commit = False,
+        )
+        store.add_chunks(
+            conn,
+            scope,
+            document_id,
+            [
+                types.SimpleNamespace(
+                    chunk_index = index,
+                    text = "ZQXAGREE statement " + "word " * (index + position),
+                    page_number = None,
+                    source_page_index = None,
+                    token_count = 5,
+                    char_count = 20,
+                )
+                for index in range(count)
+            ],
+            [[0.0] * 4] * count,
+        )
+    conn.commit()
+
+    def _tiers(**direction):
+        hits = store.search_lexical(conn, scope, "ZQXAGREE", 500, **direction)
+        grouped: list = []
+        for chunk_id, score in hits:
+            if grouped and grouped[-1][0] == score:
+                grouped[-1][1].append(chunk_id)
+            else:
+                grouped.append((score, [chunk_id]))
+        return grouped
+
+    oldest = _tiers(oldest_first = True)
+    newest = _tiers(newest_first = True)
+    every_id = [chunk_id for _score, tier in oldest for chunk_id in tier]
+    assert len(every_id) == sum(count for _o, _c, count in plan)
+    rows = store.chunks_by_id(conn, every_id)
+    # Non-vacuous: some score really is shared, or none of the above is being tested.
+    assert max(len(tier) for _score, tier in oldest) > 1, oldest
+
+    for score, tier in oldest:
+        expected = sorted(
+            tier, key = lambda chunk_id: conversation_archive._conversation_order(rows[chunk_id])
+        )
+        assert tier == expected, (score, tier, expected)
+    # And the other end is the exact mirror within each tier, or the two windows would not
+    # be cutting one run from its two ends.
+    assert [score for score, _ in newest] == [score for score, _ in oldest]
+    for (_score, forward), (_same, backward) in zip(oldest, newest):
+        assert backward == list(reversed(forward)), (forward, backward)
+
+
+def test_a_rewritten_turn_keeps_the_insertion_order_it_was_archived_in(conn, monkeypatch):
+    """A re-embed replaces a row, and the replacement has to sit where the original sat.
+
+    Carrying `created_at` over is enough only on a clock that separates the turns; on one
+    that does not, a fresh rowid moves every turn the rewrite reached to the end. Asserted
+    on the stored rows, so a regression is named as the write-side defect it is.
+    """
+    from core.rag import embeddings
+
+    monkeypatch.setattr(store, "_now", lambda: "2026-01-01T00:00:00+00:00")
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    turns = [_turn(f"turn {n} about pelicans", f"STATEMENT{n} about pelicans") for n in range(1, 4)]
+    history = [dict(message) for turn in turns for message in turn]
+    _save_thread(THREAD, history, append = True)
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 3
+    scope = store.conversation_archive_scope(THREAD)
+    before = [
+        (row["rowid"], row["id"])
+        for row in conn.execute(
+            "SELECT rowid, id FROM documents WHERE scope=? ORDER BY rowid", (scope,)
+        )
+    ]
+
+    identity["name"] = "st:model-b"
+    conversation_archive.archive_turns(THREAD, [dict(m) for m in history])
+
+    after = [
+        (row["rowid"], row["id"])
+        for row in conn.execute(
+            "SELECT rowid, id FROM documents WHERE scope=? ORDER BY rowid", (scope,)
+        )
+    ]
+    # Every row really was rewritten, and every one of them landed back where it was.
+    assert [rowid for rowid, _ in after] == [rowid for rowid, _ in before]
+    assert [document_id for _, document_id in after] != [document_id for _, document_id in before]
+
+
 def test_merging_two_recall_queries_still_lists_legacy_turns_first(conn):
     """The merge key has to agree with `_conversation_order`, or the merged block
     contradicts its own "oldest first" header on an upgraded archive."""
@@ -2142,7 +2361,8 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
     them in whatever order the two queries happened to return them: the anchor's hits
     first, then the follow-up's. `_conversation_order` breaks exactly this tie with
     `created_at`, and the merged path has to agree with it or the block contradicts its own
-    oldest-first header on an upgraded database."""
+    oldest-first header on an upgraded database. Sorted through `_order_key` itself, since
+    a copy of the key written out here passes until somebody edits one side of it."""
     from core.rag import conversation_archive
 
     merged = [
@@ -2151,21 +2371,53 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
         {"turn": 3, "createdAt": "2026-01-03T00:00:00Z", "chunkIndex": 0, "text": "numbered"},
     ]
     merged.sort(
-        key = lambda source: (
-            source.get("turn") is not None,
-            source.get("turn") or 0,
-            source.get("createdAt") or "",
-            source.get("chunkIndex") or 0,
+        key = lambda source: conversation_archive._order_key(
+            source.get("turn"),
+            source.get("createdAt"),
+            source.get("documentRowid"),
+            source.get("chunkIndex"),
         )
     )
 
     assert [m["text"] for m in merged] == ["earlier", "later", "numbered"]
 
 
+def test_both_recall_paths_order_by_the_same_key():
+    """The single-query path reads snake_case columns and the merge reads camelCase keys;
+    they are only the same key while both call `_order_key`.
+    """
+    from core.rag import conversation_archive
+    for ordinal in (None, 0, 4):
+        for created in ("", "2026-01-01T00:00:00Z"):
+            for rowid in (None, 0, 12):
+                for index in (None, 0, 3):
+                    row = {
+                        "archive_ordinal": ordinal,
+                        "created_at": created,
+                        "document_rowid": rowid,
+                        "chunk_index": index,
+                    }
+                    source = {
+                        "turn": ordinal,
+                        "createdAt": created,
+                        "documentRowid": rowid,
+                        "chunkIndex": index,
+                    }
+                    assert conversation_archive._conversation_order(row) == (
+                        conversation_archive._order_key(
+                            source.get("turn"),
+                            source.get("createdAt"),
+                            source.get("documentRowid"),
+                            source.get("chunkIndex"),
+                        )
+                    ), row
+
+
 def test_recall_sources_carry_the_fields_the_merge_orders_by():
     """The sort above is only as good as the field it reads, and nothing RENDERS
-    `createdAt` or `chunkIndex`, so an unused-looking key is exactly the sort of thing a
-    later cleanup deletes. This pins the producer."""
+    `createdAt`, `documentRowid` or `chunkIndex`, so an unused-looking key is exactly the
+    sort of thing a later cleanup deletes. This pins the producer. `documentRowid` most of
+    all: it decides the order once the clock has stopped separating rows."""
     from types import SimpleNamespace
 
     from core.rag import tool
@@ -2178,6 +2430,7 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
             "archive_ordinal": None,
             "chunk_index": 2,
             "created_at": "2026-01-01T00:00:00Z",
+            "document_rowid": 41,
         },
     }
     hits = [SimpleNamespace(chunk_id = "c1", score = 0.5)]
@@ -2186,6 +2439,7 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
 
     assert sources[0]["createdAt"] == "2026-01-01T00:00:00Z"
     assert sources[0]["chunkIndex"] == 2
+    assert sources[0]["documentRowid"] == 41
     assert sources[0]["turn"] is None
 
 
@@ -2768,13 +3022,7 @@ def _persist_agent_thread():
         (
             "assistant",
             [
-                {
-                    "type": "tool-call",
-                    "toolCallId": "c1",
-                    "toolName": "terminal",
-                    "args": {"command": "ls"},
-                    "result": "main.py readme.md",
-                },
+                _tool_part(type = "tool-call"),
                 {"type": "text", "text": "the repo has two files."},
             ],
         ),
@@ -2790,13 +3038,7 @@ def _persist_agent_thread():
             }
         )
     return [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command": "ls"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "main.py readme.md"},
         {"role": "assistant", "content": "the repo has two files."},
     ]
@@ -3100,13 +3342,7 @@ def test_text_said_before_a_tool_call_rides_on_the_call_message():
     reply that followed the result and still belongs last, which is why this splits by
     POSITION and not by part type.
     """
-    call = {
-        "type": "tool-call",
-        "toolCallId": "c1",
-        "toolName": "terminal",
-        "args": {"command": "ls"},
-        "result": "main.py readme.md",
-    }
+    call = _tool_part(type = "tool-call")
     before = conversation_archive._as_wire(
         [{"role": "assistant", "content": [{"type": "text", "text": "Let me check."}, call]}]
     )
@@ -3269,13 +3505,7 @@ def test_two_sequential_tool_rounds_replay_as_two_exchanges():
     """
 
     def _call(index, command, result):
-        return {
-            "type": "tool-call",
-            "toolCallId": f"c{index}",
-            "toolName": "terminal",
-            "args": {"command": command},
-            "result": result,
-        }
+        return _tool_part(toolCallId = f"c{index}", command = command, result = result)
 
     wire = conversation_archive._as_wire(
         [
@@ -3324,13 +3554,7 @@ def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn)
     _save_thread(THREAD, user_turn, append = True)
 
     in_flight = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "deploy"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command": "deploy"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "deploy failed: port in use"},
     ]
     conversation_archive.archive_turns(THREAD, in_flight)
@@ -3452,13 +3676,7 @@ def test_an_empty_tool_result_still_produces_a_tool_message():
     # And the reconstructed row matches the document archived from the request, which is
     # the point: emitting the message and still failing the match only looks fixed.
     wire = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command":"true"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command":"true"}'),
         {"role": "tool", "tool_call_id": "c1", "content": '{"result":""}'},
     ]
     rendered = conversation_archive.render_turn(wire)
@@ -3505,28 +3723,13 @@ def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
         {
             "role": "assistant",
             "content": [
-                {
-                    "type": "tool-call",
-                    "toolCallId": "c1",
-                    "toolName": "terminal",
-                    "args": {"command": "cat deploy.yml"},
-                    "result": "token ZQX-5150",
-                },
+                _tool_part(command = "cat deploy.yml", result = "token ZQX-5150"),
                 {"type": "text", "text": "The deploy token is ZQX-5150."},
             ],
         }
     ]
     wire = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "c1",
-                    "function": {"name": "terminal", "arguments": '{"command": "cat deploy.yml"}'},
-                }
-            ],
-        },
+        _assistant_call("terminal", '{"command": "cat deploy.yml"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "token ZQX-5150"},
         {"role": "assistant", "content": "The deploy token is ZQX-5150."},
     ]
@@ -3623,15 +3826,7 @@ def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
         return [
             {
                 "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool-call",
-                        "toolCallId": "c1",
-                        "toolName": tool_name,
-                        "args": {"command": "ls"},
-                        "result": result,
-                    }
-                ],
+                "content": [_tool_part(toolName = tool_name, result = result)],
             }
         ]
 
@@ -3659,6 +3854,262 @@ def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
         '{"text":"token ZQX-5150","images":[],"sessionId":"project-7",'
         '"files":[{"name":"out.csv","size":12}]}'
     ]
+
+
+# A `web_search` that found pictures, as the frontend leaves it on the card.
+_IMAGE_ID = "aabbccddeeff"
+_IMAGE_ENTRY = {
+    "id": _IMAGE_ID,
+    "title": "Ragdoll ZQXVARA123",
+    "domain": "example.com",
+    "source": "https://example.com/ragdoll.jpg",
+    "subject": "ragdoll",
+}
+# `register_images` writes `subject` only when given one -- the ordinary shape has none.
+_IMAGE_ENTRY_NO_SUBJECT = {key: value for key, value in _IMAGE_ENTRY.items() if key != "subject"}
+_SEARCH_TEXT = (
+    "The ZQXVARA123 ragdoll weighs 6 kg.\n\n---\n\n"
+    "ragdoll:\n- [[img:%s]] Ragdoll ZQXVARA123 \u2014 example.com" % _IMAGE_ID
+)
+_SEARCH_TEXT_REPLAYED = (
+    "The ZQXVARA123 ragdoll weighs 6 kg.\n\n---\n\n"
+    "ragdoll:\n-  Ragdoll ZQXVARA123 \u2014 example.com"
+)
+
+
+_ANSWER = "A ZQXVARA123 ragdoll weighs 6 kg."
+
+
+def _image_search_row(
+    result,
+    tool_name = "web_search",
+    answer = _ANSWER,
+):
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "w1",
+                    "toolName": tool_name,
+                    "args": {"query": "ragdoll ZQXVARA123"},
+                    "result": result,
+                },
+                {"type": "text", "text": answer},
+            ],
+        }
+    ]
+
+
+def _wire_tool_content(rows):
+    return [m["content"] for m in conversation_archive._as_wire(rows) if m["role"] == "tool"]
+
+
+def test_a_web_search_result_is_replayed_without_its_image_tokens():
+    """`{text, webImages}` is a wrapper too, and the tokens do not go back out.
+
+    The `images` key gated both existing wrappers, so a search result carried its whole
+    envelope instead and no turn that returned a picture matched what was sent.
+    """
+    result = {"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]}
+
+    assert _wire_tool_content(_image_search_row(result)) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row({"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY_NO_SUBJECT]})
+    ) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row({"text": "[[img:%s]]" % _IMAGE_ID, "webImages": [_IMAGE_ENTRY]})
+    ) == ['{"result":""}']
+    assert _wire_tool_content(_image_search_row(result, "lookup")) == [_SEARCH_TEXT_REPLAYED]
+    # A token alone in a block takes its introducing blank line too.
+    assert _wire_tool_content(
+        _image_search_row(
+            {
+                "text": "The ragdoll:\n\n[[img:%s]]\n\nIt weighs 6 kg." % _IMAGE_ID,
+                "webImages": [_IMAGE_ENTRY],
+            }
+        )
+    ) == ["The ragdoll:\n\nIt weighs 6 kg."]
+    assert _wire_tool_content(
+        _image_search_row(
+            {
+                "text": _SEARCH_TEXT,
+                "webImages": [{**_IMAGE_ENTRY, "source": "HTTPS://example.com/cat.jpg"}],
+            }
+        )
+    ) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row(
+            {
+                "text": "see [[img:%s]] and [[img:not-an-id]]" % _IMAGE_ID,
+                "webImages": [_IMAGE_ENTRY],
+            }
+        )
+    ) == ["see  and [[img:not-an-id]]"]
+
+
+def test_an_envelope_that_is_not_the_search_shape_is_still_serialised_whole():
+    """Unwrapping on `text` alone would drop every other field a tool returned.
+
+    Every entry field is re-checked; a result failing any of them goes out as JSON.
+    """
+    rejected = [
+        [],
+        "not a list",
+        [{**_IMAGE_ENTRY, "source": "javascript:alert(1)"}],
+        # `httpſ` is `https` to a Unicode case fold and not to JavaScript's `/i`.
+        [{**_IMAGE_ENTRY, "source": "httpſ://example.com/cat.jpg"}],
+        [{**_IMAGE_ENTRY, "id": "nope"}],
+        [{**_IMAGE_ENTRY, "title": None}],
+        [{**_IMAGE_ENTRY, "domain": 7}],
+        # The frontend accepts an absent `subject`, not a null one.
+        [{**_IMAGE_ENTRY, "subject": None}],
+        [_IMAGE_ENTRY, {**_IMAGE_ENTRY, "id": "nope"}],
+    ]
+    for entries in rejected:
+        result = {"text": _SEARCH_TEXT, "webImages": entries}
+        assert _wire_tool_content(_image_search_row(result)) == [
+            json.dumps(result, ensure_ascii = False, separators = (",", ":"))
+        ], entries
+
+
+def test_a_result_that_is_two_wrappers_at_once_is_still_stripped():
+    """Being a wrapper and losing the tokens are two questions in the serializer."""
+    both = {
+        "text": _SEARCH_TEXT,
+        "images": [{"data": "AAAA", "mimeType": "image/png"}],
+        "webImages": [_IMAGE_ENTRY],
+    }
+    assert _wire_tool_content(_image_search_row(both)) == [_SEARCH_TEXT_REPLAYED]
+    sandboxed = {
+        "text": _SEARCH_TEXT,
+        "images": [],
+        "sessionId": "project-7",
+        "webImages": [_IMAGE_ENTRY],
+    }
+    assert _wire_tool_content(_image_search_row(sandboxed, "terminal")) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row({"text": _SEARCH_TEXT, "images": both["images"]})
+    ) == [_SEARCH_TEXT]
+    # A null session is not an absent one: nobody's wrapper.
+    nulled = {"text": _SEARCH_TEXT, "images": both["images"], "sessionId": None}
+    assert _wire_tool_content(_image_search_row(nulled)) == [
+        json.dumps(nulled, ensure_ascii = False, separators = (",", ":"))
+    ]
+
+
+def _persist_image_search_turn(answer = _ANSWER):
+    """The stored rows for one web_search turn, in the shape assistant-ui saves."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    row = _image_search_row({"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]}, answer = answer)
+    rows = [
+        ("u0", None, "user", [{"type": "text", "text": "how heavy is a ZQXVARA123 ragdoll"}]),
+        ("a0", "u0", "assistant", row[0]["content"]),
+    ]
+    for index, (identifier, parent, role, content) in enumerate(rows):
+        studio_db.upsert_chat_message(
+            {
+                "id": identifier,
+                "threadId": THREAD,
+                "parentId": parent,
+                "role": role,
+                "content": content,
+                "createdAt": index + 2,
+            }
+        )
+
+
+# The request the client sent for that turn: one `tool` message, already stripped.
+_IMAGE_SEARCH_WIRE = [
+    {"role": "user", "content": "how heavy is a ZQXVARA123 ragdoll"},
+    _assistant_call("web_search", '{"query":"ragdoll ZQXVARA123"}', id = "w1"),
+    {"role": "tool", "tool_call_id": "w1", "content": _SEARCH_TEXT_REPLAYED},
+    {"role": "assistant", "content": "A ZQXVARA123 ragdoll weighs 6 kg."},
+]
+
+
+def test_a_turn_that_returned_pictures_still_finds_its_transcript_seat(conn):
+    """The seat is matched against the stored rows, which is where the envelope lived.
+
+    `_transcript_positions` reads them through `_as_wire`, so a turn serialised whole
+    described a message the request never sent and matched no position at all.
+    """
+    _persist_image_search_turn()
+
+    positions = conversation_archive._transcript_positions(THREAD)
+
+    assert len(positions) == 2, positions
+    assert conversation_archive._occurrences(positions, _IMAGE_SEARCH_WIRE[1:]) == [1]
+
+
+def test_a_recalled_turn_that_returned_pictures_survives_the_branch_filter(conn):
+    """The other half: recall falls back to the stored rows when it has no branch.
+
+    `_live_transcript` rebuilds them the same way, so the archived turn matched nothing.
+    """
+    _persist_image_search_turn()
+    conversation_archive.archive_turns(THREAD, _IMAGE_SEARCH_WIRE)
+
+    with_branch = conversation_archive.recall(
+        THREAD, "ZQXVARA123 ragdoll", branch_messages = _IMAGE_SEARCH_WIRE
+    )
+    without_branch = conversation_archive.recall(THREAD, "ZQXVARA123 ragdoll")
+
+    assert with_branch is not None and "6 kg" in with_branch[0]
+    assert without_branch is not None, "the stored rows rejected a turn that is on branch"
+    assert "6 kg" in without_branch[0]
+
+
+def test_a_reply_that_shows_the_picture_still_finds_its_transcript_seat(conn):
+    """The other half of the same turn: the reply carries the token that placed the image.
+
+    Showing a picture IS writing the token -- the tool result says to -- and the serializer
+    strips it from the replayed reply, so a turn whose picture actually rendered still
+    matched no seat while only the `tool` message was mirrored.
+    """
+    answer = "%s\n\n[[img:%s]]" % (_ANSWER, _IMAGE_ID)
+    _persist_image_search_turn(answer = answer)
+
+    positions = conversation_archive._transcript_positions(THREAD)
+
+    assert conversation_archive._occurrences(positions, _IMAGE_SEARCH_WIRE[1:]) == [1], positions
+
+
+def test_an_audio_reply_is_replayed_as_the_sentinel_the_request_carried():
+    """`sanitizeAssistantReplayText` also substitutes inline audio, and for the same reason.
+
+    An audio model answers with the whole wav in an `<audio-player>` tag, so every such
+    turn reconstructed as a message megabytes longer than the one that was sent.
+    """
+    row = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": '<audio-player src="data:audio/wav;base64,QUJD" />'}
+            ],
+        }
+    ]
+
+    assert conversation_archive._probe_text(conversation_archive._as_wire(row)[0]) == (
+        '<audio-player src="[audio]" />'
+    )
+    # Off for a caller comparing the request against something written without it.
+    assert (
+        conversation_archive._probe_text(
+            conversation_archive._as_wire(row, sanitise_assistant = False)[0]
+        )
+        == '<audio-player src="data:audio/wav;base64,QUJD" />'
+    )
+    # The assistant side only: the serializer sanitises replies, not what the user typed.
+    user = [{"role": "user", "content": [{"type": "text", "text": "[[img:%s]]" % _IMAGE_ID}]}]
+    assert conversation_archive._probe_text(conversation_archive._as_wire(user)[0]) == (
+        "[[img:%s]]" % _IMAGE_ID
+    )
 
 
 def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):
@@ -3757,7 +4208,7 @@ def test_a_batch_mixing_a_search_with_an_ordinary_tool_keeps_its_transcript_span
 
 
 def test_a_system_prompt_does_not_stall_the_branch_seed(conn):
-    """Studio prepends chat and project instructions to every outbound request.
+    """Unsloth prepends chat and project instructions to every outbound request.
 
     That synthetic `system` message is not part of the stored chain, so a strict cursor
     stalled on it: no leaf could advance past `wanted[0]`, every one scored zero, and the
@@ -3976,13 +4427,7 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
         "role": "assistant",
         "content": [
             {"type": "text", "text": "Let me check"},
-            {
-                "type": "tool-call",
-                "toolCallId": "c1",
-                "toolName": "terminal",
-                "args": {"command": "ls"},
-                "result": "main.py",
-            },
+            _tool_part(result = "main.py"),
         ],
     }
     positions = [
@@ -3993,13 +4438,7 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
         for record in (user, row)
     ]
     live = [
-        {
-            "role": "assistant",
-            "content": "Let me check",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command": "ls"}', content = "Let me check"),
         {"role": "tool", "tool_call_id": "c1", "content": "main.py"},
     ]
 
@@ -4017,13 +4456,7 @@ def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
     could return it.
     """
     short = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command":"ls"}', id = "c2"),
         {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
         {"role": "assistant", "content": "The repo has two files."},
     ]
@@ -4124,13 +4557,7 @@ def test_a_long_tool_exchange_stays_on_branch_across_a_chunk_boundary():
                     f"line {i} of the question about the repo" for i in range(lines)
                 ),
             },
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "c1", "function": {"name": "grep", "arguments": '{"pattern":"foo"}'}}
-                ],
-            },
+            _assistant_call("grep", '{"pattern":"foo"}'),
             {
                 "role": "tool",
                 "tool_call_id": "c1",
@@ -4169,13 +4596,7 @@ def test_one_pass_holding_both_spans_widens_the_window_too(conn):
     and the turn is unsearchable -- the same failure as the unlocked path, one lock down.
     """
     short = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command":"ls"}', id = "c2"),
         {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
         {"role": "assistant", "content": "The repo has two files."},
     ]

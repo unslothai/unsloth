@@ -47,15 +47,12 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready = False
-# The dylib is either there or it is not, and the UI polls the KB list on a timer, so
-# one warning per process says everything the repeat lines would. Same shape as the
-# per-job throttle in hub/services/snapshot_progress.py.
+# The dylib is either there or it is not, and the UI polls the KB list on a timer, so one warning
+# per process says everything the repeats would.
 _unavailable_lock = threading.Lock()
 _unavailable_warned = False
-# Set once a connection has actually loaded the extension, so the request gate can
-# answer without reopening the database. Only the positive verdict is kept: a failure
-# stays retried per connection exactly as it was before, so a one-off cannot latch RAG
-# off for the rest of the session.
+# Only the positive verdict is kept: a failure stays retried per connection, so a one-off cannot
+# latch RAG off for the rest of the session.
 _extension_loaded = False
 
 
@@ -246,8 +243,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
     if "project_id" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN project_id TEXT")
-    # Lazy upgrade: which embedder produced a document's vectors (NULL = legacy,
-    # assumed current). Dedupe re-ingests when it no longer matches.
+    # Which embedder produced a document's vectors (NULL = legacy, assumed current); dedupe re-ingests
+    # when it no longer matches.
     if "embedding_model" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN embedding_model TEXT")
     # Folder ownership makes crash cleanup unambiguous without changing retrieval.
@@ -255,24 +252,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
-    # How many messages an archived turn was rendered from. NULL for everything else and
-    # for older archives, which fall back to counting role labels in the rendered text.
+    # NULL for everything else and for older archives, which fall back to counting role labels in the rendered text.
     if "archive_messages" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_messages INTEGER")
-    # An archived turn group's position in its conversation. NULL elsewhere and for older
-    # archives, which fall back to created_at ordering. Not backfilled: created_at cannot
+    # NULL for older archives, which fall back to created_at ordering. Not backfilled: created_at cannot
     # recover the order within a compaction epoch.
     if "archive_ordinal" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_ordinal INTEGER")
-    # Partial, so it is empty until a chat is compacted and the MAX() that allocates the
-    # next ordinal is an index probe rather than a scan.
+    # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
+    # an index probe rather than a scan.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
     )
     # After the ALTER that adds the column on an older database. Partial, so it holds only
-    # folder-owned rows and is empty with nothing linked, which keeps the lexical fast-path
-    # gate an index probe rather than a scan of documents.
+    # folder-owned rows and is empty with nothing linked, which keeps the lexical fast-path gate an
+    # index probe rather than a scan.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_documents_linked_folder "
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
@@ -312,9 +307,8 @@ def get_connection() -> sqlite3.Connection:
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    # Wait for a lock instead of erroring immediately: a figure/scan-heavy ingest can
-    # hold its connection across many seconds of vision calls, and a concurrent ingest
-    # or autoinject read would otherwise hit "database is locked".
+    # Wait for a lock instead of erroring immediately: a figure-heavy ingest can hold its connection
+    # across many seconds of vision calls, and a concurrent read would hit "database is locked".
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
         conn.enable_load_extension(True)
@@ -324,8 +318,8 @@ def get_connection() -> sqlite3.Connection:
         conn.close()
         _warn_unavailable_once(exc)
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
-    # Set before the schema step: the library loaded, so RAG runs on this machine
-    # whatever a broken database does next. A monotonic flip, so no lock.
+    # Set before the schema step: the library loaded, so RAG runs on this machine whatever a broken
+    # database does next. A monotonic flip, so no lock.
     _extension_loaded = True
 
     if not _schema_ready:
@@ -423,17 +417,16 @@ def reconcile_orphaned_ingestion_jobs() -> int:
     live backend is left alone until its lease expires. No-op without RAG. Returns
     the number of jobs reset.
     """
-    # rag_available(), not RAG_AVAILABLE: a venv with the package but no vec0 binary
-    # would otherwise raise out of startup and be logged as a reconcile failure, when
-    # there is simply nothing here to reconcile.
+    # rag_available(), not RAG_AVAILABLE: a venv with the package but no vec0 binary would raise out of
+    # startup and be logged as a reconcile failure when there is nothing to reconcile.
     if not rag_available():
         return 0
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         now = datetime.now(timezone.utc).isoformat()
-        # 'cancelled' is terminal too: the job stopped because its document was deleted, so
-        # rewriting it to failed would report a deliberate cancellation as an indexing failure.
+        # "cancelled" is terminal too: the job stopped because its document was deleted, so rewriting it to
+        # failed would report a deliberate cancellation as an indexing failure.
         rows = conn.execute(
             "SELECT j.id, j.document_id FROM ingestion_jobs j "
             "WHERE j.status NOT IN ('completed', 'failed', 'cancelled') AND NOT EXISTS ("
@@ -446,10 +439,8 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                 "SELECT status FROM documents WHERE id=?", (row["document_id"],)
             ).fetchone()
             if doc is not None and doc["status"] == "completed":
-                # Worker finished indexing before the crash but didn't retire the
-                # job row. Mark the job completed (not failed) and keep its chunks,
-                # so the UI's getJob fallback after restart doesn't flag a
-                # searchable document as a failed ingestion.
+                # The worker finished indexing before the crash but did not retire the job row: mark it completed
+                # and keep its chunks, so the UI does not flag a searchable document as a failed ingestion.
                 conn.execute(
                     "UPDATE ingestion_jobs SET status='completed', stage='done', "
                     "progress=1.0, error=NULL WHERE id=?",
@@ -466,9 +457,8 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                     "WHERE id=? AND status NOT IN ('completed', 'failed')",
                     (row["document_id"],),
                 )
-                # A failed or still-in-flight doc must not leave citable chunks
-                # (retrieval filters by scope, not status); also drops any chunks of a
-                # doc already 'failed' before the crash.
+                # A failed or still-in-flight doc must not leave citable chunks, since retrieval filters by scope
+                # and not status.
                 _delete_document_chunks(conn, row["document_id"])
             conn.execute(
                 "DELETE FROM rag_job_leases WHERE kind='ingestion' AND job_id=?",

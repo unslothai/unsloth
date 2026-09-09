@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AppReadinessBoundary } from "@/components/app-readiness";
 import { LlamaUpdateBanner } from "@/components/llama-update-banner";
 import {
   ClosingScreen,
@@ -19,22 +20,24 @@ import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { DownloadManagerPanel } from "@/features/hub/download-manager";
+import {
+  DownloadManagerPanel,
+  dismissStartToasts,
+} from "@/features/hub/download-manager";
 import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
   useAppearanceCustomStore,
-  useStackGeometry,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
+import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { getToastOffsets } from "@/lib/toast-offset";
-import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
@@ -42,6 +45,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -76,8 +80,11 @@ type TauriMonitor = NonNullable<
 // Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
-// Logical px per CSS px: webview zoom above the display scale (Windows text
-// scaling); 1 if none.
+// Room the corner rail keeps around its cards so its overflow clip does not cut their shadows off (#9246).
+const STACK_SHADOW_GUTTER_BOTTOM = 16;
+const STACK_SHADOW_GUTTER_TOP = 8;
+
+// Logical px per CSS px: webview zoom above the display scale; 1 if none.
 function logicalPerCssPx(monitorScale: number): number {
   if (typeof window === "undefined" || !(monitorScale > 0)) return 1;
   const ratio = window.devicePixelRatio / monitorScale;
@@ -105,7 +112,6 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-/** Watches native geometry changes that may arrive after a restore call resolves. */
 async function observeWindowLayout(
   win: TauriWindow,
   isCurrent: WindowLayoutGuard,
@@ -171,7 +177,6 @@ function measureTauriWindowLayout(
   );
 }
 
-/** Sizes the window and centers it inside the work area. */
 async function placeWindow(
   win: TauriWindow,
   { LogicalSize, PhysicalPosition }: WindowModule,
@@ -203,14 +208,12 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const win = windowModule.getCurrentWindow();
   await invoke("reset_app_window_layout_initialized");
   if (!isCurrent()) return;
-  // Clear app-mode constraints before showing the smaller setup window.
   await win.setSizeConstraints(null);
   if (!isCurrent()) return;
   await win.setResizable(false);
   if (!isCurrent()) return;
   const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
   if (!measured) return;
-  // Keep the non-resizable setup window fully visible.
   const setupSize = fitWindowSize(
     PREFERRED_SETUP_WINDOW_SIZE,
     measured.bounds.maximum,
@@ -233,7 +236,6 @@ async function enforceWindowSizeBounds(
     [win.innerSize(), win.scaleFactor(), win.isMaximized(), win.isFullscreen()],
   );
   if (!isCurrent()) return;
-  // Let the window manager size maximized and fullscreen windows.
   if (isMaximized || isFullscreen) return;
 
   const currentSize = {
@@ -261,10 +263,7 @@ async function applyAppWindowLayout(
   if (!isCurrent()) return;
 
   const win = windowModule.getCurrentWindow();
-  // Setup-window activity may create plugin state before the full app is ever
-  // shown, so use a dedicated full-app marker to decide whether restoration is
-  // appropriate. Keep checking plugin state so a missing/corrupt state file
-  // falls back to a monitor-safe centered layout.
+  // Setup-window activity can create plugin state before the full app is shown, so use a dedicated marker.
   const [hasInitializedAppLayout, hasSavedState] = await Promise.all([
     invoke<boolean>("has_initialized_app_window_layout"),
     invoke<boolean>("has_saved_window_state"),
@@ -285,14 +284,11 @@ async function applyAppWindowLayout(
       // Subscribe before restoring so native events cannot race listener setup.
       layoutObserver = await observeWindowLayout(win, isCurrent);
       if (!layoutObserver) return;
-      // Subsequent launch: plugin restores size/position/maximized, with built-in
-      // off-screen protection for positions saved on a now-disconnected display.
       await restoreStateCurrent(
         StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
       );
       if (!isCurrent()) return;
     } else {
-      // First launch: fit to the current work area and center.
       const cssSafeLogicalWidth = measured.monitor
         ? Math.round(
             MIN_DESKTOP_LAYOUT_WIDTH *
@@ -381,7 +377,6 @@ function TauriUpdateLayer({
   appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
-  const stack = useStackGeometry();
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -399,23 +394,15 @@ function TauriUpdateLayer({
       onCopyDiagnostics={update.copyDiagnostics}
     />
   ) : (
-    // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
-      ref={stack.ref}
-      // Scrolls when the cap is smaller than the cards, rather than spilling
-      // them over the page. The gutter, cancelled by the margin, keeps the card
-      // shadows out of the clip; horizontal only, since useStackGeometry reads
-      // this node's scrollHeight and vertical padding would inflate it.
-      // Click-through until it actually scrolls: pointer-events-none also
-      // costs it its scrollbar, and only the cards opt back in, so nothing
-      // would drag the ones below the fold into view.
-      className={cn(
-        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
-        stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
-      )}
+      // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
+      className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+      // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
+      data-testid="overlay-rail"
+      // Block gutter in px, never a spacing utility: those are rem, and the cards would drift off the corner.
       style={{
-        bottom: stack.bottom,
-        maxHeight: stack.maxHeight,
+        paddingTop: STACK_SHADOW_GUTTER_TOP,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
         zIndex: Z_LAYER.OVERLAY_STACK,
       }}
     >
@@ -461,6 +448,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": "34px",
   "--studio-desktop-titlebar-height": "34px",
+  "--studio-titlebar-navigation-margin-top": "4px",
   "--studio-titlebar-navigation-offset-y": "4px",
   "--studio-mac-traffic-light-inset": "78px",
   "--studio-collapsed-chat-controls-inset": "188px",
@@ -493,8 +481,7 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-window-control-inset": "112px",
 } as CSSProperties;
 
-// Mirror the titlebar heights onto <html>: the styles above sit on a wrapper
-// div, so overlays portalled into document.body would read them as empty.
+// Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
 function DesktopChromeVarsEffect({
   usesCustomTitlebar,
   usesNativeMacTitlebar,
@@ -511,8 +498,7 @@ function DesktopChromeVarsEffect({
     set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
     set("--studio-mac-titlebar-height", usesNativeMacTitlebar ? "34px" : null);
     set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
-    // How far body-portaled surfaces (dialogs, alert dialogs) must stay clear of the
-    // top: either titlebar paints over them, and neither inherits the wrapper's style.
+    // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar || usesNativeMacTitlebar ? "34px" : null,
@@ -529,7 +515,6 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const stack = useStackGeometry();
   const {
     status,
     logs,
@@ -545,7 +530,20 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     retryInstall,
     approveElevation,
     copyDiagnostics,
+    startRepair,
   } = useTauriBackend();
+
+  // Settings' manual repair reruns the INSTALLER, not `studio update`, so a CPU-only venv is rebuilt rather than reused.
+  // Through a ref, not a dependency: startRepair is rebuilt on every render.
+  const startRepairRef = useRef(startRepair);
+  startRepairRef.current = startRepair;
+  const repairController = useMemo(
+    () => ({
+      repairInstall: () => startRepairRef.current({ forceInstaller: true }),
+      isExternalServer,
+    }),
+    [isExternalServer],
+  );
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);
   const hasEnteredAppModeRef = useRef(false);
@@ -553,6 +551,24 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
+  const [appShellReady, setAppShellReady] = useState(false);
+  const canMountApp = status === "running" && desktopAuthReady;
+
+  // Readiness is delivered by the mounted AppReadinessBoundary, not the
+  // global reload-snapshot event: an obsolete async load cannot reveal us.
+
+  useEffect(() => {
+    if (!isTauri) return;
+    if (!canMountApp) {
+      setAppShellReady(false);
+      return;
+    }
+    if (appShellReady) return;
+    // A failed route/chunk must not strand the user behind the splash. Reveal
+    // its error/recovery UI after a bounded wait; never bypass credential auth.
+    const timeout = window.setTimeout(() => setAppShellReady(true), 15_000);
+    return () => window.clearTimeout(timeout);
+  }, [canMountApp, appShellReady]);
 
   const [windowRevealRevision, setWindowRevealRevision] = useState(0);
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
@@ -580,8 +596,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           if (!payload || disposed) return;
           stopListening?.();
           stopListening = undefined;
-          // Native tray reveal focuses the window. Re-run the deferred layout now
-          // that currentMonitor() can resolve the restored display.
+          // Native tray reveal focuses the window; re-run the deferred layout now that currentMonitor() resolves.
           launchedHidden = Promise.resolve(false);
           appliedWindowModeRef.current = null;
           setWindowRevealRevision((revision) => revision + 1);
@@ -597,7 +612,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Keep the Tauri window hidden until setup or app layout is ready.
   useEffect(() => {
     if (!isTauri) return;
 
@@ -620,7 +634,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       nextMode === "setup" ? showSetupWindow : applyAppWindowLayout;
     applyWindowMode(isCurrent).catch(async () => {
       if (!isCurrent()) return;
-      // On failure, at minimum make the window visible and resizable so user can fix manually.
       try {
         await showWindowFallback();
       } catch {
@@ -692,27 +705,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
-        {/* One bottom-right stack so overlays never overlap: download panel at the
-            corner, banners above, each owning its width. */}
-        {/* Capped to the viewport, or a long download list plus expanded notes
-            pushes the top of the stack off screen. */}
+        {/* One bottom-right stack so overlays never overlap. */}
+        {/* Capped to the viewport: a long download list plus expanded notes would
+            push the top of the stack off screen. */}
         <div
-          ref={stack.ref}
-          // Scrolls when the cap is smaller than the cards, rather than
-          // spilling them over the page. The gutter, cancelled by the margin,
-          // keeps the card shadows out of the clip; horizontal only, since
-          // useStackGeometry reads this node's scrollHeight and vertical
-          // padding would inflate it.
-          // Click-through until it actually scrolls: pointer-events-none also
-          // costs it its scrollbar, and only the cards opt back in, so nothing
-          // would drag the ones below the fold into view.
-          className={cn(
-            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
-            stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
-          )}
+          // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
+          className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+          // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
+          data-testid="overlay-rail"
+          // Block gutter in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
-            bottom: stack.bottom,
-            maxHeight: stack.maxHeight,
+            paddingTop: STACK_SHADOW_GUTTER_TOP,
+            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
             zIndex: Z_LAYER.OVERLAY_STACK,
           }}
         >
@@ -725,58 +729,71 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
           />
           <DownloadManagerPanel positioned={false} />
-          {/* Last in the stack, so the persistent card sits at the corner and the
-              transient banners above it never cover it. */}
+          {/* Last in the stack, so the persistent card sits at the corner. */}
           <LoadedModelsIndicator positioned={false} />
         </div>
       </>
     );
   }
 
-  const showApp = status === "running" && desktopAuthReady;
+  const showApp = canMountApp && appShellReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
 
-  const shell = showApp ? (
-    <TauriUpdateLayer
-      isExternalServer={isExternalServer}
-      appContent={
-        <>
-          <NativeIntentDrain />
-          {children}
-        </>
-      }
-    >
-      <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
-      <DownloadManagerPanel positioned={false} />
-      <LoadedModelsIndicator positioned={false} />
-    </TauriUpdateLayer>
-  ) : (
-    <StartupScreen
-      status={startupStatus}
-      logs={logs}
-      error={error}
-      currentStepIndex={currentStepIndex}
-      progressDetail={startupProgressDetail}
-      startupMessage={startupMessage}
-      elevationPackages={elevationPackages}
-      onInstall={startInstall}
-      onRetry={retry}
-      onRetryInstall={retryInstall}
-      onApproveElevation={approveElevation}
-      onStartServer={retry}
-      onCopyDiagnostics={copyDiagnostics}
-    />
+  const shell = (
+    <>
+      {canMountApp && (
+        <div
+          className="h-full min-h-0"
+          style={{ visibility: showApp ? "visible" : "hidden" }}
+          inert={!showApp}
+          aria-hidden={!showApp}
+        >
+          <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
+            <TauriUpdateLayer
+              isExternalServer={isExternalServer}
+              appContent={
+                <>
+                  {showApp && <NativeIntentDrain />}
+                  {children}
+                </>
+              }
+            >
+              <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
+              <DownloadManagerPanel positioned={false} />
+              <LoadedModelsIndicator positioned={false} />
+            </TauriUpdateLayer>
+          </AppReadinessBoundary>
+        </div>
+      )}
+      {!showApp && (
+        <div className="fixed inset-0 z-40 bg-background">
+          <StartupScreen
+            status={startupStatus}
+            logs={logs}
+            error={error}
+            currentStepIndex={currentStepIndex}
+            progressDetail={startupProgressDetail}
+            startupMessage={startupMessage}
+            elevationPackages={elevationPackages}
+            onInstall={startInstall}
+            onRetry={retry}
+            onRetryInstall={retryInstall}
+            onApproveElevation={approveElevation}
+            onStartServer={retry}
+            onCopyDiagnostics={copyDiagnostics}
+          />
+        </div>
+      )}
+    </>
   );
 
-  // Over the shell, not instead of it: ClosingScreen covers the app and the update layer
-  // alike, and a declined quit puts the user back where they were rather than remounting
-  // the tree under them.
+  // Over the shell, not instead of it: a declined quit must not remount the tree.
   const content = (
-    <>
+    <TauriRepairContext.Provider value={repairController}>
       {shell}
       {closing && <ClosingScreen />}
-    </>
+    </TauriRepairContext.Provider>
   );
 
   const chromeVars = (
@@ -787,8 +804,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   );
 
   if (!usesCustomTitlebar) {
-    // macOS desktop uses the native titlebar and returns here before the
-    // custom-titlebar branch, so mount the updater banner on this path too.
+    // macOS returns here before the custom-titlebar branch, so mount the updater banner too.
     if (usesNativeMacTitlebar) {
       return (
         <div
@@ -841,11 +857,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   );
 }
 
-/**
- * Mirrors the appearance customization store onto <html> (inline CSS vars,
- * classes, attributes). Colors are per resolved light/dark mode, so re-apply
- * whenever either the customization or the resolved theme changes.
- */
+/** Mirrors the appearance customization store onto <html>; colors are per resolved light/dark mode. */
 function AppearanceCustomizationEffect() {
   const { theme, resolved } = useTheme();
   const customization = useAppearanceCustomStore((s) => s.customization);
@@ -879,6 +891,9 @@ export function AppProvider({ children }: AppProviderProps) {
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,
   );
+  useEffect(() => {
+    dismissStartToasts();
+  }, [pathname]);
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
@@ -891,8 +906,6 @@ export function AppProvider({ children }: AppProviderProps) {
           visibleToasts={2}
           expand={true}
           closeButton={true}
-          // Header routes clear their controls. Desktop chrome also stays clear,
-          // except where a macOS page header overlays the native titlebar.
           offset={toastOffsets.default}
           mobileOffset={toastOffsets.mobile}
         />

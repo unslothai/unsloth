@@ -138,19 +138,19 @@ def _rope_embedding(
     )
 
     if BACKWARD_PASS:
-        # See our blog post for more info.
+        # See the Unsloth blog post for more info.
         sin1 = -sin1
 
     # [TODO] Autotune ROPE_GROUP_SIZE to be 1, 2, 4, 8
     head_start = group_head_position * ROPE_GROUP_SIZE
     head_end = min((head_start + ROPE_GROUP_SIZE), n_heads)
 
-    # 10% Faster kernel from [HuyNguyen-hust](https://github.com/unslothai/unsloth/pull/238)
+    # 10% faster kernel from HuyNguyen-hust, unslothai/unsloth#238.
     for k in range(head_start, head_end):
         offs_q1 = row_position * Q_row_stride + k * head_dim + col_offsets
         offs_q2 = row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
 
-        # For Gemma - sometimes RoPE must be done in float32 and not bfloat16
+        # Gemma sometimes needs RoPE done in float32 rather than bfloat16.
         Q1 = tl.load(Q + offs_q1, mask = mask, other = 0).to(sin1.dtype)
         Q2 = tl.load(Q + offs_q2, mask = mask, other = 0).to(sin1.dtype)
 
@@ -181,9 +181,9 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         n_rows, n_cols = Q.shape
         assert seq_len <= cos.shape[0]
 
-        # [TODO] Changing blocksize to head_dim//2 seems to have
-        # some concurrency / un-deterministic issues.
-        BLOCK_SIZE, num_warps = calculate_settings(head_dim // 2)  # (head_dim//2)
+        # Changing blocksize to head_dim//2 showed concurrency / non-deterministic issues; group_size too
+        # large also hurts performance.
+        BLOCK_SIZE, num_warps = calculate_settings(head_dim // 2)
 
         # group_size = 4 # 4 or 8, too large group_size can hurt performance.
         div: int
@@ -261,7 +261,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         )
 
 
-# [TODO] Unsure why RoPE Embedding is not torch.compiling properly
+# RoPE embedding does not torch.compile properly; reason unknown.
 @torch.compiler.disable
 def fast_rope_embedding(
     Q,
@@ -289,12 +289,12 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         batch, n_heads_Q, seq_len, head_dim = Q.shape
         _, n_heads_K, _, _ = K.shape
 
-        # Inplace rotary embedding is generally fine
+        # Inplace rotary embedding is generally fine.
         Q_out = Q.clone() if not Q.is_contiguous() else Q
         K_out = K.clone() if not K.is_contiguous() else K
 
         if has_indices:
-            # TRL's rotary indices are always in int32, so casting is just for safety
+            # TRL's rotary indices are always int32, so the cast is only for safety.
             rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
         else:
             rope_ptr = cos.new_empty(1, dtype = torch.int32)
@@ -357,7 +357,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
         rope_ptr = ctx.rope_indices if ctx.has_indices else ctx.cos.new_empty(1, dtype = torch.int32)
 
-        # Inplace rotary embedding is generally fine
+        # Inplace rotary embedding is generally fine.
         dQ_out = dQ.clone() if not dQ.is_contiguous() else dQ
         dK_out = dK.clone() if not dK.is_contiguous() else dK
 
@@ -403,19 +403,17 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, cos, sin, position_ids):
         if position_ids is not None:
-            # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
-            cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
-            sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
-            cos = cos[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
-            sin = sin[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
+            # The first two dimensions of cos and sin are always 1, so squeeze them.
+            cos = cos.squeeze(1).squeeze(0)
+            sin = sin.squeeze(1).squeeze(0)
+            cos = cos[position_ids].unsqueeze(2)
+            sin = sin[position_ids].unsqueeze(2)
 
-        # Q * cos + rotate_half(Q) * sin
+        # Q * cos + rotate_half(Q) * sin, with the transposed rotate_half in the backward.
         half = Q.shape[-1] // 2
         RH_Q = torch.cat((-Q[..., half:], Q[..., :half]), dim = -1)
         Q *= cos
         Q.addcmul_(RH_Q, sin)
-        # RH_Q *= sin
-        # Q += RH_Q
         ctx.save_for_backward(cos, sin)
         return Q
 
@@ -427,8 +425,6 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
         dY *= cos
         dY.addcmul_(RH_dY, sin)
-        # RH_dY *= sin
-        # dY += RH_dY
         return dY, None, None, None
 
 

@@ -9,10 +9,20 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import type { DocumentStatus } from "../types/rag";
 
+const STAGE_LABELS: Record<string, string> = {
+  parsing: "Reading document",
+  ocr: "Reading scanned pages",
+  captioning: "Reading charts and figures",
+  chunking: "Preparing text",
+  embedding: "Indexing text",
+  storing: "Saving document",
+};
+
 export function DocumentStatusChip({
   filename,
   status,
   progress,
+  stage,
   error,
   onRemove,
   shared = false,
@@ -20,6 +30,7 @@ export function DocumentStatusChip({
   filename: string;
   status: DocumentStatus;
   progress?: number | null;
+  stage?: string | null;
   error?: string | null;
   onRemove?: () => void;
   /** Indexed for the whole project rather than this one chat: swap the file
@@ -33,9 +44,11 @@ export function DocumentStatusChip({
       size="sm"
       title={
         error ??
-        (shared
-          ? `${filename} — shared with every chat in this project`
-          : filename)
+        (processing && stage && STAGE_LABELS[stage]
+          ? `${filename} — ${STAGE_LABELS[stage]}`
+          : shared
+            ? `${filename} — shared with every chat in this project`
+            : filename)
       }
       className={cn(
         "rounded-full inline-flex items-center gap-1.5 max-w-[16rem]",

@@ -43,7 +43,7 @@ def cache(monkeypatch, tmp_path):
     for module in (download_registry, hf_cache_state):
         monkeypatch.setattr(module, "hf_cache_root", lambda **_kw: root, raising = False)
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [root])
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda: True)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: True)
     return entry
 
 
@@ -92,7 +92,7 @@ def test_a_row_with_no_partial_left_has_nothing_to_resume(cache):
 def test_a_writer_that_cannot_reopen_anything_never_promises_a_resume(cache, monkeypatch):
     """The ordinary install: hub >= 1.18 refetches from zero, so even a legacy-named
     survivor is litter."""
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda: False)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: False)
     _record("http", cache)
     _partial(cache, LEGACY_PARTIAL)
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
@@ -197,7 +197,7 @@ def split_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         download_registry, "iter_active_repo_cache_dirs", lambda *_a, **_k: iter((first, second))
     )
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda: True)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: True)
     return first, second
 
 
@@ -249,7 +249,7 @@ def two_roots(monkeypatch, tmp_path):
         (root / "models--Org--Model" / "blobs").mkdir(parents = True)
     monkeypatch.setenv("HF_HUB_CACHE", str(active))
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda: True)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: True)
     for module in (download_registry, hf_cache_state):
         monkeypatch.setattr(
             module,

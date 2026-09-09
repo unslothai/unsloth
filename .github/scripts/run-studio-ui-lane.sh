@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# One lane of the Windows Chat UI Tests job, start to finish: boot a Studio on
+# One lane of the Windows Chat UI Tests job, start to finish: boot an Unsloth on
 # this lane's own port and own UNSLOTH_STUDIO_HOME, rotate the bootstrap
 # password, drive its Playwright suites, stop the server.
 #
@@ -47,7 +47,7 @@
 # UNSLOTH_STUDIO_HOME is the CLI's INSTALL root, not just a data root, so a bare
 # empty directory is not usable: unsloth_cli/commands/studio.py resolves
 # $UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/python.exe and exits "Unsloth
-# Studio not set up. Run install.sh first." before binding a port. Each lane
+# Unsloth not set up. Run install.sh first." before binding a port. Each lane
 # home therefore links the one venv install.ps1 already built and owns only the
 # mutable state beside it.
 #

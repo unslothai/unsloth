@@ -71,7 +71,9 @@ def _patch_create_causal_mask() -> None:
     _CAUSAL_MASK_PATCHED = True
 
 
-# The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows), read from config so a future change cannot mis-split it.
+# fused qkv (Q/K/V stacked, each hidden_size rows), read from config so a future change cannot mis-split it
+# The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows), read from config so a future
+# change cannot mis-split it.
 _QKV_SPLIT = ("to_q", "to_k", "to_v")
 
 
@@ -141,9 +143,9 @@ def _convert_fp8_state_dict(raw: dict, hidden_size: int, dtype) -> dict:
             converted[key] = value.to(dtype)
             continue
         if key.endswith("attention.qkv.weight"):
-            fused = dequantize(key)  # [3 * hidden_size, hidden_size]
+            fused = dequantize(key)
             if fused.shape[0] != 3 * hidden_size:
-                # Equal-thirds only holds for full multi-head attention; a GQA export must fail loudly.
+                # equal thirds only holds for full multi-head attention; a GQA export must fail loudly
                 raise RuntimeError(
                     f"fused qkv at {key} has {fused.shape[0]} rows, expected "
                     f"{3 * hidden_size}; cannot split into equal Q/K/V blocks"
@@ -207,7 +209,6 @@ def _text_encoder_is_fp8(repo_id: str, token: Optional[str]) -> bool:
             return any(k.endswith("_scale") for k in weight_map)
         except Exception:  # noqa: BLE001 -- single-file (nf4) text encoder, not fp8
             return False
-    # Single-file local text encoder: peek the header keys.
     import safetensors
 
     single = local_root / "text_encoder" / "model.safetensors"
@@ -263,7 +264,7 @@ def load_ideogram4_text_encoder(
         else:
             state_dict[key] = value.to(dtype)
 
-    # Construct normally (so __init__ computes the non-persistent rotary inv_freq the checkpoint omits), then copy the dequantized weights in. Build at the target dtype: this ~8B Qwen3-VL scaffold is ~2x at the fp32 default and loads FIRST, so fp32 can OOM a 64 GB host.
+    # build at the target dtype: this ~8B scaffold loads FIRST, so the fp32 default can OOM a 64 GB host
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -320,7 +321,9 @@ def load_ideogram4_transformer(
     config = _read_transformer_config(repo_id, subfolder, token)
     shard_paths = _transformer_shard_paths(repo_id, subfolder, token)
 
-    # Detect fp8 from shard HEADERS (keys() reads metadata only), checking all shards so a dense-first multi-shard export still routes to the dequant path. Only fp8 materializes tensors; -nf4 goes straight to from_pretrained.
+    # check every shard header: a dense-first multi-shard fp8 export must still route to dequant
+    # Detect fp8 from shard HEADERS (keys() reads metadata only), checking all shards so a dense-first multi-shard
+    # export still routes to the dequant path. Only fp8 materializes tensors; -nf4 goes straight to from_pretrained.
     is_fp8 = False
     for path in shard_paths:
         with safetensors.safe_open(path, "pt") as handle:
@@ -342,7 +345,8 @@ def load_ideogram4_transformer(
 
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # from_config materializes the full ~9B module before the weights copy in, and at fp32 that is ~2x the bf16 model while the second DiT builds with the first + encoder resident, so build at the target dtype. Only rotary_emb.inv_freq is absent from the checkpoint.
+    # build at the target dtype: from_config materializes the full ~9B module while the first DiT and the encoder are
+    # resident
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -351,7 +355,8 @@ def load_ideogram4_transformer(
         torch.set_default_dtype(default_dtype)
     state_dict = _convert_fp8_state_dict(raw, hidden_size, dtype)
     missing, unexpected = model.load_state_dict(state_dict, strict = False)
-    # rotary_emb.inv_freq is the only expected "missing" key (built in __init__); a real gap or leftover key must fail loudly rather than ship a partly random model.
+    # rotary_emb.inv_freq is the only expected "missing" key (built in __init__); a real gap or leftover key must fail
+    # loudly rather than ship a partly random model.
     real_missing = [k for k in missing if not k.endswith("rotary_emb.inv_freq")]
     if real_missing or unexpected:
         raise RuntimeError(
@@ -381,7 +386,8 @@ def load_ideogram4_pipeline(
     text_encoder = load_ideogram4_text_encoder(repo_id, dtype, hf_token = token)
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token)
     transformer = load_ideogram4_transformer(repo_id, "transformer", dtype, hf_token = token)
-    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG (same class and size, always required).
+    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG (same class and size, always
+    # required).
     unconditional_transformer = load_ideogram4_transformer(
         repo_id, "unconditional_transformer", dtype, hf_token = token
     )

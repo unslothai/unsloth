@@ -83,9 +83,8 @@ def test_zoo_saving_utils_has_num_experts_resolver():
 def test_zoo_saving_utils_writes_generation_config():
     src = _fetch_saving_utils()
     _skip_until_pr_647_lands(src)
-    # zoo#647 aliases generation_config to a local var, so match a
-    # `generation_config` mention plus a nearby `.save_pretrained(` call
-    # rather than the exact `generation_config.save_pretrained(` substring.
+    # zoo#647 aliases generation_config to a local var, so match a `generation_config` mention plus a nearby
+    # `.save_pretrained(` call rather than the exact `generation_config.save_pretrained(` substring.
     assert re.search(
         r"generation_config[\s\S]{0,400}?\.save_pretrained\s*\(", src
     ), "generation_config.json no longer saved (#5410)."

@@ -126,10 +126,9 @@ class TestClientIp:
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_isolates_first_element(self, env_trust_proxy):
-        from routes.auth import _client_ip
-
         # Pick the first Forwarded element only, else suffix variations create
         # attacker-controlled buckets.
+        from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
             {"forwarded": "for=198.51.100.42, for=10.0.0.1;proto=https"},
@@ -137,9 +136,8 @@ class TestClientIp:
         assert _client_ip(req) == "198.51.100.42"
 
     def test_xff_invalid_ip_falls_back_to_client_host(self, env_trust_proxy):
-        from routes.auth import _client_ip
-
         # A garbage XFF must not propagate into the bucket key.
+        from routes.auth import _client_ip
         req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "not-an-ip"})
         assert _client_ip(req) == "127.0.0.1"
 

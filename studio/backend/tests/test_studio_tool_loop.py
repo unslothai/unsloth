@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The provider-agnostic Studio tool loop.
+"""The provider-agnostic Unsloth tool loop.
 
 The transport is faked so these exercise the loop itself: turn cycling, the
 budget, approvals, and the text-form healing that self-hosted models need. The
@@ -258,7 +258,7 @@ def test_a_conversation_search_here_gets_the_active_branch(executed):
     assert [call["name"] for call in executed] == ["search_conversation"]
     assert executed[0]["conversation_branch"] == branch
     # And a budget, or the tool's clamp is skipped and a model-chosen top_k of 8 appends
-    # roughly 4K tokens to a prompt this loop replays. Studio cannot measure an external
+    # roughly 4K tokens to a prompt this loop replays. Unsloth cannot measure an external
     # model's window, so the cap is one ordinary recall's worth.
     from core.rag import config as rag_config
 
@@ -771,12 +771,27 @@ def test_a_stalled_model_is_nudged_to_act(executed):
             [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
     # The nudge is a user turn appended after the stall.
     second = transport.requests[1]["messages"]
     assert second[-1]["role"] == "user"
+
+
+def test_a_stalled_model_is_not_nudged_by_default(executed):
+    """The external loop must not invent a retry for an omitted opt-in flag."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
 
 
 def test_a_finished_answer_is_not_nudged(executed):
@@ -973,6 +988,77 @@ def _call_delta(index, call_id, name, arguments):
     }
 
 
+def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
+    """A string-only accumulator ran the tool with ``{}``, and the backend's authoritative
+    tool_start then overwrote the payload the frontend had recovered, so both ends are pinned.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {"tool_calls": [_call_delta(0, "call_obj", "web_search", {"query": "value"})]}
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "value"}]
+    assert _events(lines, "tool_start")[0]["arguments"] == {"query": "value"}
+
+
+def test_a_decoded_object_lands_where_its_string_spelling_would():
+    """Serializing puts the object on the path the accumulator already has for text, so the
+    object-boundary fork and the id that holds a snapshot to its own call read it the same
+    either way. Pinned as a pair: the one way this helper can mislead is by giving the two
+    dialects different answers.
+    """
+    streams = [
+        (
+            "one payload",
+            [[_call_delta(0, "c1", "s", {"query": "v"})]],
+            [[_call_delta(0, "c1", "s", '{"query":"v"}')]],
+        ),
+        (
+            "an empty opening, then the rest as fragments",
+            [
+                [_call_delta(0, "c1", "s", {})],
+                [{"index": 0, "function": {"arguments": '{"query":'}}],
+                [{"index": 0, "function": {"arguments": '"v"}'}}],
+            ],
+            [
+                [_call_delta(0, "c1", "s", "{}")],
+                [{"index": 0, "function": {"arguments": '{"query":'}}],
+                [{"index": 0, "function": {"arguments": '"v"}'}}],
+            ],
+        ),
+        (
+            "two snapshots under one id",
+            [
+                [_call_delta(0, "c1", "s", {"query": "a"})],
+                [_call_delta(0, "c1", "s", {"query": "ab"})],
+            ],
+            [
+                [_call_delta(0, "c1", "s", '{"query":"a"}')],
+                [_call_delta(0, "c1", "s", '{"query":"ab"}')],
+            ],
+        ),
+    ]
+
+    def _shape(batches):
+        turn = loop_mod._Turn(round = 1)
+        for batch in batches:
+            turn.merge_structured(batch)
+        return [(c["function"]["name"], c["function"]["arguments"]) for c in turn.calls()]
+
+    for label, as_object, as_string in streams:
+        assert _shape(as_object) == _shape(as_string), label
+
+
 def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     """A tool result is only legal next to the call it answers.
 
@@ -1078,7 +1164,7 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     ends = _events(lines, "tool_end")
     assert len(ends) == 2
     assert [end["tool_call_id"] for end in ends] == ["call_a", "call_a"]
-    assert ends[1]["result"].startswith("Studio did not run this call")
+    assert ends[1]["result"].startswith("Unsloth did not run this call")
     # Opened as well as closed. The client retires a card id when it closes it,
     # so a second tool_end on the same id resolves to no card and the adapter
     # drops it -- the skip would be invisible again. Announcing it first draws

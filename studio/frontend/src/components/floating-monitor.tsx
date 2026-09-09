@@ -3,11 +3,13 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
+
 import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
-import { resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -241,6 +243,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
   // republishing through them would re-render every overlay in the stack for
   // each one, which is most of what made dragging feel heavy.
   useLayoutEffect(() => {
+    void layout;
     const monitor = monitorRef.current;
     if (!(monitor && constraintsElement)) {
       return;
@@ -465,7 +468,9 @@ function FloatingMonitorPanel({
     ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
     : 0;
   const devices = displayedGpu?.devices ?? [];
-  const vramTotal = aggregateGpuMemoryTotalGb(devices);
+  const memoryTotals = gpuMemoryTotalsGb(devices);
+  const vramTotal = memoryTotals.total;
+  const hasSharedPool = memoryTotals.shared > 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
@@ -479,13 +484,10 @@ function FloatingMonitorPanel({
   const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
 
   // The container sits on the floating panel layer, above the bottom-right
-  // overlay stack. That stack normally dodges this monitor, but the dodge has a
-  // floor: drag the monitor to the corner and resize it to fill the viewport and
-  // there is nowhere left to dodge to, so stackBottomInset clamps at
-  // MIN_STACK_ROOM and parks the stack at the top of the screen, directly over
-  // this monitor's title bar and Close button. The stack is passive status; this
-  // is a window the user is dragging, resizing and closing, so it wins. Still
-  // below the startup screen and tooltips. See lib/z-layers.
+  // overlay stack. The stack is anchored to that same corner and does not move
+  // for this monitor, so the two can overlap. The stack is passive status; this
+  // is a window being dragged, resized and closed, so it wins. Still below the
+  // startup screen and tooltips. See lib/z-layers.
   //
   // The API monitor panel shares this layer rather than sitting under it, and
   // whichever of the two the user touched last is the one in front.
@@ -496,6 +498,7 @@ function FloatingMonitorPanel({
       style={{ zIndex }}
     >
       <motion.div
+        {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         onPointerDownCapture={() => raisePanel("resource-monitor")}
         initial={{ opacity: 0 }}
@@ -599,7 +602,12 @@ function FloatingMonitorPanel({
                 </div>
                 <div className="text-xs text-muted-foreground font-mono tabular-nums">
                   {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                  {formatGiB(vramTotal)}
+                  {hasSharedPool
+                    ? t("settings.resources.environment.vramWithShared", {
+                        vram: formatGiB(memoryTotals.dedicated),
+                        shared: formatGiB(memoryTotals.shared),
+                      })
+                    : formatGiB(vramTotal)}
                 </div>
                 <Progress
                   value={vramUsageKnown ? vramPercent : 0}

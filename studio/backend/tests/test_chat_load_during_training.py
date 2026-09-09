@@ -11,6 +11,7 @@ and leaves non-training/external loads untouched."""
 import asyncio
 import importlib.util
 import sys
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -31,6 +32,36 @@ _spec = importlib.util.spec_from_file_location(
 )
 tv = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tv)
+
+
+def _gguf_cfg(**overrides):
+    """The GGUF model row the chat route reads, with per-test overrides."""
+    return SimpleNamespace(
+        **{
+            "gguf_file": None,
+            "gguf_mmproj_file": None,
+            "gguf_mtp_file": None,
+            "gguf_dspark_file": None,
+            "gguf_dflash_file": None,
+            "gguf_hf_repo": "org/repo",
+            "gguf_variant": "Q4_K_M",
+            **overrides,
+        }
+    )
+
+
+def _model_cfg(**overrides):
+    """A non-GGUF model row, with per-test overrides."""
+    return SimpleNamespace(
+        **{
+            "is_gguf": False,
+            "is_lora": False,
+            "is_vision": False,
+            "path": None,
+            "base_model": None,
+            **overrides,
+        }
+    )
 
 
 class _GpuCacheResetMixin:
@@ -444,6 +475,10 @@ def _stub_guard_deps(
 ):
     """Inject the guard's two lazy imports (get_training_backend, can_load_chat_
     during_training); `captured` records the can_load kwargs for assertions."""
+    # Keep the process-wide lifecycle gate in patch.dict's module snapshot so
+    # later route imports cannot create a second lock through a stale package attribute.
+    import core.inference.llama_keepwarm  # noqa: F401
+
     core_training = types.ModuleType("core.training")
     if isinstance(training_active, Exception):
 
@@ -866,6 +901,161 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "x")
             self.assertTrue(self.route._effective_load_in_4bit(cfg, True))  # no crash
 
+    def test_native_audio_uses_full_precision_for_admission(self):
+        cfg = SimpleNamespace(
+            is_lora = False,
+            path = None,
+            base_model = None,
+            audio_type = "moss_tts_local",
+        )
+        self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+
+
+class TestNativeAudioPlacementContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.route = _load_inference_route()
+
+    def _preflight(
+        self,
+        *,
+        metadata,
+        availability = None,
+        requested = None,
+        selected = None,
+    ):
+        config = SimpleNamespace(identifier = "test/native-audio", audio_type = "higgs_tts2")
+        request = SimpleNamespace(gpu_ids = requested, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(requested, None, False, False)
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "core.inference.native_audio.native_audio_security_targets",
+                return_value = [config.identifier],
+            ),
+            patch(
+                "utils.hardware.prepare_gpu_selection",
+                return_value = (selected if selected is not None else [0], metadata),
+            ),
+            patch.object(
+                self.route,
+                "_native_audio_post_handoff_free_gb",
+                return_value = availability,
+            ),
+            patch.object(_hw_module, "IS_ROCM", False),
+        ):
+            return asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
+    def test_automatic_fallback_requires_attributable_resident_memory(self):
+        metadata = {"selection_mode": "fallback_all", "required_gb": 20.0, "usable_gb": 6.0}
+        with self.assertRaisesRegex(HTTPException, "No single GPU has enough free memory"):
+            self._preflight(metadata = metadata)
+
+        availability = self.route._NativeAudioAvailability({0: 24.0}, {0: 18.0})
+        placement = self._preflight(metadata = metadata, availability = availability)
+        self.assertEqual(placement.resolved_gpu_ids, [0])
+        self.assertEqual(placement.native_required_gb, 20.0)
+        self.assertEqual(placement.native_post_handoff_free_gb, {0: 24.0})
+
+    def test_minimax_uses_a_threshold_a_24_gb_card_can_report(self):
+        config = SimpleNamespace(
+            identifier = "MiniMaxAI/MiniMax-Music3",
+            audio_type = "minimax_music3",
+        )
+        request = SimpleNamespace(gpu_ids = None, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(None, None, False, False)
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "core.inference.native_audio.native_audio_security_targets",
+                return_value = [config.identifier],
+            ),
+            patch("utils.hardware.prepare_gpu_selection", return_value = ([1], {})) as prepare,
+        ):
+            result = asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
+        self.assertEqual(result.resolved_gpu_ids, [1])
+        self.assertEqual(result.native_required_gb, 23.0)
+        self.assertEqual(prepare.call_args.kwargs["required_override_gb"], 23.0)
+
+    def test_explicit_multi_gpu_is_rejected_before_load(self):
+        with self.assertRaisesRegex(HTTPException, "require one GPU"):
+            self._preflight(
+                metadata = {"selection_mode": "explicit"},
+                requested = [0, 1],
+                selected = [0, 1],
+            )
+
+    def test_live_training_recheck_cannot_switch_off_selected_gpu(self):
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.get_visible_gpu_utilization",
+                return_value = {"devices": _devices((0, 24, 12), (1, 48, 8))},
+            ),
+            patch("utils.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.auto_select_gpu_ids") as auto_select,
+        ):
+            ok, info = tv.can_load_chat_during_training(
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = False,
+                max_seq_length = 2048,
+                requested_gpu_ids = [0],
+                required_override_gb = 16.0,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(info["usable_gb"], 12.0)
+        auto_select.assert_not_called()
+
+    def test_worker_memory_reply_is_correlated_to_its_probe(self):
+        from core.inference.orchestrator import InferenceOrchestrator
+
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        replies = iter(
+            [
+                {"type": "gpu_memory", "request_id": "old", "reclaimable_gpu_gb": {"0": 10.0}},
+                {"type": "gpu_memory", "request_id": "new", "reclaimable_gpu_gb": {"0": 4.0}},
+            ]
+        )
+        backend._read_resp = lambda **_kwargs: next(replies)
+        backend._ensure_subprocess_alive = lambda: True
+        response = backend._wait_response("gpu_memory", timeout = 1.0, expected_request_id = "new")
+        self.assertEqual(response["reclaimable_gpu_gb"], {"0": 4.0})
+
+    def test_llama_floor_uses_the_child_to_physical_gpu_map(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = SimpleNamespace(poll = lambda: None)
+        backend._gpu_ids = None
+        backend._child_gpu_physical_ids = (1,)
+        backend._stdout_lines = ["load_tensors: CUDA0 model buffer size = 10240.0 MiB"]
+        self.assertEqual(backend.reclaimable_gpu_memory_gb(), {1: 10.0})
+
+    def test_inflight_media_replacement_is_never_credited(self):
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]}
+        media = SimpleNamespace(
+            _generate_lock = threading.Lock(),
+            _lock = threading.Lock(),
+            _state = object(),
+            _loading = object(),
+        )
+        with (
+            patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+            patch("core.inference.gpu_arbiter.owner_snapshot", return_value = ("diffusion", 4)),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = media,
+            ),
+        ):
+            self.assertIsNone(self.route._native_audio_post_handoff_free_gb())
+
 
 # ── validate_model integration (early refusal, real settings) ────────────────
 
@@ -888,15 +1078,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         request = ValidateModelRequest(
             model_path = "unsloth/Qwen3-1.7B", load_in_4bit = load_in_4bit, max_seq_length = 4096
         )
-        cfg = SimpleNamespace(
-            identifier = "unsloth/Qwen3-1.7B",
-            display_name = "Qwen3-1.7B",
-            is_gguf = False,
-            is_lora = False,
-            is_vision = False,
-            path = None,
-            base_model = None,
-        )
+        cfg = _model_cfg(identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B")
         with (
             patch.object(
                 self.route,
@@ -937,15 +1119,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             gguf_variant = "Q4_K_M",
             gpu_memory_mode = "manual",
         )
-        cfg = SimpleNamespace(
-            identifier = "unsloth/model-GGUF",
-            display_name = "model-GGUF",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            path = None,
-            base_model = None,
-        )
+        cfg = _model_cfg(identifier = "unsloth/model-GGUF", display_name = "model-GGUF", is_gguf = True)
         captured = {}
         with (
             patch.object(
@@ -974,15 +1148,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             cache_type_kv = "f32",
             tensor_parallel = True,
         )
-        cfg = SimpleNamespace(
-            identifier = "unsloth/Qwen3-1.7B",
-            display_name = "Qwen3-1.7B",
-            is_gguf = False,
-            is_lora = False,
-            is_vision = False,
-            path = None,
-            base_model = None,
-        )
+        cfg = _model_cfg(identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B")
         captured = {}
         with (
             patch.object(
@@ -1014,15 +1180,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             max_seq_length = 4096,
             include_context_length = True,
         )
-        cfg = SimpleNamespace(
-            identifier = "unsloth/Qwen3-1.7B",
-            display_name = "Qwen3-1.7B",
-            is_gguf = False,
-            is_lora = False,
-            is_vision = False,
-            path = None,
-            base_model = None,
-        )
+        cfg = _model_cfg(identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B")
         guard_called = []
         with (
             patch.object(
@@ -1048,17 +1206,13 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             model_path = "unsloth/DiffusionGemma-GGUF",
             include_context_length = True,
         )
-        cfg = SimpleNamespace(
+        cfg = _model_cfg(
             identifier = "unsloth/DiffusionGemma-GGUF",
             display_name = "DiffusionGemma-GGUF",
             is_gguf = True,
-            is_lora = False,
-            is_vision = False,
             gguf_file = None,
             gguf_hf_repo = "unsloth/DiffusionGemma-GGUF",
             gguf_variant = None,
-            path = None,
-            base_model = None,
         )
         with (
             patch.object(
@@ -1092,15 +1246,11 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             native_path_lease = "signed-lease",
             include_chat_template = True,
         )
-        cfg = SimpleNamespace(
+        cfg = _model_cfg(
             identifier = canonical_path,
             display_name = "model.gguf",
             is_gguf = True,
-            is_lora = False,
-            is_vision = False,
             gguf_file = canonical_path,
-            path = None,
-            base_model = None,
         )
         import utils.models.gguf_metadata as gguf_meta
 
@@ -1396,7 +1546,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         guard refused an inference load that fits. Identity is the resolved path,
         so a symlink or another spelling of the same file dedupes too. A drafter
         somewhere else is charged instead of the discovered sidecar, not on top of
-        it: the loader ranks the extras path ahead of Studio's and the launch
+        it: the loader ranks the extras path ahead of Unsloth's and the launch
         appends the caller's flags last, so only one --model-draft is resident.
         """
         import os
@@ -1413,11 +1563,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             elsewhere = p / "other" / "dflash-elsewhere.gguf"
             elsewhere.parent.mkdir()
             elsewhere.write_bytes(b"z" * 4000)
-            cfg = SimpleNamespace(
+            cfg = _gguf_cfg(
                 gguf_file = str(target),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = None,
-                gguf_dspark_file = None,
                 gguf_dflash_file = str(sidecar),
                 gguf_hf_repo = None,
                 gguf_variant = None,
@@ -1463,11 +1610,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             target.write_bytes(b"x" * 2000)
             sidecar.write_bytes(b"y" * 3000)
             custom.write_bytes(b"z" * 4000)
-            cfg = SimpleNamespace(
+            cfg = _gguf_cfg(
                 gguf_file = str(target),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = None,
-                gguf_dspark_file = None,
                 gguf_dflash_file = str(sidecar),
                 gguf_hf_repo = None,
                 gguf_variant = None,
@@ -1500,15 +1644,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
         with tempfile.TemporaryDirectory() as d:
             drafter = Path(d) / "dflash-kquant.gguf"
@@ -1638,15 +1774,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         charged separately; billing the repo's on top is a 409 for a load that fits."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
         import tempfile
 
@@ -1706,15 +1834,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         import utils.models.model_config as mc
         from core.inference.llama_cpp import LlamaCppBackend
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
         siblings = [
             SimpleNamespace(rfilename = "drafter-Q4_K_M-00001-of-00002.gguf", size = 3 * 1024**3 // 2),
@@ -1778,15 +1898,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         import utils.models.model_config as mc
         from core.inference.llama_cpp import LlamaCppBackend
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
         reserve = self.route._REMOTE_DRAFTER_RESERVE_BYTES
         self.assertGreater(reserve, 0)
@@ -1833,7 +1945,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
     def test_a_priced_remote_extras_drafter_is_not_charged_twice(self):
         """--spec-draft-hf names the drafter that actually loads, and it is now
         priced from its own listing, so the target repository's sidecar must NOT
-        be charged as well: _build_speculative_flags returns before Studio emits
+        be charged as well: _build_speculative_flags returns before Unsloth emits
         that sidecar, so it never becomes resident and billing it 409s a load
         that fits. (Before the remote repo was priced this test asserted the
         opposite, which was the safe reading while the drafter was charged
@@ -1841,15 +1953,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         import utils.models.model_config as mc
         from core.inference.llama_cpp import LlamaCppBackend
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
         for extras, kind in (
             (["--spec-type", "draft-dspark", "--spec-draft-hf", "org/drafter"], "include_dspark"),
@@ -1935,15 +2039,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         a typo, not a download, put in the extras."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * 1024**3)
         with (
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
@@ -1966,15 +2062,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         a drafter the launch cannot open."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * 1024**3)
         with (
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
@@ -2034,15 +2122,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         load whose drafter is multiple GB."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * 1024**3)
         with (
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
@@ -2079,15 +2159,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         Billing both charges the training job for weights only one of them loads."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(
             filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
         )
@@ -2172,15 +2244,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         resource, and it 409s a load that takes no VRAM for the drafter at all."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
         extras = ["--spec-type", "draft-dspark", "--spec-draft-hf", "org/drafter"]
         with (
@@ -2202,7 +2266,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_a_bare_model_draft_overrides_the_repository_sidecar(self):
         """No --spec-type needed for the override to win: the loader ranks the
-        extras draft path ahead of Studio's and the launch appends the caller's
+        extras draft path ahead of Unsloth's and the launch appends the caller's
         flags last, so exactly one --model-draft is resident. Charging the repo's
         sidecar as well 409s a load that fits."""
         import tempfile
@@ -2216,12 +2280,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             target.write_bytes(b"t" * 2000)
             sidecar.write_bytes(b"s" * 3000)
             custom.write_bytes(b"c" * 4000)
-            cfg = SimpleNamespace(
+            cfg = _gguf_cfg(
                 gguf_file = str(target),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = None,
                 gguf_dspark_file = str(sidecar),
-                gguf_dflash_file = None,
                 gguf_hf_repo = None,
                 gguf_variant = None,
             )
@@ -2240,7 +2301,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_a_cpu_pinned_discovered_sidecar_is_not_charged_vram(self):
         """-ngld 0 applies to whichever separate drafter launches, including one
-        Studio resolved itself with no draft path in the extras at all. It is then
+        Unsloth resolved itself with no draft path in the extras at all. It is then
         host-resident, so charging it against the training job's VRAM 409s a load
         that takes none."""
         import tempfile
@@ -2250,12 +2311,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             sidecar = Path(d) / "dspark-model-Q8_0.gguf"
             target.write_bytes(b"t" * 2000)
             sidecar.write_bytes(b"s" * 3000)
-            cfg = SimpleNamespace(
+            cfg = _gguf_cfg(
                 gguf_file = str(target),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = None,
                 gguf_dspark_file = str(sidecar),
-                gguf_dflash_file = None,
                 gguf_hf_repo = None,
                 gguf_variant = None,
             )
@@ -2316,15 +2374,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         is the caller that has to pass the loader's Auto rule down."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
         with (
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
@@ -2444,15 +2494,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         the multi-family repo above is under-charged by the whole difference."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(
             filename = "model-A-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
         )
@@ -2476,15 +2518,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         ~1.5 GiB nothing would load. Extra args asking for draft-dflash still pay."""
         import utils.models.model_config as mc
 
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_dspark_file = None,
-            gguf_dflash_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
+        cfg = _gguf_cfg()
         variant = SimpleNamespace(
             filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
         )
@@ -2752,7 +2786,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         class _FakeBackend:
             _context_length = 2048
-            _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
             supports_kv_unified = True
 
             def _read_gguf_metadata(self, path):
@@ -2818,7 +2851,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
             self.assertFalse(seen["swa_full"])
-            self.assertFalse(seen["flash_attn"])
+            # load_model appends --flash-attn on to every launch whose build has the
+            # flag, so the guard sizes the cache the launch will actually allocate.
+            # False here padded variable-width V tensors to the model-wide maximum.
+            self.assertTrue(seen["flash_attn"])
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
@@ -2831,7 +2867,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
             self.assertTrue(seen["kv_unified"])
-            # User extras are appended after Studio's managed default.
+            # User extras are appended after Unsloth's managed default.
             r._estimate_gguf_kv_gb("m", 4096, ["--no-kv-unified"], 4)
             self.assertFalse(seen["kv_unified"])
             # An older binary without the flag keeps separate KV streams.
@@ -2854,13 +2890,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             ):
                 r._estimate_gguf_kv_gb("m", 4096)
             self.assertEqual(seen["cache_type"], "q4_0")
+            # Tensor mode passes the requested type through, so the budget matches it.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,
                 ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"],
                 tensor_parallel = True,
             )
-            self.assertEqual(seen["cache_type"], "f16")
+            self.assertEqual(seen["cache_type"], "q4_0")
+            # The heavier axis still wins, tensor or not.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,
@@ -2974,16 +3012,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             adopt_load_intent_if_matched = lambda intent: False,
         )
         llama.unload_model = MagicMock()
-        cfg = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            path = None,
-            base_model = None,
-            identifier = "x.gguf",
-            display_name = "x",
-            gguf_variant = None,
-        )
+        cfg = _model_cfg(is_gguf = True, identifier = "x.gguf", display_name = "x", gguf_variant = None)
         request = LoadRequest(model_path = "x.gguf", gpu_ids = [0], max_seq_length = 4096)
         captured = []
         with (

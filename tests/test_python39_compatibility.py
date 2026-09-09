@@ -23,11 +23,52 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "unsloth"
 
 # studio/ ships under the same requires-python, so it is held to the syntax check. Its
-# evaluated-union debt is ratcheted rather than fixed here: the 35 files involved include
-# FastAPI routers and pydantic models, where `from __future__ import annotations` is
-# supported but has real failure modes around class dependencies, so converting them needs
-# Studio actually booted and its routes exercised. The ratchet stops the debt growing.
-STUDIO_UNION_DEBT = 35
+# evaluated-union debt is ratcheted rather than fixed here: the files involved include FastAPI routers and pydantic
+# models, where `from __future__ import annotations` is supported but has real failure modes around class
+# dependencies, so converting them needs Unsloth actually booted and its routes exercised.
+#
+# The SET, not just a count, so a breach can name the files it added. Shrinking is the only edit that should ever be
+# made here: a new entry means a new file evaluates a union on the floor, and the fix is the future import in that
+# file, not a longer list.
+STUDIO_UNION_DEBT_FILES = frozenset(
+    {
+        "studio/backend/auth/hashing.py",
+        "studio/backend/core/inference/external_provider.py",
+        "studio/backend/core/inference/key_exchange.py",
+        "studio/backend/core/inference/providers.py",
+        "studio/backend/core/inference/tools.py",
+        "studio/backend/core/training/trainer.py",
+        "studio/backend/hub/tests/test_model_services.py",
+        "studio/backend/main.py",
+        "studio/backend/routes/auth.py",
+        "studio/backend/routes/inference.py",
+        "studio/backend/routes/mcp_servers.py",
+        "studio/backend/routes/models.py",
+        "studio/backend/routes/providers.py",
+        "studio/backend/routes/settings.py",
+        "studio/backend/storage/rag_db.py",
+        "studio/backend/storage/studio_db.py",
+        "studio/backend/tests/test_anthropic_citations_edge.py",
+        "studio/backend/tests/test_cached_gguf_routes.py",
+        "studio/backend/tests/test_chat_attachments.py",
+        "studio/backend/tests/test_chat_history_storage.py",
+        "studio/backend/tests/test_export_absolute_paths.py",
+        "studio/backend/tests/test_index_bootstrap_origin.py",
+        "studio/backend/tests/test_kv_cache_estimation.py",
+        "studio/backend/tests/test_middleware.py",
+        "studio/backend/tests/test_openai_citation_markers.py",
+        "studio/backend/tests/test_openai_citation_markers_edge.py",
+        "studio/backend/tests/test_setup_llama_cpp_backend.py",
+        "studio/backend/tests/test_training_history_update.py",
+        "studio/backend/tests/test_transformers_version.py",
+        "studio/backend/utils/datasets/dataset_utils.py",
+        "studio/backend/utils/datasets/format_conversion.py",
+        "studio/backend/utils/datasets/format_detection.py",
+        "studio/backend/utils/models/model_config.py",
+        "studio/backend/utils/transformers_latest.py",
+        "studio/backend/utils/transformers_version.py",
+    }
+)
 
 
 def declared_floor():
@@ -182,8 +223,8 @@ def evaluated_annotations(tree):
     return out
 
 
-# A `|` between these is a union, not arithmetic: builtin types, `None`, and whatever the
-# module pulled in from typing.
+# A `|` between these is a union, not arithmetic. These are the builtin types; `None` and whatever the module pulled
+# in from typing count as anchors too, and are handled in the check below.
 TYPE_ANCHORS = frozenset(
     {
         "str",
@@ -341,7 +382,7 @@ def test_every_packaged_module_compiles():
 def test_studio_evaluated_unions_do_not_grow():
     """studio/ is shipped on the same floor but still carries unions that raise there.
 
-    A ratchet, not a pass: converting those files needs Studio booted and its routes
+    A ratchet, not a pass: converting those files needs Unsloth booted and its routes
     exercised, because FastAPI resolves annotations when it builds each endpoint. This
     keeps the debt from growing in the meantime.
     """
@@ -350,11 +391,23 @@ def test_studio_evaluated_unions_do_not_grow():
     studio = REPO_ROOT / "studio"
     if not studio.is_dir():
         pytest.skip("no studio/ directory in this checkout")
-    offenders = evaluated_union_files(studio)
-    assert len(offenders) <= STUDIO_UNION_DEBT, (
+    offenders = sorted(str(p.relative_to(REPO_ROOT)) for p in evaluated_union_files(studio))
+    # Name the files that are NEW against the recorded set, not the whole list.
+    # A bare count told you only that 37 exceeded 35, and the full list was truncated at 2000 chars, so finding the two
+    # additions meant re-running the scan on an older checkout and diffing by hand.
+    added = [p for p in offenders if p not in STUDIO_UNION_DEBT_FILES]
+    removed = [p for p in sorted(STUDIO_UNION_DEBT_FILES) if p not in offenders]
+    assert len(offenders) <= len(STUDIO_UNION_DEBT_FILES), (
         f"{len(offenders)} studio files now evaluate PEP 604 unions on the floor, up from "
-        f"{STUDIO_UNION_DEBT}. Add `from __future__ import annotations` to the new ones:\n  "
-        + "\n  ".join(sorted(str(p.relative_to(REPO_ROOT)) for p in offenders))[:2000]
+        f"{len(STUDIO_UNION_DEBT_FILES)}. Add `from __future__ import annotations` to "
+        "these, do not raise the ratchet:\n  "
+        + "\n  ".join(added or offenders)
+        + (
+            "\n\nalso no longer offending (drop them from STUDIO_UNION_DEBT_FILES):\n  "
+            + "\n  ".join(removed)
+            if removed
+            else ""
+        )
     )
 
 
@@ -395,8 +448,6 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
 #
 # The skip above is the kind of thing that rots into a blanket `vendor/`
 # exclusion. These pin it to the guard.
-
-
 def test_the_truststore_guard_is_what_exempts_it():
     """Not the path. If upstream drops the version guard, the files come back
     into the scan and this gate goes red again -- which is correct, because at

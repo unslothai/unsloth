@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect } from "react";
+import { type RefObject, useEffect } from "react";
 
 /**
  * Swallow the outside click that dismisses a non-modal menu before it activates an adjacent
@@ -30,6 +30,7 @@ let keyboardOnly = false;
 /** Used to undo focus taken by the swallowed press. */
 let armedPressTarget: Node | undefined;
 let focusBeforePress: Element | null = null;
+let armedTrigger: HTMLElement | null = null;
 
 /** Maximum post-release click delay. */
 const CLICK_GRACE_MS = 500;
@@ -68,6 +69,7 @@ const disarm = (): void => {
   keyboardOnly = false;
   armedPressTarget = undefined;
   focusBeforePress = null;
+  armedTrigger = null;
   document.removeEventListener("pointerdown", disarmOnNewPointerDown, true);
   document.removeEventListener("click", swallowClick, true);
   document.removeEventListener("pointerup", startGrace, true);
@@ -101,14 +103,27 @@ function startGrace(event: PointerEvent): void {
 const TEXT_ENTRY = "input,textarea,select";
 
 function releaseFocusTakenByTheGuardedPress(): void {
-  // Swallowing the click is not enough: blur only focus acquired by this guarded press, so a
-  // later Space key cannot activate the dismissed control.
+  // Swallowing the click is not enough: move focus away from the control focused by this guarded
+  // press, so a later Space key cannot activate it.
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return;
   if (active === focusBeforePress) return;
   if (active.isContentEditable || active.matches(TEXT_ENTRY)) return;
   if (!(armedPressTarget instanceof Node)) return;
   if (!active.contains(armedPressTarget)) return;
+  const trigger = armedTrigger;
+  if (
+    trigger?.isConnected &&
+    !trigger.matches(":disabled") &&
+    !trigger.closest("[inert]")
+  ) {
+    try {
+      trigger.focus({ preventScroll: true });
+      if (document.activeElement === trigger) return;
+    } catch {
+      // Fall through to the existing blur fallback for an unfocusable trigger.
+    }
+  }
   active.blur();
 }
 
@@ -156,7 +171,12 @@ function swallowClick(event: Event): void {
   document.dispatchEvent(new MouseEvent("click", { bubbles: false }));
 }
 
-const arm = (touch: boolean, pointerId: number, pressTarget: Node): void => {
+const arm = (
+  touch: boolean,
+  pointerId: number,
+  pressTarget: Node,
+  trigger: HTMLElement | null,
+): void => {
   if (armed) return;
   armed = true;
   armedByTouch = touch;
@@ -166,6 +186,7 @@ const arm = (touch: boolean, pointerId: number, pressTarget: Node): void => {
   keyboardOnly = false;
   armedPressTarget = pressTarget;
   focusBeforePress = document.activeElement;
+  armedTrigger = trigger;
   document.addEventListener("pointerdown", disarmOnNewPointerDown, true);
   document.addEventListener("click", swallowClick, true);
   document.addEventListener("pointerup", startGrace, true);
@@ -176,7 +197,9 @@ const arm = (touch: boolean, pointerId: number, pressTarget: Node): void => {
 };
 
 /** Install the watcher for one open menu. */
-export function installDismissingClickGuard(): () => void {
+export function installDismissingClickGuard(
+  triggerRef?: RefObject<HTMLElement | null>,
+): () => void {
   const onPointerDown = (event: PointerEvent): void => {
     if (armed && pointerIsDown && event.pointerId !== armedPointerId) return;
     disarmAndReleaseFocus();
@@ -184,7 +207,13 @@ export function installDismissingClickGuard(): () => void {
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.closest(MENU_SURFACE)) return;
-    arm(event.pointerType === "touch", event.pointerId, target);
+    const trigger = triggerRef?.current;
+    arm(
+      event.pointerType === "touch",
+      event.pointerId,
+      target,
+      trigger instanceof HTMLElement ? trigger : null,
+    );
   };
   document.addEventListener("pointerdown", onPointerDown, true);
   return () => {
@@ -193,6 +222,8 @@ export function installDismissingClickGuard(): () => void {
 }
 
 /** Mount the guard inside an open non-modal menu's content. */
-export function useDismissingClickGuard(): void {
-  useEffect(installDismissingClickGuard, []);
+export function useDismissingClickGuard(
+  triggerRef: RefObject<HTMLElement | null>,
+): void {
+  useEffect(() => installDismissingClickGuard(triggerRef), [triggerRef]);
 }

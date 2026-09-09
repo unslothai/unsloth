@@ -3,14 +3,13 @@
 
 // Identity of one ModelConfigPage editor instance. The page seeds its state from `loadedConfig`
 // in a useState initializer, so it reads that prop once per mount: a host that opens it before
-// status hydrates gets null first and the live config a moment later, and without the config in
-// the React key the instance survives that flip and keeps showing saved values, which Apply
-// then writes back over the running model.
+// status hydrates gets null first and the live config a moment later, and without the config
+// in the React key the instance keeps showing saved values, which Apply then writes back.
 
 import type { PerModelConfig } from "./per-model-config";
 
-// Serialize the GPU knobs with the store's "absent == default" coalescing: mode auto,
-// gpuLayers Auto (< 0), nCpuMoe 0, and null / absent GPU picks as automatic.
+// Serialize the GPU knobs with the store's "absent == default" coalescing: mode auto, gpuLayers
+// Auto (< 0), nCpuMoe 0, and null or absent GPU picks as automatic.
 export function gpuFieldsSignature(config: PerModelConfig): string {
   const gpuSelection =
     config.selectedGpuIds == null
@@ -37,10 +36,8 @@ function hashString(value: string): number {
   return hash;
 }
 
-/**
- * Signature of the live config an editor was seeded from. `null` (not resident, or status has
- * not answered yet) is its own value: the arrival of the live config must remount.
- */
+/** Signature of the live config an editor was seeded from. `null` (not resident, or status has
+ *  not answered yet) is its own value: the arrival of the live config must remount. */
 export function loadedConfigSignature(
   config: PerModelConfig | null | undefined,
 ): string {
@@ -70,10 +67,8 @@ export function loadedConfigSignature(
   ].join("|");
 }
 
-/**
- * React key for one ModelConfigPage instance, so every host agrees on when the editor
- * re-seeds: a different model, a different quant, or a change in the live config.
- */
+/** React key for one ModelConfigPage instance, so every host agrees on when the editor re-seeds:
+ *  a different model, a different quant, or a change in the live config. */
 export function modelConfigInstanceKey(
   modelId: string,
   ggufVariant: string | null | undefined,

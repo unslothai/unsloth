@@ -391,6 +391,7 @@ export function ProjectSourceDropzone({
                     className="size-4 shrink-0 text-muted-foreground"
                   />
                   <span
+                    data-reload-snapshot-sensitive
                     className="min-w-0 flex-1 truncate text-ui-14 text-foreground"
                     title={entry.name}
                   >
@@ -401,6 +402,7 @@ export function ProjectSourceDropzone({
                   </span>
                   <button
                     type="button"
+                    data-reload-snapshot-sensitive
                     aria-label={`Remove ${entry.name}`}
                     disabled={disabled}
                     onClick={() =>

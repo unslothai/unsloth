@@ -13,14 +13,10 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
-/**
- * Length of the longest suffix of `text` that is a proper prefix of `tag`.
- *
- * Those characters cannot be classified yet: `<thi` at the end of what has
- * arrived is plain text if the reply stops there and the opening of a
- * reasoning block if `nk>` arrives next, so they are held back and reclassified
- * once the next arrival settles them.
- */
+/** Length of the longest suffix of `text` that is a proper prefix of `tag`. Those characters
+ *  cannot be classified yet: `<thi` at the end of what has arrived is plain text if the reply
+ *  stops there and the opening of a reasoning block if `nk>` arrives next, so they are held
+ *  back and reclassified once the next arrival settles them. */
 function heldBackLength(text: string, tag: string): number {
   const most = Math.min(tag.length - 1, text.length);
   for (let size = most; size > 0; size -= 1) {
@@ -31,13 +27,10 @@ function heldBackLength(text: string, tag: string): number {
   return 0;
 }
 
-/**
- * One run of text between two tool-call boundaries, parsed as it arrives.
- *
- * Reproduces `parseAssistantContent` over the run exactly, including that it
- * coalesces adjacent parts of the same kind and that a run ending inside a
- * `<think>` block yields a reasoning part with no closing tag.
- */
+/** One run of text between two tool-call boundaries, parsed as it arrives. Reproduces
+ *  `parseAssistantContent` over the run exactly, including that it coalesces adjacent parts of
+ *  the same kind and that a run ending inside a `<think>` block yields an unclosed reasoning
+ *  part. */
 class ParsedRun {
   readonly parts: ContentPart[] = [];
   private insideThink = false;
@@ -73,15 +66,12 @@ class ParsedRun {
     }
   }
 
-  /**
-   * The run's parts. The held-back characters are folded in as whatever
-   * `parseAssistantContent` would call them if the reply stopped here, so the
-   * result is that function's output for every state the run passes through.
-   */
+  /** The run's parts. The held-back characters are folded in as whatever `parseAssistantContent`
+   *  would call them if the reply stopped here, so the result is that function's output for
+   *  every state the run passes through. */
   view(): ContentPart[] {
-    // A copy even when nothing is held back. The retained parts are the state
-    // the next arrival extends, so handing the array itself out would let a
-    // caller rewrite what has already been parsed.
+    // A copy even when nothing is held back. The retained parts are the state the next arrival
+    // extends, so handing the array itself out would let a caller rewrite what has been parsed.
     const out = this.parts.slice();
     if (!this.held) {
       return out;
@@ -106,14 +96,10 @@ class ParsedRun {
 export type SegmentedAssistantText = {
   /** Take the characters an arrival added to the reply. */
   appendText(delta: string): void;
-  /**
-   * Parsed parts for the run before each boundary, then the run after the last
-   * one, so the result always has `boundaries.length + 1` entries.
-   *
-   * `rawText` is only read when the retained state cannot be trusted for it;
-   * on the streaming path that is the boundaries changing, which happens once
-   * per tool call, not once per arrival.
-   */
+  /** Parsed parts for the run before each boundary, then the run after the last one, so the result
+   *  always has `boundaries.length + 1` entries. `rawText` is only read when the retained state
+   *  cannot be trusted for it; on the streaming path that is the boundaries changing, once per
+   *  tool call rather than once per arrival. */
   runs(rawText: string, boundaries: readonly number[]): ContentPart[][];
 };
 
@@ -132,21 +118,12 @@ function sameBoundaries(
   return true;
 }
 
-/**
- * Parse the accumulated reply into content parts without rereading it.
- *
- * The adapter appends to one string per arrival and then parses the whole
- * thing, which is O(reply) per arrival for two reasons: the parse itself, and
- * that `text += delta` builds a cons string whose first read flattens it. This
- * keeps the parse of everything already seen and extends it with the delta, so
- * neither cost is paid again.
- *
- * The retained state describes an append-only reply. Anything else, a rewrite
- * of the prefix or a suffix removed or a tool call landing behind the end,
- * shows up as a length or boundary mismatch and rebuilds from `rawText`. That
- * costs one full parse, on the arrivals that do it, which is the behaviour
- * this replaces.
- */
+/** Parse the accumulated reply into content parts without rereading it. The adapter appends to
+ *  one string per arrival and then parses the whole thing, which is O(reply) per arrival for
+ *  two reasons: the parse itself, and that `text += delta` builds a cons string whose first
+ *  read flattens it. This keeps the parse of everything already seen and extends it with the
+ *  delta. The retained state describes an append-only reply; anything else shows up as a
+ *  length or boundary mismatch and rebuilds from `rawText`, at one full parse. */
 export function createSegmentedAssistantText({
   trustAppends = true,
 }: { trustAppends?: boolean } = {}): SegmentedAssistantText {

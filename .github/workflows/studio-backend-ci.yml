@@ -30,6 +30,9 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'tests/**'
+      # The validate_studio_features.py step below guards docker/jupyter and the
+      # docker notebook helpers, so a docker-only change must trigger this CI.
+      - 'docker/**'
       # The root installers: tests/sh/*.sh and tests/studio/install/* assert
       # against these two files, so a change here must run the suite that
       # covers it. Without them an install-only edit (the shape most AMD/ROCm
@@ -158,6 +161,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: studio-backend
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -184,7 +188,8 @@ jobs:
           # Torch CPU + transformers are required by a chunk of the backend test
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            'torch>=2.4,<2.11' 'torchaudio<2.11'
           pip install 'transformers>=4.51,<5.5'
           # peft: core/inference/inference.py imports it at module scope, and it is listed
           # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
@@ -251,6 +256,8 @@ jobs:
         # isolation guard scans for the tight ones, so a new test below the threshold
         # fails that guard instead of flaking here.
         #
+        # test_media_auto_switch has a 0.4s budget that xdist scheduling can exceed.
+        #
         # --timeout: a per-test wall-clock cap, so a test that never returns fails with its
         # own name in the summary instead of taking the job's 45 minutes down with it and
         # reporting "cancelled". 330s comes off the measured distribution rather than taste:
@@ -259,7 +266,20 @@ jobs:
         # at 82.5s (measured under -n 4 on a contended box; 75.4s serially), and the next
         # ones down are 76s and 25s, so the cap is 4x the worst real test. Nothing here is
         # near it, and a deadlock is caught in minutes rather than never.
+        #
+        # --timeout arms inside each xdist worker, so a stuck CONTROLLER escapes it: when a
+        # worker wedges holding the pipe, the session waits forever and no per-test cap is
+        # consulted. On the #9473 branch this step sat silent from 95% for 36.8 minutes,
+        # three runs running, each burning the whole 45 minute budget and reporting
+        # "cancelled" -- unreadable against ordinary concurrency supersession.
+        #
+        # So bound the session from outside, where a wedged worker cannot defeat it. SIGINT
+        # first so pytest dumps where it was stuck, SIGKILL 60s later if it will not.
+        # Reproduced with a test forking a child that never exits: unwrapped it hangs
+        # silently, wrapped it exits 124 through execnet safe_terminate -> workerpool.waitall.
+        # Expect a stuck FRAME, not always a test name. 1500s is ~3x the 8-10 minute norm.
         run: |
+          timeout --signal=INT --kill-after=60 1500 \
           python -m pytest tests/ -q --tb=short -n 4 --timeout=330 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
@@ -273,6 +293,7 @@ jobs:
             --ignore=tests/test_scan_loras_off_event_loop.py \
             --ignore=tests/test_anthropic_messages.py \
             --ignore=tests/test_profile_stats.py \
+            --ignore=tests/test_media_auto_switch.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -292,7 +313,8 @@ jobs:
             tests/test_tunnel_safe_long_post.py \
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
-            tests/test_profile_stats.py
+            tests/test_profile_stats.py \
+            tests/test_media_auto_switch.py
 
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
@@ -347,6 +369,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: repo-cpu-tests
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -373,7 +396,7 @@ jobs:
             'numpy<3' pytest pytest-asyncio pytest-xdist httpx
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
+            'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           pip install 'transformers>=4.51,<5.5'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.
@@ -393,6 +416,21 @@ jobs:
             sleep $((5 * attempt))
           done
           pip install -e . --no-deps
+
+      # tests/test_formatter_fixed_point.py runs the real formatting hook, and it
+      # skips when the installed ruff is not the one the repo is formatted with,
+      # because another ruff answers a different question. Without this the guard
+      # would be permanently skipped here, which is the failure mode it exists to
+      # stop. The version is read out of .pre-commit-config.yaml rather than
+      # pinned a second time: a stale copy would silently disable the guard.
+      - name: Install the pinned ruff (formatter fixed-point guard)
+        run: |
+          pin="$(python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print(r.pinned_ruff_version(r.CONFIG.read_text(encoding = "utf-8")) or "")')"
+          if [ -z "$pin" ]; then
+            echo "::error::.pre-commit-config.yaml no longer pins a ruff for ruff-format-with-kwargs"
+            exit 1
+          fi
+          pip install "ruff==$pin"
 
       - name: Repo tests (CPU, auto-discovered)
         env:
@@ -416,11 +454,11 @@ jobs:
         # --deselect:
         #   - test_model_registration / test_all_model_registration:
         #     hit huggingface_hub for live model existence checks.
-        #   - test_autoconfig_works_with_no_torch_runtime / test_autoconfig_succeeds:
-        #     fail because no-torch-runtime.txt does not pin tokenizers
-        #     and the latest tokenizers (0.23.1) is incompatible with the
-        #     transformers it resolves to. Tracked separately; this is a
-        #     real bug in the no-torch install path, not a CI issue.
+        #   test_autoconfig_works_with_no_torch_runtime / test_autoconfig_succeeds
+        #   used to be deselected here too, for a tokenizers pin no-torch-runtime.txt
+        #   was missing. #5359 added that pin and both now pass, so the lines are gone
+        #   -- they were redundant anyway, since the -m filter above already excludes
+        #   their `e2e` class marker, and the reason they gave outlived the bug.
         #
         # -n 4: 806.1s -> 219.7s locally on the same 4-worker shape as the runner, with an
         # identical 2-failed / 8066-passed / 178-skipped / 40-subtest result. The three pytest
@@ -437,13 +475,12 @@ jobs:
             --ignore=tests/studio/test_hardware_dispatch_matrix.py \
             --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
             --ignore=tests/studio/test_xpu_spoof_pipeline.py \
+            --ignore=tests/studio/test_mlx_context_platform_matrix.py \
             --ignore=tests/vllm_compat \
             --ignore=tests/version_compat \
             -m 'not server and not e2e' \
             --deselect tests/test_model_registry.py::test_model_registration \
-            --deselect tests/test_model_registry.py::test_all_model_registration \
-            --deselect 'tests/python/test_tokenizers_and_torch_constraint.py::TestE2ETokenizersFix::test_autoconfig_works_with_no_torch_runtime' \
-            --deselect 'tests/python/test_tokenizers_and_torch_constraint.py::TestE2EFullNoTorchSandbox::test_autoconfig_succeeds'
+            --deselect tests/test_model_registry.py::test_all_model_registration
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)
         env:
@@ -457,21 +494,25 @@ jobs:
           python -m pytest -q --tb=short \
             tests/studio/test_hardware_dispatch_matrix.py \
             tests/studio/test_is_mlx_dispatch_gate.py \
-            tests/studio/test_xpu_spoof_pipeline.py
+            tests/studio/test_xpu_spoof_pipeline.py \
+            tests/studio/test_mlx_context_platform_matrix.py
 
       - name: Event-loop latency tests (wall clock, run without CPU contention)
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These drive a live uvicorn server and assert upper bounds on real
-        # elapsed time: a /health burst must stay under 250 ms while a 600 ms
-        # blocking probe runs, and a 100-request burst under 350 ms. That is the
-        # actual contract (the route hands the blocking call to a thread), so the
-        # bounds cannot be relaxed without the test ceasing to test anything.
-        # A descheduled worker inflates them, so they run alone. Measured under
-        # 3x CPU oversubscription the margin is wide (8 ms against 250, 38 ms
-        # against 350), but a runner core is several times slower than the box
-        # that measured it, which puts the 350 ms one within reach.
+        # These drive a live uvicorn server and assert upper bounds on real elapsed
+        # time: 50 concurrent probes under 15s, a fast-shim probe under 2s, five
+        # sequential probes under 10s, and a not-loaded short circuit under 50 ms.
+        # A descheduled worker inflates them, so they run alone.
+        #
+        # The two tightest bounds this step used to carry, 250 ms for a /health burst
+        # and 350 ms for a 100-request burst, are gone. Both were proxies for one
+        # property, that the route hands its blocking call to a thread and leaves the
+        # event loop free, and both could be falsified by a descheduled thread with the
+        # code entirely correct. Those two tests now hold the blocking call open on an
+        # event and require /health to answer while it is held, which asserts the
+        # property itself and does not move with load.
         # 20s serially, against the ~10 minutes -n 4 saves on this job.
         run: python -m pytest tests/studio/load_freeze -q --tb=short
 
@@ -512,6 +553,11 @@ jobs:
           [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
           echo "ran $found shell installer test files"
 
+      - name: Docker JupyterLab/notebook feature validation
+        # Named validate_studio_features.py (not test_*.py) so pytest skips it;
+        # run explicitly so notebook/Colab/branding regressions fail CI.
+        run: python tests/validate_studio_features.py
+
       - name: Save the pip cache
         if: always()
         uses: ./.github/actions/pip-cache-save
@@ -519,4 +565,3 @@ jobs:
           dir: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ steps.pip-cache.outputs.key }}
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
-

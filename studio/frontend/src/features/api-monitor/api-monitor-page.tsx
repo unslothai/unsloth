@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
+
 // Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
@@ -269,7 +271,11 @@ function RequestRow({
           {entry.model}
         </div>
         {entry.error ? (
-          <div className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400">
+          // Backend error text can quote the request, so keep it out too.
+          <div
+            data-reload-snapshot-sensitive
+            className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400"
+          >
             {entry.error}
           </div>
         ) : null}
@@ -312,7 +318,9 @@ function RequestRow({
           <span>{formatTime(entry.started_at)}</span>
         </span>
       </div>
+      {/* A prompt or reply excerpt, same as the expanded payload below it. */}
       <p
+        data-reload-snapshot-sensitive
         className={cn(
           "line-clamp-2 pl-4 text-ui-11 leading-[1.45]",
           entry.error
@@ -356,7 +364,9 @@ function PayloadBlock({
           ) : null}
         </div>
       </div>
+      {/* Prompt and reply bodies, so keep them out of the reload snapshot. */}
       <pre
+        data-reload-snapshot-sensitive
         className={cn(
           "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
@@ -515,6 +525,7 @@ function RequestDetail({
 }
 
 export function ApiMonitorPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const {
     data,
     entries,
@@ -530,6 +541,14 @@ export function ApiMonitorPage(): ReactElement {
     loadingDetails,
     requestDetail,
   } = useApiMonitor();
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (loading || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
@@ -945,7 +964,7 @@ export function ApiMonitorPage(): ReactElement {
                 {entries.length > 0
                   ? "No requests match this filter."
                   : loggingDisabled
-                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Studio to re-enable."
+                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
                     : "No API traffic yet. Point a client at the base URL above to see requests here."}
               </p>
             ) : (

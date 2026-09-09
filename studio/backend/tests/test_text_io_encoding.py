@@ -7,7 +7,7 @@
 ``locale.getencoding()`` when no ``encoding`` is passed. On Windows that is
 cp1252 (or cp932, cp1251, ... by system locale), not UTF-8, so a chat template,
 model config or path containing ``ä ö ü → 世`` mojibakes or raises
-``UnicodeDecodeError`` mid-load. Studio's files are UTF-8, so say so.
+``UnicodeDecodeError`` mid-load. Unsloth's files are UTF-8, so say so.
 """
 
 from __future__ import annotations
@@ -606,7 +606,7 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
     pid_file = tmp_path / "studio.pid"
     pid_file.write_bytes(b"\x80\xff")
     monkeypatch.setattr(studio_run, "_PID_FILE", pid_file)
-    # _legacy_heir scans the real Studio root, so without this the last assertion asks whether
+    # _legacy_heir scans the real Unsloth root, so without this the last assertion asks whether
     # a server happens to be running on the machine: with one, the record is handed over rather
     # than unlinked. The handoff has its own test below.
     monkeypatch.setattr(studio_run, "_legacy_heir", lambda: None)

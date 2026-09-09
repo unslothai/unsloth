@@ -51,7 +51,7 @@ class RemoteCodeDecision:
     max_severity: Optional[str]
     findings_summary: str
     reason: str
-    findings: list = field(default_factory = list)  # structured [{severity,file,check,evidence}]
+    findings: list = field(default_factory = list)
     approvable: bool = True  # False only for CRITICAL (user cannot override)
 
     def response_payload(self) -> dict:
@@ -166,7 +166,7 @@ def _load_remote_code_configs(
                     cache_dir = active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
-                continue  # genuine 404 -> truly absent
+                continue
             except Exception:
                 # Transient/auth failure is not "absent" -> fail closed to "unknown" so the caller scans.
                 return None
@@ -244,10 +244,10 @@ def evaluate_remote_code_consent_for_targets(
             primary, False, False, None, None, "", "trust_remote_code disabled"
         )
 
-    # Persistent per-user approval: seed the stored fingerprint so the authoritative scan below
-    # auto-approves an unchanged repo (skips only the prompt, never the scan). Gated so it cannot
-    # weaken the scan: the approval must match the current ruleset, and a resolvable commit SHA must
-    # match the approved revision. The fingerprint and the CRITICAL block still apply.
+    # Persistent per-user approval seeds the stored fingerprint so the scan below auto-approves an
+    # unchanged repo, skipping the prompt but never the scan. Gated so it cannot weaken the scan:
+    # the approval must match the current ruleset and a resolvable commit SHA the approved revision.
+    # The fingerprint and the CRITICAL block still apply.
     caller_approved_fingerprint = approved_fingerprint
     if subject:
         from utils.security import remote_code_approvals
@@ -328,8 +328,7 @@ def evaluate_remote_code_consent_for_targets(
     elif approved:
         blocked, reason = False, "approved by fingerprint"
     elif sev == HIGH:
-        # HIGH is user-approvable but must pin the fingerprint via the dialog, for every repo including
-        # first-party (a compromised trusted repo still needs review).
+        # HIGH is user-approvable but must pin the fingerprint via the dialog.
         blocked, reason = True, "blocked: scan found HIGH patterns; approval required"
     elif sev == MEDIUM:
         # MEDIUM (e.g. a big embedded base64 blob) also pins approval like HIGH, so a direct API caller

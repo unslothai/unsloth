@@ -85,22 +85,22 @@ jobs:
     strategy:
       # Four shards, split where the job already split itself.
       #
-      # This is 11 Playwright scripts run one after another against four Studios booted
+      # This is 11 Playwright scripts run one after another against four Unsloth instances booted
       # one after another, and at 22.1 minutes on average it was the largest job in the
       # repo. The setup every shard has to repeat is small -- checkout, Linux deps,
       # Install Unsloth, Playwright browsers, about 2.6 minutes -- so splitting it is
       # nearly all profit in wall-clock, which is the thing being optimised. Runner
       # minutes go up. That is the trade, taken deliberately.
       #
-      # The boundaries are the Studio instances, not an even division of scripts: a
-      # Studio boot, its health wait, its bootstrap password and the scripts that drive
+      # The boundaries are the Unsloth instances, not an even division of scripts: a
+      # Unsloth boot, its health wait, its bootstrap password and the scripts that drive
       # it have to stay on one machine. So `chat` takes 18892 and the cross-browser
       # permission pass, `extra` and `banner` each boot their own 18894 (the two banner
       # engines alone were 7.25 of the 17.6 minutes, which is why they are a shard), and
       # `picker` takes 18898 and 18896, which are small and adjacent.
       #
       # In-machine parallelism is deliberately NOT used here. These are separate runners,
-      # so each still boots one Studio at a time and nothing competes for RAM.
+      # so each still boots one Unsloth at a time and nothing competes for RAM.
       fail-fast: false
       matrix:
         # The shard list stays a list: test_chat_ui_shards_cover_everything reads it
@@ -550,6 +550,21 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: MCP arguments end to end (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_mcp_arguments
+          STUDIO_UI_STRICT: '1'
+        run: |
+          mkdir -p logs/playwright_mcp_arguments
+          studio_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+          export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"
+          test -x "$STUDIO_MCP_PYTHON"
+          python tests/studio/playwright_mcp_arguments.py
+
       - name: Per-chat settings persistence (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -634,6 +649,40 @@ jobs:
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
 
+      - name: Tool activity collapse regression (Playwright)
+        if: matrix.shard == 'extra'
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm install -g npm@^11 --no-fund --no-audit
+            V=$(npm -v)
+            case "$V" in
+              11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+              *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+            esac
+            npm --prefix studio/frontend ci --strict-allow-scripts --no-fund --no-audit
+          fi
+          python tests/studio/playwright_tool_activity.py --json
+
+      # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
+      # each other: the suppression sets in loggers/handlers.py and the poll cadences in
+      # session.py. A pull request that adds a polling call site in the frontend edits
+      # neither, so it passes, and the new endpoint logs every hit on a 300 ms window.
+      # Only a browser can see that a timer started, whatever it was implemented with.
+      #
+      # Last of the shard's steps on purpose: it walks the sidebar and then sits idle for
+      # two minutes, and it rotates the bootstrap password, so anything scheduled after it
+      # would wait on the dwell and then meet a password it did not mint.
+      - name: Every polled path is declared in the log budget (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_declared_polls
+        run: |
+          mkdir -p logs/playwright_declared_polls
+          python tests/studio/playwright_declared_polls.py
+
       - name: Stop second Unsloth
         if: (always()) && (matrix.shard == 'extra' || matrix.shard == 'banner')
         run: |
@@ -677,6 +726,32 @@ jobs:
         run: |
           mkdir -p logs/playwright_modelcfg
           python tests/studio/playwright_model_config.py
+
+      # "Estimated Memory Usage" row in the same run-settings panel: the collapsible
+      # readout that prices a prospective GGUF load before it runs.
+      #
+      # On the fourth Unsloth rather than a fifth, and immediately after the step above,
+      # for two reasons. The row is GGUF-only, so it needs a GGUF sitting in the picker,
+      # and that step has just put one there. And it needs nothing else from the server:
+      # POST /api/inference/estimate-memory is intercepted in the browser, so the figures
+      # under assertion are the ones the suite handed back rather than this runner's own
+      # memory, which is what makes them assertable at all.
+      #
+      # It attaches with the password the step above minted instead of driving
+      # /change-password itself: the bootstrap password on this instance has already been
+      # rotated by then, so there is no first-boot flow left to drive.
+      - name: Estimated Memory Usage row (Playwright)
+        if: matrix.shard == 'picker'
+        env:
+          BASE_URL: http://127.0.0.1:18898
+          STUDIO_LOGIN_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
+          PW_ART_DIR: logs/playwright_memory_estimate
+          STUDIO_UI_STRICT: '1'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+        run: |
+          mkdir -p logs/playwright_memory_estimate
+          python tests/studio/playwright_memory_estimate.py
 
       - name: Stop fourth Unsloth
         if: (always()) && (matrix.shard == 'picker')
@@ -726,10 +801,10 @@ jobs:
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
           sleep 2
 
-      # Every shard, not just the one that happened to own the last Studio.
+      # Every shard, not just the one that happened to own the last Unsloth.
       #
       # This copy used to sit inside the step above, with a comment saying all three
-      # Studios share the directory. That was true when they shared a RUNNER. Each cell
+      # Unsloth instances share the directory. That was true when they shared a RUNNER. Each cell
       # now has its own machine and its own ~/.unsloth/studio/logs, so leaving it there
       # would upload three artifacts with no server-side traceback in them, and those are
       # the artifacts anyone debugging a failed shard would open first.
@@ -759,6 +834,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_mcp_arguments
             logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner
@@ -766,6 +842,7 @@ jobs:
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
             logs/playwright_modelcfg
+            logs/playwright_memory_estimate
             logs/playwright_ime
             logs/studio-permissions-*.log
           # 1 day, matching the repository-wide cap. A larger value here is
@@ -860,7 +937,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
 
       - name: Restore the apt archive cache (webkit's .deb set)
         id: apt-cache
@@ -1038,7 +1115,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
 
       - name: Cross-browser loaded-models indicator
         # The three engines are independent runs of the same suite, and running
@@ -1049,7 +1126,7 @@ jobs:
         #
         # Note the sibling ui-smoke job says in-machine parallelism is
         # deliberately not used there. That reasoning is "these are separate
-        # runners, so each still boots one Studio at a time" -- it is an argument
+        # runners, so each still boots one Unsloth at a time" -- it is an argument
         # about a SHARDED job, and this job has no shards to spread across.
         #
         # Two things are shared, and each gets split rather than serialised:
