@@ -865,6 +865,11 @@ function Install-UnslothStudio {
     # a child process that tries the emit, not from a guess about which options the
     # policy set.
     $script:StudioCanDefineNativeTypes = $null
+    # Why the last probe answered as it did, so a caller can tell "the child ran and
+    # said no" from "the child never got to answer". Those are the same boolean and
+    # they are not the same fact: one is a policy, the other is a process that failed
+    # to start, was killed at the deadline, or lost its output.
+    $script:StudioEmitProbeOutcome = $null
     function Test-StudioCanDefineNativeTypes {
         if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
         $languageMode = "FullLanguage"
@@ -906,6 +911,17 @@ function Install-UnslothStudio {
         # population: refusing everything sends every audit-mode machine down the lexical
         # path, and allowing everything risks the process. Ask the machine instead.
         $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
+        # One retry, and only when the first attempt never reached an answer. The compiled
+        # version this replaces also tried twice before caching a negative, and without
+        # that a single transient process failure is indistinguishable from a policy: it
+        # is cached for the whole run and sends the installer down the lexical path, where
+        # two unequal roots compare as unknown and a second lock gets taken. A child that
+        # RAN and said no is not retried, so a genuinely blocked machine still pays for
+        # one probe.
+        if (-not $script:StudioCanDefineNativeTypes -and
+            $script:StudioEmitProbeOutcome -eq "indeterminate") {
+            $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
+        }
         return $script:StudioCanDefineNativeTypes
     }
 
@@ -918,6 +934,9 @@ function Install-UnslothStudio {
         # HostPath is for the tests, which have no policy to trigger the real path and cannot
         # shadow $PSHOME, since it is read-only. Production never passes it.
         param([string]$HostPath)
+        # Until something here establishes otherwise. Every exit below either leaves this
+        # alone or says what it learned.
+        $script:StudioEmitProbeOutcome = "indeterminate"
         $probe = @'
 try {
     $name = New-Object System.Reflection.AssemblyName 'UnslothStudioEmitProbe'
@@ -992,11 +1011,25 @@ exit 1
             # and then died has answered no. FullLanguage because an approved script can run
             # in FullLanguage while a fresh inline command does not, and a child restricted
             # differently from its parent has measured a different machine.
-            if ($child.ExitCode -ne 0) { return $false }
+            if ($child.ExitCode -ne 0) {
+                $script:StudioEmitProbeOutcome = "blocked"
+                return $false
+            }
             $lines = ($reader.GetAwaiter().GetResult() -split "`r?`n")
             foreach ($line in $lines) {
-                if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") { return $true }
+                if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") {
+                    $script:StudioEmitProbeOutcome = "ok"
+                    return $true
+                }
+                # Emitted, but in a language mode this parent is not in. The child measured a
+                # different machine, which is an answer rather than a missed one.
+                if ($line.Trim() -like "STUDIO_EMIT_OK *") {
+                    $script:StudioEmitProbeOutcome = "blocked"
+                    return $false
+                }
             }
+            # Exit 0 with no marker at all: the child cannot have got past the emit and then
+            # reported nothing, so its output was lost rather than negative.
             return $false
         } catch {
             return $false
@@ -1130,8 +1163,15 @@ exit 1
             $script:StudioFinalPathNativeState = $false
             $languageMode = "FullLanguage"
             try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
+            # Three reasons, because the gate now has three ways to say no and only one of
+            # them is a policy. Claiming code integrity for a probe that could not be
+            # spawned, or that was killed at its deadline, is a wrong answer written into
+            # the log a support request is built from: it names a machine setting the user
+            # would then go looking for and not find.
             $reason = if ($languageMode -ne "FullLanguage") { "PowerShell is in $languageMode" }
-                      else { "this host enforces user-mode code integrity" }
+                      elseif ($script:StudioEmitProbeOutcome -eq "blocked") {
+                          "this host enforces user-mode code integrity"
+                      } else { "a probe process could not confirm native type support" }
             Write-StudioFinalPathDegraded -Reason $reason
             return $false
         }
@@ -3538,7 +3578,14 @@ exit 0
             return $true
         }
         if ($null -ne $script:StudioProcessImageNativeState) { return $script:StudioProcessImageNativeState }
-        if (-not (Test-StudioCanDefineNativeTypes)) {
+        # A type this session already emitted outranks any probe. The compiled version
+        # could not disagree with itself here, because one type carried the path helper
+        # and this one; two types can, and the way they do is a session that emitted the
+        # path type, was interrupted, and came back to a probe that now fails. Asking a
+        # child whether emit works, in a process where emit demonstrably worked, is a
+        # question with an answer already on the table.
+        $alreadyEmitted = $null -ne ("UnslothStudioFinalPathV3" -as [type])
+        if (-not $alreadyEmitted -and -not (Test-StudioCanDefineNativeTypes)) {
             $script:StudioProcessImageNativeState = $false
             return $false
         }

@@ -1816,17 +1816,18 @@ def test_the_probe_body_carries_no_double_quote(script: str):
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 @pytest.mark.parametrize(
-    "emits,code,expected,label",
+    "emits,code,expected,outcome,label",
     [
-        ("STUDIO_EMIT_OK FullLanguage", 0, "True", "the good case"),
-        ("STUDIO_EMIT_OK FullLanguage", 23, "False", "marker then a bad exit"),
-        ("STUDIO_EMIT_OK ConstrainedLanguage", 0, "False", "a child restricted differently"),
-        ("NOT_STUDIO_EMIT_OK_FAILURE", 0, "False", "a line that merely contains the marker"),
-        ("", 0, "False", "silence"),
+        ("STUDIO_EMIT_OK FullLanguage", 0, "True", "ok", "the good case"),
+        ("STUDIO_EMIT_OK FullLanguage", 23, "False", "blocked", "marker then a bad exit"),
+        ("STUDIO_EMIT_OK ConstrainedLanguage", 0, "False", "blocked", "a child restricted differently"),
+        ("", 1, "False", "blocked", "a child that ran and refused"),
+        ("NOT_STUDIO_EMIT_OK_FAILURE", 0, "False", "indeterminate", "a line that merely contains the marker"),
+        ("", 0, "False", "indeterminate", "silence"),
     ],
 )
 def test_the_probe_only_accepts_a_clean_exact_answer(
-    script: str, emits: str, code: int, expected: str, label: str, tmp_path: Path
+    script: str, emits: str, code: int, expected: str, outcome: str, label: str, tmp_path: Path
 ):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
     home = tmp_path / "fakehome"
@@ -1843,11 +1844,142 @@ def test_the_probe_only_accepts_a_clean_exact_answer(
                 '$ErrorActionPreference = "Stop"',
                 _one_function(source, "Test-StudioEmitInChildProcess"),
                 f'Write-Output "ANSWER:$(Test-StudioEmitInChildProcess -HostPath \'{fake}\')"',
+                'Write-Output "OUTCOME:$script:StudioEmitProbeOutcome"',
             ]
         )
     )
     assert result.returncode == 0, f"{label}: {result.stderr}"
     assert _lines(result, "ANSWER:") == [f"ANSWER:{expected}"], label
+    # And WHY, which is not the same fact as the boolean. A child that ran and refused is a
+    # machine that cannot emit; a child that never answered is a process that failed, and
+    # the gate retries only the second one and reports a different reason for it.
+    assert _lines(result, "OUTCOME:") == [f"OUTCOME:{outcome}"], label
+
+
+# One transient process failure used to be indistinguishable from a policy: cached for the
+# whole run, it sends the installer down the lexical path, where two unequal roots compare as
+# unknown and a second runtime lock is taken, which is how an unrelated install elsewhere on
+# the machine turns into "the managed Unsloth environment is busy". The compiled version this
+# replaces tried twice before caching a negative. A machine that really is blocked still pays
+# for exactly one probe, so the retry costs nothing where the answer was already real.
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize(
+    "outcome,calls",
+    [("indeterminate", "2"), ("blocked", "1")],
+    ids = ["never-answered-is-retried", "answered-no-is-not"],
+)
+def test_only_a_probe_that_never_answered_is_retried(script: str, outcome: str, calls: str):
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "$script:StudioCanDefineNativeTypes = $null",
+                "$script:StudioEmitProbeOutcome = $null",
+                "$script:ProbeCalls = 0",
+                # A stub, because the gate calls the real probe through $PSHOME, which is
+                # read-only and cannot be pointed at a fake host. What is under test here is
+                # the gate's retry rule, not the child.
+                "function Test-StudioEmitInChildProcess {",
+                "    $script:ProbeCalls = $script:ProbeCalls + 1",
+                f'    $script:StudioEmitProbeOutcome = "{outcome}"',
+                "    return $false",
+                "}",
+                _one_function(source, "Test-StudioCanDefineNativeTypes"),
+                '$answer = Test-StudioCanDefineNativeTypes',
+                'Write-Output "ANSWER:$answer"',
+                'Write-Output "CALLS:$script:ProbeCalls"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert _lines(result, "ANSWER:") == ["ANSWER:False"]
+    assert _lines(result, "CALLS:") == [f"CALLS:{calls}"]
+
+
+# The reason printed alongside the degradation. Naming a machine setting for what was really
+# a process that could not be spawned sends whoever reads the log looking for a policy that
+# is not there.
+@requires_pwsh
+@pytest.mark.parametrize(
+    "outcome,expected",
+    [
+        ("blocked", "this host enforces user-mode code integrity"),
+        ("indeterminate", "a probe process could not confirm native type support"),
+    ],
+    ids = ["a-real-refusal", "a-probe-that-never-answered"],
+)
+def test_the_degradation_reason_says_what_was_actually_established(outcome: str, expected: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "$script:StudioFinalPathNativeState = $null",
+                f'$script:StudioEmitProbeOutcome = "{outcome}"',
+                "function Test-StudioCanDefineNativeTypes { return $false }",
+                # Straight to the console, not Write-Output: the initializer's return value is
+                # discarded below, and that discards everything else on the success stream with
+                # it, including the warning this test is here to read.
+                "function Write-StudioLine { param($Message, $ForegroundColor)",
+                '    [Console]::Out.WriteLine("LINE:$Message") }',
+                _one_function(source, "Write-StudioFinalPathDegraded"),
+                _one_function(source, "Initialize-StudioFinalPathNativeType"),
+                "$null = Initialize-StudioFinalPathNativeType",
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    warning = [line for line in _lines(result, "LINE:") if "native path resolver" in line]
+    assert warning, result.stdout
+    assert expected in warning[0], warning[0]
+
+
+# The compiled version carried the path helper and the process-image helper on ONE type, so
+# they could not disagree about whether this session can emit. Two types can: a session that
+# emitted the path type, was interrupted, and came back to a probe that now fails would keep
+# native path resolution and silently lose native process inspection, which is how a running
+# Studio stops being seen. A type already published here is stronger evidence than any child.
+@requires_pwsh
+def test_an_already_emitted_type_settles_it_without_asking_a_child():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "$script:StudioProcessImageNativeState = $null",
+                "$script:GateCalls = 0",
+                "function Test-StudioCanDefineNativeTypes {",
+                "    $script:GateCalls = $script:GateCalls + 1",
+                "    return $false",
+                "}",
+                _one_function(source, "New-StudioDynamicAssembly"),
+                _one_function(source, "New-StudioEmittedNativeType"),
+                _one_function(source, "Initialize-StudioFinalPathNativeType"),
+                # The real path type, emitted the way a real run emits it, so what stands in
+                # for the interrupted session is the same evidence that session would leave.
+                "$script:StudioFinalPathNativeState = $null",
+                "function Write-StudioFinalPathDegraded { param($Reason) }",
+                "$null = New-StudioEmittedNativeType -TypeName 'UnslothStudioFinalPathV3' -Imports @(",
+                "    @{ Name = 'CloseHandle'; Library = 'kernel32.dll'; Return = [bool]",
+                "       Args = @([IntPtr]); Ansi = $true }",
+                ")",
+                'Write-Output "PATHTYPE:$($null -ne (\'UnslothStudioFinalPathV3\' -as [type]))"',
+                _one_function(source, "Initialize-StudioProcessImageNativeType"),
+                '$ok = Initialize-StudioProcessImageNativeType',
+                'Write-Output "PROCESS:$ok"',
+                'Write-Output "GATE:$script:GateCalls"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert _lines(result, "PATHTYPE:") == ["PATHTYPE:True"], result.stdout
+    assert _lines(result, "PROCESS:") == ["PROCESS:True"], result.stdout
+    assert _lines(result, "GATE:") == ["GATE:0"], (
+        "the process-image helper asked a child whether emit works in a process that had "
+        "already emitted a type"
+    )
 
 
 @requires_pwsh

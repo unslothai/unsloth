@@ -1602,6 +1602,11 @@ $Rule = [string]::new([char]0x2500, 52)
 # assemblies built with System.Reflection.Emit, and Microsoft documents the parent process as
 # usually stopped or crashing rather than raising, so this has to be a gate and not a catch.
 $script:StudioCanDefineNativeTypes = $null
+# Why the last probe answered as it did, so a caller can tell "the child ran and
+# said no" from "the child never got to answer". Those are the same boolean and
+# they are not the same fact: one is a policy, the other is a process that failed
+# to start, was killed at the deadline, or lost its output.
+$script:StudioEmitProbeOutcome = $null
 function Test-StudioCanDefineNativeTypes {
     if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
     $languageMode = "FullLanguage"
@@ -1636,6 +1641,17 @@ function Test-StudioCanDefineNativeTypes {
     # an audit policy before Windows 11 24H2, while an audit policy without it emits fine. So a
     # child process tries it. Same reasoning as install.ps1, which carries the full note.
     $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
+    # One retry, and only when the first attempt never reached an answer. The compiled
+    # version this replaces also tried twice before caching a negative, and without
+    # that a single transient process failure is indistinguishable from a policy: it
+    # is cached for the whole run and sends the installer down the lexical path, where
+    # two unequal roots compare as unknown and a second lock gets taken. A child that
+    # RAN and said no is not retried, so a genuinely blocked machine still pays for
+    # one probe.
+    if (-not $script:StudioCanDefineNativeTypes -and
+        $script:StudioEmitProbeOutcome -eq "indeterminate") {
+        $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
+    }
     return $script:StudioCanDefineNativeTypes
 }
 
@@ -1645,6 +1661,9 @@ function Test-StudioEmitInChildProcess {
     # HostPath is for the tests, which have no policy to trigger the real path and cannot
     # shadow $PSHOME, since it is read-only. Production never passes it.
     param([string]$HostPath)
+    # Until something here establishes otherwise. Every exit below either leaves this
+    # alone or says what it learned.
+    $script:StudioEmitProbeOutcome = "indeterminate"
     $probe = @'
 try {
     $name = New-Object System.Reflection.AssemblyName 'UnslothStudioEmitProbe'
@@ -1717,11 +1736,25 @@ exit 1
         # and then died has answered no. FullLanguage because an approved script can run
         # in FullLanguage while a fresh inline command does not, and a child restricted
         # differently from its parent has measured a different machine.
-        if ($child.ExitCode -ne 0) { return $false }
+        if ($child.ExitCode -ne 0) {
+            $script:StudioEmitProbeOutcome = "blocked"
+            return $false
+        }
         $lines = ($reader.GetAwaiter().GetResult() -split "`r?`n")
         foreach ($line in $lines) {
-            if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") { return $true }
+            if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") {
+                $script:StudioEmitProbeOutcome = "ok"
+                return $true
+            }
+            # Emitted, but in a language mode this parent is not in. The child measured a
+            # different machine, which is an answer rather than a missed one.
+            if ($line.Trim() -like "STUDIO_EMIT_OK *") {
+                $script:StudioEmitProbeOutcome = "blocked"
+                return $false
+            }
         }
+        # Exit 0 with no marker at all: the child cannot have got past the emit and then
+        # reported nothing, so its output was lost rather than negative.
         return $false
     } catch {
         return $false
