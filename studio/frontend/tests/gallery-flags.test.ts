@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -21,6 +20,8 @@ import {
   sortGalleryItems,
 } from "../src/lib/gallery-flags.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const item = (id: string, created_at: number | string, pinned = false) => ({
   id,
   created_at,
@@ -29,13 +30,7 @@ const item = (id: string, created_at: number | string, pinned = false) => ({
 
 const ids = (items: { id: string }[]) => items.map((i) => i.id);
 
-const archivedMediaSource = readFileSync(
-  new URL(
-    "../src/features/settings/components/archived-media-dialog.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const archivedMediaSource = readSrc("features/settings/components/archived-media-dialog.tsx");
 
 test("unpinned items sort newest first", () => {
   const items = [item("old", 1), item("new", 3), item("mid", 2)];

@@ -8,42 +8,19 @@
 // No React renderer here, so this asserts on source, like ~50 sibling tests.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const HOOK = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/rag/components/use-linked-folders.ts", import.meta.url),
-  ),
-  "utf8",
-);
+import { readSrc, readText } from "./helpers/kit.ts";
 
-const MANAGER = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/rag/components/linked-folders-manager.tsx", import.meta.url),
-  ),
-  "utf8",
-);
+const HOOK = readSrc("features/rag/components/use-linked-folders.ts");
 
-const COMMANDS = readFileSync(
-  fileURLToPath(
-    new URL("../../src-tauri/src/commands.rs", import.meta.url),
-  ),
-  "utf8",
-);
+const MANAGER = readSrc("features/rag/components/linked-folders-manager.tsx");
 
-const READINESS = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/native-intents/use-native-readiness.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const COMMANDS = readText("../../src-tauri/src/commands.rs");
 
-const PREFLIGHT = readFileSync(
-  fileURLToPath(new URL("../../src-tauri/src/preflight.rs", import.meta.url)),
-  "utf8",
-);
+const READINESS = readSrc("features/native-intents/use-native-readiness.ts");
+
+const PREFLIGHT = readText("../../src-tauri/src/preflight.rs");
 
 test("the picker is gated on the backend capability, not on isTauri alone", () => {
   assert.match(
