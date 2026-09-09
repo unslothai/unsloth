@@ -2161,9 +2161,9 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
     conflicts = _exact.contradicting_args(args)
     if conflicts:
         return (
-            "the extra arguments pass "
+            "the launch line passes "
             + ", ".join(conflicts)
-            + ", which llama-server cannot combine with it"
+            + ", which exact concurrency cannot run with"
         )
     # The same condition `_stand_down_child_parking` acts on later (studio mode above is its
     # other): Studio's preemption off hands the child a zero, over any budget the line names.
@@ -23714,8 +23714,8 @@ class LlamaCppBackend:
                     if _exact_conflicts:
                         self._record_load_warning(
                             "Exact concurrency was requested, but the extra arguments "
-                            "pass " + ", ".join(_exact_conflicts) + ", which llama-server "
-                            "cannot combine with it. The load will run without exact "
+                            "pass " + ", ".join(_exact_conflicts) + ", which exact "
+                            "concurrency cannot run with. The load will run without exact "
                             "concurrency, or fail, depending on the setting."
                         )
 

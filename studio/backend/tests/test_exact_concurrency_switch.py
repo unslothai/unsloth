@@ -189,10 +189,54 @@ class TestTheLaunchArgs:
             (["--context-shift", "--no-context-shift"], []),
             (["-nkvo", "--kv-offload"], []),
             (["--kv-offload", "-nkvo"], ["-nkvo"]),
+            # Expert weights on the CPU put per-layer matmuls on a backend whose kernel
+            # selection is size dependent, outside the invariant CUDA expert dispatcher.
+            (["--cpu-moe"], ["--cpu-moe"]),
+            (["-cmoe"], ["-cmoe"]),
+            (["--n-cpu-moe", "8"], ["--n-cpu-moe"]),
+            (["-ncmoe", "8"], ["-ncmoe"]),
+            (["--n-cpu-moe=8"], ["--n-cpu-moe"]),
+            # A zero places nothing, like `--cache-reuse 0`.
+            (["--n-cpu-moe", "0"], []),
+            (["-ncmoe", "0"], []),
+            # An -ot is a contradiction for the buffer type it names, not for existing.
+            (["-ot", "exps=CPU"], ["-ot"]),
+            (["--override-tensor", "blk.*ffn=CPU"], ["--override-tensor"]),
+            (["-ot", "attn=CUDA0"], []),
+            (["-ot", "attn=CUDA0,exps=CPU"], ["-ot"]),
+            (["-ot=exps=CPU"], ["-ot"]),
+            (["-ot", "exps"], []),
+            # llama.cpp appends these overrides, so a later one cannot take an earlier
+            # CPU placement back the way a later --flash-attn can.
+            (["-ot", "exps=CPU", "--override-tensor", "attn=CUDA0"], ["-ot"]),
+            (["-ot", "attn=CUDA0", "--override-tensor", "exps=CPU"], ["--override-tensor"]),
+            (["--n-cpu-moe", "8", "-ncmoe", "0"], ["--n-cpu-moe"]),
+            (["-ncmoe", "0", "--n-cpu-moe", "8"], ["--n-cpu-moe"]),
+            (
+                ["--cpu-moe", "-ot", "exps=CPU"],
+                ["--cpu-moe", "-ot"],
+            ),
         ],
     )
     def test_what_the_mode_cannot_run_beside(self, args, expected):
         assert exact.contradicting_args(args) == expected
+
+    @pytest.mark.parametrize(
+        ("value", "on_cpu"),
+        [
+            ("exps=CPU", True),
+            ("exps=cpu", True),
+            ("exps=CPU_Mapped", True),
+            ("exps=CUDA0", False),
+            ("exps=CPUX", True),
+            ("exps", False),
+            ("", False),
+            (None, False),
+            ("attn=CUDA0,exps=CPU", True),
+        ],
+    )
+    def test_an_override_is_read_for_the_buffer_type_it_names(self, value, on_cpu):
+        assert exact._places_tensors_on_cpu(value) is on_cpu
 
     @pytest.mark.parametrize(
         ("args", "caps", "env", "missing"),

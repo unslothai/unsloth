@@ -841,6 +841,23 @@ class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:
             is None
         )
 
+    def test_cpu_expert_placement_is_read_off_the_whole_launch_line(self, monkeypatch):
+        monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
+        monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
+        # Studio emits --n-cpu-moe itself, so the preflight reads the line, not just the extras,
+        # and llama-server does not refuse this one: exact concurrency does.
+        reason = llama_mod._exact_auto_blocker(
+            exact.EXACT_AUTO, ["llama-server", "--kv-unified", "--n-cpu-moe", "12"], {}
+        )
+        assert reason is not None and "--n-cpu-moe" in reason
+        assert "llama-server cannot combine" not in reason
+        assert (
+            llama_mod._exact_auto_blocker(
+                exact.EXACT_AUTO, ["llama-server", "--kv-unified", "--n-cpu-moe", "0"], {}
+            )
+            is None
+        )
+
 
 class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
     """`auto` was preflighted for the opt-out, `on` was not: the exact launch sized a parking budget

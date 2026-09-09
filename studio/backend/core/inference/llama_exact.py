@@ -137,10 +137,12 @@ def is_exact_refusal(text: Optional[str]) -> bool:
     return any(marker in text.lower() for marker in _REFUSAL_MARKERS)
 
 
-# What the mode cannot live beside, checked in llama.cpp itself so Studio can warn about its own
-# launch line: `--cache-reuse` and `--context-shift` move positions while a cell's offset in its
-# 256-cell page IS its position mod 256; `--no-kv-offload` drops a layer, and no flash attention
-# leaves V transposed.
+# What the mode cannot live beside. Most are checked in llama.cpp itself, so Studio can warn about
+# its own launch line: `--cache-reuse` and `--context-shift` move positions while a cell's offset
+# in its 256-cell page IS its position mod 256; `--no-kv-offload` drops a layer, and no flash
+# attention leaves V transposed. The CPU expert placements below are Studio's own refusal, llama.cpp
+# checking KV placement rather than every computation: they put per-layer matmuls on a backend whose
+# SGEMM and vector-dot selection is size dependent, outside the invariant CUDA expert dispatcher.
 _CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v", "-ctk", "-ctv")
 _BARE_CONTRADICTIONS = (
     "--context-shift",
@@ -149,7 +151,12 @@ _BARE_CONTRADICTIONS = (
     "--no-flash-attn",
     "--no-kv-unified",
     "-no-kvu",
+    "--cpu-moe",
+    "-cmoe",
 )
+# llama.cpp APPENDS these tensor overrides rather than replacing them, so a later occurrence
+# cannot take an earlier CPU placement back the way a later `--flash-attn on` can.
+_ACCUMULATING_OVERRIDES = ("--n-cpu-moe", "-ncmoe", "--override-tensor", "-ot")
 # A later spelling of the same option replaces an earlier one, as llama-server applies argv,
 # so `--flash-attn off --flash-attn on` runs with flash attention and is no contradiction.
 _OPTION_FAMILY = {
@@ -164,7 +171,23 @@ _OPTION_FAMILY = {
     "-kvu": "--kv-unified",
     "-no-kvu": "--kv-unified",
     "--no-kv-unified": "--kv-unified",
+    "-cmoe": "--cpu-moe",
+    "-ncmoe": "--n-cpu-moe",
+    "-ot": "--override-tensor",
 }
+
+
+def _places_tensors_on_cpu(value: Optional[str]) -> bool:
+    """Whether an ``--override-tensor`` value maps anything onto a CPU buffer type.
+
+    The value is a comma-separated list of ``<tensor name pattern>=<buffer type>``, and the
+    buffer type is a backend's own name: ``CPU`` for the CPU device, and the repacked and mapped
+    variants that also decode on it."""
+    for override in str(value or "").split(","):
+        _pattern, sep, buft = override.partition("=")
+        if sep and buft.strip().lower().startswith("cpu"):
+            return True
+    return False
 
 
 def _flag_name(token: str) -> str:
@@ -179,8 +202,9 @@ def _flag_value(token: str, following: Optional[str]) -> Optional[str]:
 
 def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
     """The tokens in ``args`` that exact mode cannot run with, in the order they appear. Flag
-    names, not values. A zero ``--cache-reuse 0`` and an ``f16`` cache type are the flag spelled
-    as the default, not contradictions, and an option's LAST occurrence decides for it."""
+    names, not values. A zero ``--cache-reuse 0``, a zero ``--n-cpu-moe 0`` and an ``f16`` cache
+    type are the flag spelled as the default, not contradictions, and an option's LAST occurrence
+    decides for it, except for the tensor overrides llama.cpp accumulates."""
     tokens = [str(a) for a in (args or ())]
     # family -> (name as last spelled, contradicts)
     final: dict[str, tuple[str, bool]] = {}
@@ -195,13 +219,22 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
         elif name in ("--flash-attn", "-fa"):
             value = (_flag_value(token, following) or "").strip().lower()
             contradicts = value in ("off", "0", "false", "disabled")
+        elif name in ("--n-cpu-moe", "-ncmoe"):
+            value = (_flag_value(token, following) or "").strip()
+            contradicts = value.isdigit() and int(value) > 0
+        elif name in ("--override-tensor", "-ot"):
+            contradicts = _places_tensors_on_cpu(_flag_value(token, following))
         elif name in _BARE_CONTRADICTIONS:
             contradicts = True
         elif name in ("--no-context-shift", "-kvo", "--kv-offload", "-kvu", "--kv-unified"):
             contradicts = False
         else:
             continue
-        final[_OPTION_FAMILY.get(name, name)] = (name, contradicts)
+        family = _OPTION_FAMILY.get(name, name)
+        held = final.get(family)
+        if held is not None and held[1] and name in _ACCUMULATING_OVERRIDES:
+            continue
+        final[family] = (name, contradicts)
     return [name for name, contradicts in final.values() if contradicts]
 
 
