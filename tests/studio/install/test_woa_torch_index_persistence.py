@@ -4733,7 +4733,8 @@ class TestNativeNeedsAPairedTorchvision:
                 "function Test-WoaCudaWheel { param($IndexUrl, $PythonMinor, $AbiTag, $Project)"
                 " [bool]$script:Torch[$IndexUrl] }",
                 "function Get-WoaCudaWheelVersion { param($IndexUrl, $PythonMinor, $AbiTag,"
-                " $Project, $PairWith)",
+                " $Project, $PairWith, $Below)",
+                "  if ($Below) { return '' }",
                 "  if ($Project -eq 'torchvision') { return $script:Vision[$IndexUrl] }",
                 "  if ($Project -eq 'torchaudio') { return '' }",
                 "  return $script:Torch[$IndexUrl] }",
@@ -4849,7 +4850,8 @@ class TestAnUpdateKeepsTheInstalledPairWhenTheIndexLags:
             "$WinArm64NoAudio = $true",
             "$WinArm64EffectiveTorchIndexUrl = 'https://i.test'",
             "function Get-WoaCudaWheelVersionParity { param($IndexUrl, $PyTag, $AbiTag, $Project,"
-            " $PairWith)",
+            " $PairWith, $Below)",
+            "  if ($Below) { return '' }",
             "  if ($Project -eq 'torchvision') { return '' }",
             "  if ($Project -eq 'torchaudio') { return '' }",
             "  return '2.15.0.dev20260905+cu134' }",
@@ -5567,7 +5569,8 @@ class TestProbeWarningsDoNotPrintIndexCredentials:
                 "function Test-WoaCudaWheel"
                 " { param($IndexUrl, $PythonMinor, $AbiTag, $Project) $true }",
                 "function Get-WoaCudaWheelVersion { param($IndexUrl, $PythonMinor, $AbiTag,"
-                " $Project, $PairWith)",
+                " $Project, $PairWith, $Below)",
+                "  if ($Below) { return '' }",
                 f"  if ($Project -eq 'torchvision') {{ return '{vision}' }}",
                 "  if ($Project -eq 'torchaudio') { return '' }",
                 "  return '2.14.0+cu134' }",
@@ -6034,3 +6037,219 @@ class TestFoldedCallerOverridesDoNotOutliveTheRun:
             'Remove-Item -LiteralPath (Join-Path $woaDir "overrides.session.txt")' in body
         ), "an interrupted install's copy is cleared, never restored"
         assert body.count("overrides.session.txt") == 1, "and referenced nowhere else"
+
+
+class TestAnInlineCommentSurvivesTheRebase:
+    """`-c constraints.txt # shared pins` is a valid line: pip and uv treat whitespace then "#"
+    as a comment. The rebase read the comment as part of the path and quoted a file that does
+    not exist, so a folded caller override failed the very resolve it was kept for."""
+
+    BASE = "/base/sub"
+
+    @requires_pwsh
+    @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1], ids = ["install", "setup"])
+    @pytest.mark.parametrize(
+        "line, expected, why",
+        [
+            (
+                "-c constraints.txt # shared pins",
+                "-c /base/sub/constraints.txt # shared pins",
+                "-c",
+            ),
+            (
+                "-f wheels  # local builds",
+                "-f /base/sub/wheels  # local builds",
+                "-f, spacing kept",
+            ),
+            ("-e ./pkg[dev] # editable", "-e /base/sub/pkg[dev] # editable", "-e with extras"),
+            (
+                'pkg @ file:../x.whl ; python_version < "3.12" # note',
+                'pkg @ file:///base/x.whl ; python_version < "3.12" # note',
+                "a direct file reference keeps its marker AND its comment",
+            ),
+            ("./w/p.whl # local", "/base/sub/w/p.whl # local", "a bare wheel path"),
+            ("./pkg # local dir", "/base/sub/pkg # local dir", "a bare directory"),
+            (
+                "pkg @ https://h/x.whl#sha256=ab",
+                "pkg @ https://h/x.whl#sha256=ab",
+                "a fragment has no whitespace before it and is not a comment",
+            ),
+            ("rich>=13 # why", "rich>=13 # why", "a plain requirement is untouched"),
+        ],
+    )
+    def test_the_comment_is_kept_and_the_path_is_not_polluted(self, path, line, expected, why):
+        script = _script(
+            _ps_function(path, "Resolve-WoaOverrideLine"),
+            "Write-Output ('[' + (Resolve-WoaOverrideLine -Line '%s' -BaseDir '%s') + ']')"
+            % (line.replace("'", "''"), self.BASE),
+        )
+        assert _ps_last(script) == "[%s]" % expected, why
+
+
+class TestTheProbeCanLookBelowAVersion:
+    """-Below is what the backtrack walks on: the newest version ranked strictly under the one
+    given, by the same numeric-then-prerelease order the probe already uses."""
+
+    VERSIONS = [
+        "2.15.0rc1%2Bcu134",
+        "2.15.0.dev20260910%2Bcu134",
+        "2.15.0.dev20260909%2Bcu134",
+        "2.14.0%2Bcu134",
+    ]
+
+    @classmethod
+    def _pick(cls, source, fn, below):
+        parity = fn != "Get-WoaCudaWheelVersion"
+        tags = "-PyTag 'cp313' -AbiTag 'cp313'" if parity else "-PythonMinor '3.13' -AbiTag 'cp313'"
+        script = _script(
+            invoke_restmethod(_torch_links(*cls.VERSIONS)),
+            JOIN_URL_RETURNS_BASE,
+            functions(
+                source,
+                "Test-WoaWheelTagsParity" if parity else "Test-WoaWheelTags",
+                "Test-WoaPairsWithTorchParity" if parity else "Test-WoaWheelPairsWithTorch",
+                fn,
+            ),
+            "$v = %s -IndexUrl 'https://i.test' %s -Below '%s'" % (fn, tags, below),
+            "Write-Output ('[' + $v + ']')",
+        )
+        return _ps_last(script)[1:-1]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "fn, source",
+        [("Get-WoaCudaWheelVersion", "INSTALL"), ("Get-WoaCudaWheelVersionParity", "SETUP")],
+    )
+    @pytest.mark.parametrize(
+        "below, expected, why",
+        [
+            ("", "2.15.0rc1+cu134", "no bound: the newest, as before"),
+            ("2.15.0rc1+cu134", "2.15.0.dev20260910+cu134", "under the rc: the newest dev build"),
+            ("2.15.0.dev20260910+cu134", "2.15.0.dev20260909+cu134", "strictly under, not itself"),
+            ("2.15.0.dev20260909+cu134", "2.14.0+cu134", "across the numeric release"),
+            ("2.14.0+cu134", "", "nothing under the oldest"),
+            ("2.15.0+cu134", "2.15.0rc1+cu134", "a final outranks every prerelease of its release"),
+            ("garbage", "", "an unreadable bound answers nothing rather than everything"),
+        ],
+    )
+    def test_the_version_under(self, fn, source, below, expected, why):
+        src = INSTALL_SRC if source == "INSTALL" else SETUP_SRC
+        assert self._pick(src, fn, below) == expected, why
+
+
+class TestAnUnpairedNewestTorchBacktracks:
+    """A nightly torchvision lags its torch by a day or two, and a partial mirror can lag longer.
+    The newest torch alone decided the index, so a lag with an older complete pair still on the
+    same index sent the install to the x64 stack, where Triton's x64 ptxas cannot serve SM121."""
+
+    NEWEST = "2.15.0.dev20260910+cu134"
+    OLDER = "2.15.0.dev20260909+cu134"
+    OLDER_VISION = "0.30.0.dev20260909+cu134"
+
+    @staticmethod
+    def _native(torch_versions, paired_vision):
+        """`torch_versions` newest first; `paired_vision` maps a torch to its torchvision."""
+        torch_list = ", ".join("'%s'" % v for v in torch_versions)
+        vision = "; ".join("'%s' = '%s'" % (k, v) for k, v in paired_vision.items())
+        script = native_probe_script(
+            driver = "@(13, 4)",
+            stubs = (
+                "$script:WoaNvidiaTorchIndexUrls = @('%s')" % NV_NIGHTLY,
+                "$script:TorchList = @(%s)" % torch_list,
+                "$script:Vision = @{ %s }" % vision,
+                "function Test-WoaCudaWheel { param($IndexUrl, $PythonMinor, $AbiTag, $Project)"
+                " $script:TorchList.Count -gt 0 }",
+                "function Get-WoaCudaWheelVersion { param($IndexUrl, $PythonMinor, $AbiTag,"
+                " $Project, $PairWith, $Below)",
+                "  if ($Project -eq 'torchvision') { return $script:Vision[$PairWith] }",
+                "  if ($Project -eq 'torchaudio') { return '' }",
+                "  if ($Below) {",
+                "    $i = [array]::IndexOf($script:TorchList, $Below)",
+                "    if ($i -lt 0 -or $i -ge $script:TorchList.Count - 1) { return '' }",
+                "    return $script:TorchList[$i + 1] }",
+                "  return $script:TorchList[0] }",
+            ),
+            outputs = (
+                "Write-Output ('TORCH=' + $script:WoaTorchWheelVersion)",
+                "Write-Output ('VISION=' + $script:WoaVisionWheelVersion)",
+            ),
+        )
+        return _ps_kv(script)
+
+    @requires_pwsh
+    def test_the_newest_complete_pair_is_taken(self):
+        out = self._native([self.NEWEST, self.OLDER], {self.OLDER: self.OLDER_VISION})
+        assert out["NATIVE"] == "True", out["MSG"]
+        assert (out["TORCH"], out["VISION"]) == (self.OLDER, self.OLDER_VISION)
+        assert "no torchvision paired with it; trying torch %s" % self.OLDER in out["MSG"]
+
+    @requires_pwsh
+    def test_a_paired_newest_never_backtracks(self):
+        out = self._native([self.NEWEST, self.OLDER], {self.NEWEST: "0.30.0.dev20260910+cu134"})
+        assert (out["TORCH"], out["VISION"]) == (self.NEWEST, "0.30.0.dev20260910+cu134")
+        assert "trying torch" not in out["MSG"]
+
+    @requires_pwsh
+    def test_with_nothing_older_the_index_is_still_skipped(self):
+        out = self._native([self.NEWEST], {})
+        assert out["NATIVE"] == "False"
+        assert "trying the next index" in out["MSG"] and "trying torch" not in out["MSG"]
+
+    @requires_pwsh
+    def test_the_walk_is_bounded(self):
+        """Each step re-reads the index; a mirror missing torchvision for weeks is not searched
+        to its floor."""
+        versions = ["2.15.0.dev202609%02d+cu134" % d for d in range(30, 22, -1)]
+        out = self._native(versions, {versions[-1]: "0.30.0.dev20260923+cu134"})
+        assert out["NATIVE"] == "False", out["MSG"]
+        assert out["MSG"].count("trying torch") == 5
+
+
+class TestTheRepairBacktracksTheSameWay(TestAnUpdateKeepsTheInstalledPairWhenTheIndexLags):
+    """setup.ps1's repair kept the installed pair when the newest torch was unpaired, and left
+    torchvision at its floor with nothing installed. The newest complete pair on the index
+    comes first, as in install.ps1."""
+
+    def _run_with_older(self, tmp_path, installed, older_paired):
+        venv = self._venv_with(tmp_path, installed)
+        vision = "'0.30.0.dev20260904+cu134'" if older_paired else "''"
+        script = _script(
+            substep_collector(),
+            "$VenvDir = '%s'" % venv,
+            "$WinArm64Venv = $true",
+            "$WinArm64NoAudio = $true",
+            "$WinArm64EffectiveTorchIndexUrl = 'https://i.test'",
+            "function Get-WoaCudaWheelVersionParity { param($IndexUrl, $PyTag, $AbiTag, $Project,"
+            " $PairWith, $Below)",
+            "  if ($Project -eq 'torchvision') {",
+            "    if ($PairWith -eq '2.15.0.dev20260904+cu134') { return %s }" % vision,
+            "    return '' }",
+            "  if ($Project -eq 'torchaudio') { return '' }",
+            "  if ($Below -eq '2.15.0.dev20260905+cu134') { return '2.15.0.dev20260904+cu134' }",
+            "  if ($Below) { return '' }",
+            "  return '2.15.0.dev20260905+cu134' }",
+            functions(SETUP_SRC, "Test-WoaPairsWithTorchParity", "Test-WoaAudioMatchesTorchParity"),
+            self._block(),
+            "Write-Output ('TORCH=' + $WinArm64TorchSpec)",
+            "Write-Output ('VISION=' + $WinArm64VisionSpec)",
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        return _ps_kv(script)
+
+    @requires_pwsh
+    def test_an_older_complete_pair_beats_the_installed_one(self, tmp_path):
+        out = self._run_with_older(
+            tmp_path, {"torch": "2.14.0+cu134", "torchvision": "0.29.0+cu134"}, True
+        )
+        assert out["TORCH"] == "torch==2.15.0.dev20260904+cu134", out["MSG"]
+        assert out["VISION"] == "torchvision==0.30.0.dev20260904+cu134"
+        assert "trying torch 2.15.0.dev20260904+cu134" in out["MSG"]
+        assert "keeping the installed" not in out["MSG"]
+
+    @requires_pwsh
+    def test_the_installed_pair_is_still_the_fallback(self, tmp_path):
+        out = self._run_with_older(
+            tmp_path, {"torch": "2.14.0+cu134", "torchvision": "0.29.0+cu134"}, False
+        )
+        assert out["TORCH"] == "torch==2.14.0+cu134", out["MSG"]
+        assert "keeping the installed torch 2.14.0+cu134" in out["MSG"]

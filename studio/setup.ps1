@@ -4525,7 +4525,7 @@ function Test-WoaAudioMatchesTorchParity {
 
 function Get-WoaCudaWheelVersionParity {
     param([string]$IndexUrl, [string]$PyTag, [string]$AbiTag, [string]$Project = "torch",
-          [string]$PairWith = "")
+          [string]$PairWith = "", [string]$Below = "")
     if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PyTag)) { return $null }
     if (-not $AbiTag) { $AbiTag = $PyTag }
     $base = ($IndexUrl -split '[?#]', 2)[0].TrimEnd('/')
@@ -4544,6 +4544,13 @@ function Get-WoaCudaWheelVersionParity {
         if ($r -match '(?i)(a|b|rc)(\d+)') { return @(@{ a = 1; b = 2; rc = 3 }[$Matches[1].ToLowerInvariant()], [long]$Matches[2]) }
         return @(4, [long]0)
     }
+    # -Below: only versions ranked strictly under it, so a caller can walk back from an unpaired newest.
+    $belowKey = $null; $belowRank = $null
+    if ($Below) {
+        $belowNumeric = [regex]::Match((($Below -split '\+', 2)[0]), '^\d+(\.\d+){0,2}').Value
+        try { $belowKey = [version]$belowNumeric } catch { return $null }
+        $belowRank = & $prerelease $Below
+    }
     foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
         $name = $match.Value
         try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
@@ -4555,6 +4562,13 @@ function Get-WoaCudaWheelVersionParity {
         $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
         $key = $null
         try { $key = [version]$numeric } catch { continue }
+        if ($belowKey) {
+            if ($key -gt $belowKey) { continue }
+            if ($key -eq $belowKey) {
+                $rank = & $prerelease $version
+                if (($rank[0] -gt $belowRank[0]) -or (($rank[0] -eq $belowRank[0]) -and ($rank[1] -ge $belowRank[1]))) { continue }
+            }
+        }
         if ($null -eq $bestKey -or $key -gt $bestKey) { $bestKey = $key; $best = $version }
         elseif ($key -eq $bestKey) {
             $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
@@ -4620,6 +4634,9 @@ function Get-UvSafePath {
 function Resolve-WoaOverrideLine {
     param([string]$Line, [string]$BaseDir)
     if (-not $BaseDir -or $Line -match '^\s*(#|$)') { return $Line }
+    # pip's inline comment is whitespace then "#": split off, or the rebase reads it as part of the path.
+    $comment = ""
+    if ($Line -match '^(.*?)(\s+#.*)$') { $Line = $Matches[1]; $comment = $Matches[2] }
     $abs = {
         param([string]$p)
         if (-not $p -or $p -match '^[A-Za-z][A-Za-z0-9+.-]*://' -or [System.IO.Path]::IsPathRooted($p)) { return $p }
@@ -4631,7 +4648,7 @@ function Resolve-WoaOverrideLine {
         $bare = $Matches[4].Trim('"').Trim("'"); $tail = $Matches[5]
         $rebased = & $abs $bare
         if ($rebased -match '\s') { $rebased = '"' + $rebased + '"' }
-        return "$lead$opt$sep$rebased$tail"
+        return "$lead$opt$sep$rebased$tail$comment"
     }
     # -e / --editable names a path too. Extras split off first, or GetFullPath folds ".[dev]" into the parent.
     if ($Line -match '^(\s*)(-e|--editable)([=\s]+)(.+?)(\s*)$') {
@@ -4641,7 +4658,7 @@ function Resolve-WoaOverrideLine {
         if ($bare -match '^(.*?)(\[[^\]]*\])$') { $bare = $Matches[1]; $extras = $Matches[2] }
         $rebased = (& $abs $bare) + $extras
         if ($rebased -match '\s') { $rebased = '"' + $rebased + '"' }
-        return "$lead$opt$sep$rebased$tail"
+        return "$lead$opt$sep$rebased$tail$comment"
     }
     if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
         $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
@@ -4651,22 +4668,22 @@ function Resolve-WoaOverrideLine {
         if ($target -match '^file:(?!//)(.*)$') {
             $rebasedPath = & $abs $Matches[1]
             $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
-            return "$head$uri$marker$tail"
+            return "$head$uri$marker$tail$comment"
         }
-        return $Line
+        return "$Line$comment"
     }
     if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
         $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
-        if ($path -match '[\\/]') { return "$lead" + (& $abs $path) + "$rest" }
+        if ($path -match '[\\/]') { return "$lead" + (& $abs $path) + "$rest$comment" }
     }
     # A bare local directory is a requirement to pip and uv both; the leading dot segment is what tells it from a package name.
     if ($Line -match '^(\s*)(\.{1,2}[^\s#;]*)(\s*(?:[;#].*)?)$') {
         $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
         $extras = ""
         if ($path -match '^(.*?)(\[[^\]]*\])$') { $path = $Matches[1]; $extras = $Matches[2] }
-        return "$lead" + (& $abs $path) + "$extras$rest"
+        return "$lead" + (& $abs $path) + "$extras$rest$comment"
     }
-    return $Line
+    return "$Line$comment"
 }
 
 
@@ -6087,6 +6104,17 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
         if ($_woaTorchV) {
             $WinArm64TorchSpec = "torch==$_woaTorchV"
             $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
+            # As install.ps1 selects: the newest COMPLETE pair, searched a few torch versions deep, before falling back to what is installed.
+            $_woaBacktracks = 0
+            while (-not $_woaVisionV -and $_woaBacktracks -lt 5) {
+                $_woaOlderTorch = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Below $_woaTorchV
+                if (-not $_woaOlderTorch) { break }
+                substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; trying torch $_woaOlderTorch" "Yellow"
+                $_woaTorchV = $_woaOlderTorch
+                $WinArm64TorchSpec = "torch==$_woaTorchV"
+                $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
+                $_woaBacktracks++
+            }
             if ($_woaVisionV) {
                 $WinArm64VisionSpec = "torchvision==$_woaVisionV"
             } else {
