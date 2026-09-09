@@ -34,6 +34,7 @@ load bit-identical. torch imported lazily.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from functools import lru_cache
 from typing import Any, Optional
@@ -385,12 +386,18 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch).
 
     ``max`` compiles regional blocks dynamic=False and U-Net whole-module is always static;
-    ``default`` DiT compiles dynamic=True (one artifact across shapes). The compile-cache layer
-    keys on this to re-save its bundle when a session hits an uncovered shape."""
+    ``default`` DiT compiles dynamic=True (one artifact across shapes) EXCEPT for a stream-merging
+    DiT, which is static there too (see ``_STREAM_MERGING_BLOCKS``). The compile-cache layer keys on
+    this to re-save its bundle when a session hits an uncovered shape."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
         return True
-    return mode == SPEED_DEFAULT and _denoiser_unet(pipe) is not None
+    if mode != SPEED_DEFAULT:
+        return False
+    if _denoiser_unet(pipe) is not None:
+        return True
+    # A stream-merging DiT compiled static too, so its artifacts are per-shape as well.
+    return _dits_merge_streams(_denoiser_dits(pipe))
 
 
 def _denoiser_dits(pipe: Any) -> list:
@@ -404,6 +411,72 @@ def _denoiser_dits(pipe: Any) -> list:
         if m is not None and m not in dits:
             dits.append(m)
     return dits
+
+
+# Repeated blocks that CONCATENATE the text and image streams into ONE sequence inside the block
+# (diffusers' "single" MMDiT phase: ``torch.cat([encoder_hidden_states, hidden_states], dim = 1)``).
+# Under dynamic = True the two stream lengths reach the block as two SEPARATE dynamic symbols, so a
+# pointwise node over the merged sequence gets extent ``15360*s31 + 15360*s87`` while the kernel group
+# is ``s31 + s87``. Inductor proves the split through ``torch.utils._sympy.functions.Mod``, whose eval
+# only tests ``(p / q).is_integer`` and never cancels an Add over an Add, so the identity
+# ``15360*(s31 + s87) / (s31 + s87) == 15360`` is missed and ``_split_iteration_ranges`` raises
+# ``CantSplit: 15360*s31 + 15360*s87 not divisible by s31 + s87``. FLUX.1 hits it on EVERY arm (bf16,
+# fp8, nvfp4), at the 15360-wide ``torch.cat([attn_output, mlp_hidden_states])`` feeding ``proj_out``.
+# There is no per-dim escape: ``dynamic = True`` overrides ``torch._dynamo.mark_static``, and marking
+# only the text length static leaves ``Mod(15360*s87 + 7864320, s87 + 512)``, equally unprovable. So
+# these DiTs compile with STATIC shapes and pay a recompile per (height, width, batch), exactly as the
+# ``max`` tier and the U-Net whole-module compile already do. ``dynamic = False`` is not version
+# specific, so this needs no torch-version guard; ``dynamic = None`` would NOT do, it goes dynamic on
+# the second distinct shape and crashes there instead.
+_STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({
+    "FluxSingleTransformerBlock",
+    "Flux2SingleTransformerBlock",
+    "BriaSingleTransformerBlock",
+    "LongCatImageSingleTransformerBlock",
+    "OvisImageSingleTransformerBlock",
+})
+
+# Same cat, matched on source for families the frozenset above does not name yet. Whitespace tolerant,
+# both argument orders.
+_STREAM_MERGE_SOURCE = re.compile(
+    r"torch\.cat\(\s*\[\s*(?:encoder_hidden_states\s*,\s*hidden_states"
+    r"|hidden_states\s*,\s*encoder_hidden_states)\s*\]"
+)
+
+
+@lru_cache(maxsize = None)
+def _class_merges_streams(cls: type) -> bool:
+    """Whether one repeated-block CLASS merges the two streams (name list, else its source)."""
+    if cls.__name__ in _STREAM_MERGING_BLOCKS:
+        return True
+    try:
+        import inspect  # noqa: PLC0415 - only reached for an unrecognised block class
+        source = inspect.getsource(cls.forward)
+    except Exception:  # noqa: BLE001 - no source (frozen / C ext) means fall back to the name list
+        return False
+    return bool(_STREAM_MERGE_SOURCE.search(source))
+
+
+def _dits_merge_streams(dits: list) -> bool:
+    """Whether ANY denoiser DiT's repeated blocks merge the streams, so the regional compile of that
+    load must be static. One check per distinct block class, not per block instance."""
+    seen: set[type] = set()
+    for transformer in dits:
+        names = set(getattr(transformer, "_repeated_blocks", ()) or ())
+        if not names:
+            continue
+        try:
+            modules = list(transformer.named_modules())
+        except Exception:  # noqa: BLE001 - a probe, never a failed load
+            continue
+        for _name, sub in modules:
+            cls = type(sub)
+            if cls.__name__ not in names or cls in seen:
+                continue
+            seen.add(cls)
+            if _class_merges_streams(cls):
+                return True
+    return False
 
 
 def _compile_repeated_blocks(
@@ -424,9 +497,17 @@ def _compile_repeated_blocks(
     # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
     # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
     # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
+    # The one exception to "default is dynamic": a stream-merging DiT (FLUX.1 and friends) cannot be codegen'd with
+    # dynamic sequence lengths at all, see _STREAM_MERGING_BLOCKS. It joins max on the static side.
+    static_shapes = max_autotune or _dits_merge_streams(dits)
+    if static_shapes and not max_autotune and logger is not None:
+        logger.info(
+            "diffusion.speed: regional compile is static; this DiT merges the text and image streams "
+            "inside its repeated block and cannot be codegen'd with dynamic sequence lengths",
+        )
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
-        "dynamic": not max_autotune,
+        "dynamic": not static_shapes,
     }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
