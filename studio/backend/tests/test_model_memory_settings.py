@@ -47,6 +47,8 @@ def policy(monkeypatch):
         extras,
         supports_load_mode = False,
         weights_in_host_memory = True,
+        gpu_offload_confirmed = False,
+        env = None,
     ):
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
@@ -55,6 +57,8 @@ def policy(monkeypatch):
             extras,
             supports_load_mode = supports_load_mode,
             weights_in_host_memory = weights_in_host_memory,
+            gpu_offload_confirmed = gpu_offload_confirmed,
+            env = env,
         )
 
     return run
@@ -2285,7 +2289,7 @@ class TestFitOffRetryDropsTheLock:
             "_without_subsequence(run_cmd, _mem_managed)",
             "_mem_host_resident = False",
             "self._memory_mlock_applicable = False",
-            "resolve_effective_memory_state(run_cmd, env)",
+            "self._record_memory_state(run_cmd, env)",
         ):
             assert needle in tail, needle
 
@@ -2457,6 +2461,7 @@ class TestWindowsNoReserveStreaming:
             ["--no-mmap", "--temp", "0.7"],
             supports_load_mode = True,
             weights_in_host_memory = False,
+            gpu_offload_confirmed = True,
         )
         selected, extras = _lsa.apply_load_mode_policy(
             extras,
@@ -2485,6 +2490,7 @@ class TestWindowsNoReserveStreaming:
             ["--mlock"],
             supports_load_mode = supported,
             weights_in_host_memory = host,
+            gpu_offload_confirmed = not host,
         )
         assert managed == []
         assert extras == []
@@ -2492,7 +2498,12 @@ class TestWindowsNoReserveStreaming:
     def test_explicit_mmap_remains_an_override(self, policy, monkeypatch):
         monkeypatch.setattr(_lsa.sys, "platform", "win32")
         managed, extras = policy(
-            False, True, [], supports_load_mode = True, weights_in_host_memory = False
+            False,
+            True,
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            gpu_offload_confirmed = True,
         )
         selected, extras = _lsa.apply_load_mode_policy(
             extras,
@@ -2501,3 +2512,228 @@ class TestWindowsNoReserveStreaming:
             requested_load_mode = "mmap",
         )
         assert managed + selected == ["--load-mode", "dio", "--load-mode", "mmap"]
+
+
+class TestWindowsNoReserveStreamingGates:
+    """The DirectIO branch is a positive choice about where the weights land, so
+    it has to be handed a confirmed placement rather than infer one from
+    ``weights_in_host_memory``. That predicate answers a different question
+    (may the page-lock be skipped), errs towards True for a device it did not
+    probe, and stays False for an ``-ngl`` the build cannot honour."""
+
+    def test_an_unconfirmed_offload_never_streams(self, policy, monkeypatch):
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        managed, extras = policy(
+            False,
+            True,
+            [],
+            supports_load_mode = True,
+            # What a cpu-only build with a pass-through -ngl looks like: the
+            # predicate says "not host resident", but nothing reaches a GPU.
+            weights_in_host_memory = False,
+            gpu_offload_confirmed = False,
+        )
+        assert managed == []
+        assert extras == []
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"LLAMA_ARG_MMAP": "1"},
+            {"LLAMA_ARG_LOAD_MODE": "mmap"},
+            {"LLAMA_ARG_DIO": "1"},
+        ],
+    )
+    def test_an_inherited_loader_choice_is_not_overridden(self, policy, monkeypatch, env):
+        """scrub_memory_env keeps a non-reserving loader picked through the
+        environment, and llama.cpp lets argv beat it, so the managed pair would
+        silently win. It stands aside the way the fit's own mode does."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+        # The premise: no-reserve owns the reservation, not the loader, so these
+        # survive the scrub and llama.cpp would let argv beat them.
+        assert _lsa.scrub_memory_env(dict(env)) == []
+        assert _lsa.memory_env_selects_load_mode(env)
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        managed, _extras = policy(
+            False,
+            True,
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            gpu_offload_confirmed = True,
+            env = env,
+        )
+        assert managed == []
+
+    def test_a_reserving_env_var_does_not_veto(self, policy, monkeypatch):
+        """The scrub drops it, so the child never sees it and it has no loader
+        choice left to preserve."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        scrubbed = {"LLAMA_ARG_NO_MMAP": "1"}
+        assert _lsa.scrub_memory_env(scrubbed) == ["LLAMA_ARG_NO_MMAP"]
+        assert scrubbed == {}
+        managed, _extras = policy(
+            False,
+            True,
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            gpu_offload_confirmed = True,
+            env = scrubbed,
+        )
+        assert managed == ["--load-mode", "dio"]
+
+
+class TestDirectIoIsVisibleToTheReloadComparator:
+    """``mmap`` and ``dio`` are both "no full host copy", so the pair alone
+    cannot tell a launch that already streams from one still on the default
+    mapping. Without that the setting silently does nothing until the model is
+    unloaded by hand, which is the complaint it exists to fix."""
+
+    @staticmethod
+    def _no_reserve(monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+
+    def test_the_pair_alone_cannot_tell_the_two_apart(self):
+        assert resolve_effective_memory_state([]) == (False, False)
+        assert resolve_effective_memory_state(["--load-mode", "dio"]) == (False, False)
+        assert _lsa.resolve_effective_direct_io([]) is False
+        assert _lsa.resolve_effective_direct_io(["--load-mode", "dio"]) is True
+
+    def test_a_default_mmap_launch_needs_a_reload_where_dio_applies(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert not memory_state_satisfies_settings(
+            (False, False), False, False, False, True
+        )
+
+    def test_a_streaming_launch_is_satisfied(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert memory_state_satisfies_settings((False, False), True, False, True, True)
+
+    def test_a_placement_that_owes_no_dio_is_unchanged(self, monkeypatch):
+        """Linux, a legacy build, or a partial offload: the default mapping is
+        the policy, so nothing may demand a reload."""
+        self._no_reserve(monkeypatch)
+        assert memory_state_satisfies_settings((False, False), False, True, False, False)
+
+    def test_a_caller_that_does_not_track_it_never_forces_a_reload(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert memory_state_satisfies_settings((False, False), False, False, None, True)
+
+    def test_a_reservation_still_loses(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert not memory_state_satisfies_settings(
+            (False, True), True, False, True, True
+        )
+
+
+class TestNoReserveRequiresDio:
+    def test_every_leg_is_required(self, monkeypatch):
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        assert _lsa.no_reserve_requires_dio(
+            supports_load_mode = True, gpu_offload_confirmed = True
+        )
+        assert not _lsa.no_reserve_requires_dio(
+            supports_load_mode = False, gpu_offload_confirmed = True
+        )
+        assert not _lsa.no_reserve_requires_dio(
+            supports_load_mode = True, gpu_offload_confirmed = False
+        )
+        monkeypatch.setattr(_lsa.sys, "platform", "linux")
+        assert not _lsa.no_reserve_requires_dio(
+            supports_load_mode = True, gpu_offload_confirmed = True
+        )
+
+
+class TestTheLaunchWithdrawsTheManagedDio:
+    """Source checks, like the sibling pins on the fit's own load mode: the
+    managed pair was chosen for a confirmed full offload, so every rung that
+    gives that placement up has to take it back out. Under dio llama.cpp does
+    not map the file, so the layers it then leaves on the CPU are read into
+    allocated buffers instead."""
+
+    @staticmethod
+    def _load_model_source():
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_the_fit_on_retry_drops_it(self):
+        src = self._load_model_source()
+        branch = src.find('_run[_run.index("--fit") + 1] = "on"')
+        assert branch != -1, "the --fit on retry moved"
+        tail = src[branch : src.index('run_cmd = [*run_cmd, "--fit", "off"]', branch)]
+        assert "_run = self._drop_managed_dio(" in tail
+
+    def test_the_arch_crash_retry_drops_it(self):
+        src = self._load_model_source()
+        branch = src.find("_fit_mode_left_cmd = bool(self._fit_load_mode_flags)")
+        assert branch != -1, "the arch-crash retry moved"
+        tail = src[branch : branch + 3000]
+        assert "cmd = self._drop_managed_dio(" in tail
+
+    def test_the_cpu_fallback_replay_drops_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch)
+        assert "replay = self._drop_managed_dio(" in src
+
+    def test_the_helper_clears_the_record_with_the_flags(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._drop_managed_dio)
+        assert "_without_subsequence(argv, self._memory_dio_flags)" in src
+        assert "self._memory_dio_flags = []" in src
+        assert "self._memory_dio_applicable = False" in src
+
+
+class TestTheLaunchProbesVulkanWhenDioDependsOnIt:
+    def test_the_probe_is_not_gated_on_should_mlock_alone(self):
+        """``should_mlock()`` is False for every no-reserve load, and an
+        unprobed Vulkan device answers host-resident, so gating on it alone made
+        the branch unreachable on the shipped Vulkan build."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("_mem_host_resident = self._weights_in_host_memory(") :]
+        arm = arm[: arm.index("fit_active =")]
+        compact = "".join(arm.split())
+        assert "probe_vulkan=should_mlock()or(_mem_dio_possibleandget_no_ram_reserve())" in compact
+
+    def test_the_confirmation_requires_a_gpu_backend_and_a_device(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("_mem_gpu_offload_confirmed = bool(") :]
+        arm = arm[: arm.index("_mem_managed, _mem_extras = apply_model_memory_policy(")]
+        assert "self._build_offers_gpu_backend(binary)" in arm
+        assert "(_detected_gpus or gpu_indices)" in arm
+
+    def test_a_cpu_only_prebuilt_offers_no_gpu_backend(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_installed_ggml_backends",
+            staticmethod(lambda binary = None: frozenset({"base", "cpu"})),
+        )
+        assert not LlamaCppBackend._build_offers_gpu_backend("llama-server")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_installed_ggml_backends",
+            staticmethod(lambda binary = None: frozenset({"base", "cpu", "vulkan"})),
+        )
+        assert LlamaCppBackend._build_offers_gpu_backend("llama-server")

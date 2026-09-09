@@ -1199,11 +1199,33 @@ def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
     )
 
 
+# The exact managed block the branch below emits, named so the launch can spot its own tokens in an argv and take
+# them back out when the placement they were chosen for stops holding.
+MANAGED_DIO_FLAGS: tuple[str, ...] = ("--load-mode", "dio")
+
+
+def no_reserve_requires_dio(
+    *, supports_load_mode: bool, gpu_offload_confirmed: bool
+) -> bool:
+    """Whether "Don't reserve system RAM" owes this launch ``--load-mode dio``.
+
+    Windows keeps the whole GGUF mapping resident after a full offload, because
+    ``unmap_fragment`` is a no-op there (#9033), so the setting only means
+    anything on that platform once the offload is confirmed and the build
+    understands the flag. One definition, because the launch has to record the
+    same answer the policy acts on: the reload comparator asks it about a
+    process that is already running.
+    """
+    return sys.platform == "win32" and supports_load_mode and gpu_offload_confirmed
+
+
 def apply_model_memory_policy(
     extra_args: Optional[Iterable[str]],
     *,
     supports_load_mode: bool = False,
     weights_in_host_memory: bool = True,
+    gpu_offload_confirmed: bool = False,
+    env: Optional[Mapping[str, str]] = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags.
 
@@ -1223,6 +1245,17 @@ def apply_model_memory_policy(
     default mmap path except on Windows with confirmed full GPU offload, where
     supported builds use DirectIO to avoid retaining the resident file mapping.
     With both off nothing is stripped, so a hand-typed flag still applies.
+
+    ``gpu_offload_confirmed`` is that confirmation, and the caller has to
+    establish it POSITIVELY. ``not weights_in_host_memory`` is not the same
+    thing: that predicate exists to skip a page-lock, so it errs towards True
+    for a device it did not probe and towards False for an offload the build
+    cannot perform, and neither direction is safe for choosing a loader.
+
+    ``env`` is the child's environment AFTER ``scrub_memory_env``. An inherited
+    loader choice that survives the scrub is a non-reserving one the settings
+    disclaim, and argv beats the environment in llama.cpp, so the managed
+    DirectIO stands aside for it the way the fit's own mode does.
 
     The per-model Mmap/Mlock control is resolved separately, by
     ``apply_load_mode_policy``, which runs after this and defers to it.
@@ -1251,16 +1284,20 @@ def apply_model_memory_policy(
         tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
-    if (
-        no_ram_reserve
-        and sys.platform == "win32"
-        and not weights_in_host_memory
-        and supports_load_mode
+    if no_ram_reserve and no_reserve_requires_dio(
+        supports_load_mode = supports_load_mode,
+        gpu_offload_confirmed = gpu_offload_confirmed,
     ):
         # Windows cannot partially unmap the GGUF after offload: unmap_fragment
-        # is a no-op in llama.cpp. Prefer streaming for this confirmed placement.
+        # is a no-op in llama.cpp. Stream instead for this confirmed placement.
         # Explicit per-model mmap/dio and surviving extras still resolve afterward.
-        managed.extend(["--load-mode", "dio"])
+        if memory_env_selects_load_mode(env):
+            logger.info(
+                "Model Memory: the environment already selects a loader mode; "
+                "leaving the managed --load-mode dio off this launch."
+            )
+        else:
+            managed.extend(MANAGED_DIO_FLAGS)
     if keep_resident and not no_ram_reserve and weights_in_host_memory:
         # Before the extras, like the rest of the managed block. mmap+mlock, not bare mlock: it matches what --mlock
         # meant alongside the default mmap.
@@ -1767,15 +1804,40 @@ def resolve_effective_memory_state(
     compare a running process against the current settings, so the reload hint
     reflects the launched state rather than only what Unsloth emitted.
     """
+    mlock, reserves_ram, _direct_io = resolve_effective_load_state(argv, env)
+    return mlock, reserves_ram
+
+
+def resolve_effective_direct_io(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether the child will actually run DirectIO.
+
+    ``mmap`` and ``dio`` both hold no full host copy, so they are the same
+    ``(mlock, reserves_ram)`` and the reload comparator cannot tell them apart.
+    Where the Windows no-reserve policy owes a launch dio, that difference is
+    the whole decision, so it is resolved from the same parse rather than a
+    second one that could drift from it.
+    """
+    return resolve_effective_load_state(argv, env)[2]
+
+
+def resolve_effective_load_state(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[bool, bool, bool]:
+    """``(mlock, reserves_ram, direct_io)``. Every branch that resolves the mode
+    assigns all three, so the DirectIO bit cannot fall out of step with the pair."""
     env = env or {}
     mlock = False
     reserves_ram = False
+    direct_io = False
     # Each var runs the SAME handler as its flag, so it assigns the whole mode and a later one overwrites an earlier
     # one, in llama.cpp's registration order. Measured: LLAMA_ARG_MLOCK=1 with LLAMA_ARG_MMAP=on or LLAMA_ARG_DIO=0
     # leaves the child unlocked. Only the mlock bit, like the argv --mlock below: "mlock" vs "mmap+mlock" is not
     # observable and changes no decision.
     if str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES:
-        mlock = True
+        # Either mode it can mean maps or buffers the weights; neither streams.
+        mlock, direct_io = True, False
     # Every option with a negative form also answers to LLAMA_ARG_NO_<NAME>: upstream rewrites the name and, if that var
     # EXISTS, forces the value falsey whatever it says, before reading the affirmative one. Measured:
     # LLAMA_ARG_NO_MMAP=0 still disables mmap, and it beats LLAMA_ARG_MMAP=on. --mlock has no negative form, so
@@ -1783,20 +1845,21 @@ def resolve_effective_memory_state(
     _mmap_env = "0" if "LLAMA_ARG_NO_MMAP" in env else str(env.get("LLAMA_ARG_MMAP", ""))
     _mmap_env = _mmap_env.strip().lower()
     if _mmap_env in _ENV_TRUE_VALUES:
-        mlock, reserves_ram = False, False
+        mlock, reserves_ram, direct_io = False, False, False
     elif _mmap_env in _ENV_FALSE_VALUES:
-        mlock, reserves_ram = False, True
+        mlock, reserves_ram, direct_io = False, True, False
     # LLAMA_ARG_DIO likewise: on selects DirectIO, off selects "none".
     _dio_env = "0" if "LLAMA_ARG_NO_DIO" in env else str(env.get("LLAMA_ARG_DIO", ""))
     _dio_env = _dio_env.strip().lower()
     if _dio_env in _ENV_TRUE_VALUES:
-        mlock, reserves_ram = False, False
+        mlock, reserves_ram, direct_io = False, False, True
     elif _dio_env in _ENV_FALSE_VALUES:
-        mlock, reserves_ram = False, True
+        mlock, reserves_ram, direct_io = False, True, False
     _mode_env = str(env.get("LLAMA_ARG_LOAD_MODE", "")).strip().lower()
     if _mode_env:
         mlock = _mode_env in _LOAD_MODE_MLOCK_VALUES
         reserves_ram = _mode_env in _LOAD_MODE_RESERVING_VALUES
+        direct_io = _mode_env == "dio"
 
     tokens = [str(a) for a in (argv or [])]
     i, n = 0, len(tokens)
@@ -1807,30 +1870,35 @@ def resolve_effective_memory_state(
             i += 1
             continue
         if flag in _MLOCK_FLAGS:
-            # Only the mlock bit: which of "mlock" / "mmap+mlock" this maps to is not observable and changes no decision
-            mlock = True
+            # Only the mlock bit: which of "mlock" / "mmap+mlock" this maps to is not observable and changes no
+            # decision. Both of them do, however, replace a DirectIO mode set earlier.
+            mlock, direct_io = True, False
             i += 1
         elif flag in _NO_MMAP_FLAGS:
             # Deprecated selector for the whole "none" mode, so it clears the mlock too: measured, "--mlock --no-mmap"
             # leaves the child unlocked while "--no-mmap --mlock" locks it.
             mlock = False
             reserves_ram = True
+            direct_io = False
             i += 1
         elif flag in _DIO_ON_FLAGS:
             # Deprecated load-mode selector: resets the mode, so the mlock goes. DirectIO streams the weights, so it
             # holds no full host copy.
             mlock = False
             reserves_ram = False
+            direct_io = True
             i += 1
         elif flag in _DIO_OFF_FLAGS:
             # Not "plain mmap": upstream maps these to mode `none`, like --no-mmap, which reads the weights into a full
             # host buffer.
             mlock = False
             reserves_ram = True
+            direct_io = False
             i += 1
         elif flag == "--mmap":
             mlock = False
             reserves_ram = False
+            direct_io = False
             i += 1
         elif flag in _LOAD_MODE_FLAGS:
             if "=" in tok:
@@ -1843,16 +1911,19 @@ def resolve_effective_memory_state(
             if value:
                 mlock = value in _LOAD_MODE_MLOCK_VALUES
                 reserves_ram = value in _LOAD_MODE_RESERVING_VALUES
+                direct_io = value == "dio"
             i += step
         else:
             i += 1
-    return mlock, reserves_ram
+    return mlock, reserves_ram, direct_io
 
 
 def memory_state_satisfies_settings(
     state: Optional[tuple[bool, bool]],
     policy_active: bool = False,
     mlock_applicable: bool = True,
+    direct_io: Optional[bool] = None,
+    dio_applicable: bool = False,
 ) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
@@ -1875,6 +1946,14 @@ def memory_state_satisfies_settings(
     not emitted. Residency there is the idle-unload veto, which needs no
     relaunch, so demanding mlock would ask for a reload that can never satisfy
     the check.
+
+    ``direct_io`` is whether the launch actually streams, and ``dio_applicable``
+    whether ``no_reserve_requires_dio`` held for its platform, build and
+    placement. Default mmap and DirectIO are the same ``(mlock, reserves_ram)``,
+    so without these a Windows full-offload process launched on the default
+    mapping reports as satisfying a no-reserve that would now emit dio, and both
+    the reload hint and the duplicate-load fast path leave it running. None means
+    a caller that does not track it, which never forces a reload.
     """
     if state is None:
         return True
@@ -1885,7 +1964,9 @@ def memory_state_satisfies_settings(
     mlock, reserves_ram = state
     if get_no_ram_reserve():
         # mlock_applicable only excuses a MISSING lock; a live reservation still has to go, wherever the weights are.
-        return not (mlock or reserves_ram)
+        if mlock or reserves_ram:
+            return False
+        return not (dio_applicable and direct_io is False)
     if get_keep_resident():
         return mlock or not mlock_applicable
     return not policy_active

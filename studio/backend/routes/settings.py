@@ -921,7 +921,8 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable)`` for the running child.
+    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable)``
+    for the running child.
 
     ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
     caller can tell "no process" apart from "a process with no load-mode".
@@ -932,14 +933,16 @@ def _active_launch_placement():
         backend = get_llama_cpp_backend()
         pending = bool(getattr(backend, "_memory_launch_pending", False))
         if not backend.is_active and not pending:
-            return _NO_LAUNCH, False, True
+            return _NO_LAUNCH, False, True, None, False
         return (
             getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
+            getattr(backend, "_memory_direct_io", None),
+            bool(getattr(backend, "_memory_dio_applicable", False)),
         )
     except Exception:
-        return _NO_LAUNCH, False, True
+        return _NO_LAUNCH, False, True, None, False
 
 
 def _model_memory_reload_required() -> bool:
@@ -956,14 +959,18 @@ def _model_memory_reload_required() -> bool:
     same window before Popen, where the placement is decided but _process is
     still None.
     """
-    state, policy_active, mlock_applicable = _active_launch_placement()
+    state, policy_active, mlock_applicable, direct_io, dio_applicable = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return False
 
     # Same predicate the duplicate-load comparator uses.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+    return not memory_state_satisfies_settings(
+        state, policy_active, mlock_applicable, direct_io, dio_applicable
+    )
 
 
 def _model_memory_mlock_active(want_mlock: bool) -> bool:
@@ -979,7 +986,9 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     """
     if not want_mlock:
         return False
-    state, _policy_active, _applicable = _active_launch_placement()
+    state, _policy_active, _applicable, _direct_io, _dio_applicable = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return True
     return bool(state and state[0])

@@ -707,6 +707,7 @@ def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
     from unittest import mock
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = ["--load-mode", "none"]
     replay = [
         "llama-server",
@@ -742,6 +743,7 @@ def test_the_cpu_fallback_keeps_a_load_mode_the_user_asked_for(monkeypatch):
     from unittest import mock
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = []  # user pick: nothing recorded
     replay = ["llama-server", "-m", "model.gguf", "--load-mode", "none"]
     with (
@@ -2152,9 +2154,9 @@ def test_the_no_flash_rung_recomputes_the_memory_record():
     # Bounded at the next definition, so this proves the recompute is in the
     # helper and not merely somewhere later in load_model.
     helper = helper[: helper.index("_spawn_and_wait")]
-    assert "self._memory_state" in helper
+    assert "self._record_memory_state" in helper
     compact = "".join(helper.split())
-    assert "resolve_effective_memory_state(stripped" in compact
+    assert "self._record_memory_state(stripped" in compact
 
 
 def test_the_cpu_projector_rung_recomputes_the_memory_record():
@@ -2165,9 +2167,9 @@ def test_the_cpu_projector_rung_recomputes_the_memory_record():
     src = inspect.getsource(B.load_model)
     arm = src[: src.index('"-mmproj-cpu"')]
     arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
-    assert "self._memory_state" in arm
+    assert "self._record_memory_state" in arm
     compact = "".join(arm.split())
-    assert "resolve_effective_memory_state(_stripped_cpu_projector_cmd" in compact
+    assert "self._record_memory_state(_stripped_cpu_projector_cmd" in compact
 
 
 def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
@@ -2194,7 +2196,7 @@ def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
     # Reachability: single call expression, whitespace stripped, so a reformat
     # that wraps the call cannot break it.
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "resolve_effective_memory_state(cmd,env)" in compact
+    assert "self._record_memory_state(cmd,env)" in compact
 
 
 # ------------------ round 12: the CPU fallback is a rung that strips the loader
@@ -2218,6 +2220,7 @@ def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
     )
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = ["--load-mode", FIT_MODE]
     launched = ["llama-server", "-m", "model.gguf", "--load-mode", FIT_MODE]
     with (
@@ -2263,7 +2266,7 @@ def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
     # Bounded at the normalisation that closes the recovery, so this proves the
     # recompute is in the arm and not merely somewhere later in load_model.
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
-    assert "resolve_effective_memory_state(_last_spawn_cmd,env)" in arm
+    assert "self._record_memory_state(_last_spawn_cmd,env)" in arm
 
 
 def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
@@ -2277,4 +2280,4 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     # crash path's, which reads the same helper without it.
     arm = src[src.index("allow_manual_cpu=True") :]
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
-    assert "resolve_effective_memory_state(cmd,env)" in arm
+    assert "self._record_memory_state(cmd,env)" in arm

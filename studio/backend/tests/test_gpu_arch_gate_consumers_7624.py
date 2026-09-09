@@ -621,6 +621,10 @@ class TestArchRetryRestoresTheMemoryPolicy:
         assert _snap == [
             "_mem_host_resident",
             "self._memory_state",
+            # Recorded together with the pair: the respawn restores a launch state,
+            # and a stale DirectIO bit beside a restored pair is the same drift the
+            # snapshot exists to prevent.
+            "self._memory_direct_io",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]
@@ -641,6 +645,10 @@ class TestArchRetryRestoresTheMemoryPolicy:
         assert _restored == [
             "_mem_host_resident",
             "self._memory_state",
+            # Recorded together with the pair: the respawn restores a launch state,
+            # and a stale DirectIO bit beside a restored pair is the same drift the
+            # snapshot exists to prevent.
+            "self._memory_direct_io",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]

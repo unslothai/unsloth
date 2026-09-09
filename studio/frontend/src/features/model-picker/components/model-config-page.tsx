@@ -192,8 +192,8 @@ const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   dio: "DirectIO",
 };
 
-// What "Don't reserve system RAM" vetoes: allocated or locked host weight buffers.
-// Windows mmap can still retain resident file pages. Mirrors _LOAD_MODE_MLOCK_VALUES and _LOAD_MODE_RESERVING_VALUES.
+// What "Don't reserve system RAM" vetoes: allocated or locked host weight buffers. Windows mmap can still hold the
+// file pages resident, which is what the DirectIO policy is for.
 // Mirrors _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
 const RAM_RESERVING_LOAD_MODES = new Set(["none", "mlock", "mmap+mlock"]);
 
