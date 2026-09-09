@@ -972,7 +972,9 @@ def test_the_dry_run_carries_the_installer_override_on_apple_silicon(managed, mo
     on the staging matrix it planned mlx-vlm and mlx-audio downgrades the update never
     makes, and the offline swap installed them."""
     site = managed / _studio_prefetch.VENV_NAME / "lib" / "python3.12" / "site-packages"
-    overrides = site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    overrides = (
+        site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    )
     overrides.write_text("transformers>=5.5.0,<=5.5.0\n", encoding = "utf-8")
     monkeypatch.setattr(_studio_prefetch.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_studio_prefetch.platform, "machine", lambda: "arm64")
@@ -989,7 +991,11 @@ def test_the_dry_run_carries_the_installer_override_on_apple_silicon(managed, mo
 
     # A caller's own override is kept, as the installer keeps it.
     seen.clear()
-    _studio_prefetch.run(studio_home = managed, env = {**os.environ, "UV_OVERRIDE": "/my/overrides.txt"}, echo = lambda line: None)
+    _studio_prefetch.run(
+        studio_home = managed,
+        env = {**os.environ, "UV_OVERRIDE": "/my/overrides.txt"},
+        echo = lambda line: None,
+    )
     assert seen and all(e.get("UV_OVERRIDE") == "/my/overrides.txt" for e in seen)
 
     # Off Apple silicon nothing is set.

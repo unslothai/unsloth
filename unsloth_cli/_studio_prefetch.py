@@ -1204,5 +1204,8 @@ def _prefetch_requirement_file(
             return {"pins": dict(planned), "skipped_reason": "out of time"}
         return {"pins": dict(planned), "skipped_reason": f"download failed: {_redact(str(exc))}"}
     if fetched.returncode != 0:
-        return {"pins": dict(planned), "skipped_reason": "download failed: " + _failure_text(fetched, 400)}
+        return {
+            "pins": dict(planned),
+            "skipped_reason": "download failed: " + _failure_text(fetched, 400),
+        }
     return {"pins": dict(planned)}

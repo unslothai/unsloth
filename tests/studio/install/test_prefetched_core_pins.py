@@ -124,7 +124,7 @@ def test_the_core_steps_are_the_ones_that_get_the_pins():
     core = core[: core.index("if not skip_base:")]
     assert "offline_pins = _prefetched_core_pins()" in core
     no_torch = source[source.index("(no-torch mode)") :]
-    no_torch = no_torch[: no_torch.index("pip_install(") ]
+    no_torch = no_torch[: no_torch.index("pip_install(")]
     assert "offline_pins = _prefetched_core_pins()" in no_torch
     local = source[source.index("# Local dev install:") :]
     local = local[: local.index("_overlay_local_core_packages(local_repo)")]
