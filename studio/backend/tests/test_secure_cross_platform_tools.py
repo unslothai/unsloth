@@ -330,7 +330,7 @@ def test_project_supervisor_results_keep_artifact_cards(tool_name, tmp_path, mon
     session_id = _bind_project(monkeypatch, root)
 
     def write_artifact(*_args, **_kwargs):
-        (root / "report.csv").write_text("a,b\n1,2\n", encoding = "utf-8")
+        (root / "report.csv").write_bytes(b"a,b\n1,2\n")
         return supervisor.ProjectProcessResult("passed", 0, "", 0, False)
 
     monkeypatch.setattr(supervisor, "run_project_python", write_artifact)

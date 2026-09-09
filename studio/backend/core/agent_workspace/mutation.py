@@ -423,7 +423,7 @@ _OPEN_EXISTING = 3
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _FILE_READ_ATTRIBUTES = 0x00000080
-_FILE_LIST_DIRECTORY = 0x00000001
+_FILE_TRAVERSE = 0x00000020
 _DELETE = 0x00010000
 _READ_CONTROL = 0x00020000
 _WRITE_DAC = 0x00040000
@@ -433,7 +433,7 @@ _FILE_BASIC_INFO_CLASS = 0
 _FILE_STREAM_INFO_CLASS = 7
 _FILE_ID_INFO_CLASS = 18
 _FILE_DISPOSITION_INFO_CLASS = 4
-_FILE_RENAME_INFO_CLASS = 3
+_NT_FILE_RENAME_INFORMATION_CLASS = 10
 _ERROR_HANDLE_EOF = 38
 _ERROR_FILE_EXISTS = 80
 _ERROR_INSUFFICIENT_BUFFER = 122
@@ -542,10 +542,17 @@ class _Win32Api:
         class FileDispositionInfo(ctypes.Structure):
             _fields_ = [("delete_file", wintypes.BOOL)]
 
+        class IoStatusValue(ctypes.Union):
+            _fields_ = [("status", wintypes.LONG), ("pointer", ctypes.c_void_p)]
+
+        class IoStatusBlock(ctypes.Structure):
+            _fields_ = [("value", IoStatusValue), ("information", ctypes.c_size_t)]
+
         self.ByHandleFileInformation = ByHandleFileInformation
         self.FileIdInfo = FileIdInfo
         self.FileBasicInfo = FileBasicInfo
         self.FileDispositionInfo = FileDispositionInfo
+        self.IoStatusBlock = IoStatusBlock
         handle = wintypes.HANDLE
         dword = wintypes.DWORD
         boolean = wintypes.BOOL
@@ -607,6 +614,17 @@ class _Win32Api:
             dword,
         ]
         self.kernel32.SetFileInformationByHandle.restype = boolean
+        self.ntdll = ctypes.WinDLL("ntdll", use_last_error = True)
+        self.ntdll.NtSetInformationFile.argtypes = [
+            handle,
+            ctypes.POINTER(IoStatusBlock),
+            ctypes.c_void_p,
+            dword,
+            ctypes.c_int,
+        ]
+        self.ntdll.NtSetInformationFile.restype = wintypes.LONG
+        self.ntdll.RtlNtStatusToDosError.argtypes = [wintypes.LONG]
+        self.ntdll.RtlNtStatusToDosError.restype = dword
         self.advapi32 = ctypes.WinDLL("advapi32", use_last_error = True)
         void_pointer = ctypes.c_void_p
         self.advapi32.GetSecurityInfo.argtypes = [
@@ -733,8 +751,9 @@ def _validated_windows_part(value: str) -> str:
     return value
 
 
-def _windows_error(message: str) -> OSError:
-    code = ctypes.get_last_error()
+def _windows_error(message: str, *, code: Optional[int] = None) -> OSError:
+    if code is None:
+        code = ctypes.get_last_error()
     factory = getattr(ctypes, "WinError", None)
     if factory is None:
         return OSError(code, f"{message} (WinError {code})")
@@ -761,7 +780,9 @@ def _open_windows_handle(
     api = _win32_api()
     access = _FILE_READ_ATTRIBUTES
     if directory:
-        access |= _FILE_LIST_DIRECTORY
+        # Traverse/metadata authority avoids a directory-read sharing conflict
+        # with the kernel's relative rename target open.
+        access |= _FILE_TRAVERSE
     if read:
         access |= _GENERIC_READ
     if write:
@@ -1154,32 +1175,46 @@ class _NativeWindowsMutationOps:
         api = _win32_api()
         encoded_name = name.encode("utf-16-le")
 
-        class FileRenameInfo(ctypes.Structure):
+        class FileRenameInformation(ctypes.Structure):
             _fields_ = [
                 ("replace_if_exists", api.wintypes.BOOL),
                 ("root_directory", api.wintypes.HANDLE),
                 ("file_name_length", api.wintypes.DWORD),
-                # Keep the WCHAR terminator and native structure padding in
-                # the buffer passed to Win32, outside FileNameLength.
-                ("file_name", ctypes.c_ubyte * (len(encoded_name) + 2)),
+                ("file_name", ctypes.c_ubyte * 2),
             ]
 
-        info = FileRenameInfo()
+        # NtSetInformationFile accepts a directory-relative name without the
+        # Win32 DOS-path conversion that rejects RootDirectory on some hosts.
+        # Its documented buffer bound includes sizeof the fixed structure plus
+        # the UTF-16 filename bytes, including native padding and a terminator.
+        buffer = ctypes.create_string_buffer(
+            ctypes.sizeof(FileRenameInformation) + len(encoded_name)
+        )
+        info = FileRenameInformation.from_buffer(buffer)
         info.replace_if_exists = bool(replace)
         info.root_directory = parent_handle
         info.file_name_length = len(encoded_name)
-        info.file_name[: len(encoded_name)] = encoded_name
-        if api.kernel32.SetFileInformationByHandle(
-            handle,
-            _FILE_RENAME_INFO_CLASS,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-        ):
+        ctypes.memmove(
+            ctypes.addressof(buffer) + FileRenameInformation.file_name.offset,
+            encoded_name,
+            len(encoded_name),
+        )
+        io_status = api.IoStatusBlock()
+        status = int(
+            api.ntdll.NtSetInformationFile(
+                handle,
+                ctypes.byref(io_status),
+                buffer,
+                ctypes.sizeof(buffer),
+                _NT_FILE_RENAME_INFORMATION_CLASS,
+            )
+        )
+        if status == 0:
             return True
-        code = ctypes.get_last_error()
+        code = int(api.ntdll.RtlNtStatusToDosError(status))
         if not replace and code in {_ERROR_FILE_EXISTS, _ERROR_ALREADY_EXISTS}:
             return False
-        raise _windows_error("Windows could not atomically publish the project file")
+        raise _windows_error("Windows could not atomically publish the project file", code = code)
 
     def mark_delete(self, handle: int) -> None:
         api = _win32_api()
@@ -1215,6 +1250,12 @@ class _WindowsVerifiedMutation:
             raise WindowsMutationRejected(
                 "Extended-length and device namespace edit paths are not supported."
             )
+        # Native ntpath.normpath can erase trailing dots/spaces. Validate the
+        # caller's components first so an ambiguous path is never retargeted.
+        _drive, raw_tail = ntpath.splitdrive(raw_target_text)
+        for part in raw_tail.split("\\"):
+            if part and part != ".":
+                _validated_windows_part(part)
         raw_target = _normalize_windows_path(raw_target_text)
         requested = (
             _validated_windows_path(raw_target)
