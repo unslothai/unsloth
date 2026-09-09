@@ -1032,10 +1032,16 @@ def _apply_overflow_truncation(
     body: dict,
     err_text: str,
     policy: str = "truncate_middle",
+    *,
+    reprice_max_tokens = None,
 ) -> bool:
     """Shrink a passthrough body after an upstream context overflow: drop
     middle turn-groups, clip still-oversized contents, clamp ``max_tokens``
-    to the generation headroom. Returns False when nothing could shrink."""
+    to the generation headroom. Returns False when nothing could shrink.
+
+    ``reprice_max_tokens`` re-prices the admission bound from the messages that
+    survive, since the one in ``body`` was priced on the history this just dropped.
+    """
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
     pre_clip_est = _estimate_messages_tokens(messages)
@@ -1072,6 +1078,13 @@ def _apply_overflow_truncation(
         clipped += _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
+    if reprice_max_tokens is not None:
+        # Replaced, not narrowed, and before the headroom clamp: a prompt over the window
+        # priced at the one-token floor, and narrowing keeps the floor no matter how much
+        # room the drop above just made. None means no bound applies, so leave it alone.
+        _repriced = reprice_max_tokens(body.get("messages") or [])
+        if _repriced is not None:
+            body["max_tokens"] = _repriced
     if n_ctx:
         headroom = max(1024, int(n_ctx * (1.0 - _OVERFLOW_PROMPT_TARGET_FRACTION)))
         cur_max = body.get("max_tokens")
@@ -1087,9 +1100,17 @@ def _apply_overflow_truncation(
     return True
 
 
-def _apply_measured_overflow_truncation(body: dict, err_text: str, policy: str) -> Optional[int]:
+def _apply_measured_overflow_truncation(
+    body: dict,
+    err_text: str,
+    policy: str,
+    *,
+    reprice_max_tokens = None,
+) -> Optional[int]:
     before = len(body.get("messages") or [])
-    if not _apply_overflow_truncation(body, err_text, policy):
+    if not _apply_overflow_truncation(
+        body, err_text, policy, reprice_max_tokens = reprice_max_tokens
+    ):
         return None
     return max(0, before - len(body.get("messages") or []))
 
@@ -34137,9 +34158,24 @@ async def _openai_passthrough_stream_admitted(
         # relaunch is a real failure, not a stale port.
         _respawn_retried = False
 
+        def _repriced_passthrough_cap(fitted):
+            """The bound for what survives the drop, not for the history it removed."""
+            return _openai_llama_admission_enforced_max_tokens(
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                conversation = fitted,
+                injected_tools = body.get("tools"),
+            )
+
         def _apply_passthrough_truncation(err_text: str) -> bool:
             nonlocal _context_was_truncated, _truncated_messages
-            dropped = _apply_measured_overflow_truncation(body, err_text, _truncate_policy)
+            dropped = _apply_measured_overflow_truncation(
+                body,
+                err_text,
+                _truncate_policy,
+                reprice_max_tokens = _repriced_passthrough_cap,
+            )
             if dropped is None:
                 return False
             _context_was_truncated = True
@@ -35043,9 +35079,24 @@ async def _openai_passthrough_non_streaming_upstream(
     # One respawn per request, as on the streaming twin.
     _respawn_retried = False
 
+    def _repriced_passthrough_cap(fitted):
+        """The bound for what survives the drop, not for the history it removed."""
+        return _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = request,
+            llama_backend = llama_backend,
+            conversation = fitted,
+            injected_tools = body.get("tools"),
+        )
+
     def _apply_nonstream_truncation(err_text: str) -> bool:
         nonlocal _context_was_truncated, _truncated_messages
-        dropped = _apply_measured_overflow_truncation(body, err_text, _truncate_policy)
+        dropped = _apply_measured_overflow_truncation(
+            body,
+            err_text,
+            _truncate_policy,
+            reprice_max_tokens = _repriced_passthrough_cap,
+        )
         if dropped is None:
             return False
         _context_was_truncated = True
@@ -35188,8 +35239,14 @@ async def _openai_passthrough_non_streaming_upstream(
         }
         _retry_bound = _openai_llama_admission_retry_max_tokens(
             retry_body,
+            # From the body, not the raw payload: an overflow retry has already dropped
+            # history, and the raw figure is the floor that drop was meant to lift.
             admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
-                payload, request = request, llama_backend = llama_backend
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                conversation = body.get("messages") or [],
+                injected_tools = body.get("tools"),
             ),
             request = request,
             llama_backend = llama_backend,

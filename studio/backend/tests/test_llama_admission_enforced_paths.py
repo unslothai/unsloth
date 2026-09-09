@@ -869,6 +869,21 @@ class TestEveryCallSiteCarriesIt:
         ]
         assert not blind, f"these fit the prompt but keep the pre-fit bound: {blind}"
 
+    def test_an_overflow_retry_re_prices_the_cap_it_kept(self):
+        """The passthrough twins drop history on an upstream overflow. The cap in the body
+        was priced on that history, so a retry that does not re-price sends the floor."""
+        import ast
+
+        tree = self._routes_tree()
+        blind = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "_apply_measured_overflow_truncation"
+            and not any(keyword.arg == "reprice_max_tokens" for keyword in node.keywords)
+        ]
+        assert not blind, f"{len(blind)} overflow retries keep their pre-truncation bound"
+
     def test_a_tool_loop_bound_is_priced_with_the_catalogue_it_sends(self):
         """`payload.tools` omits Studio's server-side catalogue, which the lease charges."""
         import ast
