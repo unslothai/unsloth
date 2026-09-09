@@ -2247,7 +2247,9 @@ def _child_parking_stands_down(server_supports: Optional[bool] = None) -> bool:
 
 
 def _stand_down_child_parking(
-    env: dict, args: Optional[list] = None, server_supports: Optional[bool] = None
+    env: dict,
+    args: Optional[list] = None,
+    server_supports: Optional[bool] = None,
 ) -> Optional[list[str]]:
     """One switch means no preemption anywhere: with Studio's off, the child would still park on its
     own default budget. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands it down too, a park the child
