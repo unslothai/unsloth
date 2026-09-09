@@ -2173,7 +2173,9 @@ _sidecar_current() {
             "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
         _sc_rc=$?
     fi
-    if [ "$_sc_rc" -eq 124 ]; then
+    # 124 is the TERM after 60 s; 137 is the KILL five seconds later when the audit
+    # ignored the TERM. Both are an audit that did not answer.
+    if [ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]; then
         _sc_out="sidecar: audit did not answer within 60 seconds"
     fi
     unset _sc_python _sc_rc

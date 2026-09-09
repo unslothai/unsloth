@@ -172,7 +172,8 @@ def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
     call = sh.index('install_manifest.py" sidecar "$_sc_dir"')
     window = sh[call - 400 : call + 900]
     assert "timeout -k 5 60" in window
-    assert '[ "$_sc_rc" -eq 124 ]' in window and "sidecar: audit did not answer" in window
+    assert '[ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]' in window
+    assert "sidecar: audit did not answer" in window
 
 
 def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
