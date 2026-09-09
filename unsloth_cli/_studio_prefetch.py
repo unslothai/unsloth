@@ -79,6 +79,24 @@ REQUIREMENT_PASS: Tuple[Tuple[str, bool], ...] = (
 # install_manifest.NO_TORCH_MARKER, for the same reason as the tuple above.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
+# Mirrors of install_python_stack.py:NO_TORCH_SKIP_PACKAGES and
+# WINDOWS_SKIP_PACKAGES. The installer drops these lines from a requirement file
+# before it installs it (`_filter_requirements`), so resolving the unfiltered file
+# describes an install nobody performs: on a GGUF-only machine openai-whisper and
+# librosa drag the whole CUDA stack into the plan, and prefetching that is gigabytes
+# of downloads the update will never use.
+NO_TORCH_SKIP_PACKAGES = frozenset(
+    {
+        "torch-stoi",
+        "timm",
+        "torchcodec",
+        "torch-c-dlpack-ext",
+        "openai-whisper",
+        "librosa",
+    }
+)
+WINDOWS_SKIP_PACKAGES = frozenset({"triton_kernels"})
+
 VENV_NAME = "unsloth_studio"
 
 _UV_TRUE = ("1", "true", "yes", "on")
@@ -200,6 +218,7 @@ def core_dry_run_command(
     *,
     floor: str,
     constraints: Optional[Path],
+    no_torch: bool = False,
     use_system: bool = False,
     uv: str = "uv",
 ) -> List[str]:
@@ -209,12 +228,20 @@ def core_dry_run_command(
     the update will act on, and any drift between the two makes the prefetch warm
     the wrong wheels. `--no-cache-dir` is absent because
     `_translate_pip_args_for_uv` drops it on the uv path.
+
+    `no_torch` is the installer's own branch, and it is load bearing rather than
+    cosmetic: PyPI metadata makes torch a hard dependency of unsloth, so without
+    `--no-deps` the resolver plans torch and every nvidia wheel behind it against
+    a venv that deliberately has none of them. Measured: a 24-package plan and
+    2.7 GB downloaded on a GGUF-only install whose update installs two wheels.
     """
     cmd = [uv, "pip", "install"]
     if use_system:
         cmd.append("--system")
     cmd.extend(["--python", str(python)])
     cmd.append("--dry-run")
+    if no_torch:
+        cmd.append("--no-deps")
     spec = f"unsloth>={floor}" if floor else "unsloth"
     cmd.extend(
         [
@@ -230,6 +257,43 @@ def core_dry_run_command(
     if constraints is not None and constraints.is_file():
         cmd.extend(["-c", _uv_safe_path(constraints)])
     return cmd
+
+
+# A requirement line's distribution name: everything before the first marker,
+# extra, comparison or comment character.
+_REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9._-]+)")
+
+
+def effective_requirements(requirement: Path, skip: Iterable[str], work_dir: Path) -> Path:
+    """`_filter_requirements`'s output, or the file itself when nothing is skipped.
+
+    Mirrors install_python_stack.py:_filter_requirements, including the rule that a
+    `-r`/`-c` include or an option line is copied through untouched.
+    """
+    skipped = {canonical_name(name) for name in skip}
+    if not skipped:
+        return requirement
+    try:
+        lines = requirement.read_text(encoding = "utf-8").splitlines(keepends = True)
+    except OSError:
+        return requirement
+    kept: List[str] = []
+    dropped = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith(("#", "-")):
+            match = _REQUIREMENT_NAME.match(stripped)
+            if match and canonical_name(match.group(1)) in skipped:
+                dropped = True
+                continue
+        kept.append(line)
+    if not dropped:
+        return requirement
+    work_dir.mkdir(parents = True, exist_ok = True)
+    # Named after the file it filters, flattened, so two directories cannot collide.
+    filtered = work_dir / requirement.name
+    filtered.write_text("".join(kept), encoding = "utf-8")
+    return filtered
 
 
 def requirement_dry_run_command(
@@ -749,8 +813,16 @@ def run(
 
     # 2. Resolve. The plan is what the update's core step would do, asked of the
     #    live venv so anything already satisfied is absent from it.
+    # The installer's own branch, read from the venv the update will run against.
+    no_torch = _no_torch(venv)
     step("prefetch resolving core packages")
-    core_cmd = core_dry_run_command(interpreter, floor = floor, constraints = live_constraints, uv = uv)
+    core_cmd = core_dry_run_command(
+        interpreter,
+        floor = floor,
+        constraints = live_constraints,
+        no_torch = no_torch,
+        uv = uv,
+    )
     try:
         resolved = _run(core_cmd, child_env)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -830,7 +902,10 @@ def run(
         new_constraints = req_root / "single-env" / "constraints.txt"
         if not new_constraints.is_file():
             new_constraints = None
-        no_torch = _no_torch(venv)
+        skip = set(NO_TORCH_SKIP_PACKAGES) if no_torch else set()
+        if platform.system() == "Windows":
+            skip |= set(WINDOWS_SKIP_PACKAGES)
+        work_dir = prefetch_root(studio_home) / "req"
         for name, no_deps in REQUIREMENT_PASS:
             if no_torch and name == "base.txt":
                 continue
@@ -841,7 +916,7 @@ def run(
                 continue
             record = _prefetch_requirement_file(
                 interpreter,
-                requirement,
+                effective_requirements(requirement, skip, work_dir),
                 target = target,
                 constraints = new_constraints,
                 no_deps = no_deps,

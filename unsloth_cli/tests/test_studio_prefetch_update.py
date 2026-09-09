@@ -22,6 +22,8 @@ from unsloth_cli import _studio_prefetch  # noqa: E402
 
 STUDIO_COMMAND = _REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 INSTALL_PYTHON_STACK = _REPO_ROOT / "studio" / "install_python_stack.py"
+# The source form of the no-torch core step's label, as ast.unparse renders it.
+NO_TORCH_CORE_LABEL = "f'Updating {package_name} + unsloth-zoo (no-torch mode)'"
 
 
 # ── Dry-run plan parsing ──
@@ -75,8 +77,11 @@ def test_plan_names_are_normalised_so_the_pin_matches_the_index():
 # ── The core command must not drift from the installer's ──
 
 
-def _installer_core_step_arguments() -> list[str]:
-    """The positional arguments of the default core `pip_install` call.
+def _installer_core_step_arguments(label: str) -> list[str]:
+    """The positional arguments of one core `pip_install` call in the installer.
+
+    `label` is the SOURCE form of the call's first argument, because one of the two
+    branches names itself with an f-string.
 
     Read out of the installer rather than copied, so a change to that call site
     fails this test instead of silently making the prefetch warm the wrong wheels.
@@ -89,22 +94,33 @@ def _installer_core_step_arguments() -> list[str]:
         and isinstance(node.func, ast.Name)
         and node.func.id == "pip_install"
         and node.args
-        and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "Updating core packages"
-        # The --local branch passes the literal "unsloth"; the default branch
-        # passes the floor-aware spec, and that is the one the desktop runs.
+        # The no-torch label is an f-string, so compare the unparsed source form.
+        and ast.unparse(node.args[0]) == label
+        # The --local branch passes the literal "unsloth"; the branches the desktop
+        # runs pass the floor-aware spec.
         and any(isinstance(arg, ast.Name) and arg.id == "unsloth_spec" for arg in node.args)
     ]
-    assert len(calls) == 1, "the installer's default core step moved or was duplicated"
+    assert len(calls) == 1, f"the installer's {label!r} core step moved or was duplicated"
     arguments: list[str] = []
     for argument in calls[0].args[1:]:
         if isinstance(argument, ast.Constant):
             arguments.append(argument.value)
-        elif isinstance(argument, ast.Name) and argument.id == "unsloth_spec":
-            arguments.append("<spec>")
+        elif isinstance(argument, ast.Name) and argument.id in ("unsloth_spec", "package_name"):
+            arguments.append("<spec>" if argument.id == "unsloth_spec" else "unsloth")
         else:  # pragma: no cover - a new argument shape needs a decision, not a guess
             raise AssertionError(f"unhandled core step argument: {ast.dump(argument)}")
     return arguments
+
+
+def _expected_tail(label: str, floor: str) -> list[str]:
+    installer = _installer_core_step_arguments(label)
+    # _translate_pip_args_for_uv drops this on the uv path, so the prefetch does too.
+    assert "--no-cache-dir" in installer
+    return [
+        f"unsloth>={floor}" if argument == "<spec>" else argument
+        for argument in installer
+        if argument != "--no-cache-dir"
+    ]
 
 
 def test_the_core_dry_run_is_the_installers_core_step_plus_dry_run(tmp_path):
@@ -112,24 +128,73 @@ def test_the_core_dry_run_is_the_installers_core_step_plus_dry_run(tmp_path):
     constraints.write_text("numpy<3\n", encoding = "utf-8")
     python = tmp_path / "unsloth_studio" / "bin" / "python"
 
-    installer = _installer_core_step_arguments()
-    # _translate_pip_args_for_uv drops this on the uv path, so the prefetch does too.
-    assert "--no-cache-dir" in installer
-    expected_tail = [
-        "unsloth>=2026.9.2" if argument == "<spec>" else argument
-        for argument in installer
-        if argument != "--no-cache-dir"
-    ]
-
     command = _studio_prefetch.core_dry_run_command(
         python, floor = "2026.9.2", constraints = constraints
     )
 
     assert command == (
         ["uv", "pip", "install", "--python", str(python), "--dry-run"]
-        + expected_tail
+        + _expected_tail("'Updating core packages'", "2026.9.2")
         + ["-c", str(constraints)]
     )
+
+
+def test_a_no_torch_install_resolves_the_core_step_with_no_deps(tmp_path):
+    """Without it the resolver plans torch and every nvidia wheel behind it.
+
+    unsloth's PyPI metadata makes torch a hard dependency, and a GGUF-only venv has
+    none of it installed to satisfy that, so the plain resolve returns the whole
+    CUDA stack. Measured before this branch pinned it: 24 packages, 2.7 GB
+    downloaded, for an update that installs two wheels.
+    """
+    python = tmp_path / "unsloth_studio" / "bin" / "python"
+
+    command = _studio_prefetch.core_dry_run_command(
+        python, floor = "2026.9.2", constraints = None, no_torch = True
+    )
+
+    assert command == (
+        ["uv", "pip", "install", "--python", str(python), "--dry-run"]
+        + _expected_tail(NO_TORCH_CORE_LABEL, "2026.9.2")
+    )
+    assert "--no-deps" in command
+
+
+def test_a_requirement_file_is_filtered_the_way_the_installer_filters_it(tmp_path):
+    requirement = tmp_path / "extras.txt"
+    requirement.write_text(
+        "# audio\n"
+        "-r base.txt\n"
+        "librosa>=0.10\n"
+        "openai_whisper==20250625\n"
+        "soundfile\n"
+        "timm ; sys_platform != 'darwin'\n",
+        encoding = "utf-8",
+    )
+    work = tmp_path / "req"
+
+    filtered = _studio_prefetch.effective_requirements(
+        requirement, _studio_prefetch.NO_TORCH_SKIP_PACKAGES, work
+    )
+
+    assert filtered != requirement
+    assert filtered.read_text(encoding = "utf-8") == "# audio\n-r base.txt\nsoundfile\n"
+    # openai_whisper and openai-whisper are the same distribution; timm carries a marker.
+    assert "librosa" not in filtered.read_text(encoding = "utf-8")
+
+
+def test_a_requirement_file_with_nothing_to_skip_is_used_as_it_stands(tmp_path):
+    requirement = tmp_path / "studio.txt"
+    requirement.write_text("fastapi\nuvicorn\n", encoding = "utf-8")
+
+    assert _studio_prefetch.effective_requirements(requirement, (), tmp_path / "req") is requirement
+    assert (
+        _studio_prefetch.effective_requirements(
+            requirement, _studio_prefetch.NO_TORCH_SKIP_PACKAGES, tmp_path / "req"
+        )
+        is requirement
+    )
+    assert not (tmp_path / "req").exists()
 
 
 def test_the_core_dry_run_falls_back_to_a_bare_name_without_a_floor(tmp_path):
@@ -287,6 +352,46 @@ def test_a_successful_prefetch_writes_a_ready_marker_and_never_touches_the_venv(
     # site-packages of the live venv is untouched: everything landed under site/.
     live = managed / _studio_prefetch.VENV_NAME / "lib" / "python3.12" / "site-packages"
     assert sorted(entry.name for entry in live.iterdir()) == ["studio"]
+
+
+def test_a_gguf_only_install_prepares_two_wheels_and_not_the_cuda_stack(managed, monkeypatch):
+    """The regression this branch was measured into: 24 packages and 2.7 GB.
+
+    A no-torch venv satisfies none of unsloth's torch dependency, so a plain
+    resolve plans torch and every nvidia wheel behind it, and the requirement
+    files the installer filters plan the rest.
+    """
+    (managed / _studio_prefetch.VENV_NAME / _studio_prefetch.NO_TORCH_MARKER).write_text(
+        "", encoding = "utf-8"
+    )
+    target = _studio_prefetch.site_dir(managed)
+    recorder = _Recorder([])
+
+    def respond(cmd, env):
+        recorder(cmd, env)
+        cmd = list(cmd)
+        if "--dry-run" in cmd:
+            return _plan_response(" + unsloth==2026.9.2\n")
+        if "--target" in cmd:
+            _install_new_wheel_tree(target)
+            (target / "studio" / "backend" / "requirements" / "extras.txt").write_text(
+                "librosa>=0.10\nopenai_whisper==20250625\nsoundfile\n", encoding = "utf-8"
+            )
+            return _completed(0)
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", respond)
+    _studio_prefetch.run(studio_home = managed, floor = "2026.9.2", echo = lambda line: None)
+
+    core = recorder.commands[0]
+    assert "--no-deps" in core, core
+    # base.txt is the torch file; a no-torch install never runs it.
+    assert not any(command[-1].endswith("base.txt") for command in recorder.commands)
+    extras = [c for c in recorder.commands if c[-1].endswith("extras.txt")]
+    assert extras, recorder.commands
+    filtered = Path(extras[0][-1]).read_text(encoding = "utf-8")
+    assert "librosa" not in filtered and "openai_whisper" not in filtered
+    assert "soundfile" in filtered
 
 
 def test_a_plan_without_unsloth_records_noop_and_downloads_nothing(managed, monkeypatch):
