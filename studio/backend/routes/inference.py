@@ -2170,16 +2170,14 @@ def _openai_llama_admission_tokens(
     """
     if not budget:
         return None
-    if conversation is not None:
-        # What is actually sent: the GGUF builders splice a date prompt, a nudge and media
-        # in later. Transport still counts, since the ledger wants it.
-        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
-            conversation, image_tokens = image_tokens, injected_tools = injected_tools
-        ) + _openai_llama_admission_transport_tokens(payload)
-    else:
-        prompt_tokens = _openai_llama_admission_prompt_tokens(
-            payload, image_tokens = image_tokens, injected_tools = injected_tools
-        )
+    # What is actually sent when a conversation is given: the GGUF builders splice a date
+    # prompt, a nudge and media in later. Transport still counts, since the ledger wants it.
+    prompt_tokens = _openai_llama_admission_charged_prompt_tokens(
+        payload,
+        conversation = conversation,
+        image_tokens = image_tokens,
+        injected_tools = injected_tools,
+    )
     if prompt_tokens is None:
         return max(1, budget // max(1, capacity))
     # The same helper generation honours, not the raw field. A request that sets only
@@ -2321,6 +2319,27 @@ def _openai_llama_admission_wire_prompt_tokens(
         estimate_messages_tokens_dense(estimate_messages)
         + _openai_llama_admission_injected_tool_tokens(injected_tools)
         + max(0, message_image_parts) * image_tokens
+    )
+
+
+def _openai_llama_admission_charged_prompt_tokens(
+    payload,
+    *,
+    conversation = None,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    injected_tools = None,
+) -> Optional[int]:
+    """The prompt term of the admission charge: the part of it that becomes resident.
+
+    The preemptor needs it apart from the output allowance, or a chat that spends its
+    allowance is charged for the same cells twice.
+    """
+    if conversation is not None:
+        return _openai_llama_admission_wire_prompt_tokens(
+            conversation, image_tokens = image_tokens, injected_tools = injected_tools
+        ) + _openai_llama_admission_transport_tokens(payload)
+    return _openai_llama_admission_prompt_tokens(
+        payload, image_tokens = image_tokens, injected_tools = injected_tools
     )
 
 
@@ -2679,6 +2698,9 @@ def _openai_llama_preemption_arm(
     gen_id: str,
     signal,
     loop = None,
+    payload = None,
+    conversation = None,
+    injected_tools = None,
 ):
     """Enrol a generation with the preemptor, and pause whoever must make room.
 
@@ -2725,7 +2747,24 @@ def _openai_llama_preemption_arm(
         )
         return None
     charged = int(getattr(lease, "tokens", 0) or 0)
-    controller.register(gen_id, lease = lease, tokens = charged, signal = signal)
+    # The charge is prompt plus an output reservation; the ledger needs the two apart, or
+    # a chat that spends the reservation is counted for it twice over.
+    try:
+        prompt_tokens = _openai_llama_admission_charged_prompt_tokens(
+            payload,
+            conversation = conversation,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+        )
+    except Exception:
+        prompt_tokens = None
+    controller.register(
+        gen_id,
+        lease = lease,
+        tokens = charged,
+        signal = signal,
+        prompt_tokens = prompt_tokens,
+    )
     # Whoever has to stop so this one fits; the victims notice at their own next safe
     # point. `needed = 0`, not `needed = charged`: register() has just put this generation
     # in the ledger carrying exactly `charged`, so asking for that much more room again
@@ -23432,7 +23471,16 @@ async def produce_openai_chat_completions(
                     _lease = _res.lease_nowait() if _res is not None else None
                     if _lease is not None:
                         get_preemption_controller(_preempt_key(llama_backend)).note_tokens(
-                            completion_id, int(_lease.tokens or 0)
+                            completion_id,
+                            int(_lease.tokens or 0),
+                            # The round's own prompt, apart from the output the re-cost
+                            # reserved on top of it.
+                            _openai_llama_admission_charged_prompt_tokens(
+                                payload,
+                                conversation = conversation,
+                                image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                                injected_tools = tools_to_use,
+                            ),
                         )
                         # And SWEEP on the new figure: note_tokens only records it, so a
                         # round that grew the prompt by thousands updated the ledger
@@ -23563,6 +23611,10 @@ async def produce_openai_chat_completions(
                         gen_id = completion_id,
                         signal = _gguf_preempt_signal,
                         loop = _preempt_loop,
+                        # What the ledger must keep apart from the output it reserved.
+                        payload = payload,
+                        conversation = gguf_messages,
+                        injected_tools = tools_to_use,
                     )
                 )
             except LlamaAdmissionQueueFull as exc:
@@ -23991,6 +24043,10 @@ async def produce_openai_chat_completions(
                                     gen_id = completion_id,
                                     signal = _gguf_preempt_signal,
                                     loop = _preempt_loop,
+                                    # What the ledger must keep apart from the output it reserved.
+                                    payload = payload,
+                                    conversation = gguf_messages,
+                                    injected_tools = tools_to_use,
                                 )
                             )
                         iterator = gguf_tool_stream()
@@ -24199,6 +24255,10 @@ async def produce_openai_chat_completions(
                             gen_id = completion_id,
                             signal = _gguf_preempt_signal,
                             loop = _preempt_loop,
+                            # What the ledger must keep apart from the output it reserved.
+                            payload = payload,
+                            conversation = gguf_messages,
+                            injected_tools = tools_to_use,
                         )
                     )
                 # In the request's own context: the task and thread below each get a
@@ -24710,6 +24770,9 @@ async def produce_openai_chat_completions(
                             signal = _plain_preempt_signal,
                             # Guarded exactly like the tool path's `_preempt_loop`.
                             loop = _plain_preempt_loop,
+                            # What the ledger must keep apart from the output it reserved.
+                            payload = payload,
+                            conversation = gguf_messages,
                         )
                     )
                     iterator = gguf_stream_chunks()
@@ -24941,6 +25004,9 @@ async def produce_openai_chat_completions(
                         gen_id = completion_id,
                         signal = _plain_preempt_signal,
                         loop = _plain_preempt_loop,
+                        # What the ledger must keep apart from the output it reserved.
+                        payload = payload,
+                        conversation = gguf_messages,
                     )
                 )
                 # ``n`` requests several independent completions; the single
@@ -32054,6 +32120,9 @@ async def anthropic_messages(
                 gen_id = message_id,
                 signal = _anthropic_preempt_signal,
                 loop = _anthropic_preempt_loop,
+                # What the ledger must keep apart from the output it reserved.
+                payload = payload,
+                conversation = openai_messages,
             )
         )
 

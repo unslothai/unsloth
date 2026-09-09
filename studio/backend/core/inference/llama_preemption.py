@@ -421,6 +421,10 @@ class Participant:
     tokens: int = 0
     # What admission charged; live growth is ADDED to it, never replacing it.
     base_tokens: int = 0
+    # The prompt part of that charge, when the caller could split it. The REST of
+    # `base_tokens` is an output reservation, and generated tokens are written into it
+    # rather than added on top of it. Zero means the split is unknown.
+    prompt_tokens: int = 0
     # True once this prompt is known to be IN the cache. Until then its charge is a
     # reservation the resident figure cannot see; after, adding it counts the cells twice.
     measured: bool = False
@@ -446,6 +450,23 @@ class Participant:
     # Last count `observe` was given, so cumulative reports become a delta. Falls back to
     # zero rather than negative when a resumed attempt restarts llama-server's counter.
     generated_seen: int = 0
+
+    def resident_tokens(self, generated: int) -> int:
+        """Cells this holder occupies now that its prompt is in the cache.
+
+        Prompt plus what it has written. NOT the charge plus what it has written: the
+        output reservation inside `base_tokens` is the room those tokens are being written
+        into, so counting both charged the same cells twice -- four chats holding 3472
+        cells were counted as 7568 against a 7424 ceiling and the newest was preempted for
+        room nobody needed.
+
+        Without the split there is nothing safe to subtract, so the charge keeps carrying
+        the whole reservation and the old arithmetic stands.
+        """
+        generated = max(0, int(generated or 0))
+        if self.prompt_tokens <= 0:
+            return self.base_tokens + generated
+        return self.prompt_tokens + generated
 
     def prefill_pending(self, now: float) -> int:
         """Outstanding prefill worth reserving a batch for. Zero when there is none, and
@@ -590,6 +611,7 @@ class PreemptionController:
         tokens: int = 0,
         state: str = ParticipantState.DECODING,
         signal: Optional[PreemptSignal] = None,
+        prompt_tokens: Optional[int] = None,
     ) -> Participant:
         """``signal`` MUST be the object the stream polls.
 
@@ -607,6 +629,8 @@ class PreemptionController:
                 lease = lease,
                 tokens = max(0, int(tokens or 0)),
                 base_tokens = max(0, int(tokens or 0)),
+                # Never above the charge: the prompt is one term of it.
+                prompt_tokens = min(max(0, int(prompt_tokens or 0)), max(0, int(tokens or 0))),
                 state = state,
                 **({} if signal is None else {"preempt_event": signal}),
             )
@@ -700,6 +724,9 @@ class PreemptionController:
                 need = max(0, int(want or 0))
                 participant.tokens = max(participant.tokens, need)
                 participant.base_tokens = max(participant.base_tokens, need)
+                if participant.prompt_tokens > 0:
+                    # `want` is the whole replayed prompt, which is what becomes resident.
+                    participant.prompt_tokens = max(participant.prompt_tokens, need)
                 participant.measured = False
                 participant.state = ParticipantState.RESUMING
                 # Announced under the same lock that booked the room, so no participant
@@ -777,7 +804,7 @@ class PreemptionController:
                 previous = participant.generated_seen
                 participant.generated_seen = reported
                 self._progress_tokens += (reported - previous) if reported >= previous else reported
-                participant.tokens = participant.base_tokens + reported
+                participant.tokens = participant.resident_tokens(reported)
                 participant.measured = True
                 participant.cells_reclaimed = False
                 if reported > 0:
@@ -834,18 +861,32 @@ class PreemptionController:
             self._resident = max(0, min(int(resident), ceiling))
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
 
-    def note_tokens(self, gen_id: str, tokens: int) -> None:
+    def note_tokens(
+        self,
+        gen_id: str,
+        tokens: int,
+        prompt_tokens: Optional[int] = None,
+    ) -> None:
         """What a round boundary says this run now holds.
 
         Also the third and last place a prefill is announced: only the difference from the
         previous figure is submitted, which keeps the reserve honest on a chat whose 6000
         token history grew by 40.
+
+        ``tokens`` is the re-costed CHARGE and ``prompt_tokens`` the part of it the cache
+        is about to hold; the round restates the whole conversation, so the previous
+        round's output is inside that prompt rather than added to it again.
         """
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
+                charge = max(0, int(tokens or 0))
+                if prompt_tokens is not None:
+                    participant.prompt_tokens = min(max(0, int(prompt_tokens or 0)), charge)
                 previous = participant.tokens
-                participant.tokens = max(0, int(tokens or 0))
+                participant.tokens = (
+                    participant.prompt_tokens if participant.prompt_tokens > 0 else charge
+                )
                 growth = participant.tokens - previous
                 if participant.cells_reclaimed:
                     # A reclaim erased every cell: the whole prompt goes in again, not the
@@ -857,8 +898,12 @@ class PreemptionController:
                     # Same counter as `observe`: a waiter must be able to see a tool
                     # result land.
                     self._progress_tokens += growth
-                # Re-baselined: a round boundary restates the whole conversation.
-                participant.base_tokens = participant.tokens
+                # Re-baselined: a round boundary restates the whole conversation. The
+                # charge, not the occupancy, since it is what admission now holds.
+                participant.base_tokens = charge
+                # This round has written nothing yet, and what the last one wrote is now
+                # part of the prompt above.
+                participant.generated_seen = 0
                 participant.measured = True
                 participant.cells_reclaimed = False
 
@@ -988,8 +1033,15 @@ class PreemptionController:
             participant = self._participants.get(gen_id)
             if participant is None:
                 return
-            participant.base_tokens = participant.base_tokens + max(0, int(tokens or 0))
-            participant.tokens = max(participant.tokens, participant.base_tokens)
+            replayed = max(0, int(tokens or 0))
+            participant.base_tokens = participant.base_tokens + replayed
+            if participant.prompt_tokens > 0:
+                # It comes back as PROMPT, so it moves into the prompt term rather than
+                # being counted as output the next attempt has yet to write.
+                participant.prompt_tokens = participant.prompt_tokens + replayed
+                participant.tokens = max(participant.tokens, participant.prompt_tokens)
+            else:
+                participant.tokens = max(participant.tokens, participant.base_tokens)
 
     def set_state(self, gen_id: str, state: str) -> None:
         """Report a safe point. Ends the epoch when the winner stops decoding.

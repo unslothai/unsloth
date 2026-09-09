@@ -81,25 +81,11 @@ def test_a_queued_tool_chat_is_armed_once_granted(monkeypatch):
     arms: list[tuple[str, bool]] = []
     real_arm = inference_route._openai_llama_preemption_arm
 
-    def _recording_arm(
-        *,
-        request,
-        llama_backend,
-        reservation,
-        gen_id,
-        signal,
-        loop = None,
-    ):
+    def _recording_arm(**kwargs):
+        reservation = kwargs.get("reservation")
         held = reservation is not None and reservation.lease_nowait() is not None
-        arms.append((gen_id, held))
-        return real_arm(
-            request = request,
-            llama_backend = llama_backend,
-            reservation = reservation,
-            gen_id = gen_id,
-            signal = signal,
-            loop = loop,
-        )
+        arms.append((kwargs.get("gen_id"), held))
+        return real_arm(**kwargs)
 
     monkeypatch.setattr(inference_route, "_openai_llama_preemption_arm", _recording_arm)
 
