@@ -49,7 +49,14 @@ class _Recorder:
         return [c for c in self.calls if c and c[0] == "ssh"]
 
 
-def _run(cluster, monkeypatch, tmp_path, *, dry_run: bool, peer_dirs_exist: bool = True):
+def _run(
+    cluster,
+    monkeypatch,
+    tmp_path,
+    *,
+    dry_run: bool,
+    peer_dirs_exist: bool = True,
+):
     local = tmp_path / "studio"
     local.mkdir(parents = True, exist_ok = True)
     (local / "marker").write_text("x", encoding = "utf-8")
@@ -58,12 +65,19 @@ def _run(cluster, monkeypatch, tmp_path, *, dry_run: bool, peer_dirs_exist: bool
     monkeypatch.setattr(cluster, "provision_paths", lambda: [(str(local), "studio")])
     monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
     monkeypatch.setattr(
-        cluster, "peer_gpu_busy",
+        cluster,
+        "peer_gpu_busy",
         lambda ip: {"busy": False, "reason": "", "processes": []},
     )
-    monkeypatch.setattr(cluster, "fast_path_decision", lambda ip, no_fast = False: {
-        "ok": False, "reason": "disabled for this test", "local_ip": None,
-    })
+    monkeypatch.setattr(
+        cluster,
+        "fast_path_decision",
+        lambda ip, no_fast = False: {
+            "ok": False,
+            "reason": "disabled for this test",
+            "local_ip": None,
+        },
+    )
     recorder = _Recorder(peer_dirs_exist = peer_dirs_exist)
     monkeypatch.setattr(cluster.subprocess, "run", recorder)
     results = cluster.provision_peer("192.0.2.7", dry_run = dry_run, no_fast = True)
@@ -99,9 +113,7 @@ def test_a_missing_peer_directory_is_reported_not_attempted(monkeypatch, tmp_pat
     """With nothing on the far side there is nothing to compare against, so the dry run says
     what the real run would create instead of failing on a destination that is not there."""
     cluster = _cluster()
-    recorder, results = _run(
-        cluster, monkeypatch, tmp_path, dry_run = True, peer_dirs_exist = False
-    )
+    recorder, results = _run(cluster, monkeypatch, tmp_path, dry_run = True, peer_dirs_exist = False)
 
     assert not recorder.rsync_calls(), "a dry run tried to transfer into a missing directory"
     assert recorder.ssh_calls(), "the check that replaced the mkdir did not run"

@@ -56,8 +56,13 @@ def test_pipeline_gradients_match_a_plain_backward_of_the_same_loss() -> None:
 
     pipeline = _pipeline_module()
     config = transformers.LlamaConfig(
-        vocab_size = 64, hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
-        num_attention_heads = 4, num_key_value_heads = 4, max_position_embeddings = 32,
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        max_position_embeddings = 32,
         tie_word_embeddings = False,
     )
     torch.manual_seed(0)
@@ -73,19 +78,25 @@ def test_pipeline_gradients_match_a_plain_backward_of_the_same_loss() -> None:
     want = {name: p.grad.clone() for name, p in reference.named_parameters() if p.grad is not None}
 
     os.environ.update(
-        MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(_free_port()),
-        RANK = "0", WORLD_SIZE = "1", LOCAL_RANK = "0",
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(_free_port()),
+        RANK = "0",
+        WORLD_SIZE = "1",
+        LOCAL_RANK = "0",
     )
     dist.init_process_group("gloo", rank = 0, world_size = 1)
     try:
-        plan = pipeline.torch_pp_plan(
-            "gpipe", 1, MICROBATCHES, 2, config.num_hidden_layers
-        )
+        plan = pipeline.torch_pp_plan("gpipe", 1, MICROBATCHES, 2, config.num_hidden_layers)
         model = copy.deepcopy(base)
         model.train()
         schedule, mods, step_kw, scale_grads = pipeline.build_torch_schedule(
-            model, plan, pipeline.plan_for_rank(plan, 0), microbatches = MICROBATCHES,
-            device = "cpu", grad_checkpoint = False, log = lambda *a, **k: None,
+            model,
+            plan,
+            pipeline.plan_for_rank(plan, 0),
+            microbatches = MICROBATCHES,
+            device = "cpu",
+            grad_checkpoint = False,
+            log = lambda *a, **k: None,
         )
         for mod in mods:
             for p in mod.parameters():

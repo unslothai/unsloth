@@ -527,12 +527,15 @@ def _upgrade_harness(tmp_path: Path, *, tree: Path, cmake_writes: str | None) ->
         echo "PRESENT=$(_has_local_rpc_server "{tree}" && echo yes || echo no)"
         """
     )
-    return subprocess.run(
-        [BASH, "-c", script], capture_output = True, text = True, check = True
-    ).stdout
+    return subprocess.run([BASH, "-c", script], capture_output = True, text = True, check = True).stdout
 
 
-def _old_install(tmp_path: Path, *, configured: bool = True, rpc_target: bool = True) -> Path:
+def _old_install(
+    tmp_path: Path,
+    *,
+    configured: bool = True,
+    rpc_target: bool = True,
+) -> Path:
     """An install from before the RPC server was built: llama-server and nothing else new."""
     tree = tmp_path / "llama.cpp"
     (tree / "build" / "bin").mkdir(parents = True)

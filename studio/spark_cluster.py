@@ -668,9 +668,13 @@ def rpc_server_names(windows: Optional[bool] = None) -> Tuple[str, ...]:
     On Windows that let a stray extensionless `ggml-rpc-server` sitting beside the real
     `ggml-rpc-server.exe` win, so the resolution could report success while returning the wrong
     file. Ordering by platform is what stops that; rejecting non-executables alone would not."""
-    suffixed = tuple(n for n in _RPC_SERVER_NAMES if n.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES))
+    suffixed = tuple(
+        n for n in _RPC_SERVER_NAMES if n.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES)
+    )
     plain = tuple(n for n in _RPC_SERVER_NAMES if n not in suffixed)
     return (suffixed + plain) if _on_windows(windows) else (plain + suffixed)
+
+
 _RPC_LIB_NAMES = ("libggml-rpc.so", "libggml-rpc.dylib", "libggml-rpc.0.dylib", "ggml-rpc.dll")
 _BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
 
@@ -695,13 +699,25 @@ def llama_bundle_dir() -> Path:
 def _peer_dir_exists(peer_ip: str, user: str, remote_dir: str) -> bool:
     """Read-only `test -d` on the peer. Used only by the dry run, which must not write."""
     try:
-        return subprocess.run(
-            [
-                "ssh", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-                f"{user}@{peer_ip}", "test", "-d", remote_dir,
-            ],
-            capture_output = True, timeout = 30,
-        ).returncode == 0
+        return (
+            subprocess.run(
+                [
+                    "ssh",
+                    "-n",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    f"{user}@{peer_ip}",
+                    "test",
+                    "-d",
+                    remote_dir,
+                ],
+                capture_output = True,
+                timeout = 30,
+            ).returncode
+            == 0
+        )
     except Exception:
         return False
 
