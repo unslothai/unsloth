@@ -1008,3 +1008,69 @@ def test_round_twelve_paths(template, expected):
 )
 def test_round_thirteen_paths(template, expected):
     assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3970832364: get() is the mapping spelling of a field read.
+        (
+            "{% if message.get('tool_calls') %}{{ message.get('tool_calls')|tojson }}{% endif %}",
+            True,
+        ),
+        ("{% if message.get('content') %}{{ message.get('content') }}{% endif %}", False),
+        ("{% set w={'role':'tool'} %}{% if w.get('role') == 'tool' %}plain{% endif %}", False),
+        # 3970832372: {% do load() %} discards the value but still runs the macro.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% macro load() %}{% set ns.catalog=tools %}"
+            "{% endmacro %}{% do load() %}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        # 3970832382: unmatched arguments arrive as the implicit varargs and kwargs.
+        ("{% macro show() %}{{ kwargs|tojson }}{% endmacro %}{{ show(catalog=tools) }}", True),
+        ("{% macro show() %}{{ varargs|tojson }}{% endmacro %}{{ show(tools) }}", True),
+        ("{% macro show() %}{{ kwargs|tojson }}{% endmacro %}{{ show(label='x') }}", False),
+        # 3970832395: a default is only reachable when the key can be absent.
+        ("{% set d={'present': []} %}{{ d.pop('present', tools)|tojson }}", False),
+        ("{% set d={'present': 'x'} %}{{ d.pop('present', tools)|tojson }}", False),
+        ("{% set d={} %}{{ d.pop('missing', tools)|tojson }}", True),
+        ("{% set d={'other': 1} %}{{ d.pop('missing', tools)|tojson }}", True),
+        ("{{ payload.pop('x', tools)|tojson }}", True),
+        ("{% set w={'label':'x'} %}{{ w.get('label', tools)|tojson }}", False),
+        # 3970832398: constant Jinja tests fold, so their branches are not scanned.
+        ("{% if false is true %}{{ tools|tojson }}{% endif %}", False),
+        ("{% if 1 is none %}{{ tools|tojson }}{% endif %}", False),
+        ("{% if true is true %}{{ tools|tojson }}{% endif %}", True),
+        ("{% if x is defined %}{{ tools|tojson }}{% endif %}", True),
+        # 3970832411: break leaves the loop incomplete, so Jinja renders the else arm.
+        ("{% for x in [1] %}{% break %}{% else %}{{ tools|tojson }}{% endfor %}", True),
+        ("{% for x in [1] %}plain{% else %}{{ tools|tojson }}{% endfor %}", False),
+        # 3970832421: a namespace write inside {% set %}...{% endset %} outlives it.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% set captured %}{% set ns.catalog=tools %}x"
+            "{% endset %}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% set captured %}plain{% endset %}"
+            "{{ ns.catalog|tojson }}",
+            False,
+        ),
+        # 3970832427: reverse and sort move the members, so the indices go unknown.
+        ("{% set c=[tools, []] %}{% do c.reverse() %}{{ c[1]|tojson }}", True),
+        ("{% set c=[[], []] %}{% do c.reverse() %}{{ c[1]|tojson }}", False),
+    ],
+)
+def test_round_fourteen_paths(template, expected):
+    assert template_supports_tools(template) is expected
+
+
+def test_reordering_a_list_over_approximates_rather_than_losing_the_catalog():
+    """`reverse` makes every index under the receiver unknown rather than tracking
+    where each member went, so selecting the index the catalog moved AWAY from also
+    matches. That is deliberate: this detector's damaging failure is hiding tool
+    controls on a template that supports them, so it errs towards showing them."""
+    assert (
+        template_supports_tools("{% set c=[tools, []] %}{% do c.reverse() %}{{ c[0]|tojson }}")
+        is True
+    )

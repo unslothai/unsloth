@@ -68,11 +68,28 @@ class _State:
         )
 
 
+def _reading_call(node):
+    """`d.get('k')` reads field k, so it is the mapping spelling of `d.k` and `d['k']`.
+
+    Only the single-argument form: with a default the value may come from elsewhere,
+    and `_value_aliases` handles that case on its own.
+    """
+    return (
+        isinstance(node, nodes.Call)
+        and isinstance(node.node, nodes.Getattr)
+        and node.node.attr == "get"
+        and len(node.args) == 1
+        and not node.kwargs
+    )
+
+
 def _field(node):
     if isinstance(node, nodes.Getattr):
         return node.attr
     if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
         return node.arg.value
+    if _reading_call(node):
+        return node.args[0].value if isinstance(node.args[0], nodes.Const) else _UNKNOWN
     return _UNKNOWN
 
 
@@ -94,8 +111,9 @@ def _reference_key(node):
         return (node.name,)
     if isinstance(node, nodes.NSRef):
         return (node.name, node.attr)
-    if isinstance(node, (nodes.Getattr, nodes.Getitem)):
-        parent = _reference_key(node.node)
+    if isinstance(node, (nodes.Getattr, nodes.Getitem)) or _reading_call(node):
+        base = node.node.node if _reading_call(node) else node.node
+        parent = _reference_key(base)
         member = _field(node)
         if parent is not None and isinstance(member, (str, int)):
             return (*parent, member)
@@ -138,6 +156,16 @@ def _constant_truth(node, state = None):
             try:
                 # The rebuilt node is synthetic, so it carries no environment of its
                 # own and has to be handed an evaluation context explicitly.
+                return bool(replacement.as_const(nodes.EvalContext(_ENVIRONMENT)))
+            except Exception:
+                pass
+    if isinstance(node, nodes.Test):
+        # `{% if false is true %}` and `{% if 1 in [] %}` never run their bodies.
+        folded = _as_const(node.node, state)
+        arguments = [_as_const(argument, state) for argument in node.args]
+        if folded is not None and all(argument is not None for argument in arguments):
+            try:
+                replacement = nodes.Test(folded, node.name, arguments, [], None, None)
                 return bool(replacement.as_const(nodes.EvalContext(_ENVIRONMENT)))
             except Exception:
                 pass
@@ -242,7 +270,8 @@ def _template_built(node, state):
     """The member-name shortcuts below read a field off an untracked value, so they
     only mean anything when the base is one. A base the template constructed is
     tracked, and its provenance already lives in `aliases`."""
-    return _reference_key(node.node) in state.constructed
+    base = node.node.node if _reading_call(node) else node.node
+    return _reference_key(base) in state.constructed
 
 
 def _tool_reference(node, state):
@@ -445,9 +474,12 @@ def _value_aliases(value, state, active):
         removed = _removed_key(value.node.attr, value)
         if removed is not None:
             result = _select(_value_aliases(value.node.node, state, active), removed)
-            # `d.pop('missing', tools)` renders the default when the field is absent.
-            for fallback in value.args[1:]:
-                result |= _value_aliases(fallback, state, active)
+            # `d.pop('missing', tools)` renders the default, but only when the field
+            # can actually be absent: a literal that visibly holds the key never
+            # reaches it.
+            if not _definitely_has(value.node.node, removed, state):
+                for fallback in value.args[1:]:
+                    result |= _value_aliases(fallback, state, active)
             return result
         # A shallow copy is the receiver again as far as provenance goes; without this
         # the fallback reads `copy` as a data field and loses everything under it.
@@ -456,9 +488,11 @@ def _value_aliases(value, state, active):
         if value.node.attr == "get" and value.args:
             member = value.args[0].value if isinstance(value.args[0], nodes.Const) else _UNKNOWN
             result = _select(_value_aliases(value.node.node, state, active), member)
-            # The default is what a missing field falls back to, so it counts too.
-            for fallback in value.args[1:]:
-                result |= _value_aliases(fallback, state, active)
+            # The default is what a missing field falls back to, so it counts - unless
+            # the receiver is a literal that visibly holds the key.
+            if not _definitely_has(value.node.node, member, state):
+                for fallback in value.args[1:]:
+                    result |= _value_aliases(fallback, state, active)
             return result
         # append/extend/update and the other in-place mutators return None: the data
         # goes into the receiver, not into the rendered result.
@@ -502,6 +536,28 @@ def _value_aliases(value, state, active):
                     active,
                     source = state if parameter.name in arguments else local.copy(),
                 )
+            # Jinja collects arguments the signature does not name into the implicit
+            # `varargs` and `kwargs`, so `{% macro show() %}{{ kwargs|tojson }}` sees
+            # what was passed by keyword.
+            extra_positional = value.args[len(parameters) :]
+            _replace(
+                local.aliases,
+                ("varargs",),
+                {
+                    (index, *suffix)
+                    for index, argument in enumerate(extra_positional)
+                    for suffix in _value_aliases(argument, state, active)
+                },
+            )
+            extra_keywords = set()
+            for keyword in value.kwargs:
+                if keyword.key not in parameters:
+                    _replace(
+                        extra_keywords,
+                        (keyword.key,),
+                        _value_aliases(keyword.value, state, active),
+                    )
+            _replace(local.aliases, ("kwargs",), extra_keywords)
             # The macro's own names stay live: nothing outside it constrains its body.
             emits, children = _scan(macro.body, local, active | {macro.name}, tail = _names(macro))
             # A namespace write inside a macro escapes it, so the caller sees it:
@@ -616,6 +672,13 @@ def _mark_constructed(key, value, state):
     for member, item in pairs:
         if _constructs_object(item):
             _mark_constructed((*key, member), item, state)
+        elif isinstance(item, nodes.Const):
+            # A literal scalar member is template-built too, and recording it is what
+            # says this record HAS the field, which decides whether a get/pop default
+            # can ever be reached. A member holding an expression is NOT recorded: it
+            # may carry external data, and `{% set w={'message': message} %}` must
+            # leave w.message external.
+            state.constructed.add((*key, member))
 
 
 def _constructs_object(value):
@@ -683,6 +746,23 @@ def _mutate(call, state, active):
         for keyword in call.kwargs
         for suffix in _value_aliases(keyword.value, state, active)
     }
+    if method in ("reverse", "sort") and not call.args:
+        # The members are the same but their positions are not, so every index under
+        # the receiver becomes unknown. This over-approximates - selecting the index
+        # the catalog moved away from also matches - which is the safe direction for
+        # a detector whose failure mode is silently hiding tool controls.
+        moved = {
+            alias for alias in state.aliases if alias[: len(key)] == key and len(alias) > len(key)
+        }
+        if moved:
+            _replace(
+                state.aliases,
+                key,
+                {(_UNKNOWN, *alias[len(key) + 1 :]) for alias in moved},
+            )
+            state.mutated.add(key)
+            _forget(key, state)
+        return
     removed = _removed_key(method, call)
     if method != "clear" and removed is None and not paths:
         return
@@ -721,6 +801,19 @@ def _unknown_callee(call, state):
     for reasons not visible here, so the block is scanned unconditionally.
     """
     return not (isinstance(call.node, nodes.Name) and call.node.name in state.macros)
+
+
+def _definitely_has(node, member, state):
+    """Whether the receiver is a literal this template built that visibly holds
+    `member`, so a `get`/`pop` default can never be reached."""
+    if member is _UNKNOWN:
+        return False
+    if isinstance(node, nodes.Dict):
+        return any(
+            isinstance(pair.key, nodes.Const) and pair.key.value == member for pair in node.items
+        )
+    key = _reference_key(node)
+    return key is not None and key in state.constructed and (*key, member) in state.constructed
 
 
 def _removed_key(method, call):
@@ -866,7 +959,7 @@ def _scan_loop(node, state, active, guarded, tail):
     # A filter can reject every item of a literal iterable, in which case the body
     # never runs and Jinja takes the else. Only an unfiltered literal is guaranteed
     # to iterate.
-    if not literal or (node.test is not None and else_reachable):
+    if not literal or (node.test is not None and else_reachable) or finished:
         emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded, inner_tail)
         if emits:
             return True, []
@@ -919,6 +1012,9 @@ def _scan(
                 _bind(node.target, node.node, current, active)
                 _mutate(node.node, current, active)
             elif isinstance(node, nodes.ExprStmt):
+                # `{% do load() %}` discards the return value but still runs the
+                # macro, so it is evaluated for the state it leaves behind.
+                _value_aliases(node.node, current, active)
                 _mutate(node.node, current, active)
             elif isinstance(node, nodes.Macro):
                 current.macros[node.name] = node
@@ -969,7 +1065,17 @@ def _scan(
                     if emits:
                         return True, []
             elif isinstance(node, nodes.AssignBlock):
-                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
+                emits, captured = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
+                # Jinja keeps a namespace write made inside the capture, so the
+                # escaping mutations are exported before the target is bound.
+                escaped = set()
+                for child in captured:
+                    exported = _export_scope(current, child)
+                    escaped |= exported.aliases
+                    current.mutated.update(exported.mutated)
+                if captured:
+                    current.aliases.clear()
+                    current.aliases.update(escaped)
                 _bind_paths(node.target, {()} if emits else set(), current)
             elif isinstance(node, nodes.With):
                 local = current.copy(scoped = True)
