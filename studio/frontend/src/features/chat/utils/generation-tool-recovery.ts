@@ -119,9 +119,14 @@ export function createGenerationToolRecovery(
     const part = record(entry.part);
     return part?.type === "tool-call" && part.result === undefined;
   });
+  // Saved id-less cards all carry the same empty id, so keying them by it would keep the last
+  // one and leave the rest running for good. Each keeps its own slot, in the order it was saved.
+  let savedIdless = 0;
   for (const entry of savedPending) {
     const id = record(entry.part)?.backendToolCallId;
-    if (typeof id === "string") pending.set(id, entry);
+    if (typeof id === "string") {
+      pending.set(id || ` idless:saved:${savedIdless++}`, entry);
+    }
   }
   const replayFrom = savedPending.some(
     (entry) => typeof record(entry.part)?.backendToolCallId !== "string",

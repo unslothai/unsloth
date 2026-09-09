@@ -815,3 +815,56 @@ test("an id-less completion closes the most recent open card", async () => {
     ],
   );
 });
+
+test("saved id-less cards each keep their own pending slot", async () => {
+  const saved = (name: string) => ({
+    type: "tool-call",
+    toolCallId: `${name}:saved`,
+    backendToolCallId: "",
+    toolName: name,
+    args: {},
+    argsText: "{}",
+  });
+  const { content } = await recoverRun(
+    [saved("read_file"), saved("edit_file")],
+    [
+      { type: "tool_end", tool_call_id: "", result: "second" },
+      { type: "tool_end", tool_call_id: "", result: "first" },
+    ],
+  );
+  const cards = content.filter((part) => part.type === "tool-call");
+  assert.deepEqual(
+    cards.map((part) => [part.toolName, part.result]),
+    [
+      ["read_file", "first"],
+      ["edit_file", "second"],
+    ],
+  );
+});
+
+test("a full identity replay does not republish the saved history", async () => {
+  const legacy = {
+    type: "tool-call",
+    toolCallId: "call_7:legacy",
+    toolName: "edit_file",
+    args: {},
+    argsText: "{}",
+  };
+  const history = Array.from({ length: 12 }, (_, i) => ({
+    choices: [{ delta: { content: `t${i}` } }],
+  }));
+  const { replayFrom, imports } = await recoverRun(
+    [legacy],
+    [
+      ...history,
+      { type: "tool_start", tool_call_id: "call_7", tool_name: "edit_file" },
+      { type: "tool_end", tool_call_id: "call_7", result: "done" },
+    ],
+    { cursor: 12 },
+  );
+  assert.equal(replayFrom, 0, "a legacy card still replays from the start");
+  assert.ok(
+    imports.length <= 4,
+    `history must not be republished, got ${imports.length} imports`,
+  );
+});

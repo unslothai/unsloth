@@ -1033,6 +1033,10 @@ function scheduleGenerationRecovery(
             }
             identityValidated = true;
           }
+          // A legacy pending card replays the run from 0 to recover its identity. Those chunks are
+          // already in the saved reply, so publishing them again would rewrite storage and reimport
+          // the thread once per historical token.
+          let advanced = false;
           if (update.event?.type === "chunk") {
             toolRecovery.apply(
               update.event.payload,
@@ -1042,6 +1046,7 @@ function scheduleGenerationRecovery(
             );
           }
           if (update.event && update.event.seq > cursor) {
+            advanced = true;
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
@@ -1111,7 +1116,7 @@ function scheduleGenerationRecovery(
             }
           }
           const shouldPublish =
-            update.event?.type === "chunk" ||
+            (update.event?.type === "chunk" && advanced) ||
             update.run.status !== lastPublishedStatus ||
             (["cancelled", "completed", "failed"].includes(update.run.status) &&
               cursor >= update.run.lastEventSeq);
