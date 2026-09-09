@@ -5,10 +5,11 @@
 // whole enforcement; custom TTS posted assistant text with connections switched off.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 type Adapter = {
   generateCustomTtsAudio: (
@@ -340,10 +341,7 @@ test("custom TTS sends no key when the connection already has one saved", async 
 // #9214: a deleted connection left ttsProviderId persisted, so the select pointed at a
 // missing item and every read aloud posted the stale id. Mirrors the dictation guard.
 test("the custom TTS selection is dropped when its connection disappears", () => {
-  const voiceTab = readFileSync(
-    new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(
     voiceTab,
     /if \(ttsProviderId && !hasSelectedTtsConnection\) \{\s*setTtsProviderId\(""\);/,

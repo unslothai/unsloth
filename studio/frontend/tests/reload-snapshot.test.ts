@@ -2,133 +2,41 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const script = readFileSync(
-  new URL("../public/reload-snapshot.js", import.meta.url),
-  "utf8",
-);
-const indexHtml = readFileSync(
-  new URL("../index.html", import.meta.url),
-  "utf8",
-);
-const indexCss = readFileSync(
-  new URL("../src/index.css", import.meta.url),
-  "utf8",
-);
-const rootRouteSource = readFileSync(
-  new URL("../src/app/routes/__root.tsx", import.meta.url),
-  "utf8",
-);
-const runtimeProviderSource = readFileSync(
-  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-  "utf8",
-);
-const chatPageSource = readFileSync(
-  new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-  "utf8",
-);
-const sharedComposerSource = readFileSync(
-  new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-  "utf8",
-);
-const imageDropzoneSource = readFileSync(
-  new URL("../src/components/image-dropzone.tsx", import.meta.url),
-  "utf8",
-);
-const attachmentPreviewSource = readFileSync(
-  new URL(
-    "../src/components/assistant-ui/attachment-preview.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc, readText } from "./helpers/kit.ts";
 
-const attachmentSource = readFileSync(
-  new URL("../src/components/assistant-ui/attachment.tsx", import.meta.url),
-  "utf8",
-);
-const imagesPageSource = readFileSync(
-  new URL("../src/features/images/images-page.tsx", import.meta.url),
-  "utf8",
-);
-const videoPageSource = readFileSync(
-  new URL("../src/features/video/video-page.tsx", import.meta.url),
-  "utf8",
-);
-const audioPageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const hubPageSource = readFileSync(
-  new URL("../src/features/hub/hub-page.tsx", import.meta.url),
-  "utf8",
-);
-const referencePickerSource = readFileSync(
-  new URL("../src/features/video/reference-picker.tsx", import.meta.url),
-  "utf8",
-);
+const script = readText("../public/reload-snapshot.js");
+const indexHtml = readText("../index.html");
+const indexCss = readSrc("index.css");
+const rootRouteSource = readSrc("app/routes/__root.tsx");
+const runtimeProviderSource = readSrc("features/chat/runtime-provider.tsx");
+const chatPageSource = readSrc("features/chat/chat-page.tsx");
+const sharedComposerSource = readSrc("features/chat/shared-composer.tsx");
+const imageDropzoneSource = readSrc("components/image-dropzone.tsx");
+const attachmentPreviewSource = readSrc("components/assistant-ui/attachment-preview.tsx");
 
-const unstructuredDropZoneSource = readFileSync(
-  new URL(
-    "../src/features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const attachmentSource = readSrc("components/assistant-ui/attachment.tsx");
+const imagesPageSource = readSrc("features/images/images-page.tsx");
+const videoPageSource = readSrc("features/video/video-page.tsx");
+const audioPageSource = readSrc("features/audio/audio-page.tsx");
+const hubPageSource = readSrc("features/hub/hub-page.tsx");
+const referencePickerSource = readSrc("features/video/reference-picker.tsx");
 
-const projectsPageSource = readFileSync(
-  new URL("../src/features/chat/projects-page.tsx", import.meta.url),
-  "utf8",
-);
+const unstructuredDropZoneSource = readSrc("features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx");
 
-const seedDialogSource = readFileSync(
-  new URL(
-    "../src/features/recipe-studio/dialogs/seed/seed-dialog.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const projectsPageSource = readSrc("features/chat/projects-page.tsx");
 
-const projectSourceDropzoneSource = readFileSync(
-  new URL(
-    "../src/features/rag/components/project-source-dropzone.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const dataRecipesPageSource = readFileSync(
-  new URL(
-    "../src/features/data-recipes/pages/data-recipes-page.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const editRecipePageSource = readFileSync(
-  new URL(
-    "../src/features/data-recipes/pages/edit-recipe-page.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const exportPageSource = readFileSync(
-  new URL("../src/features/export/export-page.tsx", import.meta.url),
-  "utf8",
-);
-const studioPageSource = readFileSync(
-  new URL("../src/features/studio/studio-page.tsx", import.meta.url),
-  "utf8",
-);
-const apiMonitorPageSource = readFileSync(
-  new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url),
-  "utf8",
-);
-const authFormSource = readFileSync(
-  new URL("../src/features/auth/components/auth-form.tsx", import.meta.url),
-  "utf8",
-);
+const seedDialogSource = readSrc("features/recipe-studio/dialogs/seed/seed-dialog.tsx");
+
+const projectSourceDropzoneSource = readSrc("features/rag/components/project-source-dropzone.tsx");
+const dataRecipesPageSource = readSrc("features/data-recipes/pages/data-recipes-page.tsx");
+const editRecipePageSource = readSrc("features/data-recipes/pages/edit-recipe-page.tsx");
+const exportPageSource = readSrc("features/export/export-page.tsx");
+const studioPageSource = readSrc("features/studio/studio-page.tsx");
+const apiMonitorPageSource = readSrc("features/api-monitor/api-monitor-page.tsx");
+const authFormSource = readSrc("features/auth/components/auth-form.tsx");
 
 type Listener = (event: Record<string, unknown>) => void;
 

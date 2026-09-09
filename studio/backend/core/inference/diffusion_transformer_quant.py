@@ -23,6 +23,8 @@ probe is best-effort: an unsupported scheme yields None and the caller loads GGU
 
 from __future__ import annotations
 
+import inspect as _inspect
+import os as _os
 import re as _re
 import sys as _sys
 import threading as _threading
@@ -30,6 +32,10 @@ from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
+
+# Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
+install_torchao_int_mm_patch()
 
 TQ_INT8 = "int8"
 TQ_FP8 = "fp8"
@@ -964,6 +970,37 @@ def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
     return True if fast_accum is None else bool(fast_accum)
 
 
+# torchao's config handlers call the PROCESS-WIDE ``recommended_inductor_config_setter()`` unless
+# ``set_inductor_config`` is False, and two of its flags change results rather than only speed: coordinate-descent
+# tuning makes the render differ between processes on one seed, and set_float32_matmul_precision("high") reaches
+# every fp32 op in the pipeline (VAE, norms). UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores it, for A/B benchmarking.
+_TORCHAO_INDUCTOR_CONFIG_ENV = "UNSLOTH_TORCHAO_INDUCTOR_CONFIG"
+
+
+def _torchao_may_set_inductor_config() -> bool:
+    return (_os.environ.get(_TORCHAO_INDUCTOR_CONFIG_ENV) or "").strip().lower() in (
+        "1",
+        "on",
+        "true",
+        "yes",
+    )
+
+
+def _quiet_config(cls: Any, **kwargs: Any) -> Any:
+    """Build a torchao config with ``set_inductor_config = False`` when the class accepts it. Guarded by
+    signature, not version: the mx_formats configs lack the kwarg and never call the setter anyway."""
+    if not _torchao_may_set_inductor_config():
+        try:
+            if "set_inductor_config" in _inspect.signature(cls).parameters:
+                kwargs = {**kwargs, "set_inductor_config": False}
+        except (
+            TypeError,
+            ValueError,
+        ):  # C-implemented or otherwise unintrospectable: leave it alone
+            pass
+    return cls(**kwargs)
+
+
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     """The torchao dynamic-activation config for ``scheme`` (lazy imports per branch).
 
@@ -974,7 +1011,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     )
 
     if scheme == TQ_INT8:
-        return Int8DynamicActivationInt8WeightConfig()
+        return _quiet_config(Int8DynamicActivationInt8WeightConfig)
     if scheme == TQ_FP8:
         # Per-ROW granularity (per-token activation + per-channel weight scale) is REQUIRED: torchao defaults to
         # per-TENSOR, where one Z-Image outlier near 6.6e4 forces a tensor-wide scale that pushes normal values below
@@ -982,11 +1019,10 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # it falls to int8. fast accumulate (fp8 only) follows GPU class unless forced: consumer cards run fp8 ~2x
         # faster with FP16 accumulate. activation_value_lb floors the per-row scale: an ALL-ZERO row otherwise yields
         # scale 0, NaN qdata, black frames.
-        import inspect
         from torchao.quantization import PerRow
 
         fp8_kwargs: dict = {"granularity": PerRow()}
-        config_params = inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
+        config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
             fp8_kwargs["activation_value_lb"] = 1e-12
         # Pin the plain-torch quantize kernel: the default AUTO switches to the MSLK kernel whenever an mslk package is
@@ -1002,32 +1038,35 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
                 pass
         try:
             from torchao.float8 import Float8MMConfig
-            return Float8DynamicActivationFloat8WeightConfig(
+            return _quiet_config(
+                Float8DynamicActivationFloat8WeightConfig,
                 mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum)),
                 **fp8_kwargs,
             )
         except Exception:  # noqa: BLE001 - older torchao without the explicit mm knob
-            return Float8DynamicActivationFloat8WeightConfig(**fp8_kwargs)
+            return _quiet_config(Float8DynamicActivationFloat8WeightConfig, **fp8_kwargs)
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with CUTLASS
         # FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
         try:
-            return NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
+            return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig, use_triton_kernel = False)
         except TypeError:  # older torchao without the knob
-            return NVFP4DynamicActivationNVFP4WeightConfig()
+            return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig)
     if scheme == TQ_MXFP8:
         import torch
         from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
         try:
-            return MXDynamicActivationMXWeightConfig(
-                activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
+            return _quiet_config(
+                MXDynamicActivationMXWeightConfig,
+                activation_dtype = torch.float8_e4m3fn,
+                weight_dtype = torch.float8_e4m3fn,
             )
         except (TypeError, AttributeError):
             # TypeError: older torchao without the explicit dtype knobs. AttributeError: a torch build without
             # torch.float8_e4m3fn.
-            return MXDynamicActivationMXWeightConfig()
+            return _quiet_config(MXDynamicActivationMXWeightConfig)
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
 
