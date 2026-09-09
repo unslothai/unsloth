@@ -1199,7 +1199,7 @@ def test_a_cuda_index_codec_also_installs_npp():
     dependency set, so a --no-deps install from a cuNNN index reports success and then fails
     to import. docker/Dockerfile installs nvidia-npp-cu12 beside the same wheel."""
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    assert 'f"nvidia-npp-cu{_npp_major}"' in source
+    assert "_npp_req = _npp_requirement(_npp_major)" in source
     assert "Installing torchcodec CUDA runtime (NPP)" in source
 
     # The major follows the index leaf, and a cpu or rocm index asks for nothing.
@@ -1218,6 +1218,43 @@ def test_a_cuda_index_codec_also_installs_npp():
     # The Dockerfile this mirrors still pairs the two, so the rationale stays checkable.
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
     assert "nvidia-npp-cu12" in dockerfile
+
+
+def test_cuda_13_asks_for_nvidia_npp_not_the_retired_cu13_name():
+    """`nvidia-npp-cu13` on PyPI is a deprecation stub: its only release, 0.0.1, ships no
+    wheel and its sdist build backend raises on purpose. So a cu13x host did not merely skip
+    NPP, it tried to build an sdist and failed, and the clean-machine CI job rejects the
+    source build outright ("built from source: nvidia-npp-cu13"). NVIDIA's replacement is
+    plain `nvidia-npp`, whose own major is the CUDA major."""
+    import re as _re
+
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    namespace: dict = {}
+    exec(
+        # Up to the next TOP-LEVEL statement of any kind: what follows this helper is a
+        # module-level assignment, not a def, so a `(?=\n\ndef )` stop swallows it.
+        _re.search(r"def _npp_requirement.*?\n(?=\n\n[^\s])", source, _re.S).group(0),
+        namespace,
+    )
+    npp_requirement = namespace["_npp_requirement"]
+
+    # CUDA 13 and later: the retired name must not appear at all.
+    assert npp_requirement("13") == "nvidia-npp>=13,<14"
+    assert npp_requirement("14") == "nvidia-npp>=14,<15"
+    for major in ("13", "14"):
+        assert "nvidia-npp-cu" not in npp_requirement(major), major
+    # Bounded above, or a CUDA 14 wheel would satisfy a CUDA 13 torch.
+    assert "<14" in npp_requirement("13")
+
+    # CUDA 12 and earlier keep the name that is still published.
+    assert npp_requirement("12") == "nvidia-npp-cu12"
+    assert npp_requirement("11") == "nvidia-npp-cu11"
+
+    # No major means no NPP, which is what keeps the caller's guard intact on a cpu host.
+    assert npp_requirement("") == ""
+    # _cuda_major_for_npp returns a string; an unparseable one keeps the old spelling
+    # rather than inventing a range.
+    assert npp_requirement("x") == "nvidia-npp-cux"
 
 
 def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():

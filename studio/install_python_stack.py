@@ -513,6 +513,30 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     return match.group(1)[:2] if match else ""
 
 
+def _npp_requirement(cuda_major: str) -> str:
+    """The NPP runtime for a CUDA major as a pip requirement, or `""` for no major.
+
+    NVIDIA retired the per-major `nvidia-npp-cuNN` names at CUDA 13. `nvidia-npp-cu13` on
+    PyPI is now a deprecation stub whose only release, 0.0.1, ships no wheel and whose sdist
+    build backend raises on purpose, so asking for it does not merely miss: it fails the
+    step, and on a clean machine it fails the whole install. From 13 the distribution is
+    plain `nvidia-npp`, whose own major IS the CUDA major, so the major moves out of the name
+    and into the specifier. cu12 and earlier keep the old name, which is still published.
+    """
+    if not cuda_major:
+        return ""
+    try:
+        major = int(cuda_major)
+    except ValueError:
+        # An unparseable major keeps the historical spelling rather than guessing a range.
+        return f"nvidia-npp-cu{cuda_major}"
+    if major < 13:
+        return f"nvidia-npp-cu{major}"
+    # Bounded above: `nvidia-npp` tracks the CUDA major, so an unbounded floor would let a
+    # future CUDA 14 wheel satisfy a CUDA 13 torch.
+    return f"nvidia-npp>={major},<{major + 1}"
+
+
 # Any sign of the CUDA runtime, versioned or not: nvcudart_hybrid64.dll is the Windows cu130
 # spelling and carries no major. Absent entirely from a cpu build, which is what makes "" safe.
 _CUDA_RUNTIME_MARKER_RE = re.compile(
@@ -8125,13 +8149,14 @@ def install_python_stack() -> int:
                         "which its torch tag implies -- matching NPP to the wheel"
                     )
                     _npp_major = _npp_probed
-            if _npp_major and not pip_install_try(
+            _npp_req = _npp_requirement(_npp_major)
+            if _npp_req and not pip_install_try(
                 "Installing torchcodec CUDA runtime (NPP)",
                 "--no-cache-dir",
-                f"nvidia-npp-cu{_npp_major}",
+                _npp_req,
             ):
                 _note(
-                    f"could not install nvidia-npp-cu{_npp_major} -- torchcodec may fail to "
+                    f"could not install {_npp_req} -- torchcodec may fail to "
                     "import on a host without the CUDA toolkit, leaving audio disabled"
                 )
 
