@@ -876,9 +876,7 @@ def test_masked_visible_devices_filter_needs_a_shared_index_space(monkeypatch):
     pair. That is only sound under PCI_BUS_ID: numeric mask entries are CUDA
     ordinals, and under FASTEST_FIRST mask "0,1" can mean physical 0,2, so
     trusting it could confirm NV# for a pair that is not the one in use."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2))
     _use_topo(monkeypatch, TOPO_BRIDGED_4X)
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")

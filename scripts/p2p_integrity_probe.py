@@ -133,9 +133,7 @@ def main() -> int:
                     s = d = None
                     try:
                         try:
-                            s = torch.arange(
-                                elements, dtype = torch.float32, device = f"cuda:{src}"
-                            )
+                            s = torch.arange(elements, dtype = torch.float32, device = f"cuda:{src}")
                             d = torch.full(
                                 (elements,),
                                 SENTINEL,
