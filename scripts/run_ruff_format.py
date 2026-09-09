@@ -16,6 +16,7 @@ CONFIG = HERE.parent / ".pre-commit-config.yaml"
 # Set to run against whatever ruff is installed. For a one-off experiment; a commit
 # made under it will be reformatted by the hook and fail pre-commit.
 ANY_VERSION_ENV = "UNSLOTH_RUFF_FORMAT_ANY_VERSION"
+USAGE = "usage: run_ruff_format.py FILE [FILE ...]  (formats in place; no options)"
 
 # `- ruff==0.6.9` under the hook's additional_dependencies. Read out of the config
 # rather than copied here, because a second copy of the pin is a second thing to
@@ -58,10 +59,43 @@ def version_mismatch(pinned: str | None, installed: str | None) -> bool:
     return bool(pinned and installed and pinned != installed)
 
 
+def parse_files(argv: list[str]) -> tuple[list[str], str | None]:
+    """The paths to format, or an empty list plus a message saying why not.
+
+    Every argument is a path to rewrite. Silently dropping the rest was worse
+    than it sounds: `--check FILE` dropped the flag, kept the file, and wrote
+    to it, and a typo'd path formatted nothing while exiting 0, which quietly
+    passes any "the formatter is a fixed point" check.
+    """
+    if not argv:
+        return [], f"no files given.\n{USAGE}"
+
+    options = [arg for arg in argv if arg.startswith("-")]
+    if options:
+        message = f"unsupported option{'s' if len(options) > 1 else ''}: {' '.join(options)}"
+        if any(opt in ("--check", "--diff") for opt in options):
+            message += (
+                "\n  There is no check mode: this script always rewrites the files"
+                " it is given, and `ruff format --check` is not an equivalent."
+                "\n  It checks the middle one of three passes, so a clean ruff says"
+                " nothing about the kwarg-spacing passes either side of it."
+                "\n  To preview a run, copy the file aside, run this script on the"
+                " copy, and diff the two."
+            )
+        return [], f"{message}\n{USAGE}"
+
+    missing = [arg for arg in argv if not Path(arg).exists()]
+    if missing:
+        return [], f"no such file{'s' if len(missing) > 1 else ''}: {' '.join(missing)}\n{USAGE}"
+
+    return list(argv), None
+
+
 def main(argv: list[str]) -> int:
-    files = [arg for arg in argv if Path(arg).exists()]
-    if not files:
-        return 0
+    files, error = parse_files(argv)
+    if error is not None:
+        print(f"run_ruff_format: {error}", file = sys.stderr)
+        return 2
 
     # Checked before anything is rewritten. ruff's own formatting is not stable
     # across releases -- 0.9 changed which half of an `assert cond, "msg"` gets
