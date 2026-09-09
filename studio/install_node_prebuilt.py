@@ -756,6 +756,10 @@ def record_runtime_verification(
 ) -> None:
     """Remember that THESE bytes answered `node -v` and `npm --version`.
 
+    Only the node half is later trusted in place of a spawn: npm_major_checked records that
+    the npm probe cleared the floor at the time, not that it still would. See
+    _recorded_runtime_matches.
+
     Read-modify-write, never raises, and never leaves a half-written marker: this
     rewrites a file that already describes a good install, so a torn write here is
     strictly worse than not writing at all.
@@ -785,21 +789,36 @@ def record_runtime_verification(
 
 
 def _recorded_runtime_matches(install_dir: Path, host: HostInfo, meta: dict, version: str) -> bool:
-    """Whether a previous run already proved these exact bytes run this exact version.
+    """Whether a previous run already proved this exact node binary reports this version.
 
-    `node -v` and `npm --version` are two interpreter starts of a 110 MB runtime, run on
-    every install and every update to re-derive an answer that cannot have changed while
-    the binaries have not. Absent records mean an install made before this existed, so
-    it pays the spawns once and then records them.
+    `node -v` is an interpreter start of a 110 MB runtime, re-run on every install and
+    every update to re-derive an answer that cannot have changed while the binary has not.
+    Absent records mean an install made before this existed, so it pays the spawn once and
+    then records it.
+
+    What this deliberately does NOT prove is npm. The npm record covers npm-cli.js alone,
+    a launcher that bootstraps thousands of files under npm/lib: deleting npm/lib/cli.js
+    leaves the recorded launcher byte-identical while `npm --version` fails. So the npm
+    record is only used as "this file is still the one the last probe ran", and
+    npm_major_checked only as "that probe cleared the floor" -- the caller still pays the
+    npm probe, because only npm can show npm's own module tree still loads.
     """
     if meta.get("node_version_checked") != version:
         return False
     npm_major = meta.get("npm_major_checked")
     if not isinstance(npm_major, int) or npm_major < NPM_MIN_MAJOR:
         return False
-    return _file_record_matches(
-        node_binary_path(install_dir, host), meta.get("node_binary")
-    ) and _file_record_matches(npm_cli_path(install_dir, host), meta.get("npm_cli"))
+    if not _file_record_matches(node_binary_path(install_dir, host), meta.get("node_binary")):
+        return False
+    if not _file_record_matches(npm_cli_path(install_dir, host), meta.get("npm_cli")):
+        return False
+    # chmod -x moves ctime only: size and mtime_ns both survive it, so the records above
+    # still match a node that can no longer be executed. The spawn this record stands in for
+    # would have failed on it and the install would have been repaired, so re-derive that
+    # answer rather than trusting bytes that are no longer reachable. npm-cli.js is read by
+    # node, not executed, so it needs no execute bit; Windows has none at all (os.access
+    # answers X_OK there from little more than existence).
+    return host.is_windows or os.access(node_binary_path(install_dir, host), os.X_OK)
 
 
 def existing_install_matches(
@@ -818,7 +837,12 @@ def existing_install_matches(
     if expected_sha is not None and meta.get("sha256") != expected_sha:
         return False
     if _recorded_runtime_matches(install_dir, host, meta, version):
-        return True
+        # The record stands in for `node -v` only. npm is a tree of thousands of files that
+        # npm-cli.js merely bootstraps, and no cheap record of the launcher can show the tree
+        # behind it is intact, so the npm probe is paid on every run: one interpreter start
+        # saved out of two, and a damaged npm still fails the check instead of being kept.
+        npm_major = installed_npm_major(install_dir, host)
+        return npm_major is not None and npm_major >= NPM_MIN_MAJOR
     if installed_node_version(install_dir, host) != version:
         return False
     npm_major = installed_npm_major(install_dir, host)

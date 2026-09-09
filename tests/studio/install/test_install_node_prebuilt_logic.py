@@ -850,21 +850,26 @@ def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
     assert (install_dir / "marker.txt").read_text(encoding = "utf-8") == "node"
 
 
-# ── the recorded runtime check: two 110 MB interpreter starts per run ──
+# ── the recorded runtime check: the 110 MB interpreter start it saves per run ──
 def _real_node_tree(root: Path, host) -> None:
-    """The two files existing_install_matches spawns, as real bytes on disk."""
+    """The two files existing_install_matches spawns, as real bytes on disk.
+
+    The execute bit is not decoration: the recorded fast path refuses a node it could not
+    run, so a tree built without it never reaches the short circuit under test.
+    """
     node = M.node_binary_path(root, host)
     npm = M.npm_cli_path(root, host)
     node.parent.mkdir(parents = True, exist_ok = True)
     npm.parent.mkdir(parents = True, exist_ok = True)
     node.write_bytes(b"node" * 64)
     npm.write_bytes(b"npm" * 64)
+    node.chmod(0o755)
 
 
 def test_a_verified_install_is_not_re_probed(tmp_path: Path, monkeypatch):
-    """`node -v` and `npm --version` are two interpreter starts of a 110 MB runtime,
-    run on every install and every update to re-derive an answer that cannot have
-    changed while the binaries have not."""
+    """`node -v` is an interpreter start of a 110 MB runtime, run on every install and
+    every update to re-derive an answer that cannot have changed while the binary has
+    not."""
     host = _host("linux", "x64")
     _real_node_tree(tmp_path, host)
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
@@ -880,7 +885,9 @@ def test_a_verified_install_is_not_re_probed(tmp_path: Path, monkeypatch):
 
     spawns.clear()
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
-    assert spawns == [], "the recorded verification was not believed"
+    # `node -v` is the one that is saved. npm is re-probed on purpose: the record covers
+    # npm-cli.js, not the module tree it loads.
+    assert spawns == ["npm"], "the recorded verification was not believed"
 
 
 def test_a_replaced_binary_is_probed_again(tmp_path: Path, monkeypatch):
@@ -897,8 +904,9 @@ def test_a_replaced_binary_is_probed_again(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: (spawns.append("npm"), 11)[1])
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
-    assert spawns == []
+    assert spawns == ["npm"]
 
+    spawns.clear()
     M.node_binary_path(tmp_path, host).write_bytes(b"a different node")
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
     assert spawns == ["node", "npm"]
@@ -941,6 +949,103 @@ def test_a_recorded_npm_below_the_floor_is_probed_again(tmp_path: Path, monkeypa
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+# os.access(..., X_OK) answers from the POSIX mode bits, which root is exempt from and
+# Windows does not have, so the stripped execute bit can only be observed as an
+# unprivileged POSIX user.
+_EXECUTE_BIT_IS_ENFORCED = os.name != "nt" and getattr(os, "geteuid", lambda: 0)() != 0
+
+
+@pytest.mark.skipif(
+    not _EXECUTE_BIT_IS_ENFORCED,
+    reason = "needs an unprivileged POSIX user: root and Windows both ignore the execute bit",
+)
+def test_a_node_that_lost_its_execute_bit_is_not_a_match(tmp_path: Path, monkeypatch):
+    """Dropping the execute bit is invisible to the record: it moves ctime, and nothing else.
+
+    Size and mtime_ns both survive it, so the file record still matches a node that can no
+    longer be started. The spawn the record stands in for would have failed here and the
+    install would have been repaired, which is the outcome that has to be kept.
+    """
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    node = M.node_binary_path(tmp_path, host)
+    before = node.stat()
+
+    node.chmod(0o644)
+    after = node.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    # The record itself still matches, which is exactly why the mode has to be asked for.
+    assert M._file_record_matches(node, M.load_metadata(tmp_path)["node_binary"]) is True
+    assert (
+        M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is False
+    )
+
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: None)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_an_execute_bit_is_not_demanded_of_the_npm_launcher(tmp_path: Path, monkeypatch):
+    """npm-cli.js is read by node, not executed, so its mode says nothing about npm."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    M.npm_cli_path(tmp_path, host).chmod(0o644)
+
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is True
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+
+
+def test_a_recorded_install_whose_npm_tree_was_gutted_is_not_a_match(tmp_path: Path, monkeypatch):
+    """The record covers npm-cli.js, a launcher that bootstraps ../lib/cli.js.
+
+    Deleting npm/lib/cli.js leaves the recorded launcher byte for byte identical while
+    `npm --version` fails, so nothing about the record can notice it. That is why the npm
+    probe is still paid on the recorded path, and this pins that it is.
+    """
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    cli_js = M.npm_cli_path(tmp_path, host).parent.parent / "lib" / "cli.js"
+    cli_js.parent.mkdir(parents = True, exist_ok = True)
+    cli_js.write_bytes(b"module.exports = () => {};\n")
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    launcher_before = M.npm_cli_path(tmp_path, host).read_bytes()
+
+    # Stands in for the real spawn: node loads the launcher, which requires ../lib/cli.js.
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11 if cli_js.exists() else None)
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: pytest.fail("`node -v` should stay saved")
+    )
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+
+    cli_js.unlink()
+    assert M.npm_cli_path(tmp_path, host).read_bytes() == launcher_before
+    # The record cannot tell the difference, so only the probe can.
+    assert M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is True
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_the_healthy_recorded_case_never_spawns_node_v(tmp_path: Path, monkeypatch):
+    """The saved `node -v` is the whole point of the record; losing it is a silent revert."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+
+    probes = []
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: pytest.fail("`node -v` was spawned")
+    )
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: (probes.append("npm"), 11)[1])
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert probes == ["npm"]
 
 
 def test_the_record_survives_an_unwritable_marker(tmp_path: Path):
