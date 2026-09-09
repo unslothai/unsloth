@@ -209,6 +209,7 @@ def test_the_hint_names_the_nodes_the_groups_and_the_account(monkeypatch, linux)
 
 def _no_passwd_entry(monkeypatch):
     """A uid the passwd database does not know, which is where the environment is read."""
+
     def _missing(_uid):
         raise KeyError(_uid)
 
@@ -810,6 +811,7 @@ def _stat_nodes(monkeypatch, modes: dict, names: dict):
     and a two-argument lambda takes the whole session down with it rather than failing
     the test that installed it.
     """
+
     def _stat(path, *, follow_symlinks = True):
         if str(path) not in modes:
             raise OSError("gone")
