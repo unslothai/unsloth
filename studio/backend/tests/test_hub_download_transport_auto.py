@@ -35,6 +35,13 @@ except ImportError:
 
 from hub.services import download_lifecycle as dl
 from hub.utils import download_registry
+import importlib
+import os
+import utils.hf_xet_fallback as shim
+
+
+def _boom(**kw):
+    raise RuntimeError("no")
 
 
 # --------------------------------------------------------------------------------------------
@@ -168,8 +175,6 @@ def test_xet_worker_is_sized_from_the_machine(monkeypatch):
 def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
     """Unsloth used to force the flag off here. Two copies of one rule drifted, and on a 2TB host the
     worker ended up with a 24GB laptop's buffer, 3.4x slower than the machine's own setting."""
-    import utils.hf_xet_fallback as shim
-
     seen = {}
 
     def _apply(env, cache_dir = None):
@@ -199,8 +204,6 @@ def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch)
     """An unsloth_zoo with no `hf_xet_tuning` is exactly the version that sets
     HF_XET_HIGH_PERFORMANCE=1 at import, so routing the clear through the (then empty) overrides
     would hand the worker a 64GB buffer ceiling on the installs Unsloth alone cannot fix."""
-    import utils.hf_xet_fallback as shim
-
     monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
@@ -210,8 +213,6 @@ def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch)
 def test_the_legacy_opt_in_still_works_without_the_tuning_module(monkeypatch):
     """Newer zoos honour the flag on their own, but this is the escape hatch on installs that
     cannot, so it has to keep working there."""
-    import utils.hf_xet_fallback as shim
-
     monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
     monkeypatch.setenv("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "1")
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
@@ -382,9 +383,6 @@ def test_capabilities_report_what_auto_resolves_to(monkeypatch):
 def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
     fake = _types.ModuleType("utils.hf_xet_fallback")
 
-    def _boom(**kw):
-        raise RuntimeError("no")
-
     fake.cached_xet_health = _boom
 
     fake.xet_health = _boom
@@ -405,16 +403,10 @@ def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
     """unsloth_zoo.__init__ runs torch accelerator detection and raises on a CPU-only host, which is
     exactly the small machine these caps protect, so without the retry they switch off where they
     are needed."""
-    import importlib
-
-    import utils.hf_xet_fallback as shim
-
     attempts: list[str | None] = []
     sentinel = _types.ModuleType("fake_zoo_module")
 
     def _fake_import(name):
-        import os
-
         seen = os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         attempts.append(seen)
         if seen != "1":
@@ -427,16 +419,11 @@ def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is sentinel
     assert attempts == [None, "1"]
     # The flag is scoped to the retry: it must not leak into unrelated later imports.
-    import os
 
     assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in os.environ
 
 
 def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
-    import importlib
-
-    import utils.hf_xet_fallback as shim
-
     def _always_fail(name):
         raise ModuleNotFoundError(name)
 
@@ -450,8 +437,6 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
 
 def test_capabilities_read_does_not_load_zoo(monkeypatch):
     """Opening Hub asks for capabilities; that read must not initialize optional GPU consumers."""
-    import utils.hf_xet_fallback as shim
-
     monkeypatch.setattr(shim, "_optional_modules", {})
 
     loaded: list[str] = []
@@ -514,11 +499,7 @@ def test_gpu_init_override_is_serialized(monkeypatch):
     not reproducible by thread timing, and is established by construction instead (both take the
     same `_load_lock` around their save/set/restore) -- see the test below.
     """
-    import importlib
-    import os
     import threading
-
-    import utils.hf_xet_fallback as shim
 
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
 
@@ -544,9 +525,6 @@ def test_both_loaders_share_one_env_lock():
     """The cross-loader guarantee, checked structurally. Two separate locks would each be correct in
     isolation and still allow the interleave that leaves the override set permanently."""
     import inspect
-
-    import utils.hf_xet_fallback as shim
-
     for fn in (shim._load_shared, shim._load_optional):
         source = inspect.getsource(fn)
         assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" in source
@@ -702,9 +680,6 @@ def test_the_gate_runs_when_the_health_probe_raises(monkeypatch):
     """Same for a health module that blows up: the failure is evidence about health, not about RAM."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
 
-    def _boom(**kw):
-        raise RuntimeError("no")
-
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.xet_health = _boom
     fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
@@ -716,9 +691,6 @@ def test_the_gate_runs_when_the_health_probe_raises(monkeypatch):
 def test_no_health_and_no_pressure_still_reads_as_xet(monkeypatch):
     """The optimistic default survives when neither probe objects, including its wording."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
-
-    def _boom(**kw):
-        raise RuntimeError("no")
 
     for health_fn, expected in (
         (lambda **kw: None, "Xet"),
@@ -735,9 +707,6 @@ def test_the_probe_reads_free_ram_even_when_health_raises(monkeypatch):
     """Registry mirror of the above: the RAM read sits outside the health try, so a raising health
     module cannot take the free-RAM verdict down with it."""
 
-    def _boom(**kw):
-        raise RuntimeError("no")
-
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.cached_xet_health = _boom
     fake.xet_health = _boom
@@ -753,8 +722,6 @@ def test_the_probe_reads_free_ram_even_when_health_raises(monkeypatch):
 def test_spawn_binds_the_ram_reservation_to_the_worker(monkeypatch):
     """The sizing reserves RAM for a spawn that has not happened yet. spawn_worker has to hand that
     reservation the worker's pid, or it ages out and siblings oversubscribe the machine."""
-    import utils.hf_xet_fallback as shim
-
     bound = []
     monkeypatch.setattr(shim, "bind_worker_budget", lambda pid: bound.append(pid))
     _spawn_env(monkeypatch, use_xet = True)
@@ -767,8 +734,6 @@ def test_spawn_binds_the_ram_reservation_to_the_worker(monkeypatch):
 
 def test_a_failed_spawn_releases_its_reservation(monkeypatch):
     """Popen raising must drop the reservation rather than pin RAM until it ages out."""
-    import utils.hf_xet_fallback as shim
-
     bound = []
     monkeypatch.setattr(shim, "bind_worker_budget", lambda pid: bound.append(pid))
 
