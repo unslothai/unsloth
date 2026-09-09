@@ -65,6 +65,10 @@ on:
       - 'studio/install_*.py'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
+      # This is the only lane that executes it, and the Windows smoke workflow it moved
+      # from deliberately skips it, so without this line a PR editing only the test
+      # would never run it.
+      - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
@@ -132,6 +136,10 @@ on:
       - 'studio/install_*.py'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
+      # This is the only lane that executes it, and the Windows smoke workflow it moved
+      # from deliberately skips it, so without this line a PR editing only the test
+      # would never run it.
+      - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
