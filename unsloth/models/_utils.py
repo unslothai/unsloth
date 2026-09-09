@@ -3469,7 +3469,8 @@ def patch_gradient_accumulation_fix(Trainer):
     patch_triton_heuristics_run()
 
     # Count parameters once for the FLOPs tally instead of walking the model every micro-step.
-    if getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops":
+    if hasattr(Trainer, "floating_point_ops") and \
+            getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops":
         Trainer.floating_point_ops = _unsloth_floating_point_ops
 
     # Settle any deferred compile-mode switch at the start of every step: on recompile-limit
