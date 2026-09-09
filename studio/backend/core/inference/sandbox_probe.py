@@ -45,6 +45,7 @@ from __future__ import annotations
 import ctypes
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -137,7 +138,9 @@ def must_raise(label, fn):
 '''
 
 
-def _negative_controls(sentinel: str, escape: str, outside: str, interpreter_writable: bool) -> str:
+def _negative_controls(
+    sentinel: str, escape: str, outside: str, interpreter_writable: bool, abstract: "bytes | None"
+) -> str:
     """What a confined process must NOT be able to do.
 
     The sentinel is read twice, by two different names. Once directly, and once
@@ -153,6 +156,14 @@ def _negative_controls(sentinel: str, escape: str, outside: str, interpreter_wri
     checked after the run, by the host, in ``_host_saw_the_write``. Opening the
     interpreter for append is the leg that must raise: no sandbox shadows the
     system root with something writable, so a success there is a real escape.
+
+    Reaching a host ABSTRACT unix socket is the leg with no filesystem in it at
+    all. Those live in the network namespace this sandbox deliberately shares, so
+    the Landlock scope is the only thing that closes them, and whether that scope
+    actually took hold cannot be read off the kernel's ABI version: an outer
+    sandbox or the nesting limit can deny ``landlock_restrict_self`` on a kernel
+    new enough to offer it. Proven here rather than inferred, which is the same
+    rule the rest of this module follows.
     """
     interpreter_leg = ""
     if interpreter_writable:
@@ -160,11 +171,17 @@ def _negative_controls(sentinel: str, escape: str, outside: str, interpreter_wri
             '\nmust_raise("opened the interpreter for writing", '
             'lambda: open(sys.executable, "ab").close())\n'
         )
+    abstract_leg = ""
+    if abstract is not None:
+        abstract_leg = (
+            f'\nmust_raise("connected to a host abstract unix socket", lambda: '
+            f"socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).connect({abstract!r}))\n"
+        )
     return f"""
 must_raise("read the host sentinel", lambda: open({sentinel!r}, "rb").close())
 must_raise("followed a workdir symlink to the host sentinel",
            lambda: open({escape!r}, "rb").close())
-{interpreter_leg}
+{interpreter_leg}{abstract_leg}
 # Allowed to succeed against a private tmpfs; the host checks afterwards that
 # nothing arrived. See _negative_controls.
 try:
@@ -221,7 +238,12 @@ if child.returncode != 0 or child.stdout.strip() != b"42":
 
 
 def _payload(
-    workdir: str, sentinel: str, escape: str, outside: str, interpreter_writable: bool
+    workdir: str,
+    sentinel: str,
+    escape: str,
+    outside: str,
+    interpreter_writable: bool,
+    abstract: "bytes | None",
 ) -> str:
     """The full program that runs INSIDE the sandbox.
 
@@ -233,7 +255,7 @@ def _payload(
     """
     return (
         _PREAMBLE
-        + _negative_controls(sentinel, escape, outside, interpreter_writable)
+        + _negative_controls(sentinel, escape, outside, interpreter_writable, abstract)
         + _positive_controls(workdir)
         + f"\nprint({PROBE_TOKEN!r})\n"
     )
@@ -251,6 +273,38 @@ def _no_new_privs() -> None:
         return
     if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         logger.warning("The sandbox probe could not set PR_SET_NO_NEW_PRIVS")
+
+
+def _abstract_control() -> "tuple[bytes | None, Any]":
+    """A host abstract socket the sandboxed payload must NOT be able to reach.
+
+    Returns nothing where there is no scope to test: off Linux, and on a kernel
+    too old for it, where ``sandbox_linux.LIMITATIONS`` already says the boundary
+    is not there. Nothing either when the host cannot connect to its own socket,
+    since a refusal inside would then prove nothing -- the same pairing every
+    other control in here is held to.
+    """
+    if sys.platform != "linux":
+        return None, None
+    from . import sandbox_landlock
+
+    if not sandbox_landlock.abstract_scope_supported():
+        return None, None
+    name = b"\0unsloth-probe-" + os.urandom(8).hex().encode()
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(name)
+        listener.listen(1)
+        control = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        control.settimeout(5)
+        try:
+            control.connect(name)
+        finally:
+            control.close()
+    except OSError:
+        listener.close()
+        return None, None
+    return name, listener
 
 
 def _host_saw_the_write(outside: str) -> bool:
@@ -386,6 +440,7 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
     """
     base = None
     prepared = None
+    abstract_listener = None
     try:
         base = _probe_base()
         workdir = os.path.join(base, "work")
@@ -417,6 +472,10 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         # fail at appending to a file the host cannot write either proves nothing,
         # so that leg is dropped and disclosed rather than passed for free.
         interpreter_writable = os.access(sys.executable, os.W_OK)
+        # And for the abstract-socket leg, which only exists where the kernel has
+        # the scope to enforce it: bound and proven reachable from out here first,
+        # so a refusal inside is the scope and not a socket nobody could reach.
+        abstract, abstract_listener = _abstract_control()
 
         plan = plan_cls(
             argv = (
@@ -424,7 +483,7 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
                 "-I",
                 "-S",
                 "-c",
-                _payload(workdir, sentinel, escape, outside, interpreter_writable),
+                _payload(workdir, sentinel, escape, outside, interpreter_writable, abstract),
             ),
             workdir = workdir,
             env = env,
@@ -478,6 +537,8 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         logger.debug("sandbox probe for %s could not run", backend_name, exc_info = True)
         return False, f"the {backend_name} live probe could not run: {type(exc).__name__}: {exc}"
     finally:
+        if abstract_listener is not None:
+            abstract_listener.close()
         if prepared is not None:
             try:
                 prepared.cleanup()

@@ -76,9 +76,14 @@ def abstract_scope_supported() -> bool:
 def apply_abstract_scope() -> None:
     """Put this process, and everything it execs, out of reach of host abstract sockets.
 
-    Runs in the forked child. Silent on a kernel that cannot do it, because
-    ``auto`` is the mode that never refuses and the limitation already says the
-    boundary is not there.
+    Runs in the forked child, where there is nothing to report to: it cannot
+    raise without failing the launch after Popen, and it cannot log without
+    touching a lock a thread may have held at fork time. Whether the scope
+    actually took hold is therefore not decided here and not read off the ABI
+    version either -- an outer sandbox or the nesting limit can deny
+    ``landlock_restrict_self`` on a kernel new enough to offer it. The live probe
+    connects to a host abstract socket through this same pre-exec and requires
+    the refusal, which is what makes the capability proven rather than assumed.
     """
     if _libc is None:
         return

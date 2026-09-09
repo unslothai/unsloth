@@ -35,7 +35,7 @@ import sys
 
 import pytest
 
-from core.inference import os_sandbox, sandbox_probe
+from core.inference import os_sandbox, sandbox_landlock, sandbox_probe
 from core.inference.os_sandbox import PreparedSandboxLaunch, ToolLaunchPlan
 
 
@@ -137,7 +137,10 @@ def _wrap(
         argv = plan.argv[:-1] + (wrapper,),
         workdir = plan.workdir,
         env = plan.env,
-        preexec_fn = plan.preexec_fn,
+        # A backend claiming to confine has to carry the abstract-socket scope
+        # like the real one does, or the probe refuses it -- which is the point of
+        # that control, and the reason these stand-ins compose it too.
+        preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
         backend = name,
     )
 
@@ -463,3 +466,39 @@ def test_this_host_reports_unavailable_with_something_actionable():
     )
     if blocked and os.path.exists("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"):
         assert "apparmor_restrict_unprivileged_userns" in capability.remediation
+
+
+def test_the_abstract_socket_control_is_paired_like_every_other(monkeypatch):
+    """No control without its positive half: a refusal inside proves nothing
+    unless the host could reach that socket a moment earlier, and there is nothing
+    to prove at all on a kernel with no scope to enforce."""
+    from core.inference import sandbox_landlock, sandbox_probe
+
+    monkeypatch.setattr(sandbox_landlock, "abstract_scope_supported", lambda: False)
+    assert sandbox_probe._abstract_control() == (None, None)
+
+    monkeypatch.setattr(sandbox_landlock, "abstract_scope_supported", lambda: True)
+    if sys.platform != "linux":
+        assert sandbox_probe._abstract_control() == (None, None)
+        return
+    name, listener = sandbox_probe._abstract_control()
+    try:
+        assert name is not None and name.startswith(b"\0unsloth-probe-")
+        assert listener is not None
+    finally:
+        if listener is not None:
+            listener.close()
+
+
+def test_the_payload_requires_the_abstract_socket_to_be_out_of_reach():
+    """The scope is the only thing that closes an abstract socket, and whether it
+    took hold cannot be read off the kernel's ABI version, so the probe asks."""
+    from core.inference import sandbox_probe
+
+    with_scope = sandbox_probe._payload(
+        "/work", "/sentinel", "/escape", "/outside", False, b"\0host-socket"
+    )
+    assert "connected to a host abstract unix socket" in with_scope
+    assert "AF_UNIX" in with_scope
+    without = sandbox_probe._payload("/work", "/sentinel", "/escape", "/outside", False, None)
+    assert "abstract" not in without
