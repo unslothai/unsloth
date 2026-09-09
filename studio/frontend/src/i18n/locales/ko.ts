@@ -1255,6 +1255,7 @@ export const ko = {
       copy: "복사",
       copied: "복사됨",
       commandBuilder: "명령 빌더",
+      commandShell: "모든 명령에 사용할 셸",
       agent: "코딩 에이전트",
       model: "모델",
       searchModels: "GGUF 모델 검색...",

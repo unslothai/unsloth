@@ -1267,6 +1267,18 @@ def _windows_amd_host(**overrides):
     return ilp.HostInfo(**defaults)
 
 
+def _windows_gfx803_host(
+    *args,
+    rocm_gfx_target = "gfx803",
+    rocm_gfx_targets = ["gfx1201", "gfx803"],
+    **kwargs,
+):
+    """_windows_amd_host with the gfx803 target list these cases share."""
+    return _windows_amd_host(
+        *args, rocm_gfx_target = rocm_gfx_target, rocm_gfx_targets = rocm_gfx_targets, **kwargs
+    )
+
+
 def test_route_to_vulkan_prebuilt_auto_fallback_for_legacy_amd_gfx():
     host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
@@ -1277,10 +1289,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_for_legacy_amd_gfx():
 
 
 def test_route_to_vulkan_prebuilt_keeps_hip_when_one_gpu_is_supported():
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx1201",
-        rocm_gfx_targets = ["gfx1201", "gfx803"],
-    )
+    host = _windows_gfx803_host(rocm_gfx_target = "gfx1201")
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed is host
     assert repo == FORK
@@ -1291,10 +1300,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_skips_hip_masked_hosts():
     # A HIP mask can hide a HIP-capable dGPU, but the Vulkan runtime honours none of them,
     # so auto-routing would let the installed backend grab the gfx1201 the user masked
     # off.
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx803",
-        rocm_gfx_targets = ["gfx1201", "gfx803"],
-    )
+    host = _windows_gfx803_host()
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
     assert persist is None
@@ -1304,10 +1310,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_skips_hip_masked_hosts():
 def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
     # Every physical AMD device is below the floor, so no card can be exposed to HIP and
     # the #7357 auto-Vulkan fallback still fires.
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx900",
-        rocm_gfx_targets = ["gfx803", "gfx900"],
-    )
+    host = _windows_gfx803_host(rocm_gfx_target = "gfx900", rocm_gfx_targets = ["gfx803", "gfx900"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
     assert persist == "auto"
@@ -1384,10 +1387,7 @@ def test_route_to_vulkan_prebuilt_hip_masked_host_still_honours_explicit_optin(m
     # The mask guard only suppresses the AUTOMATIC fallback; an explicit opt-in is the user
     # taking responsibility for the Vulkan device mask themselves.
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx803",
-        rocm_gfx_targets = ["gfx1201", "gfx803"],
-    )
+    host = _windows_gfx803_host()
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
     )
@@ -1467,11 +1467,7 @@ def test_upstream_windows_hip_targets_are_a_subset_of_the_combined_floor():
 
 
 def test_route_to_vulkan_prebuilt_unknown_gfx_does_not_auto_fallback():
-    host = _windows_amd_host(
-        has_rocm = True,
-        rocm_gfx_target = None,
-        rocm_gfx_targets = [],
-    )
+    host = _windows_gfx803_host(has_rocm = True, rocm_gfx_target = None, rocm_gfx_targets = [])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed is host
     assert repo == FORK
@@ -1505,10 +1501,7 @@ def test_route_to_vulkan_prebuilt_gfx1034_keeps_rocm():
 
 def test_route_to_vulkan_prebuilt_explicit_opt_in_on_mixed_amd(monkeypatch):
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx1201",
-        rocm_gfx_targets = ["gfx1201", "gfx803"],
-    )
+    host = _windows_gfx803_host(rocm_gfx_target = "gfx1201")
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
     assert persist == "vulkan"
@@ -1546,8 +1539,7 @@ def test_hip_backend_env_suppresses_auto_vulkan_fallback_on_unsupported_gfx(monk
 def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
     # Vulkan ignores CUDA_VISIBLE_DEVICES, so a CUDA-masked NVIDIA card next to a legacy
     # AMD gfx must not auto-route: Vulkan could grab the reserved NVIDIA GPU.
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx803",
+    host = _windows_gfx803_host(
         rocm_gfx_targets = ["gfx803"],
         has_physical_nvidia = True,
         has_usable_nvidia = False,
@@ -1561,8 +1553,7 @@ def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
 def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkeypatch):
     # The physical-NVIDIA guard only gates the AMD auto path; an explicit opt-in wins.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx803",
+    host = _windows_gfx803_host(
         rocm_gfx_targets = ["gfx803"],
         has_physical_nvidia = True,
         has_usable_nvidia = False,
