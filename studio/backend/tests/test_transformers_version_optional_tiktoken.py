@@ -106,10 +106,10 @@ def test_a_runtime_repair_survives_a_tiktoken_that_will_not_install(tmp_path, mo
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
 
 
-def test_a_tiktoken_dist_info_without_its_payload_is_not_damage(tmp_path, monkeypatch):
-    """An interrupted tiktoken install leaves a dist-info whose RECORD names files that
-    never landed. The whole-tree scan used to read that as damage and wipe the sidecar
-    on every check; the optional package's leftovers are the top-up's business."""
+def test_a_present_tiktoken_is_held_to_its_record_like_any_other(tmp_path, monkeypatch):
+    """Absence is what is optional. A tiktoken that is present but whose RECORD names a
+    file that is not there (an interrupted install, a native extension left from an
+    older interpreter) is a tokenizer that fails at import, and the scan says so."""
     root = tmp_path / ".venv_t5_550"
     _sidecar(
         root,
@@ -128,9 +128,38 @@ def test_a_tiktoken_dist_info_without_its_payload_is_not_damage(tmp_path, monkey
     (info / "METADATA").write_text("Name: tiktoken\nVersion: 0.9.0\n", encoding = "utf-8")
     (info / "RECORD").write_text("tiktoken/__init__.py,sha256=abc,1234\n", encoding = "utf-8")
     monkeypatch.delenv(tv._SIDECAR_FILE_CHECK_ENV, raising = False)
+    assert tv._sidecar_damaged_files(str(root)) != []
+    assert tv._venv_dir_is_valid_and_undamaged(str(root), tv._VENV_T5_550_PACKAGES) is False
+    # With the payload the RECORD names in place, the sidecar is whole.
+    (root / "tiktoken").mkdir()
+    (root / "tiktoken" / "__init__.py").write_bytes(b"x" * 1234)
     assert tv._sidecar_damaged_files(str(root)) == []
     assert tv._venv_dir_is_valid_and_undamaged(str(root), tv._VENV_T5_550_PACKAGES) is True
-    # A required package's RECORD is still held to the disk.
+    # A required package's RECORD is held to the disk too.
     hub = root / "huggingface_hub-1.8.0.dist-info"
     (hub / "RECORD").write_text("huggingface_hub/gone.py,sha256=abc,12\n", encoding = "utf-8")
     assert tv._sidecar_damaged_files(str(root)) != []
+
+
+def test_a_valid_sidecar_missing_tiktoken_is_topped_up_once(tmp_path, monkeypatch):
+    """A transient failure while a sidecar was built (the latest sidecar in particular,
+    which no setup top-up visits) left tiktoken out for good: every later check accepted
+    the sidecar and returned before another install. The top-up adds it without touching
+    the rest, and asks once per process when the wheel is unavailable."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: True)
+    installed: list[tuple[str, str]] = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append((pkg, target)) or False)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert installed == [("tiktoken", str(root))]
+    assert root.is_dir(), "the top-up must not wipe the sidecar"
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert len(installed) == 1, "an unavailable wheel is asked for once per process"
+    # A tiktoken that is there is left alone.
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    (root / "tiktoken").mkdir()
+    (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert len(installed) == 1

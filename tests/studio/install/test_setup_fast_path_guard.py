@@ -153,18 +153,43 @@ def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
     assert body.index("command -v python") < body.index("_target_has_pkg_version")
 
 
-def test_the_ps1_sidecar_predicate_reads_the_shim_answer_under_native_error_promotion():
-    """The shim answers "stale" with exit 1. With $PSNativeCommandUseErrorActionPreference
-    set under ErrorActionPreference Stop that exit is a terminating error, and a catch
-    that discards the output lets the fallback grep accept what the shim rejected."""
+def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
+    """Two reasons, one mechanism. The shim answers "stale" with exit 1, which a native
+    command turns into a terminating error under $PSNativeCommandUseErrorActionPreference,
+    and the shim's scan budget cannot interrupt a stalled read on a wedged mount. A bounded
+    process has neither problem; a timeout reads as stale."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     start = text.index("function Test-SidecarCurrent {")
     body = text[start : text.index("\nfunction ", start + 1)]
-    assert "$PSNativeCommandUseErrorActionPreference = $false" in body
-    assert body.index("$PSNativeCommandUseErrorActionPreference = $false") < body.index(
-        "& python $shim sidecar"
-    )
-    assert "finally" in body
+    assert "& python $shim" not in body
+    assert "Invoke-BoundedPythonProbe -PythonExe $pythonExe -Code $code -TimeoutSec 60" in body
+    # The argv travels base64-encoded: a path with quotes or backslashes cannot break -c.
+    assert "[Convert]::ToBase64String" in body and "base64.b64decode" in body
+    assert "runpy.run_path(sys.argv[0], run_name='__main__')" in body
+    assert body.index("$probe.TimedOut") < body.index('$out = "sidecar: audit did not answer')
+    # The shell mirror: the shim call is bounded where a timeout exists and a timeout is stale.
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    call = sh.index('install_manifest.py" sidecar "$_sc_dir"')
+    window = sh[call - 400 : call + 900]
+    assert "timeout -k 5 60" in window
+    assert '[ "$_sc_rc" -eq 124 ]' in window and "sidecar: audit did not answer" in window
+
+
+def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
+    """setup.sh routes every sidecar install through fast_install_sidecar, which unsets
+    UV_OVERRIDE; an override naming huggingface_hub or hf_xet would otherwise install
+    another version than the exact pin and the audit would rebuild the sidecar to the
+    same wrong answer on every run. The PowerShell helper mirrors it."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index("function Fast-Install-Sidecar {")
+    body = text[start : text.index("\nfunction ", start + 1)]
+    assert "Remove-Item Env:UV_OVERRIDE" in body and "Fast-Install @Args_" in body
+    assert "finally" in body and "$env:UV_OVERRIDE = $savedOverride" in body
+    for name in ("function Repair-SidecarTiktoken {", "function Install-T5Sidecar {"):
+        start = text.index(name)
+        body = text[start : text.index("\nfunction ", start + 1)]
+        assert "Fast-Install --target" not in body, name
+        assert "Fast-Install-Sidecar --target" in body, name
 
 
 def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
@@ -185,11 +210,12 @@ def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
     assert '--no-deps --upgrade "tiktoken"' in sh_body[: sh_body.index("\n}\n")]
 
 
-def test_the_ps1_native_error_preference_is_tested_for_existence_not_version():
-    """The variable exists from PowerShell 7.3; under Set-StrictMode reading an absent
-    variable is a terminating error, so 7.0 to 7.2 must not be sent to that read."""
+def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
+    """$PSNativeCommandUseErrorActionPreference exists from PowerShell 7.3 and reading an
+    absent variable under Set-StrictMode is a terminating error; the predicate no longer
+    touches it at all, and must not grow a version check in its place."""
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
     start = ps1.index("function Test-SidecarCurrent {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
-    assert "Get-Variable -Name PSNativeCommandUseErrorActionPreference" in body
+    assert "$PSNativeCommandUseErrorActionPreference =" not in body
     assert "PSVersion.Major -ge 7" not in body
