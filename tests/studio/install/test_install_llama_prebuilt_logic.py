@@ -6360,19 +6360,66 @@ def test_the_reuse_path_backfills_what_the_no_network_check_needs(tmp_path, monk
 
 
 def test_the_backfill_never_overwrites_evidence_a_run_already_recorded(tmp_path, monkeypatch):
-    """Added only. A key already present was written by a run that hashed the bytes; a
-    reuse decision must not re-bless a tree from a different host's profile."""
+    """Added only, for the hashes: a key already present was written by a run that
+    hashed the bytes, and a reuse decision must not re-bless them."""
     install_dir = _current_install(tmp_path, monkeypatch)
     before = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    (install_dir / "build" / "bin" / "libggml-base.so.0").write_bytes(b"replaced after install")
     sync_marker_selection(
         install_dir,
         choice = asset_choice(),
         backend_request = "auto",
-        host = linux_host(**_CUDA_HOST_FIELDS),
+        host = linux_host(),
     )
     after = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
-    assert after["host_profile"] == before["host_profile"]
     assert after["runtime_files"] == before["runtime_files"]
+    assert after["runtime_sha256"] == before["runtime_sha256"]
+
+
+def test_the_reuse_path_refreshes_a_stale_host_profile(tmp_path, monkeypatch):
+    """The profile is this run's own probe of the box the reuse was decided on. If the
+    reuse path left it alone after a hardware change, the mismatch would send every
+    later update down the full path: only the no-network check reads the profile, and
+    nothing else would ever write it again."""
+    install_dir = _current_install(
+        tmp_path, monkeypatch, install_host = linux_host(**_CUDA_HOST_FIELDS)
+    )
+    _detects(monkeypatch, linux_host())
+    assert _check(install_dir) is False
+    sync_marker_selection(
+        install_dir,
+        choice = asset_choice(),
+        backend_request = "auto",
+        host = linux_host(),
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    assert marker["host_profile"] == host_profile(linux_host())
+    assert _check(install_dir) is True
+
+
+def test_a_fallback_bundle_is_retried_rather_than_kept(tmp_path, monkeypatch):
+    """A bundle that landed because the preferred one could not be fetched is recorded
+    with prebuilt_fallback_used; the full path is what retries the preferred bundle."""
+    install_dir = _current_install(tmp_path, monkeypatch, prebuilt_fallback_used = True)
+    assert _check(install_dir) is False
+    install_dir = _current_install(tmp_path / "again", monkeypatch, prebuilt_fallback_used = False)
+    assert _check(install_dir) is True
+
+
+def test_a_release_pin_still_honours_an_upstream_pin(tmp_path, monkeypatch):
+    """The full path checks a pinned release against a concrete UNSLOTH_LLAMA_TAG too."""
+    install_dir = _current_install(tmp_path, monkeypatch)
+    assert _check(install_dir, published_release_tag = "release-1", llama_tag = "b9001") is True
+    assert _check(install_dir, published_release_tag = "release-1", llama_tag = "b9999") is False
+
+
+def test_a_different_cpu_architecture_is_not_current(tmp_path, monkeypatch):
+    """Every GPU field can be equal across an x86_64 and an arm64 box; the profile has
+    to carry the architecture the bundle was built for."""
+    assert host_profile(linux_host())["machine"] == "x86_64"
+    stale = dict(host_profile(linux_host()), machine = "aarch64")
+    install_dir = _current_install(tmp_path, monkeypatch, host_profile = stale)
+    assert _check(install_dir) is False
 
 
 def test_a_hand_edited_marker_is_not_trusted(tmp_path, monkeypatch):

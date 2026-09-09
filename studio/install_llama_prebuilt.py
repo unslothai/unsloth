@@ -6584,6 +6584,10 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         return sorted({str(value).strip() for value in (values or []) if str(value).strip()})
 
     return {
+        # The CPU architecture is not a selector input the GPU fields cover: a home
+        # directory carried from an x86_64 box to an arm64 one (or an install under
+        # Rosetta) keeps a bundle the loader cannot run, with every other field equal.
+        "machine": str(host.machine or "").strip().lower(),
         "has_usable_nvidia": bool(host.has_usable_nvidia),
         "driver_cuda_version": (
             list(host.driver_cuda_version) if host.driver_cuda_version else None
@@ -6878,7 +6882,12 @@ def _marker_selection_patch(
         # fail-closed check pass on nothing.
         if records:
             patch["runtime_files"] = records
-    if host is not None and not isinstance(marker.get("host_profile"), dict):
+    # host_profile is the exception to "added only": it is this run's own probe of the
+    # box the reuse was just decided on, not a hash of bytes it did not read. Left
+    # stale, a profile from before a hardware change would send every later update
+    # down the full path, since only the no-network check reads it and it would never
+    # match again.
+    if host is not None and marker.get("host_profile") != host_profile(host):
         patch["host_profile"] = host_profile(host)
     return patch
 
@@ -7461,9 +7470,15 @@ def _expected_release_tag_without_plan(
     API's answer, and a payload this process already fetched is compared for free.
     """
     pinned = (published_release_tag or "").strip()
-    if pinned:
-        return pinned
     requested = normalized_requested_llama_tag(llama_tag)
+    if pinned:
+        # The full path checks a pinned release against a concrete upstream pin too, so
+        # a marker that names the release but a different upstream build is not current.
+        if requested != "latest":
+            recorded_upstream = marker.get("tag")
+            if not isinstance(recorded_upstream, str) or recorded_upstream != requested:
+                return None
+        return pinned
     if requested != "latest":
         # An upstream pin. The recorded upstream tag is what would be asked for, so a
         # marker that already names it is current by construction; anything else is not.
@@ -7616,6 +7631,12 @@ def existing_install_current_without_plan(
     if not isinstance(recorded_request, str) or recorded_request != backend_request:
         return False
     if bool(marker.get("force_cpu")) != bool(force_cpu):
+        return False
+    # A bundle that landed because the preferred one could not be fetched is a stopgap,
+    # not the install this run would make: the full path is what retries the preferred
+    # bundle, so a fallback marker must keep taking it until that retry succeeds.
+    if marker.get("prebuilt_fallback_used") is True:
+        log("kept install rejected: it is a fallback bundle; the preferred one is retried")
         return False
     # (2) the hardware. Local probes only, and before the HEAD below, so a box whose GPU
     # changed does not pay a network round trip to find out it must reinstall anyway.

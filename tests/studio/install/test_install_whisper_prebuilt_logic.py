@@ -2536,6 +2536,41 @@ def test_an_unreachable_lookup_keeps_a_validated_install(tmp_path, monkeypatch, 
     assert (marker_path.read_bytes(), server.read_bytes(), server.stat().st_mtime_ns) == before
 
 
+def test_whisper_an_asset_for_another_architecture_is_not_current(tmp_path, monkeypatch):
+    """The marker's asset name carries the platform tokens; a bundle for another
+    architecture is not intact on this host whatever the tree looks like."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert "-linux-x64-" in marker["asset"]
+    assert _whisper_check(install_dir, host) is True
+    marker["asset"] = marker["asset"].replace("-linux-x64-", "-linux-arm64-")
+    marker_path.write_text(json.dumps(marker, indent = 2), encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_a_rate_limited_release_fetch_still_keeps_the_install(tmp_path, monkeypatch, capsys):
+    """fetch_json turns an HTTP 403/429 from api.github.com into RuntimeError, not
+    URLError; the keep path has to read that shape too."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+
+    def limited(*_args, **_kwargs):
+        raise RuntimeError("GitHub API returned 403 for https://api.github.com/repos/x/releases")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", M.fetch_release_for_install)
+    monkeypatch.setattr(M.core, "fetch_release_for_install", limited)
+
+    rc, output = _cli_install(capsys, install_dir)
+
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+    assert "prebuilt update reason: could not fetch release" in output
+    assert "unexpected error" not in output
+    assert FAILED_LINE not in output
+    assert calls["n"] == 1
+
+
 def test_a_raw_network_error_from_the_release_fetch_still_keeps_the_install(
     tmp_path, monkeypatch, capsys
 ):

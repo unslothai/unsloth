@@ -1236,9 +1236,10 @@ def fetch_release_for_install(
         )
     except PrebuiltFallback:
         raise
-    except (OSError, ValueError) as exc:
-        # A refused connection, a proxy that answers 403, a timeout or an unparseable
-        # payload arrive here as URLError / OSError / ValueError, and install_prebuilt's
+    except (OSError, ValueError, RuntimeError) as exc:
+        # A refused connection, a timeout or an unparseable payload arrive here as
+        # URLError / OSError / ValueError, and fetch_json turns an HTTP 403/429 from
+        # api.github.com (a rate limit, a proxy) into RuntimeError; install_prebuilt's
         # keep path only reads PrebuiltFallback. Without this wrap an offline update
         # printed "unexpected error" and "prebuilt install failed" over an intact tree.
         raise PrebuiltFallback(
@@ -1496,6 +1497,15 @@ def _existing_install_is_intact(
     if (marker.get("published_repo") or "") != published_repo:
         return None
     if marker.get("backend") != requested_backend:
+        return None
+    # The marker names its asset, and the asset name carries the platform tokens the
+    # selector would use for this host; a bundle for another architecture (a home
+    # directory carried between machines, an emulated interpreter) is not intact here
+    # whatever the tree looks like. Whisper assets are named
+    # whisper-<tag>-<os>-<arch>-<accel><ext>, see asset_name_for.
+    os_token, arch_token = host_platform_tokens(host)
+    recorded_asset = marker.get("asset")
+    if not isinstance(recorded_asset, str) or f"-{os_token}-{arch_token}-" not in recorded_asset:
         return None
     recorded_release = marker.get("release_tag")
     if not isinstance(recorded_release, str) or not recorded_release:
