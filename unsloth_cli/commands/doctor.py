@@ -32,6 +32,7 @@ doctor_app = typer.Typer(
 # Environment that is SUPPOSED to differ between the hosts; comparing it would be noise.
 PARITY_SKIP = (
     "host",
+    "home",
     "hostname_resolves_to",
     "VLLM_HOST_IP",
     "MASTER_ADDR",
@@ -56,6 +57,9 @@ def parity_probe_source(deep: bool = False) -> str:
         "    os.path.join(sysconfig.get_paths()['include'], 'Python.h'))",
         "r['python_version'] = '.'.join(map(str, __import__('sys').version_info[:3]))",
         "r['executable'] = __import__('sys').executable",
+        # Reported so path-valued probes can be compared relative to each node's own home,
+        # which provisioning already allows to differ. Skipped in the comparison itself.
+        "r['home'] = os.path.expanduser('~')",
         "r['PATH'] = os.environ.get('PATH', '')",
         "for k in ('LD_LIBRARY_PATH', 'CUDA_HOME', 'CUDA_VISIBLE_DEVICES',",
         "          'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME', 'NCCL_IB_HCA',",
@@ -236,7 +240,29 @@ def _run_probe_peer(
     return _extract(proc.stdout, proc.stderr, marker)
 
 
+def _relative_to_home(probe: dict) -> dict:
+    """Path-valued probes rewritten against that node's OWN home.
+
+    A supported pair may use different usernames, and provisioning explicitly allows it, so
+    `/home/alice/.unsloth/.../torchrun` and `/home/bob/.unsloth/.../torchrun` are the same
+    capability. Compared raw they read as a divergence, doctor returns failure, and it warns of
+    a deadlock while both tools are present and equivalent. Only the home prefix is folded: a
+    tool at `/usr/bin` on one node and under the managed environment on the other still differs,
+    because that one is real."""
+    home = (probe.get("home") or "").rstrip("/")
+    if not home:
+        return probe
+    out = dict(probe)
+    for key, value in probe.items():
+        if not (key.startswith("which_") or key == "executable"):
+            continue
+        if isinstance(value, str) and value.startswith(home + "/"):
+            out[key] = "~" + value[len(home):]
+    return out
+
+
 def compare_parity(local: dict, peer: dict) -> list:
+    local, peer = _relative_to_home(local), _relative_to_home(peer)
     keys = sorted(set(local) | set(peer))
     return [
         (k, local.get(k), peer.get(k))

@@ -89,6 +89,23 @@ def _resolve(root, path: Sequence[str]):
     return node
 
 
+def dataset_problem(path: str) -> Optional[str]:
+    """Why `--data path` cannot be trained on, or None.
+
+    Checked next to the other refusals rather than where the rows are used: the repetition
+    count divides by the row count, so an empty file raised ZeroDivisionError, and only after
+    both ranks had loaded and materialised the model. That is the most expensive part of the
+    run, spent to reach an input error."""
+    try:
+        with open(path, encoding = "utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    return None
+    except OSError as exc:
+        return f"--data {path} could not be read: {exc}"
+    return f"--data {path} has no rows; nothing to train on"
+
+
 def find_layers(model):
     for path in _LAYER_PATHS:
         layers = _resolve(model, path)
@@ -1587,6 +1604,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # The legacy stages take the loss from their own input ids, so there is nowhere to
         # put -100 for the padding and a short example would train on pad targets.
         raise SystemExit("--data needs --pp-backend torch; legacy cannot mask padded labels")
+    if args.data:
+        problem = dataset_problem(args.data)
+        if problem:
+            raise SystemExit(problem)
     # Fail before the tokenizer and model load, so the reason appears in a second instead of
     # a silent process. The refusals apply to the LEGACY backend only: the same schedule
     # names work under the torch backend, so refusing them outright would refuse a working
