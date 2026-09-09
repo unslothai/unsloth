@@ -462,11 +462,8 @@ def archive_turns(
                 # reorder the archive by the order its vectors were rebuilt. NULL stays
                 # NULL, since numbering a pre-column row moves the oldest turn behind every
                 # numbered one and the header would call it the conversation's last word.
-                #
-                # And its ROWID, which is what "keeps its timestamp" reduces to whenever the
-                # timestamp cannot separate two turns: rows archived in the same clock tick
-                # share a `created_at` to the byte, and insertion order is then the only
-                # surviving record of which was said first. Free to reuse because the row is
+                # And its ROWID: turns archived in one clock tick share a `created_at`, so
+                # insertion order is all that separates them. Reusable because the row is
                 # deleted below in this same transaction.
                 previous = store.document_rewrite_identity(conn, stale) or {}
                 ordinal = previous.get("archive_ordinal")
@@ -503,8 +500,7 @@ def archive_turns(
                 # When the turn was archived, not when this row was written. None for a turn
                 # seen for the first time, which takes the clock as before.
                 created_at = archived_at,
-                # Likewise None for a first sighting, which lets SQLite assign the next
-                # rowid exactly as it always has.
+                # Likewise None for a first sighting: SQLite then assigns the next rowid.
                 rowid = archived_rowid,
                 commit = False,
             )
@@ -2120,12 +2116,9 @@ def _document_matches_one_run(
 
 
 def _order_key(ordinal, created_at, document_rowid, chunk_index) -> tuple:
-    """The recall order, from the four values it reads, whatever they were spelled.
-
-    One definition because there are two callers: the single-query path reads a row's
-    snake_case columns and the two-query merge reads a source's camelCase keys. They must
-    agree component for component, and a second copy of a five-part key agrees only until
-    someone edits one of them.
+    """The recall order, spelling-independent: the single-query path passes a row's
+    snake_case columns and the merge passes a source's camelCase keys, and a second copy of
+    the key agrees only until someone edits one of them.
     """
     created = created_at or ""
     rowid = document_rowid or 0
@@ -2144,24 +2137,15 @@ def _conversation_order(row) -> tuple:
     deliberately not UNIQUE: the write lock is best-effort, so two concurrent archive
     passes can compute the same MAX + 1 and must tie-break rather than raise.
 
-    Then the document's rowid, and it is needed because everything above it can tie:
-    `created_at` is a wall-clock reading, and a clock whose granularity is coarser than a
-    write is a clock that stamps several rows identically. Windows advances the system
-    clock about every 15.6 ms, so a compaction writing a whole conversation at once
-    routinely gives every turn the same timestamp to the byte. With the key exhausted the
-    sort is no longer a total order, `sorted` keeps whatever order relevance handed it, and
-    the turns are quoted scrambled under a header saying they are oldest first and that
-    each supersedes the one before. Insertion order is the tiebreak because it is what the
-    archive actually recorded, and the rewrite path preserves it (`create_document`'s
-    `rowid`) so a re-embed cannot move a turn.
+    Then the document's rowid, because `created_at` ties whenever the clock is coarser than
+    the write: Windows advances it about every 15.6 ms, so a compaction stamps a whole
+    conversation identically and the sort falls back to relevance order under a header
+    saying oldest first. Insertion order is what the archive recorded, and the rewrite path
+    preserves it (`create_document`'s `rowid`) so a re-embed cannot move a turn.
 
-    `chunk_index` comes LAST, under the rowid rather than over it, because it is a position
-    WITHIN a document and means nothing between two of them. Ranked above document
-    identity it does not order the turns, it interleaves them: two tied documents of three
-    chunks each sort A0, B0, A1, B1, A2, B2, and the long message whose pieces this
-    component exists to keep contiguous is shredded through its neighbour. That is the same
-    defect as the tie it sits beneath, one level down, and it only appears once two
-    DOCUMENTS tie, which is exactly the case the rowid was added for.
+    `chunk_index` comes LAST because it is a position WITHIN a document: above the rowid it
+    interleaves two tied documents (A0, B0, A1, B1, ...) rather than ordering them,
+    shredding the long message it exists to keep contiguous.
     """
     if row is None:
         return (2, 0, "", 0, 0)
@@ -2504,11 +2488,9 @@ def recall(
         if not merged:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            # Literally the key `_conversation_order` uses, not a second copy of it that
-            # agrees today: `chunkIndex` keeps a long turn's pieces in writing order rather
-            # than in the order the two queries returned them, and it has to stay UNDER
-            # `documentRowid`, or two tied documents interleave here while the single-query
-            # path groups them and the merged block disagrees with the unmerged one.
+            # Literally the key `_conversation_order` uses, not a second copy that agrees
+            # today: component order included, or the merged block contradicts the unmerged
+            # one on the same archive.
             merged.sort(
                 key = lambda source: _order_key(
                     source.get("turn"),

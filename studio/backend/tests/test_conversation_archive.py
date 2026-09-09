@@ -2100,22 +2100,15 @@ def test_a_re_embed_that_stops_partway_does_not_reorder_a_legacy_archive(conn, m
 def test_a_legacy_archive_written_in_one_clock_tick_is_still_ordered(conn, monkeypatch):
     """The same reorder as the test above, with the clock tie forced instead of hoped for.
 
-    That test only reaches the bug where the archive rows carry DISTINCT timestamps, which
-    is a property of the host clock and not of the code: `store._now` reads the wall clock,
-    and Windows advances it about every 15.6 ms, far slower than five turns are written.
-    So a compaction there stamps the whole conversation identically, on Linux and macOS it
-    almost never does, and the failure shows up on one CI leg as a different permutation
-    every run. Freezing `_now` reproduces it everywhere, in one shape, on purpose.
-
-    With `archive_ordinal` NULL and `created_at` equal, the sort key is spent. `sorted` is
-    stable, so the turns keep the order RELEVANCE handed them and are quoted scrambled
-    beneath a header promising oldest first. The assertion is on the order alone, because
-    the defect is that the key stopped being a total order.
+    That test only reaches the bug when the rows carry DISTINCT timestamps, a property of
+    the host clock: Windows advances it about every 15.6 ms, so a compaction there stamps
+    the whole conversation alike and the failure lands on one CI leg as a different
+    permutation every run. With the ordinal NULL and `created_at` equal the key is spent,
+    and a stable `sorted` quotes the turns in RELEVANCE order under an oldest-first header.
     """
     from core.rag import embeddings
 
-    # One tick for every row: the archive cannot see that the five turns were written in
-    # sequence, which is exactly what a coarse system clock does to it.
+    # One tick for every row, which is what a coarse system clock does to the archive.
     monkeypatch.setattr(store, "_now", lambda: "2026-01-01T00:00:00+00:00")
 
     identity = {"name": "st:model-a"}
@@ -2163,13 +2156,10 @@ def test_a_legacy_archive_written_in_one_clock_tick_is_still_ordered(conn, monke
 def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monkeypatch):
     """Tied documents must GROUP, because `chunk_index` is a position inside one of them.
 
-    The tie is the same one the test above forces, a clock too coarse to separate two
-    writes, but the turns here are long enough to be stored as several chunks each. Ranked
-    above the document, `chunk_index` stops being the thing that keeps a long message
-    contiguous and becomes the thing that shreds it: every document's chunk 0 sorts before
-    any document's chunk 1, so two three-chunk turns come back A0, B0, A1, B1, A2, B2 and
-    each turn is quoted through the middle of the other. Ranked below it, the same
-    component does the job it was added for.
+    Same clock tie as the test above, but with turns long enough to span several chunks.
+    Ranked above the document, `chunk_index` sorts every document's chunk 0 ahead of any
+    document's chunk 1, so two three-chunk turns come back A0, B0, A1, B1, A2, B2 and each
+    is quoted through the middle of the other.
     """
     monkeypatch.setattr(config, "CHUNK_TOKENS", 30)
     monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
@@ -2190,8 +2180,8 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
     scope = store.conversation_archive_scope(THREAD)
     conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
     conn.commit()
-    # The premise, and it takes both halves: one timestamp for both documents, and more
-    # than one chunk each, or the interleave has nothing to interleave.
+    # The premise takes both halves: one timestamp for both documents, more than one chunk
+    # each, or the interleave has nothing to interleave.
     assert {
         row["created_at"]
         for row in conn.execute("SELECT created_at FROM documents WHERE scope=?", (scope,))
@@ -2214,8 +2204,7 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
         if index == 0 or documents[index - 1] != document
     ]
     assert len(runs) == len(set(documents)) == 2, documents
-    # And inside a run the pieces are still in writing order, which is what `chunk_index`
-    # is for once it is asked the question it can answer.
+    # And inside a run the pieces are still in writing order.
     for document in runs:
         indexes = [s["chunkIndex"] for s in sources if s["documentId"] == document]
         assert indexes == sorted(indexes), (document, indexes)
@@ -2225,11 +2214,9 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
 def test_a_rewritten_turn_keeps_the_insertion_order_it_was_archived_in(conn, monkeypatch):
     """A re-embed replaces a row, and the replacement has to sit where the original sat.
 
-    `created_at` is carried over already, and on a clock that can separate the turns that
-    is enough. On one that cannot it is not: insertion order is the whole of what is left,
-    and a rewrite that took a fresh position would move every turn it reached to the end of
-    the conversation. Asserted on the stored rows rather than through `recall`, so a
-    regression here is named as the write-side defect it is.
+    Carrying `created_at` over is enough only on a clock that separates the turns; on one
+    that does not, a fresh rowid moves every turn the rewrite reached to the end. Asserted
+    on the stored rows, so a regression is named as the write-side defect it is.
     """
     from core.rag import embeddings
 
@@ -2315,11 +2302,8 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
     them in whatever order the two queries happened to return them: the anchor's hits
     first, then the follow-up's. `_conversation_order` breaks exactly this tie with
     `created_at`, and the merged path has to agree with it or the block contradicts its own
-    oldest-first header on an upgraded database.
-
-    Sorted through `_order_key`, the function the product sorts with, rather than through a
-    copy of its key written out here. A copy passes for as long as nobody edits one side of
-    it, which is the failure this test exists to catch."""
+    oldest-first header on an upgraded database. Sorted through `_order_key` itself, since
+    a copy of the key written out here passes until somebody edits one side of it."""
     from core.rag import conversation_archive
 
     merged = [
@@ -2340,11 +2324,8 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
 
 
 def test_both_recall_paths_order_by_the_same_key():
-    """The single-query path reads snake_case columns and the merge reads camelCase keys.
-
-    They are only "the same key" while both call `_order_key`; two hand-written five-part
-    tuples agree until one of them is edited, and the merged block then contradicts the
-    unmerged one on exactly the archives this ordering exists for.
+    """The single-query path reads snake_case columns and the merge reads camelCase keys;
+    they are only the same key while both call `_order_key`.
     """
     from core.rag import conversation_archive
     for ordinal in (None, 0, 4):
@@ -2376,11 +2357,8 @@ def test_both_recall_paths_order_by_the_same_key():
 def test_recall_sources_carry_the_fields_the_merge_orders_by():
     """The sort above is only as good as the field it reads, and nothing RENDERS
     `createdAt`, `documentRowid` or `chunkIndex`, so an unused-looking key is exactly the
-    sort of thing a later cleanup deletes. This pins the producer.
-
-    `documentRowid` most of all: it is the component that decides the order once the clock
-    has stopped separating rows, and it is the newest and least obviously load-bearing of
-    the three."""
+    sort of thing a later cleanup deletes. This pins the producer. `documentRowid` most of
+    all: it decides the order once the clock has stopped separating rows."""
     from types import SimpleNamespace
 
     from core.rag import tool

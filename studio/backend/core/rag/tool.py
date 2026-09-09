@@ -151,10 +151,8 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 # ordinals are not UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
-                # And insertion order under that, for the archives whose rows all carry the
-                # same timestamp because the clock that stamped them could not tell them
-                # apart. Without it the merge key runs out and the block contradicts its
-                # own "oldest first" header.
+                # And insertion order under that, for archives whose rows share a timestamp
+                # the clock was too coarse to separate; without it the merge key runs out.
                 "documentRowid": _row_value(r, "document_rowid"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
