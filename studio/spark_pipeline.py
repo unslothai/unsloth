@@ -346,9 +346,10 @@ class _Stage:
         self.chunk_layers = {}
         self.is_first = rank == 0
         self.is_last = rank == world - 1
-        base = getattr(model, "base_model", None)
-        self.base = base.model if base is not None else model  # unwrap PEFT
-        self.inner = getattr(self.base, "model", self.base)
+        # unwrap_stack, not `base_model.model`: on a bare causal LM `base_model` is already the
+        # decoder stack, so `.model` raised AttributeError before the first step of any
+        # --full-finetune run on this backend. get_base_model() is the PEFT discriminator.
+        self.base, self.inner = unwrap_stack(model)
         self.hidden = self.base.config.hidden_size
 
     def forward_chunk(self, ids, hidden, posid, chunk):
@@ -1412,6 +1413,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 ],
             ),
         )
+    # from_pretrained hands back an eval-mode model while the shard-load path builds one in
+    # training mode, so without this the run's dropout depended on which loader was chosen.
+    model.train()
     if args.grad_checkpoint and use_torch_pp:
         # `_PPStageModule` calls the decoder layers directly, so transformers'
         # `gradient_checkpointing_enable()` is consulted in a `forward` never reached here

@@ -20,6 +20,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ADAPTER_BIN = "adapter_model.safetensors"
 ADAPTER_CFG = "adapter_config.json"
+# Written per stage and expected to differ: the merged adapter is the union of the stages,
+# so a per-stage module list says nothing about a config mismatch.
+_CFG_IGNORED = frozenset()
 _LAYER_RE = re.compile(r"\.layers\.(\d+)\.")
 
 
@@ -42,6 +45,16 @@ def stage_dirs(root: str) -> List[str]:
         raise RuntimeError(
             f"stage directories are not contiguous from 0: found {ranks}. A missing stage means "
             f"missing layers, and merging would silently produce a partly-untrained adapter."
+        )
+    # Contiguity alone cannot see a truncated run: [0] equals range(1), so a rank 1 that died
+    # before saving passed this check and merged half a model. A pipeline is two ranks or more,
+    # and each rank saves on its own node, so a lone stage0 usually means stage1 is still on the
+    # peer or was never written.
+    if len(ranks) < 2:
+        raise RuntimeError(
+            f"only stage{ranks[0]}/ is here, and a layer split always has at least two stages. "
+            f"Copy the other stage directories from the peer into {root}, or re-run the training "
+            f"if a rank failed before saving."
         )
     return [p for _, p in found]
 
@@ -151,14 +164,31 @@ def merge(
     os.makedirs(out, exist_ok = True)
     save_file(tensors, osp.join(out, ADAPTER_BIN))
 
-    # Verbatim: rank/alpha/targets are identical across stages by construction, and rewriting
-    # would risk inventing a config nobody trained with.
-    src_cfg = osp.join(plan["stages"][0]["path"], ADAPTER_CFG)
-    if osp.isfile(src_cfg):
-        with open(src_cfg, encoding = "utf-8") as f:
-            cfg = json.load(f)
-        with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
-            json.dump(cfg, f, indent = 2)
+    # Identical across stages within one run, but a stale stage left over from an earlier run
+    # passes the layer-coverage check and would then be read through stage 0's rank, alpha and
+    # target modules. Compare them all and refuse rather than write a config nobody trained with.
+    cfgs = []
+    for st in plan["stages"]:
+        path = osp.join(st["path"], ADAPTER_CFG)
+        if not osp.isfile(path):
+            raise RuntimeError(
+                f"{path} is missing, so this stage's rank, alpha and target modules cannot be "
+                f"checked against the others. Merging would apply stage 0's config to it."
+            )
+        with open(path, encoding = "utf-8") as f:
+            cfgs.append((path, json.load(f)))
+    for path, cfg in cfgs[1:]:
+        differing = sorted(
+            k for k in set(cfg) | set(cfgs[0][1])
+            if cfg.get(k) != cfgs[0][1].get(k) and k not in _CFG_IGNORED
+        )
+        if differing:
+            raise RuntimeError(
+                f"{path} disagrees with {cfgs[0][0]} on {differing}. These stages are not from "
+                f"one run; merging them would read later stages through the wrong config."
+            )
+    with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
+        json.dump(cfgs[0][1], f, indent = 2)
 
     return {
         "out": out,
