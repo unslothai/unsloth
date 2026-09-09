@@ -10074,19 +10074,18 @@ class LlamaCppBackend:
                 # read, which keeps the behaviour it had before the check existed.
                 if not _is_vulkan:
                     return False
-                # VK_DRIVER_FILES and VK_ICD_FILENAMES REPLACE the loader's own driver
-                # search rather than adding to it -- only the drivers they list are used --
-                # and the probe child inherits them, so a list naming AMD alone means the
-                # loader never opens the other vendor's driver however open its node is.
-                # Nothing here can read that list's vendors, so crediting the node would
-                # suppress a real repair, which is the unsafe direction. VK_ADD_DRIVER_FILES
-                # is the additive one and leaves the standard search in place, so it is not
-                # tested for.
-                for _icd_var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
-                    if os.environ.get(_icd_var, "").strip():
-                        return False
+                # A driver list REPLACES the loader's own search and the probe child
+                # inherits it, so a list naming AMD alone means the other vendor's driver
+                # never loads and its open node is no path. A list naming that vendor is the
+                # opposite case and must NOT suppress: the AMD node is then not a path
+                # either, so it cannot be why the probe came back empty.
                 try:
-                    from utils.hardware.amd import a_non_amd_render_node_is_open
+                    from utils.hardware.amd import (
+                        a_non_amd_render_node_is_open,
+                        an_amd_only_icd_list_is_in_force,
+                    )
+                    if an_amd_only_icd_list_is_in_force():
+                        return False
                     return a_non_amd_render_node_is_open()
                 except Exception:  # noqa: BLE001
                     return False

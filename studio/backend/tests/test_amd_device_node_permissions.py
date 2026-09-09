@@ -3512,3 +3512,130 @@ def test_an_empty_icd_override_is_not_an_override(monkeypatch, linux):
     )
     reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
     assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_an_icd_list_naming_another_vendor_does_not_suppress_the_vulkan_finding(monkeypatch, linux):
+    """The other edge of the same rule. A list pinned to an Intel or NVIDIA ICD leaves the
+    loader unable to use the AMD card at all, so its closed node cannot be why the probe
+    was empty -- and returning the group repair alone sends the user after a change that
+    cannot help. Only an AMD-only list is evidence that the other vendor is unreachable.
+
+    Fails before the fix, which read any non-empty list as AMD's."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
+    monkeypatch.setenv("VK_DRIVER_FILES", "/etc/vulkan/icd.d/intel_icd.x86_64.json")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert reason.startswith("the Vulkan probe reported no device")
+    assert "Separately" in reason and "usermod" in reason
+
+
+def test_a_list_carrying_both_vendors_does_not_suppress_either(monkeypatch, linux):
+    """A list is AMD-only or it is not; one non-AMD entry leaves that vendor loadable and
+    its open node a complete path, whatever else the list names."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
+    monkeypatch.setenv(
+        "VK_DRIVER_FILES",
+        os.pathsep.join(
+            [
+                "/etc/vulkan/icd.d/radeon_icd.x86_64.json",
+                "/etc/vulkan/icd.d/nvidia_icd.json",
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_an_unclassifiable_icd_entry_keeps_the_unpinned_behaviour(monkeypatch, linux):
+    """A directory, or a name this does not recognise, is not evidence of anything. The
+    guard fires on positive evidence alone, so an unreadable list leaves the finding
+    exactly as it is without one -- rather than suppressing on a guess."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
+    monkeypatch.setenv("VK_DRIVER_FILES", "/opt/vendor/icd.d")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_every_amd_icd_spelling_the_installer_knows_counts_here_too():
+    """The two lists are the same convention twice, and a driver named in one but not the
+    other would make the installer and this diagnosis disagree about the same host."""
+    import install_llama_prebuilt
+    assert amd._AMD_VULKAN_ICD_NEEDLES == install_llama_prebuilt._AMD_VULKAN_ICD_NEEDLES
+
+
+def test_a_blocking_hip_mask_cancels_the_verdict_before_any_node_advice(monkeypatch):
+    """A mask that hides every accelerator is the configuration working, so the whole
+    chat-only classification is cancelled and no message -- node repair included -- is
+    built. This is the first of the two gates that keep a blocking selector away from the
+    node hint, and it sits well above the code that returns it."""
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"devices": [{"vendor": "amd"}], "unknown": False},
+    )
+    for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_var, raising = False)
+    assert hardware._masks_hide_every_accelerator(block_inventory = True) is False
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
+    assert hardware._masks_hide_every_accelerator(block_inventory = True) is True
+    assert hardware.classify_torch_build(block_inventory = True) is None
+
+
+def test_a_blocking_mask_drops_amd_from_the_vendors_the_node_hint_needs(monkeypatch):
+    """The second gate, for the hybrid host the first one does not cover: an NVIDIA card
+    still raises the verdict, but the masked AMD card is dropped from the inventory that
+    establishes it, so "amd" never reaches CHAT_ONLY_MISMATCH_VENDORS and the node hint is
+    not even computed. An empty active CUDA mask is the same story, since HIP reads that
+    variable too."""
+    from utils.hardware import hardware
+
+    devices = [{"vendor": "amd"}, {"vendor": "nvidia"}]
+    monkeypatch.setattr(
+        hardware,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"devices": devices, "unknown": False},
+    )
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
+    for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_var, raising = False)
+    kept = hardware._devices_that_can_establish_a_mismatch(devices)
+    assert {device["vendor"] for device in kept} == {"amd", "nvidia"}
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
+    kept = hardware._devices_that_can_establish_a_mismatch(devices)
+    assert {device["vendor"] for device in kept} == {"nvidia"}
+    # HIP reads CUDA_VISIBLE_DEVICES too, so an emptied one hides both cards rather than
+    # just the NVIDIA half -- nothing establishes the mismatch at all and the verdict is
+    # cancelled a step earlier. Either way "amd" is not among the vendors, which is the
+    # invariant the node hint is gated on.
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    kept = hardware._devices_that_can_establish_a_mismatch(devices)
+    assert {device["vendor"] for device in kept} == set()

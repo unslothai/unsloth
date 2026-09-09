@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from pathlib import PurePath
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -744,6 +745,42 @@ def an_amd_render_node_is_open() -> bool:
                 return True
         except OSError:
             continue
+    return False
+
+
+# RADV radeon_icd.x86_64.json, AMDVLK amd_icd64 / amd_pro_icd64 / amdvlk64, Adrenalin
+# amd-vulkan64.json. install_llama_prebuilt._AMD_VULKAN_ICD_NEEDLES is the same list for
+# the same reason and a test below holds the two together; it is copied rather than
+# imported so the inference path does not pull in the installer.
+_AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
+
+
+def an_amd_only_icd_list_is_in_force() -> bool:
+    """Whether the Vulkan loader is pinned to a driver list that names AMD and nothing else.
+
+    VK_DRIVER_FILES, or VK_ICD_FILENAMES when it is unset, REPLACES the loader's own search
+    rather than adding to it, so a list naming AMD alone means no other vendor's driver is
+    ever loaded and its open render node is not a path this binary has.
+    VK_ADD_DRIVER_FILES is the additive one and leaves the search in place, so it answers
+    nothing here.
+
+    POSITIVE evidence only. An entry this cannot classify -- a directory, an unfamiliar
+    name -- makes the answer False, so the caller keeps the behaviour it has with no list
+    at all rather than suppressing a finding on a guess.
+    """
+    for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        value = (os.environ.get(var) or "").strip()
+        if not value:
+            # Empty is unset to the loader, so the lower-priority spelling still decides.
+            continue
+        entries = [entry for entry in value.split(os.pathsep) if entry.strip()]
+        if not entries:
+            return False
+        for entry in entries:
+            stem = PurePath(entry.strip()).stem.lower().replace("-", "_")
+            if not any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES):
+                return False
+        return True
     return False
 
 
