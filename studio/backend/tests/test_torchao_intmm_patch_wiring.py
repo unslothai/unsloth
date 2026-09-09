@@ -141,7 +141,8 @@ def test_finder_answers_for_both_torchao_homes(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        importlib.util, "find_spec",
+        importlib.util,
+        "find_spec",
         lambda fullname, *a, **k: importlib.machinery.ModuleSpec(fullname, _Loader()),
     )
     finder = _TorchaoIntmmPatchFinder()
@@ -149,6 +150,7 @@ def test_finder_answers_for_both_torchao_homes(monkeypatch):
         spec = finder.find_spec(name)
         assert spec is not None and isinstance(spec.loader, _TorchaoIntmmLoader), name
     assert finder.find_spec("torchao.kernel.other") is None
+
 
 def test_real_torchao_int_mm_is_patched_and_bit_identical():
     """The copy returns exactly what the original returned, over shapes covering both cuBLAS guards."""
