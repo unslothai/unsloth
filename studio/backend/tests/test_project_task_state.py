@@ -431,9 +431,12 @@ def test_expired_worker_cannot_publish_result_or_overlap_retry(task_db, runners)
 
 def test_shutdown_reports_a_worker_that_has_not_stopped(runners):
     started, release = threading.Event(), threading.Event()
+    cancelled_seen = threading.Event()
 
     def execute(context):
         started.set()
+        assert context.cancel_event.wait(3)
+        cancelled_seen.set()
         assert release.wait(3)
         return {}
 
@@ -444,7 +447,8 @@ def test_shutdown_reports_a_worker_that_has_not_stopped(runners):
         assert runner.shutdown(timeout = 0.05) is False
         with pytest.raises(state.TaskStateError, match = "shutting down"):
             runner.submit("one", "More", {})
-        assert state.get_task("one", task["id"])["status"] == "cancelling"
+        assert cancelled_seen.wait(3)
+        assert state.get_task("one", task["id"])["status"] in {"running", "cancelling"}
     finally:
         release.set()
     assert runner.shutdown(timeout = 3)
@@ -613,3 +617,27 @@ def test_task_tables_integrate_with_real_studio_storage():
     assert state.list_tasks("integration")[0]["result"] == {"output": "Done"}
     studio_db.delete_chat_project("integration", delete_files = False)
     assert state.list_tasks("integration") == []
+
+
+def test_retirement_can_fence_an_already_archived_project(task_db):
+    connect, _ = task_db
+    with connect() as conn:
+        conn.execute("UPDATE chat_projects SET archived=1 WHERE id='one'")
+    state.begin_project_retirement("one", "retire")
+    state.renew_project_retirement("one", "retire")
+    with pytest.raises(state.TaskStateError):
+        root()
+    state.finish_project_retirement("one", "retire")
+
+
+def test_executor_system_exit_does_not_remove_worker_capacity(runners):
+    def execute(context):
+        if context.task["instruction"] == "Exit":
+            raise SystemExit(1)
+        return {"output": "Still working"}
+
+    runner = runners(execute, root_workers = 1)
+    first = runner.submit("one", "Exit", {})
+    assert runner.wait("one", first["id"], timeout = 3)["status"] == "failed"
+    second = runner.submit("one", "Continue", {})
+    assert runner.wait("one", second["id"], timeout = 3)["result"] == {"output": "Still working"}

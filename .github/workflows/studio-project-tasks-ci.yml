@@ -52,8 +52,15 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install focused test dependencies
         run: python -m pip install pytest pytest-timeout structlog rich psutil huggingface-hub
-      - name: Check task ownership, scheduling, and project storage
+      - name: Check task ownership and scheduling
         working-directory: studio/backend
         run: >-
-          python -m pytest tests/test_project_task_state.py tests/test_chat_history_storage.py
+          python -m pytest tests/test_project_task_state.py
           -q --tb=short --timeout=30
+      - name: Check adjacent project storage
+        working-directory: studio/backend
+        # The 900-thread storage fixture performs thousands of durable commits;
+        # allow Windows filesystem latency without weakening task-engine timeouts.
+        run: >-
+          python -m pytest tests/test_chat_history_storage.py
+          -q --tb=short --timeout=120

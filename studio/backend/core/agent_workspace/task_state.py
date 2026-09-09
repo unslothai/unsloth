@@ -154,9 +154,15 @@ def _public(row) -> dict:
     }
 
 
-def _project_available(conn, project_id: str, now: int) -> None:
+def _project_available(
+    conn,
+    project_id: str,
+    now: int,
+    *,
+    allow_archived: bool = False,
+) -> None:
     row = conn.execute("SELECT archived FROM chat_projects WHERE id=?", (project_id,)).fetchone()
-    if row is None or row["archived"]:
+    if row is None or (row["archived"] and not allow_archived):
         raise TaskStateError("Project not found.")
     retiring = conn.execute(
         "SELECT 1 FROM studio_project_task_retirements WHERE project_id=? AND lease_expires_at>?",
@@ -592,7 +598,7 @@ def begin_project_retirement(project_id: str, owner: str) -> None:
     if not isinstance(owner, str) or not owner or len(owner) > 128:
         raise TaskStateError("A retirement ownership token is required.")
     with _transaction() as (conn, now):
-        _project_available(conn, project_id, now)
+        _project_available(conn, project_id, now, allow_archived = True)
         conn.execute(
             "INSERT INTO studio_project_task_retirements(project_id,owner,lease_expires_at) VALUES(?,?,?) "
             "ON CONFLICT(project_id) DO UPDATE SET owner=excluded.owner,lease_expires_at=excluded.lease_expires_at",

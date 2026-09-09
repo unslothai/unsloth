@@ -332,9 +332,10 @@ class ProjectTaskRunner:
                     context.check()
                 except TaskCancelled:
                     status = "cancelled"
-                except Exception as exc:
+                except BaseException as exc:
                     # Exceptions can contain provider credentials. Persist a
                     # bounded generic diagnostic; the executor owns safe detail.
+                    # SystemExit from an executor must not kill this worker lane.
                     status = "failed"
                     result = None
                     error = f"Task executor failed ({type(exc).__name__})."
