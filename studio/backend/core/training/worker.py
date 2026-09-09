@@ -14,6 +14,7 @@ from __future__ import annotations
 from loggers import get_logger
 import importlib
 import importlib.metadata
+import importlib.util
 import math
 import os
 import shutil
@@ -92,7 +93,7 @@ def _data_parallel_world_size() -> int:
     extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
 
     The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
-    model-parallel one (device_map="balanced", which is what Studio's own multi-GPU
+    model-parallel one (a sharding device_map, which is what Unsloth's own multi-GPU
     load uses) forces it to 1 as well. Rounding up when the model turns out to be
     sharded rather than replicated only tokenizes a larger subset of a corpus this
     bound is orders of magnitude below anyway; rounding down means the run silently
@@ -735,6 +736,143 @@ def _pre_detect_training_model(
         local_files_only = local_files_only,
         model_revision = model_revision,
     )
+    _check_finetune_targets_after_detect(trainer, config)
+
+
+_NOTHING_TO_TRAIN = (
+    "Nothing to train: select at least one layer family (finetune_language_layers or "
+    "finetune_vision_layers) and at least one module type (finetune_attention_modules or "
+    "finetune_mlp_modules)."
+)
+
+
+def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
+    """(vision, language, attention, mlp), read exactly the way the consumers read them.
+
+    A guard that models the run differently from the code it guards rejects runs that would
+    have trained, so every default here is the CUDA consumer's own default for an omitted key.
+    Only the MLX consumer defaults vision False, and _check_mlx_finetune_targets discards the
+    vision element, so True is safe there too.
+    """
+    return (
+        bool(config.get("finetune_vision_layers", True)),
+        bool(config.get("finetune_language_layers", True)),
+        bool(config.get("finetune_attention_modules", True)),
+        bool(config.get("finetune_mlp_modules", True)),
+    )
+
+
+def _requests_all_linear(config: dict) -> bool:
+    """Whether target_modules is PEFT's bare "all-linear" keyword rather than a leaf list.
+
+    get_peft_model forces every selector True for the keyword, so all-linear with the
+    selectors off trains every linear layer today and rejecting it would break the very
+    requests the selectors are not consulted for. A list naming all-linear alongside other
+    leaves is not the keyword: the caller strips it and the rest take the scoped path.
+    """
+    target_modules = config.get("target_modules")
+    if isinstance(target_modules, str):
+        return target_modules == "all-linear"
+    if isinstance(target_modules, (list, tuple)):
+        return list(target_modules) == ["all-linear"]
+    return False
+
+
+def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
+    """Reject a LoRA run that selects no adapter layers, once detection has settled which
+    branch it takes. The request model cannot decide this: the codec/ASR branches ignore the
+    selectors that is_audio_vlm reads, is_vlm needs a vision-capable model and not just an
+    image-tagged dataset, and only the probe in pre_detect separates those. pre_detect is
+    config/tokenizer only, so this still fires before any weights load, instead of surfacing
+    as get_peft_regex's "No layers to finetune" with the model already in memory."""
+    if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
+        return  # Full Finetuning / CPT build adapters from target_modules alone
+    if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
+        return  # the text branch ignores these four
+    if _requests_all_linear(config):
+        return  # get_peft_model turns all five selectors on for the keyword; see below
+    vision, language, attention, mlp = _finetune_selectors(config)
+    # Mirror get_peft_regex's two guards: one layer family AND one module type.
+    if not (vision or language) or not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+# Targets the MLX loader trains regardless of the layer-family flags: on the CPT path
+# embed_tokens becomes a full trainable module and lm_head its own adapter.
+_CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
+
+
+def _names_a_cpt_target(target_modules) -> bool:
+    """Whether an explicit target list names something that trains on its own."""
+    if isinstance(target_modules, str):
+        return target_modules in _CPT_TARGET_NAMES
+    try:
+        return any(name in _CPT_TARGET_NAMES for name in target_modules)
+    except TypeError:  # not iterable -> not a list of names, so nothing is guaranteed
+        return False
+
+
+def _check_mlx_finetune_targets(config: dict) -> None:
+    """MLX equivalent, called from the LoRA branch of the MLX worker.
+
+    Two things differ from the CUDA path. FastMLXModel.get_peft_model is handed these
+    selectors for text models too, so there is no is_vlm gate. And the caller back-fills
+    finetune_language_layers whenever a module type is on, so only an empty module selection
+    can survive here.
+
+    Surviving the module-type filter is NOT enough to train. get_peft_model drops only the
+    names it recognises as attention or MLP leaves, so a fused qkv, a c_fc or an expanded
+    all-linear survives with both module types off -- but the text branch then gates the LoRA
+    application on finetune_language_layers, and with all four selectors off the caller's
+    back-fill never fires. Those runs apply no adapters at all: the model warns and trains
+    nothing, and a VLM raises only once the weights are loaded.
+
+    The exception is a target the loader handles independently of the layer families: naming
+    embed_tokens or lm_head puts it on the CPT path, which trains whatever the flags say.
+
+    An explicit list that merely filters down to nothing still gets the loader's own message,
+    which names the two flags."""
+    targets = config.get("target_modules")
+    if targets:
+        if _names_a_cpt_target(targets):
+            return
+        _, language, attention, mlp = _finetune_selectors(config)
+        # Vision read the way the MLX call site reads it, NOT the way _finetune_selectors
+        # does: that helper carries the CUDA consumer's defaults, where an omitted vision
+        # selector means True, while MLX defaults it False and forces it False for a text
+        # model. Taking True from an omitted key would wave through every legacy config
+        # that never sent the selectors at all.
+        vision = bool(config.get("finetune_vision_layers", False))
+        # Any one of them leaves something that can train, or leaves the loader to say so
+        # with a better message. Vision counts because this runs BEFORE detection, so a VLM
+        # whose vision tower is the only selection must not be refused here;
+        # _check_mlx_effective_targets catches the text case once is_vlm is known.
+        if attention or mlp or language or vision:
+            return
+        raise ValueError(_NOTHING_TO_TRAIN)
+    _, _, attention, mlp = _finetune_selectors(config)
+    if not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _check_mlx_effective_targets(
+    config: dict, *, finetune_language: bool, finetune_vision: bool
+) -> None:
+    """The same refusal, re-asked with the values get_peft_model will actually receive.
+
+    ``_check_mlx_finetune_targets`` runs before the model is loaded, so it cannot tell a VLM
+    from a text model and has to let a vision-only selection through. The call site can: it
+    has forced vision to False for a text model and applied the language back-fill, so if
+    both layer families are still off here, no adapter is coming and the run would train
+    nothing but its own warning.
+
+    Later than the preflight deliberately: this is the first point the answer is knowable,
+    and it is still before the trainer is built and before a single step runs."""
+    if finetune_language or finetune_vision:
+        return
+    if _names_a_cpt_target(config.get("target_modules") or ()):
+        return
+    raise ValueError(_NOTHING_TO_TRAIN)
 
 
 def _reload_dataset_with_remote_model_tokenizer(
@@ -855,22 +993,6 @@ _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
 _FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
-# apache-tvm-ffi 0.1.10/0.1.11 crash Triton with "CUDA: misaligned address" on sm_100.
-_TILELANG_PACKAGE_VERSION = "0.1.8"
-_APACHE_TVM_FFI_PACKAGE_VERSION = "0.1.9"
-_TILELANG_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_TILELANG_INSTALL"
-# Pin both so plain pip can't silently upgrade torch under the worker (fla-core needs torch>=2.7).
-_FLA_PACKAGE_VERSION = "0.5.0"
-_FLA_CORE_PACKAGE_VERSION = "0.5.0"
-_FLA_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLA_INSTALL"
-# `--no-deps` saves torch but loses fla-core's transitive deps; `packaging` is also undeclared upstream.
-_FLA_RUNTIME_DEPS = ("einops", "packaging", "triton")
-_FLA_MIN_TORCH = (2, 7)
-_FLA_MIN_PYTHON = (3, 10)
-# tilelang 0.1.8 ships wheels only for these Linux arches and macOS arm64; never fall back to its 93MB sdist.
-_TILELANG_SUPPORTED_LINUX_MACHINES = frozenset(("x86_64", "amd64", "aarch64", "arm64"))
-_TILELANG_INSTALL_TIMEOUT_S = 600
-_TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 
 # Module scope so the torch.library.Library registration isn't GC'd mid-run.
@@ -1413,179 +1535,18 @@ def _ensure_causal_conv1d_fast_path(
     )
 
 
-def _installed_torch_version_tuple() -> tuple[int, int] | None:
-    """Return ``(major, minor)`` of the installed torch, else None."""
-    try:
-        from importlib.metadata import version as _pkg_version
-
-        raw = _pkg_version("torch").split("+", 1)[0]
-        parts = raw.split(".")
-        return (int(parts[0]), int(parts[1]))
-    except Exception:
-        return None
-
-
 def _flash_linear_attention_importable() -> bool:
-    """Catch any exception (not just ImportError) so a broken native lib doesn't abort the worker."""
+    """True iff the gated-delta kernels unsloth_zoo vendors and injects as `fla` import."""
     try:
         import fla.modules  # noqa: F401
         import fla.ops.gated_delta_rule  # noqa: F401
         return True
     except Exception as exc:
         logger.warning(
-            "flash-linear-attention is not importable; continuing with install/fallback: %s",
+            "flash-linear-attention is not importable; continuing on the pure-torch path: %s",
             exc,
         )
         return False
-
-
-def _flash_linear_attention_current(already_importable: bool | None = None) -> bool:
-    """True iff FLA imports AND is at the pinned version (older FLA lacks gated_delta_rule kernels)."""
-    if already_importable is None:
-        already_importable = _flash_linear_attention_importable()
-    if not already_importable:
-        return False
-    try:
-        from importlib.metadata import version as _pkg_version
-        from packaging.version import Version
-
-        fla_v = Version(_pkg_version("flash-linear-attention"))
-        core_v = Version(_pkg_version("fla-core"))
-        return fla_v >= Version(_FLA_PACKAGE_VERSION) and core_v >= Version(
-            _FLA_CORE_PACKAGE_VERSION
-        )
-    except Exception as exc:
-        logger.warning(
-            "flash-linear-attention importable but version check failed; treating as stale: %s",
-            exc,
-        )
-        return False
-
-
-def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
-    """Install pinned FLA + fla-core with --no-deps. Returns True iff importable post-call."""
-    if os.getenv(_FLA_SKIP_ENV) == "1":
-        return False
-    if sys.platform == "win32":
-        logger.info("Skipping flash-linear-attention install: no prebuilt wheel for Windows")
-        return False
-    if sys.version_info < _FLA_MIN_PYTHON:
-        logger.info(
-            "Skipping flash-linear-attention install: requires Python >= %d.%d, have %s",
-            _FLA_MIN_PYTHON[0],
-            _FLA_MIN_PYTHON[1],
-            sys.version.split()[0],
-        )
-        return False
-    torch_ver = _installed_torch_version_tuple()
-    if torch_ver is not None and torch_ver < _FLA_MIN_TORCH:
-        _send_status(
-            event_queue,
-            (
-                f"Skipping flash-linear-attention install: fla-core requires "
-                f"torch>={_FLA_MIN_TORCH[0]}.{_FLA_MIN_TORCH[1]}, have "
-                f"{torch_ver[0]}.{torch_ver[1]}"
-            ),
-        )
-        return False
-
-    # Probe once so the --force-reinstall decision and short-circuit share a call count.
-    already_importable = _flash_linear_attention_importable()
-    if already_importable and _flash_linear_attention_current(already_importable = True):
-        logger.info("flash-linear-attention already importable at the pinned version")
-        return True
-
-    if _model_offline_mode_enabled():
-        logger.info("Skipping flash-linear-attention installation while offline")
-        return False
-
-    _send_status(
-        event_queue,
-        f"Installing flash-linear-attention=={_FLA_PACKAGE_VERSION} for faster training...",
-    )
-
-    # `--no-deps` blocks the silent torch upgrade; bring non-torch runtime deps in by hand.
-    specs = [
-        *_FLA_RUNTIME_DEPS,
-        f"fla-core=={_FLA_CORE_PACKAGE_VERSION}",
-        f"flash-linear-attention=={_FLA_PACKAGE_VERSION}",
-    ]
-    extra_args = ["--no-deps"]
-    if already_importable:
-        # Older FLA already imported; pip skips reinstall without this flag.
-        extra_args.append("--force-reinstall")
-
-    if shutil.which("uv"):
-        pypi_cmd = [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            *extra_args,
-            *specs,
-        ]
-    else:
-        pypi_cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            *extra_args,
-            *specs,
-        ]
-
-    try:
-        result = _sp.run(
-            pypi_cmd,
-            stdout = _sp.PIPE,
-            stderr = _sp.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(),
-            timeout = _TILELANG_INSTALL_TIMEOUT_S,
-        )
-    except _sp.TimeoutExpired:
-        logger.warning("flash-linear-attention install timed out; continuing")
-        _send_status(event_queue, "flash-linear-attention install timed out; continuing")
-        return False
-
-    if result.returncode != 0:
-        if sys.platform == "win32":
-            logger.info(
-                "flash-linear-attention not available on Windows (no prebuilt wheel); "
-                "continuing on torch fallback"
-            )
-            logger.debug("Install output:\n%s", result.stdout)
-        else:
-            logger.warning(
-                "flash-linear-attention install failed (continuing on torch fallback):\n%s",
-                result.stdout,
-            )
-        _send_status(
-            event_queue,
-            "flash-linear-attention install failed; continuing without it",
-        )
-        return False
-
-    # pip can exit 0 with a missing transitive runtime dep; verify the import.
-    if not _flash_linear_attention_importable():
-        _send_status(
-            event_queue,
-            "flash-linear-attention installed but is not importable; continuing without it",
-        )
-        return False
-
-    logger.info("Installed flash-linear-attention for the FLA fast path")
-    return True
-
-
-def _ensure_flash_linear_attention(event_queue: Any, model_name: str) -> None:
-    """Legacy model-name-gated FLA install, used when UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1."""
-    if not _model_wants_tilelang(model_name):
-        return
-    _ensure_flash_linear_attention_unconditional(event_queue)
 
 
 _SSM_MODEL_SUBSTRINGS = (
@@ -1614,84 +1575,6 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
         release_tag = _MAMBA_SSM_RELEASE_TAG,
         release_base_url = "https://github.com/state-spaces/mamba/releases/download",
     )
-
-
-# Auto-derived from installed transformers: model_types whose modeling_*.py imports
-# `from fla.*`. Empty when transformers can't be inspected -> skip tilelang pre-install.
-_TRANSFORMERS_FLA_MODEL_TYPES_CACHE: frozenset[str] | None = None
-_MODEL_NAME_SEP_CHARS = ("-", ".", "/", " ")
-
-
-def _discover_fla_model_types() -> frozenset[str]:
-    """Installed-transformers model_types whose modeling file imports `from fla.*`."""
-    global _TRANSFORMERS_FLA_MODEL_TYPES_CACHE
-    if _TRANSFORMERS_FLA_MODEL_TYPES_CACHE is not None:
-        return _TRANSFORMERS_FLA_MODEL_TYPES_CACHE
-    found: set[str] = set()
-    try:
-        import transformers
-        models_root = Path(transformers.__file__).parent / "models"
-        for modeling in models_root.glob("*/modeling_*.py"):
-            try:
-                src = modeling.read_text(encoding = "utf-8", errors = "ignore")
-            except OSError:
-                continue
-            if "from fla." in src:
-                found.add(modeling.parent.name)
-    except Exception as exc:
-        logger.debug("FLA model-type discovery skipped: %s", exc)
-    _TRANSFORMERS_FLA_MODEL_TYPES_CACHE = frozenset(found)
-    return _TRANSFORMERS_FLA_MODEL_TYPES_CACHE
-
-
-def _model_wants_tilelang(model_name: str) -> bool:
-    """True iff model_name normalizes to contain a discovered FLA model_type."""
-    types = _discover_fla_model_types()
-    if not types:
-        return False
-    name = model_name.lower()
-    for sep in _MODEL_NAME_SEP_CHARS:
-        name = name.replace(sep, "_")
-    return any(t in name for t in types)
-
-
-def _installed_tvm_ffi_version() -> str | None:
-    """Installed apache-tvm-ffi version, or None if missing/unimportable."""
-    try:
-        from importlib.metadata import version as _pkg_version
-        return _pkg_version("apache-tvm-ffi")
-    except Exception:
-        return None
-
-
-def _tilelang_importable() -> bool:
-    """Catch any exception (not just ImportError) so a broken native lib doesn't abort the worker."""
-    try:
-        import tilelang  # noqa: F401
-        import tvm_ffi  # noqa: F401
-        return True
-    except Exception as exc:
-        logger.warning(
-            "tilelang/tvm_ffi is not importable; continuing with install/fallback: %s",
-            exc,
-        )
-        return False
-
-
-def _torch_has_hip() -> bool:
-    """True iff torch is a ROCm build.
-
-    `torch.version.hip` covers official PyTorch ROCm wheels; AMD SDK / Radeon
-    wheels can leave it unset but still encode "rocm" in `torch.__version__`.
-    """
-    try:
-        import torch as _torch
-        return bool(
-            getattr(_torch.version, "hip", None)
-            or "rocm" in getattr(_torch, "__version__", "").lower()
-        )
-    except Exception:
-        return False
 
 
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
@@ -1858,154 +1741,9 @@ def _rocm_memory_fraction(
     return min(fraction, _DISCRETE_MEM_FRACTION)
 
 
-def _tilelang_platform_supported() -> bool:
-    """True iff a tilelang 0.1.8 wheel will load: Linux x86_64/aarch64, non-HIP torch.
-
-    HIP excluded: tilelang 0.1.8 has no HIP GEMM and crashes mid-backward.
-    """
-    import platform as _platform
-
-    if not sys.platform.startswith("linux"):
-        return False
-    if _platform.machine().lower() not in _TILELANG_SUPPORTED_LINUX_MACHINES:
-        return False
-    if _torch_has_hip():
-        return False
-    return True
-
-
-def _pip_install_cmd(*args: str) -> list[str]:
-    """`uv pip install` if uv is on PATH, else `python -m pip install`."""
-    if shutil.which("uv"):
-        return ["uv", "pip", "install", "--python", sys.executable, *args]
-    return [sys.executable, "-m", "pip", "install", *args]
-
-
-def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
-    """Run a pip install and surface success/failure via status events."""
-    try:
-        result = _sp.run(
-            cmd,
-            stdout = _sp.PIPE,
-            stderr = _sp.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(),
-            timeout = _TILELANG_INSTALL_TIMEOUT_S,
-        )
-    except _sp.TimeoutExpired:
-        logger.warning("%s install timed out; continuing", label)
-        _send_status(event_queue, f"{label} install timed out; continuing")
-        return False
-    if result.returncode != 0:
-        logger.warning("%s install failed (continuing without it):\n%s", label, result.stdout)
-        _send_status(event_queue, f"{label} install failed; continuing")
-        return False
-    return True
-
-
-def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
-    """Install pinned tilelang + apache-tvm-ffi; two-step repair if a broken tvm-ffi is present.
-
-    Returns True iff both import post-call. Step 1 downgrades a broken tvm-ffi
-    with --force-reinstall --no-deps so torch / CUDA stay untouched; step 2 is a
-    regular install for missing transitive deps. Bypass via
-    UNSLOTH_STUDIO_SKIP_TILELANG_INSTALL=1.
-    """
-    if os.getenv(_TILELANG_SKIP_ENV) == "1":
-        return False
-    if sys.version_info < _FLA_MIN_PYTHON:
-        logger.info(
-            "Skipping tilelang install: requires Python >= %d.%d, have %s",
-            _FLA_MIN_PYTHON[0],
-            _FLA_MIN_PYTHON[1],
-            sys.version.split()[0],
-        )
-        return False
-    if not _tilelang_platform_supported():
-        import platform as _platform
-        logger.info(
-            "Skipping tilelang install: no prebuilt wheel for %s/%s",
-            sys.platform,
-            _platform.machine(),
-        )
-        return False
-
-    existing_tvm_ffi = _installed_tvm_ffi_version()
-    needs_repair = existing_tvm_ffi in _TVM_FFI_BROKEN_VERSIONS
-
-    if not needs_repair and _tilelang_importable():
-        logger.info("tilelang + apache-tvm-ffi already installed")
-        return True
-
-    if _model_offline_mode_enabled():
-        if needs_repair and os.environ.get("FLA_TILELANG") is None:
-            os.environ["FLA_TILELANG"] = "0"
-            logger.warning(
-                "Disabling TileLang while offline because apache-tvm-ffi %s is unsafe",
-                existing_tvm_ffi,
-            )
-        logger.info("Skipping TileLang installation while offline")
-        return False
-
-    # Step 1: --no-deps keeps --force-reinstall off torch/CUDA via the dep graph.
-    if needs_repair:
-        logger.info(
-            "Forcing apache-tvm-ffi downgrade: %s is on the broken list",
-            existing_tvm_ffi,
-        )
-        _send_status(
-            event_queue,
-            (
-                f"Downgrading apache-tvm-ffi {existing_tvm_ffi} -> "
-                f"{_APACHE_TVM_FFI_PACKAGE_VERSION} (broken-versions list)"
-            ),
-        )
-        repair_cmd = _pip_install_cmd(
-            "--only-binary=:all:",
-            "--force-reinstall",
-            "--no-deps",
-            f"apache-tvm-ffi=={_APACHE_TVM_FFI_PACKAGE_VERSION}",
-        )
-        if not _run_pip(repair_cmd, event_queue, "TileLang backend repair"):
-            return False
-
-    # Step 2: regular install pulls transitive deps (z3-solver, ml-dtypes) without touching torch.
-    _send_status(
-        event_queue,
-        f"Installing TileLang=={_TILELANG_PACKAGE_VERSION} for faster training...",
-    )
-    install_cmd = _pip_install_cmd(
-        "--only-binary=:all:",
-        f"apache-tvm-ffi=={_APACHE_TVM_FFI_PACKAGE_VERSION}",
-        f"tilelang=={_TILELANG_PACKAGE_VERSION}",
-    )
-    if not _run_pip(install_cmd, event_queue, "TileLang backend"):
-        return False
-
-    # pip can exit 0 while a native lib (libz3.so) is missing; verify the import.
-    if not _tilelang_importable():
-        _send_status(
-            event_queue,
-            "TileLang backend installed but is not importable; continuing on the FLA Triton path",
-        )
-        return False
-
-    logger.info("Installed TileLang backend for FLA fast path")
-    return True
-
-
-def _ensure_tilelang_backend(event_queue: Any, model_name: str) -> None:
-    """Legacy substring-gated tilelang installer (opt-out path)."""
-    if not _model_wants_tilelang(model_name):
-        return
-    _ensure_tilelang_backend_unconditional(event_queue)
-
-
 # ── Fast-path hooks ──
-# Wrap transformers' is_{flash_linear_attention,causal_conv1d}_available so the first call
-# (at modeling import) drives the install; models that never query the gate pay nothing.
+# Wrap transformers' is_causal_conv1d_available so the first call (at modeling import)
+# drives the install; models that never query the gate pay nothing.
 # UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
 
 
@@ -2033,6 +1771,45 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
     return count
 
 
+_TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
+
+
+def _guard_fla_tilelang() -> None:
+    """Default FLA_TILELANG to 0 on ROCm torch and on an apache-tvm-ffi that faults on sm_100."""
+    try:
+        import torch as _torch_for_fla
+        if (
+            getattr(_torch_for_fla.version, "hip", None)
+            or "rocm" in getattr(_torch_for_fla, "__version__", "").lower()
+        ):
+            os.environ.setdefault("FLA_TILELANG", "0")
+    except Exception as exc:
+        logger.debug("FLA_TILELANG guard skipped: %s", exc)
+
+    # A leftover TileLang plus a broken tvm-ffi crashes the run; steer off it instead of installing.
+    try:
+        if importlib.util.find_spec("tilelang") is not None:
+            tvm_ffi_version = importlib.metadata.version("apache-tvm-ffi")
+            if tvm_ffi_version in _TVM_FFI_BROKEN_VERSIONS:
+                before = os.environ.get("FLA_TILELANG")
+                os.environ.setdefault("FLA_TILELANG", "0")
+                # setdefault is a no-op under an override, so only claim what actually happened.
+                if before is None:
+                    logger.info(
+                        "Disabling TileLang: apache-tvm-ffi %s faults under it; FLA_TILELANG is now %s",
+                        tvm_ffi_version,
+                        os.environ.get("FLA_TILELANG"),
+                    )
+                else:
+                    logger.info(
+                        "Keeping FLA_TILELANG=%s set by the environment despite apache-tvm-ffi %s",
+                        before,
+                        tvm_ffi_version,
+                    )
+    except Exception as exc:
+        logger.debug("FLA_TILELANG guard skipped: %s", exc)
+
+
 def _install_fast_path_hooks(
     event_queue: Any,
     model_name: str,
@@ -2043,16 +1820,11 @@ def _install_fast_path_hooks(
 
     Idempotent. UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring gate.
     """
+    _guard_fla_tilelang()
+
     if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
         logger.info("Fast-path hooks disabled via env; using substring fallback")
         return
-
-    # On HIP torch even installed tilelang crashes FLA's dispatch; override with FLA_TILELANG=1.
-    if _torch_has_hip() and os.environ.get("FLA_TILELANG") is None:
-        os.environ["FLA_TILELANG"] = "0"
-        logger.info(
-            "HIP/ROCm torch detected; setting FLA_TILELANG=0 (no HIP GEMM in tilelang 0.1.8)"
-        )
 
     try:
         from transformers.utils import import_utils as _iu
@@ -2064,10 +1836,7 @@ def _install_fast_path_hooks(
         return
 
     def _make_wrapper(
-        original: Callable[[], bool],
-        install_fn: Callable[[Any], bool],
-        gate_name: str,
-        post_available_fn: Callable[[Any], None] | None = None,
+        original: Callable[[], bool], install_fn: Callable[[Any], bool], gate_name: str
     ) -> Callable[[], bool]:
         state = {"installed": False}
 
@@ -2079,9 +1848,7 @@ def _install_fast_path_hooks(
             except AttributeError:
                 pass
             ok = original()
-            ran_install = False
             if not ok:
-                ran_install = True
                 logger.info("Hook fired for %s; triggering install", gate_name)
                 try:
                     ok = bool(install_fn(event_queue))
@@ -2089,40 +1856,12 @@ def _install_fast_path_hooks(
                     logger.warning("%s install raised: %s; falling back to torch", gate_name, exc)
                     ok = False
                 logger.info("%s hook done; available=%s", gate_name, ok)
-            # Handles "gate already True but ancillary kernel broken" (tilelang missing while FLA imports).
-            if ok and not ran_install and post_available_fn is not None:
-                try:
-                    post_available_fn(event_queue)
-                except Exception as exc:
-                    logger.warning("%s post-available step raised: %s; continuing", gate_name, exc)
             state["installed"] = True
             return ok
 
         wrapper.__wrapped__ = original  # type: ignore[attr-defined]
         wrapper.cache_clear = getattr(original, "cache_clear", lambda: None)  # type: ignore[attr-defined]
         return wrapper
-
-    def _fla_install(eq: Any) -> bool:
-        # FLA alone ~2.35x; +tilelang adds ~26%. tilelang is GDN-only (Qwen3.5 family).
-        if not _ensure_flash_linear_attention_unconditional(eq):
-            logger.info("FLA install did not produce an importable runtime; skipping TileLang")
-            return False
-        if _model_wants_tilelang(model_name):
-            _ensure_tilelang_backend_unconditional(eq)
-        else:
-            logger.info(
-                "Model %r outside TileLang allowlist; FLA Triton path is sufficient",
-                model_name,
-            )
-        return True
-
-    def _fla_post_available(eq: Any) -> None:
-        # FLA imports; repair tilelang if missing or on the broken tvm-ffi list.
-        if not _model_wants_tilelang(model_name):
-            return
-        if _installed_tvm_ffi_version() not in _TVM_FFI_BROKEN_VERSIONS and _tilelang_importable():
-            return
-        _ensure_tilelang_backend_unconditional(eq)
 
     def _causal_conv1d_install(eq: Any) -> bool:
         if sys.platform == "win32":
@@ -2140,15 +1879,13 @@ def _install_fast_path_hooks(
         )
         return bool(ok)
 
-    hooks = [
-        ("is_flash_linear_attention_available", _fla_install, _fla_post_available),
-    ]
+    hooks: list[tuple[str, Callable[[Any], bool]]] = []
     if install_causal_conv1d is None:
         install_causal_conv1d = _model_wants_causal_conv1d(model_name)
     if install_causal_conv1d:
-        hooks.append(("is_causal_conv1d_available", _causal_conv1d_install, None))
+        hooks.append(("is_causal_conv1d_available", _causal_conv1d_install))
 
-    for gate_name, install_fn, post_fn in hooks:
+    for gate_name, install_fn in hooks:
         original = getattr(_iu, gate_name, None)
         if original is None:
             logger.info(
@@ -2156,7 +1893,7 @@ def _install_fast_path_hooks(
                 gate_name,
             )
             continue
-        wrapped = _make_wrapper(original, install_fn, gate_name, post_fn)
+        wrapped = _make_wrapper(original, install_fn, gate_name)
         setattr(_iu, gate_name, wrapped)
         rebound = _rebind_in_already_imported_modules(
             attr_name = gate_name, old_obj = original, new_obj = wrapped
@@ -2431,6 +2168,34 @@ def _normalize_mlx_studio_optimizer(value):
         return opt
 
 
+def _mlx_dora_peft_kwargs(config, get_peft_model):
+    """LoRA kwargs a DoRA request adds for MLX, or raise why it cannot run."""
+    import inspect
+
+    if not config.get("use_dora"):
+        return {}
+    try:
+        parameter = inspect.signature(get_peft_model).parameters.get("use_dora")
+    except (TypeError, ValueError):
+        parameter = None
+    # A **kwargs catch-all absorbs use_dora and trains plain LoRA, so the
+    # parameter must be named and bindable by keyword.
+    named = parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
+    if not named:
+        raise NotImplementedError(
+            "DoRA on Apple Silicon needs an unsloth-zoo whose MLX "
+            "get_peft_model takes use_dora, and this install cannot be "
+            "confirmed to. The version that predates MLX DoRA accepts the "
+            "request and trains plain LoRA instead, so the run stops here "
+            "rather than guessing. Update unsloth-zoo, or pick a different "
+            "LoRA variant."
+        )
+    return {"use_dora": True}
+
+
 def _normalize_mlx_studio_scheduler(value):
     raw = str(value or "linear").strip().lower()
     if raw not in _MLX_STUDIO_LR_SCHEDULERS:
@@ -2443,7 +2208,7 @@ def _normalize_mlx_studio_scheduler(value):
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import resolve_dataset_path
+    from utils.paths import dataset_files_in_dir, resolve_dataset_path
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
@@ -2457,24 +2222,8 @@ def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
         file_path_obj = Path(file_path)
 
         if file_path_obj.is_dir():
-            parquet_dir = (
-                file_path_obj / "parquet-files"
-                if (file_path_obj / "parquet-files").exists()
-                else file_path_obj
-            )
-            parquet_files = sorted(parquet_dir.glob("*.parquet"))
-            if parquet_files:
-                all_files.extend(str(p) for p in parquet_files)
-                continue
-
-            candidates: list[Path] = []
-            for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-            if candidates:
-                all_files.extend(str(c) for c in candidates)
-                continue
-
-            raise ValueError(f"No supported data files in directory: {file_path_obj}")
+            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+            continue
 
         all_files.append(str(file_path_obj))
 
@@ -2659,10 +2408,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "LoftQ is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
-    if config.get("use_dora"):
-        message = "DoRA is not supported for MLX training yet."
-        _send("error", error = message)
-        raise NotImplementedError(message)
     if config.get("is_embedding"):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
@@ -2671,6 +2416,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    # Decided before the model loads, so version skew does not cost a download.
+    try:
+        mlx_dora_kwargs = _mlx_dora_peft_kwargs(config, FastMLXModel.get_peft_model)
+    except NotImplementedError as exc:
+        _send("error", error = str(exc))
+        raise
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
     lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
@@ -2685,6 +2436,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    # Before the download/load below: unlike the CUDA path, this needs none of the model.
+    if use_lora:
+        _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
     random_seed = 3407 if _raw_seed is None else int(_raw_seed)
@@ -2811,6 +2565,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ],
             use_gradient_checkpointing = use_grad_checkpoint,
         )
+        peft_kwargs.update(mlx_dora_kwargs)
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
@@ -2818,6 +2573,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
+
+        # is_vlm and the back-fill's outcome are known now; the preflight could only guess.
+        _check_mlx_effective_targets(
+            config,
+            finetune_language = finetune_language,
+            finetune_vision = finetune_vision,
+        )
 
         peft_kwargs["finetune_language_layers"] = finetune_language
         peft_kwargs["finetune_attention_modules"] = finetune_attention
@@ -3706,9 +3468,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
     # 1) causal-conv1d runs eagerly for matching architectures: some SSM modeling files
     #    lazy_load it without calling is_causal_conv1d_available.
-    # 2) FLA + tilelang: gated by the runtime hook on is_flash_linear_attention_available.
-    # 3) mamba-ssm + flash-attn keep their substring / size gates.
-    # 4) UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
+    # 2) mamba-ssm + flash-attn keep their substring / size gates.
+    # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     try:
         from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 
@@ -3722,15 +3483,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             model_name,
             required = wants_causal_conv1d,
         )
-        if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
-            _ensure_flash_linear_attention(event_queue, model_name)
-            _ensure_tilelang_backend(event_queue, model_name)
-        else:
-            _install_fast_path_hooks(
-                event_queue,
-                model_name,
-                install_causal_conv1d = wants_causal_conv1d,
-            )
+        _install_fast_path_hooks(
+            event_queue,
+            model_name,
+            install_causal_conv1d = wants_causal_conv1d,
+        )
         _ensure_mamba_ssm(event_queue, model_name)
         _ensure_flash_attn_for_long_context(
             event_queue,
@@ -3743,8 +3500,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 "error": (
                     f"Please choose another model to train, since "
                     f"a fast-path kernel library "
-                    f"(causal-conv1d / flash-linear-attention / "
-                    f"mamba-ssm / tilelang) failed to install "
+                    f"(causal-conv1d / mamba-ssm) failed to install "
                     f"with error: {exc}"
                 ),
                 "stack": traceback.format_exc(limit = 20),
@@ -3757,16 +3513,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # stdlib multiprocessing onto "fork" never reached it; the guard now asks multiprocess.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1d. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py (no RCCL on Windows ROCm); run before transformers/unsloth_zoo.
@@ -4130,6 +3880,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         import transformers
 
         logger.info("Subprocess loaded transformers %s", transformers.__version__)
+        # unsloth_zoo injects its vendored fla when the trainer imports unsloth above.
+        logger.info(
+            "flash-linear-attention fast path importable: %s",
+            _flash_linear_attention_importable(),
+        )
     except Exception as exc:
         event_queue.put(
             {
@@ -4212,6 +3967,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
                 max_train_rows = max_train_rows,
                 max_train_rows_seed = max_train_rows_seed,
             )
@@ -4506,12 +4262,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if is_cpt:
             _send_status(event_queue, "Configuring LoRA for continued pretraining...")
-            # embed_tokens (if included) goes to modules_to_save -- trained full-precision at
-            # embedding_learning_rate. lm_head stays a LoRA target for merges (unsloth PR #4106).
+            # Both go to modules_to_save: trained full-precision at
+            # embedding_learning_rate, since LoRA on either never trains.
+            # By leaf: PEFT resolves model.embed_tokens to the same module.
+            _embedding_modules = ("embed_tokens", "lm_head")
             _user_modules = config.get("target_modules") or []
-            wants_embed = "embed_tokens" in _user_modules
-            cpt_trains_embeddings = wants_embed
-            cpt_target_modules = [m for m in _user_modules if m != "embed_tokens"]
+            _leaf = lambda m: str(m).rsplit(".", 1)[-1]  # noqa: E731
+            _wants = [m for m in _user_modules if _leaf(m) in _embedding_modules]
+            # Either module in modules_to_save fills the embedding_learning_rate group.
+            cpt_trains_embeddings = bool(_wants)
+            cpt_target_modules = [m for m in _user_modules if _leaf(m) not in _embedding_modules]
             if not cpt_target_modules:
                 cpt_target_modules = [
                     "q_proj",
@@ -4521,12 +4281,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "gate_proj",
                     "up_proj",
                     "down_proj",
-                    "lm_head",
                 ]
             success = trainer.prepare_model_for_training(
                 use_lora = True,
                 target_modules = cpt_target_modules,
-                modules_to_save = ["embed_tokens"] if wants_embed else None,
+                modules_to_save = _wants or None,
                 lora_r = config.get("lora_r", 128),
                 lora_alpha = config.get("lora_alpha", 32),
                 lora_dropout = config.get("lora_dropout", 0.0),
@@ -4597,8 +4356,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
             elif embedding_lr_value is not None:
                 logger.warning(
-                    "CPT: embedding_learning_rate was provided but embed_tokens is "
-                    "not being trained; ignoring the override.\n"
+                    "CPT: embedding_learning_rate was provided but neither embed_tokens "
+                    "nor lm_head is being trained; ignoring the override.\n"
                 )
                 embedding_lr_value = None
 
@@ -4629,7 +4388,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
             ensure_dir(Path(tensorboard_dir))
 
-        # Start training directly — no inner thread, we ARE the subprocess.
+        # Start training directly - no inner thread, we ARE the subprocess.
         dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,
@@ -5174,6 +4933,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         local_datasets = config.get("local_datasets") or []
 
         def _load_local_embedding_dataset(dataset_paths: list[str]):
+            from utils.paths import dataset_files_in_dir
+
             all_files: list[str] = []
             for dataset_file in dataset_paths:
                 file_path = (
@@ -5186,22 +4947,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 if os.path.isdir(file_path):
                     file_path_obj = Path(file_path)
-                    parquet_dir = (
-                        file_path_obj / "parquet-files"
-                        if (file_path_obj / "parquet-files").exists()
-                        else file_path_obj
-                    )
-                    parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                    if parquet_files:
-                        all_files.extend(str(p) for p in parquet_files)
-                        continue
-                    candidates: list[Path] = []
-                    for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                        candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                    if candidates:
-                        all_files.extend(str(c) for c in candidates)
-                        continue
-                    raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                    all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
                 else:
                     all_files.append(file_path)
 

@@ -17,7 +17,7 @@ The OVERRIDE (`set_tool_policy`) comes from an explicit `--enable-tools`/
 The DEFAULT (`set_tool_policy_default`) is what an omitted `enable_tools` falls
 back to. `unsloth studio run` installs True for every bind, `--secure` included,
 so a plain request to a tool-capable model can use tools. It is only a default:
-a request that says `enable_tools: false` (what the Studio UI sends with its tool
+a request that says `enable_tools: false` (what the Unsloth UI sends with its tool
 pills off) turns them off, which the override deliberately would not.
 
 No other launcher installs it. `unsloth studio`, the desktop app and Colab leave

@@ -270,8 +270,8 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     command whose real work is done.
     """
     studio = _studio()
-    # Captured BEFORE any patching: studio.tempfile is the tempfile module itself, so
-    # patching through it replaces the global.
+    # Captured BEFORE any patching: studio.tempfile is the tempfile module itself, so patching through
+    # it replaces the global.
     real_mkstemp = tempfile.mkstemp
     calls = []
 
@@ -321,8 +321,8 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     monkeypatch.setattr(studio.os, "fdopen", lambda fd, *a, **k: _BadHandle(fd))
     studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
     assert not Path(made["path"]).exists(), "the temp script must not be left behind"
-    # Asserted directly so the descriptor leak is caught on Linux too, rather than
-    # only surfacing as an unlink failure on Windows.
+    # Asserted directly so the descriptor leak is caught on Linux too, rather than only surfacing as an
+    # unlink failure on Windows.
     with pytest.raises(OSError):
         os.fstat(made["fd"])
 
@@ -367,8 +367,8 @@ def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(mon
     checkout.mkdir()
     (checkout / "install.sh").write_text("#!/bin/sh\n")
     monkeypatch.setenv("STUDIO_LOCAL_REPO", str(checkout))
-    # The tests run from a clone, so _PACKAGE_ROOT would otherwise supply a second
-    # usable installer and the network would never be the fallback under test.
+    # The tests run from a clone, so _PACKAGE_ROOT would otherwise supply a second usable installer and
+    # the network would never be the fallback under test.
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
 

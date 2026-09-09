@@ -71,6 +71,7 @@ test("migration preserves tuned values while protecting them from model defaults
     learningRateManuallySet: true,
     modelAdapterLearningRate: null,
     datasetFormatBeforeCpt: null,
+    targetModulesBeforeCpt: null,
   });
   assert.equal("wandbToken" in migrated, false);
 });

@@ -43,11 +43,14 @@ from pydantic import ValidationError
 from core.inference.api_monitor import ApiMonitor
 from models.inference import (
     ChatMessage,
+    ResponsesCustomToolCallInputItem,
+    ResponsesCustomToolCallOutputInputItem,
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
     ResponsesFunctionTool,
     ResponsesInputMessage,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputTextContent,
@@ -62,16 +65,30 @@ from routes.inference import (
     _ResponsesReasoningExtractor,
     _SameTaskStreamingResponse,
     _build_chat_request,
+    _build_openai_passthrough_body,
     _chat_tool_calls_to_responses_output,
     _extract_response_format,
     _extract_responses_reasoning,
     _normalise_responses_input,
+    _responses_custom_tool_input,
     _responses_tool_output_content,
     _responses_non_streaming,
     _responses_stream,
     _translate_responses_tool_choice_to_chat,
     _translate_responses_tools_to_chat,
 )
+
+
+def _codex_apply_patch_tool():
+    return {
+        "type": "custom",
+        "name": "apply_patch",
+        "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": 'start: "*** Begin Patch" LF hunk+ "*** End Patch" LF?',
+        },
+    }
 
 
 # =====================================================================
@@ -185,6 +202,26 @@ class TestResponsesMultiTurnInput:
         )
         assert isinstance(item.output, list)
 
+    def test_custom_tool_call_items(self):
+        req = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch",
+                    "output": "Done!",
+                },
+            ]
+        )
+
+        assert isinstance(req.input[0], ResponsesCustomToolCallInputItem)
+        assert isinstance(req.input[1], ResponsesCustomToolCallOutputInputItem)
+
 
 # =====================================================================
 # Translators — tools, tool_choice
@@ -230,6 +267,66 @@ class TestToolsTranslation:
         assert len(out) == 1
         assert out[0]["function"]["name"] == "search"
 
+    def test_codex_apply_patch_custom_tool_becomes_a_local_function(self):
+        grammar = (
+            'start: "*** Begin Patch" LF add_hunk "*** End Patch" LF?\n'
+            'add_hunk: "*** Add File: " filename LF add_line+\n'
+            'add_line: "+" /(.*)/ LF'
+        )
+        out = _translate_responses_tools_to_chat(
+            [
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "freeform",
+                    "format": {"type": "grammar", "syntax": "lark", "definition": grammar},
+                }
+            ]
+        )
+
+        assert out == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "apply_patch",
+                    "description": (
+                        "Edit files by passing one complete patch in the input field. "
+                        "Every added content line must start with +. Example:\n"
+                        "*** Begin Patch\n"
+                        "*** Add File: path/to/file.txt\n"
+                        "+first line\n"
+                        "*** End Patch\n\n"
+                        "The input must match this Lark grammar:\n" + grammar
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "string",
+                                "description": "A complete patch matching the tool grammar.",
+                            }
+                        },
+                        "required": ["input"],
+                        "additionalProperties": False,
+                    },
+                    "strict": False,
+                },
+            }
+        ]
+
+    def test_unrelated_custom_tools_stay_unsupported(self):
+        assert (
+            _translate_responses_tools_to_chat(
+                [{"type": "custom", "name": "code_exec", "description": "raw input"}]
+            )
+            is None
+        )
+
+    def test_apply_patch_without_the_codex_grammar_stays_unsupported(self):
+        assert (
+            _translate_responses_tools_to_chat([{"type": "custom", "name": "apply_patch"}]) is None
+        )
+
     def test_empty_returns_none(self):
         assert _translate_responses_tools_to_chat(None) is None
         assert _translate_responses_tools_to_chat([]) is None
@@ -263,6 +360,19 @@ class TestToolChoiceTranslation:
             {"type": "function", "name": "get_weather"}
         ) == {"type": "function", "function": {"name": "get_weather"}}
 
+    def test_forced_apply_patch_custom_tool_converted(self):
+        assert _translate_responses_tool_choice_to_chat(
+            {"type": "custom", "name": "apply_patch"}, {"apply_patch"}
+        ) == {"type": "function", "function": {"name": "apply_patch"}}
+
+    def test_forced_apply_patch_without_valid_catalog_passes_through(self):
+        choice = {"type": "custom", "name": "apply_patch"}
+        assert _translate_responses_tool_choice_to_chat(choice, set()) is choice
+
+    def test_unrelated_custom_tool_choice_passes_through(self):
+        choice = {"type": "custom", "name": "code_exec"}
+        assert _translate_responses_tool_choice_to_chat(choice) is choice
+
     def test_already_chat_nested_shape_passes_through(self):
         """A client sending the Chat Completions nested shape isn't
         double-wrapped."""
@@ -275,6 +385,17 @@ class TestToolChoiceTranslation:
 
 
 class TestBuildChatRequest:
+    def test_seed_reaches_the_llama_passthrough_policy(self):
+        payload = ResponsesRequest(input = "hi", seed = 3407)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = True)
+        body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+
+        assert chat_req.seed == 3407
+        assert body["seed"] == 3407
+        assert body["cache_prompt"] is False
+
     def test_parallel_tool_calls_false_is_preserved_for_passthrough_caps(self):
         payload = ResponsesRequest(
             input = "hi",
@@ -438,6 +559,67 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[2].role == "tool"
         assert msgs[2].tool_call_id == "call_1"
         assert msgs[2].content == '{"temp": 20}'
+
+    def test_custom_tool_call_round_trip_maps_to_local_function(self):
+        patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch",
+                    "name": "apply_patch",
+                    "input": patch,
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch",
+                    "output": "Done!",
+                },
+            ],
+            tools = [_codex_apply_patch_tool()],
+        )
+
+        messages = _normalise_responses_input(payload)
+
+        assert len(messages) == 2
+        assert messages[0].role == "assistant"
+        call = messages[0].tool_calls[0]
+        assert call["id"] == "call_patch"
+        assert call["function"]["name"] == "apply_patch"
+        assert json.loads(call["function"]["arguments"]) == {"input": patch}
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_patch"
+        assert messages[1].content == "Done!"
+
+    def test_unrelated_custom_tool_replay_stays_ignored(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_code",
+                    "name": "code_exec",
+                    "input": "print('hidden')",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_code",
+                    "output": "hidden output",
+                },
+            ],
+            tools = [
+                {
+                    "type": "custom",
+                    "name": "code_exec",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: /.+/",
+                    },
+                }
+            ],
+        )
+
+        assert _normalise_responses_input(payload) == []
 
     def test_instructions_plus_developer_message_are_merged(self):
         """Codex CLI sends `instructions` (system prompt) AND a developer
@@ -636,6 +818,464 @@ class TestNormaliseResponsesInputWithTools:
         assert exc.value.status_code == 400
         assert "image_url" in str(exc.value.detail)
 
+    def test_input_file_message_part_rejected_clearly(self):
+        # Same shape function_call_output already refuses; dropped here, it answered 200.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "summarise this"},
+                        {
+                            "type": "input_file",
+                            "file_data": "data:application/pdf;base64,AAA",
+                            "filename": "report.pdf",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_file_id_image_message_part_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {"type": "input_image", "file_id": "file_abc"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "file_id" in str(exc.value.detail)
+
+    def test_unmodelled_message_part_is_named_not_dropped(self):
+        # Matches _reject_unsupported_content_parts on /chat/completions.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hello"},
+                        {"type": "input_something_new", "value": 1},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_something_new" in str(exc.value.detail)
+
+    def test_image_message_part_without_any_source_rejected_clearly(self):
+        # Nothing to serve, and the tool-result path already says so in these words.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {"type": "input_image"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "require an image_url string" in str(exc.value.detail)
+
+    def test_image_message_part_with_unknown_detail_rejected_clearly(self):
+        # Fails the Literal, degrades to the catch-all, and loses a servable url with it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/a.png",
+                            "detail": "medium",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "auto, low, high, or original" in str(exc.value.detail)
+
+    def test_image_message_part_with_url_and_file_id_is_served_from_the_url(self):
+        # file_id means instead of a url, not as well as: with a url, serve it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/a.png",
+                            "file_id": "file_abc",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert len(msgs) == 1
+        assert msgs[0].content[1].image_url.url == "https://example.com/a.png"
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_attachment_refused_on_the_roles_that_exit_early(self, role):
+        # Both return via `continue`, so a refusal in the user parts loop never sees them.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [text_part, {"type": "input_file", "filename": "r.pdf"}],
+                },
+                {"role": "user", "content": "and now?"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_assistant_replay_keeps_its_lenient_text_flatten(self):
+        # Clients round-trip prior assistant output verbatim, so only attachments are
+        # refused on a replay turn.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "earlier answer"},
+                        {"type": "refusal", "refusal": "I cannot help with that"},
+                    ],
+                },
+                {"role": "user", "content": "why not?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("assistant", "earlier answer"),
+            ("user", "why not?"),
+        ]
+
+    def test_string_content_never_hides_an_attachment(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "system", "content": "be brief"},
+                {"role": "assistant", "content": "earlier"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("system", "be brief"),
+            ("assistant", "earlier"),
+            ("user", "hello"),
+        ]
+
+    def test_refusal_body_is_the_openai_unsupported_parameter_shape(self):
+        # Clients branch on error.code / error.param.
+        payload = ResponsesRequest(
+            input = [{"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        error = exc.value.detail["error"]
+        assert error["code"] == "unsupported_parameter"
+        assert error["param"] == "input"
+        assert error["type"] == "invalid_request_error"
+
+
+# Every part shape and the answer it is owed; the failures live in the combinations.
+_IMG = "https://example.com/a.png"
+_RESPONSES_PART_MATRIX = [
+    # (part, refused, needle in the message)
+    ({"type": "input_text", "text": "hi"}, False, ""),
+    ({"type": "output_text", "text": "hi"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "auto"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "low"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "high"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "original"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": None}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "file_id": "f1"}, False, ""),
+    ({"type": "input_image", "image_url": "data:image/png;base64,AAAA"}, False, ""),
+    ({"type": "input_image", "file_id": "f1"}, True, "file_id"),
+    ({"type": "input_image"}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": None}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": ""}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": 17}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": {"url": _IMG}}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": _IMG, "detail": "medium"}, True, "auto, low, high"),
+    ({"type": "input_image", "image_url": _IMG, "detail": 4}, True, "auto, low, high"),
+    ({"type": "input_file", "file_id": "f1"}, True, "input_file"),
+    ({"type": "input_file", "file_data": "data:application/pdf;base64,AA"}, True, "input_file"),
+    ({"type": "input_file", "file_url": "https://example.com/d.pdf"}, True, "input_file"),
+    ({"type": "input_file", "filename": "r.pdf"}, True, "input_file"),
+    ({"type": "input_file"}, True, "input_file"),
+    ({"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}}, True, "input_audio"),
+    ({"type": "input_something_new", "value": 1}, True, "input_something_new"),
+]
+
+
+def _matrix_id(case):
+    part, refused, _ = case
+    keys = "+".join(k for k in part if k != "type")
+    return f"{part['type']}({keys or 'bare'})-{'400' if refused else '200'}"
+
+
+class TestResponsesMessagePartMatrix:
+    """One expected answer per (part shape, role, position). No server, no GPU."""
+
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("alone", [True, False], ids = ["alone", "with_text"])
+    def test_user_turn(self, case, alone):
+        part, refused, needle = case
+        content = [part] if alone else [{"type": "input_text", "text": "hi"}, part]
+        payload = ResponsesRequest(input = [{"role": "user", "content": content}])
+        if refused:
+            with pytest.raises(HTTPException) as exc:
+                _normalise_responses_input(payload)
+            assert exc.value.status_code == 400
+            assert needle in str(exc.value.detail)
+        else:
+            assert _normalise_responses_input(payload)
+
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_attachments_refused_on_every_role(self, case, role):
+        # These roles flatten to text, so only a text-ish part survives; everything else,
+        # servable image included, is caller content the flatten would drop.
+        part, refused, needle = case
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [{"type": "input_text", "text": "hi"}, part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        survives = part["type"] in ("input_text", "output_text") or (
+            role == "assistant" and part["type"] in ("refusal", "summary_text")
+        )
+        if survives:
+            assert _normalise_responses_input(payload)
+            return
+        if part["type"] == "input_file":
+            expected = needle
+        elif part["type"] == "input_image":
+            expected = needle if refused else "only supported on user messages"
+        else:
+            expected = part["type"]
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert expected in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_a_servable_image_is_refused_on_a_role_that_flattens(self, role):
+        # Passed every shape check and vanished in the flatten anyway. Nowhere to forward
+        # it to: Chat Completions wants a plain string on system and assistant.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        text_part,
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "only supported on user messages" in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}},
+            {"type": "computer_screenshot", "image_url": "https://example.com/a.png"},
+            {"type": "input_brand_new", "value": 1},
+        ],
+        ids = ["input_audio", "computer_screenshot", "future"],
+    )
+    def test_a_non_text_part_is_refused_on_a_role_that_flattens(self, role, part):
+        # Anything the flatten does not keep is caller content that vanishes.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [text_part, part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part["type"] in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "user", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_text"},
+            {"type": "input_text", "text": None},
+            {"type": "input_text", "text": 123},
+            {"type": "output_text"},
+        ],
+        ids = ["no_text", "null_text", "int_text", "output_no_text"],
+    )
+    def test_a_text_part_without_text_is_named_for_what_is_wrong(self, role, part):
+        # A known type name on an untyped part: waved through, then dropped by the flatten.
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "require a text field" in str(exc.value.detail)
+        assert part["type"] in str(exc.value.detail)
+
+    def test_a_malformed_text_part_does_not_hide_behind_a_good_one(self):
+        # Servable text beside it, so the request succeeded and only the broken part went.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "keep"}, {"type": "input_text"}],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert "require a text field" in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    @pytest.mark.parametrize("role", ["system", "developer"])
+    def test_output_metadata_is_caller_content_on_a_non_assistant_turn(self, role, part_type):
+        # Only the model's own output on a replay turn; elsewhere someone wrote it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        {"type": "input_text", "text": "keep"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part_type in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    def test_assistant_output_metadata_survives_the_flatten(self, part_type):
+        # Clients round-trip these, and the prompt needs nothing from them.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "earlier answer"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "why?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("assistant", "earlier answer"),
+            ("user", "why?"),
+        ]
+
+    def test_a_servable_image_still_passes_on_a_user_turn(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hi"},
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].content[1].image_url.url == "https://example.com/a.png"
+
+    def test_instructions_still_merge_when_a_turn_is_servable(self):
+        payload = ResponsesRequest(
+            instructions = "be brief",
+            input = [
+                {"role": "developer", "content": [{"type": "input_text", "text": "and kind"}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("system", "be brief\n\nand kind"),
+            ("user", "hello"),
+        ]
+
+    def test_top_level_item_types_are_untouched_by_the_refusal(self):
+        # The refusal walks message items only.
+        payload = ResponsesRequest(
+            input = [
+                {"type": "reasoning", "summary": [], "id": "rs_1"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+                {"role": "user", "content": "thanks"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [m.role for m in msgs] == ["assistant", "tool", "user"]
+
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
             input = [
@@ -785,6 +1425,51 @@ class TestChatToolCallsToResponsesOutput:
         )
         assert items[0]["arguments"] == ""
 
+    def test_apply_patch_function_is_restored_to_a_custom_tool_call(self):
+        patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
+        items = _chat_tool_calls_to_responses_output(
+            [
+                {
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {
+                        "name": "apply_patch",
+                        "arguments": json.dumps({"input": patch}),
+                    },
+                }
+            ],
+            {"apply_patch"},
+        )
+
+        assert items[0]["type"] == "custom_tool_call"
+        assert items[0]["call_id"] == "call_patch"
+        assert items[0]["name"] == "apply_patch"
+        assert items[0]["input"] == patch
+
+    def test_regular_function_named_apply_patch_stays_a_function_call(self):
+        items = _chat_tool_calls_to_responses_output(
+            [
+                {
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {"name": "apply_patch", "arguments": '{"path":"x"}'},
+                }
+            ]
+        )
+
+        assert items[0]["type"] == "function_call"
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected"),
+        [
+            ('{"input":"patch"', '{"input":"patch"'),
+            ('{"other":"value"}', '{"other":"value"}'),
+            (None, ""),
+        ],
+    )
+    def test_malformed_custom_arguments_are_not_hidden(self, arguments, expected):
+        assert _responses_custom_tool_input(arguments) == expected
+
 
 # =====================================================================
 # Non-streaming Responses adapter
@@ -801,14 +1486,19 @@ class TestResponsesNonStreamingAdapter:
         message,
         payload = None,
         llama_backend = None,
+        finish_reason = None,
     ):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             return JSONResponse(
                 content = {
                     "model": "test-model",
-                    "choices": [{"message": message}],
+                    "choices": [{"message": message, "finish_reason": finish_reason}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3},
                 }
             )
@@ -827,6 +1517,52 @@ class TestResponsesNonStreamingAdapter:
 
         return asyncio.run(run())
 
+    def test_a_truncated_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": "half an ans",
+                "reasoning_content": "partial plan",
+                "tool_calls": [
+                    {
+                        "id": "call_partial",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"q":"x"'},
+                    }
+                ],
+            },
+            finish_reason = "length",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "max_output_tokens"}
+        assert [item["status"] for item in body["output"]] == [
+            "incomplete",
+            "incomplete",
+            "incomplete",
+        ]
+
+    def test_a_natural_stop_is_still_completed(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "a whole answer"},
+            finish_reason = "stop",
+        )
+
+        assert body["status"] == "completed"
+        assert body["incomplete_details"] is None
+
+    def test_a_content_filtered_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "filtered partial output"},
+            finish_reason = "content_filter",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "content_filter"}
+        assert [item["status"] for item in body["output"]] == ["incomplete"]
+
     def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
         body = self._run_with_message(
@@ -842,6 +1578,34 @@ class TestResponsesNonStreamingAdapter:
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
 
+    def test_apply_patch_function_becomes_a_custom_tool_call(self, monkeypatch):
+        patch = "*** Begin Patch\n*** Add File: nested/a.txt\n+ok\n*** End Patch"
+        payload = ResponsesRequest(
+            input = "edit the file",
+            tools = [_codex_apply_patch_tool()],
+        )
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": json.dumps({"input": patch}),
+                        },
+                    }
+                ],
+            },
+            payload = payload,
+        )
+
+        assert len(body["output"]) == 1
+        assert body["output"][0]["type"] == "custom_tool_call"
+        assert body["output"][0]["input"] == patch
+
     def test_unclosed_think_block_extracts_as_reasoning(self):
         reasoning, visible = _extract_responses_reasoning(
             "<think>partial plan",
@@ -855,7 +1619,11 @@ class TestResponsesNonStreamingAdapter:
         import routes.inference as inf_mod
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -911,7 +1679,11 @@ class TestResponsesNonStreamingAdapter:
 
         usage = {"prompt_tokens": 11, "completion_tokens": 50, "total_tokens": 61}
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             # monitor_id is None here: this call's own row is the suppressed one.
             if observations is not None:
@@ -1030,7 +1802,11 @@ class TestResponsesNonStreamingAdapter:
     def test_monitor_records_tool_only_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -1085,7 +1861,11 @@ class TestResponsesNonStreamingAdapter:
     def test_cancelled_chat_completion_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             raise asyncio.CancelledError()
 
@@ -1841,6 +2621,115 @@ class TestResponsesStreamAdapter:
             "message",
         ]
 
+    def test_apply_patch_stream_is_restored_to_one_custom_tool_call(self, monkeypatch):
+        patch = "*** Begin Patch\n*** Add File: nested/café.txt\n+héllo\n*** End Patch"
+        arguments = json.dumps({"input": patch}, ensure_ascii = False)
+        split = len(arguments) // 2
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_patch",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch",
+                                        "arguments": arguments[:split],
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": arguments[split:]},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(
+            input = "edit",
+            stream = True,
+            tools = [_codex_apply_patch_tool()],
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.function_call_arguments.delta") == []
+        assert self._payloads(lines, "response.function_call_arguments.done") == []
+        done = self._payloads(lines, "response.output_item.done")
+        assert len(done) == 1
+        assert done[0]["item"] == {
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": "call_patch",
+            "name": "apply_patch",
+            "input": patch,
+        }
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["output"] == [done[0]["item"]]
+
+    def test_regular_apply_patch_function_stream_stays_a_function_call(self, monkeypatch):
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_patch",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch",
+                                        "arguments": '{"path":"x"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(
+            input = "edit",
+            stream = True,
+            tools = [{"type": "function", "name": "apply_patch"}],
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        done = self._payloads(lines, "response.output_item.done")
+        assert done[0]["item"]["type"] == "function_call"
+        assert self._payloads(lines, "response.function_call_arguments.done")
+
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -1969,6 +2858,17 @@ class TestResponsesOutputFunctionCall:
         assert d["call_id"] == "call_1"
         assert d["status"] == "completed"
         assert d["id"].startswith("fc_")
+
+    def test_custom_tool_call_construction(self):
+        call = ResponsesOutputCustomToolCall(
+            call_id = "call_patch",
+            name = "apply_patch",
+            input = "*** Begin Patch\n*** End Patch",
+        ).model_dump()
+
+        assert call["type"] == "custom_tool_call"
+        assert call["id"].startswith("ctc_")
+        assert call["status"] == "completed"
 
     def test_response_with_tool_call_output(self):
         resp = ResponsesResponse(
@@ -2636,3 +3536,93 @@ def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
 
     row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
     assert row["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_truncated_responses_stream_ends_on_response_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "half an ans"}, "finish_reason": finish_reason}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_healed_truncated_tool_call_remains_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": finish_reason}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == finish_reason
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
+
+
+def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatch):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "a whole answer"}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.incomplete") == []
+    completed = TestResponsesStreamAdapter._payloads(lines, "response.completed")[0]
+    assert completed["response"]["status"] == "completed"
+    assert completed["response"]["incomplete_details"] is None
+    assert [item["status"] for item in completed["response"]["output"]] == ["completed"]

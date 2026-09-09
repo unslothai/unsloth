@@ -71,8 +71,8 @@ def _load() -> dict:
     try:
         with open(_store_path(), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a
-        # dict (e.g. ``[]``) would otherwise crash lookup/record instead of failing safe.
+        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a dict would
+        # crash lookup/record instead of failing safe.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
@@ -130,7 +130,7 @@ def _file_lock():
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
         except Exception:
-            pass  # locking unavailable; the thread lock still applies
+            pass
         yield
     finally:
         try:
@@ -182,7 +182,7 @@ def record(
         data = _load()
         subjects = data.setdefault("subjects", {})
         subj = subjects.get(subject)
-        if not isinstance(subj, dict):  # tolerate a hand-edited non-dict entry
+        if not isinstance(subj, dict):
             subj = subjects[subject] = {}
         subj[target_key] = {
             "commit_sha": commit_sha,

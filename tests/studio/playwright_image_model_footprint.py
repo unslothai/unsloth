@@ -25,10 +25,9 @@ COMPANION_BYTES = 8_200_000_000
 REQUIRED_BYTES = CHECKPOINT_BYTES + COMPANION_BYTES
 REPO_ID = "unsloth/FLUX.2-klein-4B-GGUF"
 FILENAME = "FLUX.2-klein-4B-Q4_K_M.gguf"
-# The row is labelled by the catalogue's displayName ("FLUX.2 klein 4B"), not by the
-# artifact repo id. Matching the id exactly waited 30 s for text the picker never
-# renders. This test is about the footprint the row reports, not about its wording,
-# so accept either spelling and let a genuinely missing row still fail.
+# The row is labelled by the catalogue's displayName ("FLUX.2 klein 4B"), not by the artifact repo id. Matching the id
+# exactly waited 30 s for text the picker never renders. This test is about the footprint the row reports, not about
+# its wording, so accept either spelling and let a genuinely missing row still fail.
 KLEIN_ROW = re.compile(r"FLUX\.2[\s\-]klein[\s\-]4B")
 
 
@@ -177,8 +176,8 @@ def _api_payload(path: str, query: dict[str, list[str]], *, full_footprint: bool
                 checkpoint_bytes = CHECKPOINT_BYTES,
             )
         return base
-    # Nonessential background probes are allowed to settle to an empty object;
-    # the test fails on browser exceptions or a missing selector row below.
+    # Nonessential background probes are allowed to settle to an empty object; the test fails on browser exceptions or a
+    # missing selector row below.
     return {}
 
 

@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = (path: string) =>
-  readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+import { readSrc } from "./helpers/kit.ts";
 
 const Z_INDEX_PATTERN = /z-\[(\d+)\]|\bz-(\d+)\b/;
 const DECORATION_PATTERN =
@@ -16,9 +14,6 @@ const DIALOG_OVERLAY_PATTERN =
   /data-slot="dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
 const ALERT_DIALOG_OVERLAY_PATTERN =
   /data-slot="alert-dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
-const SETTINGS_OVERLAY_PATTERN = /overlayClassName="([^"]*\bz-\[60\][^"]*)"/;
-const SETTINGS_SURFACE_PATTERN =
-  /"([^"]*\bsettings-surface\b[^"]]*\bz-\[60\][^"]*)"/;
 const TOP_FULL_PATTERN = /top-full/;
 const CLOSED_DECORATION_PATTERN = /<\/div>\s*\)\}\s*$/;
 
@@ -28,11 +23,33 @@ function zIndex(block: string): number {
   return Number(match[1] ?? match[2]);
 }
 
+test("chat decorations are isolated without raising Settings above child portals", async () => {
+  const [chat, settings, dialog, alertDialog, dropdown] = await Promise.all([
+    readSrc("features/chat/chat-page.tsx"),
+    readSrc("features/settings/settings-dialog.tsx"),
+    readSrc("components/ui/dialog.tsx"),
+    readSrc("components/ui/alert-dialog.tsx"),
+    readSrc("components/ui/dropdown-menu.tsx"),
+  ]);
+  assert.match(chat, /className="chat-artifact-split\s+isolate\s/);
+  const surface = settings.match(/"settings-surface[^"]*"/);
+  const overlay = settings.match(/overlayClassName="[^"]*"/);
+  assert.ok(surface);
+  assert.ok(overlay);
+  assert.doesNotMatch(surface[0] + overlay[0], /\bz-(?:\[\d+\]|\d+)/);
+  assert.match(dialog, /<DialogPortal container=/);
+  assert.match(alertDialog, /<AlertDialogPortal>/);
+  assert.match(dropdown, /<DropdownMenuPrimitive\.Portal>/);
+  for (const portal of [dialog, alertDialog, dropdown]) {
+    assert.match(portal, /\bz-50\b/);
+  }
+});
+
 test("titlebar decoration stays below modal backdrops and window controls", async () => {
   const [titlebar, dialog, alertDialog] = await Promise.all([
-    source("components/tauri/window-titlebar.tsx"),
-    source("components/ui/dialog.tsx"),
-    source("components/ui/alert-dialog.tsx"),
+    readSrc("components/tauri/window-titlebar.tsx"),
+    readSrc("components/ui/dialog.tsx"),
+    readSrc("components/ui/alert-dialog.tsx"),
   ]);
 
   const decoration = titlebar.match(DECORATION_PATTERN);
@@ -55,7 +72,7 @@ test("titlebar decoration stays below modal backdrops and window controls", asyn
 });
 
 test("below-titlebar decoration is not trapped in the titlebar stacking context", async () => {
-  const titlebar = await source("components/tauri/window-titlebar.tsx");
+  const titlebar = await readSrc("components/tauri/window-titlebar.tsx");
   const decorationIndex = titlebar.indexOf(
     'data-slot="window-titlebar-decoration"',
   );
@@ -73,31 +90,4 @@ test("below-titlebar decoration is not trapped in the titlebar stacking context"
   assert.notEqual(headerEnd, -1);
   const header = titlebar.slice(headerIndex, headerEnd);
   assert.doesNotMatch(header, TOP_FULL_PATTERN);
-});
-
-test("settings stays above ordinary chat surfaces and below window controls", async () => {
-  const [titlebar, dialog, settings] = await Promise.all([
-    source("components/tauri/window-titlebar.tsx"),
-    source("components/ui/dialog.tsx"),
-    source("features/settings/settings-dialog.tsx"),
-  ]);
-
-  const titlebarHeader = titlebar.match(TITLEBAR_PATTERN);
-  const dialogOverlay = dialog.match(DIALOG_OVERLAY_PATTERN);
-  const settingsOverlay = settings.match(SETTINGS_OVERLAY_PATTERN);
-  const settingsSurface = settings.match(SETTINGS_SURFACE_PATTERN);
-
-  assert.ok(titlebarHeader);
-  assert.ok(dialogOverlay);
-  assert.ok(settingsOverlay);
-  assert.ok(settingsSurface);
-
-  const ordinaryModalLayer = zIndex(dialogOverlay[1]);
-  const settingsOverlayLayer = zIndex(settingsOverlay[1]);
-  const settingsSurfaceLayer = zIndex(settingsSurface[1]);
-  const titlebarLayer = zIndex(titlebarHeader[1]);
-
-  assert.equal(settingsOverlayLayer, settingsSurfaceLayer);
-  assert.ok(ordinaryModalLayer < settingsOverlayLayer);
-  assert.ok(settingsSurfaceLayer < titlebarLayer);
 });

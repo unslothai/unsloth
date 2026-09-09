@@ -13,7 +13,7 @@ generated launcher:
 
     python -X utf8 -I -m unsloth_cli studio -p 8888
 
-Use -I when that `python` is the managed Studio interpreter, which is what every
+Use -I when that `python` is the managed Unsloth interpreter, which is what every
 command Unsloth prints does. `-m` resolves the package before this file runs, so a
 shell standing in a directory that has an `unsloth_cli` folder would otherwise run
 that copy, and -I drops the working directory from sys.path first.
@@ -41,15 +41,11 @@ Output is identical to the console script, which takes three things:
 
 import sys
 
-# Before the import, so a direct `python path/to/unsloth_cli/__main__.py` run
-# takes the console-script gate in __init__ rather than needing the call below.
+# Before the import, so a direct `python .../__main__.py` run takes the console-script gate in __init__.
 sys.argv[0] = "unsloth"
 
 import unsloth_cli  # noqa: E402
 
 unsloth_cli._prepare_entry_point()
-# sys.exit, like the generated console script's `sys.exit(app())`. Typer raises
-# SystemExit itself in standalone mode, so today both spellings exit the same way,
-# but a returned value has to become the exit status here too or the two routes
-# stop agreeing the moment one exists.
+# A returned value must become the exit status, like the console script's `sys.exit(app())`.
 sys.exit(unsloth_cli.app(prog_name = "unsloth"))

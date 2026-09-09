@@ -56,6 +56,9 @@ def _stub_linux_path_checks(monkeypatch, module):
     monkeypatch.setattr(module.os.path, "exists", lambda _p: True)
     monkeypatch.setattr(module.os.path, "isdir", lambda _p: True)
     monkeypatch.setattr(module.os, "access", lambda _p, _mode: True)
+    # The mount does not exist on the test host, so the readability probe that
+    # opens the directory has to be part of the same pretence.
+    monkeypatch.setattr(module, "is_readable_dir", lambda _p: True)
 
 
 def _stub_hub_scan_folder_db(monkeypatch):

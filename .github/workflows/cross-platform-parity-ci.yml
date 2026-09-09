@@ -65,8 +65,23 @@ on:
       - 'studio/install_*.py'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
+      # This is the only lane that executes it, and the Windows smoke workflow it moved
+      # from deliberately skips it, so without this line a PR editing only the test
+      # would never run it.
+      - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_windows_installer_native_type_fallback.py'
+      - 'tests/python/test_pwsh_runner_encoding.py'
+      # Every PowerShell test in this job shells out through it, so a change here can break
+      # all of them. It was in no path filter, so it triggered nothing.
+      - 'tests/_shared/unsloth_pwsh_runner.py'
+      # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
+      # row here is the sole place the keep path meets a real loader. install_*.py
+      # above is only the entrypoint; these two are the rest of what it loads.
+      - 'tests/studio/install/test_keep_install_backcompat_9979.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
@@ -122,8 +137,23 @@ on:
       - 'studio/install_*.py'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
+      # This is the only lane that executes it, and the Windows smoke workflow it moved
+      # from deliberately skips it, so without this line a PR editing only the test
+      # would never run it.
+      - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_windows_installer_native_type_fallback.py'
+      - 'tests/python/test_pwsh_runner_encoding.py'
+      # Every PowerShell test in this job shells out through it, so a change here can break
+      # all of them. It was in no path filter, so it triggered nothing.
+      - 'tests/_shared/unsloth_pwsh_runner.py'
+      # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
+      # row here is the sole place the keep path meets a real loader. install_*.py
+      # above is only the entrypoint; these two are the rest of what it loads.
+      - 'tests/studio/install/test_keep_install_backcompat_9979.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
@@ -192,7 +222,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       # test_installer_profile_hardening.py imports unsloth_cli.commands.studio, which pulls
       # the CLI's import chain; without these the job dies on ModuleNotFoundError before a
       # single test runs. rich arrives through typer today, but unsloth_cli imports it
@@ -209,10 +238,13 @@ jobs:
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
           tests/python/test_windows_setup_output_encoding.py
+          tests/python/test_windows_installer_native_type_fallback.py
+          tests/python/test_pwsh_runner_encoding.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
           tests/test_installer_profile_hardening.py
+          tests/studio/install/test_keep_install_backcompat_9979.py
           -q -rs
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
@@ -255,6 +287,14 @@ jobs:
       - name: Application Control CLI fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
+      # Linux on purpose, and the only lane that can run it. Reflection emit succeeds on
+      # this engine so the types build exactly as they do on 5.1, while kernel32 and
+      # shell32 do not resolve, so every call through them fails the way it does on a
+      # Windows host whose antivirus took the helper away. That is the build side and the
+      # call side in one run, and it is not reproducible on a healthy Windows runner.
+      - name: Native path resolver degradation tests
+        if: runner.os == 'Linux'
+        run: pwsh -NoProfile -File tests/studio/test_native_path_resolver_degrades.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh

@@ -11,7 +11,6 @@ class PhiModelInfo(ModelInfo):
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
-# Phi Model Meta
 PhiMeta4 = ModelMeta(
     org = "microsoft",
     base_name = "phi",
@@ -23,7 +22,6 @@ PhiMeta4 = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
-# Phi Instruct Model Meta
 PhiInstructMeta4 = ModelMeta(
     org = "microsoft",
     base_name = "phi",

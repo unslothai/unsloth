@@ -4,7 +4,7 @@
 """Refusals the media model auto-switch answers a generation request with.
 
 Every one of these is an ordinary outcome rather than a fault. The switch never downloads,
-never cuts a running generation short, and never outlives the ~100 second window Studio's
+never cuts a running generation short, and never outlives the ~100 second window Unsloth's
 secure-mode tunnel gives an origin response, so where it cannot serve the request it says which
 of those it hit and asks the caller to retry.
 

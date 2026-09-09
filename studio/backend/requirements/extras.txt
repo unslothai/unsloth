@@ -53,5 +53,18 @@ einops==0.8.2
 # 0.10 requires >=3.10.
 tabulate==0.10.0; python_version >= "3.10"
 tabulate==0.9.0; python_version < "3.10"
-openai>=2.7.2
+# Pinned, not floating. scan_packages_baseline.json pins four reviewed-benign
+# CRITICALs in this package to the reviewed file digests, because the evidence
+# hash records a network call but not its destination (#8104, #8565). A floating
+# spec therefore reds the security gate on whatever day upstream ships, which is
+# what openai 3.2.0 did. Bump this deliberately and re-review the four entries
+# with --write-baseline.
+#
+# Split on 3.10 because openai 3.x requires it and this file still supports 3.9
+# (pyproject requires-python is >=3.9). A single `openai==3.2.0` would not resolve
+# at all there, where `>=2.7.2` had quietly been picking 2.48.0; that is the last
+# release accepting 3.9, so the pin keeps what 3.9 was already getting. Only the
+# 3.10 branch is what the security audit scans, since that job runs on 3.12.
+openai==3.2.0; python_version >= "3.10"
+openai==2.48.0; python_version < "3.10"
 websockets>=15.0.1

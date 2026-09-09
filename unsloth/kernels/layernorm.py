@@ -45,17 +45,16 @@ def layernorm_forward(
     r += row_idx
     mu += row_idx
 
-    # According to https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm, all modules
-    # are in float32!
+    # Per torchtune's Fp32LayerNorm, all modules are in float32.
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
     b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     mean_X = tl.sum(X_row, axis = 0) / n_cols
-    # (X[0] - mean) == -mean so we need to mask it out
+    # (X[0] - mean) == -mean, so mask it out.
     XX = tl.where(mask, X_row - mean_X, 0)
     row_var = tl.sum(XX * XX, axis = 0) / n_cols
-    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm
+    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm.
     eps_f32 = tl.full((), eps, tl.float32)
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
@@ -78,7 +77,7 @@ def layernorm_backward(
     eps: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    # Approximately follows https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
+    # Approximately follows karpathy/llm.c doc/layernorm/layernorm.md
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
@@ -88,8 +87,7 @@ def layernorm_backward(
     r += row_idx
     mu += row_idx
 
-    # According to https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm, all modules
-    # are in float32!
+    # Per torchtune's Fp32LayerNorm, all modules are in float32.
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -197,7 +195,6 @@ def test_layernorm(
     YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
     Y.backward(YY)
     correct_grad = X.grad.clone()
-    # from unsloth.kernels import fast_layernorm
     Y = fast_layernorm(layernorm, XX)
     Y.backward(YY)
     assert torch.dist(correct_grad, XX.grad).item() <= 0.1

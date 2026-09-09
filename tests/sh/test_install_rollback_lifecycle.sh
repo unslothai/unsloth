@@ -1,19 +1,30 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Exercises install.sh's real rollback helpers without downloading the Studio stack.
+# Exercises install.sh's real rollback helpers without downloading the Unsloth stack.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
-PASS=0
-FAIL=0
-
-ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
-bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
-
 ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 143'\'' TERM$/p' "$INSTALL_SH")
+# Both are defined above the block, with the rest of the cache selector, and both are
+# called from it. Splicing without them makes the cases exit 127 on a command the real
+# installer has, which satisfies any expectation about a marker that must not change.
+# printf, not $'\n': the workflow runs this file with `sh`, whatever the shebang says.
+MARKER_HELPER=$(awk '
+    /^(_restore_uv_cache_marker|_record_uv_cache_choice|_absolutize_uv_cache_dir)\(\) \{/ { grab = 1 }
+    grab { print }
+    grab && /^}/ { grab = 0 }
+' "$INSTALL_SH")
+if ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_restore_uv_cache_marker() {' \
+   || ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_record_uv_cache_choice() {' \
+   || ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_absolutize_uv_cache_dir() {'; then
+    echo "  FAIL: could not extract the uv cache marker helpers from install.sh"
+    exit 1
+fi
+ROLLBACK_BLOCK=$(printf '%s\n%s\n' "$MARKER_HELPER" "$ROLLBACK_BLOCK")
 if ! printf '%s\n' "$ROLLBACK_BLOCK" | grep -q '^_on_install_signal() {'; then
     echo "  FAIL: could not extract rollback lifecycle block from install.sh"
     exit 1
@@ -179,6 +190,200 @@ else
     bad "stale cleanup mutated a rollback symlink target"
 fi
 
+echo "=== install.sh commits before the post-setup tail ==="
+# The environment is final once studio setup returns, so nothing in the wiring below it may
+# reach the exit trap that restores the previous environment.
+_commit_calls=$(grep -c '^[[:space:]]*_commit_studio_venv_replacement$' "$INSTALL_SH")
+_commit_at=$(grep -n '^[[:space:]]*_commit_studio_venv_replacement$' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_setup_gate_at=$(grep -n '^if \[ "\$_SETUP_EXIT" -eq 0 \]; then$' "$INSTALL_SH" | head -1 | cut -d: -f1)
+# The first thing install.sh mutates outside the venv once setup has returned.
+_shim_at=$(grep -n '^mkdir -p "\$_LOCAL_BIN"$' "$INSTALL_SH" | head -1 | cut -d: -f1)
+if [ "$_commit_calls" -eq 1 ] && [ -n "$_commit_at" ] && [ -n "$_setup_gate_at" ] && [ -n "$_shim_at" ] \
+   && [ "$_setup_gate_at" -lt "$_commit_at" ] && [ "$_commit_at" -lt "$_shim_at" ]; then
+    ok "the replacement is committed inside the setup-succeeded gate, before anything is wired"
+else
+    bad "the replacement is committed too late (gate=$_setup_gate_at commit=$_commit_at shim=$_shim_at calls=$_commit_calls)"
+fi
+# ...and first in that gate: anything added ahead of it is one more command inside the window.
+_gate_first=$(sed -n "$((_setup_gate_at + 1)),\$p" "$INSTALL_SH" \
+    | grep -vE '^[[:space:]]*(#|$)' | head -1 | sed 's/^[[:space:]]*//')
+if [ "$_gate_first" = "_commit_studio_venv_replacement" ]; then
+    ok "nothing runs between studio setup succeeding and the commit"
+else
+    bad "the setup-succeeded gate runs something before the commit ($_gate_first)"
+fi
+
+# install.sh's own tail, gate to gate, so the cases below run its real commit call site. Both
+# anchors are checked: without the closing one sed would run to EOF and carry unrelated code.
+_tail_ends=$(grep -c '^if \[ "\$_SETUP_EXIT" -ne 0 \]; then$' "$INSTALL_SH")
+TAIL_BLOCK=$(sed -n '/^if \[ "\$_SETUP_EXIT" -eq 0 \]; then$/,/^if \[ "\$_SETUP_EXIT" -ne 0 \]; then$/p' "$INSTALL_SH" \
+    | sed '$d')
+if [ "$_tail_ends" -ne 1 ] \
+   || ! printf '%s\n' "$TAIL_BLOCK" | grep -q '^_persist_login_path_dir() {'; then
+    echo "  FAIL: could not extract the post-setup tail from install.sh"
+    exit 1
+fi
+
+# The state the tail inherits: a replacement in flight and a new environment on disk.
+write_tail_harness() {  # case dir, login shell, "no-exe" to leave the shim's target absent
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { printf "%s\n" "$1" >> "$STUDIO_HOME/steps.log"; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'step() { printf "%s\n" "$2" >> "$STUDIO_HOME/steps.log"; }'
+        printf '%s\n' 'tauri_clear_install_error() { :; }'
+        # The tail ends with this call; writing a launcher is not what these cases are about.
+        printf '%s\n' 'create_studio_shortcuts() { return 0; }'
+        printf '%s\n' 'TAURI_MODE=false'
+        printf '%s\n' 'OS=linux'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$1"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$1"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+        printf '%s\n' 'mkdir -p "$VENV_DIR/bin"'
+        if [ "${3:-}" != no-exe ]; then
+            printf '%s\n' 'printf "#!/bin/sh\\n" > "$VENV_DIR/bin/unsloth"'
+            printf '%s\n' 'chmod +x "$VENV_DIR/bin/unsloth"'
+        fi
+        printf '%s\n' 'VENV_ABS_BIN="$VENV_DIR/bin"'
+        printf '%s\n' 'printf "new\n" > "$VENV_DIR/generation"'
+        printf '%s\n' '_SETUP_EXIT=0'
+        printf "HOME='%s/home'\n" "$1"
+        printf '%s\n' 'export HOME'
+        printf "SHELL='%s'\n" "$2"
+        printf '%s\n' 'export SHELL'
+        # The tail reads all four from the environment; an exported ZDOTDIR would send the
+        # fixture's write to the developer's own ~/.zshrc.
+        printf '%s\n' 'unset ZDOTDIR ZSH_VERSION UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL'
+        printf '%s\n' '_LOCAL_BIN="$HOME/.local/bin"'
+        printf '%s\n' '_STUDIO_HOME_REDIRECT=default'
+        printf '%s\n' '_UNSLOTH_LOGIN_PATH="/usr/bin:/bin"'
+        printf '%s\n' '_UNSLOTH_UV_BIN_DIR="$HOME/.local/uvbin"'
+        printf '%s\n' "$TAIL_BLOCK"
+    } > "$1/harness.sh"
+}
+
+# An unwritable profile costs the PATH entry it would have added, not the install.
+run_readonly_profile_case() {
+    _case="$1"
+    _case_dir="$WORK/readonly-$_case"
+    _case_home="$_case_dir/home"
+    mkdir -p "$_case_dir/unsloth_studio" "$_case_home/.local/bin" \
+        "$_case_home/$(dirname "$3")"
+    printf 'old\n' > "$_case_dir/unsloth_studio/generation"
+    printf '# unwritable\n' > "$_case_home/$3"
+    chmod 444 "$_case_home/$3"
+    if true 2>/dev/null >> "$_case_home/$3"; then
+        bad "unwritable $_case profile could not be set up (this user appends to it regardless)"
+        return 0
+    fi
+    write_tail_harness "$_case_dir" "$2"
+
+    set +e
+    sh "$_case_dir/harness.sh" >/dev/null 2>&1
+    _status=$?
+    set -e
+    if [ "$_status" -eq 0 ]; then
+        ok "an unwritable $_case profile does not fail the install"
+    else
+        bad "an unwritable $_case profile failed the install (exit $_status)"
+    fi
+    if [ "$(cat "$_case_home/$3")" = "# unwritable" ]; then
+        ok "an unwritable $_case profile is left as it was"
+    else
+        bad "an unwritable $_case profile was modified"
+    fi
+    if grep -q "could not write $_case_home/$3; add ~/.local/bin" \
+        "$_case_dir/steps.log" 2>/dev/null; then
+        ok "an unwritable $_case profile is reported to the user"
+    else
+        bad "an unwritable $_case profile is silently skipped"
+    fi
+    # One unwritable profile must not cost the other five the uv loop writes.
+    if grep -q '/.local/uvbin' "$_case_home/.profile" 2>/dev/null; then
+        ok "the profiles that can be written still get their PATH entry ($_case)"
+    else
+        bad "one unwritable $_case profile stopped the remaining profiles from being written"
+    fi
+}
+
+run_readonly_profile_case zsh /bin/zsh .zshrc
+run_readonly_profile_case fish /usr/bin/fish .config/fish/conf.d/unsloth.fish
+
+# The tail can still refuse outright: a real directory at the shim path is user data it will not
+# delete. That refusal must cost the shim, not the environment.
+REFUSE_DIR="$WORK/tail-refusal"
+mkdir -p "$REFUSE_DIR/unsloth_studio" "$REFUSE_DIR/home/.local/bin/unsloth"
+printf 'old\n' > "$REFUSE_DIR/unsloth_studio/generation"
+write_tail_harness "$REFUSE_DIR" /bin/bash
+set +e
+sh "$REFUSE_DIR/harness.sh" >/dev/null 2>&1
+_refusal_status=$?
+set -e
+if [ "$_refusal_status" -eq 1 ]; then
+    ok "a directory at the shim path still refuses the install"
+else
+    bad "a directory at the shim path no longer refuses the install (exit $_refusal_status)"
+fi
+if [ "$(cat "$REFUSE_DIR/unsloth_studio/generation" 2>/dev/null)" = "new" ]; then
+    ok "a refused shim keeps the environment just installed"
+else
+    bad "a refused shim rolled back the environment just installed"
+fi
+if ! find "$REFUSE_DIR" -maxdepth 1 -name 'unsloth_studio.rollback.*' -print -quit | grep -q .; then
+    ok "a refused shim leaves no rollback copy"
+else
+    bad "a refused shim left a rollback copy"
+fi
+
+# An unwritable bin directory is only a failed install when what it holds is not this run's shim.
+run_readonly_bin_case() {  # name, what the existing entry points at, expected status, [no-exe]
+    _bin_dir="$WORK/readonly-bin-$1"
+    _bin_home="$_bin_dir/home"
+    mkdir -p "$_bin_dir/unsloth_studio" "$_bin_home/.local/bin"
+    printf 'old\n' > "$_bin_dir/unsloth_studio/generation"
+    # The harness writes the executable; the entry already there either resolves to it or not.
+    ln -sfn "$2" "$_bin_home/.local/bin/unsloth"
+    chmod 555 "$_bin_home/.local/bin"
+    if true 2>/dev/null > "$_bin_home/.local/bin/probe"; then
+        rm -f "$_bin_home/.local/bin/probe"
+        chmod 755 "$_bin_home/.local/bin"
+        bad "unwritable bin directory holding $1 could not be set up (this user writes it anyway)"
+        return 0
+    fi
+    write_tail_harness "$_bin_dir" /bin/bash "${4:-}"
+    set +e
+    sh "$_bin_dir/harness.sh" >/dev/null 2>"$_bin_dir/stderr"
+    _bin_status=$?
+    set -e
+    chmod 755 "$_bin_home/.local/bin"
+    if [ "$_bin_status" -eq "$3" ]; then
+        ok "an unwritable bin directory holding $1 exits $3"
+    else
+        bad "an unwritable bin directory holding $1 exits $3 (got $_bin_status)"
+    fi
+    if [ "$3" -eq 0 ]; then
+        if grep -q "kept the existing shim" "$_bin_dir/steps.log" 2>/dev/null; then
+            ok "keeping the existing shim is reported rather than passed over in silence"
+        else
+            bad "keeping the existing shim is not reported"
+        fi
+    elif grep -qF "run '$_bin_dir/unsloth_studio/bin/unsloth' directly" "$_bin_dir/stderr"; then
+        ok "refusing $1 says how to start Unsloth without the shim"
+    else
+        bad "refusing $1 does not say how to start Unsloth without the shim"
+    fi
+}
+
+# Absolute as install.sh writes it, relative as something else might: both resolve to it.
+run_readonly_bin_case absolute-shim "$WORK/readonly-bin-absolute-shim/unsloth_studio/bin/unsloth" 0
+run_readonly_bin_case relative-shim ../../../unsloth_studio/bin/unsloth 0
+# One resolving elsewhere, one naming the exact path install.sh writes but resolving nowhere.
+run_readonly_bin_case another-command /bin/false 1
+run_readonly_bin_case dangling-shim \
+    "$WORK/readonly-bin-dangling-shim/unsloth_studio/bin/unsloth" 1 no-exe
+
 echo "=== install.ps1 rollback wiring ==="
 if grep -q '^    function Remove-StaleStudioVenvRollbacks {' "$INSTALL_PS1" \
    && grep -q '^    Remove-StaleStudioVenvRollbacks$' "$INSTALL_PS1"; then
@@ -198,6 +403,94 @@ if grep -A18 '^    function Remove-StudioVenvTreeWithRetry {' "$INSTALL_PS1" \
 else
     bad "Windows rollback deletion still hides failures"
 fi
+
+# The marker must not outlive the attempt that wrote it, even when no venv replacement
+# was ever in flight: a first install has none, and the ownership guard can refuse early.
+marker_case() {  # label, pre-existing marker value or empty, expect, [commit]
+    _label="$1"; _pre="$2"; _expect="$3"; _commit="${4:-}"
+    _dir="$WORK/marker-$_label"
+    mkdir -p "$_dir/cache"
+    [ -n "$_pre" ] && printf '%s\n' "$_pre" > "$_dir/cache/uv-cache-dir"
+    _h="$_dir/harness.sh"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_dir"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' 'UV_CACHE_DIR="/tmp/this-attempt-cache"'
+        printf '%s\n' '_record_uv_cache_choice'
+        [ -n "$_commit" ] && printf '%s\n' '_commit_studio_venv_replacement'
+        printf '%s\n' 'exit 1'
+    } > "$_h"
+    ( cd "$_dir" && sh "$_h" >/dev/null 2>"$_dir/err" ) || _rc=$?
+    if [ "${_rc:-0}" = 127 ] || [ -s "$_dir/err" ]; then
+        bad "$_label (harness did not run: $(cat "$_dir/err"))"
+        return 0
+    fi
+    if [ -f "$_dir/cache/uv-cache-dir" ]; then _got=$(cat "$_dir/cache/uv-cache-dir"); else _got="<gone>"; fi
+    if [ "$_got" = "$_expect" ]; then
+        ok "$_label"
+    else
+        bad "$_label (expected [$_expect], got [$_got])"
+    fi
+}
+
+# A signal can land between any two statements, so the commit sets one flag that both
+# restores consult. With two flags, a signal mid-commit put the previous environment back
+# and kept the marker of the attempt that replaced it, or the reverse.
+commit_flag_case() {
+    _dir="$WORK/marker-commit-window"
+    mkdir -p "$_dir/cache"
+    printf '%s\n' "/previous/install/cache" > "$_dir/cache/uv-cache-dir"
+    _h="$_dir/harness.sh"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_dir"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' 'UV_CACHE_DIR="/tmp/this-attempt-cache"'
+        printf '%s\n' '_record_uv_cache_choice'
+        # The state a signal would find between the two flag assignments: committed, but
+        # with the venv rollback still armed.
+        printf '%s\n' 'mkdir -p "$VENV_DIR" "$STUDIO_HOME/backup"'
+        printf '%s\n' 'printf "new\n" > "$VENV_DIR/generation"'
+        printf '%s\n' 'printf "old\n" > "$STUDIO_HOME/backup/generation"'
+        printf '%s\n' '_STUDIO_INSTALL_COMMITTED=true'
+        printf '%s\n' '_VENV_ROLLBACK_ACTIVE=true'
+        printf '%s\n' '_VENV_ROLLBACK_DIR="$STUDIO_HOME/backup"'
+        printf '%s\n' '_VENV_ROLLBACK_TARGET="$VENV_DIR"'
+        printf '%s\n' '_restore_studio_venv_replacement'
+        printf '%s\n' '_restore_uv_cache_marker'
+    } > "$_h"
+    ( cd "$_dir" && sh "$_h" >/dev/null 2>"$_dir/err" ) || _rc=$?
+    if [ "${_rc:-0}" = 127 ] || [ -s "$_dir/err" ]; then
+        bad "a committed install is not half rolled back (harness: $(cat "$_dir/err"))"
+        return 0
+    fi
+    _got=$(cat "$_dir/cache/uv-cache-dir" 2>/dev/null)
+    _gen=$(cat "$_dir/unsloth_studio/generation" 2>/dev/null)
+    if [ "$_got" = "/tmp/this-attempt-cache" ] && [ "$_gen" = new ]; then
+        ok "a committed install is not half rolled back by a signal mid-commit"
+    else
+        bad "a signal mid-commit undid half the commit (marker [$_got], venv [$_gen])"
+    fi
+}
+
+echo "=== uv cache marker survives only a successful install ==="
+marker_case "a failed install with no venv replacement restores the previous marker" \
+    "/previous/install/cache" "/previous/install/cache"
+marker_case "a failed first install leaves no marker behind" "" "<gone>"
+# A first install takes no rollback branch and must still commit the marker: what follows
+# can fail, and the environment it installed stays.
+marker_case "a committed first install keeps its marker when a later step fails" \
+    "/previous/install/cache" "/tmp/this-attempt-cache" commit
+commit_flag_case
 
 echo ""
 echo "  PASS: $PASS"
