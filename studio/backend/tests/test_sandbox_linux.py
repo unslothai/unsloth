@@ -564,6 +564,7 @@ def test_the_probe_builds_its_launch_through_the_real_argv_builder(tmp_path):
     try:
         reference = sandbox_linux.prepare(_plan(tmp_path, argv = ("/bin/true", "-x")))
         try:
+
             def normalise(argv, launch):
                 fd = str(argv[argv.index("--seccomp") + 1])
                 identity = launch.cleanup_paths[0]

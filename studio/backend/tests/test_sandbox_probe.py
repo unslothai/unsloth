@@ -257,7 +257,6 @@ def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
 
 
 def test_a_backend_that_only_prints_the_token_is_not_believed():
-
     def liar(plan):
         return PreparedSandboxLaunch(
             argv = (sys.executable, "-I", "-S", "-c", f"print({sandbox_probe.PROBE_TOKEN!r})"),

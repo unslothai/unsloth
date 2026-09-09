@@ -348,7 +348,6 @@ def test_the_launch_is_released_when_the_spawn_raises(monkeypatch):
 
 
 def test_the_launch_is_released_when_required_refuses(monkeypatch):
-
     def refuse(plan):
         raise SandboxUnavailableError("OS_ISOLATION_UNAVAILABLE: nope", remediation = "install it")
 
@@ -390,7 +389,6 @@ def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
 
 
 def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
-
     def explode(plan):
         raise ImportError("no module named sandbox_linux")
 
@@ -403,7 +401,6 @@ def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
 
 
 def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatch):
-
     def explode(plan):
         raise RuntimeError("planner down")
 
@@ -417,7 +414,6 @@ def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatc
 
 
 def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
-
     def forgetful(plan):
         return PreparedSandboxLaunch(
             argv = plan.argv,
