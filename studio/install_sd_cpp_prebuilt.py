@@ -372,7 +372,44 @@ def _is_rate_limited(exc: BaseException) -> bool:
     headers = getattr(exc, "headers", None)
     if headers is not None and _header(headers, "Retry-After"):
         return True
+    # A secondary limit can answer 403 with the primary quota untouched and no
+    # Retry-After; only the body names it. Same markers the repo's GitHub scraper uses.
+    if _names_a_rate_limit(_error_body(exc)):
+        return True
     return not _quota_left(headers)
+
+
+_RATE_LIMIT_BODY_MARKERS = (
+    "api rate limit exceeded",
+    "rate limit exceeded",
+    "secondary rate limit",
+    "secondary limit",
+    "abuse detection mechanism",
+    "abuse detection",
+)
+
+
+def _names_a_rate_limit(body: str) -> bool:
+    text = (body or "").lower()
+    return any(marker in text for marker in _RATE_LIMIT_BODY_MARKERS)
+
+
+def _error_body(exc: BaseException, *, limit: int = 2048) -> str:
+    """The refusal's body, read once and remembered: HTTPError is the response, so
+    reading it consumes it and the caller still prints the same object."""
+    cached = getattr(exc, "_unsloth_body", None)
+    if cached is not None:
+        return cached
+    try:
+        raw = exc.read(limit)  # type: ignore[attr-defined]
+        text = raw.decode("utf-8", errors = "replace") if isinstance(raw, bytes) else str(raw)
+    except Exception:  # noqa: BLE001 - a body we cannot read names nothing
+        text = ""
+    try:
+        exc._unsloth_body = text  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - exotic exception types
+        pass
+    return text
 
 
 def _header(headers: object, name: str) -> str:

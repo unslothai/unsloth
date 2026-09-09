@@ -3550,6 +3550,27 @@ def test_a_429_stops_the_ladder_whatever_the_quota_header_says():
     assert sdmod._is_rate_limited(err(403, primary_quota_left)) is False
 
 
+def test_a_headerless_secondary_limit_403_stops_the_ladder():
+    """A secondary limit can answer 403 with quota to spare and no Retry-After; only the
+    body names it, and the rest of the ladder shares the same throttled API."""
+    import email.message
+    import io
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+
+    def err(body):
+        return urllib.error.HTTPError(
+            "https://api.github.com/x", 403, "no", headers, io.BytesIO(body)
+        )
+
+    throttled = err(b'{"message": "You have exceeded a secondary rate limit."}')
+    permission = err(b'{"message": "Resource not accessible by personal access token"}')
+    assert sdmod._is_rate_limited(throttled) is True
+    assert sdmod._is_rate_limited(permission) is False
+
+
 def test_a_stalled_download_is_not_retried_into_a_tripled_deadline(tmp_path, monkeypatch):
     """Three attempts at the full timeout would block an install for 15 minutes where
     one stall used to cost 5. A timeout is terminal, exactly as url_exists treats it."""

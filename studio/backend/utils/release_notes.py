@@ -824,8 +824,8 @@ def _http_error_source(
         # headers still report quota is a permission refusal, and forcing `wait` would
         # walk straight past the helper's check for exactly that.
         if urllib.parse.urlparse(url).hostname == "api.github.com":
-            from utils.prebuilt.freshness_flow import note_github_rate_limited
-            note_github_rate_limited(error.headers, status = error.code)
+            from utils.prebuilt.freshness_flow import error_body, note_github_rate_limited
+            note_github_rate_limited(error.headers, status = error.code, body = error_body(error))
         return (
             ReleaseSource(
                 release = None,

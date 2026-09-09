@@ -1023,3 +1023,45 @@ def test_a_403_naming_a_retry_after_is_throttling(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9600"
     assert 115 < fr._flow.github_rate_limit_remaining() <= 120
+
+
+def test_a_headerless_secondary_limit_403_is_still_throttling(monkeypatch):
+    """A secondary limit can answer 403 with the primary quota untouched and no
+    Retry-After. Only the body names it, so headers alone read as a permission refusal
+    and the redirect fallback would never run."""
+    import email.message
+    import io
+    import urllib.error
+    import urllib.request
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+    body = b'{"message": "You have exceeded a secondary rate limit."}'
+
+    def fake_urlopen(req, timeout = 5.0):
+        if "api.github.com" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 403, "forbidden", headers, io.BytesIO(body))
+        return _Redirected("https://github.com/unslothai/llama.cpp/releases/tag/b9600")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9600"
+    assert fr._flow.github_rate_limit_remaining() > 0
+
+
+def test_a_permission_403_with_a_plain_body_is_still_not_throttling(monkeypatch):
+    """The body check must not swallow the permission case it was added beside."""
+    import email.message
+    import io
+    import urllib.error
+    import urllib.request
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+    body = b'{"message": "Resource not accessible by personal access token"}'
+
+    def fake_urlopen(req, timeout = 5.0):
+        raise urllib.error.HTTPError(req.full_url, 403, "forbidden", headers, io.BytesIO(body))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert fr._flow.github_rate_limit_remaining() == 0

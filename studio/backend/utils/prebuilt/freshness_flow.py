@@ -64,6 +64,50 @@ def rate_limit_wait_seconds(headers: Any, *, now: Optional[float] = None) -> Opt
     return None
 
 
+# What GitHub says in the body when it throttles. Mirrors the marker list in
+# plugins/data-designer-github-repo-seed .../gh_client.py::_is_rate_limit_response, which
+# is this repo's existing answer to the same question. A secondary limit can answer 403
+# with the primary quota untouched and no Retry-After, and only the body names it.
+_RATE_LIMIT_BODY_MARKERS = (
+    "api rate limit exceeded",
+    "rate limit exceeded",
+    "secondary rate limit",
+    "secondary limit",
+    "abuse detection mechanism",
+    "abuse detection",
+)
+
+
+def names_a_rate_limit(body: object) -> bool:
+    if not body:
+        return False
+    if isinstance(body, (bytes, bytearray)):
+        body = bytes(body).decode("utf-8", errors = "replace")
+    text = str(body).lower()
+    return any(marker in text for marker in _RATE_LIMIT_BODY_MARKERS)
+
+
+def error_body(exc: BaseException, *, limit: int = 2048) -> str:
+    """The refusal's body, read once and remembered on the exception.
+
+    HTTPError is the response, so reading it consumes it; callers downstream still
+    want to print or inspect the same object.
+    """
+    cached = getattr(exc, "_unsloth_body", None)
+    if cached is not None:
+        return cached
+    try:
+        raw = exc.read(limit)  # type: ignore[attr-defined]
+        text = raw.decode("utf-8", errors = "replace") if isinstance(raw, bytes) else str(raw)
+    except Exception:  # noqa: BLE001 - a body we cannot read simply names nothing
+        text = ""
+    try:
+        exc._unsloth_body = text  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - exotic exception types
+        pass
+    return text
+
+
 def _quota_left(headers: Any) -> bool:
     if headers is None:
         return False
@@ -78,6 +122,7 @@ def note_github_rate_limited(
     *,
     wait: Optional[float] = None,
     status: Optional[int] = None,
+    body: object = None,
 ) -> float:
     """Record the lockout and return its length; 0 when this was not a rate limit.
 
@@ -87,13 +132,15 @@ def note_github_rate_limited(
     for it would push the freshness checks onto the lagging redirect for nothing.
 
     ``status`` 429 is always throttling, whatever the quota header says: X-RateLimit-*
-    describes the PRIMARY quota, and a secondary limit leaves it untouched.
+    describes the PRIMARY quota, and a secondary limit leaves it untouched. A secondary
+    limit can also answer 403 with quota to spare and no Retry-After, and then only
+    ``body`` names it.
     """
     global _api_rate_limited_until
     if wait is None:
         wait = rate_limit_wait_seconds(headers)
     if wait is None:
-        if status != 429 and _quota_left(headers):
+        if status != 429 and not names_a_rate_limit(body) and _quota_left(headers):
             return 0.0
         wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
     wait = min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
@@ -246,7 +293,7 @@ def _fetch_newest_published_release_blocking(
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in GITHUB_RATE_LIMIT_STATUS:
-            wait = note_github_rate_limited(exc.headers, status = exc.code)
+            wait = note_github_rate_limited(exc.headers, status = exc.code, body = error_body(exc))
             logger.debug(
                 log_message,
                 repo = repo,

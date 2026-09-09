@@ -26,6 +26,7 @@ from utils.prebuilt.freshness_flow import (
     RELEASE_CACHE_TTL_SECONDS,
     RELEASE_FAILURE_CACHE_TTL_SECONDS,
     github_rate_limit_remaining,
+    error_body,
     note_github_rate_limited,
 )
 
@@ -111,7 +112,7 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
         payload = json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in GITHUB_RATE_LIMIT_STATUS:
-            wait = note_github_rate_limited(exc.headers, status = exc.code)
+            wait = note_github_rate_limited(exc.headers, status = exc.code, body = error_body(exc))
             logger.debug(
                 "llama changelog fetch rate limited", repo = repo, tag = tag, backoff_seconds = int(wait)
             )
