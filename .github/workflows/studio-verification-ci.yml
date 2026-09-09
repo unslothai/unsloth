@@ -56,7 +56,7 @@ jobs:
       - name: Compose project lifecycle support
         shell: bash
         run: |
-          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 31327e51f71055215b6d67fb4de9b6eb38494a73
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 9ced365ad35a84f34d5cdb00f9f0cd766825fe4c
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
 
       - name: Compose confined edits and supervised commands
@@ -65,7 +65,7 @@ jobs:
         run: |
           git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git a5d144019bb585e246d0752c11d325807d0bfb19
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
-          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 9d25a218f4dc335a952b8817588a0d023479c6de
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git ba95d92a7d66d45dc6902a00947a4eaccfc06759
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
