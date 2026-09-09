@@ -261,6 +261,8 @@ def _negated_guard(node, state):
     """
     if isinstance(node, nodes.Not):
         return _positive_test(node.node, state)
+    if _counts_tools(node, state):
+        return True
     if isinstance(node, nodes.Test) and node.name in ("none", "undefined"):
         return _tool_reference(node.node, state)
     if isinstance(node, nodes.Compare) and len(node.ops) == 1 and node.ops[0].op == "eq":
@@ -335,6 +337,8 @@ def _positive_test(node, state):
             and node.node.name in ("none", "undefined")
             and _tool_reference(node.node.node, state)
         )
+    if _counts_tools(node, state):
+        return True
     if _non_empty_tools(node, state):
         return True
     if isinstance(node, nodes.Compare) and len(node.ops) == 1:
@@ -343,11 +347,34 @@ def _positive_test(node, state):
             return any(
                 _field(role) == "role"
                 and not _template_built(role, state)
-                and isinstance(value, nodes.Const)
-                and value.value == "tool"
+                and (literal := _as_const(value, state)) is not None
+                and literal.value == "tool"
                 for role, value in ((node.expr, operand.expr), (operand.expr, node.expr))
             )
     return False
+
+
+def _known_empty(node, state):
+    """True when this path already established that the value renders as empty.
+
+    `{% if not tools %}{{ tools|tojson }}{% endif %}` emits `[]`, which is no schema:
+    the guard proves the catalog is falsy on the only path that reaches the output.
+    """
+    inner = node
+    while isinstance(inner, nodes.Filter) and inner.node is not None:
+        inner = inner.node
+    if not isinstance(inner, (nodes.Name, nodes.Getattr, nodes.Getitem)):
+        return False
+    return _constant_truth(inner, state) is False
+
+
+def _raises(node):
+    """`{{ raise_exception(...) }}` aborts the render, so the path stops here."""
+    return (
+        isinstance(node, nodes.Call)
+        and isinstance(node.node, nodes.Name)
+        and node.node.name == "raise_exception"
+    )
 
 
 def _is_payload(node):
@@ -417,7 +444,11 @@ def _value_aliases(value, state, active):
         # `catalog.pop('schema')` evaluates to whatever sat at that field.
         removed = _removed_key(value.node.attr, value)
         if removed is not None:
-            return _select(_value_aliases(value.node.node, state, active), removed)
+            result = _select(_value_aliases(value.node.node, state, active), removed)
+            # `d.pop('missing', tools)` renders the default when the field is absent.
+            for fallback in value.args[1:]:
+                result |= _value_aliases(fallback, state, active)
+            return result
         # A shallow copy is the receiver again as far as provenance goes; without this
         # the fallback reads `copy` as a data field and loses everything under it.
         if value.node.attr == "copy" and not value.args and not value.kwargs:
@@ -450,11 +481,19 @@ def _value_aliases(value, state, active):
             defaults = dict(
                 zip(parameters[len(parameters) - len(macro.defaults) :], macro.defaults)
             )
+            # `{% macro wrap(caller=None) %}` declares the parameter only to document
+            # it; inside a {% call %} Jinja binds `caller` to the block regardless, so
+            # the declaration must not clear a binding the caller supplied.
+            supplied_caller = state.macros.get("caller")
             for name in parameters:
+                if name == "caller" and supplied_caller is not None:
+                    continue
                 _replace(local.aliases, (name,), set())
                 local.macros.pop(name, None)
                 _forget((name,), local)
             for parameter in macro.args:
+                if parameter.name == "caller" and supplied_caller is not None:
+                    continue
                 expression = arguments.get(parameter.name, defaults.get(parameter.name))
                 _bind(
                     parameter,
@@ -528,6 +567,12 @@ def _bind(
             else None
         )
         if _constructs_object(value):
+            # The replacement populates its own members, so the old subtree goes
+            # first: otherwise `{% set w={'message': message} %}` keeps the previous
+            # literal's `w.message` marked template-built while it now holds input.
+            state.constructed.difference_update(
+                [built for built in state.constructed if built[: len(key)] == key]
+            )
             _mark_constructed(key, value, state)
         elif source_key is not None and source_key in state.constructed:
             # The nested members were built by the template too, so the alias has to
@@ -668,17 +713,14 @@ def _keeps_content(node):
     return True
 
 
-def _invokes_caller(call, state):
-    """Whether the macro a `{% call %}` targets actually runs its caller block."""
-    macro = state.macros.get(call.node.name) if isinstance(call.node, nodes.Name) else None
-    if macro is None:
-        # An unknown callee could invoke it, so assume the block runs.
-        return True
-    return any(
-        isinstance(found.node, nodes.Name) and found.node.name == "caller"
-        for statement in macro.body
-        for found in statement.find_all(nodes.Call)
-    )
+def _unknown_callee(call, state):
+    """Whether a `{% call %}` targets something this analyser cannot read.
+
+    A macro it knows is scanned, and the caller block bound into it as `caller`, so
+    reachability falls out of the ordinary scan. Anything else could invoke the block
+    for reasons not visible here, so the block is scanned unconditionally.
+    """
+    return not (isinstance(call.node, nodes.Name) and call.node.name in state.macros)
 
 
 def _removed_key(method, call):
@@ -773,10 +815,12 @@ def _scan_loop(node, state, active, guarded, tail):
             # `loop.first` reprs the same in every loop, so an outer loop's facts would
             # otherwise prune branches of a nested one.
             _forget(("loop",), local)
-            if literal:
-                # A literal iterable is simulated item by item, so which iteration this
-                # is happens to be known: `{% for x in [1] %}{% if not loop.first %}`
-                # never runs its body.
+            if literal and node.test is None:
+                # A literal iterable is simulated item by item, so which iteration
+                # this is happens to be known: `{% for x in [1] %}{% if not
+                # loop.first %}` never runs its body. With a filter the position
+                # describes the accepted sequence, not the source, so it stays
+                # unknown rather than being read off the source index.
                 position = values.index(value)
                 for member, truth in (
                     ("first", position == 0),
@@ -849,11 +893,24 @@ def _scan(
             if current.budget[0] < 0:
                 raise _AnalysisLimit
             if isinstance(node, nodes.Output):
-                if any(
-                    _is_payload(value) and (guarded or _value_aliases(value, current, active))
-                    for value in node.nodes
-                ):
-                    return True, []
+                # Consecutive `{{ }}` are parsed into one Output, so its children are
+                # walked in order: what precedes a raise renders, what follows it
+                # does not, and a mutating call lands before the next statement.
+                aborted = False
+                for value in node.nodes:
+                    if (
+                        _is_payload(value)
+                        and (guarded or _value_aliases(value, current, active))
+                        and not _known_empty(value, current)
+                    ):
+                        return True, []
+                    _mutate(value, current, active)
+                    if _raises(value):
+                        aborted = True
+                        break
+                if aborted:
+                    # The render stops here, so this path reaches no later output.
+                    continue
             elif isinstance(node, nodes.Assign):
                 # `{% set _ = xs.append(...) %}` is how templates mutate without the do
                 # extension, so the call mutates even though this is an assignment.
@@ -893,10 +950,14 @@ def _scan(
                 # {% call macro(...) %}: the body is the caller block, so the generic
                 # handler below would only ever see an empty one. The invocation is
                 # where the catalog actually reaches the output.
-                if _value_aliases(node.call, current, active):
+                # Binding the block as a macro named `caller` lets the ordinary scan
+                # decide whether it runs, so a caller() sitting in a branch that
+                # cannot execute does not drag the block in with it.
+                invoked = current.copy()
+                invoked.macros["caller"] = nodes.Macro("caller", [], [], node.body)
+                if _value_aliases(node.call, invoked, active):
                     return True, []
-                # The caller block runs only if the macro invokes caller().
-                if _invokes_caller(node.call, current):
+                if _unknown_callee(node.call, current):
                     emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
                     if emits:
                         return True, []

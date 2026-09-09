@@ -936,3 +936,75 @@ def test_unrelated_conditions_do_not_exhaust_the_budget(blocks):
 )
 def test_round_twelve_paths(template, expected):
     assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3969739986: caller() reached only on a dead path is not an invocation.
+        (
+            "{% macro wrap(caller=None) %}{% if false %}{{ caller() }}{% endif %}{% endmacro %}"
+            "{% call wrap() %}{{ tools|tojson }}{% endcall %}",
+            False,
+        ),
+        (
+            "{% macro wrap(caller=None) %}{{ caller() }}{% endmacro %}"
+            "{% call wrap() %}{{ tools|tojson }}{% endcall %}",
+            True,
+        ),
+        (
+            "{% macro w(caller=None) %}{% if flag %}{{ caller() }}{% endif %}{% endmacro %}"
+            "{% call w() %}{{ tools|tojson }}{% endcall %}",
+            True,
+        ),
+        ("{% call unknown() %}{{ tools|tojson }}{% endcall %}", True),
+        (
+            "{% macro w(caller=None) %}{{ caller() }}{% endmacro %}{% call w() %}plain{% endcall %}",
+            False,
+        ),
+        # 3969739997: with a filter the loop position describes the accepted sequence.
+        (
+            "{% for x in [false, true] if x %}{% if loop.first %}{{ tools|tojson }}{% endif %}"
+            "{% endfor %}",
+            True,
+        ),
+        # 3969740007: a mutator called in output position still mutates.
+        ("{% set catalog=tools|list %}{{ catalog.clear() }}{{ catalog|tojson }}", False),
+        ("{% set catalog=tools|list %}{{ catalog|tojson }}", True),
+        # 3969740018: a truth-tested count is a guard, in both spellings.
+        ("{% if tools|length %}You may call tools.{% endif %}", True),
+        ("{% if not tools|length %}plain{% else %}You may call tools.{% endif %}", True),
+        ("{% if messages|length %}nothing here{% endif %}", False),
+        # 3969740028: the role literal may be staged in a variable.
+        (
+            "{% set tool_role='tool' %}{% if message.role == tool_role %}{{ message.content }}"
+            "{% endif %}",
+            True,
+        ),
+        ("{% set r='user' %}{% if message.role == r %}{{ message.content }}{% endif %}", False),
+        # 3969740040: pop hands back its default when the field is missing.
+        ("{% set d={} %}{{ d.pop('missing', tools)|tojson }}", True),
+        ("{% set d={'a':tools} %}{% do d.pop('a') %}{{ d|tojson }}", False),
+        # 3969740046: rebuilding a container drops the old subtree.
+        (
+            "{% set wrapper={'message': {'role':'user'}} %}{% set wrapper={'message': message} %}"
+            "{% if wrapper.message.role == 'tool' %}{{ wrapper.message.content }}{% endif %}",
+            True,
+        ),
+        (
+            "{% set wrapper={'message': {'role':'user'}} %}"
+            "{% if wrapper.message.role == 'tool' %}{{ wrapper.message.content }}{% endif %}",
+            False,
+        ),
+        # 3969740055: raise_exception aborts the render, and a guard that proves the
+        # catalog empty means the output it reaches carries no schema.
+        ("{% if tools %}{{ raise_exception('unsupported') }}{% endif %}{{ tools|tojson }}", False),
+        ("{{ raise_exception('always') }}{{ tools|tojson }}", False),
+        ("{{ tools|tojson }}{{ raise_exception('after') }}", True),
+        ("{% if not tools %}{{ raise_exception('none') }}{% endif %}{{ tools|tojson }}", True),
+        ("{% if not tools %}{{ tools|tojson }}{% endif %}", False),
+        ("{% if tools %}{{ tools|tojson }}{% endif %}", True),
+    ],
+)
+def test_round_thirteen_paths(template, expected):
+    assert template_supports_tools(template) is expected
