@@ -1152,3 +1152,429 @@ def test_a_calibrated_build_is_refused_before_the_dense_download(monkeypatch, tm
     )
     assert code == 2
     assert "from_pretrained" not in saved
+
+
+# ── the video branch of the calibration pass ──────────────────────────────────────────────────
+# A video family calibrates through its own pipeline, on its own grid, with a third axis and a
+# guidance mechanism the image families do not have. Every one of those differences is silent when
+# it is wrong: a still rendered instead of a clip, a guider left at its default scale, or a MoE
+# build whose hooks saw the other expert's steps all produce a checkpoint that loads and renders.
+
+
+def test_the_calibration_grid_reads_as_wxhxframes_only_for_a_video_family():
+    build = _script()
+    # An image family: one number is a square, two are a rectangle, three are not its to render.
+    assert build.parse_calib_grid("1024", video = False) == (1024, 1024, None)
+    assert build.parse_calib_grid("1024x576", video = False) == (1024, 576, None)
+    with pytest.raises(ValueError) as excinfo:
+        build.parse_calib_grid("832x480x25", video = False)
+    assert "frame count" in str(excinfo.value)
+    # A video family: the third axis, and a default for it when only the frame size is given.
+    assert build.parse_calib_grid("832x480x25", video = True) == (832, 480, 25)
+    assert build.parse_calib_grid("832x480", video = True) == (832, 480, 25)
+    # The documented defaults, per modality.
+    assert build.parse_calib_grid(None, video = False) == (1024, 1024, None)
+    assert build.parse_calib_grid(None, video = True) == (832, 480, 25)
+    for bad in ("", "832x", "832xW", "0x480x25", "1x2x3x4"):
+        with pytest.raises(ValueError):
+            build.parse_calib_grid(bad, video = True)
+
+
+def test_a_frame_count_the_family_cannot_render_is_refused_before_the_dense_load():
+    build = _script()
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    # 25 = 6 * 4 + 1 sits on the lattice; 26 does not, and the pipeline would only say so hours in.
+    assert build.frame_count_refusal(wan, 25) is None
+    assert "k * 4 + 1" in build.frame_count_refusal(wan, 26)
+    # An image build has no frame count at all, so there is nothing to refuse.
+    assert build.frame_count_refusal(detect_family("Tongyi-MAI/Z-Image-Turbo"), None) is None
+
+
+def test_the_two_registries_are_told_apart_by_type_not_by_a_shared_attribute():
+    build = _script()
+    assert build.is_video_family(detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers"))
+    assert not build.is_video_family(detect_family("Tongyi-MAI/Z-Image-Turbo"))
+
+
+class _StubVideoPipe:
+    """A video pipeline as far as the calibration pass drives it, guider and all."""
+
+    class _Guider:
+        def __init__(self) -> None:
+            self.guidance_scale = 1.0
+
+    def __init__(self, *, supports = None, guider = False):
+        self.calls: list = []
+        self.guider = self._Guider() if guider else None
+        self._supports = tuple(
+            supports
+            if supports is not None
+            else (
+                "prompt",
+                "num_inference_steps",
+                "width",
+                "height",
+                "num_frames",
+                "generator",
+                "output_type",
+                "guidance_scale",
+                "guidance_scale_2",
+            )
+        )
+
+    def __call__(self, **kwargs):
+        unexpected = sorted(set(kwargs) - set(self._supports))
+        assert not unexpected, f"pipeline was passed kwargs it does not take: {unexpected}"
+        self.calls.append(kwargs)
+        return None
+
+
+def test_a_video_calibration_renders_a_clip_at_the_grid_it_was_given():
+    build = _script()
+    pipe = _StubVideoPipe()
+    ran = build.render_calibration(
+        pipe,
+        ("a red fox trotting through falling snow",),
+        steps = 20,
+        guidance = 5.0,
+        width = 832,
+        height = 480,
+        num_frames = 25,
+        seed = 3407,
+        device = "cpu",
+    )
+    assert ran == 1
+    (call,) = pipe.calls
+    assert (call["width"], call["height"], call["num_frames"]) == (832, 480, 25)
+    assert call["num_inference_steps"] == 20 and call["guidance_scale"] == 5.0
+    # Still no VAE decode, and still seeded, for the same reasons the image branch is.
+    assert call["output_type"] == "latent" and call["generator"].initial_seed() == 3407
+
+
+def test_a_family_with_no_guidance_kwarg_is_calibrated_through_its_guider():
+    """HunyuanVideo-1.5's __call__ takes no guidance at all. Passing one would raise; passing
+    nothing would calibrate at whatever scale the guider shipped with."""
+    build = _script()
+    pipe = _StubVideoPipe(
+        supports = (
+            "prompt",
+            "num_inference_steps",
+            "width",
+            "height",
+            "num_frames",
+            "generator",
+            "output_type",
+        ),
+        guider = True,
+    )
+    build.render_calibration(
+        pipe,
+        ("a candle flame flickering in a dark room",),
+        steps = 20,
+        guidance = 6.0,
+        width = 832,
+        height = 480,
+        num_frames = 25,
+        guidance_via_guider = True,
+        device = "cpu",
+    )
+    assert pipe.guider.guidance_scale == 6.0
+    assert "guidance_scale" not in pipe.calls[0]
+
+    # A family that declares a guider and has none is a wiring mistake, not a silent default.
+    with pytest.raises(ValueError) as excinfo:
+        build.render_calibration(
+            _StubVideoPipe(),
+            ("a candle flame",),
+            steps = 2,
+            guidance = 6.0,
+            num_frames = 25,
+            guidance_via_guider = True,
+            device = "cpu",
+        )
+    assert "guider" in str(excinfo.value)
+
+
+def test_the_second_expert_guidance_is_passed_only_when_the_family_names_a_kwarg_for_it():
+    build = _script()
+    pipe = _StubVideoPipe()
+    build.render_calibration(
+        pipe,
+        ("a herd of horses galloping across a dusty plain",),
+        steps = 20,
+        guidance = 5.0,
+        num_frames = 25,
+        cfg2_kwarg = "guidance_scale_2",
+        guidance_2 = 4.0,
+        device = "cpu",
+    )
+    assert pipe.calls[0]["guidance_scale_2"] == 4.0
+    # Unset, the pipeline's own default (the high-noise expert's scale) applies, which is the
+    # family default this build calibrates at.
+    pipe = _StubVideoPipe()
+    build.render_calibration(
+        pipe, ("a herd of horses",), steps = 20, guidance = 5.0, num_frames = 25, device = "cpu"
+    )
+    assert "guidance_scale_2" not in pipe.calls[0]
+
+
+def test_an_investigation_prompt_module_declaring_CALIB_is_read(tmp_path):
+    """The video calibration set is the campaign's own CALIB list, which is the one the GPTQ
+    weights this build replays were solved on."""
+    build = _script()
+    module = tmp_path / "prompts.py"
+    module.write_text('CALIB = ["a red fox", "a blue whale"]\n')
+    assert build.load_calibration_prompts(str(module)) == ("a red fox", "a blue whale")
+
+
+def test_the_baked_scales_record_the_grid_they_were_measured_at():
+    build = _script()
+    meta = build.activation_scale_metadata(
+        prompts = ("a red fox",),
+        schedule_steps = 20,
+        scales = {"a": 12.0},
+        layers = 1,
+        grid = "832x480x25",
+    )
+    assert meta["grid"] == "832x480x25"
+
+
+def test_a_whole_model_video_build_bakes_its_scales_through_its_own_pipeline(monkeypatch, tmp_path):
+    """The end a video artifact is built for: every admitted linear at 4 bits, one activation
+    scale each, and the TOP-LEVEL flag that tells the flashinfer backend it may convert them --
+    a whole-model artifact has no policy block to carry it."""
+    build = _script()
+    saved = _stub_build_stack(monkeypatch, _fake_state_dict())
+
+    import contextlib
+
+    torch = sys.modules["torch"]
+    torch.no_grad = contextlib.nullcontext
+    torch.cuda = types.SimpleNamespace(empty_cache = lambda: None)
+
+    class _Generator:
+        def __init__(self, device = None):
+            self._seed = 0
+
+        def manual_seed(self, seed):
+            self._seed = seed
+            return self
+
+        def initial_seed(self):
+            return self._seed
+
+    torch.Generator = _Generator
+
+    class _Linear:
+        def __init__(self):
+            self.in_features = 1024
+            self.out_features = 1024
+            self.weight = types.SimpleNamespace(
+                shape = (1024, 1024), device = "cuda", dtype = "bfloat16", data = None
+            )
+
+    nn = types.ModuleType("torch.nn")
+    nn.Linear = _Linear
+    torch.nn = nn
+    monkeypatch.setitem(sys.modules, "torch.nn", nn)
+
+    transformer = sys.modules["diffusers"].WanTransformer3DModel()
+    layers = {"blocks.0.attn1.to_q": _Linear(), "blocks.1.attn1.to_q": _Linear()}
+    transformer.named_modules = lambda: list(layers.items())
+    monkeypatch.setattr(
+        sys.modules["diffusers"].WanTransformer3DModel,
+        "from_pretrained",
+        classmethod(lambda cls, base, **kwargs: transformer),
+    )
+
+    class _Pipe:
+        instances: list = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls: list = []
+            _Pipe.instances.append(self)
+
+        @classmethod
+        def from_pretrained(cls, base, **kwargs):
+            return cls(base = base, **kwargs)
+
+        def to(self, device):
+            return self
+
+        def set_progress_bar_config(self, disable = True):
+            return None
+
+        def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            return None
+
+    sys.modules["diffusers"].WanPipeline = _Pipe
+
+    class _Amax:
+        def __init__(self, modules):
+            self.modules = dict(modules)
+
+        def attach(self):
+            return self
+
+        def detach(self):
+            return self
+
+        def unseen(self):
+            return []
+
+        def global_scales(self):
+            return {fqn: 224.0 for fqn in self.modules}
+
+    from core.inference import diffusion_nvfp4_gptq
+
+    monkeypatch.setattr(diffusion_nvfp4_gptq, "ActivationAmaxAccumulator", _Amax)
+
+    prompts = tmp_path / "prompts.py"
+    prompts.write_text('CALIB = ["a red fox", "a blue whale", "a green field"]\n')
+    out = tmp_path / "wan5b.pt"
+    code = build.main(
+        [
+            "--base",
+            str(tmp_path),  # a local mirror: the id the loader checks comes from --base-id
+            "--base-id",
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "--modality",
+            "video",
+            "--family",
+            "wan2.2-ti2v-5b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(out),
+            "--bake-activation-scales",
+            "--bake-prompts",
+            "2",
+            "--calib-prompts",
+            str(prompts),
+        ]
+    )
+    assert code == 0
+    metadata = saved["ckpt"]["metadata"]
+    # Whole-model: every admitted linear has a scale, and the flag sits at the top level.
+    assert metadata["activation_scales_baked"] is True
+    assert set(metadata["act_global_scales"]) == set(layers)
+    assert metadata["activation_calibration"]["grid"] == "832x480x25"
+    assert metadata["activation_calibration"]["prompts"] == 2
+    assert metadata["activation_calibration"]["schedule_steps"] == 20
+    # The pipeline was built around the denoiser this build quantises, not a second copy of it,
+    # and it rendered a clip at the video default grid with the family's own guidance.
+    (pipe,) = _Pipe.instances
+    assert pipe.kwargs["transformer"] is transformer
+    assert len(pipe.calls) == 2
+    call = pipe.calls[0]
+    assert (call["width"], call["height"], call["num_frames"]) == (832, 480, 25)
+    assert call["num_inference_steps"] == 20 and call["guidance_scale"] == 5.0
+
+
+def test_a_moe_video_build_calibrates_the_expert_it_was_asked_for(monkeypatch, tmp_path):
+    """Both A14B experts share a family, a class and a key set. A build of the second one that
+    handed its denoiser to the pipeline as ``transformer`` would measure the FIRST expert's
+    activations, over the first expert's steps, and stamp them into the second one's artifact."""
+    build = _script()
+    _stub_build_stack(monkeypatch, _fake_state_dict())
+
+    import contextlib
+
+    torch = sys.modules["torch"]
+    torch.no_grad = contextlib.nullcontext
+    torch.cuda = types.SimpleNamespace(empty_cache = lambda: None)
+    torch.Generator = lambda device = None: types.SimpleNamespace(manual_seed = lambda s: s)
+
+    class _Linear:
+        def __init__(self):
+            self.in_features = 1024
+            self.out_features = 1024
+            self.weight = types.SimpleNamespace(
+                shape = (1024, 1024), device = "cuda", dtype = "bfloat16", data = None
+            )
+
+    nn = types.ModuleType("torch.nn")
+    nn.Linear = _Linear
+    torch.nn = nn
+    monkeypatch.setitem(sys.modules, "torch.nn", nn)
+
+    transformer = sys.modules["diffusers"].WanTransformer3DModel()
+    transformer.named_modules = lambda: [("blocks.0.attn1.to_q", _Linear())]
+    monkeypatch.setattr(
+        sys.modules["diffusers"].WanTransformer3DModel,
+        "from_pretrained",
+        classmethod(lambda cls, base, **kwargs: transformer),
+    )
+
+    built: dict = {}
+
+    class _Pipe:
+        def __init__(self, **kwargs):
+            built.update(kwargs)
+
+        @classmethod
+        def from_pretrained(cls, base, **kwargs):
+            return cls(**kwargs)
+
+        def to(self, device):
+            return self
+
+        def set_progress_bar_config(self, disable = True):
+            return None
+
+        def __call__(self, **kwargs):
+            return None
+
+    sys.modules["diffusers"].WanPipeline = _Pipe
+
+    class _Amax:
+        def __init__(self, modules):
+            self.modules = dict(modules)
+
+        def attach(self):
+            return self
+
+        def detach(self):
+            return self
+
+        def unseen(self):
+            return []
+
+        def global_scales(self):
+            return {fqn: 224.0 for fqn in self.modules}
+
+    from core.inference import diffusion_nvfp4_gptq
+
+    monkeypatch.setattr(diffusion_nvfp4_gptq, "ActivationAmaxAccumulator", _Amax)
+    prompts = tmp_path / "prompts.py"
+    prompts.write_text('CALIB = ["a red fox"]\n')
+    code = build.main(
+        [
+            "--base",
+            str(tmp_path),
+            "--base-id",
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            "--modality",
+            "video",
+            "--family",
+            "wan2.2-t2v-a14b",
+            "--scheme",
+            "nvfp4",
+            "--component",
+            "transformer_2",
+            "--out",
+            str(tmp_path / "a14b_2.pt"),
+            "--bake-activation-scales",
+            "--bake-prompts",
+            "1",
+            "--calib-prompts",
+            str(prompts),
+        ]
+    )
+    assert code == 0
+    # The low-noise expert went in under its own name; the high-noise one loads from the base and
+    # the pipeline's boundary switch keeps the hooked expert on its own steps.
+    assert built["transformer_2"] is transformer
+    assert "transformer" not in built
