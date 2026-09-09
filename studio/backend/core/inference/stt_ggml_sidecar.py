@@ -122,7 +122,8 @@ def resolve_ggml_model_id(model: Optional[str]) -> str:
 
 
 def _managed_whisper_cpp_dir() -> Path:
-    """`<STUDIO_HOME>/whisper.cpp` in custom mode, else `~/.unsloth/whisper.cpp`.
+    """`<UNSLOTH_HOME>/whisper.cpp` when set, else `<STUDIO_HOME>/whisper.cpp` in custom mode,
+    else `~/.unsloth/whisper.cpp`.
 
     Mirrors `managed_node_dir` / `_find_llama_server_binary` so managed runtimes
     share one parent directory.

@@ -557,6 +557,10 @@ def _matplotlib_config_dir() -> Path | None:
     when this machine has no such directory. Mirrors _get_config_or_cache_dir: XDG config base on
     Linux/FreeBSD, %LOCALAPPDATA% on Windows but keeping a pre-existing ~/.matplotlib there.
 
+    The Windows branch is matplotlib 3.11's; the pinned 3.10.9 sends every non-XDG platform to
+    ~/.matplotlib. The disagreement is one-way and safe: an rc under %LOCALAPPDATA% that 3.10.9
+    would ignore only costs us the pin, and it never hides a file matplotlib does read.
+
     None means matplotlib falls back to a temporary directory, so a pin can strand nothing.
     """
     # XDG_CONFIG_HOME ahead of Path.home(), as _get_xdg_config_dir does: an install that sets it

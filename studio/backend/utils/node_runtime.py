@@ -47,8 +47,9 @@ def _version_meets_floor(version: str) -> bool:
 
 
 def managed_node_dir() -> Path:
-    """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a
-    parent with llama.cpp -- ``<STUDIO_HOME>`` in custom mode, else legacy ``~/.unsloth``."""
+    """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a parent with
+    llama.cpp -- ``UNSLOTH_HOME`` when set, else ``<STUDIO_HOME>`` in custom mode, else legacy
+    ``~/.unsloth``."""
     legacy_node = Path.home() / ".unsloth" / "node"
     try:
         # Lazy import (mirrors _find_llama_server_binary) so this module stays
