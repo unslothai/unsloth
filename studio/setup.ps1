@@ -5894,8 +5894,13 @@ function Repair-SidecarTiktoken {
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$DirName
     )
+    # The payload, not the dist-info alone: an interrupted install can leave the
+    # dist-info directory with no package beside it, the sidecar predicate accepts the
+    # sidecar (tiktoken is unpinned and optional), and a dist-info-only check would then
+    # skip this top-up forever while Qwen tokenizers keep failing.
     $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue)
-    if ($present.Count -gt 0) { return }
+    $payload = Join-Path $TargetDir "tiktoken"
+    if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
     $output = Fast-Install --target $TargetDir --no-deps tiktoken 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
@@ -5925,7 +5930,9 @@ function Test-SidecarCurrent {
     # fallback grep then accepted a sidecar the shim had just rejected.
     $previousNativeErrorPreference = $null
     $restoreNativeErrorPreference = $false
-    if ($PSVersionTable.PSVersion.Major -ge 7) {
+    # The variable exists from PowerShell 7.3; under Set-StrictMode a read of an absent
+    # variable is a terminating error, so its existence is what is tested, not the version.
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
         $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $false
         $restoreNativeErrorPreference = $true
