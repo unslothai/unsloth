@@ -292,8 +292,13 @@ def _settle_journal(
     *,
     timeout: float = 5.0,
     quiet: float = 0.25,
-) -> None:
+    active_grace: float = 75.0,
+) -> bool:
     """Wait for the proxy's journal to stop growing, before the proxy is terminated.
+
+    Returns False when a worker was still between accept and its record after
+    `active_grace` seconds, longer than the proxy's 60 s upstream connect timeout: the
+    journal is then incomplete and the caller must not read it as a zero-connection proof.
 
     A worker appends its record once the connection it describes has closed, so the child
     can exit -- or a client can see its response -- with records still in flight, and
@@ -316,15 +321,22 @@ def _settle_journal(
     size = -1
     stable_since = time.monotonic()
     deadline = stable_since + timeout
-    while time.monotonic() < deadline:
+    grace_deadline = stable_since + active_grace
+    while True:
+        now = time.monotonic()
         try:
             current = log_path.stat().st_size
         except OSError:
             current = 0
         if current != size:
-            size, stable_since = current, time.monotonic()
-        elif time.monotonic() - stable_since >= quiet and not _workers_active():
-            return
+            size, stable_since = current, now
+        elif now - stable_since >= quiet and not _workers_active():
+            return True
+        if now >= deadline and not _workers_active():
+            # A journal still growing past the deadline with no worker in flight is bounded here.
+            return True
+        if now >= grace_deadline:
+            return not _workers_active()
         time.sleep(0.05)
 
 
@@ -380,6 +392,10 @@ def run_update(
         http_proxy = url,
         NO_PROXY = "127.0.0.1,localhost",
         no_proxy = "127.0.0.1,localhost",
+        # Presence, not truthiness: without it the CLI probes the Windows PowerShell
+        # profiles for an Invoke-WebRequest proxy default, which would outrank the
+        # variables above and route setup.ps1 around the logging proxy.
+        _UNSLOTH_PS_PROXY_DEFAULTS = "{}",
     )
     if os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME"):
         env["UNSLOTH_STUDIO_HOME"] = os.environ["UNSLOTH_IDEMPOTENCY_STUDIO_HOME"]
@@ -406,13 +422,17 @@ def run_update(
         rc = completed.returncode
     finally:
         seconds = time.time() - started
-        _settle_journal(log_path)
+        settled = _settle_journal(log_path)
         process.terminate()
         try:
             process.wait(timeout = 10)
         except subprocess.TimeoutExpired:  # pragma: no cover - a wedged tunnel
             process.kill()
     (directory / "update.log").write_text(text, encoding = "utf-8")
+    assert settled, (
+        f"{label}: the update finished while a proxy worker was still between accept and "
+        "its journal record; the journal is incomplete and proves nothing about connections"
+    )
     summary = _load_proxy_module().summary(str(log_path))
     run = ProxyRun(directory, text, summary, seconds, rc)
     print(f"[idempotency] {label}: {run.report()}", flush = True)
