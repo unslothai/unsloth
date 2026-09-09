@@ -284,17 +284,24 @@ def offline_repair(root: Path, host, monkeypatch, *, shell_stage: bool) -> str:
     # a library; reusable_existing_install is the gate the shell now asks first. Defaults
     # assumed: no UNSLOTH_LLAMA_FORCE_COMPILE, no UNSLOTH_LLAMA_PR.
     #
-    # POSIX only, and that is the shell rather than this model: setup.ps1 has no reuse step, so
-    # a Windows update reaching the source stage always builds. The paths are setup.sh's own,
-    # which is why they are build/bin and not the Windows build/bin/Release the probe reads.
-    if (
-        not host.is_windows
-        and ILP.reusable_existing_install(root, host)
-        and all(
+    # Both shells, because both have a reuse shortcut. This comment used to say setup.ps1
+    # had none and that a Windows update reaching the source stage always builds; that was
+    # wrong, and the mistake is what let the Windows half of this loop survive (Codex
+    # 3963478816). setup.ps1's shortcut is an elseif on Test-PathQuiet $LlamaServerBin, so
+    # on Windows the entrypoint test is llama-server.exe under build/bin/Release, and the
+    # gate it now asks first is Test-LlamaTreeStillHealthy, which is the same
+    # --check-existing-install call the shell makes.
+    if host.is_windows:
+        entrypoints = [root / "build" / "bin" / "Release" / "llama-server.exe"]
+        reusable = ILP.reusable_existing_install(root, host) and all(
+            path.is_file() for path in entrypoints
+        )
+    else:
+        reusable = ILP.reusable_existing_install(root, host) and all(
             os.access(root / "build" / "bin" / f"llama-{name}", os.X_OK)
             for name in ("server", "quantize")
         )
-    ):
+    if reusable:
         return "shell-kept"
     install_fresh_source_build(root, host)
     return "source-rebuilt"
@@ -524,6 +531,36 @@ def test_the_offline_repair_terminates_once_the_source_build_actually_runs(
             "aborted",
         }, f"{cell}/{label}: {outcome} after {cycles} repairs ({trail})"
         assert cycles <= 1, f"{cell}/{label}: took {cycles} repairs ({trail})"
+
+
+def test_both_shells_gate_their_reuse_shortcut_on_the_same_check():
+    """Codex 3963478816, P1. The model above is only worth as much as its fidelity, and it
+    was wrong about this: it recorded that setup.ps1 had no reuse step, when it has an
+    ``elseif`` on ``Test-PathQuiet $LlamaServerBin`` that reports "already built". So the
+    Windows half of the loop survived the fix that closed the POSIX half. A Windows repair
+    that fell through to the source stage kept a tree with a quarantined DLL, returned it
+    unchanged, and preflight offered the same repair on every launch.
+
+    Read off both scripts, because the model cannot catch a shell losing its gate.
+    """
+    root = Path(__file__).resolve().parents[3]
+
+    shell = (root / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    assert "--check-existing-install" in shell
+    assert "_LLAMA_REUSE_EXISTING" in shell, "setup.sh lost its reuse gate"
+
+    ps1 = (root / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    assert "function Test-LlamaTreeStillHealthy" in ps1, "setup.ps1 lost its reuse gate"
+    assert "--check-existing-install" in ps1, (
+        "the PowerShell gate must ask install_llama_prebuilt, not reimplement healthy"
+    )
+    # On the shortcut itself, not somewhere else in the file: an elseif that reaches
+    # "already built" without it is the exact defect.
+    shortcut = ps1[ps1.index("$RequestedLlamaTag -ne \"master\""):]
+    shortcut = shortcut[: shortcut.index("already built")]
+    assert "Test-LlamaTreeStillHealthy" in shortcut, (
+        "the reuse shortcut skips the health gate again"
+    )
 
 
 def test_the_offline_repair_terminates_with_the_shell_rebuild_skip_in_place(tmp_path, offline):

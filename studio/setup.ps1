@@ -5675,6 +5675,39 @@ function Invoke-LlamaHelper {
     }
 }
 
+function Test-LlamaTreeStillHealthy {
+    <#
+    Whether a tree the reuse shortcut is about to keep is one preflight will accept.
+
+    llama-server.exe existing is not enough. Quarantine and a truncated extract both
+    take a library and leave the entrypoint in place, and this branch is only reached
+    once the prebuilt path has already failed, so keeping such a tree returns it byte
+    for byte identical and reports success. Desktop preflight grades the same tree on
+    every launch, so an update that repaired nothing left it offering the same repair
+    forever, which is the loop installed_runtime_health exists to prevent.
+
+    The setup.sh side of this gate is the same call. Both go through
+    install_llama_prebuilt so there is one definition of healthy rather than two that
+    can disagree.
+
+    Healthy on any failure to ask. A helper that cannot run, or a python that is not
+    there yet, must not turn into a rebuild: that trades a wrong keep for a
+    multi-gigabyte source build on a machine whose only fault was an unreadable tree.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$TreeRoot)
+    if ([string]::IsNullOrWhiteSpace($TreeRoot)) { return $true }
+    if (-not (Test-PathQuiet $TreeRoot "Container")) { return $true }
+    try {
+        $probe = Invoke-LlamaHelper -Arguments @("--check-existing-install", $TreeRoot)
+    } catch {
+        return $true
+    }
+    if ($null -eq $probe) { return $true }
+    if ($probe.ExitCode -eq 0) { return $true }
+    step "llama.cpp" "existing build is incomplete; rebuilding" "Yellow"
+    return $false
+}
+
 if ($LlamaSource -ne "https://github.com/ggml-org/llama.cpp") {
     step "llama.cpp" "custom source: $LlamaSource -- forcing source build" "Yellow"
     $NeedLlamaSourceBuild = $true
@@ -6195,7 +6228,8 @@ if ($LocalLlamaCppLinked) {
 } elseif (-not $NeedLlamaSourceBuild) {
     Write-StudioLine ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+} elseif ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and
+          $RequestedLlamaTag -ne "master" -and (Test-LlamaTreeStillHealthy $LlamaCppDir)) {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
     # up new model architecture support (e.g. Gemma 4).
