@@ -581,7 +581,6 @@ class TestTheRoundIsPricedOnceForEveryCallInIt:
 
     def test_the_round_is_sized_before_its_deferred_drivers_start(self):
         import core.inference.llama_cpp as mod
-
         folded = " ".join(Path(mod.__file__).read_text(encoding = "utf-8").split())
         assert folded.index("_round_budget_cell[0] = _round_budget") < folded.index(
             "for _entry_index, _entry in enumerate(_pending_calls)"
