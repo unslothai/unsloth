@@ -575,43 +575,6 @@ function CommandBlock({ command }: { command: string }) {
   );
 }
 
-function CommandOsSelector({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: ExampleOs;
-  onChange: (os: ExampleOs) => void;
-}) {
-  const t = useT();
-  return (
-    <fieldset className="flex min-w-0 items-center gap-0.5">
-      <legend className="sr-only">{label}</legend>
-      {(["unix", "windows"] as const).map((os) => (
-        <button
-          key={os}
-          type="button"
-          onClick={() => onChange(os)}
-          aria-pressed={value === os}
-          className={cn(
-            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            value === os
-              ? "hub-tab-toggle-pill text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {t(
-            os === "unix"
-              ? "settings.apiKeys.osUnix"
-              : "settings.apiKeys.osWindows",
-          )}
-        </button>
-      ))}
-    </fieldset>
-  );
-}
-
 function SubagentSection({
   agent,
   command,
@@ -688,8 +651,8 @@ export function AgentsTab() {
     keepUnsupportedTags: false,
     enabled: online,
   });
-  // Seed a remote command from the client platform. The shell selectors can
-  // override it for SSH, WSL, containers, or another paste destination.
+  // Seed a remote command from the client platform; the remote setup selector can
+  // override it for SSH, WSL, containers, or any other paste destination.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
@@ -718,14 +681,12 @@ export function AgentsTab() {
   );
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
+  // Detection is only a default: a remote Studio cannot know whether its command
+  // will be pasted into the viewer's local shell, SSH, WSL, or a container.
   const [commandOsOverride, setCommandOsOverride] = useState<ExampleOs | null>(
     storedPrefs.agentsOs,
   );
   const commandOs = commandOsOverride ?? inferredCommandOs;
-  const handleCommandOsChange = (os: ExampleOs) => {
-    setCommandOsOverride(os);
-    setStoredOs(os);
-  };
   const [agents, setAgents] = useState<string[]>(
     SUPPORTED_AGENTS.map((agent) => agent.id),
   );
@@ -870,32 +831,29 @@ export function AgentsTab() {
     selectedVariant && suffixVariant
       ? `${modelId}:${selectedVariant}`
       : modelId;
+  const commandModelArg = quoteShellArg(commandModel, commandOs);
   // A bare `unsloth start` attaches to whatever is loaded, which is the only way
   // to reach a native-grant GGUF: naming it would switch the server to another model.
   const attachOnly = selectedModel === attachOnlyModel;
+  const selectedModelArgs =
+    selectedVariant && !suffixVariant
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, commandOs)}`
+      : `--model ${commandModelArg}`;
   const selectedModelFlags =
     modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)
       ? EXAMPLE_MODEL_FLAGS
       : "";
-  const commandsForOs = (os: ExampleOs) => {
-    const commandModelArg = quoteShellArg(commandModel, os);
-    const selectedModelArgs =
-      selectedVariant && !suffixVariant
-        ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, os)}`
-        : `--model ${commandModelArg}`;
-    const modelArgs = attachOnly
-      ? ""
-      : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
-    // No key is passed: the CLI caches an explicit one per base, overwriting a working
-    // saved key. Omitting it replays the saved key; the remote section covers first setup.
-    return buildAgentShellCommands(studioBase, os, selectedAgent, modelArgs);
-  };
-  const unixCommands = commandsForOs("unix");
-  const windowsCommands = commandsForOs("windows");
-  const shellCommands = commandOs === "windows" ? windowsCommands : unixCommands;
-  // Compare the final text: remote URLs and apostrophes in local paths still
-  // need a shell choice even though the usual local Hub command is identical.
-  const showCommandOsSelector = unixCommands.primary !== windowsCommands.primary;
+  const modelArgs = attachOnly
+    ? ""
+    : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
+  // No key is passed: the CLI caches an explicit one per base, overwriting a working
+  // saved key. Omitting it replays the saved key; the remote section covers first setup.
+  const shellCommands = buildAgentShellCommands(
+    studioBase,
+    commandOs,
+    selectedAgent,
+    modelArgs,
+  );
   const command = shellCommands.primary;
   const {
     copied,
@@ -1635,18 +1593,9 @@ export function AgentsTab() {
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.generatedCommand")}
-            </span>
-            {showCommandOsSelector ? (
-              <CommandOsSelector
-                label={t("settings.agents.generatedCommand")}
-                value={commandOs}
-                onChange={handleCommandOsChange}
-              />
-            ) : null}
-          </div>
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.agents.generatedCommand")}
+          </span>
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.automaticSettingsNote")}
           </p>
@@ -1707,11 +1656,45 @@ export function AgentsTab() {
         description={t("settings.agents.remote.description")}
       >
         <div className="flex flex-col gap-2.5 pt-3">
-          <CommandOsSelector
-            label={t("settings.agents.remote.title")}
-            value={commandOs}
-            onChange={handleCommandOsChange}
-          />
+          <fieldset className="flex min-w-0 items-center gap-0.5">
+            <legend className="sr-only">
+              {t("settings.agents.remote.title")}
+            </legend>
+            <button
+              type="button"
+              onClick={() => {
+                setCommandOsOverride("unix");
+                setStoredOs("unix");
+                resetCopied();
+              }}
+              aria-pressed={commandOs === "unix"}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                commandOs === "unix"
+                  ? "hub-tab-toggle-pill text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t("settings.apiKeys.osUnix")}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCommandOsOverride("windows");
+                setStoredOs("windows");
+                resetCopied();
+              }}
+              aria-pressed={commandOs === "windows"}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                commandOs === "windows"
+                  ? "hub-tab-toggle-pill text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t("settings.apiKeys.osWindows")}
+            </button>
+          </fieldset>
           <CommandBlock command={shellCommands.remoteSetup} />
         </div>
       </SettingsSection>
