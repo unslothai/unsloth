@@ -436,6 +436,15 @@ export function resolveMemoryAdvisory(
       text: "Exceeds combined GPU and system memory. Try a shorter context or smaller model.",
     };
   }
+  if (
+    (verdicts.gpuFit === "exceeds" && verdicts.hostPressured) ||
+    (verdicts.hostShareFit === "exceeds" && verdicts.gpuPressured)
+  ) {
+    return {
+      tone: "warn",
+      text: "GPU and system memory are both under pressure. Try a shorter context or smaller model.",
+    };
+  }
   if (verdicts.hostShareFit === "exceeds") {
     return {
       tone: "warn",

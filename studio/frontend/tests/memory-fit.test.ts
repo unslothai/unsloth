@@ -310,7 +310,7 @@ test("a discrete host under host-RAM pressure keeps the system-RAM wording", () 
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.hostPressure);
 });
 
-test("host pressure advice does not shift layers onto a tight GPU", () => {
+test("pressure advice does not shift layers into another pressured pool", () => {
   for (const freeGpu of [24, 22, 0]) {
     const result = fit(
       { gpuBytes: 22 * GB, totalBytes: 40 * GB },
@@ -323,6 +323,18 @@ test("host pressure advice does not shift layers onto a tight GPU", () => {
     assert.equal(result.rawGpuFit, "tight");
     assert.equal(result.usableHostFit, "tight");
     assert.doesNotMatch(result.advisory?.text ?? "", /CPU layers|offload/);
+    assert.match(result.advisory?.text ?? "", /shorter context or smaller model/);
+  }
+  for (const [gpuGb, hostGb, freeGpu, freeHost] of [
+    [30, 5, 23, 2],
+    [21, 65, 1, 60],
+  ]) {
+    const result = fit(
+      { gpuBytes: gpuGb * GB, totalBytes: (gpuGb + hostGb) * GB },
+      { freeGpuCapacityGb: freeGpu, usableSystemRamGb: freeHost },
+    );
+    assert.equal(result.advisory?.tone, "warn");
+    assert.doesNotMatch(result.advisory?.text ?? "", /layers|offload/);
     assert.match(result.advisory?.text ?? "", /shorter context or smaller model/);
   }
 });
