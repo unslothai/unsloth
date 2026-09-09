@@ -55,6 +55,10 @@ _SYSTEM_READ_ROOTS = (
 )
 _DEVICE_ROOT = "/dev"
 
+# XDG_RUNTIME_DIR is 0700 for the Studio process's own user, so DAC does not stop a managed
+# tool; the rest of /run stays readable (resolv.conf usually points into /run/systemd).
+_PRIVATE_RUNTIME_ROOTS = ("/run/user",)
+
 
 class ToolConfinementUnavailable(RuntimeError):
     """This host cannot confine a managed account's tool process."""
@@ -195,6 +199,9 @@ def _grant_excluding(
         return
     for name in children:
         child = os.path.join(path, name)
+        if not os.path.exists(child):
+            # A dangling link under a volatile root cannot carry a rule.
+            continue
         if os.path.islink(child):
             # A link opens as its target: one under or above a protected root grants the tree.
             target = os.path.realpath(child)
@@ -269,8 +276,9 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     rules: list[tuple[str, int]] = []
     writable_roots = _writable_roots()
     protected = _protected_roots()
+    system_protected = _with_shared_bases(protected, _PRIVATE_RUNTIME_ROOTS)
     for path in _existing(_SYSTEM_READ_ROOTS):
-        _grant_excluding(path, read, protected, rules)
+        _grant_excluding(path, read, system_protected, rules)
     for path in _interpreter_roots():
         _grant_excluding(path, read, protected, rules)
     for path in _existing((sandbox_site_dir,)):
