@@ -30034,6 +30034,12 @@ class LlamaCppBackend:
                     yield from _finish_after_giving_up(notice = False)
                     return
             resumed_p = yield from _await_resume(preempt_policy, cancel_event)
+            # `await_resume` answers False for a Stop as well as for a give-up, and the two
+            # are not the same ending: a cancel leaves the stream the way every other cancel
+            # in this generator does, silently, rather than telling the client its turn ran
+            # out of cache and handing it a `length` finish it would offer to continue.
+            if cancel_event is not None and cancel_event.is_set():
+                return
             if not resumed_p:
                 # The room never came back. Ending here leaves the client the partial it
                 # was streamed, which the length-continuation path picks up, but it must SAY
@@ -34045,6 +34051,11 @@ class LlamaCppBackend:
                     _resumed = False
                     if preempt_event is not None:
                         preempt_event.clear()
+                if cancel_event is not None and cancel_event.is_set():
+                    # Stop, not contention: `await_resume` reports both as False, and the
+                    # give-up notice below would tell the client its turn ran out of cache
+                    # and offer to continue a turn the user just stopped.
+                    return
                 if not _resumed:
                     # The policy stopped waiting; ending the turn leaves the partial in the
                     # conversation rather than hanging the chat.
@@ -35176,6 +35187,9 @@ class LlamaCppBackend:
                     _resumed_f = False
                     if preempt_event is not None:
                         preempt_event.clear()
+                if cancel_event is not None and cancel_event.is_set():
+                    # Stop, not contention; see the round loop above.
+                    return
                 if not _resumed_f:
                     logger.info(
                         "Paused final answer was not resumed; ending the turn with what "

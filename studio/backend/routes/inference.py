@@ -2762,6 +2762,42 @@ def _openai_llama_note_raw_measured(*, llama_backend, gen_id: str) -> None:
         logger.debug("could not mark the raw holder measured", exc_info = True)
 
 
+# How long arming will hold the event loop for the residency read below. A localhost
+# `/slots` answers in single-digit milliseconds; the probe's own timeout is three seconds,
+# which is a stall no admission may impose on every other request on this loop.
+_ARM_RESIDENCY_READ_S = 0.25
+
+
+def _refresh_residency_before_planning(controller) -> None:
+    """Read the cache afresh before arming plans against it, without owning the loop.
+
+    `contended()` states that admission and the resume wait read afresh regardless, because
+    those are the boundaries where a stale figure hands out room that is not there. The
+    resume wait did; admission did not. The token path skips its probe while a chat is
+    alone and a finished chat's prompt cache is deliberately kept when nobody is waiting,
+    so after a solo long answer this controller's residency is commonly stale or None, and
+    the first live reading lands 32 generated tokens later, after the prefill that had to
+    fit. The probe also erases dead idle residue, so this is what makes the room real
+    rather than merely believed.
+
+    The read is blocking HTTP and arming runs inside async route bodies, so it is bounded
+    rather than awaited to completion: a server slow enough to miss the bound leaves the
+    previous figure in place, which is what the tree does today, instead of holding every
+    other request on this loop for the probe's full timeout. No probe registered is a
+    no-op, as before.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        controller.refresh_residency()
+        return
+    worker = threading.Thread(
+        target = controller.refresh_residency, name = "preempt-arm-residency", daemon = True
+    )
+    worker.start()
+    worker.join(_ARM_RESIDENCY_READ_S)
+
+
 def _openai_llama_preemption_arm(
     *,
     request: Optional[Request],
@@ -2837,6 +2873,7 @@ def _openai_llama_preemption_arm(
         signal = signal,
         prompt_tokens = prompt_tokens,
     )
+    _refresh_residency_before_planning(controller)
     # Whoever has to stop so this one fits; the victims notice at their own next safe
     # point. `needed = 0`, not `needed = charged`: register() has just put this generation
     # in the ledger carrying exactly `charged`, so asking for that much more room again
@@ -2967,6 +3004,7 @@ def _openai_llama_admission_enforced_max_tokens(
     conversation = None,
     prompt_tokens: Optional[int] = None,
     capacity: Optional[int] = None,
+    preemptable: bool = True,
 ) -> Optional[int]:
     """The cap to SEND, so the reservation is enforced instead of merely recorded.
 
@@ -3027,7 +3065,9 @@ def _openai_llama_admission_enforced_max_tokens(
         prompt_tokens = prompt_tokens,
         window = window or budget,
         budget = budget,
-        preemption_active = _openai_llama_preemption_will_apply(llama_backend, budget),
+        preemption_active = (
+            preemptable and _openai_llama_preemption_will_apply(llama_backend, budget)
+        ),
     )
 
 
@@ -3040,6 +3080,7 @@ def _openai_llama_admission_retry_max_tokens(
     injected_tools = None,
     payload = None,
     first_messages = None,
+    preemptable: bool = True,
 ) -> Optional[int]:
     """The cap for a passthrough retry whose prompt grew. Gated on the first attempt's
     bound, so a client with its own cap does not start being bounded here.
@@ -3068,7 +3109,9 @@ def _openai_llama_admission_retry_max_tokens(
         prompt_tokens = prompt_tokens,
         window = _openai_llama_admission_context_window(llama_backend) or budget or share,
         budget = budget,
-        preemption_active = _openai_llama_preemption_will_apply(llama_backend, budget),
+        preemption_active = (
+            preemptable and _openai_llama_preemption_will_apply(llama_backend, budget)
+        ),
     )
     if first_messages is not None:
         first_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
@@ -3090,7 +3133,19 @@ def _openai_llama_admission_reserve(
     tool_loop: bool = False,
     injected_tools = None,
     conversation = None,
+    preemptable: bool = True,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
+    """``preemptable`` False for a surface nothing can reclaim from.
+
+    Optimism is priced on the promise that a request outgrowing its charge will be paused,
+    so the raw passthroughs and the Responses surface must not buy it: they stream
+    llama-server's bytes with no Studio generator behind them, register `STREAMING_RAW`,
+    are never chosen as victims and report no growth. Priced as preemptable they would each
+    be charged a fraction of what they may write and then allowed the whole window on the
+    wire, so two of them recreate the collision this whole change exists to prevent. They
+    keep the fair-share clamp and the conservative charge for a stated cap, which is what
+    the tree does today for every surface.
+    """
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = _preempt_key(llama_backend)
@@ -3107,7 +3162,9 @@ def _openai_llama_admission_reserve(
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
             context_window = _openai_llama_admission_context_window(llama_backend),
-            preemption_active = _openai_llama_preemption_will_apply(llama_backend, budget),
+            preemption_active = (
+                preemptable and _openai_llama_preemption_will_apply(llama_backend, budget)
+            ),
             conversation = conversation,
         )
         if payload is not None
@@ -29842,6 +29899,10 @@ async def _responses_stream(
             # `max_output_tokens`, so the estimator found no `messages` and fell back to
             # one equal cache share no matter how large the request really was.
             payload = chat_req,
+            # Streams llama-server's bytes with no generator behind them: `STREAMING_RAW`,
+            # never a victim and reporting no growth, so nothing would reclaim the
+            # difference optimism prices in.
+            preemptable = False,
         )
     except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(
@@ -32459,6 +32520,10 @@ async def anthropic_messages(
                 # wire bound becomes the flat allowance, and the raw payload charged a share.
                 conversation = openai_messages,
                 injected_tools = wire_tools,
+                # The same `raw` `_arm_anthropic` reads: this branch registers as
+                # STREAMING_RAW, which nothing can reclaim from, so it may not be priced
+                # on the promise that it would be paused.
+                preemptable = not raw,
             )
             if tool_loop:
                 _anthropic_admission_hold["reservation"] = reservation
@@ -32570,6 +32635,9 @@ async def anthropic_messages(
             llama_backend = llama_backend,
             conversation = openai_messages,
             injected_tools = openai_tools,
+            # `_arm_anthropic(raw = True)` for this branch: counted, never chosen, no
+            # growth reported, so it keeps the share rather than the whole window.
+            preemptable = False,
         )
         _anthropic_passthrough_max_tokens = (
             _anthropic_passthrough_allowance
@@ -34343,6 +34411,8 @@ async def _anthropic_passthrough_non_streaming(
                 request = request,
                 llama_backend = llama_backend,
                 injected_tools = _healing_tools,
+                # A raw passthrough retry, so the share bounds it as the first attempt.
+                preemptable = False,
                 # One lease covers both attempts, so the retry writes what is left of the
                 # first attempt's allowance, not a fresh one.
                 first_messages = body.get("messages") or [],
@@ -34950,7 +35020,13 @@ def _build_openai_passthrough_body(
         # `request` too: without it capacity reads 1 and this declines.
         (
             _openai_llama_admission_enforced_max_tokens(
-                payload, request = request, llama_backend = llama_backend
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                # Every caller of this builder is a raw surface (the Responses stream and
+                # both passthroughs), so the bound is the share whatever the preemptor can
+                # do for the surfaces it can actually pause.
+                preemptable = False,
             )
             or _effective_openai_max_tokens(payload)
         ),
@@ -35015,6 +35091,8 @@ async def _openai_passthrough_stream(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
+            # Raw: counted in the ledger, never chosen, and silent about its growth.
+            preemptable = False,
         )
     except LlamaAdmissionQueueFull as exc:
         _tracker.__exit__(None, None, None)
@@ -36118,6 +36196,8 @@ async def _openai_passthrough_non_streaming(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
+            # Raw: counted in the ledger, never chosen, and silent about its growth.
+            preemptable = False,
         )
     except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(
@@ -36392,12 +36472,17 @@ async def _openai_passthrough_non_streaming_upstream(
         _retry_bound = _openai_llama_admission_retry_max_tokens(
             retry_body,
             admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
-                payload, request = request, llama_backend = llama_backend
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                preemptable = False,
             ),
             request = request,
             llama_backend = llama_backend,
             injected_tools = body.get("tools"),
             payload = payload,
+            # A raw passthrough retry, so the share bounds it as the first attempt.
+            preemptable = False,
             # One lease covers both attempts, so the retry writes what is left of the
             # first attempt's allowance, not a fresh one.
             first_messages = body.get("messages") or [],

@@ -385,6 +385,14 @@ _PREEMPTABLE = frozenset(
         ParticipantState.PARKED_ON_TOOL,
     }
 )
+
+# Holding an IDLE slot: nothing is decoding, so an idle-slot erase takes these cells.
+_PARKED_ON_A_TOOL = frozenset(
+    {
+        ParticipantState.PARKED_ON_TOOL,
+        ParticipantState.TOOLS_RUNNING,
+    }
+)
 # PREEMPTING is absent: asking twice would double-count the room its pause will free.
 
 # States a generated token contradicts; `observe` moves such a holder to DECODING.
@@ -490,6 +498,9 @@ class Participant:
     # (the next of `n` choices) can be put back to them.
     charged_tokens: int = 0
     charged_prompt_tokens: int = 0
+    # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so
+    # a value left behind by an earlier round is never consulted.
+    preempted_from: str = ""
 
     def replay_tokens(self) -> int:
         """What a resume sends back as prompt: the prompt, with every paused partial folded
@@ -544,6 +555,24 @@ class Participant:
     @property
     def preemptable(self) -> bool:
         return self.state in _PREEMPTABLE
+
+    @property
+    def parked_on_a_tool(self) -> bool:
+        """Whether an idle-slot erase takes THIS holder's cells.
+
+        The state alone is not enough once it has been chosen. `observe()` runs the sweep
+        and the reclaim reads the ledger after it, so a victim picked while parked is
+        already PREEMPTING when `parked_holders()` is taken; and an approval has no
+        upstream stream to abort, so its pause may not land until the user answers.
+        Invisible to the erase that took its cells, it would keep a phantom charge and a
+        commitment nobody can use for as long as the approval sits, and its next prefill
+        would be announced as the round's growth rather than the full replay it is.
+        """
+        if self.state in _PARKED_ON_A_TOOL:
+            return True
+        return (
+            self.state == ParticipantState.PREEMPTING and self.preempted_from in _PARKED_ON_A_TOOL
+        )
 
 
 @dataclass(frozen = True, **_SLOTS)
@@ -1090,8 +1119,7 @@ class PreemptionController:
             return {
                 gen_id: participant.park_seq
                 for gen_id, participant in self._participants.items()
-                if participant.state
-                in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
+                if participant.parked_on_a_tool
             }
 
     def note_cells_reclaimed(self, only: Optional[Dict[str, int]] = None) -> int:
@@ -1111,10 +1139,7 @@ class PreemptionController:
         released = []
         with self._lock:
             for participant in self._participants.values():
-                if participant.state not in (
-                    ParticipantState.PARKED_ON_TOOL,
-                    ParticipantState.TOOLS_RUNNING,
-                ):
+                if not participant.parked_on_a_tool:
                     continue
                 if only is not None and only.get(participant.gen_id) != participant.park_seq:
                     # Parked after the reading, or parked again since: its cells are the
@@ -1483,6 +1508,9 @@ class PreemptionController:
                 # participant stays KV-holding until on_preempted says the stream stopped.
                 total -= victim.tokens
                 victim.consecutive_preemptions += 1
+                # Before the state goes: PREEMPTING erases the only record that this
+                # holder's cells are an idle slot's, which is what the reclaim keys on.
+                victim.preempted_from = victim.state
                 victim.state = ParticipantState.PREEMPTING
                 victim.preempt_chosen_at = time.monotonic()
                 victim.preempt_event.set()
