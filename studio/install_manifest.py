@@ -728,7 +728,21 @@ def unsatisfied_closure_requirement(
     index: Optional[Dict[str, Tuple[str, List[str]]]] = None,
     budget_seconds: float = CLOSURE_SCAN_BUDGET_SECONDS,
 ) -> Optional[str]:
-    """The first requirement in *req_file*'s INSTALLED closure that is not met, or None.
+    """The first requirement in *req_file*'s INSTALLED closure that is not met, or None."""
+    unmet = closure_unmet_requirements(req_file, index, budget_seconds)
+    return unmet[0] if unmet else None
+
+
+def closure_unmet_requirements(
+    req_file: Path,
+    index: Optional[Dict[str, Tuple[str, List[str]]]] = None,
+    budget_seconds: float = CLOSURE_SCAN_BUDGET_SECONDS,
+) -> List[str]:
+    """Every requirement in *req_file*'s INSTALLED closure that is not met; [] if none.
+
+    A missing distribution is reported by name, a version outside its specifier as
+    "name version". Reasons the audit could not run are reported as one "<...>" entry
+    and the walk stops there, so a caller reads any "<" entry as "cannot audit".
 
     missing_requirements() reads the file's own lines, which stay true after a
     transitive dependency is uninstalled: `mammoth>=1.8.0` is satisfied by a mammoth
@@ -750,15 +764,15 @@ def unsatisfied_closure_requirement(
     try:
         from packaging.requirements import Requirement
     except Exception:
-        return "<packaging unavailable>"
+        return ["<packaging unavailable>"]
     if index is None:
         index = installed_dependency_index()
     if index is None:
-        return "<metadata unreadable>"
+        return ["<metadata unreadable>"]
     try:
         lines = Path(req_file).read_text(encoding = "utf-8-sig").splitlines()
     except (OSError, ValueError):
-        return "<requirements unreadable>"
+        return ["<requirements unreadable>"]
 
     deadline = time.monotonic() + budget_seconds if budget_seconds > 0 else None
     # (raw requirement, the extras whose markers are in scope for it). The top level has
@@ -771,42 +785,49 @@ def unsatisfied_closure_requirement(
         if text.startswith("-"):
             # A pip flag. None of the audited files carry one today, and an `-r` include
             # would hide requirements from this walk entirely.
-            return f"<flag line: {text}>"
+            return [f"<flag line: {text}>"]
         pending.append((text, ("",)))
 
+    unmet: List[str] = []
     seen: set = set()
     visits = 0
     while pending:
         visits += 1
         if visits > _CLOSURE_MAX_VISITS:
-            return "<closure too large>"
+            return ["<closure too large>"]
         if deadline is not None and time.monotonic() > deadline:
-            return "<closure audit timed out>"
+            return ["<closure audit timed out>"]
         raw, contexts = pending.pop()
         try:
             requirement = Requirement(raw)
         except Exception:
-            return f"<unparseable: {raw}>"
+            return [f"<unparseable: {raw}>"]
         marker = requirement.marker
         if marker is not None:
             try:
                 applies = any(marker.evaluate({"extra": extra}) for extra in contexts)
             except Exception:
-                return f"<unevaluable marker: {raw}>"
+                return [f"<unevaluable marker: {raw}>"]
             if not applies:
                 continue
         if requirement.url:
             # A direct reference is satisfied by whatever landed, and the version says
             # nothing about which. _direct_reference_is_installed answers that for the
             # one step that has one, and that step is --no-deps and never gets here.
-            return f"{requirement.name} (direct reference)"
+            return [f"{requirement.name} (direct reference)"]
         key = _canonical(requirement.name)
         record = index.get(key)
         if record is None:
-            return requirement.name
+            if requirement.name not in unmet:
+                unmet.append(requirement.name)
+            continue
         version, requires = record
         if requirement.specifier and not requirement.specifier.contains(version, prereleases = True):
-            return f"{requirement.name} {version}"
+            # Recorded, and the walk goes on: the distribution is installed, so what it
+            # requires is still part of the closure, and the caller needs the whole list.
+            entry = f"{requirement.name} {version}"
+            if entry not in unmet:
+                unmet.append(entry)
         extras = tuple(sorted(_canonical(extra) for extra in requirement.extras))
         visit_key = (key, extras)
         if visit_key in seen:
@@ -820,7 +841,7 @@ def unsatisfied_closure_requirement(
         # canonical "all-files" would silently drop that extra's whole subtree.
         child_contexts = ("", *extras, *requirement.extras)
         pending.extend((child, child_contexts) for child in requires)
-    return None
+    return unmet
 
 
 def violated_constraints(

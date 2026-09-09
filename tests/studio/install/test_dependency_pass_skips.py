@@ -1059,6 +1059,58 @@ def test_a_transitive_dependency_outside_its_window_is_not_satisfied(tmp_path) -
     assert stack.install_manifest.unsatisfied_closure_requirement(req, index) == "cffi 1.9.0"
 
 
+def test_every_unmet_closure_requirement_is_collected(tmp_path) -> None:
+    """The gate needs the whole list, not the first hit: a step is skipped only when
+    everything left unmet is on the record the last pass wrote."""
+    req = tmp_path / "studio.txt"
+    req.write_text("mammoth>=1.8.0\ncryptography\n", encoding = "utf-8")
+    index = _closure_index(
+        mammoth = ("1.12.1", ["cobble>=0.1.3"]),
+        cryptography = ("46.0.3", ["cffi>=1.14"]),
+        cffi = ("1.9.0", []),
+    )
+    unmet = stack.install_manifest.closure_unmet_requirements(req, index)
+    assert sorted(unmet) == ["cffi 1.9.0", "cobble"]
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, index) in unmet
+
+
+def test_a_conflict_the_last_pass_left_behind_does_not_run_the_step(monkeypatch, gated) -> None:
+    """sqlfluff 3.x pins click<=8.3.0 and huggingface-hub 1.23+ needs click>=8.4.2, so
+    the data-designer step's closure is unmet after every pass. The record the last
+    pass wrote of exactly that lets the gate skip; a new unmet requirement still runs."""
+    _payload, req_root = gated
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.5.0"]
+    )
+    monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: [])
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.5.0"]}
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is True
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["click 8.5.0", "cobble"],
+    )
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+
+
+def test_the_closure_record_never_carries_an_audit_failure(monkeypatch, gated) -> None:
+    """A "<...>" entry means the audit could not run; recording it would let an
+    unreadable environment skip the step next time."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "ran"})
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["<metadata unreadable>", "click 8.5.0"],
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.5.0"]}
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.3.0"]}
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+
+
 def test_the_closure_walk_follows_extras_and_survives_cycles(tmp_path) -> None:
     req = tmp_path / "studio.txt"
     req.write_text("alpha[fancy]\n", encoding = "utf-8")
@@ -1146,8 +1198,8 @@ def test_a_broken_closure_runs_a_with_deps_step_but_not_a_no_deps_one(monkeypatc
     _payload, req_root = gated
     monkeypatch.setattr(
         stack.install_manifest,
-        "unsatisfied_closure_requirement",
-        lambda *a, **k: "botocore",
+        "closure_unmet_requirements",
+        lambda *a, **k: ["botocore"],
     )
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = True) is True
@@ -1162,9 +1214,9 @@ def test_the_closure_audit_reads_the_filtered_file(monkeypatch, gated) -> None:
 
     def audit(path, *_a, **_k):
         seen.append(pathlib.Path(path).is_file())
-        return None
+        return []
 
-    monkeypatch.setattr(stack.install_manifest, "unsatisfied_closure_requirement", audit)
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", audit)
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is True
     assert seen == [True]
 

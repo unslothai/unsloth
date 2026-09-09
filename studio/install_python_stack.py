@@ -7909,6 +7909,8 @@ _PASS_EVIDENCE: "dict | None" = None
 # What this pass did, per step, for the manifest. Only "ran" and "skipped" let the NEXT
 # run skip; a step that never reached its slot records nothing and so is never skipped.
 _STEP_RESULTS: "dict[str, str]" = {}
+# The with-deps requirements steps this pass audited, for the closure record below.
+_AUDITED_STEPS: "dict[str, Path]" = {}
 _CONSTRAINTS_CACHE: "tuple[int, list[str]] | None" = None
 
 
@@ -7925,6 +7927,36 @@ def _full_deps_requested() -> bool:
 
 def _record_step(key: str, result: str) -> None:
     _STEP_RESULTS[key] = result
+
+
+def _closure_record() -> "dict[str, list[str]]":
+    """What each audited with-deps step leaves unmet in its closure, after the pass.
+
+    Recorded for the next run's gate: a requirement still unmet once its step has run
+    is one the step cannot satisfy (sqlfluff 3.x pins click<=8.3.0 while huggingface-hub
+    1.23+ needs >=8.4.2, so no resolution holds both), and re-running the step for it on
+    every update resolved nothing and needed the index. A step that was skipped carries
+    the record it was skipped on. Audit failures are not recorded: a "<...>" entry would
+    otherwise let an unreadable environment skip the step next time.
+    """
+    record: dict[str, list[str]] = {}
+    previous = (_PASS_EVIDENCE or {}).get("known_unmet") or {}
+    for key, req in _AUDITED_STEPS.items():
+        if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
+            record[key] = list(previous[key])
+            continue
+        effective, temps = _effective_requirements(req)
+        try:
+            unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
+        except Exception:  # noqa: BLE001 - nothing recorded means nothing ignored next time
+            unmet = []
+        finally:
+            for temp in temps:
+                temp.unlink(missing_ok = True)
+        unmet = [entry for entry in unmet if not entry.startswith("<")]
+        if unmet:
+            record[key] = unmet
+    return record
 
 
 def _may_skip_on_evidence() -> bool:
@@ -8029,6 +8061,7 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         "step_results": results,
         "pip_check_ok": manifest.get("pip_check_ok"),
         "mlx_health": manifest.get("mlx_health"),
+        "known_unmet": manifest.get("known_unmet"),
         "bnb_rocm": manifest.get("bnb_rocm"),
     }
 
@@ -8182,13 +8215,19 @@ def _requirements_satisfied(
         # the step that used to repair that is this one. Not asked of --no-deps steps,
         # whose requirements' own dependencies the installer left unresolved on purpose.
         if not no_deps:
-            unmet = install_manifest.unsatisfied_closure_requirement(effective, _installed_index())
-            if unmet is not None:
+            unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
+            # A requirement the last pass left unmet right after running this very step is
+            # one this step cannot satisfy -- two installed distributions pin the same
+            # dependency to disjoint ranges -- so it is not evidence that the step's work
+            # is missing. Anything new is. Audit failures ("<...>") are never on the list.
+            known = set((_PASS_EVIDENCE.get("known_unmet") or {}).get(key) or [])
+            unmet = [entry for entry in unmet if entry not in known]
+            if unmet:
                 # Named under UNSLOTH_VERBOSE because the alternative failure is
                 # invisible: an audit that can never pass turns every update into a full
                 # dependency pass, which is correct but slow, and nothing says why.
                 if VERBOSE:
-                    _note(f"{key}: {unmet} is not satisfied -- running the step")
+                    _note(f"{key}: {unmet[0]} is not satisfied -- running the step")
                 return False
     except Exception as exc:  # noqa: BLE001
         return _refuse_step(key, f"audit raised {exc!r}")
@@ -8218,6 +8257,10 @@ def _skip_step(
     triton-kernels.txt, where the version says nothing about which ref landed.
     """
     key = _pass_input_key(req) or str(req)
+    if not no_deps and _pass_input_key(req) is not None:
+        # Registered whether or not it is skipped, so the first pass on a venv already
+        # records what its closure cannot satisfy and the second pass can skip it.
+        _AUDITED_STEPS[key] = req
     satisfied = _requirements_satisfied(req, no_deps = no_deps, constrain = constrain)
     if satisfied and extra_check is not None:
         satisfied = bool(extra_check())
@@ -9200,6 +9243,7 @@ def install_python_stack() -> int:
                     **_plugin_digests,
                 },
                 "step_results": dict(_STEP_RESULTS),
+                "known_unmet": _closure_record(),
                 # What the AMD bitsandbytes repair left installed, so the next pass can
                 # tell a wheel it landed on purpose from one another step pulled in.
                 "bnb_rocm": _BNB_ROCM_PASS_PROVENANCE,
