@@ -35822,9 +35822,9 @@ async def load_diffusion_model_gated(
             preflighted = engine_for(pending_name)
             await asyncio.to_thread(_preflight, preflighted)
 
-        # Engine activation can unload the previous image engine, so guard before it too.
-        if needs_gpu:
-            require_no_foreign_generations()
+        # Engine activation can unload the previous engine and begin_load signals whatever
+        # generation is running, so guard on every device; only the GPU handoff is conditional.
+        require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind

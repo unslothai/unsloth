@@ -267,7 +267,12 @@ async def load_video_model_gated(
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
-    from core.inference.gpu_arbiter import VIDEO, acquire_for_request, release
+    from core.inference.gpu_arbiter import (
+        VIDEO,
+        acquire_for_request,
+        release,
+        require_no_foreign_generations,
+    )
     from core.inference.media_keepwarm import note_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.video import (
@@ -364,6 +369,8 @@ async def load_video_model_gated(
                 gpu_ordinal = gpu_ordinal,
             )
 
+        # begin_load signals whatever generation is running, so guard on every device.
+        require_no_foreign_generations()
         if device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
             # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission

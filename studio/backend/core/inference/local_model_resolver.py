@@ -22,6 +22,7 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
+from utils.account_context import account_thread, current_account_id, is_owner_context
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,28 @@ _CACHE_TTL_S = 5.0
 # other.
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+_EMPTY_SCAN: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+# One snapshot per managed account, like the /v1/models catalog: the scanned roots are account
+# private, so a shared snapshot would answer the next account with the previous one's paths.
+# The owner keeps ``_scan`` so a single-user install has exactly one index.
+_managed_scans: dict[str, tuple[float, dict[str, _LocalGgufEntry]]] = {}
+
+
+def _snapshot() -> tuple[float, dict[str, _LocalGgufEntry]]:
+    """The acting account's published index snapshot."""
+    if is_owner_context():
+        return _scan
+    return _managed_scans.get(current_account_id(), _EMPTY_SCAN)
+
+
+def _publish(snapshot: tuple[float, dict[str, _LocalGgufEntry]]) -> None:
+    global _scan
+    if is_owner_context():
+        _scan = snapshot
+    else:
+        _managed_scans[current_account_id()] = snapshot
+
+
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
 # Repos that finished downloading but are not in the published index yet: nothing else covers them until the next scan,
@@ -840,11 +863,18 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     with _lock:
         now = time.monotonic()
         _generation += 1
-        timestamp, retained = _scan
-        # Publish entries and their trust state together. A lock-free reader sees either the complete old snapshot or
-        # the complete invalidated one, never a fresh timestamp paired with already-revoked trust.
-        stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
-        _scan = (stamp, retained)
+
+        def _invalidated(snapshot):
+            timestamp, retained = snapshot
+            # Entries and trust state publish together: a lock-free reader never sees a fresh
+            # timestamp paired with revoked trust.
+            stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
+            return (stamp, retained)
+
+        # Every account's snapshot: what changed on disk is not scoped to whoever noticed.
+        _scan = _invalidated(_scan)
+        for account_id, snapshot in list(_managed_scans.items()):
+            _managed_scans[account_id] = _invalidated(snapshot)
     # This may have waited out a scan on _lock, so the warmer that just published can still own the slot with a snapshot
     # that is stale again. See _warm_pending.
     with _warm_lock:
@@ -853,12 +883,11 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
-    global _scan
     # Build under the lock so concurrent callers with an expired cache don't all run the (multi-dir) scan at once; the
     # rest wait and reuse the fresh result.
     with _lock:
         now = time.monotonic()
-        ts, cached = _scan
+        ts, cached = _snapshot()
         # `ts > 0`: monotonic() counts from boot, so under a TTL of uptime an invalidated stamp reads as recent and
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
@@ -869,7 +898,7 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
-        _scan = (time.monotonic(), fresh)
+        _publish((time.monotonic(), fresh))
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
         return fresh
@@ -882,7 +911,7 @@ def index_is_built() -> bool:
     park the request path on the scan it is trying to stay off. Safe because
     ``_scan`` is only ever rebound, never mutated.
     """
-    return _scan[0] > 0.0
+    return _snapshot()[0] > 0.0
 
 
 def resolve_trusted_cached_local_gguf(
@@ -899,16 +928,16 @@ def resolve_trusted_cached_local_gguf(
     With ``include_companion_scope=True``, append whether sibling snapshots belong
     to this repo-level resolution and may be searched for compatible companions.
     """
-    snapshot = _scan
+    snapshot = _snapshot()
     resolved = _resolve_from_index(
         requested,
         snapshot[1],
         include_companion_scope = include_companion_scope,
     )
-    if resolved is None or _scan is not snapshot:
+    if resolved is None or _snapshot() is not snapshot:
         return None
     trusted = _snapshot_is_trusted(snapshot[0], time.monotonic())
-    return resolved if trusted and _scan is snapshot else None
+    return resolved if trusted and _snapshot() is snapshot else None
 
 
 def warm_index_soon() -> None:
@@ -920,7 +949,7 @@ def warm_index_soon() -> None:
     for the life of the process. Never blocks, and never touches ``_lock``.
     """
     global _warming, _warm_pending
-    stamp = _scan[0]
+    stamp = _snapshot()[0]
     if stamp > 0.0 and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
         return
     with _warm_lock:
@@ -953,7 +982,8 @@ def warm_index_soon() -> None:
                 with _warm_lock:
                     _warming = _warm_pending = False
 
-    threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+    # Pinned to the caller's account, or the rebuild would publish under the owner's scope.
+    account_thread(target = _run, name = "local-model-index-warm", daemon = True).start()
 
 
 def resolve_local_gguf(
@@ -982,7 +1012,7 @@ def resolve_local_gguf(
         return None
     requested = requested.strip()
     try:
-        index = _index() if allow_scan else _scan[1]
+        index = _index() if allow_scan else _snapshot()[1]
         return _resolve_from_index(
             requested,
             index,
@@ -1060,7 +1090,7 @@ def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = No
             pass
     if not isinstance(loader_id, str) or not loader_id.strip():
         return True
-    entry = _scan[1].get(loader_id.strip().lower())
+    entry = _snapshot()[1].get(loader_id.strip().lower())
     return entry.is_gguf if entry is not None else True
 
 
