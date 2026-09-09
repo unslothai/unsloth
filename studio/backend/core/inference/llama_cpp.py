@@ -32709,7 +32709,11 @@ class LlamaCppBackend:
                         # The synthesized final answer never returns to the prompt.
                         recall_budget_tokens = _retrieval_budget(
                             self._effective_context_length,
-                            max_tokens,
+                            # The bound the wire is held to, like the fit above: the
+                            # caller's whole cap against an eighth-of-the-window lease
+                            # reserves a reply this request may not write, and the
+                            # recall is what pays for it.
+                            _final_fit_max_tokens,
                             truncation.get("prompt_tokens_after") or 0,
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -32834,7 +32838,9 @@ class LlamaCppBackend:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
-                    max_tokens = max_tokens,
+                    # Priced against the pre-respawn window, as the iteration refit is:
+                    # a new window is not a new reservation.
+                    max_tokens = _final_fit_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
                             messages_without_unpriced_media(fitted), None, self.markup_profile

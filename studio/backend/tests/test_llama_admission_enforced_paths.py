@@ -1655,8 +1655,8 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
     else -- the fit, the recall budget, every tool-result budget -- against the caller's
     whole cap. On eight slots that reserves eight times the room the request may ever
     emit, so history is evicted and results are cut to pay for output the lease already
-    forbids. The final pass had it right with `_final_fit_max_tokens`; the rounds now
-    match.
+    forbids. The final pass had its fit right with `_final_fit_max_tokens` and priced the
+    recall beside it off the caller's cap; both ends now read the admitted figure.
     """
 
     _ALLOWANCE = 256
@@ -1719,6 +1719,61 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
         ) == self._budget_handed_to_the_tool(monkeypatch, None)
 
 
+    @staticmethod
+    def _final_pass_recall_cap(monkeypatch, allowance):
+        """The cap the synthesized final pass prices its recall against."""
+        seen: list[int] = []
+        _real = llama_cpp_mod._retrieval_budget
+
+        def _recorder(context_length, max_tokens, prompt_tokens, **kwargs):
+            # The final pass is the only caller that leaves `reply_returns` unset: its
+            # answer never returns to the prompt.
+            if not kwargs.get("reply_returns"):
+                seen.append(max_tokens)
+            return _real(context_length, max_tokens, prompt_tokens, **kwargs)
+
+        monkeypatch.setattr(llama_cpp_mod, "_retrieval_budget", _recorder)
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [[_sse({"content": "6.10"}), _done()]], payloads)
+        # The stub has no server to render a template with, and the fit evicts nothing
+        # without a count it can trust.
+        monkeypatch.setattr(
+            backend,
+            "count_chat_tokens",
+            lambda messages, *_a, **_k: sum(
+                len(str(message.get("content") or "")) for message in (messages or [])
+            )
+            // 4,
+        )
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "word " * 4000},
+                    {"role": "assistant", "content": "word " * 4000},
+                    {"role": "user", "content": "Which kernel?"},
+                ],
+                tools = [_TOOL],
+                # No round to run, so what is exercised is the synthesized final pass.
+                max_tool_iterations = 0,
+                permission_mode = "off",
+                max_tokens = _CTX,
+                context_overflow = "truncate_oldest",
+                admission_output_allowance = allowance,
+            )
+        )
+        assert seen, "the final pass never priced a recall"
+        return seen[0]
+
+    def test_the_final_pass_recall_is_priced_against_the_share(self, monkeypatch):
+        """Its fit reserved the share while the recall beside it reserved the whole cap,
+        which on a small window leaves the retrieval nothing to spend."""
+        assert self._final_pass_recall_cap(monkeypatch, self._ALLOWANCE) == self._ALLOWANCE
+
+    def test_the_final_pass_recall_is_left_alone_without_an_allowance(self, monkeypatch):
+        """Nothing admitted, nothing clamped: the caller's cap, as before."""
+        assert self._final_pass_recall_cap(monkeypatch, None) == _CTX
+
+
 class TestTheSizingSitesReadTheClampedFigure:
     """Source-level, because a seventh sizing site added against the unclamped name is
     the same defect again and no single behaviour test sees all of them."""
@@ -1749,3 +1804,46 @@ class TestTheSizingSitesReadTheClampedFigure:
             'payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)'
             in self._SOURCE
         )
+
+    _SIZERS = ("_retrieval_budget", "prompt_budget", "tool_result_budget")
+    _CLAMPED = ("_iteration_fit_max_tokens", "_final_fit_max_tokens")
+
+    def _tool_loop(self):
+        import ast
+
+        tree = ast.parse(Path(llama_cpp_mod.__file__).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "generate_chat_completion_with_tools"
+            ):
+                return node
+        raise AssertionError("the tool loop is gone")
+
+    def test_no_sizing_call_in_the_loop_reads_an_unclamped_cap(self):
+        """Every budget in the loop, rounds and final pass alike, prices against what the
+        wire is allowed to emit. Read off the source because one behaviour test cannot
+        reach all of them and a new site added against the raw cap is the same defect."""
+        import ast
+
+        unclamped = []
+        for call in ast.walk(self._tool_loop()):
+            if not isinstance(call, ast.Call):
+                continue
+            name = getattr(call.func, "id", None)
+            if name in self._SIZERS and len(call.args) >= 2:
+                read = getattr(call.args[1], "id", None)
+                if read not in self._CLAMPED:
+                    unclamped.append(f"{name}({read})")
+            if name == "_fit_with_instruction_pins":
+                for keyword in call.keywords:
+                    if keyword.arg != "max_tokens":
+                        continue
+                    # Bare names only. The continuation eviction helper fits to a computed
+                    # reply FLOOR on purpose, and a site regressed to the raw cap would be
+                    # written as a name.
+                    if not isinstance(keyword.value, ast.Name):
+                        continue
+                    if keyword.value.id not in self._CLAMPED:
+                        unclamped.append(f"{name}(max_tokens = {keyword.value.id})")
+        assert not unclamped, f"these size against a cap the wire will not send: {unclamped}"
