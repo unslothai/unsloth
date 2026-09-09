@@ -298,6 +298,8 @@ from datetime import datetime
 from routes import (
     auth_router,
     chat_history_router,
+    project_git_review_router,
+    project_worktrees_router,
     data_recipe_router,
     datasets_router,
     export_router,
@@ -681,6 +683,15 @@ async def lifespan(app: FastAPI):
         open_wal_keeper()
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
+
+    try:
+        from core.agent_workspace.worktrees import reconcile_worktrees_on_startup
+        from core.agent_workspace.checkpoints import reconcile_checkpoints_on_startup
+        if os.name == "posix":
+            await asyncio.to_thread(reconcile_worktrees_on_startup)
+            await asyncio.to_thread(reconcile_checkpoints_on_startup)
+    except Exception as exc:
+        _lifespan_log.warning("Git ownership recovery needs attention: %s", exc)
 
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
@@ -1465,6 +1476,8 @@ app.add_middleware(RemoteAccessStopResponseMiddleware)
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
+app.include_router(project_git_review_router, prefix = "/api/agent", tags = ["agent"])
+app.include_router(project_worktrees_router, prefix = "/api/agent", tags = ["agent"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(

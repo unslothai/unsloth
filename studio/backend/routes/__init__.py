@@ -26,7 +26,12 @@ from routes.research_runs import router as research_runs_router
 from routes.chat_generation_runs import router as chat_generation_runs_router
 from routes.youtube import router as youtube_router
 
+from routes.project_git_review import router as project_git_review_router
+from routes.project_worktrees import router as project_worktrees_router
+
 __all__ = [
+    "project_git_review_router",
+    "project_worktrees_router",
     "training_router",
     "models_router",
     "inference_router",

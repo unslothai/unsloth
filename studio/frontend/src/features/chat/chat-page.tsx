@@ -224,7 +224,7 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
-import type { ChatView, MessageRecord } from "./types";
+import type { ChatView, MessageRecord, ProjectRecord } from "./types";
 import {
   type ComparePairReadState,
   checkpointCompareClass,
@@ -246,6 +246,10 @@ import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
+
+const ProjectGitPanel = lazy(() =>
+  import("./components/project-git-panel").then((module) => ({ default: module.ProjectGitPanel })),
+);
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -1314,6 +1318,7 @@ function extractMessageText(content: MessageRecord["content"]): string {
 }
 
 function ProjectLanding({
+  project,
   projectId,
   projectName,
   items,
@@ -1322,6 +1327,7 @@ function ProjectLanding({
   dataLoaded,
   runtimeReady,
 }: {
+  project: ProjectRecord | null;
   projectId: string;
   projectName: string;
   items: SidebarItem[];
@@ -1343,7 +1349,7 @@ function ProjectLanding({
     () => useChatRuntimeStore.getState().activeThreadId,
   );
   // Land on Sources when the project was just created with dropped files.
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+  const [projectTab, setProjectTab] = useState<"chats" | "sources" | "git">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
   );
   // Drop the marker once committed: React may replay the initializer above.
@@ -1801,9 +1807,21 @@ function ProjectLanding({
               >
                 Sources
               </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("git")}
+                data-active={projectTab === "git"}
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Git & worktrees
+              </button>
             </div>
 
-            {projectTab === "sources" ? (
+            {projectTab === "git" ? (
+              <Suspense fallback={<div className="mt-8 text-sm text-muted-foreground">Loading Git review…</div>}>
+                {project ? <ProjectGitPanel project={project} /> : null}
+              </Suspense>
+            ) : projectTab === "sources" ? (
               <Suspense
                 fallback={
                   <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
@@ -4228,6 +4246,7 @@ export function ChatPage({
                 {baseView.mode === "project" ? (
                   <ProjectLanding
                     key={baseView.projectId}
+                    project={currentProject}
                     projectId={baseView.projectId}
                     projectName={currentProject?.name ?? "Project"}
                     items={currentProjectItems}
