@@ -4209,6 +4209,22 @@ def test_base_model_candidates_survive_unsloth_not_being_installed(monkeypatch):
     assert start._base_model_candidates("owner/base") == ["owner/base"]
 
 
+def test_base_model_candidates_keep_every_installs_bad_mapping(monkeypatch):
+    # Two installs can disagree on the same key; collapsing them to the first would leave
+    # the worker downloading a repo the CLI never polls.
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "owner/mapped"}])
+    monkeypatch.setattr(
+        start,
+        "_BAD_MAPPINGS",
+        [{"owner/mapped": "owner/parent-target"}, {"owner/mapped": "owner/venv-target"}],
+    )
+
+    candidates = start._base_model_candidates("owner/base")
+
+    assert "owner/parent-target" in candidates
+    assert "owner/venv-target" in candidates
+
+
 def test_base_model_candidates_follow_the_loaders_second_rewrite():
     # get_model_name maps Qwen/Qwen3-32B to unsloth/Qwen3-32B-unsloth-bnb-4bit and then
     # rewrites that through BAD_MAPPINGS, so the repo that downloads is two steps out.
@@ -4222,13 +4238,15 @@ def test_bad_mappings_are_read_without_importing_the_loader():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(start, "_BAD_MAPPINGS", None)
     try:
-        table = start._unsloth_bad_mappings()
+        tables = start._unsloth_bad_mappings()
     finally:
         monkeypatch.undo()
 
-    assert table and all(isinstance(k, str) and isinstance(v, str) for k, v in table.items())
+    assert tables and all(isinstance(t, dict) and t for t in tables)
+    pairs = [(k, v) for t in tables for k, v in t.items()]
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in pairs)
     # The source spells these as "...".lower(), which only evaluating the literal resolves.
-    assert all(key == key.lower() for key in table)
+    assert all(key == key.lower() for key, _ in pairs)
     assert ("torch" in sys.modules) == torch_before
 
 

@@ -1161,7 +1161,7 @@ def _flattened_repo_ids(value: object, found: set) -> None:
             _flattened_repo_ids(item, found)
 
 
-_BAD_MAPPINGS: Optional[dict] = None
+_BAD_MAPPINGS: Optional[list[dict]] = None
 
 
 def _literal_text(node: object) -> Optional[str]:
@@ -1179,8 +1179,8 @@ def _literal_text(node: object) -> Optional[str]:
     return None
 
 
-def _unsloth_bad_mappings() -> dict:
-    """`unsloth.models.loader_utils.BAD_MAPPINGS`, read out of the source.
+def _unsloth_bad_mappings() -> list[dict]:
+    """One `unsloth.models.loader_utils.BAD_MAPPINGS` per install, read out of the source.
 
     The loader rewrites a mapped name a second time through this table, so a candidate set
     built from the mapper alone stops one step short. Unlike the mapper this module cannot
@@ -1189,7 +1189,7 @@ def _unsloth_bad_mappings() -> dict:
     """
     global _BAD_MAPPINGS
     if _BAD_MAPPINGS is None:
-        _BAD_MAPPINGS = {}
+        _BAD_MAPPINGS = []
         for directory in _unsloth_package_dirs():
             path = directory / "models" / "loader_utils.py"
             try:
@@ -1201,10 +1201,16 @@ def _unsloth_bad_mappings() -> dict:
                         continue
                     if not isinstance(node.value, ast.Dict):
                         continue
+                    table: dict = {}
                     for key, value in zip(node.value.keys, node.value.values):
                         name, mapped = _literal_text(key), _literal_text(value)
                         if name and mapped:
-                            _BAD_MAPPINGS.setdefault(name, mapped)
+                            table[name] = mapped
+                    if table:
+                        # One table per install, not one merged dict: two installs can
+                        # disagree on the same key, and the worker's answer is as real as
+                        # the parent's, so both targets stay candidates.
+                        _BAD_MAPPINGS.append(table)
             except Exception:
                 # Nothing here is required; the mapper candidates are still worth polling.
                 continue
@@ -1224,7 +1230,7 @@ def _base_model_candidates(base_model: str) -> list[str]:
     costs the user their server.
     """
     tables = _unsloth_quant_mappers()
-    bad = _unsloth_bad_mappings()
+    bad_tables = _unsloth_bad_mappings()
     # The strip is applied after mapping, and an unmapped base falls through mapping
     # unchanged, so the recorded name itself is a subject of it.
     seeds = {base_model, _without_prequantized_suffix(base_model)}
@@ -1242,8 +1248,9 @@ def _base_model_candidates(base_model: str) -> list[str]:
             for table in tables:
                 if key in table:
                     _flattened_repo_ids(table[key], step)
-            if key in bad:
-                step.add(bad[key])
+            for bad in bad_tables:
+                if key in bad:
+                    step.add(bad[key])
         # The loader strips the 4-bit suffix after mapping when the device forbids
         # pre-quantized repos, so the fetched name can be a third step out.
         step.update(_without_prequantized_suffix(repo) for repo in list(step))
