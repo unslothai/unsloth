@@ -17,6 +17,7 @@ import {
   type MemoryFitVerdict,
   classifyMemoryFit,
   formatMemoryGb,
+  memoryFigureCandidates,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -254,7 +255,7 @@ test("the floor notes outrank every verdict, in their own order", () => {
     {},
   );
   assert.match(drafter.advisory?.text ?? "", /remote draft model or vision component/);
-  const moe = fit({ moeOffloadUnmodelled: true, totalBytes: 900 * GB }, {});
+  const moe = fit({ moeOffloadUnmodelled: true, gpuBytes: 8 * GB, totalBytes: 900 * GB }, {});
   assert.equal(moe.advisory?.tone, "muted");
   assert.match(moe.advisory?.text ?? "", /Expert layers/);
 });
@@ -520,4 +521,64 @@ test("an unsized adapter warning takes precedence over a placement verdict", () 
   );
   assert.match(result.advisory?.text ?? "", /adapter or control vector/);
   assert.equal(result.advisory?.tone, "warn");
+});
+
+test("CPU-only estimates use RAM guidance without suggesting GPU placement", () => {
+  for (const total of [25.61, 40]) {
+    const result = fit(
+      { gpuBytes: 0, totalBytes: total * GB },
+      {
+        gpuCapacityGb: 0,
+        totalCapacityGb: 32,
+        systemRamCapacityGb: 32,
+        freeGpuCapacityGb: 0,
+        usableSystemRamGb: 24,
+      },
+    );
+    assert.equal(result.cpuOnly, true);
+    assert.match(result.advisory?.text ?? "", /RAM/);
+    assert.doesNotMatch(result.advisory?.text ?? "", /CPU layers|GPU layers/);
+  }
+});
+
+test("a confirmed zero free reading warns, while an unknown reading stays unknown", () => {
+  for (const known of [false, true]) {
+    const gpu = fit(
+      { gpuBytes: 20 * GB, totalBytes: 25 * GB },
+      { freeGpuCapacityGb: 0, freeGpuCapacityKnown: known },
+    );
+    assert.equal(gpu.freeGpuFit, known ? "exceeds" : "unknown");
+    assert.equal(gpu.gpuFit, known ? "tight" : "fits");
+    assert.equal(gpu.cpuOnly, false);
+    const ram = fit(
+      { gpuBytes: 0, totalBytes: 25 * GB },
+      { usableSystemRamGb: 0, usableSystemRamKnown: known },
+    );
+    assert.equal(ram.hostPressured, known);
+  }
+});
+
+test("shared pools keep their label and warn when known free memory reaches zero", () => {
+  const result = fit(
+    { gpuBytes: 0, totalBytes: 25 * GB },
+    {
+      freeGpuCapacityGb: 0,
+      usableSystemRamGb: 0,
+      freeGpuCapacityKnown: true,
+      usableSystemRamKnown: true,
+    },
+    APPLE,
+  );
+  assert.equal(result.cpuOnly, false);
+  assert.equal(result.hostPressured, true);
+  assert.equal(result.gpuPressured, true);
+});
+
+test("compact estimates retain units and never round a lower bound up", () => {
+  const candidates = memoryFigureCandidates(25.61 * GB, true);
+  assert.equal(candidates[0], "≥ 25.61 GiB");
+  assert.ok(candidates.includes("≥ 25.6 GiB"));
+  assert.ok(candidates.includes("≥ 25 GiB"));
+  assert.ok(!candidates.includes("≥ 26 GiB"));
+  assert.ok(memoryFigureCandidates(2048 * GB, false).includes("2 TiB"));
 });

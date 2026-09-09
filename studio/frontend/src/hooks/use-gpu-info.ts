@@ -70,6 +70,8 @@ export interface GpuInfo {
   systemRamAvailableGb: number;
   /** raw host RAM free as the probe reported it. */
   systemRamAvailableHostGb: number;
+  /** Whether host available memory was reported, including a real zero. */
+  systemRamAvailableKnown?: boolean;
   systemRamTotalGb: number;
 }
 
@@ -92,6 +94,7 @@ const DEFAULT_GPU: GpuInfo = {
   cpuThread: 0,
   systemRamAvailableGb: 0,
   systemRamAvailableHostGb: 0,
+  systemRamAvailableKnown: false,
   systemRamTotalGb: 0,
 };
 
@@ -107,6 +110,9 @@ function toGpuInfo(
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
     systemRamAvailableHostGb: data?.memory?.available_gb ?? 0,
+    systemRamAvailableKnown:
+      Number.isFinite(data?.memory?.available_gb) &&
+      (data?.memory?.available_gb as number) >= 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
   const gpuData =
@@ -191,6 +197,8 @@ function toGpuDevices(
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
         memoryFreeGb: d.vram_free_gb ?? 0,
+        memoryFreeKnown:
+          Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
         sharedMemory: d.shared_memory === true,
         sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
         unifiedMemory: d.unified_memory === true,
@@ -219,6 +227,8 @@ function toGpuDevices(
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
+      memoryFreeKnown:
+        Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
       unifiedMemory: d.unified_memory === true,

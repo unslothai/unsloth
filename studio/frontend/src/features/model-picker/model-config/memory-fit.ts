@@ -17,7 +17,10 @@ export {
 } from "../../../lib/memory/verdict.ts";
 export { MEMORY_FIT_TIGHT_RATIO } from "../../../lib/memory/thresholds.ts";
 
-import { classifyMemoryFit, worseMemoryFit } from "../../../lib/memory/verdict.ts";
+import {
+  classifyMemoryFit,
+  worseMemoryFit,
+} from "../../../lib/memory/verdict.ts";
 import type { MemoryFitVerdict } from "../../../lib/memory/verdict.ts";
 import { formatBytesGiB } from "../../../lib/memory/format.ts";
 
@@ -27,6 +30,26 @@ import { formatBytesGiB } from "../../../lib/memory/format.ts";
  *  different label, with the same name and signature. The divide was always by 1024^3, so
  *  every figure was a gibibyte labelled as a gigabyte, overstating each by 7.4% (#9570). */
 export const formatMemoryGb = formatBytesGiB;
+
+/** Progressively shorter labels; compact lower bounds round down. */
+export function memoryFigureCandidates(
+  bytes: number,
+  bounded: boolean,
+): string[] {
+  const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  const prefix = bounded ? "≥ " : "";
+  const candidates = [`${prefix}${formatMemoryGb(safe)}`];
+  for (const [index, unit] of ["GiB", "TiB", "PiB", "EiB"].entries()) {
+    const amount = safe / 1024 ** (index + 3);
+    if (index > 0 && amount < 1) break;
+    for (const decimals of [2, 1, 0]) {
+      const factor = 10 ** decimals;
+      const rounded = bounded ? Math.floor(amount * factor) / factor : amount;
+      candidates.push(`${prefix}${rounded.toFixed(decimals)} ${unit}`);
+    }
+  }
+  return [...new Set(candidates)];
+}
 
 /** At most one note under the figures, most actionable first. */
 export interface MemoryAdvisory {
@@ -59,15 +82,21 @@ export interface MemoryFitCapacity {
   /** Host RAM alone. Bytes pinned OUTSIDE the GPU have to fit in this, and unused VRAM cannot
    *  help them, so it is a separate question from the total. */
   systemRamCapacityGb: number;
-  /** VRAM free on the usable cards right now. Warns only. 0 when nothing was probed. */
+  /** VRAM free on the usable cards right now. Warns only. */
   freeGpuCapacityGb: number;
-  /** Host RAM the machine can hand out right now, less the loader's reserve. Warns only. 0 when unknown. */
+  /** Distinguishes an exhausted GPU budget from an unknown reading. */
+  freeGpuCapacityKnown?: boolean;
+  /** Available host RAM after the loader's reserve. Warns only. */
   usableSystemRamGb: number;
+  /** Distinguishes exhausted RAM from an unknown reading. */
+  usableSystemRamKnown?: boolean;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
 }
 
 export interface MemoryFitResult {
+  /** The estimate places the entire load in separate system RAM. */
+  cpuOnly: boolean;
   /** The GPU verdict before the free-memory warning is folded in. */
   rawGpuFit: MemoryFitVerdict;
   /** What the GPU figure is coloured with: rawGpuFit, nudged to tight under pressure. */
@@ -100,13 +129,19 @@ export function resolveMemoryFit(
   capacity: MemoryFitCapacity,
 ): MemoryFitResult {
   const { singleMemoryPool } = capacity;
-  const rawGpuFit = classifyMemoryFit(estimate.gpuBytes, capacity.gpuCapacityGb);
+  const cpuOnly =
+    !singleMemoryPool && estimate.gpuBytes === 0 && estimate.totalBytes > 0;
+  const rawGpuFit = classifyMemoryFit(
+    estimate.gpuBytes,
+    capacity.gpuCapacityGb,
+  );
   // One pool means the WHOLE load draws on that memory, so the pressure question goes to the
   // total rather than a GPU share that is not a separate reservation. Asking it of gpuBytes
   // alone let a partly CPU-offloaded load on a Vulkan iGPU look comfortable.
-  const freeGpuFit = classifyMemoryFit(
+  const freeGpuFit = classifyAvailableMemory(
     singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
     capacity.freeGpuCapacityGb,
+    capacity.freeGpuCapacityKnown,
   );
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
   // Guarded, not subtracted blind: a non-finite figure makes the difference NaN, which
@@ -116,11 +151,13 @@ export function resolveMemoryFit(
       ? Math.max(0, estimate.totalBytes - estimate.gpuBytes)
       : 0;
   // Same question for the other pool. See the note above on why this warns.
-  const usableHostFit = classifyMemoryFit(
+  const usableHostFit = classifyAvailableMemory(
     singleMemoryPool ? estimate.totalBytes : hostShareBytes,
     capacity.usableSystemRamGb,
+    capacity.usableSystemRamKnown,
   );
-  const hostPressured = usableHostFit === "exceeds" || usableHostFit === "tight";
+  const hostPressured =
+    usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
   // The host share must fit host RAM on its own: unused VRAM cannot hold bytes pinned outside
   // the GPU, so the combined ceiling alone called a 70 GB CPU placement a fit on a 24 GB card
@@ -136,8 +173,11 @@ export function resolveMemoryFit(
   // context: no attention dims, so the target cache is missing, or a drafter that is a
   // repository rather than a file, so its cache is missing while its weights are counted.
   const bounded =
-    !estimate.kvEstimable || estimate.drafterKvUnsized || estimate.adaptersUnsized;
+    !estimate.kvEstimable ||
+    estimate.drafterKvUnsized ||
+    estimate.adaptersUnsized;
   return {
+    cpuOnly,
     rawGpuFit,
     gpuFit,
     freeGpuFit,
@@ -150,6 +190,7 @@ export function resolveMemoryFit(
     bounded,
     prefix: bounded ? "≥ " : "",
     advisory: resolveMemoryAdvisory(estimate, {
+      cpuOnly,
       singleMemoryPool,
       totalFit,
       hostShareFit,
@@ -162,6 +203,7 @@ export function resolveMemoryFit(
 }
 
 interface AdvisoryVerdicts {
+  cpuOnly?: boolean;
   singleMemoryPool: boolean;
   totalFit: MemoryFitVerdict;
   hostShareFit: MemoryFitVerdict;
@@ -169,6 +211,16 @@ interface AdvisoryVerdicts {
   rawGpuFit: MemoryFitVerdict;
   gpuPressured: boolean;
   hostPressured: boolean;
+}
+
+function classifyAvailableMemory(
+  bytes: number,
+  availableGb: number,
+  known = false,
+): MemoryFitVerdict {
+  if (known && availableGb === 0 && Number.isFinite(bytes) && bytes > 0)
+    return "exceeds";
+  return classifyMemoryFit(bytes, availableGb);
 }
 
 /** At most one note, most actionable first. An unsizable cache outranks any verdict drawn from
@@ -198,11 +250,26 @@ export function resolveMemoryAdvisory(
       text: "An adapter or control vector is unmeasured. Actual usage will be higher.",
     };
   }
-  if (estimate.moeOffloadUnmodelled) {
+  if (estimate.moeOffloadUnmodelled && !verdicts.cpuOnly) {
     return {
       tone: "muted",
       text: "Expert layers on the CPU are not reflected here. GPU usage may be lower.",
     };
+  }
+  if (verdicts.cpuOnly) {
+    if (verdicts.totalFit === "exceeds") {
+      return {
+        tone: "warn",
+        text: "Exceeds system RAM. Try a shorter context or smaller model; paging may be slow.",
+      };
+    }
+    if (verdicts.hostPressured) {
+      return {
+        tone: "muted",
+        text: "RAM is tight. Free memory or try a shorter context or smaller model.",
+      };
+    }
+    return null;
   }
   if (verdicts.singleMemoryPool) {
     if (verdicts.totalFit === "exceeds") {

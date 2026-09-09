@@ -24,6 +24,11 @@ const { MemoryEstimateRow } = loadWithStubs<typeof MemoryEstimateModule>(
     "react/jsx-runtime": jsxRuntime,
     "lucide-react": { ChevronDown },
     "../model-config/memory-fit": memoryFit,
+    "@/components/ui/tooltip": {
+      Tooltip: ({ children }: { children: React.ReactNode }) => children,
+      TooltipTrigger: ({ children }: { children: React.ReactNode }) => children,
+      TooltipContent: () => null,
+    },
   },
 );
 
@@ -110,6 +115,36 @@ test("an unavailable estimate stays hidden", () => {
   assert.equal(
     render({ estimate: { ...props.estimate!, available: false } }),
     "",
+  );
+});
+
+test("a RAM-only load shows one figure with CPU-appropriate guidance", () => {
+  const html = render({
+    estimate: { ...props.estimate!, gpuBytes: 0, gpuLayers: 0, kvOnGpu: false },
+    usableSystemRamGb: 2,
+  });
+  assert.match(html, />RAM<\/span>/);
+  assert.match(html, /aria-label="RAM: 5\.50 GiB"/);
+  assert.match(html, /RAM is tight/);
+  assert.doesNotMatch(html, />GPU<\/span>|>Total<\/span>|fewer CPU layers/);
+});
+
+test("zero free VRAM keeps the GPU figure and its warning", () => {
+  const html = render({ freeGpuCapacityGb: 0, freeGpuCapacityKnown: true });
+  assert.match(html, />GPU<\/span>/);
+  assert.match(html, />Total<\/span>/);
+  assert.match(html, /GPU memory is tight/);
+});
+
+test("memory figures are keyboard targets with the full value as their name", () => {
+  const html = render();
+  assert.match(
+    html,
+    /<button[^>]*type="button"[^>]*aria-label="GPU: 4\.75 GiB"/,
+  );
+  assert.match(
+    html,
+    /<button[^>]*type="button"[^>]*aria-label="Total: 5\.50 GiB"/,
   );
 });
 

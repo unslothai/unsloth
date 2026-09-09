@@ -2,12 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDown } from "lucide-react";
-import { useId } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { MemoryEstimate } from "../api/memory-estimate";
 import {
   type MemoryFitVerdict,
   formatMemoryGb,
   glueNoteItems,
+  memoryFigureCandidates,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -23,24 +29,79 @@ const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
 /** Match the size, padding, and type of the surrounding numeric controls. */
 function MemoryFigure({
   label,
-  value,
+  bytes,
+  bounded,
   tone,
 }: {
   label: string;
-  value: string;
+  bytes: number;
+  bounded: boolean;
   tone?: string;
 }) {
+  const candidates = useMemo(
+    () => memoryFigureCandidates(bytes, bounded),
+    [bytes, bounded],
+  );
+  const value = candidates[0];
+  const [displayIndex, setDisplayIndex] = useState(0);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const button = buttonRef.current;
+    const measurement = measureRef.current;
+    if (!button || !measurement) return;
+    let active = true;
+    const fit = () => {
+      if (!active) return;
+      const style = getComputedStyle(button);
+      const width =
+        button.clientWidth -
+        Number.parseFloat(style.paddingLeft) -
+        Number.parseFloat(style.paddingRight);
+      const index = Array.from(measurement.children).findIndex(
+        (child) => child.getBoundingClientRect().width <= width,
+      );
+      setDisplayIndex(index < 0 ? candidates.length - 1 : index);
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(button);
+    observer.observe(measurement);
+    void document.fonts.ready.then(fit);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
       <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
         {label}
       </span>
-      <span
-        title={value}
-        className={`inline-flex h-8 w-[92px] shrink-0 items-center justify-end rounded-full border-transparent bg-black/[0.04] pl-3 pr-2 text-ui-13 font-medium tabular-nums dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
-      >
-        <span className="min-w-0 truncate">{value}</span>
-      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            ref={buttonRef}
+            type="button"
+            aria-label={`${label}: ${value}`}
+            className={`relative inline-flex h-8 w-[92px] shrink-0 items-center justify-end overflow-hidden rounded-full border-transparent bg-black/[0.04] pl-3 pr-2 text-ui-13 font-medium tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
+          >
+            <span aria-hidden="true" className="min-w-0 truncate">
+              {candidates[displayIndex] ?? value}
+            </span>
+            <span
+              ref={measureRef}
+              aria-hidden="true"
+              className="pointer-events-none invisible absolute left-0 top-0 flex w-max flex-col items-start whitespace-nowrap"
+            >
+              {candidates.map((candidate) => (
+                <span key={candidate}>{candidate}</span>
+              ))}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{value}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }
@@ -82,7 +143,9 @@ export function MemoryEstimateRow({
   totalCapacityGb,
   systemRamCapacityGb,
   freeGpuCapacityGb,
+  freeGpuCapacityKnown,
   usableSystemRamGb,
+  usableSystemRamKnown,
   isUnifiedMemory,
   singleMemoryPool,
   expanded,
@@ -99,8 +162,10 @@ export function MemoryEstimateRow({
   systemRamCapacityGb: number;
   /** Free GPU memory in GiB; warnings only, since replacement can free memory. */
   freeGpuCapacityGb: number;
+  freeGpuCapacityKnown?: boolean;
   /** Available host RAM minus the loader reserve, in GiB. */
   usableSystemRamGb: number;
+  usableSystemRamKnown?: boolean;
   isUnifiedMemory: boolean;
   /** Whether GPU and CPU share one memory pool. */
   singleMemoryPool: boolean;
@@ -112,14 +177,19 @@ export function MemoryEstimateRow({
     // Hide unavailable estimates without flickering during loading.
     return null;
   }
-  const { gpuFit, totalFit, prefix, advisory } = resolveMemoryFit(estimate, {
-    gpuCapacityGb,
-    totalCapacityGb,
-    systemRamCapacityGb,
-    freeGpuCapacityGb,
-    usableSystemRamGb,
-    singleMemoryPool,
-  });
+  const { gpuFit, totalFit, cpuOnly, bounded, advisory } = resolveMemoryFit(
+    estimate,
+    {
+      gpuCapacityGb,
+      totalCapacityGb,
+      systemRamCapacityGb,
+      freeGpuCapacityGb,
+      freeGpuCapacityKnown,
+      usableSystemRamGb,
+      usableSystemRamKnown,
+      singleMemoryPool,
+    },
+  );
   const kvNote = resolveKvNote(estimate);
   const draftCacheNote = resolveDraftCacheNote(
     estimate.drafterRuntimeGpuBytes,
@@ -155,17 +225,29 @@ export function MemoryEstimateRow({
         {/* A shared pool uses the total, regardless of CPU offloading. */}
         <MemoryFigure
           label={
-            singleMemoryPool ? (isUnifiedMemory ? "Unified" : "Shared") : "GPU"
+            cpuOnly
+              ? "RAM"
+              : singleMemoryPool
+                ? isUnifiedMemory
+                  ? "Unified"
+                  : "Shared"
+                : "GPU"
           }
-          value={`${prefix}${formatMemoryGb(
-            singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
-          )}`}
-          tone={MEMORY_VALUE_TONE[singleMemoryPool ? totalFit : gpuFit]}
+          bytes={
+            singleMemoryPool || cpuOnly
+              ? estimate.totalBytes
+              : estimate.gpuBytes
+          }
+          bounded={bounded}
+          tone={
+            MEMORY_VALUE_TONE[singleMemoryPool || cpuOnly ? totalFit : gpuFit]
+          }
         />
-        {singleMemoryPool ? null : (
+        {singleMemoryPool || cpuOnly ? null : (
           <MemoryFigure
             label="Total"
-            value={`${prefix}${formatMemoryGb(estimate.totalBytes)}`}
+            bytes={estimate.totalBytes}
+            bounded={bounded}
             tone={MEMORY_VALUE_TONE[totalFit]}
           />
         )}

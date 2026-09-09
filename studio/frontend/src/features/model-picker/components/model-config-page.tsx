@@ -2560,7 +2560,10 @@ export function ModelConfigPage({
     0,
     (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
   );
-  const memoryFreeGpuCapacityGb = useMemo(() => {
+  const {
+    gb: memoryFreeGpuCapacityGb,
+    known: memoryFreeGpuCapacityKnown,
+  } = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
         ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
@@ -2573,6 +2576,9 @@ export function ModelConfigPage({
       pinned,
       memoryEffectiveBudgetFraction,
     );
+    const freeVramKnown =
+      pinned.length > 0 &&
+      pinned.every((device) => device.memoryFreeKnown === true);
     // On a ROCm APU this figure is the free space inside a BIOS-carved window, and resolveMemoryFit
     // asks it the WHOLE-LOAD question as soon as the pool is single, so together they warned
     // that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free. The pool's real free
@@ -2580,9 +2586,12 @@ export function ModelConfigPage({
     // Those two together warned that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free,
     // purely because it exceeds a 48 GiB window.
     if (hasUnifiedMemory && !isAppleUnifiedMemory) {
-      return Math.max(freeVram, memoryUsableSystemRamGb);
+      return {
+        gb: Math.max(freeVram, memoryUsableSystemRamGb),
+        known: freeVramKnown || inferenceGpu.systemRamAvailableKnown === true,
+      };
     }
-    return freeVram;
+    return { gb: freeVram, known: freeVramKnown };
   }, [
     gpuDevices,
     pinnedGpuIds,
@@ -2590,6 +2599,7 @@ export function ModelConfigPage({
     hasUnifiedMemory,
     isAppleUnifiedMemory,
     memoryUsableSystemRamGb,
+    inferenceGpu.systemRamAvailableKnown,
   ]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
@@ -2839,7 +2849,9 @@ export function ModelConfigPage({
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+              freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
               usableSystemRamGb={memoryUsableSystemRamGb}
+              usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
               isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}
