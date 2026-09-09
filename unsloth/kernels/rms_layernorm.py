@@ -168,7 +168,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     ):
         shape = X.shape
         dim: int = shape[-1]
-        X = X.reshape(-1, dim)
+        X = X.reshape(-1, dim).contiguous()
         n_rows: int
         n_cols: int
         n_rows, n_cols = X.shape
