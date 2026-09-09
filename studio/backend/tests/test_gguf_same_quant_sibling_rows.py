@@ -1270,6 +1270,12 @@ def test_the_estimate_resolves_the_bare_spelling_across_every_revision(tmp_path)
         (snaps / "rev2" / "model-Q4_K_M-fp16.gguf").unlink()
         path, total = _resolve_quant_gguf("org/repo", "Q4_K_M", False)
         assert path == str(snaps / "rev1" / "model-Q4_K_M-mtp.gguf") and total == 10
+        # A subordinate checkpoint in another revision does NOT make the spelling ambiguous:
+        # the root build owns it, so the estimate must not go null for a model that loads.
+        (snaps / "rev2" / "distilled").mkdir()
+        (snaps / "rev2" / "distilled" / "model-Q4_K_M.gguf").write_bytes(b"x" * 30)
+        path, total = _resolve_quant_gguf("org/repo", "Q4_K_M", False)
+        assert path == str(snaps / "rev1" / "model-Q4_K_M-mtp.gguf") and total == 10
 
 
 def test_the_media_default_keeps_a_quant_directory_build_ahead_of_a_subordinate(tmp_path, monkeypatch):
@@ -1292,3 +1298,25 @@ def test_the_media_default_keeps_a_quant_directory_build_ahead_of_a_subordinate(
         index = {}
         assert mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path) is True
         assert index["repo"].gguf_filename == "Q4_K_M/model-Q4_K_M-mtp.gguf", files
+
+
+def test_the_load_path_default_agrees_with_every_other_resolver():
+    """``from_identifier`` was the fifth default resolver and the one that loads weights: it
+    dropped every slashed row before ranking and never collapsed same-quant root builds, so a
+    plain ``Q4_K_M`` beside its ``-mtp`` sibling loaded whichever the listing put first."""
+    import types
+
+    from utils.models.model_config import _default_root_gguf_filename
+
+    def rows(files):
+        return [types.SimpleNamespace(filename = f, quant = gguf_variant_key(f)) for f in files]
+
+    pair = ["Hy3-Q4_K_M-mtp.gguf", "Hy3-Q4_K_M.gguf"]
+    assert _default_root_gguf_filename(rows(pair)) == "Hy3-Q4_K_M.gguf"
+    assert _default_root_gguf_filename(rows(pair[::-1])) == "Hy3-Q4_K_M.gguf"
+    # Two builds under a quant-only directory are root-level and collapse deterministically.
+    quant_dir = ["Q4_K_M/model-Q4_K_M-mtp.gguf", "Q4_K_M/model-Q4_K_M-fp16.gguf"]
+    assert _default_root_gguf_filename(rows(quant_dir)) == _default_root_gguf_filename(rows(quant_dir[::-1]))
+    # And a real subordinate checkpoint still never enters the contest when a root row exists.
+    with_sub = ["distilled/model-Q4_K_M.gguf", "Q4_K_M/model-Q4_K_M-mtp.gguf"]
+    assert _default_root_gguf_filename(rows(with_sub)) == "Q4_K_M/model-Q4_K_M-mtp.gguf"

@@ -1169,7 +1169,6 @@ def test_the_remote_load_path_auto_selects_the_root_checkpoint():
     from utils.models import model_config as mc
 
     source = inspect.getsource(mc.ModelConfig.from_identifier)
-    assert "root_rows = [" in source
-    assert "variant_filenames = root_rows or [v.filename for v in variants]" in source
-    # The filter reads the ADVERTISED identity, the same one the lister assigns each row.
-    assert '"/" not in _qualified_variant_name(v.filename, v.quant)' in source
+    # The selection lives in one helper so the rule can be tested on its own; the load path
+    # only has to call it. ``test_gguf_same_quant_sibling_rows`` drives the helper directly.
+    assert "best = _default_root_gguf_filename(variants)" in source

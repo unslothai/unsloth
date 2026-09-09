@@ -3251,6 +3251,30 @@ def _find_local_gguf_by_variant(
     return None
 
 
+def _default_root_gguf_filename(variants) -> Optional[str]:
+    """The file a bare repo id LOADS, decided the way every other default resolver decides it.
+
+    ROOT rows when there are any, root-level by the lister's rule (every parent a quant-only
+    directory) rather than by the absence of a slash -- two builds filed under ``Q4_K_M/`` are at
+    the root, and dropping them emptied the set so the fallback took every row in listing order.
+    Same-quant root builds are collapsed by the shared rule before ``_pick_best_gguf`` sees
+    them, because a plain build and its tagged sibling tie in that ranking and the winner then
+    fell out of listing order: this is the LOAD path, and it was the one default resolver that
+    still ranked the pair uncollapsed. ``hub`` is imported lazily, as the load path already does
+    for ``core.inference.llama_cpp`` a few lines on; the module-level ban is on import-time cycles.
+    """
+    from hub.utils.gguf import _keys_at_repo_root, collapse_same_quant_root_builds
+
+    advertised = {
+        v.filename: _qualified_variant_name(v.filename, v.quant) for v in variants
+    }
+    root_rows = [f for f, key in advertised.items() if _keys_at_repo_root(key)]
+    pool = root_rows or list(advertised)
+    keep = set(collapse_same_quant_root_builds([advertised[f] for f in pool]))
+    ranked = [f for f in pool if advertised[f] in keep] or pool
+    return _pick_best_gguf(ranked)
+
+
 def _key_at_repo_root(key: str) -> bool:
     """MIRROR of ``hub.utils.gguf._keys_at_repo_root``: every parent segment names a quant."""
     parents = key.replace("\\", "/").rpartition("/")[0]
@@ -4243,13 +4267,7 @@ class ModelConfig:
                     # before the root ...-Q6_K made a bare repo id load the distilled checkpoint --
                     # while local_model_resolver, the auto-download map and /gguf-variants all
                     # define a bare id as the root. This is the LOAD path, so it has to agree.
-                    root_rows = [
-                        v.filename
-                        for v in variants
-                        if "/" not in _qualified_variant_name(v.filename, v.quant)
-                    ]
-                    variant_filenames = root_rows or [v.filename for v in variants]
-                    best = _pick_best_gguf(variant_filenames)
+                    best = _default_root_gguf_filename(variants)
                     if best:
                         # The SAME identity the lister advertised for that file. Converting the
                         # winner back to a bare label handed the load a name several checkpoints

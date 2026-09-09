@@ -3788,13 +3788,26 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
         if not any(ranked[0] for _root, ranked in per_root):
             from utils.models.model_config import _gguf_variant_key
 
+            from hub.utils.gguf import resolve_variant_alias
+
             label_keys = {
                 _gguf_variant_key(rel).lower()
                 for _root, ranked in per_root
                 for rel, _f, _size in ranked[1]
             }
-            if len(label_keys) > 1:
+            # The shared rule, root precedence included -- not "any two keys refuse": a tagged
+            # root beside ``distilled/model-Q4_K_M.gguf`` is what a legacy pin resolves to and
+            # what the loaders open, and refusing it here returned a null estimate for a model
+            # that loads. Two root builds still resolve to nothing, and still refuse.
+            selected = resolve_variant_alias(sorted(label_keys), want) if label_keys else None
+            if label_keys and selected is None:
                 return None, 0
+            if selected is not None:
+                for _root, ranked in per_root:
+                    ranked[1] = [
+                        entry for entry in ranked[1]
+                        if _gguf_variant_key(entry[0]).lower() == selected.lower()
+                    ]
         for root, ranked in per_root:
             # Exact keys alone when any exist: summing them with the label matches counts other
             # checkpoints' bytes into this row's estimate and can reveal one of their files.
