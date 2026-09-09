@@ -105,6 +105,8 @@ function localModelSourceLabelKey(source: LocalSource): TranslationKey {
       return "studio.modelPicker.sourceLmStudio";
     case "ollama":
       return "studio.modelPicker.sourceOllama";
+    case "hermes":
+      return "studio.modelPicker.sourceHermes";
     case "custom":
       return "studio.modelPicker.sourceCustomFolder";
     default:

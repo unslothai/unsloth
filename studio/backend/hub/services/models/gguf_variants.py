@@ -23,7 +23,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
-from hub.utils.hf_tokens import is_anonymous
+from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -1004,6 +1004,9 @@ class VariantsAnswer(NamedTuple):
 
     response: GgufVariantsResponse
     context_source: Optional[str]
+    # False when the caller may not read this repo's caches, for a reader that falls back
+    # to the repo id rather than ``context_source``.
+    cache_authorized: bool = True
 
 
 def _default_variant_candidates(variants) -> list[str]:
@@ -1041,6 +1044,8 @@ async def get_gguf_variants_answer(
     # A repo-shaped id resolving to a directory is answered by that directory alone, not the HF cache
     # of the same-named repo, else a GGUF-less directory could evict the resident model.
     answered_locally = [False]
+    # Read by the route before its own cache walk, which this listing does not cover.
+    cache_authorized = [True]
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -1274,7 +1279,17 @@ async def get_gguf_variants_answer(
         # The HF cache answers from disk without authorizing, so a denied caller could name
         # a cached private repo and read back its filenames, sizes and vision flag. A
         # local_path the caller named itself is not the Hub cache and stays available.
-        cache_reads_authorized = not is_anonymous(hf_token)
+        # `offline` passed in: a cache-only request must not pay a probe it will not use.
+        # The shared gate rather than the raw check, so the forced-anonymous sentinel keeps
+        # a cached PUBLIC repo instead of falling through to the network for one it was
+        # always entitled to.
+        # is_cached is True rather than a directory probe. Every narrower predicate here
+        # has to consult one of the cache accessors below, which are the reads this gate
+        # exists to withhold, and the lister has a cache path of its own that no predicate
+        # can see before it runs. The cost is one memoized probe per repo and token.
+        cache_reads_authorized = not hub_cached_read_refused(
+            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
+        )
 
         def _scoped_local_response():
             """The pinned snapshot's own answer, or None when it holds nothing."""
@@ -1396,7 +1411,10 @@ async def get_gguf_variants_answer(
         # so shared blobs are not double-counted, and keys are lowercased since cache casing can differ.
         cached_filenames_by_snapshot: list[dict[str, int]] = []
         cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
-        if _is_valid_repo_id(repo_id):
+        # A gated repo can list its files publicly, so reaching here is not authorization:
+        # everything below reads the local caches, and would report `downloaded`, `partial`
+        # and remaining bytes for the operator's copy to a caller the other paths refuse.
+        if _is_valid_repo_id(repo_id) and cache_reads_authorized:
             # A pinned row resolves inside one directory, so nothing else counts as downloaded.
             scoped_snapshots = (
                 [snapshot_scope]
@@ -1519,16 +1537,24 @@ async def get_gguf_variants_answer(
 
         partial_quants: set[str] = set()
         partial_quant_transports: dict[str, Optional[str]] = {}
-        try:
-            incomplete_hashes = download_registry.incomplete_blob_hashes(
-                "model",
-                repo_id,
-                active_only = True,
-                root = hub_cache,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
-            incomplete_hashes = set()
+        # The rest of this accounting reads the operator's disk too: the download registry,
+        # the snapshot markers and manifests, and the local blobs. The snapshot walk above
+        # is gated and this was not, so a caller who can still list a gated repo's PUBLIC
+        # metadata was handed `partial`, `partial_transport` and the remaining byte count
+        # for a download it cannot see. Same authorization, one variable.
+        partial_scan_variants = variants if cache_reads_authorized else ()
+        incomplete_hashes: set = set()
+        if cache_reads_authorized:
+            try:
+                incomplete_hashes = download_registry.incomplete_blob_hashes(
+                    "model",
+                    repo_id,
+                    active_only = True,
+                    root = hub_cache,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
+                incomplete_hashes = set()
         scan_snapshot_dir = snapshot_scope or hf_cache_scan.resolve_snapshot_dir_for_scan(
             "model",
             repo_id,
@@ -1553,7 +1579,7 @@ async def get_gguf_variants_answer(
 
         # Manifest + marker + main incomplete-blob check: catches variants whose download was cancelled or whose
         # expected shards are missing/undersized.
-        for variant in variants:
+        for variant in partial_scan_variants:
             try:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 variant_hashes = requirement.main_hashes if requirement is not None else None
@@ -1586,7 +1612,7 @@ async def get_gguf_variants_answer(
                 )
         # Same attribution as above: a pinned snapshot is not judged by a newer attempt's blobs.
         if incomplete_hashes:
-            for variant in variants:
+            for variant in partial_scan_variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None or not _repo_signals_apply_to(variant.quant):
                     continue
@@ -1608,7 +1634,11 @@ async def get_gguf_variants_answer(
                         ),
                     )
 
-        local_blobs_by_quant = _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
+        local_blobs_by_quant = (
+            _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
+            if cache_reads_authorized
+            else {}
+        )
 
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
@@ -1654,10 +1684,19 @@ async def get_gguf_variants_answer(
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer, not read from the closure afterwards: coalesced callers share one
         # computation and must all see the copy it answered from.
-        return VariantsAnswer(_compute_response(), answered_from[0])
+        return VariantsAnswer(_compute_response(), answered_from[0], cache_authorized[0])
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        # The enrichment reads this repo's cache dir, so it takes the same authorization:
+        # else the except branch returns 200 labelled with an empty quant folder, which is
+        # the existence of a cached private repo. Remote valid ids only, and memoized.
+        if not skip and hub_cached_read_refused(
+            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
+        ):
+            skip = True
+            # Carried out: the route's context-length fallback walks these same caches.
+            cache_authorized[0] = False
         try:
             response = _compute()
         except Exception:

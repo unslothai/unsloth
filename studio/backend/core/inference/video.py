@@ -82,6 +82,7 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     settled_snapshot_device_memory,
 )
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -111,6 +112,7 @@ from .diffusion_transformer_quant import (
     select_transformer_quant_scheme,
 )
 from .diffusion import _memory_request_forces_offload
+from .diffusion_batched import is_oom_error
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -169,6 +171,9 @@ from utils.hardware import clear_gpu_cache
 from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
+
+# Asked for here as well as in the image backend, so the video path never depends on that import order.
+install_torchao_int_mm_patch()
 
 # Load kinds (mirror the image backend): gguf (single-file GGUF DiT + base repo), single_file (safetensors DiT),
 # pipeline (full diffusers repo)
@@ -3791,6 +3796,10 @@ class VideoBackend:
         # _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
+        # Before the transformer quant, the first mutator; until the state commit a failure restores them itself.
+        backend_flags = snapshot_backend_flags()
+        self._precommit_globals = (_load_token, backend_flags)
+
         # dense transformer quant (opt-in, pipeline-kind only): torchao-quantise the dense bf16 DiT in place onto the
         # low-precision tensor cores. CUDA + bf16 only, best-effort. Quant must precede compile (eager is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
@@ -3938,10 +3947,6 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        backend_flags = snapshot_backend_flags()
-        # Until the state commit hands ownership to _teardown_state_locked, a failure has to restore these process-wide
-        # flags itself. Registered BEFORE the first mutation, as above.
-        self._precommit_globals = (_load_token, backend_flags)
         # Step cache tri-state: unset/"auto" -> FBCACHE_MIN_STEPS policy (re-checked per generation); "off"/"fbcache"
         # pinned. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
@@ -4024,6 +4029,7 @@ class VideoBackend:
                 # crashes)
                 cache_active = cache_engaged is not None or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
+                cuda_graph_default = False,
             )
             if view is pipe:
                 attention_engaged = engaged
@@ -4768,6 +4774,8 @@ class VideoBackend:
                 types.SimpleNamespace(
                     device = device,
                     dtype = dtype,
+                    # ROCm reports device "cuda"; the graph arm refuses it by backend, so keep the field.
+                    backend = getattr(umem_target, "backend", "cuda"),
                     supports_default_torch_compile = getattr(
                         umem_target, "supports_default_torch_compile", False
                     ),
@@ -4779,6 +4787,7 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
+                cuda_graph_default = False,
                 logger = logger,
             )
             speed_optims = tuple(k for k, v in applied.items() if v)
@@ -4806,6 +4815,16 @@ class VideoBackend:
                     "cuDNN fused attention on NVIDIA when a speed profile is active",
                 ),
                 "transformer_cache": (None, "off", "not supported by this modular workflow"),
+                "cuda_graph": (
+                    None,
+                    "on" if "cuda_graph" in speed_optims else "off",
+                    "denoiser step captured per input shape, replayed bit-identically"
+                    if "cuda_graph" in speed_optims
+                    else str(
+                        getattr(pipe, "_unsloth_cuda_graph_reason", None)
+                        or "speed tier does not capture"
+                    ),
+                ),
                 "transformer_quant": (
                     transformer_quant_requested,
                     transformer_quant_engaged or "off",
@@ -5768,6 +5787,18 @@ class VideoBackend:
                 }
             except Exception as exc:
                 self._gen = {"active": False}
+                if is_oom_error(exc):
+                    # Drop the graphs on ANY CUDA OOM, as the image backend does: a live graph pins its
+                    # statics, outputs and slice of the private pool, which empty_cache() cannot reclaim, so
+                    # the user's next smaller request would run a step's worth of activations short. The shape
+                    # that finally renders re-captures on its first step; a non-OOM failure keeps its graphs.
+                    try:
+                        from . import diffusion_cuda_graph
+                        diffusion_cuda_graph.reset_all(
+                            getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
+                        )
+                    except Exception:  # noqa: BLE001 -- cleanup must never mask the real failure
+                        pass
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
@@ -6224,8 +6255,13 @@ class VideoBackend:
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
+            from . import diffusion_cuda_graph
 
             diffusion_gguf_compile.uninstall_all()
+            # Before clear_gpu_cache(), or the graph pool stays reserved.
+            diffusion_cuda_graph.uninstall_all(
+                getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
+            )
             del state
             clear_gpu_cache()
 
