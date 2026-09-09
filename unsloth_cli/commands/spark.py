@@ -846,19 +846,34 @@ def train(
     layer_split: str = typer.Option(
         "", "--layer-split", "-L", help = "Model to split across the Sparks instead."
     ),
+    data_parallel: str = typer.Option(
+        "",
+        "--data-parallel",
+        "-D",
+        help = "Model to replicate on both Sparks (DDP over the LoRA gradients). "
+        "Throughput, not capacity: it must fit on one Spark.",
+    ),
+    fsdp: bool = typer.Option(
+        False,
+        "--fsdp",
+        help = "With --data-parallel: shard the base weights across the pair "
+        "instead of replicating them.",
+    ),
     shard_load: bool = typer.Option(
         False,
         "--shard-load",
         help = "Load only each node's own layers. Required for a model larger than one Spark.",
     ),
     microbatches: int = typer.Option(
-        32,
+        0,
         "--microbatches",
-        help = "Higher fills the pipeline better. Measured on "
-        "two Sparks vs one: M=4 1.13x, M=8 1.56x, "
+        help = "0 picks the default for the topology: 32 for a layer split, 2 for "
+        "--data-parallel. Higher fills the PIPELINE better, which is why the layer "
+        "split wants it. Measured on two Sparks vs one: M=4 1.13x, M=8 1.56x, "
         "M=16 1.70x, M=32 1.96x. The ceiling is 2M/(M+1), "
         "so M=32 already reaches 99% of it and going "
-        "beyond gains almost nothing.",
+        "beyond gains almost nothing. A data-parallel replica has no pipeline to fill, "
+        "and --batch must divide by this, so 32 there would only reject the default batch.",
     ),
     pp_backend: str = typer.Option(
         "torch",
@@ -871,13 +886,17 @@ def train(
     schedule: str = typer.Option(
         "1f1b",
         "--schedule",
-        help = "On --pp-backend torch, measured on two Sparks vs one: "
-        "1f1b 1.94x (default), dualpipev 1.96x, zbv 1.94x, "
-        "interleaved 1.93x, gpipe 1.86x, zerobubble 1.72x. "
-        "1f1b is the default over dualpipev because the 0.7% "
-        "gap is within noise while 1f1b's peak memory is lower "
-        "(7.34 vs 9.58 GiB). Avoid gpipe: it peaked at 99.92 "
-        "GiB for the same work, against a 121.69 GiB node.",
+        help = "On --pp-backend torch. Against a healthy single-Spark "
+        "control: 1f1b 1.57x at 2B and 1.77x at 9B, dualpipev "
+        "1.58x and 1.79x -- a tie. 1f1b is the default on memory "
+        "(5.52 vs 9.58 GiB at 2B, 16.86 vs 24.13 at 9B), and at "
+        "capacity sizes it is not a preference but a requirement: "
+        "dualpipev ran out of memory training a 70B on the pair "
+        "at global batch 16 and again at 8, where 1f1b held "
+        "69.5/69.8 GiB and reached 148 tok/s. Its V layout puts "
+        "the embedding, the LM head and the loss on one rank. "
+        "Avoid gpipe: it peaked at 99.92 GiB for the same work, "
+        "against a 121.69 GiB node.",
     ),
     steps: int = typer.Option(20, "--steps"),
     # Must stay a multiple of --microbatches: spark_pipeline rejects the pair after the load.
@@ -902,12 +921,15 @@ def train(
         False, "--run", help = "Launch it on both Sparks instead of printing commands."
     ),
 ) -> None:
-    """Print the two-node commands for DDP (--script) or layer-split (--layer-split).
+    """Print the two-node commands for DDP (--script), a layer split (--layer-split) or
+    a built-in data-parallel LoRA run (--data-parallel).
 
-    The two modes solve different problems. DDP replicates the model for throughput, so
-    it must still fit on one Spark. A layer split divides the decoder stack across both,
-    which is the only way to train something larger than one Spark's ~117 GiB -- verified
-    here on Llama-3.3-70B, which is 132 GiB and cannot be trained on a single node.
+    The modes solve different problems. DDP replicates the model for throughput, so it
+    must still fit on one Spark; --data-parallel is that, on the same loader, LoRA and
+    loss as the layer split, so the two can be compared on one model. A layer split
+    divides the decoder stack across both, which is the only way to train something
+    larger than one Spark's ~117 GiB -- verified here on Llama-3.3-70B, which is 132 GiB
+    and cannot be trained on a single node.
     """
     sc = _cluster_or_none()
     if sc is None:
@@ -917,9 +939,38 @@ def train(
         "these are two-Spark launch commands and do not apply here. "
         "Train as usual with `unsloth train`.",
     )
-    if not script and not layer_split:
-        typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
+    if not script and not layer_split and not data_parallel:
+        typer.echo(
+            "give one of --script <train.py>, --layer-split <model> or --data-parallel <model>."
+        )
         raise typer.Exit(2)
+    # All three are modes, not options that compose: --data-parallel is copied into
+    # layer_split below and the built-in trainer branch runs, so a --script given alongside
+    # either of them would be dropped without a word and, with --run, the built-in trainer
+    # would start on the other mode's model instead of the caller's program.
+    chosen = [
+        name
+        for name, value in (
+            ("--script", script),
+            ("--layer-split", layer_split),
+            ("--data-parallel", data_parallel),
+        )
+        if value
+    ]
+    if len(chosen) > 1:
+        typer.echo(f"{', '.join(chosen)} are different modes; give one.")
+        raise typer.Exit(2)
+    if microbatches < 0:
+        typer.echo("--microbatches cannot be negative.")
+        raise typer.Exit(2)
+    if microbatches == 0:
+        # A data-parallel replica has no pipeline to fill, so the layer split's 32 buys it
+        # nothing and --batch must divide by it: with the default batch of 8 the trainer
+        # refuses 32 outright, and `unsloth spark train --data-parallel MODEL --run` exited
+        # before it loaded anything.
+        microbatches = 2 if data_parallel else 32
+    if data_parallel:
+        layer_split = data_parallel
     if layer_split:
         # Before the modulo: `--microbatches 0` raised ZeroDivisionError out of this line, so
         # the user saw a traceback instead of the pipeline's own "must be >= 1".
@@ -946,10 +997,14 @@ def train(
             extra.append(f"--save {shlex.quote(save)}")
         if shard_load:
             extra.append("--shard-load")
-        if full_finetune:
-            extra.append("--full-finetune")
         if grad_checkpoint:
             extra.append("--grad-checkpoint")
+        if full_finetune:
+            extra.append("--full-finetune")
+        if data_parallel:
+            extra.append("--data-parallel")
+            if fsdp:
+                extra.append("--fsdp")
         argv = [
             "train",
             "--layer-split",

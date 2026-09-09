@@ -511,6 +511,12 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
+    # What the CALLER asked for, kept beside the resolved identifier above rather than derived
+    # from it. The two live in different namespaces -- a repo id on one side, a resolved cache
+    # filename on the other -- and no string test is right across that gap, so the only way to
+    # compare safely is to compare requested against requested.
+    requested_identifier: Optional[str] = None
+    requested_variant: Optional[str] = None
     # A cached file and every shard's byte count, already verified for this repo and variant.
     verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
@@ -6467,6 +6473,7 @@ class LlamaCppBackend:
         # compare requested-vs-requested like _requested_n_ctx does.
         self._requested_extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
+        self._extra_args_requested_source: Optional[tuple[Optional[str], Optional[str]]] = None
         self._requested_n_ctx: int = 0
         # Last healthy caller intent for crash recovery. Memory-only and never logged.
         self._last_load_intent: Optional[GgufLoadIntent] = None
@@ -6595,6 +6602,13 @@ class LlamaCppBackend:
 
     @property
     def base_url(self) -> str:
+        # On a paired DGX Spark serving replicas this is the in-process router that
+        # spreads requests over both nodes; None everywhere else.
+        from core.inference.spark_serving import route_base_url
+
+        routed = route_base_url(self)
+        if routed is not None:
+            return routed
         return f"http://127.0.0.1:{self._port}"
 
     @property
@@ -6740,6 +6754,22 @@ class LlamaCppBackend:
         ``None`` if no extras have ever been recorded. Used by the route
         to refuse cross-model inheritance (#5401)."""
         return self._extra_args_source
+
+    @property
+    def extra_args_requested_source(self) -> Optional[tuple[Optional[str], Optional[str]]]:
+        """(requested_identifier, requested_variant) the stored extra_args came from, i.e. what
+        the caller typed rather than what it resolved to. Recorded in the same commit as
+        ``extra_args_source`` so the pair cannot disagree. The Spark path compares this against
+        the incoming request, which is the only same-namespace comparison available before the
+        load has resolved anything."""
+        return self._extra_args_requested_source
+
+    @property
+    def launched_env(self) -> Optional[dict[str, str]]:
+        """The environment the running llama-server was actually spawned with, or ``None``
+        before any spawn. A copy, so a reader cannot mutate the record."""
+        env = getattr(self, "_launched_env", None)
+        return dict(env) if env else None
 
     @property
     def context_length(self) -> Optional[int]:
@@ -14614,6 +14644,14 @@ class LlamaCppBackend:
                 # prior GGUF load's record cannot outlive it.
                 self._requested_extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
+                # Cleared, not left: the two are written together at the GGUF commit point and
+                # must never disagree. A stale requested identity paired with THESE extras is
+                # read by _spark_inherited_extra_args as "the same model asked for them", so a
+                # later load of that earlier GGUF would have inherited this launch's arguments.
+                # There is no requested identity to record here -- this path has no
+                # GgufLoadIntent -- and no extras of a non-GGUF load should ever be inherited
+                # into a split, so None is the answer rather than a guess.
+                self._extra_args_requested_source = None
             # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
             chosen = maxtok
@@ -18678,6 +18716,12 @@ class LlamaCppBackend:
         # with --mmproj stripped), redacting the API key.
         logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
+        # What the child ACTUALLY runs with, after every scrub this launch applied. Nothing
+        # local reads it; it is for anyone who has to reproduce this server elsewhere -- the
+        # Spark replica, whose peer is launched from this argv and would otherwise rebuild its
+        # environment from os.environ and put the scrubbed settings back. Recorded next to the
+        # spawn so it cannot describe a different launch than the one that happened.
+        self._launched_env = dict(env)
         self._process = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -24142,6 +24186,7 @@ class LlamaCppBackend:
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
+                        self._launched_env = dict(env)  # see the note at the other spawn
                         self._process = subprocess.Popen(
                             run_cmd,
                             stdout = subprocess.PIPE,
@@ -25673,6 +25718,10 @@ class LlamaCppBackend:
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
+                    self._extra_args_requested_source = (
+                        intent.requested_identifier,
+                        intent.requested_variant,
+                    )
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
@@ -29108,6 +29157,11 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+        # Name the conversation, so the router keeps every turn of this thread on the
+        # llama-server that holds its prefix in KV. The router pops the field again.
+        from core.inference.spark_serving import tag_conversation
+
+        tag_conversation(payload, thread_id)
         retry_messages = messages
         retry_image_b64 = image_b64
         retry_max_tokens = max_tokens
@@ -30185,6 +30239,14 @@ class LlamaCppBackend:
                 "presence_penalty": presence_penalty,
                 "frequency_penalty": frequency_penalty,
             }
+
+            # Every round of one agent run names the same conversation, so the router
+            # keeps them on the llama-server holding its prefix. Without this the
+            # fallback hash is taken from the first user turn, which rolling compaction
+            # rewrites, so a long run drifts between replicas and re-prefills each time.
+            from core.inference.spark_serving import tag_conversation
+
+            tag_conversation(payload, thread_id)
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
@@ -32682,6 +32744,11 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+
+        # Same conversation as every round above it.
+        from core.inference.spark_serving import tag_conversation
+
+        tag_conversation(stream_payload, thread_id)
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
         if _reasoning_kw is not None:

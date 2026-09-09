@@ -12486,6 +12486,15 @@ def _wait_for_native_audio_gpu_free_gb(
         time.sleep(min(interval, remaining))
 
 
+def _spark_topology() -> Optional[str]:
+    """The two-Spark serving topology for the status poll; None off a paired Spark."""
+    try:
+        from core.inference.spark_serving import current_topology
+        return current_topology()
+    except Exception:
+        return None
+
+
 async def _unload_llama_before_standard_load(llama_backend) -> None:
     """Tear down llama-server and wait for asynchronous driver VRAM reclaim."""
     if not llama_backend.is_loaded:
@@ -12952,6 +12961,8 @@ def _resolve_gguf_load_intent(
     if config.gguf_hf_repo:
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
+            requested_identifier = request.model_path,
+            requested_variant = request.gguf_variant,
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
@@ -12983,6 +12994,8 @@ def _resolve_gguf_load_intent(
                 )
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
+            requested_identifier = request.model_path,
+            requested_variant = request.gguf_variant,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
@@ -13875,6 +13888,57 @@ def _cancel_scoped_load_attempt(
         return attempt, is_running
 
 
+def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
+    """The previous same-model load's pass-through extras, which
+    ``_resolve_inherited_extra_args`` carries into a request that omits the field. The
+    Spark orchestrator reads them so a ``--spec-type`` the caller owns there is left
+    alone rather than shadowed by the first-class field it would otherwise set.
+
+    This runs BEFORE anything is resolved, so it cannot compare against the resolved identifier
+    ``extra_args_source`` holds: that would put a repo id on one side and a resolved cache
+    filename on the other, and no string test is right across two namespaces. It used to try,
+    with a substring fallback, and the fallback is what made ``org/qwen-7b`` inherit the extras
+    of ``org/qwen-7b-instruct`` -- carrying that model's ``--lora``, ``--mmproj`` or
+    ``--model-draft`` onto a different model. Tightening the fallback was not possible either:
+    ``-`` is a separator inside model names, so nothing distinguishes that pair from the
+    hub-id-against-resolved-stem case the fallback existed to serve.
+
+    So the comparison is now same-namespace and exact, against the identity the CALLER asked
+    for, which ``extra_args_requested_source`` records in the same commit as the resolved one.
+    Requested against requested needs no heuristic. On a layer split this matters more than it
+    looks: ``_with_rpc_args`` materialises ``llama_extra_args``, and a non-None field makes
+    ``_resolve_inherited_extra_args`` skip inheritance, so this is the only path by which extras
+    reach a split launch and the strict resolver never gets a second opinion."""
+    if getattr(request, "llama_extra_args", None) is not None:
+        return None
+    try:
+        llama_backend = get_llama_cpp_backend()
+        stored = getattr(llama_backend, "extra_args", None)
+        source = getattr(llama_backend, "extra_args_requested_source", None)
+    except Exception:
+        return None
+    if not stored:
+        return None
+    if not source or not source[0]:
+        # Extras recorded before this identity was tracked, or by a path that does not set it.
+        # Nothing to compare against, and guessing is what this replaced.
+        return None
+    requested = str(getattr(request, "model_path", "") or "").strip().lower()
+    stored_id = str(source[0] or "").strip().lower()
+    if not requested or requested != stored_id:
+        return None
+    # The variant is part of the identity, not a detail: two quants of one repo are different
+    # files with different sidecars. ``_resolve_inherited_extra_args`` has always compared it;
+    # this function read only ``source[0]`` and dropped it, which is the same question answered
+    # two ways by two functions.
+    if (
+        str(getattr(request, "gguf_variant", "") or "").strip().lower()
+        != str(source[1] or "").strip().lower()
+    ):
+        return None
+    return list(stored)
+
+
 async def _run_tracked_load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -13893,14 +13957,43 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        return await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            current_request_counted = current_request_counted,
-            on_reload_confirmed = on_reload_confirmed,
-            load_cancel_event = attempt.cancel_event,
+        # Paired DGX Spark only. Before the load this may turn the request into a layer
+        # split; after it, it may attach a replica on the peer behind the router.
+        from core.inference import spark_serving
+
+        _spark_slots = _resolve_parallel_slots(request, fastapi_request)
+        try:
+            request = await spark_serving.before_load(
+                request,
+                _spark_slots,
+                inherited_extra_args = _spark_inherited_extra_args(request),
+                cancel_event = attempt.cancel_event,
+            )
+        except spark_serving.SparkLoadDoesNotFit as exc:
+            # The planner established that neither Spark alone nor both together holds this
+            # model plus its KV. Continuing would spend the whole load to reach an
+            # out-of-memory it had already predicted, so this is a 400 carrying the planner's
+            # own sentence, which names the sizes and what to change.
+            logger.warning("inference.spark_load_does_not_fit: %s", exc)
+            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+        try:
+            response = await _load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                current_request_counted = current_request_counted,
+                on_reload_confirmed = on_reload_confirmed,
+                load_cancel_event = attempt.cancel_event,
+                spark_planned = True,
+            )
+        except BaseException:
+            # A failed or cancelled load leaves nothing for the peer to serve.
+            await spark_serving.load_failed()
+            raise
+        await spark_serving.after_load(
+            get_llama_cpp_backend(), _spark_slots, cancel_event = attempt.cancel_event
         )
+        return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -14038,11 +14131,19 @@ async def _load_model_impl(
     on_reload_confirmed = None,
     allow_gpu_owner_eviction: bool = True,
     load_cancel_event: Optional[threading.Event] = None,
+    spark_planned: bool = False,
     cache_environment: Optional[dict[str, str]] = None,
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
+
+    if not spark_planned:
+        # Paired DGX Spark only, and a no-op with nothing attached. Every caller that reaches
+        # here without going through _run_tracked_load_model_impl skipped the topology
+        # planning, so an attached peer would be left serving the model this load replaces.
+        from core.inference import spark_serving
+        await spark_serving.reconcile_internal_load()
 
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
@@ -17116,6 +17217,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                spark_topology = _spark_topology(),
             )
 
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means

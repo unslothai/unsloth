@@ -13,11 +13,13 @@ import platform
 import re
 import secrets
 import shlex
+import signal
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import urllib.error
@@ -884,6 +886,48 @@ def _find_frontend_dist() -> Optional[Path]:
 
 
 # ── helpers for `unsloth studio run` ────────────────────────────────
+
+
+_RUN_SHUTDOWN_SIGNALS = tuple(
+    sig
+    for sig in (
+        getattr(signal, "SIGINT", None),
+        getattr(signal, "SIGTERM", None),
+        getattr(signal, "SIGBREAK", None),
+    )
+    if sig is not None
+)
+
+
+def _install_run_shutdown_handlers(run_mod):
+    """Handle SIGINT and SIGTERM the way ``python run.py`` does, and return the callback.
+
+    This path never installed them, so SIGTERM ended the process outright, the lifespan
+    shutdown never ran, and the peer's ``ggml-rpc-server`` was left holding the peer's GPU.
+    The callback restores the default disposition before doing any work, so a second signal
+    force-quits an unresponsive shutdown, and it never waits on anything.
+    """
+    stopping = threading.Event()
+
+    def _request_shutdown(_signum = None, _frame = None):
+        if stopping.is_set():
+            return
+        stopping.set()
+        for sig in _RUN_SHUTDOWN_SIGNALS:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(sig, signal.SIG_DFL)
+        run_mod._graceful_shutdown(getattr(run_mod, "_server", None))
+        event = getattr(run_mod, "_shutdown_event", None)
+        if event is not None:
+            event.set()
+
+    for sig in _RUN_SHUTDOWN_SIGNALS:
+        # Not the main thread (an embedded host): the KeyboardInterrupt path is the only
+        # one there, exactly as before.
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(sig, _request_shutdown)
+    return _request_shutdown
+
 
 _direct_http_opener = None
 
@@ -3142,6 +3186,12 @@ def run(
     # on any abort so they never orphan.
     from studio.backend.run import _graceful_shutdown, _server
 
+    # Installed HERE, not after the banner: steps 3 to 5 are the health wait and a model
+    # load that can run for minutes, and that is exactly when llama-server, cloudflared or a
+    # Spark peer process is most likely to be running. Without the handlers in place a SIGTERM
+    # in that window takes the default disposition and kills the process outright, so the
+    # except BaseException below never runs and those children orphan.
+    _request_shutdown = _install_run_shutdown_handlers(run_mod)
     try:
         request_host = getattr(app.state, "server_request_host", None)
         if not isinstance(request_host, str) or not request_host:
@@ -3280,7 +3330,14 @@ def run(
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
-    # 7. Wait for Ctrl+C.
+    # Handle both signals and leave through os._exit once the cleanup has returned:
+    # with only a KeyboardInterrupt nothing bounded the exit, and an atexit join on a
+    # worker thread inside an ssh or a subprocess wait held the process open for 60 to
+    # 90 s live. A second signal restores the default disposition, so an impatient
+    # Ctrl+C still force-quits.
+    # Already installed before the health wait above; idempotent, and re-arming here keeps
+    # the wait below reading the same way whichever path reached it.
+    _request_shutdown = _install_run_shutdown_handlers(run_mod)
     try:
         if run_mod._shutdown_event is not None:
             while not run_mod._shutdown_event.is_set():
@@ -3289,10 +3346,15 @@ def run(
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
-        run_mod._graceful_shutdown(run_mod._server)
-        typer.echo("\nShutting down...")
-    finally:
-        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
+        _request_shutdown()
+    typer.echo("\nShutting down...")
+    getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.flush()
+        except Exception:
+            pass
+    os._exit(0)
 
 
 # ── unsloth studio stop ───────────────────────────────────────────────

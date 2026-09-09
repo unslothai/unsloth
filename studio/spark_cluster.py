@@ -3180,6 +3180,256 @@ LAYER_SPLIT_DECODE_SPEEDUP = {
 }
 LAYER_SPLIT_DECODE_ONLY_SPEEDUP = 0.95
 LAYER_SPLIT_PREFILL_SPEEDUP = (1.7, 1.85)
+
+# llama-server ``--pipeline-groups N`` (unslothai/llama.cpp PR #187): N contexts from one
+# model, so one group's batch runs on the peer's layers while the other's runs here. Measured
+# with the RPC device first, which is a precondition, not a detail.
+PIPELINE_GROUPS_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --pipeline-groups 2 with --device RPC0,CUDA0, two DGX "
+    "Sparks, 2026-09-05, uncapped clocks, two repeats"
+)
+# rows: (one Spark, split with one context, split with two groups), decode tok/s
+PIPELINE_GROUPS_DECODE_TOKS = {
+    32: (116, 100, 130),
+    64: (139, 117, 157),
+    128: (150, 124, 170),
+}
+PIPELINE_GROUPS_SPLIT_SPEEDUP = {32: 1.12, 64: 1.13, 128: 1.13}  # two groups over one Spark
+PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE = (1.12, 1.13)  # 32 to 128 rows
+PIPELINE_GROUPS_OVER_ONE_CONTEXT = {32: 1.31, 64: 1.34, 128: 1.37}  # two groups over one context
+PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE = (1.31, 1.37)
+PIPELINE_GROUPS_GPU_UTIL = (0.45, 0.78)  # per node, without and with the groups
+# MTP self speculation on ONE Spark, a no-op for a GGUF with no nextn_predict_layers. Depth 3
+# is the mixed-traffic choice: 8 is faster at one user and much slower at eight. Draft models
+# and n-gram speculation are NOT defaults, both winning at one user and losing from four.
+# Greedy output under MTP is not byte identical to the baseline, and that is not a defect:
+# the baseline is not batch invariant itself.
+MTP_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL and Qwen3.5-4B-MTP-UD-Q4_K_XL, llama-server b10796 --spec-type "
+    "draft-mtp --spec-draft-n-max 3, one DGX Spark, 2026-09-05, 1690 MHz, npp 128 / ntg 256"
+)
+MTP_SPEEDUP_27B = {1: 2.61, 4: 1.87, 8: 1.59}  # users -> aggregate decode over no speculation
+MTP_SPEEDUP_4B = {1: 2.04, 4: 1.67, 8: 1.46}
+MTP_SPEEDUP_27B_LONG_OUTPUT = {1: 2.81, 8: 2.01}  # ntg 1024
+MTP_ACCEPTANCE_27B = {1: 0.88, 8: 0.74}
+MTP_ACCEPTANCE_4B = {1: 0.88, 8: 0.72}
+MTP_DRAFT_N_MAX = 3
+MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the closer estimate
+# Depth 3 came from the 1-to-8-user table above and is the WORST of the three at every row
+# count measured on a split; below 32 rows nothing was measured there. Acceptance is a function
+# of the depth alone and flat in rows, so this is not the drafter working less well at width,
+# it is the draft tokens widening a batch already past the cheap point of the per-token curve.
+# Every cell is a TWO-GROUP split, and a one-context split gets the same depth: its rows sit in
+# one step rather than halved across two, so the batch is WIDER and a narrower draft is the
+# only safe extrapolation.
+MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL split over two DGX Sparks, llama-server --pipeline-groups 2 "
+    "--kv-unified --tensor-split 0.5,0.5 --spec-type draft-mtp, unslothai/llama.cpp PR #187 "
+    "a1dd7c5e8, both nodes pinned at 1690 MHz, 2026-09-07, npp 128 / ntg 256, forward and "
+    "reversed legs per cell"
+)
+# concurrent rows -> {n-max: decode tok/s}, leg mean. 0 is the drafter off.
+MTP_DRAFT_N_MAX_X_ROWS_TOKS = {
+    32: {0: 146.8, 1: 152.8, 2: 162.9, 3: 155.9},
+    64: {0: 186.3, 1: 171.7, 2: 166.9, 3: 146.3},
+    128: {0: 212.7, 1: 164.1, 2: 138.7, 3: 132.2},
+}
+MTP_DRAFT_N_MAX_ACCEPTANCE = {1: 0.87, 2: 0.78, 3: 0.69}  # n-max -> acceptance, flat in rows
+MTP_DRAFT_N_MAX_BY_ROWS = {32: 2, 64: 1}
+
+
+def mtp_draft_n_max(users: Optional[int] = None) -> int:
+    """The ``--spec-draft-n-max`` depth measured best at this many concurrent rows, and
+    ``MTP_DRAFT_N_MAX`` below the lowest measured row count, where the one-Spark table lives.
+    No fitting: the largest measured key applies from there up."""
+    if users is None:
+        return MTP_DRAFT_N_MAX
+    rows = max(1, int(users or 1))
+    depth = MTP_DRAFT_N_MAX
+    for key in sorted(MTP_DRAFT_N_MAX_BY_ROWS):
+        if rows >= key:
+            depth = MTP_DRAFT_N_MAX_BY_ROWS[key]
+    return depth
+
+
+# Whether a drafter pays on a split AT ALL, which the depth rule above does not answer. LAYER
+# SPLIT only. Percentages come from the unrounded leg means, so recomputing them from the
+# rounded table lands within 0.2 points.
+SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT = {32: 11.0, 64: -7.9, 128: -22.9}
+SPLIT_MTP_OFF_ROWS = 64
+"""Concurrent rows at or above which a two-Spark layer split runs with the drafter OFF.
+
+The measured boundary is somewhere between 32 and 64 rows, and 33 to 63 is INTERPOLATED:
+nothing in between was measured. The two points that bound it, on the 27B layer split with
+two pipeline groups, ``--kv-unified`` and ``--tensor-split 0.5,0.5``, both nodes at 1690 MHz
+(``MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT``):
+
+* 32 rows, where the best depth (n-max 2) is worth **+11.0 %** over the drafter off,
+  162.9 against 146.8 tok/s, so speculation stays ON there;
+* 64 rows, where the best depth (n-max 1) **costs 7.9 %**, 171.7 against 186.3 tok/s, and
+  every deeper draft costs more; at 128 rows the best depth costs 22.9 %.
+
+The constant is put at 64, the lower of the two measured points at which speculation loses,
+so no interpolated row count is ever served a rule that was not measured to help there.
+
+This is NOT ``GROUPS_X_MTP_CROSSOVER_ROWS`` (16), which answers a different question -- two
+pipeline groups against one context, both with the drafter on -- and does not move.
+"""
+
+
+def split_mtp_wins(users: Optional[int] = None) -> bool:
+    """Whether a two-Spark layer split at this many concurrent rows should run a drafter AT
+    ALL, at the depth ``mtp_draft_n_max`` returns: True below ``SPLIT_MTP_OFF_ROWS``.
+
+    Layer split only; one Spark and two replicas are governed by the one-Spark MTP table, where
+    speculation is a large win, and no cell of this matrix was measured on either. ``users`` of
+    None keeps the drafter, which is what every topology did before this rule existed."""
+    if users is None:
+        return True
+    return max(1, int(users or 1)) < SPLIT_MTP_OFF_ROWS
+
+
+def split_mtp_note() -> str:
+    """Whether a layer split speculates at all, and at what depth, for reasons and the
+    ``spark plan`` text."""
+    lo, hi, top = 32, SPLIT_MTP_OFF_ROWS, max(MTP_DRAFT_N_MAX_X_ROWS_TOKS)
+    cells = MTP_DRAFT_N_MAX_X_ROWS_TOKS
+
+    def _best(rows: int) -> Tuple[int, float, float]:
+        drafting = {depth: toks for depth, toks in cells[rows].items() if depth}
+        depth = max(drafting, key = lambda d: drafting[d])
+        return depth, drafting[depth], SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT[rows]
+
+    lo_depth, lo_toks, lo_pct = _best(lo)
+    hi_depth, hi_toks, hi_pct = _best(hi)
+    _top_depth, _top_toks, top_pct = _best(top)
+    return (
+        f"A layer split speculates only below {SPLIT_MTP_OFF_ROWS} concurrent rows. Swept on "
+        f"the pair at {lo} / {hi} / {top} rows against the same split with no drafter, the "
+        f"best draft depth is worth {lo_pct:+.1f} percent at {lo} rows "
+        f"({lo_toks:.1f} against {cells[lo][0]:.1f} tok/s at n-max {lo_depth}) but "
+        f"{hi_pct:+.1f} percent at {hi} ({hi_toks:.1f} against {cells[hi][0]:.1f} at n-max "
+        f"{hi_depth}) and {top_pct:+.1f} percent at {top}, because the draft tokens widen a "
+        f"batch that is already past the cheap point of the per-token curve. So below "
+        f"{SPLIT_MTP_OFF_ROWS} rows the split asks for --spec-type draft-mtp at the depth "
+        f"measured best for the row count (n-max {mtp_draft_n_max(1)} under {lo} rows, "
+        f"{mtp_draft_n_max(lo)} from {lo}) and at or above {SPLIT_MTP_OFF_ROWS} it asks for "
+        f"no drafter and no draft flags at all. Nothing between {lo + 1} and "
+        f"{SPLIT_MTP_OFF_ROWS - 1} rows was measured, so the boundary sits on the lower of "
+        f"the two measured points at which speculation loses. This is the split only: one "
+        f"Spark and two replicas keep MTP, which is a win at every user count measured there."
+    )
+
+
+# Pipeline groups AND speculative decoding on the same layer split: unslothai/llama.cpp
+# PR #187 (a1dd7c5e8) gives every group its own speculative state, so the pair is accepted.
+# It is still refused with --mmproj, --control-vector and --sleep-idle-seconds, and --parallel
+# must stay a multiple of N. --kv-unified is on every cell, and is why this table was
+# re-measured: the first version left it out and so described a launch the product never
+# makes. Both nodes were PINNED, because the unpinned attempt spanned three clock states and
+# no two arms were comparable. The winner flips between 8 and 32 rows with nothing measured in
+# between, so GROUPS_X_MTP_CROSSOVER_ROWS is the geometric midpoint.
+GROUPS_X_MTP_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --pipeline-groups 2 --spec-type "
+    "draft-mtp with --device RPC0,CUDA0, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
+    "Sparks both pinned at 1700 MHz, 2026-09-06, npp 128 / ntg 256, --parallel 32, two "
+    "repeats in opposite arm order"
+)
+# concurrent rows -> (split 1 context, + MTP, split 2 groups, + MTP) decode tok/s, repeat mean
+GROUPS_X_MTP_DECODE_TOKS = {
+    8: (51.4, 87.8, 49.7, 84.8),
+    32: (97.2, 112.1, 139.5, 152.5),
+}
+# NOT re-measured with --kv-unified or under the pin, so not directly comparable with the rest.
+GROUPS_X_MTP_ONE_SPARK_MTP_TOKS = {8: 85.6, 32: 83.8}
+GROUPS_X_MTP_ACCEPTANCE = {8: (0.75, 0.74), 32: (0.70, 0.71)}  # (one context, two groups)
+GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
+GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
+# The geometric mean of the measured 8 and 32; nothing between them was measured.
+GROUPS_X_MTP_CROSSOVER_ROWS = 16
+
+# Sized with --parallel and -c to the offered concurrency, so every slot keeps the same context
+# at every point. Two pipeline groups win at EVERY concurrency here, including 8 rows, where an
+# earlier table had them losing: that table held --parallel at 32 and sent only 8 clients, so
+# the SIZING decided it and not the topology. No cell used a drafter.
+# The gain grows with the rows faster than a fixed-cost model predicts, because decode step
+# time here is not c0 + c1*b: two groups of 64 sit at a cheaper point on that curve than one
+# context of 128.
+SPLIT_GROUPS_ROWS_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
+    "-sm layer, --parallel R with -c 512*R, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
+    "Sparks both pinned at 1700 MHz, 2026-09-06, npp 128 / ntg 256, no speculation, two passes "
+    "in opposite arm order"
+)
+# concurrent rows -> (one context, two groups) decode tok/s, mean of the two passes
+SPLIT_GROUPS_ROWS_TOKS = {
+    8: (50.9, 68.0),
+    16: (75.1, 100.1),
+    32: (97.5, 143.4),
+    64: (112.9, 174.3),
+    128: (116.6, 201.2),
+}
+# The lowest measured point rather than a crossing: two groups won at every point.
+SPLIT_GROUPS_MIN_ROWS = 8
+
+# With no --tensor-split, llama.cpp divides the layers by each device's FREE MEMORY at load
+# time, so the boundary moves with whatever else the nodes hold and is not reproducible between
+# two loads. An explicit even split lands one block past the middle, where the two GPUs' busy
+# fractions come out equal, because the split indexes n_layer + 1 slots and the last is the
+# output block.
+SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
+SPLIT_TENSOR_SPLIT_MEASURED_PEER_BLOCKS = {27: 192.1, 30: 199.7, 33: 206.4, 34: 201.2, 36: 192.5}
+
+# SPLIT_GROUPS_ROWS_TOKS alone says "use 128 rows", and that is wrong twice over: TTFT rises
+# faster than throughput, with the knee between 32 and 64 rows, and asking for MORE slots than
+# the load offers is not free either -- an oversized server loses about a quarter of the
+# throughput AND a third of the median TTFT. So the rows track the offered concurrency, capped
+# at the last point whose p90 TTFT is inside 14 s.
+SPLIT_ROWS_TTFT_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
+    "-sm layer --tensor-split 0.5,0.5 --pipeline-groups 2, --parallel R with -c 512*R, two DGX "
+    "Sparks both pinned at 1700 MHz, 2026-09-06, npp 128 / ntg 256, no speculation, R clients "
+    "arriving at once so the TTFT is a saturating burst and not a steady state"
+)
+# concurrent rows -> (decode tok/s, TTFT median seconds, TTFT p90 seconds), slots = offered load
+SPLIT_ROWS_TTFT = {
+    8: (66.8, 1.73, 2.00),
+    16: (100.1, 2.95, 3.51),
+    32: (143.3, 4.60, 5.61),
+    64: (182.7, 9.07, 13.17),
+    128: (211.1, 18.11, 26.33),
+}
+# Largest rows setting whose measured p90 TTFT a person waiting on a reply can be asked to accept.
+SPLIT_ROWS_INTERACTIVE_MAX = 64
+# Largest rows setting measured at all. Only for offline or batch work.
+SPLIT_ROWS_THROUGHPUT_MAX = 128
+# Smallest rows setting measured; below this nothing has been run.
+SPLIT_ROWS_MIN = 8
+# offered -> (tok/s ratio, TTFT median ratio) of a 128-slot server against one sized to that load.
+SPLIT_ROWS_OVERSIZED_SLOTS = {8: (0.773, 1.09), 32: (0.770, 1.38), 128: (1.0, 1.0)}
+
+
+def split_rows_for_users(users: int, interactive: bool = True) -> int:
+    """Rows (``--parallel``) a layer split should ask for, for ``users`` offered concurrency.
+
+    Tracks the offered load rather than rounding up, because oversizing the slot count costs
+    throughput and TTFT both (``SPLIT_ROWS_OVERSIZED_SLOTS``). Clamped to the measured range,
+    and to ``SPLIT_ROWS_INTERACTIVE_MAX`` unless the caller says nobody is waiting.
+    """
+    cap = SPLIT_ROWS_INTERACTIVE_MAX if interactive else SPLIT_ROWS_THROUGHPUT_MAX
+    return max(SPLIT_ROWS_MIN, min(cap, int(users or 1)))
+
+
+def split_rows_ttft_s(rows: int) -> float:
+    """Measured p90 TTFT in seconds at the nearest measured rows point at or below ``rows``."""
+    points = sorted(SPLIT_ROWS_TTFT)
+    key = points[0]
+    for point in points:
+        if rows >= point:
+            key = point
+    return SPLIT_ROWS_TTFT[key][2]
+
+
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")
@@ -3203,6 +3453,99 @@ def replicas_speedup(prompt_tokens: int = 512, users: int = 1) -> float:
 
 def layer_split_decode_speedup(prompt_tokens: int = 512, users: int = 1) -> float:
     return _measured_cell(LAYER_SPLIT_DECODE_SPEEDUP, prompt_tokens, users)
+
+
+def pipeline_groups_note() -> str:
+    """What a layer split delivers with and without pipeline groups, for reasons and the
+    ``spark plan`` text. The flag is added only when the bundle has it, so both halves are
+    stated."""
+    low, high = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
+    clow, chigh = PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE
+    rows = sorted(PIPELINE_GROUPS_SPLIT_SPEEDUP)
+    decode = LAYER_SPLIT_DECODE_SPEEDUP[512]
+    return (
+        f"With pipeline groups (llama-server --pipeline-groups 2, added when the bundle "
+        f"has it, RPC device first so the output layer stays local) the pair measured "
+        f"{clow:.2f}x to {chigh:.2f}x of the one-context split and {low:.2f}x to {high:.2f}x "
+        f"of one Spark at {rows[0]} to {rows[-1]} concurrent rows with both GPUs near "
+        f"{PIPELINE_GROUPS_GPU_UTIL[1] * 100:.0f} percent; without them expect "
+        f"{min(decode.values()):.2f}x to {max(decode.values()):.2f}x on decode and "
+        f"{LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to {LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x "
+        f"on prefill."
+    )
+
+
+def mtp_speedup(users: int = 1, model_size_b: Optional[float] = None) -> float:
+    """MTP self speculation's aggregate decode gain at the nearest measured user count, for a
+    GGUF that ships the head. It multiplies whatever the topology gives; a GGUF without the head
+    is 1.0, which the caller knows and this function does not."""
+    small = model_size_b is not None and float(model_size_b) < MTP_SMALL_MODEL_B
+    table = MTP_SPEEDUP_4B if small else MTP_SPEEDUP_27B
+    _users, value = _nearest_concurrency(table, max(1, int(users or 1)))
+    return value
+
+
+def mtp_note() -> str:
+    """What MTP self speculation delivers, for reasons and the ``spark plan`` text. Asked for
+    only when the header has the head and the bundle has --spec-type, so the no-op case is
+    stated too."""
+    a, b = MTP_SPEEDUP_27B, MTP_SPEEDUP_4B
+    return (
+        f"A GGUF that ships its own MTP head (Qwen3.5-4B-MTP, Qwen3.8-27B) self-speculates "
+        f"(llama-server --spec-type draft-mtp --spec-draft-n-max {MTP_DRAFT_N_MAX}, asked for "
+        f"when the header has nextn_predict_layers and the bundle has the flag): measured on "
+        f"one Spark {a[1]:.2f}x / {a[4]:.2f}x / {a[8]:.2f}x aggregate decode at 1 / 4 / 8 "
+        f"users on the 27B and {b[1]:.2f}x / {b[4]:.2f}x / {b[8]:.2f}x on the 4B, on top of "
+        f"what the topology gives; a no-op for a GGUF without the head. Draft models and "
+        f"n-gram speculation are single-user tricks on this pair (about 2x at one user, a "
+        f"loss from 4) and stay off. Those figures are ONE Spark, and they govern the single "
+        f"and replicas topologies; a two-Spark layer split has its own swept table, runs the "
+        f"depth measured best for its row count and turns the drafter off entirely from "
+        f"{SPLIT_MTP_OFF_ROWS} rows up (split_mtp_note)."
+    )
+
+
+def groups_x_mtp_wins(users: int) -> bool:
+    """Whether a two-Spark layer split at this many concurrent rows should run pipeline groups
+    AND speculative decoding rather than one context with speculation. Below the crossover the
+    two are within 3 percent of each other, so choosing wrong there costs little.
+
+    This answers GROUPS against ONE CONTEXT and nothing else; whether the split runs a drafter
+    at all is ``split_mtp_wins`` / ``SPLIT_MTP_OFF_ROWS``, a separate measurement. The serving
+    side also needs a build that accepts the two flags together (PR #187)."""
+    return max(1, int(users or 1)) >= GROUPS_X_MTP_CROSSOVER_ROWS
+
+
+def groups_x_mtp_note() -> str:
+    """What a layer split gets from pipeline groups and speculative decoding together, for
+    reasons and the ``spark plan`` text.
+
+    Two measurements are stated separately: ``GROUPS_X_MTP_CROSSOVER_ROWS`` for groups against
+    one context, and ``SPLIT_MTP_OFF_ROWS`` (``split_mtp_note``) for whether a drafter runs at
+    all. So a split at 8 rows is one context with MTP, at 32 rows two groups with MTP, and at
+    64 rows and up two groups with no drafter."""
+    hi, lo = 32, 8
+    both_hi = GROUPS_X_MTP_DECODE_TOKS[hi][3]
+    mtp_hi = GROUPS_X_MTP_DECODE_TOKS[hi][1]
+    both_lo = GROUPS_X_MTP_DECODE_TOKS[lo][3]
+    mtp_lo = GROUPS_X_MTP_DECODE_TOKS[lo][1]
+    return (
+        f"A layer split can run pipeline groups and speculative decoding together on a "
+        f"llama-server that gives each group its own speculative state (unslothai/llama.cpp "
+        f"PR #187): measured on the pair at {hi} concurrent rows {both_hi:.1f} tok/s against "
+        f"{mtp_hi:.1f} for one context with MTP and "
+        f"{GROUPS_X_MTP_DECODE_TOKS[hi][2]:.1f} for two groups alone "
+        f"({GROUPS_X_MTP_OVER_MTP_ONLY[hi]:.2f}x and "
+        f"{GROUPS_X_MTP_OVER_GROUPS_ONLY[hi]:.2f}x), but at {lo} rows {both_lo:.1f} against "
+        f"{mtp_lo:.1f} ({GROUPS_X_MTP_OVER_MTP_ONLY[lo]:.2f}x), because two groups halve the "
+        f"rows per group. So from {GROUPS_X_MTP_CROSSOVER_ROWS} rows up a split asks for the "
+        f"groups and below that for one context; the speculation in that sentence is the "
+        f"drafter it runs below {SPLIT_MTP_OFF_ROWS} rows, since from {SPLIT_MTP_OFF_ROWS} "
+        f"rows up the split keeps the groups and drops the drafter entirely "
+        f"(split_mtp_note). The combination is still refused "
+        f"with --mmproj, --control-vector and --sleep-idle-seconds, and --parallel stays a "
+        f"multiple of the group count."
+    )
 
 
 def recommend_topology(
@@ -3237,7 +3580,15 @@ def recommend_topology(
         "reason": "",
         "speedup": None,
         "prefill_speedup": None,
+        "pipeline_groups_speedup": None,
+        # The planner states the single-Spark measurement; the serving side checks the header.
+        "mtp_speedup": mtp_speedup(users),
+        "mtp_note": mtp_note(),
+        # Layer split only: the rows-against-drafter matrix was measured on the split alone.
+        "split_mtp": None,
+        "split_mtp_note": None,
         "fits_one_node": fits_model,
+        "fits_any_topology": True,
         "users": users,
         "prompt_tokens": prompt_tokens,
         "single_node_bytes": single_need,
@@ -3246,18 +3597,36 @@ def recommend_topology(
         "measured_on": TOPOLOGY_MEASUREMENT,
     }
     gib = 2**30
+    # A split halves the weights and the KV across the pair, so what it can hold is bounded by
+    # the two nodes together. Above that no topology fits, and recommending one anyway spends
+    # the whole load, which for a model this size is minutes of transfer over the rail, before
+    # llama-server runs out of memory. Saying so up front is the only useful answer.
+    pair_free = free * 2.0  # this planner answers for the pair; there is no third node
+    pair_need = model_bytes + kv_each * users
+    if pair_need > pair_free:
+        out.update(
+            topology = "single",
+            fits_any_topology = False,
+            reason = (
+                f"the model ({model_bytes / gib:.1f} GiB) with KV for {users} users needs "
+                f"{pair_need / gib:.1f} GiB, against {pair_free / gib:.1f} GiB across both "
+                f"Sparks: no two-node topology holds it. Use a smaller quant, fewer users "
+                f"or a shorter context."
+            ),
+        )
+        return out
     if not fits_model:
         out.update(
             topology = "layer_split",
             prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+            pipeline_groups_speedup = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE,
             reason = (
                 f"the model ({model_bytes / gib:.1f} GiB) does not fit in one node's "
                 f"{free / gib:.1f} GiB, so a layer split across both Sparks is the only way "
-                f"to run it. That is a capacity feature: expect decode about "
-                f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x of what one node would do if it "
-                f"could, and prefill {LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to "
-                f"{LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x."
+                f"to run it. " + pipeline_groups_note() + " " + split_mtp_note()
             ),
+            split_mtp = split_mtp_wins(users),
+            split_mtp_note = split_mtp_note(),
         )
         return out
     if single_need > free:
@@ -3268,14 +3637,16 @@ def recommend_topology(
         out.update(
             topology = "layer_split",
             prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+            pipeline_groups_speedup = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE,
             reason = (
                 f"the model fits, but model plus KV for {users} users "
                 f"({single_need / gib:.1f} GiB) exceeds one node's {free / gib:.1f} GiB, and a "
                 f"replica is no smaller because each one holds a full copy and KV for every "
                 f"user. Only a layer split, which spreads the KV with the layers, has the "
-                f"room. Capacity, not speed: decode about "
-                f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x."
+                f"room. Capacity, not speed: " + pipeline_groups_note() + " " + split_mtp_note()
             ),
+            split_mtp = split_mtp_wins(users),
+            split_mtp_note = split_mtp_note(),
         )
         return out
     if prefill_heavy and users < REPLICAS_MIN_USERS:
@@ -3290,8 +3661,11 @@ def recommend_topology(
                 f"reason to split a model that fits; its decode is "
                 f"{layer_split_decode_speedup(prompt_tokens, users):.2f}x, so time to first "
                 f"token improves and tokens per second do not. Chat-shaped traffic should "
-                f"stay on one node."
+                f"stay on one node. At {users} rows the split still speculates: the drafter "
+                f"only goes off from {SPLIT_MTP_OFF_ROWS} rows up."
             ),
+            split_mtp = split_mtp_wins(users),
+            split_mtp_note = split_mtp_note(),
         )
         return out
     fit_note = (
@@ -3349,6 +3723,247 @@ def recommend_topology(
 REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per request
 # GPipe pipeline parallel, M=4 microbatches, 2 nodes: 3024 vs 2032 tok/s single-node.
 TRAIN_PP_SPEEDUP_2 = 1.49
+
+# Data parallel against pipeline parallel on the same rows and loss, the control being the same
+# file at WORLD_SIZE=1. This inverts the old guidance: the number that made a split of a model
+# that FITS look like a throughput win came from a control on a node missing the
+# linear-attention fast path. The schedules did not change; the denominator did.
+TRAIN_MEASUREMENT = (
+    "2026-09-06, unsloth/Qwen3.5-2B and -9B, LoRA r=16, seq 512, global batch 64, M=32, "
+    "20 steps, seed 3407, both Sparks uncapped at ~2400 MHz"
+)
+# `one_spark` is None where no control ran in the SAME clock state: a control taken while the
+# thermal guard capped the node mid-cell is not a control.
+TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
+    "unsloth/Qwen3.5-2B": {
+        "one_spark": 2613,
+        "ddp": 5203,
+        "dualpipev": 4128,
+        "1f1b": 4106,
+        "fsdp": 3276,
+    },
+    "unsloth/Qwen3.5-9B": {
+        "one_spark": 850,
+        "ddp": 1741,
+        "dualpipev": 1525,
+        "1f1b": 1505,
+        "fsdp": 927,
+    },
+}
+TRAIN_DP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.99, "unsloth/Qwen3.5-9B": 2.05}
+TRAIN_PP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.58, "unsloth/Qwen3.5-9B": 1.79}
+TRAIN_DP_SPEEDUP_RANGE = (1.99, 2.05)
+TRAIN_PP_SPEEDUP_RANGE = (1.58, 1.79)
+# No single-Spark control needed, so this ratio survives when a control is thrown away.
+TRAIN_DP_OVER_PP = {"unsloth/Qwen3.5-2B": 1.26, "unsloth/Qwen3.5-9B": 1.14}
+# DDP holds the whole model per node against PP's half, which is why the rule is size-gated.
+TRAIN_PEAK_GIB = {"unsloth/Qwen3.5-2B": (10.16, 9.58), "unsloth/Qwen3.5-9B": (28.60, 24.13)}
+# FSDP cuts resident memory but gathers every layer on every microbatch, landing BELOW both
+# DDP and the pipeline schedules.
+TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25, "unsloth/Qwen3.5-9B": 1.09}
+# Which schedule when a split is forced. The two are a tie-break on models that FIT, but a
+# split is only RECOMMENDED for a model that does NOT, and there the tie breaks hard: at 70B
+# dualpipev never completed a step, out of memory on rank 0, while 1f1b did. Structural, not a
+# bug: the V layout co-locates the FIRST and LAST stages on one rank, which then carries the
+# embedding, the LM head, the loss and the deepest in-flight set at once. The co-located hop it
+# trades that for buys nothing either, the link being idle at seq 512 with grad checkpointing.
+TRAIN_PP_SCHEDULE = "1f1b"
+TRAIN_PP_SCHEDULE_MARGIN = 0.005  # dualpipev over 1f1b ON MODELS THAT FIT; below noise
+
+# M sets the fill/drain bubble, which shrinks as 2M/(M+1), and the microbatch size B/M. Swept
+# at a FIXED global batch it is MONOTONE with no interior knee on both models, right up to one
+# row per microbatch, where the axis ends because B rows cannot be cut into more than B pieces.
+# At 70B the best M is also the CHEAPEST in memory, and the harness default of 4 was the WORST
+# point on that curve.
+TRAIN_PP_MICROBATCHES_RULE = "one row per microbatch: --microbatches equal to the global batch"
+TRAIN_PP_MICROBATCHES_SWEPT = {
+    # model -> global batch -> {M: tok/s}, best-of/mean where a point was measured twice
+    "unsloth/Qwen3.5-9B": {64: {4: 1108, 8: 1239, 16: 1343, 32: 1436, 64: 1473}},
+    "unsloth/Llama-3.3-70B-Instruct": {16: {2: 111, 4: 133, 8: 142, 16: 161}},
+}
+# Raising the GLOBAL batch saturates almost at once and the control is FLAT: a single Spark
+# training the 9B is bandwidth-bound.
+TRAIN_PP_GLOBAL_BATCH_SWEPT = {64: (1481, 847), 128: (1502, 849), 256: (1508, 849)}
+# Against a control swept over the same axis, not pinned at somebody else's M.
+TRAIN_PP_BEST_SPEEDUP = 1.776
+
+# The earlier speedups divided by a control that was ITSELF splitting batch 64 into 32 pieces,
+# so the denominator was handicapped like the numerator; the ratio barely moves, so they are
+# inflated by a couple of percent and the ordering is untouched. NOT rewritten here: this block
+# did not re-measure DDP or FSDP, and a half-pinned table would be worse than a consistent one.
+TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL = 0.03
+# The recorded M=32 sat at the top of that curve by luck; moving off it either way costs.
+
+# `dualpipev_gib` is None because the arm never reached a step it could report a peak for, and
+# recording the number it died at would imply it ran.
+TRAIN_PP_70B = {
+    "model": "unsloth/Llama-3.3-70B-Instruct",
+    "settings": "seq 512, global batch 16, M=16 (one row per microbatch), LoRA r=16, 6 steps, "
+    "--shard-load --grad-checkpoint, both Sparks pinned at 1690 MHz",
+    "1f1b_toks": 161,
+    "1f1b_s_per_step": 50.94,
+    "1f1b_steps": 6,
+    "1f1b_microbatches": 16,
+    "1f1b_loss_at_last_step": 12.1359,
+    "1f1b_peak_gib": (68.45, 68.61),
+    "1f1b_toks_by_microbatches": {2: 111, 4: 133, 8: 142, 16: 161},
+    "1f1b_peak_gib_by_microbatches": {
+        2: (75.15, 76.88),
+        4: (71.49, 72.17),
+        8: (69.46, 69.80),
+        16: (68.45, 68.61),
+    },
+    "dualpipev_toks": None,
+    "dualpipev_peak_gib": None,
+    # Settled by exhaustion, not inferred from two failed cells: ScheduleDualPipeV at pp=2 has
+    # num_stages=4, so M>=4 is a hard refusal and raising M only puts more microbatches in
+    # flight, leaving batch 4 with M=4 the smallest configuration the V layout admits. It
+    # failed too.
+    "dualpipev_outcome": "out of memory on rank 0 at global batch 16, at batch 8, and at "
+    "batch 4 with M=4 -- the smallest configuration the V layout admits, so no microbatch "
+    "setting makes it viable at this size",
+    "dualpipev_rank0_weights_gib": 68.06,
+    "dualpipev_rank1_weights_gib": 64.14,
+    "link_mb_moved": 1386,
+    # Measured on the M=8 cell, and bytes per step do not depend on M, so it carries over.
+    "link_measured_over_steps": 10,
+    "link_measured_s_per_step": 55.96,
+    "link_busbw_gbs": 20.31,
+}
+
+
+def plan_training(
+    size_gib: Optional[float],
+    n_nodes: int = 2,
+    *,
+    model: str = "<model>",
+) -> Dict[str, Any]:
+    """Which axis to TRAIN on, from model size and node count. Pure, measured.
+
+    * A model that fits on one Spark trains data parallel: one whole model per node and
+      the LoRA gradients averaged (`unsloth spark train --data-parallel`). Measured
+      against a pipeline split of the same model on the same rows
+      (TRAIN_DP_VS_PP_TOKS): the split pays a fill/drain bubble and holds the two halves
+      in lockstep, the replicas do not. The price is memory: the whole model per node
+      instead of half.
+    * A model that does not fit trains layer split (`--layer-split --shard-load
+      --grad-checkpoint`), with TRAIN_PP_SCHEDULE. There is no other option; DP would
+      need the whole model on each node. No speedup is claimed for that case: it is a
+      capacity feature. The schedule is a near-tie on models that fit, but at the sizes
+      this branch actually fires for it is not a tie at all -- dualpipev could not train
+      a 70B on the pair at any batch tried, so TRAIN_PP_SCHEDULE is 1f1b (TRAIN_PP_70B).
+
+    ``fits`` uses the serving budget (SPARK_USABLE_GIB minus SERVE_OVERHEAD_GIB), which
+    is deliberately looser than `training_memory_estimate`; that function is the one to
+    run before a big job, this one only picks the axis.
+    """
+    budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
+    nodes = max(1, int(n_nodes or 1))
+    out: Dict[str, Any] = {
+        "size_gib": size_gib,
+        "budget_gib": budget,
+        "n_nodes": nodes,
+        "measurement": TRAIN_MEASUREMENT,
+    }
+    if size_gib is None:
+        out.update(
+            axis = None,
+            fits_one_node = None,
+            schedule = None,
+            speedup = None,
+            measured = False,
+            commands = [],
+            recommendation = "could not determine model size; not guessing",
+        )
+        return out
+    fits = size_gib <= budget
+    out["fits_one_node"] = fits
+    env = 'eval "$(unsloth spark env)"   # GB10 NCCL settings; NCCL_NET_GDR_LEVEL=0 is mandatory'
+    if nodes < 2:
+        out.update(
+            axis = "single" if fits else "none",
+            schedule = None,
+            speedup = 1.0 if fits else None,
+            measured = fits,
+            commands = [f"unsloth train --model {_q(model)}"] if fits else [],
+            recommendation = (
+                f"{size_gib:.1f} GiB fits on this Spark ({budget:.0f} GiB budget); train "
+                f"as usual. Pair a second Spark for {TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x to "
+                f"{TRAIN_DP_SPEEDUP_RANGE[1]:.2f}x."
+                if fits
+                else f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB "
+                f"budget). Pair a second Spark and layer-split it."
+            ),
+        )
+        return out
+    if fits:
+        lo, hi = TRAIN_DP_SPEEDUP_RANGE
+        plo, phi = TRAIN_PP_SPEEDUP_RANGE
+        over_pp = min(TRAIN_DP_OVER_PP.values())
+        out.update(
+            axis = "data-parallel",
+            schedule = None,
+            speedup = lo,
+            speedup_over_pipeline = over_pp,
+            measured = True,
+            commands = [env, f"unsloth spark train --data-parallel {_q(model)} --run"],
+            recommendation = (
+                f"{size_gib:.1f} GiB fits on one Spark ({budget:.0f} GiB budget): train it "
+                f"DATA PARALLEL, one whole model per Spark. Measured {lo:.2f}x to {hi:.2f}x "
+                f"over one Spark against {plo:.2f}x to {phi:.2f}x for a layer split of the "
+                f"same model on the same rows, and DDP beat the best schedule by "
+                f"{over_pp:.2f}x or more on every model tried. The split costs a fill/drain "
+                f"bubble and buys nothing here; it is for capacity. Budget the WHOLE model "
+                f"per node, not half."
+            ),
+        )
+        return out
+    out.update(
+        axis = "pipeline-parallel",
+        schedule = TRAIN_PP_SCHEDULE,
+        speedup = None,
+        # `measured` is about the SPEEDUP and stays False: there is no control to divide by.
+        measured = False,
+        schedule_measured = True,
+        schedule_evidence = TRAIN_PP_70B,
+        commands = [
+            env,
+            # NOT optional: the trainer default of 4 is the worst point on the M curve.
+            f"unsloth spark train --layer-split {_q(model)} --shard-load --grad-checkpoint "
+            f"--schedule {TRAIN_PP_SCHEDULE} --batch {TRAIN_PP_70B['1f1b_microbatches']} "
+            f"--microbatches {TRAIN_PP_70B['1f1b_microbatches']} --run",
+        ],
+        recommendation = (
+            f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB budget): "
+            f"layer-split it with --shard-load --grad-checkpoint, schedule "
+            f"{TRAIN_PP_SCHEDULE}. A whole-model replica per node is impossible at this "
+            f"size, so this is the only two-Spark axis -- it buys capacity, not speed. "
+            f"Use one row per microbatch: --microbatches equal to the global batch. That is "
+            f"measured, not a default -- at {TRAIN_PP_70B['model']} the M sweep at global "
+            f"batch 16 reads "
+            + ", ".join(
+                f"{t} tok/s at M={m}"
+                for m, t in sorted(TRAIN_PP_70B["1f1b_toks_by_microbatches"].items())
+            )
+            + f", so the trainer's default of 4 costs about 20 percent, and M=16 is also the "
+            f"smallest in memory. "
+            f"Do NOT substitute dualpipev here: at {TRAIN_PP_70B['model']} it ran out of "
+            f"memory on rank 0 at global batch 16, again at batch 8, and again at batch 4 "
+            f"with M=4 -- the smallest configuration a 4-stage V layout admits, so there is "
+            f"no microbatch setting that rescues it, while "
+            f"{TRAIN_PP_SCHEDULE} completed the same work at "
+            f"{TRAIN_PP_70B['1f1b_peak_gib'][0]:.1f}/{TRAIN_PP_70B['1f1b_peak_gib'][1]:.1f} "
+            f"GiB per rank and {TRAIN_PP_70B['1f1b_toks']} tok/s. The V layout co-locates the "
+            f"first and last stages on one rank, so that rank carries the embedding, the LM "
+            f"head, the loss and the deepest in-flight set together "
+            f"({TRAIN_PP_70B['dualpipev_rank0_weights_gib']:.2f} GiB of weights against rank "
+            f"1's {TRAIN_PP_70B['dualpipev_rank1_weights_gib']:.2f}, the difference being the "
+            f"LM head), which is affordable at 2B and 9B and is not at 70B. "
+            f"Run `unsloth spark estimate` first."
+        ),
+    )
+    return out
+
 
 INTENTS = ("latency", "throughput", "capacity")
 
@@ -3465,7 +4080,11 @@ def expected_gain(
             measured = n_nodes == 2,
             note = (
                 f"GPipe with M=4 microbatches measured {TRAIN_PP_SPEEDUP_2:.2f}x on 2 "
-                f"Sparks (3024 vs 2032 tok/s). Bubbles, not bandwidth, are the ceiling."
+                f"Sparks (3024 vs 2032 tok/s). Bubbles, not bandwidth, are the ceiling -- "
+                f"and for a model that FITS this axis is the wrong one entirely: see "
+                f"`plan_training`, where data parallel measured "
+                f"{TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x against the best schedule's "
+                f"{TRAIN_PP_SPEEDUP_RANGE[0]:.2f}x on the same rows."
             ),
         )
         return out
@@ -3480,6 +4099,17 @@ def _nodes_needed(size_gib: float, budget: float) -> int:
     if count * budget < size_gib - 1e-9:
         count += 1
     return max(1, count)
+
+
+def _q(model: str) -> str:
+    """A model path as one shell word, for a command line a human is meant to paste.
+
+    These strings are copied into a terminal, so a checkpoint path with a space in it was
+    splitting into two arguments and a path with a glob character was expanding against the
+    current directory. Display strings elsewhere in this module are deliberately left bare;
+    only the things that are meant to be RUN are quoted.
+    """
+    return shlex.quote(str(model))
 
 
 def _serve_commands(
@@ -3837,6 +4467,10 @@ def _cmd_plan(
         print(f"  llama.cpp : {serving['topology']}")
         print(f"              {serving['reason']}")
         print(f"              (measured on {serving['measured_on']})")
+        if serving.get("mtp_note"):
+            print(f"  MTP       : {serving['mtp_note']}")
+        if serving.get("split_mtp_note"):
+            print(f"  split MTP : {serving['split_mtp_note']}")
     exp = plan.get("expected") or {}
     if exp.get("note"):
         print("")
@@ -3907,6 +4541,13 @@ NVFP4_KERNELS = {
             "compute-bound, which is the one regime where FP4's 3.3x arithmetic advantage "
             "over BF16 is reachable."
         ),
+        # NVFP4_FINDINGS.md sections 12, 33 and 37. The earlier "b12x 1.6x at long prompts"
+        # claim was refuted by the 4096-token study, so b12x is not a serving recommendation.
+        "note": (
+            "validated on vLLM 0.28.0; on vLLM main the same override also selects the FP8 "
+            "ScaledMM kernel for the FP8 layers of Unsloth's mixed checkpoints and fails at "
+            "init; there, leave auto. flashinfer_b12x only for offline batch prefill, about 5%."
+        ),
     },
 }
 
@@ -3940,6 +4581,8 @@ def _cmd_kernels(workload: str = "mixed") -> int:
     print(f"  flag     : {rec['flag']}")
     print("")
     print(f"  {rec['why']}")
+    if rec.get("note"):
+        print(f"  Note: {rec['note']}")
     print("")
     print("  Measured on this hardware (same weights, same shape, kernel varied):")
     print("    kernel        acts   M=1        M=4096")
@@ -3950,6 +4593,8 @@ def _cmd_kernels(workload: str = "mixed") -> int:
     print("")
     print("  Also on GB10: pin `nvidia-cutlass-dsl==4.6.2` -- 4.7.0 fails b12x with an")
     print("  internal DSL compiler error, disabling the kernel family built for this GPU.")
+    print("  b12x itself is an offline batch-prefill kernel (about 5% there, nothing for")
+    print("  serving); the serving default is auto.")
     return 0
 
 
@@ -4788,6 +5433,11 @@ def collect_stage_outputs(
     return None if res.returncode == 0 else (res.stderr or "").strip()[:200]
 
 
+def _is_data_parallel(command: str) -> bool:
+    """Whether a launch command is a data-parallel run rather than a pipeline one."""
+    return "--data-parallel" in shlex.split(command)
+
+
 def _save_dir_of(command: str) -> str:
     tokens = shlex.split(command)
     for i, token in enumerate(tokens[:-1]):
@@ -4909,6 +5559,16 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # directory and says it needs no second Spark, so without this a run that trained
     # correctly still left no mergeable checkpoint on either machine.
     save_dir = _save_dir_of(plan["node0"])
+    if save_dir and _is_data_parallel(plan["node0"]):
+        # Data parallel has no stages. Every rank holds the whole model, rank 0 writes the
+        # complete checkpoint or adapter and rank 1 deliberately writes nothing, so there is no
+        # `DIR/stage1` on the peer and never will be. Collecting it anyway made every
+        # SUCCESSFUL data-parallel save end in an rsync failure and a nonzero exit, after the
+        # whole training run had already finished correctly -- the worst possible moment to
+        # report a failure that is not one. The rank 0 save is the final output.
+        print(f"  data parallel: rank 0 wrote the whole checkpoint to {save_dir}")
+        print("  nothing to collect from the peer; no merge step is needed")
+        return rc
     if save_dir:
         print("  waiting for the peer stage to finish writing ...")
         finished = wait_for_peer_stage(plan["peer_ip"], user, _PEER_STAGE_PID)
@@ -4943,23 +5603,46 @@ def _cmd_pipeline(
             print(f"  cannot launch: {problem}")
         return 1
 
+    data_parallel = "--data-parallel" in extra.split()
     # A model that fits on one Spark trains faster there than split across two.
     size = model_size_gib(model)
-    if size is not None:
+    if data_parallel and size is not None:
+        budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
+        if size > budget:
+            print(
+                f"  NOTE: {model} is {size:.1f} GiB and does NOT fit on one Spark "
+                f"({budget:.0f} GiB budget); a data-parallel replica holds the whole model."
+            )
+            print("        Use --layer-split with --shard-load for it instead.")
+            print("")
+            if run:
+                # A note is not enough once --run is on the command line. Every rank builds the
+                # COMPLETE model before DDP or FSDP wraps it, so this cannot satisfy the
+                # documented requirement that the model fit one Spark, and --fsdp does not
+                # rescue it: sharding happens after construction, not during. Continuing spends
+                # the whole load on both nodes to arrive at an out-of-memory that is already
+                # known here.
+                print("  Not launching: --data-parallel needs the model to fit one Spark.")
+                return 1
+    elif size is not None:
         budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
         if size <= budget:
             print(
                 f"  NOTE: {model} is {size:.1f} GiB and fits on ONE Spark "
                 f"({budget:.0f} GiB budget)."
             )
-            print("        A layer split buys capacity, not speed. Consider DDP")
-            print("        (`--script`) for throughput instead.")
+            print("        A layer split buys capacity, not speed. Consider")
+            print("        `--data-parallel` for throughput instead.")
             print("")
 
     if run:
         return run_pipeline(plan)
-    print("  Two-Spark layer-split training (capacity, not throughput -- this is how a")
-    print("  model too large for one Spark gets trained; add --shard-load for those).")
+    if data_parallel:
+        print("  Two-Spark data-parallel training (throughput, not capacity -- one whole")
+        print("  model per Spark; the LoRA gradients are averaged across the pair).")
+    else:
+        print("  Two-Spark layer-split training (capacity, not throughput -- this is how a")
+        print("  model too large for one Spark gets trained; add --shard-load for those).")
     print("")
     _print_launch(plan)
     return 0

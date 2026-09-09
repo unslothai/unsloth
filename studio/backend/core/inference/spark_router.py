@@ -1,0 +1,1047 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Asynchronous request router for llama-server replicas on a DGX Spark pair.
+
+One llama-server per node and a front door that spreads requests over both, inside the Studio
+backend's event loop and on loopback. ``LlamaCppBackend.base_url`` points at it while replicas
+are active, so every existing Studio code path goes through it without knowing it exists.
+
+Request handlers never block, the way vLLM's V1 ``AsyncLLM`` keeps HTTP handling off the engine
+step: every upstream exchange is an ``httpx`` async stream awaited chunk by chunk, health
+probing is a background task, admission is an ``asyncio.Condition`` per backend, and the
+listener is a plain ``asyncio.start_server``. What is NOT borrowed is the single engine core
+and its output queue: the engines here are separate processes with their own schedulers and KV
+caches, so a request is a connection rather than a queue entry.
+
+That is also why prefix caching needs care. llama-server keeps its caches per process, so a
+conversation alternating between replicas re-prefills its whole history every turn. Routing is
+therefore sticky, by consistent hashing over the healthy set, at the cost of a burst of turns
+in one conversation not spreading; keyless requests fall back to least-outstanding-requests,
+and a backend whose queue is full overflows rather than refusing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+# Popped before forwarding, so llama-server never sees a field it does not know.
+CONVERSATION_FIELD = "unsloth_conversation"
+CONVERSATION_HEADER = "x-unsloth-conversation"
+
+# The paths that generate, and so need KV locality and admission control; everything else goes
+# to the primary.
+GENERATION_PATHS = frozenset(
+    {
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/completion",
+        "/completions",
+        "/v1/completions",
+        "/infill",
+        "/v1/embeddings",
+        "/embeddings",
+        "/embedding",
+        "/rerank",
+        "/reranking",
+        "/v1/rerank",
+    }
+)
+
+_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+)
+
+# The prefix is what llama-server's prompt cache reuses. Characters, not tokens: the router
+# does not tokenize.
+PREFIX_KEY_CHARS = 1024
+
+_VIRTUAL_NODES = 64
+_HEAD_LIMIT = 64 * 1024
+_BODY_LIMIT = 256 * 1024 * 1024
+_READ_CHUNK = 64 * 1024
+
+
+def _is_event_stream(headers: Any) -> bool:
+    """Whether the upstream headers promised an SSE body.
+
+    Only a reader of ``text/event-stream`` can be told anything in-band once the headers are
+    out; everything else in the routed set is JSON, where an extra frame is corruption."""
+    for name, value in headers or ():
+        if str(name).lower() == "content-type":
+            return "text/event-stream" in str(value).lower()
+    return False
+
+
+_REASONS = {
+    200: "OK",
+    400: "Bad Request",
+    404: "Not Found",
+    413: "Payload Too Large",
+    500: "Internal Server Error",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout",
+}
+
+
+class RouterError(Exception):
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        retry_after: Optional[int] = None,
+    ):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.retry_after = retry_after
+
+
+class UpstreamUnreachable(RouterError):
+    """No backend accepted the connection. The listener answers by closing the client
+    connection without a response, so an ``httpx`` caller sees the same
+    ``RemoteProtocolError`` a dead llama-server produces and
+    ``LlamaCppBackend._respawn_if_dead`` keeps working unchanged."""
+
+    def __init__(self, message: str):
+        super().__init__(502, message)
+
+
+@dataclass
+class Backend:
+    name: str
+    host: str
+    port: int
+    slots: int
+    queue_limit: int
+    primary: bool = False
+    healthy: bool = False
+    in_flight: int = 0
+    queued: int = 0
+    served: int = 0
+    failures: int = 0
+    consecutive_failures: int = 0
+    last_error: str = ""
+    last_check: float = 0.0
+    slots_busy: Optional[int] = None
+    client: Optional[httpx.AsyncClient] = None
+    _cond: Optional[asyncio.Condition] = field(default = None, repr = False)
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    @property
+    def capacity(self) -> int:
+        return max(1, int(self.slots))
+
+    def cond(self) -> asyncio.Condition:
+        if self._cond is None:
+            self._cond = asyncio.Condition()
+        return self._cond
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "host": self.host,
+            "port": self.port,
+            "primary": self.primary,
+            "healthy": self.healthy,
+            "slots": self.slots,
+            "queue_limit": self.queue_limit,
+            "in_flight": self.in_flight,
+            "queued": self.queued,
+            "slots_busy": self.slots_busy,
+            "served": self.served,
+            "failures": self.failures,
+            "last_error": self.last_error,
+            "last_check": self.last_check,
+        }
+
+
+@dataclass
+class Routed:
+    status: int
+    headers: List[Tuple[str, str]]
+    body: AsyncIterator[bytes]
+    backend: Backend
+    close: Callable[[], Awaitable[None]]
+
+
+def _stable_hash(text: str) -> int:
+    return int.from_bytes(hashlib.blake2b(text.encode("utf-8"), digest_size = 8).digest(), "big")
+
+
+def _join_to_limit(parts: Any) -> str:
+    """``" ".join(parts)[:PREFIX_KEY_CHARS]`` without building the join first. An embeddings
+    request carries its whole batch in ``input``, so the eager form copies megabytes per request
+    to keep a kilobyte. Byte-identical output; it just stops once the limit is reached."""
+    out: List[str] = []
+    total = 0
+    for part in parts:
+        text = str(part)
+        out.append(text)
+        total += len(text) + (1 if len(out) > 1 else 0)
+        if total >= PREFIX_KEY_CHARS:
+            break
+    return " ".join(out)[:PREFIX_KEY_CHARS]
+
+
+def _prompt_prefix(body: Dict[str, Any]) -> str:
+    """System prompt plus the first user turn, truncated so a huge first message does not cost
+    a hash of megabytes."""
+    messages = body.get("messages")
+    if isinstance(messages, list) and messages:
+        parts: List[str] = []
+        first_user_seen = False
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", ""))
+            content = message.get("content")
+            if isinstance(content, list):
+                content = " ".join(
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, dict) and part.get("type", "text") == "text"
+                )
+            text = str(content or "")
+            if role == "system":
+                parts.append("system:" + text)
+                continue
+            if role == "user" and not first_user_seen:
+                parts.append("user:" + text)
+                first_user_seen = True
+                break
+        return "\n".join(parts)[:PREFIX_KEY_CHARS]
+    prompt = body.get("prompt")
+    if isinstance(prompt, list):
+        prompt = _join_to_limit(prompt)
+    if isinstance(prompt, str):
+        return prompt[:PREFIX_KEY_CHARS]
+    inp = body.get("input")
+    if isinstance(inp, str):
+        return inp[:PREFIX_KEY_CHARS]
+    if isinstance(inp, list):
+        return _join_to_limit(inp)
+    return ""
+
+
+def conversation_key(headers: Dict[str, str], body: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The stickiness key, or None when nothing identifies a conversation."""
+    header = (headers.get(CONVERSATION_HEADER) or "").strip()
+    if header:
+        return header
+    if not isinstance(body, dict):
+        return None
+    # NOT "user": that is OpenAI's stable per-END-USER abuse identifier (now safety_identifier),
+    # so keying on it collapses every conversation a person has onto one backend, which on a
+    # single-user Studio session pins all traffic to one node. Conversation continuity is
+    # previous_response_id / conversation in that API.
+    for name in (
+        CONVERSATION_FIELD,
+        "conversation_id",
+        "thread_id",
+        "session_id",
+        "previous_response_id",
+        "conversation",
+    ):
+        value = body.get(name)
+        if isinstance(value, (str, int)) and str(value).strip():
+            return f"{name}:{value}"
+    prefix = _prompt_prefix(body)
+    if prefix:
+        return "prefix:" + hashlib.sha1(prefix.encode("utf-8")).hexdigest()
+    return None
+
+
+class SparkRouter:
+    def __init__(
+        self,
+        *,
+        listen_host: str = "127.0.0.1",
+        listen_port: int = 0,
+        health_interval: float = 2.0,
+        health_timeout: float = 2.0,
+        unhealthy_after: int = 2,
+        queue_wait_s: float = 120.0,
+        connect_timeout: float = 5.0,
+        on_backend_down: Optional[Callable[[Backend], Awaitable[None]]] = None,
+        on_backend_up: Optional[Callable[[Backend], Awaitable[None]]] = None,
+    ):
+        self.listen_host = listen_host
+        self._requested_port = listen_port
+        self.listen_port: Optional[int] = None
+        self.health_interval = health_interval
+        self.health_timeout = health_timeout
+        self.unhealthy_after = max(1, unhealthy_after)
+        self.queue_wait_s = queue_wait_s
+        self.connect_timeout = connect_timeout
+        self.on_backend_down = on_backend_down
+        self.on_backend_up = on_backend_up
+        self.backends: List[Backend] = []
+        self._rings: Dict[Tuple[str, ...], List[Tuple[int, Backend]]] = {}
+        self._server: Optional[asyncio.AbstractServer] = None
+        self._health_task: Optional[asyncio.Task] = None
+        self._started = False
+        self.started_at: Optional[float] = None
+        self.routed_sticky = 0
+        self.routed_keyless = 0
+        # Requests placed on another backend after the first refused the connection.
+        self.retried_elsewhere = 0
+        self.rejected = 0
+
+    def add_backend(
+        self,
+        name: str,
+        host: str,
+        port: int,
+        slots: int,
+        *,
+        primary: bool = False,
+        queue_limit: Optional[int] = None,
+    ) -> Backend:
+        if queue_limit is None:
+            # Enough to absorb a burst between two slot releases, not to hide a saturated node.
+            queue_limit = max(2, min(8, int(slots) // 2))
+        backend = Backend(
+            name = name,
+            host = host,
+            port = port,
+            slots = max(1, int(slots)),
+            queue_limit = max(0, int(queue_limit)),
+            primary = primary,
+        )
+        self.backends.append(backend)
+        if self._started:
+            backend.client = self._new_client(backend)
+        return backend
+
+    async def remove_backend(self, name: str) -> None:
+        keep = []
+        for backend in self.backends:
+            if backend.name == name:
+                await self._close_client(backend)
+            else:
+                keep.append(backend)
+        self.backends = keep
+
+    def get_backend(self, name: str) -> Optional[Backend]:
+        for backend in self.backends:
+            if backend.name == name:
+                return backend
+        return None
+
+    async def set_backend_address(self, name: str, host: str, port: int) -> None:
+        """Re-point a backend after its process was respawned on a new port."""
+        backend = self.get_backend(name)
+        if backend is None or (backend.host == host and backend.port == port):
+            return
+        await self._close_client(backend)
+        backend.host, backend.port = host, port
+        backend.healthy = False
+        backend.consecutive_failures = 0
+        if self._started:
+            backend.client = self._new_client(backend)
+
+    def _new_client(self, backend: Backend) -> httpx.AsyncClient:
+        # Reads have no timeout: a slot can wait on other slots' prefill, and Studio enforces
+        # its own stall deadlines.
+        pool = backend.capacity + backend.queue_limit + 4
+        return httpx.AsyncClient(
+            base_url = backend.base_url,
+            limits = httpx.Limits(max_connections = pool, max_keepalive_connections = pool),
+            timeout = httpx.Timeout(connect = self.connect_timeout, read = None, write = 30.0, pool = None),
+            trust_env = False,
+        )
+
+    async def _close_client(self, backend: Backend) -> None:
+        client, backend.client = backend.client, None
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+    @property
+    def primary(self) -> Optional[Backend]:
+        for backend in self.backends:
+            if backend.primary:
+                return backend
+        return self.backends[0] if self.backends else None
+
+    def healthy_backends(self) -> List[Backend]:
+        return [b for b in self.backends if b.healthy]
+
+    async def start(self, *, listen: bool = True) -> None:
+        if self._started:
+            return
+        self._started = True
+        self.started_at = time.time()
+        for backend in self.backends:
+            if backend.client is None:
+                backend.client = self._new_client(backend)
+        await self.check_health()
+        self._health_task = asyncio.create_task(self._health_loop())
+        if listen:
+            self._server = await asyncio.start_server(
+                self._serve_connection, self.listen_host, self._requested_port
+            )
+            sockets = self._server.sockets or ()
+            if sockets:
+                self.listen_port = sockets[0].getsockname()[1]
+            logger.info(
+                "spark router listening on %s:%s for %s",
+                self.listen_host,
+                self.listen_port,
+                ", ".join(f"{b.name}={b.base_url}" for b in self.backends),
+            )
+
+    async def stop(self) -> None:
+        if not self._started:
+            return
+        self._started = False
+        task, self._health_task = self._health_task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout = 2.0)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        for backend in self.backends:
+            await self._close_client(backend)
+            async with backend.cond():
+                backend.cond().notify_all()
+        self.listen_port = None
+
+    @property
+    def running(self) -> bool:
+        return self._started
+
+    @property
+    def base_url(self) -> Optional[str]:
+        if self.listen_port is None:
+            return None
+        return f"http://{self.listen_host}:{self.listen_port}"
+
+    async def _health_loop(self) -> None:
+        while self._started:
+            try:
+                await asyncio.sleep(self.health_interval)
+                await self.check_health()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("spark router health loop error", exc_info = True)
+
+    async def check_health(self) -> None:
+        await asyncio.gather(*(self._check_one(b) for b in list(self.backends)))
+
+    async def _check_one(self, backend: Backend) -> None:
+        client = backend.client
+        if client is None:
+            return
+        ok, error = False, ""
+        try:
+            resp = await client.get("/health", timeout = self.health_timeout)
+            if resp.status_code == 200:
+                ok = True
+            else:
+                error = f"/health returned {resp.status_code}"
+        except httpx.HTTPError as exc:
+            error = f"{type(exc).__name__}: {exc}"[:200]
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:200]
+        if ok:
+            try:
+                resp = await client.get("/slots", timeout = self.health_timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list):
+                        backend.slots_busy = sum(
+                            1 for s in data if isinstance(s, dict) and s.get("is_processing")
+                        )
+                # A build with --no-slots answers 501: not a health signal.
+            except Exception:
+                backend.slots_busy = None
+        backend.last_check = time.time()
+        await self._record_probe(backend, ok, error)
+
+    async def _record_probe(self, backend: Backend, ok: bool, error: str) -> None:
+        if ok:
+            backend.consecutive_failures = 0
+            backend.last_error = ""
+            if not backend.healthy:
+                backend.healthy = True
+                logger.info(
+                    "spark router: backend %s is healthy (%s)", backend.name, backend.base_url
+                )
+                await self._notify(self.on_backend_up, backend)
+                async with backend.cond():
+                    backend.cond().notify_all()
+            return
+        backend.consecutive_failures += 1
+        backend.last_error = error
+        if backend.healthy and backend.consecutive_failures >= self.unhealthy_after:
+            await self.mark_down(backend, error)
+
+    async def mark_down(self, backend: Backend, error: str) -> None:
+        """Take a backend out of rotation now; the health loop puts it back."""
+        backend.last_error = error
+        backend.failures += 1
+        was_healthy = backend.healthy
+        backend.healthy = False
+        backend.consecutive_failures = max(backend.consecutive_failures, self.unhealthy_after)
+        async with backend.cond():
+            backend.cond().notify_all()
+        if was_healthy:
+            logger.warning("spark router: backend %s out of rotation: %s", backend.name, error)
+            await self._notify(self.on_backend_down, backend)
+
+    async def _notify(self, callback, backend: Backend) -> None:
+        if callback is None:
+            return
+        try:
+            await callback(backend)
+        except Exception:
+            logger.warning("spark router: backend callback failed", exc_info = True)
+
+    def _ring(self, candidates: List[Backend]) -> List[Tuple[int, Backend]]:
+        names = tuple(b.name for b in candidates)
+        cached = self._rings.get(names)
+        if cached is not None:
+            return cached
+        points = []
+        for backend in candidates:
+            for i in range(_VIRTUAL_NODES):
+                points.append((_stable_hash(f"{backend.name}#{i}"), backend))
+        points.sort(key = lambda p: p[0])
+        self._rings[names] = points
+        return points
+
+    def pick(
+        self,
+        key: Optional[str],
+        candidates: Optional[List[Backend]] = None,
+    ) -> Optional[Backend]:
+        """Consistent hashing when there is a key, least outstanding otherwise."""
+        candidates = self.healthy_backends() if candidates is None else candidates
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        if key:
+            point = _stable_hash(key)
+            ring = self._ring(candidates)
+            for h, backend in ring:
+                if h >= point:
+                    return backend
+            return ring[0][1]
+        return min(candidates, key = lambda b: (b.in_flight + b.queued, b.name))
+
+    def _has_room(self, backend: Backend) -> bool:
+        return backend.in_flight < backend.capacity
+
+    async def _acquire(self, backend: Backend) -> None:
+        """Take a slot on ``backend``, waiting in its bounded queue when full."""
+        cond = backend.cond()
+        async with cond:
+            # A slot freed by _release belongs to the first waiter, or a burst starves the queue.
+            if self._has_room(backend) and backend.queued == 0:
+                backend.in_flight += 1
+                return
+            if backend.queued >= backend.queue_limit:
+                raise RouterError(503, f"backend {backend.name} is at capacity", retry_after = 1)
+            backend.queued += 1
+            try:
+                deadline = time.monotonic() + self.queue_wait_s
+                while not self._has_room(backend):
+                    if not backend.healthy or not self._started:
+                        raise UpstreamUnreachable(f"backend {backend.name} went away while queued")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RouterError(
+                            503, f"backend {backend.name} queue wait timed out", retry_after = 2
+                        )
+                    try:
+                        await asyncio.wait_for(cond.wait(), timeout = remaining)
+                    except asyncio.TimeoutError:
+                        pass
+                backend.in_flight += 1
+            finally:
+                backend.queued -= 1
+
+    async def _release(self, backend: Backend) -> None:
+        cond = backend.cond()
+        async with cond:
+            backend.in_flight = max(0, backend.in_flight - 1)
+            cond.notify()
+
+    def _choose(self, key: Optional[str]) -> Backend:
+        healthy = self.healthy_backends()
+        if not healthy:
+            raise UpstreamUnreachable("no healthy llama-server backend")
+        target = self.pick(key, healthy)
+        assert target is not None
+        if key and not self._has_room(target) and target.queued >= target.queue_limit:
+            # Overflow costs one re-prefill on the other node; refusing costs the request.
+            others = [
+                b
+                for b in healthy
+                if b is not target and (self._has_room(b) or b.queued < b.queue_limit)
+            ]
+            if others:
+                target = min(others, key = lambda b: (b.in_flight + b.queued, b.name))
+        return target
+
+    async def dispatch(
+        self, method: str, path: str, headers: Dict[str, str], body: bytes
+    ) -> Routed:
+        """Raises ``RouterError`` when the request cannot be placed and ``UpstreamUnreachable``
+        when the chosen backend refuses the connection."""
+        if not self._started:
+            raise UpstreamUnreachable("router stopped")
+        route_path = path.split("?", 1)[0]
+        is_generation = route_path in GENERATION_PATHS
+        parsed: Optional[Dict[str, Any]] = None
+        if is_generation and body:
+            try:
+                candidate = json.loads(body)
+                if isinstance(candidate, dict):
+                    parsed = candidate
+            except (ValueError, UnicodeDecodeError):
+                parsed = None
+        key = conversation_key(headers, parsed) if is_generation else None
+        if parsed is not None and CONVERSATION_FIELD in parsed:
+            parsed.pop(CONVERSATION_FIELD, None)
+            body = json.dumps(parsed, ensure_ascii = False).encode("utf-8")
+
+        # A peer that exits after its last health probe is not discovered until a request
+        # tries to connect to it, and that connect failure happens before any response header
+        # has been written, so the request can still be placed elsewhere. Marking the peer
+        # down and failing the caller cost one request per outage even with the primary
+        # healthy. Bounded by the backend count: mark_down takes the dead one out of
+        # healthy_backends, so each pass has one fewer to try and the loop cannot spin.
+        attempts = len(self.backends) if is_generation else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._dispatch_once(method, path, headers, body, key, is_generation)
+            except UpstreamUnreachable:
+                if attempt >= attempts or not self.healthy_backends():
+                    raise
+                self.retried_elsewhere += 1
+
+    async def _dispatch_once(
+        self,
+        method: str,
+        path: str,
+        headers: Dict[str, str],
+        body: bytes,
+        key: Optional[str],
+        is_generation: bool,
+    ) -> Routed:
+        if is_generation:
+            backend = self._choose(key)
+            if key:
+                self.routed_sticky += 1
+            else:
+                self.routed_keyless += 1
+            try:
+                await self._acquire(backend)
+            except RouterError:
+                self.rejected += 1
+                raise
+            admitted = True
+        else:
+            backend = self.primary
+            if backend is None:
+                raise UpstreamUnreachable("no backend configured")
+            admitted = False
+
+        client = backend.client
+        if client is None:
+            if admitted:
+                await self._release(backend)
+            raise UpstreamUnreachable(f"backend {backend.name} has no client")
+
+        upstream_headers = [(k, v) for k, v in headers.items() if k.lower() not in _HOP_BY_HOP]
+        request = client.build_request(method, path, headers = upstream_headers, content = body)
+        try:
+            response = await client.send(request, stream = True)
+        except asyncio.CancelledError:
+            # The caller gave up while this was pending, which for a non-streaming call can be
+            # the whole generation. The slot is already taken and nothing downstream will
+            # return it, so give it back here.
+            if admitted:
+                await self._release(backend)
+            raise
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+            # Pre-header disconnects belong here, not in the generic HTTPError branch below.
+            # This except covers the SEND only -- `response` is not bound until after it -- so
+            # no client bytes have been written and nothing has been streamed back. A replica
+            # that closes a pooled connection after accepting the request and before returning
+            # headers is the ordinary shutdown and crash race on this pair, which the relaunch
+            # supervisor exists because of. Landing in HTTPError marked the backend neither
+            # down nor unreachable, so `dispatch` could not fail over to the healthy primary and
+            # sticky routing kept picking the same dead peer until the health loop caught up.
+            # Failures AFTER headers are returned are handled by the body iterator and keep
+            # their existing no-retry behaviour: bytes are already at the client by then.
+            httpx.RemoteProtocolError,
+            httpx.ReadError,
+            httpx.WriteError,
+        ) as exc:
+            if admitted:
+                await self._release(backend)
+            await self.mark_down(backend, f"{type(exc).__name__}: {exc}"[:200])
+            raise UpstreamUnreachable(f"backend {backend.name} unreachable: {exc}") from exc
+        except httpx.HTTPError as exc:
+            if admitted:
+                await self._release(backend)
+            backend.failures += 1
+            backend.last_error = f"{type(exc).__name__}: {exc}"[:200]
+            raise RouterError(502, f"backend {backend.name} failed: {exc}") from exc
+
+        released = False
+
+        async def _close() -> None:
+            nonlocal released
+            try:
+                await response.aclose()
+            except Exception:
+                pass
+            if admitted and not released:
+                released = True
+                await self._release(backend)
+
+        async def _body() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in response.aiter_raw():
+                    if chunk:
+                        yield chunk
+                backend.served += 1
+            except httpx.HTTPError as exc:
+                backend.failures += 1
+                backend.last_error = f"{type(exc).__name__}: {exc}"[:200]
+                # A transport failure mid-body means the process is gone: out of rotation now.
+                await self.mark_down(backend, backend.last_error)
+                raise
+
+        out_headers = [
+            (k, v) for k, v in response.headers.multi_items() if k.lower() not in _HOP_BY_HOP
+        ]
+        return Routed(
+            status = response.status_code,
+            headers = out_headers,
+            body = _body(),
+            backend = backend,
+            close = _close,
+        )
+
+    def status(self) -> Dict[str, Any]:
+        backends = [b.snapshot() for b in self.backends]
+        return {
+            "running": self._started,
+            "listen": self.base_url,
+            "started_at": self.started_at,
+            "queue_depth": sum(b.queued for b in self.backends),
+            "in_flight": sum(b.in_flight for b in self.backends),
+            "healthy_backends": sum(1 for b in self.backends if b.healthy),
+            "routed_sticky": self.routed_sticky,
+            "routed_keyless": self.routed_keyless,
+            "retried_elsewhere": self.retried_elsewhere,
+            "rejected": self.rejected,
+            "backends": backends,
+        }
+
+    # Hand-rolled HTTP/1.1 on purpose: a second uvicorn.Server in the same loop wants the
+    # signal handlers, while a raw asyncio server needs nothing.
+
+    async def _serve_connection(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            while True:
+                keep_alive = await self._serve_one(reader, writer)
+                if not keep_alive:
+                    break
+        except (asyncio.IncompleteReadError, ConnectionError, asyncio.LimitOverrunError):
+            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("spark router connection error", exc_info = True)
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    async def _serve_one(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+        except asyncio.IncompleteReadError:
+            return False
+        except asyncio.LimitOverrunError:
+            await self._write_error(writer, 413, "request head too large")
+            return False
+        if len(head) > _HEAD_LIMIT:
+            await self._write_error(writer, 413, "request head too large")
+            return False
+        lines = head.decode("latin-1").split("\r\n")
+        request_line = lines[0].split(" ")
+        if len(request_line) < 3:
+            await self._write_error(writer, 400, "malformed request line")
+            return False
+        method, path, version = request_line[0], request_line[1], request_line[2]
+        headers: Dict[str, str] = {}
+        for line in lines[1:]:
+            if not line:
+                continue
+            name, sep, value = line.partition(":")
+            if sep:
+                headers[name.strip().lower()] = value.strip()
+        client_wants_close = (
+            headers.get("connection", "").lower() == "close" or version == "HTTP/1.0"
+        )
+
+        if headers.get("expect", "").lower() == "100-continue":
+            writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+            await writer.drain()
+        body = b""
+        if "content-length" in headers:
+            try:
+                length = int(headers["content-length"])
+            except ValueError:
+                await self._write_error(writer, 400, "bad content-length")
+                return False
+            if length > _BODY_LIMIT:
+                await self._write_error(writer, 413, "request body too large")
+                return False
+            body = await reader.readexactly(length) if length else b""
+        elif "chunked" in headers.get("transfer-encoding", "").lower():
+            try:
+                body = await self._read_chunked(reader)
+            except asyncio.LimitOverrunError:
+                # The same body over the limit, said the other way. Uncaught, this reached
+                # _serve_connection's connection-level handler and the socket closed with no
+                # response at all, while the Content-Length form got a 413.
+                await self._write_error(writer, 413, "request body too large")
+                return False
+
+        # A disconnect has to tear the upstream stream down, or llama-server keeps decoding
+        # for a request nobody is reading. The watcher starts BEFORE dispatch, not after it:
+        # dispatch can sit in the admission queue for the whole queue wait, and for a
+        # non-streaming call llama-server may send no headers at all until the generation is
+        # finished, so a caller can give up inside either wait. Watching only afterwards left
+        # the request queued, forwarded and prefilled for a client that was already gone.
+        disconnected = asyncio.Event()
+        pipelined = asyncio.Event()
+
+        async def _watch() -> None:
+            try:
+                data = await reader.read(1)
+            except Exception:
+                data = b""
+            if not data:
+                disconnected.set()
+            else:
+                pipelined.set()
+
+        watcher = asyncio.create_task(_watch())
+        try:
+            dispatching = asyncio.ensure_future(self.dispatch(method, path, headers, body))
+            gone = asyncio.ensure_future(disconnected.wait())
+            try:
+                await asyncio.wait({dispatching, gone}, return_when = asyncio.FIRST_COMPLETED)
+            finally:
+                gone.cancel()
+                try:
+                    await gone
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if not dispatching.done():
+                dispatching.cancel()
+                try:
+                    abandoned = await dispatching
+                except (asyncio.CancelledError, Exception):
+                    abandoned = None
+                if abandoned is not None:
+                    # It got as far as upstream headers before the cancellation landed.
+                    await abandoned.close()
+                return False
+            try:
+                routed = dispatching.result()
+            except UpstreamUnreachable as exc:
+                logger.warning("spark router: %s", exc.message)
+                return False
+            except RouterError as exc:
+                await self._write_error(
+                    writer, exc.status, exc.message, retry_after = exc.retry_after
+                )
+                return not client_wants_close
+            try:
+                await self._relay(routed, writer, method, disconnected)
+            finally:
+                await routed.close()
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except (asyncio.CancelledError, Exception):
+                pass
+        if disconnected.is_set() or pipelined.is_set():
+            # A byte mid-response belongs to a pipelined request whose first byte the watcher
+            # consumed; close so the client resends it.
+            return False
+        return not client_wants_close
+
+    async def _relay(
+        self, routed: Routed, writer: asyncio.StreamWriter, method: str, disconnected: asyncio.Event
+    ) -> None:
+        reason = _REASONS.get(routed.status, "OK")
+        no_body = method == "HEAD" or routed.status in (204, 304) or 100 <= routed.status < 200
+        head = [f"HTTP/1.1 {routed.status} {reason}"]
+        for name, value in routed.headers:
+            head.append(f"{name}: {value}")
+        if not no_body:
+            head.append("Transfer-Encoding: chunked")
+        head.append("Connection: keep-alive")
+        writer.write(("\r\n".join(head) + "\r\n\r\n").encode("latin-1"))
+        await writer.drain()
+        if no_body:
+            return
+        disconnect_wait = asyncio.create_task(disconnected.wait())
+        try:
+            body_iter = routed.body
+            while True:
+                next_chunk = asyncio.ensure_future(body_iter.__anext__())
+                done, _ = await asyncio.wait(
+                    {next_chunk, disconnect_wait}, return_when = asyncio.FIRST_COMPLETED
+                )
+                if disconnect_wait in done and next_chunk not in done:
+                    next_chunk.cancel()
+                    try:
+                        await next_chunk
+                    except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                        pass
+                    return
+                try:
+                    chunk = next_chunk.result()
+                except StopAsyncIteration:
+                    break
+                except httpx.HTTPError as exc:
+                    # Upstream died after the headers went out, so the status is already sent
+                    # and cannot be taken back.
+                    message = (
+                        f"Lost connection to llama-server on {routed.backend.name} mid-response "
+                        f"({type(exc).__name__}); the request cannot be resumed."
+                    )
+                    if not _is_event_stream(routed.headers):
+                        # The headers promised JSON, and the routed set includes non-streaming
+                        # chat and completions, embeddings and reranking. An SSE frame in that
+                        # body is not a message the client can read, and ending the chunked
+                        # body cleanly afterwards would present truncated JSON as a complete
+                        # 200. Leaving the terminating chunk off is the only in-protocol way to
+                        # say the response is incomplete: the client sees the transfer fail.
+                        logger.warning("spark router: %s", message)
+                        raise
+                    # SSE: llama-server reports its own mid-stream errors as an error frame,
+                    # so a reader that already parses the stream reads this one too.
+                    frame = (
+                        "data: "
+                        + json.dumps(
+                            {"error": {"code": 502, "message": message, "type": "server_error"}}
+                        )
+                        + "\n\n"
+                    )
+                    await self._write_chunk(writer, frame.encode("utf-8"))
+                    break
+                await self._write_chunk(writer, chunk)
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+        finally:
+            disconnect_wait.cancel()
+            try:
+                await disconnect_wait
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    @staticmethod
+    async def _write_chunk(writer: asyncio.StreamWriter, chunk: bytes) -> None:
+        writer.write(f"{len(chunk):x}\r\n".encode("ascii") + chunk + b"\r\n")
+        await writer.drain()
+
+    @staticmethod
+    async def _write_error(
+        writer: asyncio.StreamWriter,
+        status: int,
+        message: str,
+        retry_after: Optional[int] = None,
+    ) -> None:
+        payload = json.dumps(
+            {"error": {"code": status, "message": message, "type": "spark_router"}}
+        ).encode("utf-8")
+        head = [
+            f"HTTP/1.1 {status} {_REASONS.get(status, 'Error')}",
+            "Content-Type: application/json",
+            f"Content-Length: {len(payload)}",
+            "Connection: keep-alive",
+        ]
+        if retry_after is not None:
+            head.append(f"Retry-After: {retry_after}")
+        try:
+            writer.write(("\r\n".join(head) + "\r\n\r\n").encode("latin-1") + payload)
+            await writer.drain()
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _read_chunked(reader: asyncio.StreamReader) -> bytes:
+        parts: List[bytes] = []
+        total = 0
+        while True:
+            size_line = await reader.readuntil(b"\r\n")
+            size = int(size_line.split(b";", 1)[0].strip() or b"0", 16)
+            if size == 0:
+                while True:
+                    line = await reader.readuntil(b"\r\n")
+                    if line == b"\r\n":
+                        break
+                return b"".join(parts)
+            total += size
+            if total > _BODY_LIMIT:
+                raise asyncio.LimitOverrunError("request body too large", total)
+            parts.append(await reader.readexactly(size))
+            await reader.readexactly(2)
