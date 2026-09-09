@@ -2712,7 +2712,22 @@ class TestTheLaunchProbesVulkanWhenDioDependsOnIt:
         arm = src[src.index("_mem_host_resident = self._weights_in_host_memory(") :]
         arm = arm[: arm.index("fit_active =")]
         compact = "".join(arm.split())
-        assert "probe_vulkan=should_mlock()or(_mem_dio_possibleandget_no_ram_reserve())" in compact
+        assert "probe_vulkan=_mem_should_mlockor(_mem_dio_possibleand_mem_no_reserve)" in compact
+
+    def test_the_probe_gate_and_the_flags_read_one_snapshot(self):
+        """Gating the probe on its own read of the toggles lets a save landing in
+        between decide the probe on one value and the flags on another, which is
+        exactly the split get_model_memory_settings exists to close."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("_mem_settings = get_model_memory_settings()") :]
+        arm = arm[: arm.index("self._memory_dio_flags = (")]
+        compact = "".join(arm.split())
+        assert "get_no_ram_reserve()" not in arm
+        assert compact.count("get_model_memory_settings()") == 1
+        assert "settings=_mem_settings" in compact
 
     def test_the_confirmation_requires_a_gpu_backend_and_a_device(self):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -2737,3 +2752,102 @@ class TestTheLaunchProbesVulkanWhenDioDependsOnIt:
             staticmethod(lambda binary = None: frozenset({"base", "cpu", "vulkan"})),
         )
         assert LlamaCppBackend._build_offers_gpu_backend("llama-server")
+
+
+class TestAnExplicitLoaderChoiceIsNotAStandingReload:
+    """The managed DirectIO is emitted before everything the rest of the chain
+    adds, so a per-model mmap, an extra argument or an inherited choice wins by
+    last-arg. Asking the placement alone whether dio is owed then demands a
+    reload the relaunch reproduces exactly, so the route shows a notice that
+    never clears and the duplicate-load fast path restarts a healthy server."""
+
+    @staticmethod
+    def _no_reserve(monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+
+    def test_a_per_model_mmap_leaves_the_launch_satisfied(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        assert _lsa.managed_dio_applies(
+            supports_load_mode = True, gpu_offload_confirmed = True, env = {}
+        )
+        chain = [*_lsa.MANAGED_DIO_FLAGS, "--load-mode", "mmap"]
+        applicable = _lsa.resolve_effective_direct_io(chain, {})
+        assert applicable is False
+        assert memory_state_satisfies_settings(
+            (False, False), True, False, _lsa.resolve_effective_direct_io(chain, {}), applicable
+        )
+
+    def test_an_inherited_mmap_leaves_the_launch_satisfied(self, monkeypatch):
+        """The env route: the pair is never emitted, so applicability has to fall
+        with it. argv beats the environment, so asking the resolved chain alone
+        would answer dio for a launch that runs mmap."""
+        self._no_reserve(monkeypatch)
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        env = {"LLAMA_ARG_MMAP": "1"}
+        assert not _lsa.managed_dio_applies(
+            supports_load_mode = True, gpu_offload_confirmed = True, env = env
+        )
+        assert memory_state_satisfies_settings((False, False), False, False, False, False)
+
+    def test_an_unopposed_managed_pair_still_owes_dio(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        applicable = _lsa.resolve_effective_direct_io(list(_lsa.MANAGED_DIO_FLAGS), {})
+        assert applicable is True
+        # The launch that has not got it yet is the one a reload has to fix.
+        assert not memory_state_satisfies_settings((False, False), False, False, False, applicable)
+
+    def test_the_launch_reads_it_off_the_resolved_chain(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("self._memory_dio_applicable = managed_dio_applies(") :]
+        arm = arm[: arm.index("self._fit_load_mode_flags = (")]
+        compact = "".join(arm.split())
+        assert "managed_dio_applies(" in compact
+        assert "resolve_effective_direct_io(" in compact
+        assert "[*MANAGED_DIO_FLAGS,*_load_mode_managed,*_mem_extras]" in compact
+
+
+class TestTheDioRecordSurvivesACopyStrip:
+    """`cmd` is what the arch-crash and CPU rungs respawn from, and the retries
+    above strip a COPY of it. Forgetting the tokens there leaves those rungs
+    unable to name the pair `cmd` still carries, which is the trap the fit's own
+    load mode already documents."""
+
+    def test_only_the_rung_that_strips_cmd_clears_the_record(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        fit_on = src[src.find('_run[_run.index("--fit") + 1] = "on"') :]
+        fit_on = fit_on[: fit_on.index('run_cmd = [*run_cmd, "--fit", "off"]')]
+        assert "clear_record = False" in fit_on
+        arch = src[src.find("_fit_mode_left_cmd = bool(self._fit_load_mode_flags)") :][:3000]
+        assert "cmd = self._drop_managed_dio(" in arch
+        assert "clear_record = False" not in arch
+
+    def test_the_cpu_replay_builder_keeps_it_too(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch)
+        assert "clear_record = False" in src
+
+    def test_a_copy_strip_leaves_the_tokens_nameable(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._memory_dio_flags = list(_lsa.MANAGED_DIO_FLAGS)
+        backend._memory_dio_applicable = True
+        cmd = ["--model", "m.gguf", *_lsa.MANAGED_DIO_FLAGS]
+        run = backend._drop_managed_dio(list(cmd), "copy", clear_record = False)
+        assert run == ["--model", "m.gguf"]
+        assert backend._memory_dio_flags == list(_lsa.MANAGED_DIO_FLAGS)
+        # ...so the rung that really respawns cmd can still take them out.
+        assert backend._drop_managed_dio(cmd, "cmd") == ["--model", "m.gguf"]
+        assert backend._memory_dio_flags == []

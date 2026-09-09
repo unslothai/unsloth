@@ -625,6 +625,9 @@ class TestArchRetryRestoresTheMemoryPolicy:
             # and a stale DirectIO bit beside a restored pair is the same drift the
             # snapshot exists to prevent.
             "self._memory_direct_io",
+            # Same reason: a rung that strips a COPY clears it while `cmd` still owes
+            # DirectIO, so the respawn has to get `cmd`'s answer back with the pair.
+            "self._memory_dio_applicable",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]
@@ -649,6 +652,9 @@ class TestArchRetryRestoresTheMemoryPolicy:
             # and a stale DirectIO bit beside a restored pair is the same drift the
             # snapshot exists to prevent.
             "self._memory_direct_io",
+            # Same reason: a rung that strips a COPY clears it while `cmd` still owes
+            # DirectIO, so the respawn has to get `cmd`'s answer back with the pair.
+            "self._memory_dio_applicable",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]

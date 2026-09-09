@@ -1219,6 +1219,31 @@ def no_reserve_requires_dio(
     return sys.platform == "win32" and supports_load_mode and gpu_offload_confirmed
 
 
+def managed_dio_applies(
+    *,
+    supports_load_mode: bool,
+    gpu_offload_confirmed: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether "Don't reserve system RAM" would emit the managed DirectIO here.
+
+    Deliberately does NOT consult the toggle. The policy asks it once no-reserve
+    is on; the launch records the same answer so that a LATER save is compared
+    against the placement that is running instead of reading as already
+    satisfied. Two copies of this rule would let the flags and the reload
+    comparator disagree about the same launch.
+
+    ``env`` is the child's environment after ``scrub_memory_env``. A loader
+    choice that survives the scrub is a non-reserving one the settings disclaim,
+    and argv beats the environment in llama.cpp, so the managed pair stands
+    aside for it the way the fit's own mode does.
+    """
+    return no_reserve_requires_dio(
+        supports_load_mode = supports_load_mode,
+        gpu_offload_confirmed = gpu_offload_confirmed,
+    ) and not memory_env_selects_load_mode(env)
+
+
 def apply_model_memory_policy(
     extra_args: Optional[Iterable[str]],
     *,
@@ -1226,6 +1251,7 @@ def apply_model_memory_policy(
     weights_in_host_memory: bool = True,
     gpu_offload_confirmed: bool = False,
     env: Optional[Mapping[str, str]] = None,
+    settings: Optional[tuple[bool, bool]] = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags.
 
@@ -1257,18 +1283,26 @@ def apply_model_memory_policy(
     disclaim, and argv beats the environment in llama.cpp, so the managed
     DirectIO stands aside for it the way the fit's own mode does.
 
+    ``settings`` is a ``(keep_resident, no_ram_reserve)`` the caller already read
+    as one coherent snapshot. A launch that has to consult the toggles itself,
+    to decide whether a placement answer is worth probing for, must hand that
+    same pair down: re-reading here would let a save landing in between gate the
+    probe on one value and the flags on another.
+
     The per-model Mmap/Mlock control is resolved separately, by
     ``apply_load_mode_policy``, which runs after this and defers to it.
     """
-    try:
-        from utils.model_memory_settings import get_model_memory_settings
-    except Exception:
-        # Settings unavailable (bare unit-test import): behave as before.
-        return [], list(extra_args or [])
+    if settings is None:
+        try:
+            from utils.model_memory_settings import get_model_memory_settings
+        except Exception:
+            # Settings unavailable (bare unit-test import): behave as before.
+            return [], list(extra_args or [])
 
-    # One snapshot for both decisions: read separately, a save landing between them strips for one setting and locks for
-    # the other, so a saved --mlock could survive a committed no-reserve.
-    keep_resident, no_ram_reserve = get_model_memory_settings()
+        # One snapshot for both decisions: read separately, a save landing between them strips for one setting and
+        # locks for the other, so a saved --mlock could survive a committed no-reserve.
+        settings = get_model_memory_settings()
+    keep_resident, no_ram_reserve = settings
     tokens = list(extra_args or [])
     if no_ram_reserve:
         tokens = strip_shadowing_flags(
@@ -1284,20 +1318,15 @@ def apply_model_memory_policy(
         tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
-    if no_ram_reserve and no_reserve_requires_dio(
+    if no_ram_reserve and managed_dio_applies(
         supports_load_mode = supports_load_mode,
         gpu_offload_confirmed = gpu_offload_confirmed,
+        env = env,
     ):
         # Windows cannot partially unmap the GGUF after offload: unmap_fragment
         # is a no-op in llama.cpp. Stream instead for this confirmed placement.
         # Explicit per-model mmap/dio and surviving extras still resolve afterward.
-        if memory_env_selects_load_mode(env):
-            logger.info(
-                "Model Memory: the environment already selects a loader mode; "
-                "leaving the managed --load-mode dio off this launch."
-            )
-        else:
-            managed.extend(MANAGED_DIO_FLAGS)
+        managed.extend(MANAGED_DIO_FLAGS)
     if keep_resident and not no_ram_reserve and weights_in_host_memory:
         # Before the extras, like the rest of the managed block. mmap+mlock, not bare mlock: it matches what --mlock
         # meant alongside the default mmap.
@@ -1322,6 +1351,7 @@ def apply_load_mode_policy(
     supports_load_mode: bool = False,
     weights_in_host_memory: bool = True,
     requested_load_mode: Optional[str] = None,
+    settings: Optional[tuple[bool, bool]] = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve the per-model Mmap/Mlock control into llama-server flags.
 
@@ -1342,12 +1372,14 @@ def apply_load_mode_policy(
     mode = _normalize_load_mode_value(requested_load_mode)
     if not mode:
         return [], tokens
-    try:
-        from utils.model_memory_settings import get_model_memory_settings
-        keep_resident, no_ram_reserve = get_model_memory_settings()
-    except Exception:
-        # Settings unavailable (bare unit-test import): nothing to defer to.
-        keep_resident, no_ram_reserve = False, False
+    if settings is None:
+        try:
+            from utils.model_memory_settings import get_model_memory_settings
+            settings = get_model_memory_settings()
+        except Exception:
+            # Settings unavailable (bare unit-test import): nothing to defer to.
+            settings = (False, False)
+    keep_resident, no_ram_reserve = settings
     if keep_resident and not no_ram_reserve and weights_in_host_memory:
         logger.info(
             "Model Memory: 'Keep model in GPU memory' owns the load mode; "

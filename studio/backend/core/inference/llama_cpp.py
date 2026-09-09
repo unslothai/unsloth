@@ -96,7 +96,9 @@ from core.inference.llama_server_args import (
     fit_is_effectively_on,
     fit_target_margin_in,
     MANAGED_DIO_FLAGS,
+    managed_dio_applies,
     no_reserve_requires_dio,
+    resolve_effective_direct_io,
     resolve_effective_load_state,
     resolve_effective_memory_state,
     scrub_denied_env,
@@ -6518,8 +6520,10 @@ class LlamaCppBackend:
         # Whether it streams: mmap and dio are the same pair above, so without
         # this the comparator cannot tell a launch that owes dio from one on mmap.
         self._memory_direct_io: Optional[bool] = None
-        # no_reserve_requires_dio for this launch's platform, build and placement,
-        # asked independently of the toggles so a LATER save is compared against it.
+        # managed_dio_applies for this launch, AND nothing later in the chain took
+        # the pair back off: asked independently of the toggles so a LATER save is
+        # compared against it, and demanding dio where a relaunch resolves to mmap
+        # anyway would be a reload notice that never clears.
         self._memory_dio_applicable: bool = False
         # The managed DirectIO tokens, so a rung that gives up the confirmed full
         # offload can take them back out. _fit_load_mode_flags' role, one setting up.
@@ -8368,7 +8372,7 @@ class LlamaCppBackend:
         self._memory_state = (mlock, reserves_ram)
         self._memory_direct_io = direct_io
 
-    def _drop_managed_dio(self, argv, reason: str):
+    def _drop_managed_dio(self, argv, reason: str, clear_record: bool = True):
         """Take the no-reserve DirectIO pair back out of an argv whose placement
         is no longer the confirmed full offload it was chosen for.
 
@@ -8377,11 +8381,21 @@ class LlamaCppBackend:
         instead of a mapping the kernel can page: the reservation the setting
         exists to avoid. Only Unsloth's own tokens; a user's --load-mode is
         theirs, exactly as with the fit's mode.
+
+        ``clear_record`` False when the caller strips a COPY and `cmd` still
+        carries the pair, which is the arm the fit's own mode already takes for
+        the same reason: the arch-crash and CPU rungs respawn from `cmd`, and
+        forgetting the tokens here leaves their own strip a no-op on an argv that
+        still has them. The applicable flag goes either way, because it describes
+        the child about to spawn, and the `_mem_policy_for_cmd` snapshot restores
+        `cmd`'s value for the rung that goes back to it.
         """
         if not self._memory_dio_flags:
+            self._memory_dio_applicable = False
             return argv
         stripped = _without_subsequence(argv, self._memory_dio_flags)
-        self._memory_dio_flags = []
+        if clear_record:
+            self._memory_dio_flags = []
         self._memory_dio_applicable = False
         logger.info("Model Memory: dropping the managed --load-mode dio; %s", reason)
         return stripped
@@ -18520,7 +18534,7 @@ class LlamaCppBackend:
         # And the managed DirectIO, for the same reason: it was emitted for a
         # confirmed full offload, and this replay appends "--device none".
         replay = self._drop_managed_dio(
-            replay, "the CPU fallback runs entirely from host RAM"
+            replay, "the CPU fallback runs entirely from host RAM", clear_record = False
         )
         # A user's own "--load-mode none" / "--no-mmap" survives that strip, by design,
         # and on this rung it is no longer the mode they were priced for: the replay
@@ -23290,7 +23304,7 @@ class LlamaCppBackend:
                 # GPU with full offload it would hold a second copy of the model
                 # in system RAM and do nothing for VRAM, so it is not emitted
                 # and the idle-unload veto carries residency by itself.
-                from utils.model_memory_settings import get_no_ram_reserve, should_mlock
+                from utils.model_memory_settings import get_model_memory_settings, should_mlock
 
                 # fully_gpu_offloaded is only set by the auto branch. Manual mode
                 # and a user -ngl reach the same placement by their own routes,
@@ -23318,6 +23332,13 @@ class LlamaCppBackend:
                 if gpu_ids is not None:
                     _mem_extra_args = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_mem_env)
+                # ONE coherent read for every decision below. The probe gate consults
+                # the toggles itself, so a second read would let a save landing in
+                # between gate the probe on one value and the flags on another, which
+                # is the split the pair-snapshot exists to close.
+                _mem_settings = get_model_memory_settings()
+                _mem_keep_resident, _mem_no_reserve = _mem_settings
+                _mem_should_mlock = _mem_keep_resident and not _mem_no_reserve
                 # Asked BEFORE the placement, because whether this platform and build
                 # could owe a managed DirectIO decides if the placement must be probed.
                 _mem_dio_possible = no_reserve_requires_dio(
@@ -23336,7 +23357,7 @@ class LlamaCppBackend:
                     # An unprobed Vulkan device answers the conservative True, and
                     # should_mlock() is always False under no-reserve, so gating on it
                     # alone made the DirectIO branch unreachable on the Vulkan build.
-                    probe_vulkan = should_mlock() or (_mem_dio_possible and get_no_ram_reserve()),
+                    probe_vulkan = _mem_should_mlock or (_mem_dio_possible and _mem_no_reserve),
                     # Over the built cmd AND the extras, so Unsloth's own --fit
                     # counts and a later user --fit still wins by last-arg.
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
@@ -23367,12 +23388,7 @@ class LlamaCppBackend:
                     weights_in_host_memory = _mem_host_resident,
                     gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                     env = _fit_load_mode_env_view,
-                )
-                # From the placement, not the toggle, so turning no-reserve ON later is
-                # compared against this launch instead of reading as already satisfied.
-                self._memory_dio_applicable = no_reserve_requires_dio(
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                    gpu_offload_confirmed = _mem_gpu_offload_confirmed,
+                    settings = _mem_settings,
                 )
                 self._memory_dio_flags = (
                     list(_mem_managed) if tuple(_mem_managed) == MANAGED_DIO_FLAGS else []
@@ -23423,6 +23439,24 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
+                    settings = _mem_settings,
+                )
+                # Whether a relaunch under no-reserve would really end up streaming: the
+                # placement alone is not enough, because a per-model mmap, an extra
+                # argument or an inherited choice is appended after the managed pair and
+                # wins by last-arg, and a relaunch resolves to it again. Asking the
+                # placement alone made the comparator demand a reload that no relaunch
+                # could ever satisfy, so the route showed a standing reload notice and
+                # the duplicate-load fast path tore down a healthy server every time.
+                # Read from the toggle-independent chain, so a LATER save is compared
+                # against this launch rather than reading as already satisfied.
+                self._memory_dio_applicable = managed_dio_applies(
+                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    gpu_offload_confirmed = _mem_gpu_offload_confirmed,
+                    env = _fit_load_mode_env_view,
+                ) and resolve_effective_direct_io(
+                    [*MANAGED_DIO_FLAGS, *_load_mode_managed, *_mem_extras],
+                    _fit_load_mode_env_view,
                 )
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
@@ -23433,7 +23467,7 @@ class LlamaCppBackend:
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
                 self._memory_mlock_applicable = _mem_host_resident
-                if should_mlock() and not _mem_host_resident:
+                if _mem_should_mlock and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
                         "offloaded to a discrete GPU; residency is kept by not "
@@ -23582,6 +23616,7 @@ class LlamaCppBackend:
                     _mem_host_resident,
                     self._memory_state,
                     self._memory_direct_io,
+                    self._memory_dio_applicable,
                     self._memory_policy_active,
                     self._memory_mlock_applicable,
                 )
@@ -24175,6 +24210,7 @@ class LlamaCppBackend:
                         _mem_host_resident,
                         self._memory_state,
                         self._memory_direct_io,
+                        self._memory_dio_applicable,
                         self._memory_policy_active,
                         self._memory_mlock_applicable,
                     )
@@ -24495,6 +24531,7 @@ class LlamaCppBackend:
                             _run = self._drop_managed_dio(
                                 _run,
                                 "the --fit on retry gives up the confirmed full offload",
+                                clear_record = False,
                             )
                             # The full-offload prediction that suppressed the
                             # page-lock was the very thing that just proved
@@ -25124,6 +25161,7 @@ class LlamaCppBackend:
                             _mem_host_resident,
                             self._memory_state,
                             self._memory_direct_io,
+                            self._memory_dio_applicable,
                             self._memory_policy_active,
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
