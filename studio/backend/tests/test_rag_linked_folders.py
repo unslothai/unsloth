@@ -57,7 +57,9 @@ def _shared_setup_4():
     from routes import rag as rag_routes
     with _connection() as conn:
         store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
-    return conn, rag_routes
+    # Only the module escapes: `_connection` is a `closing(...)`, so `conn` is
+    # already closed by the time this returns.
+    return rag_routes
 
 
 # Shared setup for test_normal_scheduling_reclaims_an_expired_running_job, test_skipped_reconciliation_releases_a_claim_the_queue_already_activated, test_unlink_waits_for_a_foreign_sync_lease.
@@ -1955,7 +1957,7 @@ def test_project_rag_cleanup_atomically_removes_retired_scope(rag_home):
 def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     rag_home, stub_embeddings, monkeypatch
 ):
-    conn, rag_routes = _shared_setup_4()
+    rag_routes = _shared_setup_4()
     folders = []
     for name in ("kb-first", "kb-second"):
         source = rag_home / name
@@ -2022,7 +2024,7 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
 
 @requires_sqlite_vec
 def test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure(rag_home, monkeypatch):
-    conn, rag_routes = _shared_setup_4()
+    rag_routes = _shared_setup_4()
     source = rag_home / "failed-kb-delete"
     source.mkdir()
     folder = folder_sync.create_folder(
@@ -2057,7 +2059,7 @@ def test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure(rag_h
 
 @requires_sqlite_vec
 def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home, monkeypatch):
-    conn, rag_routes = _shared_setup_4()
+    rag_routes = _shared_setup_4()
     source = rag_home / "locked-kb-delete"
     source.mkdir()
     folder = folder_sync.create_folder(
@@ -2098,7 +2100,7 @@ def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home
 
 @requires_sqlite_vec
 def test_kb_upload_rejects_retired_scope_before_saving(rag_home, monkeypatch):
-    conn, rag_routes = _shared_setup_4()
+    rag_routes = _shared_setup_4()
     folder_sync.retire_scope(store.kb_scope("knowledge"))
     monkeypatch.setattr(
         rag_routes,
