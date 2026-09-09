@@ -91,7 +91,10 @@ _REHEARSAL_TAIL_STRIP_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?:
 # <tag>.*?</tag> rescans to EOF from every opener (quadratic).
 _TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 _TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL)
-_TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
+# Dotted names too, matching what the main parser accepts: a narrower name class here
+# left ``<function=foo.bar>`` out of the TRUSTED spans, so execution-shaped text in its
+# own parameter read as an independent blocked call and the mask corrupted real arguments.
+_TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w.-]+>.*?</function>", re.DOTALL)
 _TOOL_CLOSED_PATS = [
     _TC_JSON_CLOSED_PAT,
     _TC_GEMMA_CLOSED_PAT,

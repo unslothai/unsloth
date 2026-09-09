@@ -800,6 +800,11 @@ def _top_level_args_values(text: str, start: int, end: int) -> list:
                         values.append((k + 1, stop, True))
                         i = stop + 1
                         continue
+                    # A MALFORMED scalar body: not a valid JSON value, so no shape has to be
+                    # preserved, but the healer still reads raw wrapper syntax sitting there.
+                    # Returning empty here left ``"arguments":<function=python>...`` promotable.
+                    boundary = _next_top_level_comma(text, k, end)
+                    values.append((k, end if boundary is None else boundary, False))
                     return values
             i = j + 1
             continue
