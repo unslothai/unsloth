@@ -1774,37 +1774,45 @@ class InferenceOrchestrator:
                     # active_model_name and models are what the already-loaded fast path
                     # trusts, and it does not test liveness, so the next session would
                     # report a dead worker as resident. Publish nothing instead.
-                    if is_process_shutting_down(getattr(self, "_load_process_generation", None)):
-                        logger.info(
-                            "Shutdown overtook the load of '%s'; not publishing it as resident",
-                            model_name,
+                    # Under the lock shutdown takes to kill the worker, so the check and
+                    # the publication are one step: apart, the check can pass an instant
+                    # before step 2 of _graceful_shutdown terminates the subprocess and
+                    # these writes still land after it. A publisher that loses the race
+                    # now blocks here and re-reads the latch instead.
+                    with self._subprocess_shutdown_lock:
+                        if is_process_shutting_down(
+                            getattr(self, "_load_process_generation", None)
+                        ):
+                            logger.info(
+                                "Shutdown overtook the load of '%s'; not publishing it as resident",
+                                model_name,
+                            )
+                            self.loading_models.discard(model_name)
+                            self.active_model_name = None
+                            self.models.clear()
+                            return False
+                        self.active_model_name = model_info.get("identifier", model_name)
+                        self.load_generation += 1
+                        # A load always spawns a fresh subprocess holding only this model, so mirror that. A lingering stale
+                        # name would pass unload_model's "not in self.models" guard, and the worker's absent-name fallback
+                        # would unload its *active* model, not the already-gone one.
+                        self.models = {}
+                        self.models[self.active_model_name] = _mirrored_model_entry(
+                            model_info, model_name
                         )
-                        self.loading_models.discard(model_name)
-                        self.active_model_name = None
-                        self.models.clear()
-                        return False
-                    self.active_model_name = model_info.get("identifier", model_name)
-                    self.load_generation += 1
-                    # A load always spawns a fresh subprocess holding only this model, so mirror that. A lingering stale
-                    # name would pass unload_model's "not in self.models" guard, and the worker's absent-name fallback
-                    # would unload its *active* model, not the already-gone one.
-                    self.models = {}
-                    self.models[self.active_model_name] = _mirrored_model_entry(
-                        model_info, model_name
-                    )
-                    # Lets the already-loaded shortcut tell a CPU request from the GPU
-                    # model it would otherwise report as satisfied. Native audio only:
-                    # marking anything else tells training a GPU model holds no VRAM.
-                    self.models[self.active_model_name]["audio_cpu"] = model_info.get(
-                        "audio_type"
-                    ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)
-                    self.models[self.active_model_name].update(
-                        _mlx_runtime_mirror_fields(model_info)
-                    )
-                    # Mirror chat_template_info so routes can classify caps without re-entering the subprocess
-                    _tpl_info = model_info.get("chat_template_info")
-                    if isinstance(_tpl_info, dict):
-                        self.models[self.active_model_name]["chat_template_info"] = _tpl_info
+                        # Lets the already-loaded shortcut tell a CPU request from the GPU
+                        # model it would otherwise report as satisfied. Native audio only:
+                        # marking anything else tells training a GPU model holds no VRAM.
+                        self.models[self.active_model_name]["audio_cpu"] = model_info.get(
+                            "audio_type"
+                        ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)
+                        self.models[self.active_model_name].update(
+                            _mlx_runtime_mirror_fields(model_info)
+                        )
+                        # Mirror chat_template_info so routes can classify caps without re-entering the subprocess
+                        _tpl_info = model_info.get("chat_template_info")
+                        if isinstance(_tpl_info, dict):
+                            self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True

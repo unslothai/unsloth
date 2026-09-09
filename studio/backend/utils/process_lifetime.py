@@ -358,6 +358,7 @@ def _reset_after_fork() -> None:
     """A fork child inherits both locks in whatever state they were in and a
     _spawner whose thread does not exist here. Start clean instead of deadlocking."""
     global _spawner, _spawner_lock, _record_lock, _owner_identity
+    global _generation_lock, _shutdown_latch
     _spawner_lock = threading.Lock()
     # A different pid here.
     _owner_identity = None
@@ -367,6 +368,20 @@ def _reset_after_fork() -> None:
     # A fork while another thread was inside adopt_pid / forget_pid leaves this held here with nobody to release it, and
     # the first adoption blocks forever.
     _record_lock = threading.Lock()
+    # Same hazard, same remedy: a fork taken while another thread held the generation lock
+    # leaves it locked here forever, and then process_lifecycle_generation() -- which
+    # every spawn guard calls -- deadlocks the child instead of answering it.
+    _generation_lock = threading.Lock()
+    # Event carries an internal lock of its own, so it inherits the same way. Rebuild it
+    # holding the flag it had, rather than resetting it: the child is still inside
+    # whichever lifecycle forked it, and a cleared latch would read as permission to spawn.
+    _was_latched = _shutdown_latch.is_set()
+    _shutdown_latch = threading.Event()
+    if _was_latched:
+        _shutdown_latch.set()
+    # _lifecycle_generation is deliberately NOT reset. It is only ever incremented, and
+    # spawn guards compare a captured value against it; restarting the count here would
+    # make a child's stale stamp compare equal to a later session's.
     _spawner = None
 
 

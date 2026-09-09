@@ -3739,7 +3739,6 @@ def test_the_shutdown_generation_is_captured_by_the_marking_call():
     scoping exists to prevent.
     """
     import ast
-    import textwrap
     from pathlib import Path
 
     from utils import process_lifetime as pl
@@ -3755,7 +3754,219 @@ def test_the_shutdown_generation_is_captured_by_the_marking_call():
         for n in ast.walk(ast.parse(run_py))
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_graceful_shutdown"
     )
-    body = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+    # What must hold is that the SWEEP's number comes from the marking call. The name
+    # may legitimately appear elsewhere in here -- the supersede check reads the live
+    # generation on purpose, to compare it against this shutdown's -- so assert on the
+    # assignment that feeds terminate_all rather than on the text of the function.
+    sources = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "_sweep_generation" for t in node.targets):
+            continue
+        callee = node.value.func
+        sources.add(callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", "?"))
+    assert sources == {"mark_process_shutting_down"}, (
+        "the sweep generation must come from the marking call itself, not a separate "
+        f"read; it is assigned from {sorted(sources)}"
+    )
+
+
+def test_a_fork_child_does_not_inherit_a_locked_generation_lock():
+    """A fork taken while another thread held _generation_lock leaves it locked in the
+    child forever, and every spawn guard goes through process_lifecycle_generation().
+    The child would deadlock rather than answer. _record_lock and _spawner_lock are
+    already rebuilt for exactly this reason; this one was added later and missed.
+    """
+    from utils import process_lifetime as pl
+
+    before_lock = pl._generation_lock
+    before_generation = pl.process_lifecycle_generation()
+    pl.mark_process_shutting_down()
+
+    # Stand in for the fork: hold the lock, then run the child-side reset. Holding it
+    # is the whole point -- an unheld lock would survive the reset unnoticed.
+    acquired = pl._generation_lock.acquire()
+    try:
+        pl._reset_after_fork()
+    finally:
+        if acquired and before_lock.locked():
+            before_lock.release()
+
+    assert pl._generation_lock is not before_lock, (
+        "_reset_after_fork left the inherited generation lock in place; a child that "
+        "forked while it was held deadlocks on the first spawn guard"
+    )
+    assert not pl._generation_lock.locked(), "the replacement lock is already held"
+    # Answers instead of hanging, which is the property under test.
+    assert pl.process_lifecycle_generation() == before_generation, (
+        "the fork reset restarted the generation count; a stale stamp from before the "
+        "fork would then compare equal to a later session"
+    )
     assert (
-        "process_lifecycle_generation()" not in body
-    ), "the shutdown reads the generation separately from marking, reopening the race"
+        pl.is_process_shutting_down() is True
+    ), "the fork reset cleared the shutdown latch, which reads as permission to spawn"
+    pl.begin_process_lifecycle()
+
+
+def test_a_shutdown_overtaken_by_a_restart_does_not_tear_down_the_new_session():
+    """The restart's wait for a slow shutdown is bounded, so the new session can be
+    serving while the old _graceful_shutdown is still walking its steps. Every step
+    reaches its subsystem through a module singleton the new session reuses, so an
+    unscoped old shutdown removes the live pid record and, through step 5's teardown
+    kill, latches the process shut again -- leaving that session refusing every spawn
+    for good.
+    """
+    import run
+    from utils import process_lifetime as pl
+
+    steps = []
+    _real_remove = run._remove_pid_file
+    run._remove_pid_file = lambda: steps.append("remove_record")
+
+    class _Server:
+        # Step 1 (should_exit). The restart lands here: after the shutdown latched its
+        # generation at step 0a, before the teardown steps run.
+        def __setattr__(self, name, value):
+            steps.append("release_socket")
+            pl.begin_process_lifecycle()
+
+    try:
+        run._graceful_shutdown(_Server())
+    finally:
+        run._remove_pid_file = _real_remove
+
+    assert "release_socket" in steps, "the restart hook never ran; the test proves nothing"
+    assert "remove_record" not in steps, (
+        "the superseded shutdown removed the pid record, which now belongs to the live "
+        "session: `stop` and the next launch can no longer find the running server"
+    )
+    assert pl.is_process_shutting_down() is False, (
+        "the superseded shutdown left the process latched shut, so the session that "
+        "just started refuses every spawn for the rest of its life"
+    )
+
+
+def _fn_named(source, name):
+    import ast
+    return next(
+        n
+        for n in ast.walk(ast.parse(source))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+    )
+
+
+def test_the_server_thread_finalizer_is_scoped_to_its_own_lifecycle():
+    """_run's finally block drops the pid file, the startup marker and the LAN
+    listener, all one-per-process. A thread that outlives the bounded join reaches it
+    after the next session has written its own, and would take down the live one.
+    """
+    import ast
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    fn = _fn_named(run_py, "_run")
+    guarded = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.If)
+        and any(isinstance(x, ast.Return) for x in ast.walk(n))
+        and any(isinstance(x, ast.Name) and x.id == "_superseded" for x in ast.walk(n.test))
+    ]
+    assert guarded, (
+        "_run's finalizer runs its global teardown unconditionally; a superseded "
+        "server thread deletes the live session's pid file and closes its LAN listener"
+    )
+    # And the guard has to come FIRST, or the calls it protects have already run.
+    teardown = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id in {"_remove_pid_file", "_remove_startup_marker", "_close_lan_listener"}
+    ]
+    assert (
+        teardown and min(teardown) > guarded[0].lineno
+    ), "the supersede guard sits after the teardown calls it is supposed to gate"
+
+
+def test_the_primary_llama_launch_rechecks_after_recording_the_pid():
+    """mark_process_shutting_down does not take _spawn_lock, and terminate_all does not
+    take it when it snapshots, so the in-lock check is not atomic against the
+    process-wide latch for a helper-owned backend. Without a recheck the child sits
+    outside the completed sweep for the whole 600s health wait.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+    ).read_text(encoding = "utf-8")
+    fn = _fn_named(src, "_spawn_and_wait")
+    record = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_record_server_pid"
+    ]
+    stale = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_spawn_is_stale"
+    ]
+    health = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_wait_for_health"
+    ]
+    assert record and stale and health, "the spawn path no longer looks like itself"
+    assert any(max(record) < s < min(health) for s in stale), (
+        "no staleness recheck between recording the pid and the health wait: a spawn "
+        "that raced the latch is left running outside the sweep that already finished"
+    )
+
+
+def test_the_worker_mirrors_are_published_under_the_shutdown_lock():
+    """active_model_name is what the already-loaded fast path trusts, and it does not
+    test liveness. Checked and published apart, shutdown can kill the worker in between
+    and the next session reports a dead one as resident.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "core" / "inference" / "orchestrator.py"
+    ).read_text(encoding = "utf-8")
+    fn = _fn_named(src, "load_model")
+    holding = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.With)
+        and any(
+            getattr(item.context_expr, "attr", None) == "_subprocess_shutdown_lock"
+            for item in n.items
+        )
+    ]
+    assert holding, "load_model never holds the subprocess shutdown lock"
+    covered = False
+    for w in holding:
+        checks = [
+            n
+            for n in ast.walk(w)
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "is_process_shutting_down"
+        ]
+        publishes = [
+            n
+            for n in ast.walk(w)
+            if isinstance(n, ast.Assign)
+            and any(
+                getattr(t, "attr", None) == "active_model_name"
+                and not isinstance(n.value, ast.Constant)
+                for t in n.targets
+            )
+        ]
+        if checks and publishes:
+            covered = True
+    assert covered, (
+        "the shutdown check and the active_model_name publication are not inside the "
+        "same held lock, so a kill can land between them"
+    )

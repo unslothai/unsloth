@@ -23884,6 +23884,23 @@ class LlamaCppBackend:
                             # _pid_start_identity yields no start time, and the bare pid
                             # left behind is one a later launch kills blind.
                             self._record_server_pid(_spawned.pid)
+                        # The in-lock check and the process-wide latch are only atomic
+                        # for the instance run.py tears down, which sets its own flag
+                        # under this same lock. mark_process_shutting_down does not take
+                        # _spawn_lock, and neither does terminate_all when it snapshots,
+                        # so a helper-owned backend (llm_assist, the diffusion launch)
+                        # can pass the check microseconds before the latch is set and
+                        # leave this child outside the completed sweep for the whole
+                        # 600s health wait below. Recheck once the pid is recorded and
+                        # reap it, exactly as _start_llama_process does.
+                        if self._spawn_is_stale(_load_generation):
+                            logger.info(
+                                "shutdown began during the spawn; killing the new llama-server"
+                            )
+                            self._kill_process()
+                            self._close_attempt_log()
+                            self._health_wait_cancelled = True
+                            return False
                         # is_active covers it from here, so drop the pre-spawn flag.
                         self._memory_launch_pending = False
 
