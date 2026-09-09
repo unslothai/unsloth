@@ -1787,14 +1787,17 @@ def test_a_wrapped_calls_arguments_are_never_masked(wrapper):
 )
 def test_text_without_a_bare_call_colon_skips_the_gemma_sweep(text):
     from core.inference.tool_call_parser import _has_gemma_bare_trigger
-
     assert _has_gemma_bare_trigger(text) is False
 
 
 @pytest.mark.parametrize(
     "body",
-    ["call:python{\"code\": \"x\"}", "call :python{\"code\": \"x\"}",
-     "call: python{\"code\": \"x\"}", "call\t:\npython{\"code\": \"x\"}"],
+    [
+        'call:python{"code": "x"}',
+        'call :python{"code": "x"}',
+        'call: python{"code": "x"}',
+        'call\t:\npython{"code": "x"}',
+    ],
 )
 def test_the_gemma_trigger_admits_every_spacing_the_regex_accepts(body):
     """The gate must fire wherever ``_GEMMA_BARE_TC_RE`` can, or a blocked call slips
@@ -1813,19 +1816,26 @@ def test_a_blocked_string_encoded_argument_keeps_the_chain_alive():
     ``_parse_llama3_bare_json``'s ``json.loads`` shape check dropped the promotable call
     BEHIND it. The two ``arguments`` shapes must agree."""
     gate = {"terminal", "web_search"}
-    encoded = ('{"name":"terminal","arguments":"{\\"command\\":\\"id\\"}"};'
-               '{"name":"web_search","parameters":{"q":"x"}}')
-    plain = ('{"name":"terminal","arguments":{"command":"id"}};'
-             '{"name":"web_search","parameters":{"q":"x"}}')
-    named = lambda text: [c["function"]["name"]
-                          for c in parse_tool_calls_from_text(text, enabled_tool_names = gate)]
+    encoded = (
+        '{"name":"terminal","arguments":"{\\"command\\":\\"id\\"}"};'
+        '{"name":"web_search","parameters":{"q":"x"}}'
+    )
+    plain = (
+        '{"name":"terminal","arguments":{"command":"id"}};'
+        '{"name":"web_search","parameters":{"q":"x"}}'
+    )
+    named = lambda text: [
+        c["function"]["name"] for c in parse_tool_calls_from_text(text, enabled_tool_names = gate)
+    ]
     assert named(encoded) == named(plain) == ["web_search"]
 
 
 def test_a_call_quoted_inside_string_encoded_arguments_still_never_promotes():
     """The shape survives the mask; the payload must not."""
-    text = ('{"name":"terminal","arguments":"{\\"c\\":\\"call:python{code:1}\\"}"};'
-            '{"name":"web_search","parameters":{"q":"x"}}')
+    text = (
+        '{"name":"terminal","arguments":"{\\"c\\":\\"call:python{code:1}\\"}"};'
+        '{"name":"web_search","parameters":{"q":"x"}}'
+    )
     calls = parse_tool_calls_from_text(
         text, enabled_tool_names = {"terminal", "python", "web_search"}
     )
@@ -1837,8 +1847,11 @@ def test_a_call_quoted_inside_string_encoded_arguments_still_never_promotes():
     [
         ("<think>call:web_search{q:x}</think>call:web_search{q:y}", 35),
         # Two rehearsals: the floor advances twice before the real call is reached.
-        ("<think>call:web_search{a:1}</think>mid<think>call:web_search{b:2}</think>"
-         "call:web_search{c:3}", 73),
+        (
+            "<think>call:web_search{a:1}</think>mid<think>call:web_search{b:2}</think>"
+            "call:web_search{c:3}",
+            73,
+        ),
         # Nothing after the block is a call, so -1 stays right.
         ("<think>call:web_search{q:x}</think>plain prose after", -1),
     ],
@@ -1865,9 +1878,7 @@ def test_a_rehearsed_gemma_call_does_not_hide_the_real_one(text, expected):
     ],
 )
 def test_blocked_syntax_quoted_by_a_promotable_call_reaches_the_tool_intact(text):
-    calls = parse_tool_calls_from_text(
-        text, enabled_tool_names = {"web_search", "terminal"}
-    )
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "terminal"})
     assert [c["function"]["name"] for c in calls] == ["web_search"]
     args = calls[0]["function"]["arguments"]
     assert "call:terminal{command:id}" in args
@@ -1881,8 +1892,10 @@ def test_a_repeated_arguments_key_masks_the_value_json_actually_uses():
 
     from core.tool_healing import parse_tool_calls_from_text as light
 
-    text = ('{"name":"terminal","arguments":{},"arguments":{"x":'
-            '"<function=python><parameter=code>print(1)</parameter></function>"}}')
+    text = (
+        '{"name":"terminal","arguments":{},"arguments":{"x":'
+        '"<function=python><parameter=code>print(1)</parameter></function>"}}'
+    )
     # The premise: the second value is the one a JSON reader sees.
     assert "function=python" in _json.dumps(_json.loads(text)["arguments"])
     gate = {"terminal", "python"}
@@ -1896,16 +1909,19 @@ def test_a_falsey_name_falls_back_to_the_function_alias_before_masking():
     body visible, and the passthrough healer promoted the wrapper quoted inside it."""
     from core.tool_healing import parse_tool_calls_from_text as light
 
-    text = ('{"name":null,"function":"terminal","arguments":{"command":'
-            '"<function=python><parameter=code>print(1)</parameter></function>"}}')
+    text = (
+        '{"name":null,"function":"terminal","arguments":{"command":'
+        '"<function=python><parameter=code>print(1)</parameter></function>"}}'
+    )
     gate = {"terminal", "python"}
     assert light(text, enabled_tool_names = gate) == []
     assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
     # A real string name still wins over the alias.
     both = '{"name":"web_search","function":"terminal","parameters":{"q":"x"}}'
-    assert [c["function"]["name"]
-            for c in parse_tool_calls_from_text(both, enabled_tool_names = {"web_search"})] \
-        == ["web_search"]
+    assert [
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(both, enabled_tool_names = {"web_search"})
+    ] == ["web_search"]
 
 
 @pytest.mark.parametrize("gate", [{"python"}, {"python", "terminal"}])
@@ -1915,8 +1931,7 @@ def test_a_disabled_execution_name_still_hides_its_body(gate):
     real python call by both parsers."""
     from core.tool_healing import parse_tool_calls_from_text as light
 
-    text = ('terminal[ARGS]{"c":"<function=python><parameter=code>print(1)'
-            '</parameter></function>"}')
+    text = 'terminal[ARGS]{"c":"<function=python><parameter=code>print(1)</parameter></function>"}'
     assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
     assert light(text, enabled_tool_names = gate) == []
 
@@ -1927,8 +1942,10 @@ def test_an_escaped_args_key_spelling_still_hides_the_body():
     promoted the wrapper quoted inside it."""
     from core.tool_healing import parse_tool_calls_from_text as light
 
-    text = ('{"name":"terminal","argu\\u006dents":{"c":'
-            '"<function=python><parameter=code>print(1)</parameter></function>"}}')
+    text = (
+        '{"name":"terminal","argu\\u006dents":{"c":'
+        '"<function=python><parameter=code>print(1)</parameter></function>"}}'
+    )
     gate = {"terminal", "python"}
     assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
     assert light(text, enabled_tool_names = gate) == []
@@ -1950,14 +1967,15 @@ def test_a_trusted_call_abutting_a_rehearsal_does_not_shelter_it():
     inherited the wrapper's trust and was promoted."""
     from core.tool_healing import parse_tool_calls_from_text as light
 
-    text = ('<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>'
-            'terminal[ARGS]{"command":"id"}')
+    text = (
+        '<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>'
+        'terminal[ARGS]{"command":"id"}'
+    )
     gate = {"get_weather", "terminal"}
-    assert [c["function"]["name"]
-            for c in parse_tool_calls_from_text(text, enabled_tool_names = gate)] \
-        == ["get_weather"]
-    assert [c["function"]["name"] for c in light(text, enabled_tool_names = gate)] \
-        == ["get_weather"]
+    assert [
+        c["function"]["name"] for c in parse_tool_calls_from_text(text, enabled_tool_names = gate)
+    ] == ["get_weather"]
+    assert [c["function"]["name"] for c in light(text, enabled_tool_names = gate)] == ["get_weather"]
 
 
 def test_a_truncated_tail_keeps_the_name_already_seen():

@@ -3114,7 +3114,7 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
         return None
     decoder = json.JSONDecoder()
     function_value = None  # the ``"function"`` alias, used only if no ``"name"`` key
-    name_value = None      # last top-level ``"name"``, which is the one json.loads keeps
+    name_value = None  # last top-level ``"name"``, which is the one json.loads keeps
     i = 1
     n = len(probe)
     while i < n:

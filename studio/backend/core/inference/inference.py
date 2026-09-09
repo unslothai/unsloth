@@ -1307,7 +1307,9 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
-            preserve_tool_tokens = bool(tools) if tool_protocol_active is None else tool_protocol_active,
+            preserve_tool_tokens = bool(tools)
+            if tool_protocol_active is None
+            else tool_protocol_active,
             add_special_tokens = add_special_tokens,
         )
 

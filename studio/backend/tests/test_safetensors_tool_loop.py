@@ -5533,7 +5533,12 @@ def test_tool_protocol_active_is_true_when_unrestricted_with_empty_tools():
     # bool(tools) flag would strip the native tool tokens it is about to parse.
     captured: list = []
 
-    def fake_single_turn(_messages, *, active_tools = None, tool_protocol_active = None):
+    def fake_single_turn(
+        _messages,
+        *,
+        active_tools = None,
+        tool_protocol_active = None,
+    ):
         captured.append(tool_protocol_active)
         yield "Done."
 
@@ -5554,7 +5559,12 @@ def test_tool_protocol_active_is_false_once_the_last_tool_is_spent():
     captured: list = []
     exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
 
-    def fake_single_turn(_messages, *, active_tools = None, tool_protocol_active = None):
+    def fake_single_turn(
+        _messages,
+        *,
+        active_tools = None,
+        tool_protocol_active = None,
+    ):
         captured.append(tool_protocol_active)
         if len(captured) == 1:
             yield '<tool_call>{"name":"render_html","arguments":{"code":"<html>x</html>"}}</tool_call>'
