@@ -2388,6 +2388,11 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         )
         if result.returncode == 0:
             return True
+        if _runtime_repair_is_offline():
+            # pip has no offline mode: with the network declared absent, uv's answer
+            # from the cache is the only one there is.
+            logger.warning("uv could not install %s from the cache offline", pkg)
+            return False
         logger.warning("uv install of %s failed, falling back to pip", pkg)
 
     result = subprocess.run(
@@ -2717,18 +2722,26 @@ def _optional_top_up_lock(venv_dir: str):
         handle.close()
 
 
+_UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
+
+
 def _runtime_repair_is_offline() -> bool:
     """Whether a sidecar repair could only reach for a network the caller declared absent.
 
     UV_OFFLINE is what `studio update` honours when it keeps a verified install and
-    leaves a stale sidecar for the next online update; the HF offline switches are what
-    the backend reads for its own fetches. Under either, the repair below would wipe a
-    tree it cannot rebuild: uv refuses the network and _install_to_dir then falls back to
-    a pip that would use it, or fails after the deletion.
+    leaves a stale sidecar for the next online update. Under it the repair below would
+    wipe a tree it cannot rebuild: uv refuses the network and _install_to_dir then falls
+    back to a pip that would use it, or fails after the deletion.
+
+    The HF offline switches (HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE, an open
+    force_hf_offline window) are deliberately not read here: they turn off Hub model
+    access, not the package index the repair installs from, and the workers raise them
+    on their own when only the Hub is unreachable. Treating them as offline would leave
+    a damaged sidecar unrepaired and the tier unusable while PyPI answers.
     """
-    if os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES:
-        return True
-    return _env_offline()
+    # uv's own boolish spellings, which setup.sh and setup.ps1 accept for this switch:
+    # t and y count as well as 1, true, yes and on.
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in _UV_OFFLINE_TRUE_VALUES
 
 
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
@@ -2737,7 +2750,12 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
         _top_up_optional_packages(venv_dir, packages)
         return True
 
-    if _runtime_repair_is_offline():
+    # Only an in-place repair is refused offline: it starts by deleting a tree that may
+    # still serve, and the rebuild would need the network. A directory with nothing in
+    # it (the latest sidecar's staging directory, a first install) has nothing to lose,
+    # and uv's offline mode installs from a warm cache; the pip fallback, which would
+    # reach for the network, is skipped by _install_to_dir under the same switch.
+    if _runtime_repair_is_offline() and os.path.isdir(venv_dir) and os.listdir(venv_dir):
         logger.warning(
             "%s not found or incomplete at %s, and this session is offline -- left as is "
             "until the next online update",

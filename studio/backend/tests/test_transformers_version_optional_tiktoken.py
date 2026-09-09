@@ -455,3 +455,43 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
     assert tv._runtime_repair_is_offline() is False
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
+
+
+def test_an_empty_directory_is_still_built_offline_from_the_cache(tmp_path, monkeypatch):
+    """The offline rule protects a tree that may still serve. The latest sidecar's staging
+    directory and a first install have nothing to lose, and uv installs from a warm cache
+    without the network, so they are attempted; only the pip fallback stays out."""
+    root = tmp_path / ".venv_t5_latest.staging"
+    root.mkdir()
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "latest staging") is True
+    assert installed == list(tv._VENV_T5_550_PACKAGES)
+    # A missing directory is a first install, not a repair.
+    installed.clear()
+    assert tv._ensure_venv_dir(str(tmp_path / "fresh"), tv._VENV_T5_550_PACKAGES, "fresh") is True
+    assert installed == list(tv._VENV_T5_550_PACKAGES)
+
+
+def test_the_pip_fallback_stays_out_offline(tmp_path, monkeypatch):
+    calls = []
+
+    class _Result:
+        returncode = 1
+        stdout = "no cached wheel"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _Result()
+
+    monkeypatch.setattr(tv.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(tv.subprocess, "run", fake_run)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
+    assert len(calls) == 1 and calls[0][0] == "uv"
+    monkeypatch.setenv("UV_OFFLINE", "0")
+    calls.clear()
+    assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
+    assert [c[0] for c in calls] == ["uv", tv.sys.executable]
