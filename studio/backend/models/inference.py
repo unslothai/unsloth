@@ -1983,6 +1983,15 @@ def _normalize_permission_mode(value: Any) -> Any:
 
 
 class ChatCompletionRequest(BaseModel):
+    tool_execution_mode: Literal["auto", "required"] = "auto"
+
+    @field_validator("tool_execution_mode", mode="before")
+    @classmethod
+    def _validate_tool_isolation(cls, value):
+        if value not in ("auto", "required"):
+            raise ValueError("Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode.")
+        return value
+
     """OpenAI-compatible chat completion request.
 
     Non-OpenAI extension fields are marked with 'x-unsloth'.
@@ -3085,6 +3094,15 @@ class ResponsesFunctionTool(BaseModel):
 
 
 class ResponsesRequest(BaseModel):
+    tool_execution_mode: Literal["auto", "required"] = "auto"
+
+    @field_validator("tool_execution_mode", mode="before")
+    @classmethod
+    def _validate_tool_isolation(cls, value):
+        if value not in ("auto", "required"):
+            raise ValueError("Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode.")
+        return value
+
     """OpenAI Responses API request."""
 
     model: str = Field("default", description = "Model identifier")
@@ -3441,6 +3459,15 @@ _ANTHROPIC_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high"
 
 
 class AnthropicMessagesRequest(BaseModel):
+    tool_execution_mode: Literal["auto", "required"] = "auto"
+
+    @field_validator("tool_execution_mode", mode="before")
+    @classmethod
+    def _validate_tool_isolation(cls, value):
+        if value not in ("auto", "required"):
+            raise ValueError("Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode.")
+        return value
+
     model: str = "default"
     max_tokens: Optional[int] = None
     messages: list[AnthropicMessage]
