@@ -286,8 +286,10 @@ def project_hooks_trust(
 def project_hooks_revoke(
     project_id: str,
     request: RevokeProjectHooksRequest,
+    via_api_key: Annotated[bool, Depends(authenticated_via_api_key)] = False,
     _current_subject: str = Depends(get_current_subject),
 ):
+    _require_ui_session(via_api_key)
     project = _project(project_id)
     try:
         revoked = revoke_project_hook_trust(project_id, expected_revision = request.revision)

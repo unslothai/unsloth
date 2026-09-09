@@ -63,7 +63,7 @@ jobs:
         if: matrix.variant == 'secure-tools'
         shell: bash
         env:
-          SECURE_TOOLS_REVISION: 08031e4cb53dcf09bfe8eb3d744265cdf5c7d394
+          SECURE_TOOLS_REVISION: d79c53fdba726fec0b27dc4385667ba3798be277
         run: |
           git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$SECURE_TOOLS_REVISION"
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-commit --no-ff "$SECURE_TOOLS_REVISION"

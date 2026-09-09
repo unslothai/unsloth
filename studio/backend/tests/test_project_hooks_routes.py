@@ -225,6 +225,15 @@ def test_api_keys_cannot_grant_or_change_hook_authority(monkeypatch):
         )
     assert handler_denied.value.status_code == 403
 
+    with pytest.raises(HTTPException) as revoke_denied:
+        project_hooks.project_hooks_revoke(
+            "project",
+            project_hooks.RevokeProjectHooksRequest(revision = 1),
+            via_api_key = True,
+            _current_subject = "api-key",
+        )
+    assert revoke_denied.value.status_code == 403
+
 
 def test_changed_file_is_untrusted_and_stale_mutations_fail(tmp_path, monkeypatch):
     project_id = _create_project("hooks-route-drift")
