@@ -9,6 +9,7 @@ import {
 } from "../src/features/model-picker/model-config/resident-memory-request.ts";
 
 const loaded: Parameters<typeof selectResidentEstimateSettings>[0] = {
+  modelLoading: false,
   loadedKvCacheDtype: "q8_0",
   loadedNParallel: 2,
   loadedNBatch: 512,
@@ -92,6 +93,7 @@ test("pending controls cannot change the loaded placement or memory requirements
 
 test("missing baselines and recorded fallbacks withhold resident credit", () => {
   for (const patch of [
+    { modelLoading: true },
     { loadedGpuMemoryMode: null },
     { loadedSpeculativeType: null },
     { loadedTensorParallel: null },
