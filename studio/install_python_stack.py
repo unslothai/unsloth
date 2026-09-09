@@ -6122,6 +6122,9 @@ def _install_wheelhouse_optionals() -> None:
         if version is None:
             if _wheelhouse_hosts(name):
                 _note(f"windows on arm: the wheelhouse {name} is below {floor}; leaving it off")
+            # Nothing to refresh with, but the copy an earlier run installed is still resident.
+            if _canonical_dist_name(name) == "xformers":
+                _evict_xformers_built_for_another_torch()
             continue
         installed = pip_install_try(
             f"Installing {name}=={version} from the Windows on ARM wheelhouse",
@@ -6132,21 +6135,30 @@ def _install_wheelhouse_optionals() -> None:
         )
         if not installed:
             _note(f"windows on arm: could not install the wheelhouse {name}; feature stays off")
-        # xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute.
         # Checked even when the refresh failed: the copy an earlier torch left behind is still resident.
-        if _canonical_dist_name(name) == "xformers":
-            built_for = _resident_xformers_build_torch()
-            resident = str(_probe_installed_torch_version() or "")
-            if built_for and resident and built_for != resident:
-                _uninstall_distribution(name)
-                _note(
-                    f"windows on arm: the wheelhouse xformers was built for torch "
-                    f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
-                )
-                continue
+        if _canonical_dist_name(name) == "xformers" and _evict_xformers_built_for_another_torch():
+            continue
         if not installed:
             continue
         _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
+
+
+def _evict_xformers_built_for_another_torch() -> bool:
+    """Remove a resident xFormers whose extension was built against another torch. True iff removed.
+
+    xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
+    and a package install never uninstalls what an earlier run left behind.
+    """
+    built_for = _resident_xformers_build_torch()
+    resident = str(_probe_installed_torch_version() or "")
+    if not (built_for and resident and built_for != resident):
+        return False
+    _uninstall_distribution("xformers")
+    _note(
+        f"windows on arm: the wheelhouse xformers was built for torch "
+        f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
+    )
+    return True
 
 
 # Blockers the PUBLIC index resolves, per interpreter: {dist: {interpreter tag: version}}.
@@ -6331,7 +6343,13 @@ def _uv_reaches_public_pypi() -> bool:
 
 
 def _pip_reaches_public_pypi() -> bool:
-    """pip's environment only: its configuration files are not read, and doubt keeps the skip."""
+    """pip's policy: its environment first, then the configuration files it would read.
+
+    PIP_* outranks every file. Below that, `pip config list` reports the effective values from
+    the site, user and global files, an `[install]` key outranking its `[global]` twin for an
+    install. A `no-index` or an exclusive `index-url` set there replaces PyPI just as the
+    environment does. Doubt (a `pip config` that cannot be read) keeps the skip.
+    """
     if _env_flag("PIP_NO_INDEX"):
         return False
     extra_is_pypi = any(
@@ -6340,7 +6358,65 @@ def _pip_reaches_public_pypi() -> bool:
     value = os.environ.get("PIP_INDEX_URL", "").strip()
     if value:
         return extra_is_pypi or _url_is_public_pypi(value)
+    policy = _pip_config_index_policy()
+    if policy["unreadable"] or policy["no_index"] is True:
+        return False
+    extra_is_pypi = extra_is_pypi or any(_url_is_public_pypi(u) for u in policy["extra_index_urls"])
+    index_url = policy["index_url"]
+    if isinstance(index_url, str) and not _url_is_public_pypi(index_url):
+        return extra_is_pypi
     return True
+
+
+def _pip_config_index_policy() -> "dict[str, object]":
+    """The index keys pip's configuration files set, read from `pip config list`.
+
+    Lines are `<section>.<key>='<value>'`; `:env:` entries mirror PIP_* variables the caller
+    already read, so they are skipped. `install.<key>` outranks `global.<key>`, as it does for
+    pip itself. A `pip config` that cannot run or be parsed is reported unreadable.
+    """
+    policy: "dict[str, object]" = {
+        "no_index": None,
+        "index_url": None,
+        "extra_index_urls": [],
+        "unreadable": False,
+    }
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        policy["unreadable"] = True
+        return policy
+    if done.returncode != 0:
+        policy["unreadable"] = True
+        return policy
+    found: "dict[str, dict[str, str]]" = {"global": {}, "install": {}}
+    for line in done.stdout.splitlines():
+        m = re.match(r"^(global|install)\.([a-z-]+)=(.*)$", line.strip())
+        if not m:
+            continue
+        section, key, raw = m.groups()
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+            raw = raw[1:-1]
+        found[section][key] = raw
+    for section in ("global", "install"):
+        keys = found[section]
+        if "no-index" in keys:
+            policy["no_index"] = keys["no-index"].strip().lower() in ("1", "true", "yes", "on")
+        if keys.get("index-url", "").strip():
+            policy["index_url"] = keys["index-url"].strip()
+        if "extra-index-url" in keys:
+            # pip prints the repr, so a multi-line value arrives with a literal backslash-n.
+            policy["extra_index_urls"] = [
+                u for u in re.split(r"\s+|\\n", keys["extra-index-url"]) if u
+            ]
+    return policy
 
 
 def _public_index_win_arm64_versions(canonical: str) -> "set[str]":

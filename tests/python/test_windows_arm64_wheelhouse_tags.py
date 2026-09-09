@@ -64,6 +64,28 @@ def _fresh_find_links(ips):
     ips._find_links_wheel_versions.cache_clear()
 
 
+#: What `_pip_config_index_policy` reports when pip's files set no index key.
+PIP_FILES_SILENT = {
+    "no_index": None,
+    "index_url": None,
+    "extra_index_urls": [],
+    "unreadable": False,
+}
+
+
+@pytest.fixture(autouse = True)
+def _pip_files_silent(ips, monkeypatch):
+    """Keep the host's pip configuration files out of every test but the reader's own.
+
+    The pip path now consults `pip config list`, so a site pip.conf on the machine running
+    the suite would otherwise decide rows about the environment. Yields the real reader for
+    the class that tests it.
+    """
+    real = ips._pip_config_index_policy
+    monkeypatch.setattr(ips, "_pip_config_index_policy", lambda: dict(PIP_FILES_SILENT))
+    yield real
+
+
 def _this_platform() -> str:
     return (sysconfig.get_platform() or "").replace("-", "_").replace(".", "_").lower()
 
@@ -746,6 +768,50 @@ class TestAHostedOptionalIsActuallyInstalled:
         )
         assert removed == []
 
+    def test_an_evicted_xformers_is_not_reported_installed(self, ips, monkeypatch):
+        notes = []
+        self._calls(
+            ips,
+            monkeypatch,
+            {"xformers": "0.0.31"},
+            _resident_xformers_build_torch = lambda: "2.9.0+cu128",
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: True,
+            _note = lambda *a, **kw: notes.append(a[0]),
+        )
+        assert any("removed" in n for n in notes), notes
+        assert not any("installed xformers" in n for n in notes), notes
+
+    def test_an_xformers_nothing_hosts_is_still_evicted_beside_another_torch(
+        self, ips, monkeypatch
+    ):
+        """The wheelhouse can stop offering a usable xformers (a refresh dropped it, or the
+        floor moved) while the copy an earlier run installed stays resident. The check ran only
+        after a hosted attempt, so that copy kept losing its ops at import time."""
+        removed = []
+        calls = self._calls(
+            ips,
+            monkeypatch,
+            {},
+            _resident_xformers_build_torch = lambda: "2.9.0+cu128",
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: removed.append(name) or True,
+        )
+        assert calls == [], "nothing hosted, nothing installed"
+        assert removed == ["xformers"]
+
+    def test_an_xformers_nothing_hosts_is_kept_beside_its_own_torch(self, ips, monkeypatch):
+        removed = []
+        self._calls(
+            ips,
+            monkeypatch,
+            {},
+            _resident_xformers_build_torch = lambda: "2.15.0.dev20260101+cu134",
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: removed.append(name) or True,
+        )
+        assert removed == []
+
     def test_a_matching_xformers_is_kept(self, ips, monkeypatch):
         removed = []
         self._calls(
@@ -1268,6 +1334,155 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
             monkeypatch.delenv("UV_DEFAULT_INDEX")
             self._write("proj/uv.toml", f'default-index = "{url}"\n')
             assert ips._public_pypi_is_reachable() is is_pypi, "the config path: " + why
+
+
+class TestPipConfigurationFilesDecideWherePyPIIs:
+    """The pip path read PIP_* only. pip also reads its site, user and global files, where
+    `[global] index-url` or `no-index` replaces PyPI exactly as the variables do; a host with
+    such a file had librosa unblocked and the extras pass then failed on numba."""
+
+    CORP = "https://pypi.corp.test/simple"
+    PYPI = "https://pypi.org/simple"
+
+    @pytest.fixture(autouse = True)
+    def _pip_runs(self, ips, monkeypatch, _pip_files_silent):
+        monkeypatch.setattr(ips, "USE_UV", False)
+        for var in ("PIP_NO_INDEX", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_CONFIG_FILE"):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setattr(ips, "_pip_config_index_policy", _pip_files_silent)
+        self.ips = ips
+        self.monkeypatch = monkeypatch
+
+    def _listing(
+        self,
+        text,
+        returncode = 0,
+    ):
+        """Stand in for `pip config list` with this output."""
+
+        class Done:
+            stdout = text
+            stderr = ""
+
+        Done.returncode = returncode
+        self.monkeypatch.setattr(self.ips.subprocess, "run", lambda *a, **kw: Done())
+
+    def test_no_index_keys_means_pypi(self):
+        self._listing(":env:.cache-dir='/tmp/pip'\nglobal.timeout='60'\n")
+        assert self.ips._public_pypi_is_reachable() is True
+
+    @pytest.mark.parametrize(
+        "text, reachable, why",
+        [
+            (f"global.index-url='{CORP}'\n", False, "an exclusive index-url"),
+            ("global.no-index='true'\n", False, "no-index"),
+            ("global.no-index='false'\n", True, "no-index switched off"),
+            (f"install.index-url='{CORP}'\n", False, "under [install]"),
+            (f"global.index-url='{PYPI}'\n", True, "PyPI named explicitly"),
+            (
+                f"global.index-url='{CORP}'\nglobal.extra-index-url='{PYPI}'\n",
+                True,
+                "an extra that is PyPI beside a corporate default",
+            ),
+            (
+                f"global.index-url='{CORP}'\nglobal.extra-index-url='https://mirror.test/simple\\n{PYPI}'\n",
+                True,
+                "one of several extras, newline-separated as pip prints them",
+            ),
+            (
+                f"global.index-url='{CORP}'\nglobal.extra-index-url='https://mirror.test/simple'\n",
+                False,
+                "an extra that is not PyPI",
+            ),
+            (
+                f"global.no-index='true'\nglobal.extra-index-url='{PYPI}'\n",
+                False,
+                "no-index disables extras too",
+            ),
+            (
+                f"global.index-url='{CORP}'\ninstall.index-url='{PYPI}'\n",
+                True,
+                "[install] outranks [global]",
+            ),
+            (
+                f"install.index-url='{CORP}'\nglobal.index-url='{PYPI}'\n",
+                False,
+                "and still does when printed first",
+            ),
+            (
+                "global.no-index='true'\ninstall.no-index='false'\n",
+                True,
+                "[install].no-index = false beats the global true",
+            ),
+            (
+                f":env:.index-url='{CORP}'\n",
+                True,
+                ":env: rows mirror PIP_* the caller already read, and the variable is not set",
+            ),
+            (
+                f'global.index-url="{CORP}"\n',
+                False,
+                "double quotes, should pip ever print them",
+            ),
+        ],
+    )
+    def test_what_the_files_set(self, text, reachable, why):
+        self._listing(text)
+        assert self.ips._public_pypi_is_reachable() is reachable, why
+
+    def test_the_environment_outranks_the_files(self):
+        self._listing("global.no-index='true'\n")
+        self.monkeypatch.setenv("PIP_INDEX_URL", self.PYPI)
+        assert self.ips._public_pypi_is_reachable() is True
+
+    def test_a_pip_extra_from_the_environment_counts_beside_a_file_index(self):
+        self._listing(f"global.index-url='{self.CORP}'\n")
+        self.monkeypatch.setenv("PIP_EXTRA_INDEX_URL", self.PYPI)
+        assert self.ips._public_pypi_is_reachable() is True
+
+    def test_a_pip_config_that_fails_is_not_guessed_at(self):
+        self._listing("", returncode = 1)
+        assert self.ips._public_pypi_is_reachable() is False
+
+    def test_a_pip_that_cannot_run_is_not_guessed_at(self):
+        def boom(*a, **kw):
+            raise OSError("no pip")
+
+        self.monkeypatch.setattr(self.ips.subprocess, "run", boom)
+        assert self.ips._public_pypi_is_reachable() is False
+
+    def test_uv_never_reads_pip_files(self):
+        self._listing("global.no-index='true'\n")
+        self.monkeypatch.setattr(self.ips, "USE_UV", True)
+        for var in ("UV_OFFLINE", "UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX"):
+            self.monkeypatch.delenv(var, raising = False)
+        self.monkeypatch.setenv("UV_NO_CONFIG", "1")
+        assert self.ips._public_pypi_is_reachable() is True
+
+    @pytest.mark.parametrize(
+        "body, reachable",
+        [
+            ("[global]\nindex-url = https://pypi.corp.test/simple\n", False),
+            ("[global]\nno-index = true\n", False),
+            (
+                "[global]\nindex-url = https://pypi.corp.test/simple\n[install]\nindex-url = https://pypi.org/simple\n",
+                True,
+            ),
+            ("[global]\ntimeout = 60\n", True),
+        ],
+    )
+    def test_the_real_pip_reads_a_real_file(self, tmp_path, body, reachable):
+        """End to end through this interpreter's pip: PIP_CONFIG_FILE names the one file read."""
+        pytest.importorskip("pip")
+        conf = tmp_path / "pip.conf"
+        conf.write_text(body, encoding = "utf-8")
+        self.monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        assert self.ips._public_pypi_is_reachable() is reachable, body
+
+    def test_the_reader_is_the_one_the_pip_path_calls(self):
+        body = STACK_SRC[STACK_SRC.index("def _pip_reaches_public_pypi") :]
+        body = body[: body.index("\ndef ")]
+        assert "_pip_config_index_policy()" in body
 
 
 class TestSqliteVecIsAnExplicitOptionalToo:

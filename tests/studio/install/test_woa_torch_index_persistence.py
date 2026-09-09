@@ -2652,29 +2652,42 @@ class TestThePipFallbackKeepsTheIndexArguments:
             "$WinArm64IndexArgs = if ($WinArm64Venv) {" in SETUP_SRC
         ), "gating on $UseUv means the pip fallback gets no --extra-index-url at all"
 
-    @requires_pwsh
-    @pytest.mark.parametrize(
-        "use_uv, pre, expect_pre",
-        [(True, "1", True), (False, "1", True), (False, "0", False)],
-    )
-    def test_pip_receives_a_translated_list(self, use_uv, pre, expect_pre):
-        """Executed end to end: build the list, then run it through the pip translation."""
+    @staticmethod
+    def _index_args_block():
         start = SETUP_SRC.index("$WinArm64IndexArgs = if (")
         end = SETUP_SRC.index("} else { @() }", start) + len("} else { @() }")
+        return SETUP_SRC[start:end]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "use_uv, pre, expect_pre, wheels",
+        [
+            (True, "1", True, True),
+            (False, "1", True, True),
+            (False, "0", False, True),
+            (False, "1", True, False),
+        ],
+    )
+    def test_pip_receives_a_translated_list(self, tmp_path, use_uv, pre, expect_pre, wheels):
+        """Executed end to end: build the list, then run it through the pip translation."""
+        if wheels:
+            (tmp_path / "woa" / "wheels").mkdir(parents = True)
         script = _script(
             _function_source(SETUP_SRC, "Remove-UvOnlyResolverFlags"),
             # The dependency index follows the resolver policy; with none configured it is public PyPI.
             "foreach ($n in 'UV_NO_INDEX','PIP_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','PIP_INDEX_URL','UV_INDEX','UV_EXTRA_INDEX_URL','PIP_EXTRA_INDEX_URL','UV_CONFIG_FILE') { Remove-Item \"Env:$n\" -ErrorAction SilentlyContinue }",
             "$env:UV_NO_CONFIG = '1'",
+            "function Get-UvSafePath { param([string]$Path) return $Path }",
             _function_source(SETUP_SRC, "Get-WoaUvConfigIndexPolicy"),
             _function_source(SETUP_SRC, "Get-WoaDependencyIndexArgs"),
+            f"$StudioHome = '{tmp_path}'",
             "$WinArm64Venv = $true",
             f"$UseUv = ${str(use_uv).lower()}",
             "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot'",
             "$WinArm64EffectiveTorchIndexUrl = $WinArm64TorchIndexUrl",
             "$WinArm64HandoffApplies = $true",
             f"$env:UNSLOTH_WOA_TORCH_PRERELEASE = '{pre}'",
-            SETUP_SRC[start:end],
+            self._index_args_block(),
             "$pipArgs = Remove-UvOnlyResolverFlags -Arguments $WinArm64IndexArgs",
             "Write-Output ('[' + ($pipArgs -join ' ') + ']')",
         )
@@ -2685,6 +2698,13 @@ class TestThePipFallbackKeepsTheIndexArguments:
         assert "--index-strategy" not in got, "a uv-only flag would make pip print usage"
         assert "--prerelease" not in got, "likewise the uv spelling"
         assert ("--pre" in got) is expect_pre, got
+        # Fast-Install clears PIP_FIND_LINKS beside UV_FIND_LINKS, so pip too is told on the command line.
+        if wheels:
+            assert f"--find-links {tmp_path / 'woa' / 'wheels'}" in got, got
+        else:
+            assert (
+                "--find-links" not in got
+            ), "uv fails outright on a --find-links directory that is missing"
 
     # Both call sites spell it --prerelease=allow, so the rest of the grammar is untested by
     # the run above. uv accepts a space-separated value too, and five values, only one of
@@ -5852,6 +5872,106 @@ class TestANoIndexNativeTrioStillSeesItsSources:
         assert out["DURING"] == ("" if yields else value)
         assert out["AFTER"] == value, "the caller's value comes back either way"
         assert ("UV_NO_INDEX yields" in out["MSG"]) is yields
+
+
+class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
+    """setup.ps1's trio step had the same gap as install.ps1's: Fast-Install clears UV_FIND_LINKS
+    and PIP_FIND_LINKS whenever --index-url is given and leaves UV_NO_INDEX alone, so under
+    --no-index the update saw neither the wheelhouse nor the CUDA index. The wheelhouse now
+    rides in $WinArm64IndexArgs, and UV_NO_INDEX yields for the one command."""
+
+    @staticmethod
+    def _index_args(tmp_path, env):
+        (tmp_path / "woa" / "wheels").mkdir(parents = True)
+        setenv = "\n".join(f"$env:{k} = '{v}'" for k, v in env.items())
+        script = _script(
+            "foreach ($n in 'UV_NO_INDEX','PIP_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','PIP_INDEX_URL','UV_INDEX','UV_EXTRA_INDEX_URL','PIP_EXTRA_INDEX_URL','UV_CONFIG_FILE') { Remove-Item \"Env:$n\" -ErrorAction SilentlyContinue }",
+            "$env:UV_NO_CONFIG = '1'",
+            setenv,
+            "function Get-UvSafePath { param([string]$Path) return $Path }",
+            _function_source(SETUP_SRC, "Get-WoaUvConfigIndexPolicy"),
+            _function_source(SETUP_SRC, "Get-WoaDependencyIndexArgs"),
+            f"$StudioHome = '{tmp_path}'",
+            "$WinArm64Venv = $true",
+            "$UseUv = $true",
+            "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot'",
+            "$WinArm64EffectiveTorchIndexUrl = $WinArm64TorchIndexUrl",
+            "$WinArm64HandoffApplies = $true",
+            "$env:UNSLOTH_WOA_TORCH_PRERELEASE = '0'",
+            TestThePipFallbackKeepsTheIndexArguments._index_args_block(),
+            "Write-Output ('[' + ($WinArm64IndexArgs -join '|') + ']')",
+        )
+        return _ps_last(script)[1:-1].split("|")
+
+    @requires_pwsh
+    def test_the_wheelhouse_is_named_on_the_command_line(self, tmp_path):
+        args = self._index_args(tmp_path, {})
+        i = args.index("--find-links")
+        assert args[i + 1] == str(tmp_path / "woa" / "wheels")
+        assert "--extra-index-url" in args, "with no policy the dependencies come from PyPI as well"
+
+    @requires_pwsh
+    def test_under_no_index_the_wheelhouse_is_the_only_dependency_source(self, tmp_path):
+        args = self._index_args(tmp_path, {"UV_NO_INDEX": "1"})
+        assert "--find-links" in args
+        assert "--extra-index-url" not in args
+
+    def test_the_setting_fast_install_clears_is_the_one_put_on_the_command_line(self):
+        body = _function_source(SETUP_SRC, "Fast-Install")
+        assert "'UV_FIND_LINKS'" in body and "'PIP_FIND_LINKS'" in body
+        assert "--find-links" in TestThePipFallbackKeepsTheIndexArguments._index_args_block()
+
+    @staticmethod
+    def _swap_block():
+        start = SETUP_SRC.index(
+            "        if ($WinArm64Venv) {\n            # The pins are exact and the index page carries no upload dates"
+        )
+        end = SETUP_SRC.index(
+            "        try {\n            if ($script:UnslothVerbose) {\n                Fast-Install @_cudaTrio",
+            start,
+        )
+        return SETUP_SRC[start:end]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "value, yields", [("1", True), ("true", True), ("0", False), ("false", False)]
+    )
+    def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
+        script = _script(
+            "$script:Messages = @()",
+            "function substep { param($m, $c) $script:Messages += $m }",
+            "$WinArm64Venv = $true",
+            f"$env:UV_NO_INDEX = '{value}'",
+            "$env:UV_EXCLUDE_NEWER = '2026-01-01'",
+            "Remove-Item Env:UV_EXCLUDE_NEWER_PACKAGE -ErrorAction SilentlyContinue",
+            "$_woaCutoffSaved = @{}",
+            self._swap_block(),
+            "Write-Output ('DURING=' + [string]$env:UV_NO_INDEX)",
+            "Write-Output ('CUTOFF=' + [string]$env:UV_EXCLUDE_NEWER)",
+            'foreach ($_woaCutoffName in @($_woaCutoffSaved.Keys)) { Set-Item "Env:$_woaCutoffName" $_woaCutoffSaved[$_woaCutoffName] }',
+            "Write-Output ('AFTER=' + [string]$env:UV_NO_INDEX)",
+            "Write-Output ('CUTOFFAFTER=' + [string]$env:UV_EXCLUDE_NEWER)",
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        out = dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+        assert out["DURING"] == ("" if yields else value)
+        assert out["AFTER"] == value, "the caller's value comes back either way"
+        assert ("UV_NO_INDEX yields" in out["MSG"]) is yields
+        assert (
+            out["CUTOFF"] == "" and out["CUTOFFAFTER"] == "2026-01-01"
+        ), "the cutoff swap is unchanged"
+
+    @requires_pwsh
+    def test_off_arm64_nothing_is_touched(self):
+        script = _script(
+            "function substep { param($m, $c) }",
+            "$WinArm64Venv = $false",
+            "$env:UV_NO_INDEX = '1'",
+            "$_woaCutoffSaved = @{}",
+            self._swap_block(),
+            "Write-Output ('DURING=' + [string]$env:UV_NO_INDEX + ' SAVED=' + $_woaCutoffSaved.Count)",
+        )
+        assert _ps_last(script) == "DURING=1 SAVED=0"
 
 
 class TestProbeWarningsDoNotPrintIndexCredentials:

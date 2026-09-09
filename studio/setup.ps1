@@ -5800,6 +5800,13 @@ $WinArm64IndexArgs = if ($WinArm64Venv) {
     # The dependency index follows the caller's resolver policy, as install.ps1's trio step does.
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
     $_woaIndexArgs = @("--index-strategy", "unsafe-best-match") + @(Get-WoaDependencyIndexArgs -Resolver $_woaResolver)
+    # Fast-Install clears UV_FIND_LINKS and PIP_FIND_LINKS beside the other inherited index settings
+    # whenever --index-url is given, so the staged wheelhouse is named on the command line; under
+    # no-index it is the only dependency source. Only when it exists: uv fails on a missing directory.
+    $_woaWheels = Join-Path (Join-Path $StudioHome "woa") "wheels"
+    if (Test-Path -LiteralPath $_woaWheels -PathType Container) {
+        $_woaIndexArgs += @("--find-links", (Get-UvSafePath $_woaWheels))
+    }
     # install.ps1 read this off the wheel it selected; the URL spelling is only a second signal.
     if (($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_TORCH_PRERELEASE -eq "1") -or
         ($WinArm64EffectiveTorchIndexUrl -match 'nightly')) {
@@ -6025,6 +6032,15 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
                     Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
                     substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pins (the index carries no upload dates)."
                 }
+            }
+            # --no-index ignores every registry index, the CUDA one included, and Fast-Install leaves UV_NO_INDEX
+            # alone (it does clear PIP_NO_INDEX). It yields for this one command: the trio comes from the CUDA
+            # index and its dependencies from the wheelhouse named above.
+            $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
+            if ($_woaNoIndexValue -and ($_woaNoIndexValue.Trim().ToLowerInvariant() -notin @("", "0", "false"))) {
+                $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
+                Remove-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue
+                substep "windows on arm: UV_NO_INDEX yields for the CUDA trio, which only the selected index carries; its dependencies still come from the wheelhouse."
             }
         }
         try {
