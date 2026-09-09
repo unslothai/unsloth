@@ -5924,6 +5924,18 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 _HOST_RAM_HEADROOM_MIB = 2048
+# What the advice refuses to take from the host: this many GB or this share of the
+# machine, whichever is larger. The carve-out comes out of the RAM the OS sees, so
+# ignoring the host turns a slow load into an unusable desktop.
+_CARVEOUT_ADVICE_MIN_HOST_GB = 8
+# A fifth, not a quarter: the 128 GB Strix Halo firmware offers 96 GB and runs it. A
+# quarter would cap at 95.83 GB and rule out a setting we measured.
+_CARVEOUT_ADVICE_HOST_FRACTION = 0.20
+# A driver reports the pool it kept, not the firmware menu number (95.83 against a
+# 96.00 GB setting here). Without slack a model between the two earns the rung the
+# user is ALREADY on, so the advice reads "allocate 96 GB" to someone running 96 GB.
+# Half a GB is well under the gap between rungs.
+_CARVEOUT_NOMINAL_SLACK_GB = 0.5
 # Appended to whichever shortfall warning an oversized non-pageable launch produced,
 # after _page_an_oversized_unmapped_load rewrote the mode. One string, so the three
 # call sites cannot describe the same override differently.
@@ -6236,6 +6248,8 @@ class LlamaCppBackend:
         # Reset by _begin_load_warnings so one load's notice is never reported against
         # the next.
         self._last_load_warning: Optional[str] = None
+        # Set per launch by _record_carveout_advice; None on nearly every load.
+        self._last_carveout_advice: Optional[dict] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
         # Snapshot of the exact file(s) handed to the resident process. A local
@@ -10679,6 +10693,297 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _igpu_dedicated_memory_bytes(
+        gpu_indices = None, *, ordinals_are_vulkan = False
+    ) -> Optional[int]:
+        """Memory dedicated to the selected integrated GPU, in bytes, or ``None``.
+
+        Two readings, since no single source covers every platform: the DirectX
+        registry (Windows, no vendor runtime needed, already parsed for the GPU
+        inventory) and ``_rocm_selected_pool_mib`` (Linux, needs a ROCm torch,
+        reports the carve-out as the device's total memory).
+
+        ``None`` whenever the reading would be a guess; every caller treats absence
+        as "say nothing".
+
+        The registry goes first despite being the less authoritative answer, because
+        it is the cheap one: a few ``winreg`` queries against a torch import plus a
+        ``get_device_properties`` per device, which this file documents as leaking a
+        ~700 MiB primary context. Off Windows it returns nothing instantly.
+        """
+        # Every adapter the registry lists, not only those with a readable allocation:
+        # the count IS the attribution test. Filtering the unreadable ones out hid a
+        # shared APU, leaving a discrete Radeon looking like the only candidate and its
+        # fixed VRAM quoted as the APU's carve-out.
+        answers: list[Optional[dict]] = []
+        try:
+            from utils.hardware.hardware import (
+                _AMD_PCI_VENDOR_ID,
+                _INTEL_PCI_VENDOR_ID,
+                _windows_amd_adapter_records_by_luid,
+            )
+            for vendor_id in (_AMD_PCI_VENDOR_ID, _INTEL_PCI_VENDOR_ID):
+                answers.append(
+                    _windows_amd_adapter_records_by_luid(vendor_id, distinguish_failure = True)
+                )
+        except Exception:
+            answers = []
+        if any(answer is not None for answer in answers):
+            # A vendor answered, so this is Windows. A vendor that could not be read
+            # leaves the inventory incomplete, and an incomplete inventory cannot call
+            # the adapter it did see the only one, so fail closed.
+            if any(answer is None for answer in answers):
+                return None
+            adapters = sum(len(answer) for answer in answers)
+            # AMD only, though Intel is counted. On an APU the DirectX value is the
+            # firmware carve-out; on Intel UMA it is a small dedicated block beside
+            # memory handed out dynamically, so quoting it would advise a setting that
+            # may not exist and promise residency it cannot deliver.
+            amd_sizes = [
+                int(record["dedicated_memory_bytes"])
+                for record in (answers[0] or {}).values()
+                if record.get("dedicated_memory_bytes")
+            ]
+            if adapters == 1 and len(amd_sizes) == 1 and amd_sizes[0] > 0:
+                return amd_sizes[0]
+            if adapters:
+                # Two adapters need the inventory's LUID-to-device join; attributing
+                # the wrong one would advise about the wrong GPU. An APU paired with a
+                # discrete Radeon lands here, and silence is right.
+                return None
+        if ordinals_are_vulkan:
+            # No Linux reading for a Vulkan launch, for two reasons. gpu_indices holds
+            # VULKAN ordinals while _rocm_selected_pool_mib compares PHYSICAL HIP ids,
+            # and nothing in the Vulkan inventory carries a HIP id to join on, so the
+            # reading could land on a device this launch never touches. And it is not
+            # free: it creates a HIP primary context in THIS process (~800 MiB) out of
+            # the very pool it would then call too small.
+            return None
+        pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
+        return int(pool_mib) * 1024 * 1024 if pool_mib and pool_mib > 0 else None
+
+    @staticmethod
+    def _igpu_carveout_ladder_gb(cap_gb: float) -> list[int]:
+        """Plausible dedicated-GPU-memory sizes up to ``cap_gb``, ascending.
+
+        Firmware and driver panels offer a menu, not a slider, built from powers of
+        two and their halves (…16, 24, 32, 48, 64, 96, 128…). Generated rather than
+        tabulated so an unusually large machine still gets a suggestion; the caller
+        picks the smallest entry that fits, so an entry the user's firmware lacks is
+        a recommendation one notch off, not a wrong one.
+        """
+        # A `while` on the model-load path: the caller's try/except catches a raise,
+        # not a hang. A non-finite cap makes the condition permanently true, so reject
+        # it before the loop.
+        if not isinstance(cap_gb, (int, float)) or not math.isfinite(cap_gb):
+            return []
+        rungs: set[int] = set()
+        # From 1 GB, not 4: an APU on its automatic setting reports a few hundred
+        # megabytes, and starting at 4 took two more gigabytes from the host than the
+        # smallest-setting-that-fits rule needed.
+        step = 1
+        while step <= cap_gb:
+            rungs.add(step)
+            if step * 1.5 <= cap_gb:
+                rungs.add(int(step * 1.5))
+            step *= 2
+        return sorted(rungs)
+
+    @staticmethod
+    def _igpu_carveout_advice(
+        model_size_bytes: Optional[int],
+        carve_out_bytes: Optional[int],
+        host_total_bytes: Optional[int],
+        *,
+        is_igpu: bool,
+        min_host_gb: int = _CARVEOUT_ADVICE_MIN_HOST_GB,
+        host_fraction: float = _CARVEOUT_ADVICE_HOST_FRACTION,
+        nominal_slack_gb: float = _CARVEOUT_NOMINAL_SLACK_GB,
+    ) -> Optional[dict]:
+        """Advice payload when an integrated GPU's dedicated memory is too small to
+        hold this model's weights, else ``None``.
+
+        Weights spilling out of the allocation run from shared system memory, which
+        is markedly slower. Raising the allocation is a firmware/driver-panel setting
+        only the user can make, so this only ever advises.
+
+        Silent on a discrete GPU (``is_igpu`` false): that allocation is fixed
+        silicon. Nothing is hardcoded to one machine -- the ceiling comes from what
+        this host has, so a 32 GB laptop and a 512 GB workstation are each sized to
+        themselves, and a model too large for ANY allocation here gets no advice.
+        """
+        if not is_igpu:
+            return None
+        # Strictly positive, not merely truthy: -1 is truthy, so a bare falsiness test
+        # would carry a nonsense driver reading into confident wrong advice.
+        if not all(
+            isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+            for value in (model_size_bytes, carve_out_bytes, host_total_bytes)
+        ):
+            return None
+        if model_size_bytes <= carve_out_bytes:
+            return None  # already fits: nothing to advise
+
+        gb = float(1024**3)
+        # Windows subtracts the carve-out from the RAM it reports, so the machine has
+        # both; reading one under-counts by exactly the amount this advice is about.
+        machine_gb = (host_total_bytes + carve_out_bytes) / gb
+        need_gb = model_size_bytes / gb
+        current_gb = carve_out_bytes / gb
+
+        # Whatever is suggested, the rest of the system still has to run.
+        reserve_gb = max(float(min_host_gb), machine_gb * host_fraction)
+        cap_gb = machine_gb - reserve_gb
+        if need_gb > cap_gb:
+            # No allocation this machine can offer holds the weights, so advice would
+            # be something the user cannot act on.
+            return None
+
+        suggested = next(
+            (rung for rung in LlamaCppBackend._igpu_carveout_ladder_gb(cap_gb) if rung >= need_gb),
+            None,
+        )
+        # Not `<= current_gb`: the reading is the pool the driver kept, so the rung the
+        # user is already on sits just above it. See _CARVEOUT_NOMINAL_SLACK_GB.
+        if suggested is None or suggested <= current_gb + nominal_slack_gb:
+            return None
+
+        return {
+            "current_gb": round(current_gb, 1),
+            "needed_gb": round(need_gb, 1),
+            "suggested_gb": int(suggested),
+            "machine_gb": round(machine_gb, 1),
+            "host_left_gb": round(machine_gb - suggested, 1),
+        }
+
+    def _record_carveout_advice(
+        self,
+        gpu_indices,
+        need_bytes,
+        *,
+        is_vulkan_backend = False,
+        shared_gpu_ids = None,
+        detected_gpus = None,
+        target_unknown = False,
+        forced_cpu = False,
+    ) -> None:
+        """Work out whether this load is worth advising about, and stash the result.
+
+        Advisory only, and never raises: the launch decides whether to spill the
+        weights into shared memory, this only says whether the user could stop the
+        spill existing at all, and an advisory must not break a model load.
+
+        Tests are ordered cheapest first because this runs on every load, including
+        the Vulkan ones that skip the managed-memory branch above. The allocation
+        reading is arithmetic over a registry query; the integrated-GPU probe behind
+        it imports torch and reads device properties, so the common load whose model
+        fits pays only the cheap half.
+
+        ``forced_cpu``: the architecture gate emptied the pool and the env block below
+        masks every device away, so no allocation would hold a single weight. Priced
+        before that mask is written, so without this it would offer exactly that.
+
+        ``target_unknown``: the cache tuning's test, borrowed. With no ``gpu_ids`` a
+        user ``--device`` (or ``LLAMA_ARG_DEVICE``) survives into the child and wins
+        last-wins over the generated pin, so the placement this would advise about is
+        not the one the child gets. Decline rather than re-derive it from argv.
+        """
+        self._last_carveout_advice = None
+        try:
+            if not need_bytes or target_unknown or forced_cpu:
+                return
+            # Gated HERE, not beside the ROCm gate below: on Vulkan gpu_indices holds
+            # VULKAN ORDINALS, and _amd_apu_wants_unified_memory would read them as
+            # physical HIP ids, which on a mixed host advises about an integrated GPU
+            # the model is not using or hides advice that was valid. This branch is
+            # also free (a set test against the planner's shared_gpu_ids, no torch), so
+            # a dGPU-only Vulkan launch returns before the allocation reading.
+            if is_vulkan_backend and not self._offload_target_shares_system_memory(
+                is_vulkan_backend = True,
+                shared_gpu_ids = shared_gpu_ids,
+                detected_gpus = detected_gpus,
+                gpu_indices = gpu_indices,
+            ):
+                return
+            carve_out = self._igpu_dedicated_memory_bytes(
+                gpu_indices, ordinals_are_vulkan = is_vulkan_backend
+            )
+            if not carve_out or need_bytes <= carve_out:
+                return  # fits, or nothing to compare it against
+            total_mib = self._total_system_memory_mib()
+            advice = self._igpu_carveout_advice(
+                need_bytes,
+                carve_out,
+                int(total_mib) * 1024 * 1024 if total_mib else None,
+                is_igpu = True,
+            )
+            if advice is None:
+                return
+            # Only now, with a shortfall confirmed and a followable suggestion, is the
+            # probe worth paying for. AMD only: a CUDA integrated part has no readable
+            # allocation on either branch above, so carve_out is already None and we
+            # returned, and calling _integrated_cuda_unified_memory anyway would create
+            # a CUDA primary context per device for nothing. Not on Vulkan either: that
+            # launch was classified above, in the index space it actually uses.
+            if not is_vulkan_backend and not self._amd_apu_wants_unified_memory(gpu_indices):
+                return
+            # Asked last, so the common path never pays a database round trip.
+            from utils.igpu_carveout_notice_settings import notice_already_dismissed
+
+            if notice_already_dismissed(advice.get("current_gb")):
+                return
+            advice["message"] = self._igpu_carveout_advice_message(advice)
+            self._last_carveout_advice = advice
+            logger.info(
+                "Integrated GPU has %.0f GB dedicated but this model needs about "
+                "%.0f GB; suggesting %d GB.",
+                advice["current_gb"],
+                advice["needed_gb"],
+                advice["suggested_gb"],
+            )
+        except Exception:
+            logger.debug("Carve-out advice declined", exc_info = True)
+            self._last_carveout_advice = None
+
+    @property
+    def last_carveout_advice(self) -> Optional[dict]:
+        """Advice from the most recent load, or None. Read by the route."""
+        return getattr(self, "_last_carveout_advice", None)
+
+    @staticmethod
+    def _fmt_gb(value: float) -> str:
+        """A GB quantity as the user should read it: whole numbers above 10 GB, one
+        decimal below, so an APU's few-hundred-megabyte automatic allocation does not
+        print as "only about 0 GB is allocated" and read like a bug.
+        """
+        if value < 10:
+            return f"{value:.1f}".rstrip("0").rstrip(".")
+        return f"{value:.0f}"
+
+    @staticmethod
+    def _igpu_carveout_advice_message(advice: dict) -> str:
+        """The advice as user-facing prose: two sentences, because it is a toast.
+
+        Names no vendor, menu or key: the control is firmware on one machine and a
+        driver panel on the next, and a confident wrong instruction costs the user
+        more than a neutral one.
+
+        Length is a correctness constraint, not a preference, for the reason
+        xet_progress_notice.ts records: a toast tall enough to cover the controls
+        under it takes them away for as long as it is up. So it carries the four
+        numbers that make the advice actionable -- needed, allocated, suggested, left
+        for the system -- and stops.
+        """
+        fmt = LlamaCppBackend._fmt_gb
+        return (
+            f"Weights need about {fmt(advice['needed_gb'])} GB but only "
+            f"{fmt(advice['current_gb'])} GB is allocated to the integrated GPU, so the rest "
+            f"runs from slower shared memory. Raising it to {advice['suggested_gb']} GB in "
+            "your firmware or GPU control panel leaves about "
+            f"{fmt(advice['host_left_gb'])} GB for the system."
+        )
+
+    @staticmethod
     def _host_offload_shortfall_message(
         offload_bytes: int,
         avail_mib: Optional[int],
@@ -10804,6 +11109,9 @@ class LlamaCppBackend:
         reverse -- the placement everything was priced against is the one that just
         died."""
         self._last_load_warning = None
+        # Same lifetime, same reason: the advice describes the placement the dying
+        # child was priced against and must not be reported against its replacement.
+        self._last_carveout_advice = None
 
     def _record_load_warning(self, message: Optional[str]) -> None:
         """Log an advisory memory notice and keep it for the route to hand back.
@@ -10957,7 +11265,12 @@ class LlamaCppBackend:
         any other notice first-notice-wins kept, is left exactly as it is. The note
         follows the message: an override on a silenced load stays in the log alone,
         exactly as it does on the main launch path.
+
+        The carve-out advice is dropped rather than re-priced: this replay runs
+        ``--gpu-layers 0 --device none``, so no allocation holds any of the weights.
+        Here rather than at either call site, since both reach this same state.
         """
+        self._last_carveout_advice = None
         repriced = self._launch_host_shortfall_message(
             cpu_cmd,
             (),
@@ -23328,6 +23641,25 @@ class LlamaCppBackend:
                 ):
                     """Drop the variable THIS launch set once a respawn stops needing it."""
                     nonlocal _unified_env_applied
+                    # Before the withdrawal test and outside it: every caller is a retry
+                    # whose argv differs from what the advice was priced against, and
+                    # dropping a projector or the MTP blocks can take the footprint back
+                    # under the carve-out. Re-priced rather than cleared, so a spill that
+                    # still stands is still reported. Computed here rather than in the
+                    # argument list, which is evaluated OUTSIDE the recorder's try.
+                    try:
+                        _carveout_need = _unified_need_now(argv = run_cmd, mtp_engages = mtp_engages)
+                    except Exception:
+                        _carveout_need = None
+                    self._record_carveout_advice(
+                        _unified_gpu_indices,
+                        _carveout_need,
+                        is_vulkan_backend = is_vulkan_backend,
+                        shared_gpu_ids = _shared_gpu_ids,
+                        detected_gpus = _detected_gpus,
+                        target_unknown = _cache_target_unknown,
+                        forced_cpu = _arch_gate_forced_cpu,
+                    )
                     if not _unified_env_applied:
                         return
                     if self._unified_memory_for_launch(
@@ -23363,6 +23695,20 @@ class LlamaCppBackend:
                         if _unified_opt_in
                         else "the weights outgrow the carve-out and host RAM is the larger pool",
                     )
+
+                # Whether the user could stop the spill existing at all, independent of
+                # the managed-memory decision above, which only copes with one that is.
+                # The placement facts go with it: the index space gpu_indices is in, and
+                # whether a user --device makes the child's target unknowable.
+                self._record_carveout_advice(
+                    gpu_indices,
+                    _unified_need,
+                    is_vulkan_backend = is_vulkan_backend,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    detected_gpus = _detected_gpus,
+                    target_unknown = _cache_target_unknown,
+                    forced_cpu = _arch_gate_forced_cpu,
+                )
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
@@ -23543,6 +23889,23 @@ class LlamaCppBackend:
                         _child_gpu_physical_ids = tuple(int(i) for i in _survivors)
                         # Narrower than any pin above, so it replaces it.
                         _launch_pinned_ids = list(_survivors)
+                        # And the carve-out advice with it: upstream priced the
+                        # UNNARROWED set, which _rocm_selected_pool_mib declines on a
+                        # mixed host, so a model outgrowing the surviving APU's
+                        # carve-out was never advised about.
+                        try:
+                            _gated_carveout_need = _unified_need_now(argv = cmd)
+                        except Exception:
+                            _gated_carveout_need = None
+                        self._record_carveout_advice(
+                            _survivors,
+                            _gated_carveout_need,
+                            is_vulkan_backend = is_vulkan_backend,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            detected_gpus = _detected_gpus,
+                            target_unknown = _cache_target_unknown,
+                            forced_cpu = _arch_gate_forced_cpu,
+                        )
                     elif manual_tensor_split_emitted:
                         # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                         # no mask above): the UI built --tensor-split in ascending
@@ -24656,6 +25019,23 @@ class LlamaCppBackend:
                             # From the argv, like the fit-strip above: `cmd` is what
                             # the respawn runs, and the record has to match it.
                             self._memory_state = resolve_effective_memory_state(cmd, env)
+                        # And the carve-out advice with them. _begin_load_warnings()
+                        # dropped the one priced for the crashed placement, but the
+                        # respawn can land on a unified-memory APU whose allocation the
+                        # same weights outgrow. Priced against `cmd` and _remaining, so
+                        # the spill reported is this placement's.
+                        try:
+                            _retry_carveout_need = _unified_need_now(argv = cmd)
+                        except Exception:
+                            _retry_carveout_need = None
+                        self._record_carveout_advice(
+                            _remaining,
+                            _retry_carveout_need,
+                            is_vulkan_backend = is_vulkan_backend,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            detected_gpus = _retry_rows or _detected_gpus,
+                            target_unknown = _cache_target_unknown,
+                        )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Studio adds --kv-unified itself above one slot, so nothing the user

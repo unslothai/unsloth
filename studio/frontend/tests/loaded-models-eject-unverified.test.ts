@@ -14,16 +14,11 @@
 // distinguishable, and the unreadable one must not be spelled `null`.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const SOURCE = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/loaded-models/loaded-models-api.ts", import.meta.url),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const SOURCE = readSrc("features/loaded-models/loaded-models-api.ts");
 
 test("an unreadable verification is its own outcome, not `ejected`", () => {
   assert.match(
@@ -66,12 +61,7 @@ test("the sentinel is checked before the truthiness test that would hide it", ()
 });
 
 test("the user is told it was not confirmed, not that it worked", () => {
-  const HOOK = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/loaded-models/use-loaded-models.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const HOOK = readSrc("features/loaded-models/use-loaded-models.ts");
   const branch = HOOK.slice(
     HOOK.indexOf('outcome.status === "unverified"'),
     HOOK.indexOf('outcome.status === "replaced"'),

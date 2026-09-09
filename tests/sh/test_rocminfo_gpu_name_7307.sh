@@ -5,11 +5,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
-PASS=0
-FAIL=0
-
 _FUNC_FILE=$(mktemp)
 {
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
@@ -32,15 +30,6 @@ _PICK_PROG=$(_extract_pick "$INSTALL_SH")
 _PICK_PROG_SETUP=$(_extract_pick "$SETUP_SH")
 [ -n "$_PICK_PROG" ] || { echo "FATAL: no record selector found in $INSTALL_SH" >&2; exit 1; }
 _pick() { awk -v idx="$1" "$_PICK_PROG"; }
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 # Installer and updater must use the same parser.
 _body_install=$(sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH" | tail -n +2)

@@ -428,6 +428,7 @@ def test_the_hub_scan_probes_off_the_event_loop(tmp_path: Path):
                 [],
                 [],
                 [],
+                [],
                 list(rows),
             )
         )
@@ -461,6 +462,7 @@ def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
                 tmp_path / "hf",
                 tmp_path / "legacy",
                 tmp_path / "default",
+                [],
                 [],
                 [],
                 [],

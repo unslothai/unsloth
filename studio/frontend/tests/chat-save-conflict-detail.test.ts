@@ -67,6 +67,12 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
       "@/features/hf-auth": { prepareHfTokenForUse: async () => undefined },
+      // loadModel calls the notice on every load, and this harness names chat-api's
+      // imports exactly, so the stub must exist even though no toast is raised here.
+      "@/features/igpu-carveout": {
+        dismissCarveoutAdviceForModel: () => {},
+        showCarveoutAdvice: () => {},
+      },
       "@/features/hub/lib/abort-signals": {},
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },

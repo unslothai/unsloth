@@ -9,7 +9,6 @@
 // until a progress poll consumes it is what makes the reset reliable.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -17,10 +16,9 @@ import {
   PROGRESS_POLL_INTERVAL_MS,
 } from "../src/features/hub/download-manager/download-manager-config.ts";
 
-const source = readFileSync(
-  new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/hub/download-manager/poll-loop.ts");
 
 test("status ticks outnumber progress polls, so the race is the normal case", () => {
   assert.ok(
