@@ -1023,3 +1023,96 @@ def test_a_probe_that_answers_with_a_relative_path_is_ignored(monkeypatch, isola
         lambda *a, **k: real_subprocess.CompletedProcess(a[0], 0, "undefined\n", ""),
     )
     assert module._probe_tool_cache_dir("npm", ["npm", "config", "get", "cache"]) is None
+
+
+def test_the_recorded_install_uv_cache_is_reported(tmp_path, monkeypatch, isolated_caches):
+    """The backend's seeded UV_CACHE_DIR is not always the one updates fill.
+
+    _setup_cache_env seeds <studio>/cache/uv, while an install whose installer
+    used a warm cache elsewhere records it and unsloth_cli's
+    _with_studio_uv_cache keeps sending updates there.
+    """
+    from utils.paths import storage_roots
+
+    studio_cache = tmp_path / "studio-cache"
+    seeded = studio_cache / "uv"
+    warm = tmp_path / "warm-uv"
+    _write(seeded / "seeded.whl", "s" * 10)
+    _write(warm / "archive-v0" / "big.whl", "w" * 900)
+    monkeypatch.setattr(storage_roots, "cache_root", lambda: studio_cache)
+    (studio_cache / "uv-cache-dir").write_text(f"{warm}\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_CACHE_DIR", str(seeded))
+
+    entry = describe_cache(definition_for("uv"))
+    assert entry["paths"] == [str(seeded), str(warm)]
+    assert entry["size_bytes"] == 910
+    purge_caches(["uv"])
+    assert not (warm / "archive-v0").exists()
+    assert seeded.is_dir()
+
+
+def test_a_blank_or_missing_uv_marker_adds_nothing(tmp_path, monkeypatch, isolated_caches):
+    from utils import cache_inventory as module
+    from utils.paths import storage_roots
+
+    studio_cache = tmp_path / "studio-cache"
+    studio_cache.mkdir()
+    monkeypatch.setattr(storage_roots, "cache_root", lambda: studio_cache)
+    assert module._recorded_uv_cache() is None
+    (studio_cache / "uv-cache-dir").write_text("   \n", encoding = "utf-8")
+    assert module._recorded_uv_cache() is None
+
+
+def test_the_studio_temporary_workspace_is_refused(tmp_path, monkeypatch, isolated_caches):
+    """tmp_root() is not a cache: decoding and training read files back from it."""
+    from utils.paths import storage_roots
+
+    workspace = tmp_path / "unsloth-studio"
+    in_use = _write(workspace / "decode" / "clip.wav", "a" * 10)
+    monkeypatch.setattr(storage_roots, "tmp_root", lambda: workspace)
+    monkeypatch.setenv("UV_CACHE_DIR", str(workspace / "decode"))
+
+    entry = describe_cache(definition_for("uv"))
+    assert entry["purgeable"] is False
+    purge_caches(["uv"])
+    assert in_use.exists()
+    with pytest.raises(CachePurgeRefused):
+        assert_purgeable_root(workspace)
+
+
+def test_two_cold_probes_do_not_race_into_the_fallback(tmp_path, monkeypatch, isolated_caches):
+    """Recording the miss before the probe finished was itself the bug.
+
+    A second cold request read it as a finished failure, showed the platform
+    fallback, and then had its Clear resolve the configured path it never
+    displayed.
+    """
+    import subprocess as real_subprocess
+    import threading
+
+    from utils import cache_inventory as module
+
+    configured = tmp_path / "corp-pip"
+    configured.mkdir()
+    monkeypatch.delenv("PIP_CACHE_DIR", raising = False)
+    monkeypatch.setattr(module, "_probed_cache_dirs", {})
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(*args, **kwargs):
+        started.set()
+        release.wait(5)
+        return real_subprocess.CompletedProcess(args[0], 0, f"{configured}\n", "")
+
+    monkeypatch.setattr(module.subprocess, "run", slow)
+    answers: list = []
+    first = threading.Thread(target = lambda: answers.append(module._pip_dirs()))
+    first.start()
+    assert started.wait(5)
+    second = threading.Thread(target = lambda: answers.append(module._pip_dirs()))
+    second.start()
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert answers == [[configured], [configured]]

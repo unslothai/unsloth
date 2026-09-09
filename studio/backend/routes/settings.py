@@ -1125,13 +1125,20 @@ def update_hugging_face_cache(
 
 @router.get("/caches", response_model = CacheInventoryResponse)
 async def get_caches(
-    refresh: bool = False, current_subject: str = Depends(get_current_subject)
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> CacheInventoryResponse:
     """Size every cache this install writes to, plus the free space around them.
 
     ``refresh`` re-walks every cache instead of reusing a size measured in the
     last minute, for the Recheck the UI offers after something big was written.
+    It is the interactive button, and a walk of a large hub or triton cache is
+    seconds of stat calls in the shared executor with no memo in front of it, so
+    only a UI session may ask for one. A plain read stays open to an API key.
     """
+    if refresh:
+        require_ui_session(via_api_key)
     # A cold walk of a large hub or triton cache is seconds of stat calls, so it
     # stays off the event loop.
     inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)

@@ -143,13 +143,53 @@ def _first(*candidates: Optional[Path]) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 
+# Written by the installer, read by unsloth_cli's _with_studio_uv_cache.
+_UV_CACHE_MARKER = "uv-cache-dir"
+
+
+def _recorded_uv_cache() -> Optional[Path]:
+    """The uv cache the installer recorded, which updates keep filling.
+
+    storage_roots._setup_cache_env seeds UV_CACHE_DIR to <studio>/cache/uv when
+    nothing inherited one, but an install whose installer used a warm cache
+    somewhere else records it here and _with_studio_uv_cache keeps sending
+    updates there. Parsed exactly as the CLI parses it: one record, one trailing
+    delimiter, no expanduser, since uv makes a literal "~" directory.
+    """
+    try:
+        from utils.paths.storage_roots import cache_root
+        recorded = (cache_root() / _UV_CACHE_MARKER).read_text(
+            encoding = "utf-8-sig", errors = "surrogateescape"
+        )
+    except (OSError, ValueError, RuntimeError):
+        return None
+    recorded = recorded.removesuffix("\n").removesuffix("\r")
+    if not recorded.strip():
+        return None
+    try:
+        return Path(os.path.abspath(recorded))
+    except (OSError, ValueError):
+        return None
+
+
 def _uv_dirs() -> list[Path]:
-    return _first(_env_dir("UV_CACHE_DIR"), _platform_cache_dir("uv"))
+    # Both, when they differ: the one this backend runs uv with, and the one the
+    # installer recorded and updates keep filling. Either is a uv cache and
+    # either can be the multi-gigabyte one, so neither is the row on its own.
+    roots = _first(_env_dir("UV_CACHE_DIR"), _platform_cache_dir("uv"))
+    recorded = _recorded_uv_cache()
+    if recorded is not None:
+        roots.append(recorded)
+    return roots
 
 
 # One answer per tool per process: a config file does not change under a running
 # backend, and this sits on a read the Resources tab makes.
 _probed_cache_dirs: dict[str, Optional[Path]] = {}
+# Held across the probe, not just the store: recording the miss first let a
+# second cold request read it as a finished failure, show the platform fallback,
+# and then have its Clear resolve the configured path it never displayed.
+_probe_lock = threading.Lock()
 
 
 def _probe_tool_cache_dir(name: str, command: list[str]) -> Optional[Path]:
@@ -162,34 +202,36 @@ def _probe_tool_cache_dir(name: str, command: list[str]) -> Optional[Path]:
     second, weaker answer that drifts; the tool is the first-hand one.
     """
     from utils.child_stdio import utf8_child_env
-
-    if name in _probed_cache_dirs:
-        return _probed_cache_dirs[name]
-    _probed_cache_dirs[name] = None
-    try:
-        done = subprocess.run(
-            command,
-            capture_output = True,
-            text = True,
-            # The child picks its stdout encoding from the locale, which is the
-            # ANSI codepage on Windows and ASCII under a C locale, so a path
-            # with non-ASCII in it would come back mangled either way. Tell the
-            # child to emit the UTF-8 this decodes, as the other spawns here do.
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(),
-            timeout = 20,
-        )
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        logger.debug(f"Could not ask {name} for its cache directory: {exc}")
-        return None
-    reported = done.stdout.strip() if done.returncode == 0 else ""
-    if reported:
-        candidate = Path(reported).expanduser()
-        # npm prints "undefined" rather than failing when it has no answer.
-        if candidate.is_absolute():
-            _probed_cache_dirs[name] = candidate
-    return _probed_cache_dirs[name]
+    with _probe_lock:
+        if name in _probed_cache_dirs:
+            return _probed_cache_dirs[name]
+        answer: Optional[Path] = None
+        try:
+            done = subprocess.run(
+                command,
+                capture_output = True,
+                text = True,
+                # The child picks its stdout encoding from the locale, which is
+                # the ANSI codepage on Windows and ASCII under a C locale, so a
+                # path with non-ASCII in it would come back mangled either way.
+                # Tell it to emit the UTF-8 this decodes, as the other spawns
+                # here do.
+                encoding = "utf-8",
+                errors = "replace",
+                env = utf8_child_env(),
+                timeout = 20,
+            )
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            logger.debug(f"Could not ask {name} for its cache directory: {exc}")
+        else:
+            reported = done.stdout.strip() if done.returncode == 0 else ""
+            if reported:
+                candidate = Path(reported).expanduser()
+                # npm prints "undefined" rather than failing with no answer.
+                if candidate.is_absolute():
+                    answer = candidate
+        _probed_cache_dirs[name] = answer
+        return answer
 
 
 def _pip_dirs() -> list[Path]:
@@ -578,6 +620,7 @@ def protected_paths() -> set[Path]:
         studio_db_path,
         studio_root,
         tensorboard_root,
+        tmp_root,
     )
 
     candidates: list[Path] = [
@@ -595,6 +638,9 @@ def protected_paths() -> set[Path]:
         exports_root(),
         rag_root(),
         tensorboard_root(),
+        # Not a cache: audio decoding and training write inputs here and read
+        # them back after closing the writer.
+        tmp_root(),
         documents_root(),
         project_workspaces_root(),
         # Not a cache root of ours as a whole: it is the parent the per-tool
@@ -648,6 +694,7 @@ def protected_trees() -> set[Path]:
         rag_root,
         studio_bin_root,
         tensorboard_root,
+        tmp_root,
     )
 
     candidates: list[Path] = [
@@ -665,6 +712,7 @@ def protected_trees() -> set[Path]:
         # Descendants of the studio home are deliberately allowed, because the
         # caches live there, so the executables need naming on their own.
         studio_bin_root(),
+        tmp_root(),
     ]
     configured = _env_dir("DATA_DESIGNER_HOME")
     if configured is not None:

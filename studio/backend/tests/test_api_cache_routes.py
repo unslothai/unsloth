@@ -126,3 +126,34 @@ def test_recheck_asks_for_a_fresh_walk(monkeypatch, client):
     client.get("/api/settings/caches")
     client.get("/api/settings/caches?refresh=true")
     assert asked == [False, True]
+
+
+def test_an_api_key_caller_cannot_force_a_rescan(monkeypatch):
+    """A forced walk has no memo in front of it and takes seconds per cache.
+
+    It is the interactive Recheck button, so an API key gets the memoised read
+    and not the one that occupies an executor thread on demand.
+    """
+    app = FastAPI()
+    app.include_router(settings_route.router, prefix = "/api/settings")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    asked: list = []
+
+    def fake_inventory(refresh = False):
+        asked.append(refresh)
+        return {
+            "caches": [],
+            "total_bytes": 0,
+            "reclaimable_bytes": 0,
+            "free_bytes": None,
+            "total_disk_bytes": None,
+        }
+
+    monkeypatch.setattr(settings_route, "cache_inventory", fake_inventory)
+    remote = TestClient(app)
+    assert remote.get("/api/settings/caches?refresh=true").status_code == 403
+    assert asked == []
+    # ...and the ordinary read still answers it.
+    assert remote.get("/api/settings/caches").status_code == 200
+    assert asked == [False]
