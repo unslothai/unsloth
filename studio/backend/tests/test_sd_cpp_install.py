@@ -85,7 +85,8 @@ def _shared_setup_7(tmp_path):
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
         _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
-    return archive, zf
+    # Only the path escapes: the ZipFile is closed by the time this returns.
+    return archive
 
 
 # Shared setup for test_a_failed_server_upgrade_is_not_retried_by_the_cli_probe, test_a_serverless_deferred_install_still_lands_after_teardown, test_a_serverless_install_is_not_replaced_under_a_running_cli and 1 more.
@@ -114,7 +115,8 @@ def _shared_setup_10(tmp_path):
     with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
         json.dump({"accelerator": "cpu", "repo": "r", "tag": "old"}, f)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
-    return f, root
+    # Only the root escapes: the record file is closed by the time this returns.
+    return root
 
 
 # Shared setup for test_a_generation_re_resolves_the_cli_the_install_moved, test_a_partial_sweep_never_returns_the_file_it_deleted, test_a_re_found_cli_goes_through_the_usability_gate.
@@ -977,7 +979,7 @@ def test_safe_extractall_survives_a_probe_left_by_a_killed_install(tmp_path):
     # block every retry.
     target = _shared_setup_2(tmp_path)
     (target / f".unsloth-symlink-probe-{os.getpid()}").symlink_to(".")
-    archive, zf = _shared_setup_7(tmp_path)
+    archive = _shared_setup_7(tmp_path)
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
     assert (target / "libwebp.so.7").is_symlink()
@@ -1014,7 +1016,7 @@ def test_safe_extractall_repairs_a_flattened_install(tmp_path):
     # What every pre-fix install left behind: the link flattened to its target text.
     (target / "libwebp.so.7.2.0").write_bytes(b"ELFpayload")
     (target / "libwebp.so.7").write_bytes(b"libwebp.so.7.2.0")
-    archive, zf = _shared_setup_7(tmp_path)
+    archive = _shared_setup_7(tmp_path)
 
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
@@ -1028,7 +1030,7 @@ def test_safe_extractall_survives_a_hand_repaired_install(tmp_path):
     # The workaround #9268 tells users to apply by hand, which the next install must not undo.
     (target / "libwebp.so.7.2.0").write_bytes(b"ELFpayload")
     (target / "libwebp.so.7").symlink_to("libwebp.so.7.2.0")
-    archive, zf = _shared_setup_7(tmp_path)
+    archive = _shared_setup_7(tmp_path)
 
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
@@ -1044,7 +1046,7 @@ def test_safe_extractall_falls_back_when_symlinks_are_unavailable(tmp_path, monk
     # with the flattened member, exactly as it did before symlinks were restored.
     target = tmp_path / "install"
     target.mkdir()
-    archive, zf = _shared_setup_7(tmp_path)
+    archive = _shared_setup_7(tmp_path)
 
     def _no_symlinks(self, *args, **kwargs):
         raise OSError(1314, "A required privilege is not held by the client")
@@ -2382,7 +2384,7 @@ def test_an_unreadable_record_does_not_retire_the_memo(tmp_path, monkeypatch):
     now (another writer holding it open, a permission blip) is not evidence that someone else
     rewrote it, and retiring the memo on that hands the next selection the stale accelerator --
     a multi-GB reinstall on every load."""
-    f, root = _shared_setup_10(tmp_path)
+    root = _shared_setup_10(tmp_path)
 
     real_open = builtins.open
 
@@ -2423,7 +2425,7 @@ def test_an_external_record_update_retires_the_memo(tmp_path, monkeypatch):
     """The memo speaks only for the record it could not replace. Once the installer CLI or another
     Unsloth rewrites that file, the file is the newer answer -- otherwise this process would keep
     reporting its own stale accelerator and treat the other one's CUDA binaries as a CPU match."""
-    f, root = _shared_setup_10(tmp_path)
+    root = _shared_setup_10(tmp_path)
 
     real_open = builtins.open
 
@@ -2520,7 +2522,7 @@ def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_
     """The nastier shape of the same failure: the old record is READABLE but cannot be replaced, so
     it keeps answering "cpu" after a successful cuda install and every later selection downloads
     the bundle again. What this process installed is strictly newer than what is on disk."""
-    f, root = _shared_setup_10(tmp_path)
+    root = _shared_setup_10(tmp_path)
     sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
     real_open = builtins.open
