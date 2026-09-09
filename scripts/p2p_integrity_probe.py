@@ -183,7 +183,11 @@ def main() -> int:
                 checked += 1
                 pair = f"{src}->{dst}"
                 access = "yes" if can else "no"
-                if setup_error is not None:
+                # Corruption already observed on an earlier repeat outranks a later
+                # allocation failure. Repeats exist to catch INTERMITTENT drops, so
+                # letting a subsequent setup error downgrade a real mismatch to
+                # SKIPPED would hide exactly what the repeating is for.
+                if setup_error is not None and not worst_wrong:
                     inconclusive += 1
                     print(
                         f"{pair:>10}  {str(mib) + ' MiB':>8}  {access:>11}  "

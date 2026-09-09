@@ -108,6 +108,10 @@ def _isolate_host_topology(monkeypatch):
     # environment nor test ordering leaks in.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_DC_P2P", raising = False)
+    # Most tests are about the topology verdict, not the launch's device ordering,
+    # so default to a pinned order. The tests that exercise the unpinned path
+    # delete this themselves.
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     LlamaCppBackend._warned_no_nvlink = False
     yield
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
@@ -908,21 +912,37 @@ def test_explicit_p2p_opt_out_does_not_warn_about_corruption(monkeypatch):
     assert not [m for m in seen if "without a confirmed NVLink" in m], seen
 
 
-def test_auto_selected_launch_pins_pci_bus_id(monkeypatch):
-    """The gate verifies nvidia-smi physical ids, so the child's mask has to mean
-    the same devices. CUDA_DEVICE_ORDER was pinned only for an explicit user pick,
-    leaving an auto-fit selection verified as physical [0,1] free to launch on
-    [0,2]: NVLink confirmed for one pair, peer traffic on another (#10613)."""
+def test_auto_fit_selection_without_a_pinned_order_refuses_p2p(monkeypatch):
+    """The gate verifies nvidia-smi physical ids; the child only resolves the same
+    cards when CUDA_DEVICE_ORDER is pinned, which the launch does solely for an
+    explicit user pick. For an auto-fit selection [0,1] here can be [0,2] there, so
+    refuse rather than confirm NVLink for a pair that is not the one running."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")
+    # Auto-fit (the launch will not pin the order): withheld.
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+    # Explicit user pick, so the launch pins PCI_BUS_ID: allowed.
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], launch_order_pinned = True) is None
+    # Already pinned in this process: allowed either way.
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
+
+
+def test_auto_fit_launch_does_not_rewrite_an_inherited_device_order(monkeypatch):
+    """Forcing PCI_BUS_ID for an auto-fit launch would re-interpret an inherited
+    numeric mask: a scheduler's CUDA_VISIBLE_DEVICES=0,1 meaning physical 2,0 would
+    become physical 0,1, running on a GPU that was hidden on purpose."""
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)
-    marker = 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"'
-    idx = src.index("_emit_child_gpu_visibility(\n")
-    before = src[:idx]
-    assert marker in before
-    # The pin must not sit behind the explicit-pick condition.
-    tail = before[before.rindex(marker) :]
-    assert "if gpu_ids" not in before[before.rindex("elif gpu_indices is not None") :]
+    branch = src[src.index("elif gpu_indices is not None and not is_vulkan_backend"):]
+    branch = branch[: branch.index("_launch_pinned_ids")]
+    pin = 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"'
+    assert pin in branch
+    # The pin must stay behind the explicit-pick condition.
+    assert "if gpu_ids:" in branch[: branch.index(pin)]
 
 
 def test_datacenter_box_warns_once_not_twice(monkeypatch):
