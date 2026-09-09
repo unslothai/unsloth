@@ -231,7 +231,9 @@ def test_a_num_labels_load_is_hooked_even_when_fast_inference_was_asked_for():
             for c in ast.walk(node)
         )
     ]
-    assert len(branches) == 1, "no single `num_labels` branch attaches the hooks; this guard has gone vacuous"
+    assert (
+        len(branches) == 1
+    ), "no single `num_labels` branch attaches the hooks; this guard has gone vacuous"
 
     passed = [
         keyword.value
@@ -242,9 +244,7 @@ def test_a_num_labels_load_is_hooked_even_when_fast_inference_was_asked_for():
         if keyword.arg == "fast_inference"
     ]
     assert passed, "the classification load no longer says whether vLLM owns its weights"
-    assert not any(
-        _evaluate(value, fast_inference = True, num_labels = 2) for value in passed
-    ), (
+    assert not any(_evaluate(value, fast_inference = True, num_labels = 2) for value in passed), (
         "the classification load hands _attach_bnb_multidevice_hooks a truthy fast_inference, "
         "which returns early, so a split bnb model gets no dispatch hooks"
     )
@@ -420,9 +420,7 @@ def test_a_split_classification_model_gets_its_rebuilt_embedding_hooked():
     A classification model answers None for its output embedding, so the input embedding is the
     whole repair, and `score` sits on the near card with nothing to give back.
     """
-    model = _Classifier(
-        {"model.embed_tokens": FAR, "model.layer": NEAR, "score": NEAR}
-    ).dispatch()
+    model = _Classifier({"model.embed_tokens": FAR, "model.layer": NEAR, "score": NEAR}).dispatch()
     assert hasattr(model.model.embed_tokens, "_hf_hook"), "fixture never dispatched"
 
     model.post_patch()
