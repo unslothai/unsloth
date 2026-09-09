@@ -1570,12 +1570,15 @@ def _stream_then_cancel(text, tool = "web_search"):
     return (texts[-1] if texts else ""), events
 
 
-@pytest.mark.parametrize("rehearsed", [
-    "call:web_search{q:x}",
-    "<function=web_search><parameter=q>x</parameter></function>",
-    '<tool_call>{"name":"web_search"}</tool_call>',
-    'web_search[ARGS]{"q":"x"}',
-])
+@pytest.mark.parametrize(
+    "rehearsed",
+    [
+        "call:web_search{q:x}",
+        "<function=web_search><parameter=q>x</parameter></function>",
+        '<tool_call>{"name":"web_search"}</tool_call>',
+        'web_search[ARGS]{"q":"x"}',
+    ],
+)
 def test_a_call_rehearsed_in_reasoning_does_not_stall_the_stream(rehearsed):
     """The parser masks reasoning spans, so the detector must not treat a marker inside one as
     a boundary. It did, so the loop drained at the marker, stopped streaming, and a cancel then
@@ -1588,26 +1591,30 @@ def test_a_call_rehearsed_in_reasoning_does_not_stall_the_stream(rehearsed):
     assert not any(event.get("type") == "tool_start" for event in events)
 
 
-@pytest.mark.parametrize("text", [
-    "<think>plan</think>call:web_search{q:x}",
-    "<think>plan</think><function=web_search><parameter=q>x</parameter></function>",
-    "call:web_search{q:x}",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<think>plan</think>call:web_search{q:x}",
+        "<think>plan</think><function=web_search><parameter=q>x</parameter></function>",
+        "call:web_search{q:x}",
+    ],
+)
 def test_a_real_call_outside_reasoning_is_still_a_boundary(text):
     """The skip must not swallow a genuine call that merely follows a reasoning block."""
     from core.inference.safetensors_agentic import _earliest_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS
 
-    signal = _earliest_tool_signal(
-        text, TOOL_XML_SIGNALS, [{"function": {"name": "web_search"}}]
-    )
+    signal = _earliest_tool_signal(text, TOOL_XML_SIGNALS, [{"function": {"name": "web_search"}}])
     assert signal >= 0
 
 
-@pytest.mark.parametrize("predicate,text", [
-    ("gemma", 'call:terminal{command:"' + "x" * 16000),
-    ("bare_json", '{"name":"terminal","arguments":{"command":"' + "x" * 16000),
-])
+@pytest.mark.parametrize(
+    "predicate,text",
+    [
+        ("gemma", 'call:terminal{command:"' + "x" * 16000),
+        ("bare_json", '{"name":"terminal","arguments":{"command":"' + "x" * 16000),
+    ],
+)
 def test_an_open_blocked_body_is_not_rescanned_per_token(predicate, text):
     """Both loops call these per cumulative snapshot while the body streams, and each call
     restarted the walk at the opening brace: quadratic in the body, seconds at the 16 KiB the
@@ -1615,11 +1622,14 @@ def test_an_open_blocked_body_is_not_rescanned_per_token(predicate, text):
     it."""
     import time
     from core.inference.tool_call_parser import (
-        blocked_bare_json_chain_may_continue, blocked_gemma_chain_may_continue,
+        blocked_bare_json_chain_may_continue,
+        blocked_gemma_chain_may_continue,
     )
 
-    check = blocked_gemma_chain_may_continue if predicate == "gemma" else (
-        blocked_bare_json_chain_may_continue
+    check = (
+        blocked_gemma_chain_may_continue
+        if predicate == "gemma"
+        else (blocked_bare_json_chain_may_continue)
     )
     # Every snapshot, not a sample: at a coarse stride the quadratic cost is divided away and
     # the unfixed walk passes too.
