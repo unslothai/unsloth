@@ -4596,6 +4596,9 @@ class TestTheEarlyNvidiaProbesAreBounded:
         )
         script = _script(
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded"),
+            # The probe resolves its executable through this; without it the call is
+            # unresolved and the probe answers False for a reason the test is not about.
+            _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Test-WoaNvidiaPresent"),
             f"$env:PATH = '{tmp_path}' + [System.IO.Path]::PathSeparator + $env:PATH",
             "Write-Output (Test-WoaNvidiaPresent)",
@@ -4611,6 +4614,10 @@ class TestTheEarlyNvidiaProbesAreBounded:
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded").replace(
                 "[int]$TimeoutSec = 10", "[int]$TimeoutSec = 2"
             ),
+            # Required, and easy to miss: an unresolved lookup makes Get-WoaDriverCudaVersion
+            # return $null before it ever calls nvidia-smi, so the "[]" below would pass
+            # without the timeout this test exists to bound ever being exercised.
+            _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Get-WoaDriverCudaVersion"),
             f"$env:PATH = '{tmp_path}' + [System.IO.Path]::PathSeparator + $env:PATH",
             "$v = Get-WoaDriverCudaVersion",
@@ -6141,6 +6148,33 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
         helper = INSTALL_SRC.index("function Get-WoaNvidiaSmiPath")
         for name in ("Test-WoaNvidiaPresent", "Get-WoaDriverCudaVersion"):
             assert helper < INSTALL_SRC.index(f"function {name}"), name
+
+    def test_every_composed_script_injects_the_helper_its_bodies_call(self):
+        """The pwsh tests paste real function bodies into a bare script, so a body that gains a
+        call to a helper the composition does not also inject leaves that call unresolved.
+        PowerShell writes an error and carries on with $null, so Get-WoaDriverCudaVersion
+        returns $null BEFORE reaching nvidia-smi and the "[]" assertion still passes: the
+        timeout it exists to bound is never exercised. That is a silent false pass, and on a
+        host without pwsh the whole test skips, so nothing reports it. This guard needs no
+        pwsh, which is the point."""
+        callers = [
+            name
+            for name in ("Test-WoaNvidiaPresent", "Get-WoaDriverCudaVersion")
+            if "Get-WoaNvidiaSmiPath" in _function_source(INSTALL_SRC, name)
+        ]
+        assert callers, "neither probe routes through the shared lookup any more"
+        own = pathlib.Path(__file__).read_text(encoding = "utf-8")
+        for name in callers:
+            for match in re.finditer(
+                rf'_function_source\(INSTALL_SRC, "{re.escape(name)}"\)', own
+            ):
+                # The _script(...) call this appears in, back to its opening paren.
+                start = own.rindex("_script(", 0, match.start())
+                block = own[start : own.index("\n        )", match.end())]
+                assert '_function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath")' in block, (
+                    f"a composed script injects {name}, which calls Get-WoaNvidiaSmiPath, "
+                    "without injecting that helper"
+                )
 
     def test_the_guard_this_protects_is_still_there(self):
         # If the CUDA-major check ever goes away, this whole class is pointless; say so loudly.
