@@ -2177,8 +2177,8 @@ _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
     "cohere2": 4,  # Cohere2Config.sliding_window_pattern
 }
 
-# Process-wide cache backed by JSON on disk. Values are int period or
-# list[bool] mask. Lazy-loaded.
+# Process-wide cache backed by JSON on disk. Values are int period,
+# list[bool] mask, or false for a remembered Hub miss. Lazy-loaded.
 _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
 
@@ -2484,9 +2484,8 @@ def _resolve_swa_pattern(
             cache[arch] = entry
         _save_swa_cache(cache)
 
-    if (entry := cache.get(arch)) is not None:
-        if (mask := _entry_to_mask(entry)) is not None:
-            return mask
+    if arch in cache:
+        return _entry_to_mask(cache[arch])
 
     if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(arch)) is not None:
         return _entry_to_mask(entry)
@@ -2496,15 +2495,24 @@ def _resolve_swa_pattern(
         _persist(entry)
         return _entry_to_mask(entry)
 
-    # Tier 3: live HF fetch (result persistently cached)
+    # Tier 3: live HF fetch (hit or miss persistently cached)
     if allow_network:
+        seen = set()
+        fetched = False
         for repo_id in source_repo_candidates:
             if not repo_id:
                 continue
+            folded = repo_id.casefold()
+            if folded in seen:
+                continue
+            seen.add(folded)
+            fetched = True
             entry = _fetch_swa_entry_from_hf(repo_id)
             if entry is not None:
                 _persist(entry)
                 return _entry_to_mask(entry)
+        if fetched:
+            _persist(False)
 
     return None
 

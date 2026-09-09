@@ -594,13 +594,53 @@ class TestDynamicSwaResolver:
             general = {"general.source.huggingface.repository": "vendor/does-not-exist"},
         )
         assert b._sliding_window_pattern is None
-        assert not (tmp_path / "swa_cache.json").exists()
+        with open(tmp_path / "swa_cache.json") as f:
+            assert json.load(f) == {"newmodel": False}
+
+    def test_remembered_miss_skips_hf_refetch(self, monkeypatch, tmp_path):
+        self._isolate_cache(monkeypatch, tmp_path)
+        from core.inference import llama_cpp as lc
+
+        calls = []
+        monkeypatch.setattr(
+            lc, "_fetch_swa_entry_from_hf", lambda repo_id: calls.append(repo_id) or None
+        )
+        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
+        general = {"general.source.huggingface.repository": "vendor/does-not-exist"}
+        first = _backend_from_gguf("newmodel", _SWA_FIELDS, general = general)
+        assert first._sliding_window_pattern is None
+        assert calls == ["vendor/does-not-exist"]
+        monkeypatch.setattr(lc, "_SWA_CACHE", None)
+        second = _backend_from_gguf("newmodel", _SWA_FIELDS, general = general)
+        assert second._sliding_window_pattern is None
+        assert calls == ["vendor/does-not-exist"]
+
+    def test_casefold_duplicate_repos_are_fetched_once(self, monkeypatch, tmp_path):
+        self._isolate_cache(monkeypatch, tmp_path)
+        from core.inference import llama_cpp as lc
+
+        calls = []
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", lambda repo_id: calls.append(repo_id) or None)
+        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
+        b = _backend_from_gguf(
+            "newmodel",
+            _SWA_FIELDS,
+            general = {
+                "general.source.huggingface.repository": "DeepSeek-AI/Flash",
+                "general.organization": "deepseek-ai",
+                "general.basename": "Flash",
+            },
+        )
+        assert b._sliding_window_pattern is None
+        assert calls == ["DeepSeek-AI/Flash"]
 
 
 class TestTransformersIntrospection:
     """Tier 2.5: default-init the matching Config; on failure, parse via inspect."""
 
     def _isolate_cache(self, monkeypatch, tmp_path):
+        from core.inference import llama_cpp as lc
+
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
         monkeypatch.setattr(lc, "_SWA_CACHE", None)
         return tmp_path
