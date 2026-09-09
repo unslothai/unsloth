@@ -251,3 +251,158 @@ function python {
         Invoke-OfflineBranch -InstalledVer '' -UvOffline '1' -DesktopVer '' | Should -Be 'False'
     }
 }
+
+<#
+    UNSLOTH_STUDIO_FULL_DEPS is the documented way out of every dependency-pass skip:
+    install_python_stack.py's _full_deps_requested is written around "a skip nobody can
+    turn off is a bug nobody can work around". But install_python_stack.py is only ever
+    REACHED when $SkipPythonDeps is false, and the version compare above sets it true the
+    moment the installed version equals the PyPI latest -- so on exactly the install the
+    hatch exists for, one that reports "up to date" and still does not work, setting the
+    variable did nothing at all.
+
+    Invoke-FastPathEscapes is where it belongs: the up-to-date branch and the UV_OFFLINE
+    branch both run it, so neither can honour the hatch while the other ignores it. The
+    driver below is the real helper, sliced out of setup.ps1 the same way as above.
+#>
+Describe 'UNSLOTH_STUDIO_FULL_DEPS reaches the fast path' {
+    BeforeAll {
+        $fullDepsEscapeSrc = Get-FunctionSource -Path $script:SetupPs1 -Name 'Invoke-FastPathEscapes'
+        if (-not $fullDepsEscapeSrc) { throw "Invoke-FastPathEscapes is gone from setup.ps1." }
+        # Without this every case below would pass vacuously against a helper that never
+        # looks at the variable: an unset hatch and an ignored hatch both preserve the skip.
+        if ($fullDepsEscapeSrc -notmatch 'UNSLOTH_STUDIO_FULL_DEPS') {
+            throw ("Invoke-FastPathEscapes no longer reads UNSLOTH_STUDIO_FULL_DEPS -- the " +
+                   "escape hatch is honoured only inside install_python_stack.py, which a " +
+                   "skipped dependency pass never runs.")
+        }
+
+        $script:FullDepsDir = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-fulldeps-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $script:FullDepsDir -Force | Out-Null
+        $script:FullDepsDriver = Join-Path $script:FullDepsDir 'driver.ps1'
+
+        # Stubs for everything the helper reaches that is not the hatch, all answering "no
+        # repair owed", so the ONLY thing that can clear the skip in this driver is the
+        # variable under test.
+        $fullDepsPrelude = @'
+param(
+    [AllowEmptyString()][string]$FullDeps,
+    [bool]$SetFullDeps,
+    [bool]$StartSkipping
+)
+if ($SetFullDeps) {
+    $env:UNSLOTH_STUDIO_FULL_DEPS = $FullDeps
+} else {
+    Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
+}
+# No desktop floor to fail, so that arm cannot clear the skip behind the hatch's back.
+Remove-Item Env:UNSLOTH_DESKTOP_BACKEND_VERSION -ErrorAction SilentlyContinue
+$InstalledVer = "2026.8.15"
+$_PkgName = "unsloth"
+$installedTorchTag = "cu128"
+$NoTorchMode = $false
+$VenvDir = Join-Path $PSScriptRoot "venv"
+$script:IsIntelXpu = $false
+$script:ROCmGfxArch = $null
+$script:Substeps = @()
+# The flag the version compare would have set. A plain assignment at script top level IS
+# $script:SkipPythonDeps, which is what the helper copies in and publishes back.
+$SkipPythonDeps = $StartSkipping
+
+function step { param([string]$a, [string]$b, [string]$c) }
+function substep { param([string]$Message, [string]$Color = "DarkGray") $script:Substeps += $Message }
+function Get-PinnedTorchIndexUrl { return "" }
+function Get-TorchIndexLeaf { param([AllowNull()][string]$Url) return "" }
+function Test-VenvTorchIsXpuSupported { param([string]$VenvPath) return $true }
+function Invoke-BoundedPythonProbe {
+    param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+    return [pscustomobject]@{ Ok = $true; Output = ""; Error = ""; TimedOut = $false }
+}
+function python {
+    # Every probe in the helper reads $LASTEXITCODE and treats a nonzero as "nothing to
+    # repair". A function call does not set it by itself, hence the explicit $global: write.
+    $global:LASTEXITCODE = 1
+}
+'@
+        $fullDepsEpilogue = @'
+
+Invoke-FastPathEscapes
+"SKIP=$SkipPythonDeps"
+"SUBSTEPS=" + ($script:Substeps -join '|')
+'@
+        Set-Content -LiteralPath $script:FullDepsDriver -Encoding utf8 -Value (
+            $fullDepsPrelude + "`n" + $fullDepsEscapeSrc + "`n" + $fullDepsEpilogue)
+
+        function script:Invoke-FullDepsEscape {
+            param(
+                [AllowEmptyString()][string]$FullDeps,
+                [bool]$SetFullDeps = $true,
+                [bool]$StartSkipping = $true
+            )
+            $out = & $script:FullDepsDriver -FullDeps $FullDeps -SetFullDeps $SetFullDeps `
+                -StartSkipping $StartSkipping
+            $text = ($out | Out-String)
+            if ($text -notmatch '(?m)^SKIP=(\S+)\s*$') {
+                throw "the escapes did not run (output: '$text')"
+            }
+            return $Matches[1]
+        }
+
+        function script:Get-FullDepsSubsteps {
+            param([AllowEmptyString()][string]$FullDeps, [bool]$SetFullDeps = $true)
+            $out = & $script:FullDepsDriver -FullDeps $FullDeps -SetFullDeps $SetFullDeps -StartSkipping $true
+            $text = ($out | Out-String)
+            if ($text -match '(?m)^SUBSTEPS=(.*)$') { return $Matches[1] }
+            return ""
+        }
+    }
+
+    AfterAll {
+        if ($script:FullDepsDir) {
+            Remove-Item -Recurse -Force -LiteralPath $script:FullDepsDir -ErrorAction SilentlyContinue
+        }
+        Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
+    }
+
+    It 'leaves the skip alone when the variable is unset' {
+        # The default. The hatch must cost nothing to the overwhelming majority of updates.
+        Invoke-FullDepsEscape -FullDeps '' -SetFullDeps $false | Should -Be 'True'
+    }
+
+    It 'clears the skip for <value>' -ForEach @(
+        @{ value = '1' }, @{ value = 'true' }, @{ value = 'TRUE' }, @{ value = 'True' },
+        @{ value = 'yes' }, @{ value = 'on' }, @{ value = ' 1 ' }, @{ value = '  true  ' }
+    ) {
+        # The same spellings Test-UvOfflineRequested and install_python_stack.py's
+        # _full_deps_requested accept: a user who wrote FULL_DEPS=yes on one platform, or
+        # for one half of the installer, means the same thing everywhere.
+        Invoke-FullDepsEscape -FullDeps $value | Should -Be 'False'
+    }
+
+    It 'leaves the skip alone for <value>' -ForEach @(
+        @{ value = '0' }, @{ value = '' }, @{ value = '   ' }, @{ value = 'maybe' },
+        @{ value = 'false' }, @{ value = 'off' }, @{ value = 'no' }
+    ) {
+        # Not a "set means true" variable: a stale FULL_DEPS=0 in a shell profile must not
+        # turn every update into a full dependency pass.
+        Invoke-FullDepsEscape -FullDeps $value | Should -Be 'True'
+    }
+
+    It 'says why it is running the pass' {
+        # Silence here is the original bug wearing a different hat: a user who set the
+        # variable has to be able to see from the log that it took effect.
+        Get-FullDepsSubsteps -FullDeps '1' | Should -Match 'UNSLOTH_STUDIO_FULL_DEPS'
+    }
+
+    It 'says nothing when the hatch is not used' {
+        Get-FullDepsSubsteps -FullDeps '' -SetFullDeps $false |
+            Should -Not -Match 'UNSLOTH_STUDIO_FULL_DEPS'
+    }
+
+    It 'does not turn a forced pass back into a skip' {
+        # The helper only ever clears the flag. A version compare that already decided to
+        # update must stay updating whatever the hatch says.
+        Invoke-FullDepsEscape -FullDeps '1' -StartSkipping $false | Should -Be 'False'
+        Invoke-FullDepsEscape -FullDeps '0' -StartSkipping $false | Should -Be 'False'
+    }
+}

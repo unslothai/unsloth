@@ -1894,6 +1894,34 @@ _fast_path_escapes() {
     # _SKIP_PYTHON_DEPS is set directly: a POSIX sh function shares the caller's variable
     # scope, so there is nothing to thread back and no way for a caller to forget to.
 
+    # First, because it is the one escape nothing on disk has to earn: the user asked for it
+    # by hand, and answering it here costs no interpreter and no probe.
+    #
+    # UNSLOTH_STUDIO_FULL_DEPS is install_python_stack.py's own switch (_full_deps_requested
+    # there -- "a skip nobody can turn off is a bug nobody can work around"), and the shell
+    # has to know about a Python-side variable because THIS is the branch that never starts
+    # that module. When the installed version equals the PyPI one the whole dependency pass
+    # is skipped up here, so a hatch honoured only inside install_python_stack.py could not
+    # be reached on the very install it exists for: `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth
+    # studio update` printed "dependencies up to date" and did nothing at all.
+    #
+    # Spelled inline rather than as a helper on purpose: the shell suites drive this function
+    # by slicing it out of this file by name, and a helper left behind in setup.sh would read
+    # as "not requested" instead of failing loudly. The accepted values match
+    # _uv_no_cache_requested / _uv_offline_requested above and .strip().lower() in
+    # ("1", "true", "yes", "on") in install_python_stack.py, whitespace stripped either side
+    # so a value threaded through a desktop launcher or a CI matrix still counts.
+    _fpe_full=${UNSLOTH_STUDIO_FULL_DEPS:-}
+    _fpe_full=${_fpe_full#"${_fpe_full%%[![:space:]]*}"}
+    _fpe_full=${_fpe_full%"${_fpe_full##*[![:space:]]}"}
+    case "$_fpe_full" in
+        1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn])
+            substep "UNSLOTH_STUDIO_FULL_DEPS is set -- forcing dependency pass..."
+            _SKIP_PYTHON_DEPS=false
+            ;;
+    esac
+    unset _fpe_full
+
     # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
     # $_PKG_NAME itself is current; the fast path would otherwise
     # never reach install_python_stack's anyio repair (#6797).

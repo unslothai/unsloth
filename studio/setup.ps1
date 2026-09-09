@@ -4983,6 +4983,21 @@ function Invoke-FastPathEscapes {
     # exactly as they did inline, and published once on the way out.
     $SkipPythonDeps = $script:SkipPythonDeps
 
+    # The documented escape hatch, and the first arm because it is the only one a user can
+    # reach: install_python_stack.py honours UNSLOTH_STUDIO_FULL_DEPS in _full_deps_requested
+    # ("A skip nobody can turn off is a bug nobody can work around"), but that file is never
+    # invoked when the version compare above sets $SkipPythonDeps, so setting it did nothing
+    # for exactly the install it exists for -- one that is "up to date" and still broken.
+    # First also means the bounded probes below cannot cost anything once the answer is
+    # settled. Spelled inline rather than as a Test-FullDepsRequested helper so this function
+    # stays the self-contained unit the tests slice out of the file, but the accepted values
+    # are Test-UvOfflineRequested's: trimmed, case-insensitive 1/true/yes/on.
+    $_fullDepsRequested = "$($env:UNSLOTH_STUDIO_FULL_DEPS)".Trim()
+    if (@('1', 'true', 'yes', 'on') -contains $_fullDepsRequested.ToLowerInvariant()) {
+        substep "UNSLOTH_STUDIO_FULL_DEPS is set -- forcing dependency pass..." "Cyan"
+        $SkipPythonDeps = $false
+    }
+
     # A pre-#6483 install stuck on anyio>=4.14 would skip the repair (#6797), so force it.
     $_anyioBad = $false
     try {
