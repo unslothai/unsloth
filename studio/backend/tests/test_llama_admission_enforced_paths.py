@@ -1718,7 +1718,6 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
             monkeypatch, _CTX
         ) == self._budget_handed_to_the_tool(monkeypatch, None)
 
-
     @staticmethod
     def _final_pass_recall_cap(monkeypatch, allowance):
         """The cap the synthesized final pass prices its recall against."""
