@@ -2810,6 +2810,36 @@ def test_run_server_clears_the_route_latch_too():
     )
 
 
+def _run_server_call_lines(name, *, owner = None):
+    """First line of each call to *name* inside run_server, by AST rather than text.
+
+    Text offsets kept breaking here: the comments above these calls name them too, and
+    indentation-anchored searches go stale the moment a call moves inside a `with`.
+    """
+    import ast
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.parse(run_py).body
+        if isinstance(n, ast.FunctionDef) and n.name == "run_server"
+    )
+    lines = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == name:
+            if owner is not None and getattr(func.value, "id", None) != owner:
+                continue
+            lines.append(node.lineno)
+        elif isinstance(func, ast.Name) and func.id == name and owner is None:
+            lines.append(node.lineno)
+    assert lines, f"run_server no longer calls {name}"
+    return min(lines)
+
+
 def test_the_route_latch_clears_only_after_the_backend_lifecycle_reopens():
     """_begin_server_lifecycle blocks on the teardown lock while a kill is running.
     Clearing the route latch before that wait leaves a request the OLD lifecycle
@@ -2819,21 +2849,9 @@ def test_the_route_latch_clears_only_after_the_backend_lifecycle_reopens():
     Nothing legitimate is refused by clearing later: uvicorn does not serve until
     thread.start(), which is below both calls.
     """
-    import ast
-    import textwrap
-    from pathlib import Path
-
-    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
-    tree = ast.parse(run_py)
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
-    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
-
-    # Matched as statements, not as text: the comments above these calls name them
-    # too, and an earlier version of this test found "thread.start()" inside one of
-    # them and compared the wrong offsets.
-    backend_reset = src.index("_llama_cpp_backend._begin_server_lifecycle()")
-    route_reset = src.index("\n        begin_load_lifecycle()")
-    serve = src.index("\n    thread.start()")
+    backend_reset = _run_server_call_lines("_begin_server_lifecycle")
+    route_reset = _run_server_call_lines("begin_load_lifecycle")
+    serve = _run_server_call_lines("start", owner = "thread")
 
     assert backend_reset < route_reset, (
         "the route latch is cleared before the backend lifecycle reopens, so a "
@@ -3020,20 +3038,10 @@ def test_the_process_latch_clears_between_the_backend_and_the_route():
     what every other spawner reads, so it must outlast the teardown _begin_server_lifecycle
     waits on, and be clear before uvicorn admits anything.
     """
-    import ast
-    import textwrap
-    from pathlib import Path
-
-    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
-    tree = ast.parse(run_py)
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
-    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
-
-    # Indented statements, not bare names: the comments above these calls name them too.
-    backend = src.index("_llama_cpp_backend._begin_server_lifecycle()")
-    process = src.index("\n        begin_process_lifecycle()")
-    route = src.index("\n        begin_load_lifecycle()")
-    serve = src.index("\n    thread.start()")
+    backend = _run_server_call_lines("_begin_server_lifecycle")
+    process = _run_server_call_lines("begin_process_lifecycle")
+    route = _run_server_call_lines("begin_load_lifecycle")
+    serve = _run_server_call_lines("start", owner = "thread")
 
     assert backend < process < route < serve, (
         "the process latch must clear after the backend teardown completes and "
@@ -3172,19 +3180,10 @@ def test_the_previous_uvicorn_thread_is_joined_before_the_latches_clear():
     its backend call captures the freshly advanced generations. Joining first is what
     distinguishes them, and there is nothing else that can.
     """
-    import ast
-    import textwrap
-    from pathlib import Path
-
-    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
-    tree = ast.parse(run_py)
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
-    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
-
-    join = src.index("\n            _wait_for_server_shutdown()")
-    backend = src.index("_llama_cpp_backend._begin_server_lifecycle()")
-    process = src.index("\n        begin_process_lifecycle()")
-    route = src.index("\n        begin_load_lifecycle()")
+    join = _run_server_call_lines("_wait_for_server_shutdown")
+    backend = _run_server_call_lines("_begin_server_lifecycle")
+    process = _run_server_call_lines("begin_process_lifecycle")
+    route = _run_server_call_lines("begin_load_lifecycle")
 
     assert (
         join < backend < process < route
@@ -3970,3 +3969,98 @@ def test_the_worker_mirrors_are_published_under_the_shutdown_lock():
         "the shutdown check and the active_model_name publication are not inside the "
         "same held lock, so a kill can land between them"
     )
+
+
+def test_the_supersede_check_and_the_teardown_it_gates_are_one_step():
+    """Reading the generation and then tearing down is check-then-act. A restart
+    landing in the gap gets its llama-server killed by the shutdown it already
+    outwaited, and because a teardown kill re-latches the process flag, that session
+    then refuses every spawn for good. Check and teardown must hold the transition
+    lock together.
+    """
+    import ast
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    fn = _fn_named(run_py, "_graceful_shutdown")
+
+    # Every destructive step reaches its subsystem through _owned(...), which is what
+    # holds the lock. A bare _superseded() call outside it is the old racy shape.
+    owned_steps = {
+        n.items[0].context_expr.args[0].value
+        for n in ast.walk(fn)
+        if isinstance(n, ast.With)
+        and n.items
+        and isinstance(n.items[0].context_expr, ast.Call)
+        and getattr(n.items[0].context_expr.func, "id", None) == "_owned"
+        and n.items[0].context_expr.args
+        and isinstance(n.items[0].context_expr.args[0], ast.Constant)
+    }
+    assert "the llama-server teardown" in owned_steps, (
+        "step 5 is not inside _owned(); the kill that re-latches the process flag can "
+        "still land on a session that started after the check"
+    )
+    assert len(owned_steps) >= 5, f"only {sorted(owned_steps)} are held across the check"
+
+    # And the guard itself must actually take the lock, not just read the generation.
+    owned = _fn_named(run_py, "_owned")
+    assert any(
+        isinstance(n, ast.Call) and getattr(n.func, "id", None) == "lifecycle_transition"
+        for n in ast.walk(owned)
+    ), "_owned does not hold the lifecycle transition lock"
+
+
+def test_the_restart_takes_the_transition_lock_before_the_backend_teardown_lock():
+    """Lock order, and it is the whole reason this is safe. _begin_server_lifecycle
+    takes the backend's _teardown_lock, and _kill_process takes it while a shutdown
+    step holds the transition lock. Taking them in the other order here closes the
+    cycle and deadlocks the restart against the exit it is trying to replace.
+    """
+    import ast
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    fn = _fn_named(run_py, "run_server")
+    holds = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and getattr(item.context_expr.func, "id", None) == "lifecycle_transition"
+            for item in n.items
+        )
+    ]
+    assert holds, "the restart never takes the lifecycle transition lock"
+    inside = {
+        getattr(n.func, "attr", getattr(n.func, "id", None))
+        for w in holds
+        for n in ast.walk(w)
+        if isinstance(n, ast.Call)
+    }
+    for required in ("_begin_server_lifecycle", "begin_process_lifecycle", "begin_load_lifecycle"):
+        assert required in inside, (
+            f"{required} is outside the transition lock; the shutdown can then see this "
+            "transition half-applied, and for _begin_server_lifecycle the two locks are "
+            "taken in opposite orders on the two sides"
+        )
+
+
+def test_the_transition_lock_survives_a_fork():
+    """Same inheritance hazard as the generation lock: a child that cannot take it can
+    never run a teardown step."""
+    from utils import process_lifetime as pl
+
+    before = pl.lifecycle_transition()
+    acquired = before.acquire()
+    try:
+        pl._reset_after_fork()
+    finally:
+        if acquired:
+            before.release()
+
+    assert (
+        pl.lifecycle_transition() is not before
+    ), "_reset_after_fork left the inherited transition lock in place"
+    with pl.lifecycle_transition():
+        pass

@@ -358,7 +358,7 @@ def _reset_after_fork() -> None:
     """A fork child inherits both locks in whatever state they were in and a
     _spawner whose thread does not exist here. Start clean instead of deadlocking."""
     global _spawner, _spawner_lock, _record_lock, _owner_identity
-    global _generation_lock, _shutdown_latch
+    global _generation_lock, _shutdown_latch, _transition_lock
     _spawner_lock = threading.Lock()
     # A different pid here.
     _owner_identity = None
@@ -372,6 +372,8 @@ def _reset_after_fork() -> None:
     # leaves it locked here forever, and then process_lifecycle_generation() -- which
     # every spawn guard calls -- deadlocks the child instead of answering it.
     _generation_lock = threading.Lock()
+    # Same inheritance hazard, and a child that cannot take it can never tear down.
+    _transition_lock = threading.RLock()
     # Event carries an internal lock of its own, so it inherits the same way. Rebuild it
     # holding the flag it had, rather than resetting it: the child is still inside
     # whichever lifecycle forked it, and a cleared latch would read as permission to spawn.
@@ -1022,6 +1024,30 @@ _generation_lock = threading.Lock()
 # Instead the old sweep is scoped: it never signals a child a LATER lifecycle adopted.
 # None means no shutdown has been marked, so a sweep filters nothing.
 _adoption_generation: "dict[int, int]" = {}
+
+
+# Held across a whole lifecycle transition, and across each teardown step that acts on
+# a module singleton. Reading the generation and then acting on it is check-then-act:
+# without this the restart can advance the generation in the gap, and the old shutdown
+# goes on to kill the new session's server anyway. Recursive so a step that reaches
+# another guarded helper does not deadlock on itself.
+#
+# LOCK ORDER: this one FIRST, then any subsystem lock (_teardown_lock,
+# _subprocess_shutdown_lock, _spawn_lock). Both sides take it in that order -- the
+# restart holds it across _begin_server_lifecycle, which takes _teardown_lock, and the
+# shutdown holds it across _kill_process, which takes the same. Reversing it on either
+# side is a deadlock.
+_transition_lock = threading.RLock()
+
+
+def lifecycle_transition() -> "threading.RLock":
+    """Serialise a lifecycle transition against the teardown steps it races.
+
+    Held only for one step at a time, never for a whole shutdown, so a restart still
+    waits out at most a single bounded step rather than the exit it deliberately
+    refuses to wait for.
+    """
+    return _transition_lock
 
 
 def process_lifecycle_generation() -> int:

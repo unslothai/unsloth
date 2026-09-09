@@ -6,6 +6,7 @@
 Self-contained; can be moved to any directory.
 """
 
+import contextlib
 import os
 import sys
 import threading
@@ -1651,6 +1652,26 @@ def _graceful_shutdown(server = None):
         )
         return True
 
+    @contextlib.contextmanager
+    def _owned(step: str):
+        """Yield whether this shutdown still owns *step*, holding the transition lock.
+
+        Reading the generation and then tearing down is check-then-act: the restart can
+        advance it in the gap, and the kill lands on the session that just started --
+        which for step 5 also re-latches the process flag and leaves that session
+        refusing every spawn for good. Held across the check AND the teardown, so the
+        transition either happens entirely before (we skip) or entirely after (we are
+        done). Only one step at a time, so a restart waits out a single bounded step.
+        """
+        try:
+            from utils.process_lifetime import lifecycle_transition
+            with lifecycle_transition():
+                yield not _superseded(step)
+                return
+        except ImportError:
+            pass
+        yield not _superseded(step)
+
     # 0. Drop the LAN listener first: it shares the loop uvicorn is about to stop.
     try:
         from lan_access import close_lan_listener_lifecycle
@@ -1665,24 +1686,27 @@ def _graceful_shutdown(server = None):
     # 2. Clean up inference subprocess (if instantiated).
     try:
         from core.inference.orchestrator import _inference_backend
-        if _inference_backend is not None and not _superseded("the inference subprocess"):
-            _inference_backend._shutdown_subprocess(timeout = 5.0)
+        with _owned("the inference subprocess") as _mine:
+            if _inference_backend is not None and _mine:
+                _inference_backend._shutdown_subprocess(timeout = 5.0)
     except Exception as e:
         logger.warning("Error shutting down inference subprocess: %s", e)
 
     # 3. Clean up export subprocess (if instantiated).
     try:
         from core.export.orchestrator import _export_backend
-        if _export_backend is not None and not _superseded("the export subprocess"):
-            _export_backend._shutdown_subprocess(timeout = 5.0)
+        with _owned("the export subprocess") as _mine:
+            if _export_backend is not None and _mine:
+                _export_backend._shutdown_subprocess(timeout = 5.0)
     except Exception as e:
         logger.warning("Error shutting down export subprocess: %s", e)
 
     # 4. Clean up training subprocess (if active).
     try:
         from core.training.training import _training_backend
-        if _training_backend is not None and not _superseded("the training subprocess"):
-            _training_backend.force_terminate()
+        with _owned("the training subprocess") as _mine:
+            if _training_backend is not None and _mine:
+                _training_backend.force_terminate()
     except Exception as e:
         logger.warning("Error shutting down training subprocess: %s", e)
 
@@ -1696,23 +1720,25 @@ def _graceful_shutdown(server = None):
         # would cancel loads the NEW session admitted, and _kill_process(teardown=True)
         # would kill its llama-server and, because a teardown kill latches the process
         # flag again, leave that session refusing every later spawn for good.
-        if not _superseded("the llama-server teardown"):
-            try:
-                cancelled = cancel_pending_loads()
-                if cancelled:
-                    logger.info("Cancelled %d in-flight model load(s) for shutdown", cancelled)
-            except Exception as e:
-                logger.warning("Could not cancel in-flight loads: %s", e)
-            if _llama_cpp_backend is not None:
-                _llama_cpp_backend._kill_process(teardown = True)
+        with _owned("the llama-server teardown") as _mine:
+            if _mine:
+                try:
+                    cancelled = cancel_pending_loads()
+                    if cancelled:
+                        logger.info("Cancelled %d in-flight model load(s) for shutdown", cancelled)
+                except Exception as e:
+                    logger.warning("Could not cancel in-flight loads: %s", e)
+                if _llama_cpp_backend is not None:
+                    _llama_cpp_backend._kill_process(teardown = True)
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
     # 6. Stop the Cloudflare tunnel (if started).
     try:
         from cloudflare_tunnel import close_studio_tunnel_lifecycle
-        if not _superseded("the Cloudflare tunnel"):
-            close_studio_tunnel_lifecycle()
+        with _owned("the Cloudflare tunnel") as _mine:
+            if _mine:
+                close_studio_tunnel_lifecycle()
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
@@ -1728,8 +1754,9 @@ def _graceful_shutdown(server = None):
     # early leaves a retried `stop` or a new launch unable to find it.
     # One record per process, so a restart has already overwritten it with its own:
     # removing it here would leave the LIVE server unfindable by `stop` or by a launch.
-    if not _superseded("the pid file"):
-        _remove_pid_file()
+    with _owned("the pid file") as _mine:
+        if _mine:
+            _remove_pid_file()
     logger.info("All subprocesses cleaned up")
     _shutdown_complete.set()
 
@@ -3152,10 +3179,21 @@ def run_server(
                     "(its sweep cannot reach this session's children)"
                 )
 
-        if _llama_cpp_backend is not None:
-            _llama_cpp_backend._begin_server_lifecycle()
-        begin_process_lifecycle()
-        begin_load_lifecycle()
+        # All three under the transition lock, and it is taken BEFORE
+        # _begin_server_lifecycle rather than around the generation bump alone. That
+        # call takes the backend's _teardown_lock, which _kill_process also takes while
+        # a shutdown step holds the transition lock: acquiring the two in the opposite
+        # order here would close the cycle and deadlock the restart against the exit.
+        # Holding it across all three is also what makes a superseded shutdown's check
+        # and teardown atomic -- it sees the generation either wholly before or wholly
+        # after this block, never halfway through it.
+        from utils.process_lifetime import lifecycle_transition
+
+        with lifecycle_transition():
+            if _llama_cpp_backend is not None:
+                _llama_cpp_backend._begin_server_lifecycle()
+            begin_process_lifecycle()
+            begin_load_lifecycle()
     except Exception as e:
         logger.warning("Could not reset llama-server shutdown state: %s", e)
 
