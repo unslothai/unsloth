@@ -17,6 +17,18 @@ function asName(value: unknown): string | null {
 export const isGgufName = (value: string): boolean =>
   value.toLowerCase().endsWith(".gguf");
 
+const escapeRegex = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Whether `quant` is a qualified key whose bare quant token is `label`: the token delimited on
+ *  both sides, and not the start of a bit-width modifier (`IQ4_XS-3.53bpw` is its own token). */
+const bareLabelOf = (quant: string, label: string): boolean =>
+  quant.toLowerCase() !== label.toLowerCase() &&
+  new RegExp(
+    `(^|[-_./])${escapeRegex(label)}(?!-\\d+(?:\\.\\d+)?bpw)([-_./]|$)`,
+    "i",
+  ).test(quant);
+
 /** The .gguf to load, given the listing and what the pick carried: a filename, a quant label, or nothing. A load needs a real
  *  filename and a label is not one. Null when the repo is ambiguous, so the caller keeps its prompt. */
 export function pickGgufFilename(
@@ -49,7 +61,23 @@ export function pickGgufFilename(
     const byLabel = listed.filter(
       (v) => v.quant?.toLowerCase() === wanted.toLowerCase(),
     );
-    return (byLabel.find((v) => v.downloaded) ?? byLabel[0])?.filename ?? null;
+    if (byLabel.length > 0) {
+      return (
+        (byLabel.find((v) => v.downloaded) ?? byLabel[0])?.filename ?? null
+      );
+    }
+    // No row owns the label outright. A saved bare label may be the legacy spelling of ONE
+    // qualified row (a repo's lone tagged build is advertised as `model-Q4_K_M-mtp`), which the
+    // backend's download and load paths still accept; refusing it here left "Pick a quantization"
+    // on a hint that resolves everywhere else. Unique only: two rows carrying the label name
+    // neither, and the prompt stays. A trailing bit-width modifier is part of the token, not a tag.
+    const byAlias = listed.filter(
+      (v) => v.quant && bareLabelOf(v.quant, wanted),
+    );
+    if (byAlias.length === 1) {
+      return byAlias[0].filename;
+    }
+    return null;
   }
   // No label: only a lone file names itself. Downloaded first, so a fully listed remote repo resolves to the quant on disk.
   const downloaded = listed.filter((v) => v.downloaded);

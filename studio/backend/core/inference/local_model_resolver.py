@@ -1046,6 +1046,49 @@ def local_variant_keys(base: str, *, allow_scan: bool = False) -> tuple[str, ...
     return tuple(entry.variants) if entry is not None else ()
 
 
+def resident_variant_serves(base: str, requested_variant: str, loaded_variant: str) -> bool:
+    """Whether a resident loaded as *loaded_variant* is the build *requested_variant* names.
+
+    The ONE rule for "is what is serving the thing that was asked for", shared by the resident
+    short circuit and the recipe gate so they cannot disagree. Both spellings are read against
+    the repo's inventory; only an ABSENT request bypasses it. Equal spellings are not equal
+    builds: a resident loaded through the legacy bare ``Q4_K_M`` while only the tagged build
+    existed still records ``Q4_K_M``, and once a plain sibling is cached that same request
+    names the plain build -- so a bare-loaded resident beside a sibling that also answers to
+    its spelling is not trusted, and the caller's safe error (a reload, a refusal) follows.
+    With no inventory at all the spellings are all there is, compared exactly.
+    """
+    from hub.utils.gguf import (
+        accepts_bare_quant_alias,
+        bare_quant_alias,
+        is_qualified_gguf_variant_key,
+        resolve_variant_alias,
+    )
+
+    left = (loaded_variant or "").strip().lower()
+    right = (requested_variant or "").strip().lower()
+    if not right:
+        return True
+    try:
+        keys = list(local_variant_keys(base, allow_scan = False))
+    except Exception:
+        return False
+    if not keys:
+        return left == right
+    requested_key = resolve_variant_alias(keys, requested_variant)
+    resident_key = resolve_variant_alias(keys, loaded_variant)
+    if requested_key is None or resident_key is None:
+        return False
+    if not is_qualified_gguf_variant_key(loaded_variant) and any(
+        key.lower() != resident_key.lower()
+        and accepts_bare_quant_alias(key)
+        and bare_quant_alias(key).lower() == left
+        for key in keys
+    ):
+        return False
+    return requested_key.lower() == resident_key.lower()
+
+
 def _resolve_from_index(
     requested: str,
     index: dict[str, _LocalGgufEntry],

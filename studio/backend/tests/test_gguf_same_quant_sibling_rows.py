@@ -1576,13 +1576,21 @@ def test_the_recipe_gate_never_resolves_an_empty_active_variant(monkeypatch):
     """With llama.cpp idle and a non-GGUF backend active, the active variant is empty. Resolving
     ``target:`` answered the indexed DEFAULT, so a recipe selecting that default passed against
     the other backend's weights."""
+    from core.inference import local_model_resolver
     from routes.data_recipe import jobs
 
-    monkeypatch.setattr(jobs, "_resolved_local_variant", lambda target, variant: "Q4_K_M")
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M",))
     assert jobs._recipe_variant_matches("org/repo", "", "Q4_K_M") is False
     assert jobs._recipe_variant_matches("org/repo", None, "Q4_K_M") is False
     assert jobs._recipe_variant_matches("org/repo", "Q4_K_M", "Q4_K_M") is True
     assert jobs._recipe_variant_matches("org/repo", "", None) is True
+    # The same inventory-growth rule the resident short circuit applies: loaded through the bare
+    # spelling while only the tagged build existed, then a plain sibling appears -- the resident
+    # may be either build, so a recipe selecting the plain one must not run against it.
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("model-Q4_K_M-mtp",))
+    assert jobs._recipe_variant_matches("org/repo", "Q4_K_M", "Q4_K_M") is True
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"))
+    assert jobs._recipe_variant_matches("org/repo", "Q4_K_M", "Q4_K_M") is False
 
 
 def test_the_cached_template_walk_folds_key_case_across_snapshots(tmp_path, monkeypatch):

@@ -73,3 +73,45 @@ test("an empty or malformed listing resolves to nothing", () => {
     null,
   );
 });
+
+// A repo's second build at one quant is advertised under a qualified key (`model-Q4_K_M-mtp`),
+// and a saved bare label is the legacy spelling the backend's download and load paths still
+// accept for a LONE such build. Refusing it here left "Pick a quantization" on a hint that
+// resolves everywhere else.
+const TAGGED = {
+  filename: "model-Q4_K_M-mtp.gguf",
+  quant: "model-Q4_K_M-mtp",
+  downloaded: true,
+};
+const TAGGED_FP16 = {
+  filename: "model-Q4_K_M-fp16.gguf",
+  quant: "model-Q4_K_M-fp16",
+  downloaded: true,
+};
+const PLAIN = {
+  filename: "model-Q4_K_M.gguf",
+  quant: "Q4_K_M",
+  downloaded: false,
+};
+
+test("a bare label reaches the lone tagged build advertised under a qualified key", () => {
+  assert.equal(pickGgufFilename([TAGGED, Q8], "Q4_K_M"), TAGGED.filename);
+  assert.equal(pickGgufFilename([TAGGED, Q8], "q4_k_m"), TAGGED.filename);
+});
+
+test("a bare label that two tagged builds carry names neither", () => {
+  assert.equal(pickGgufFilename([TAGGED, TAGGED_FP16], "Q4_K_M"), null);
+});
+
+test("a plain row that owns the label wins over its tagged sibling", () => {
+  assert.equal(pickGgufFilename([TAGGED, PLAIN], "Q4_K_M"), PLAIN.filename);
+});
+
+test("a bit-width modifier is part of the token, not a tag past it", () => {
+  const bpw = {
+    filename: "model-IQ4_XS-3.53bpw.gguf",
+    quant: "IQ4_XS-3.53bpw",
+    downloaded: true,
+  };
+  assert.equal(pickGgufFilename([bpw], "IQ4_XS"), null);
+});

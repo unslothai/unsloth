@@ -8033,44 +8033,10 @@ def _resident_variant_matches(base: str, requested_variant: str, loaded_variant:
     compare: where a plain row owns the bare quant beside a tagged one they are different
     checkpoints, and calling them equal here reports the wrong model as already serving.
     """
-    left = (loaded_variant or "").strip().lower()
-    right = (requested_variant or "").strip().lower()
-    if not right:
-        return True
-    try:
-        from core.inference.local_model_resolver import local_variant_keys
-        from hub.utils.gguf import (
-            accepts_bare_quant_alias,
-            bare_quant_alias,
-            is_qualified_gguf_variant_key,
-            resolve_variant_alias,
-        )
+    # One rule, shared with the recipe gate: see ``resident_variant_serves``.
+    from core.inference.local_model_resolver import resident_variant_serves
 
-        keys = list(local_variant_keys(base, allow_scan = False))
-    except Exception:
-        return False
-    if not keys:
-        # No inventory to consult: the spellings themselves are all there is.
-        return left == right
-    # Only an ABSENT request bypasses the inventory. Equal spellings are not equal builds: a
-    # resident loaded through the legacy bare ``Q4_K_M`` while only the tagged build existed
-    # still records ``Q4_K_M``, and once a plain sibling is cached that same request names the
-    # plain build.
-    requested_key = resolve_variant_alias(keys, requested_variant)
-    resident_key = resolve_variant_alias(keys, loaded_variant)
-    if requested_key is None or resident_key is None:
-        return False
-    if not is_qualified_gguf_variant_key(loaded_variant) and any(
-        key.lower() != resident_key.lower()
-        and accepts_bare_quant_alias(key)
-        and bare_quant_alias(key).lower() == left
-        for key in keys
-    ):
-        # A bare-loaded resident may be the plain build or the tagged sibling that answered to
-        # that spelling at load time, and the inventory has grown since: its identity cannot be
-        # read off its spelling, so it is not "already serving". A reload is the safe error.
-        return False
-    return requested_key.lower() == resident_key.lower()
+    return resident_variant_serves(base, requested_variant, loaded_variant)
 
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.

@@ -162,35 +162,23 @@ def _loaded_local_model_identity() -> tuple[bool, str, str]:
     return False, "", ""
 
 
-def _resolved_local_variant(target: str, variant: str) -> Optional[str]:
-    """The on-disk variant key *variant* names for *target*, or None when it names none.
-
-    The resolver applies the same unambiguous bare-quant alias the download and loader paths do,
-    so a recipe saved under a legacy spelling still finds its build -- while a bare quant that a
-    plain row already owns keeps resolving to that row rather than to a tagged sibling.
-    """
-    try:
-        from core.inference.local_model_resolver import resolve_local_gguf
-        hit = resolve_local_gguf(f"{target}:{variant}", allow_scan = False)
-    except Exception:
-        return None
-    return hit[1] if hit and len(hit) > 1 and hit[1] else None
-
-
 def _recipe_variant_matches(target: str, active_variant: Optional[str], gguf_variant: Optional[str]) -> bool:
-    """Whether the ACTIVE variant is the one the recipe selected, both resolved against the repo.
+    """Whether the ACTIVE variant is the one the recipe selected.
 
-    An EMPTY active variant is never resolved: ``resolve_local_gguf("target:")`` reads the empty
-    suffix as a foreign tag and answers the indexed default, which let a recipe that selected that
-    default pass while the non-GGUF backend was serving the same identifier from other weights.
+    The same rule the resident short circuit applies (``resident_variant_serves``), so the two
+    cannot disagree: both spellings are read against the repo's inventory, and a resident loaded
+    through a bare spelling beside a sibling that also answers to it is not trusted. An EMPTY
+    active variant means no GGUF is loaded and never reaches the resolver -- ``target:`` reads as
+    a foreign tag and answers the indexed default, which let a recipe selecting that default pass
+    while the non-GGUF backend served the same identifier from other weights.
     """
     if not gguf_variant:
         return True
-    active = (
-        (_resolved_local_variant(target, active_variant) or active_variant) if active_variant else ""
-    )
-    selected = _resolved_local_variant(target, gguf_variant) or gguf_variant
-    return bool(active) and active.strip().lower() == selected.strip().lower()
+    if not active_variant:
+        return False
+    from core.inference.local_model_resolver import resident_variant_serves
+
+    return resident_variant_serves(target, gguf_variant, active_variant)
 
 
 def _ensure_selected_local_model_loaded(
