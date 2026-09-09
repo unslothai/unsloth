@@ -269,12 +269,22 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     assert worker._load_download_repos(adapter, True, cuda) == ["owner/adapter", "owner/base"]
     loader.ALLOW_BITSANDBYTES = True
 
-    audio = SimpleNamespace(identifier = "owner/tts-lora", base_model = "owner/base", audio_type = "snac")
+    audio = SimpleNamespace(
+        identifier = "owner/tts-lora", base_model = "owner/base", audio_type = "snac", is_audio = True
+    )
     assert worker._load_download_repos(audio, True, cuda, ["owner/tts-lora", "owner/codec"]) == [
         "owner/tts-lora",
         "owner/codec",
         "owner/base",
         "hubertsiuzdak/snac_24khz",
+    ]
+    audio_vlm = SimpleNamespace(
+        identifier = "owner/avlm-lora", base_model = "owner/base", audio_type = "audio_vlm", is_audio = False
+    )
+    assert worker._load_download_repos(audio_vlm, True, cuda) == [
+        "owner/avlm-lora",
+        "owner/base",
+        "unsloth/base-bnb-4bit",
     ]
     spark = SimpleNamespace(
         identifier = "owner/spark-lora", base_model = "unsloth/Spark-TTS-0.5B/LLM", audio_type = "bicodec"

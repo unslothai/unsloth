@@ -1024,7 +1024,9 @@ def _in_flight_bytes(reading: dict) -> int:
 
 
 def _active_reading(
-    readings: list[tuple[str, dict]], grown: "frozenset[str]" = frozenset()
+    readings: list[tuple[str, dict]],
+    grown: "frozenset[str]" = frozenset(),
+    last: Optional[str] = None,
 ) -> tuple[str, dict]:
     """The one repo whose transfer the progress line should follow.
 
@@ -1040,7 +1042,9 @@ def _active_reading(
     # drops the live figure, so the biggest partial on disk is not the running download.
     moved = [item for item in readings if item[0] in grown and _in_flight_bytes(item[1]) > 0]
     active = max(moved or readings, key = lambda item: _in_flight_bytes(item[1]))
-    return active if _in_flight_bytes(active[1]) > 0 else readings[0]
+    if _in_flight_bytes(active[1]) > 0:
+        return active
+    return next((item for item in readings if item[0] == last), readings[0])
 
 
 class _ModelDownloadProgress:
@@ -1062,6 +1066,7 @@ class _ModelDownloadProgress:
         self._repo_bytes: dict[str, int] = {}
         self._companions: list[str] = []
         self._companions_listed = True
+        self._active_repo: Optional[str] = None
 
     def _is_gguf(self) -> bool:
         return bool(self._variant) or "gguf" in self._model.lower()
@@ -1188,7 +1193,8 @@ class _ModelDownloadProgress:
             self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0
-            active_repo, active = _active_reading(readings, grown)
+            active_repo, active = _active_reading(readings, grown, self._active_repo)
+            self._active_repo = active_repo
             self._display.update(active, active_repo)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`

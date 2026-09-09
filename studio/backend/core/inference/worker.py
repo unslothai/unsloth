@@ -423,7 +423,7 @@ def _load_download_repos(
 
                 quantized = (
                     load_in_4bit
-                    and audio_type is None
+                    and not getattr(mc, "is_audio", False)
                     and getattr(loader, "ALLOW_BITSANDBYTES", True)
                 )
                 mapped = get_model_name(str(base), load_in_4bit = quantized)

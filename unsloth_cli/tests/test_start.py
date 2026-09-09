@@ -4318,6 +4318,39 @@ def test_download_progress_display_forgets_the_last_repos_total(monkeypatch, cap
     assert "60.0 GiB" not in out.splitlines()[-1]
 
 
+def test_model_download_progress_completes_the_transfer_it_last_showed(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    base_readings = iter(
+        [
+            {"downloaded_bytes": 2 * 1024**3, "completed_bytes": 0, "expected_bytes": 4 * 1024**3, "progress": 0.5},
+            {"downloaded_bytes": 4 * 1024**3, "completed_bytes": 4 * 1024**3, "expected_bytes": 4 * 1024**3, "progress": 0.99},
+        ]
+    )
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/active-downloads"):
+            return _load_listing("owner/base")
+        if url.endswith("repo_id=owner%2Fbase"):
+            return next(base_readings)
+        return {
+            "downloaded_bytes": 8 * 1024**2,
+            "completed_bytes": 8 * 1024**2,
+            "expected_bytes": 8 * 1024**2,
+            "progress": 1.0,
+        }
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+    progress.complete()
+
+    out = capsys.readouterr().out
+    assert "100% 4.0 GiB / 4.0 GiB" in out
+    assert "8.0 MiB" not in out
+
+
 def test_active_reading_follows_the_repo_with_bytes_in_flight():
     model = ("owner/adapter", {"downloaded_bytes": 1024, "completed_bytes": 1024})
     cached_base = (
