@@ -620,7 +620,11 @@ def _retire_scope_rows(
             )
 
 
-def retire_scope(scope: str, folder_ids: list[str] | None = None, rows: bool = True) -> None:
+def retire_scope(
+    scope: str,
+    folder_ids: list[str] | None = None,
+    rows: bool = True,
+) -> None:
     """Stop all future work, even when the vector extension cannot load.
 
     `rows = False` writes only the tombstone, which is already enough to stop new links and
