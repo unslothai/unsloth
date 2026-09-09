@@ -1672,12 +1672,13 @@ exit 1
             # Under "Stop", Test-Path inside an ACL-denied directory throws.
             $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
             if ($existing) {
-                # UTF8, not the default: Windows PowerShell 5.1 decodes a BOM-less file
-                # with the active ANSI code page, and every writer of this file -- the
-                # update, install.sh, and now the write below -- writes it BOM-less UTF-8,
-                # so a non-ASCII path came back as mojibake and was restored that way.
-                $previous = Get-Content -LiteralPath $markerFile -Raw -Encoding UTF8 `
-                    -ErrorAction SilentlyContinue
+                # The bytes, not the text: a rollback puts back exactly what it found,
+                # whichever writer (and encoding) produced it, so a failed reinstall
+                # leaves no change of its own behind. (Reading it as text went wrong
+                # twice over: Windows PowerShell 5.1 decoded a BOM-less file with the
+                # ANSI code page, and the restore re-encoded whatever it had read.)
+                $previous = $null
+                try { $previous = [System.IO.File]::ReadAllBytes($markerFile) } catch { $previous = $null }
                 # One we cannot read is one we cannot put back, so leave it alone.
                 if ($null -eq $previous) { return }
                 $script:StudioUvMarkerPrevious = $previous
@@ -1733,15 +1734,13 @@ exit 1
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
         $stillThere = $null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)
         if (-not $stillThere -and $script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
-            # Same bytes the writer above produces, for the same reason: BOM-less UTF-8 and
-            # one LF. A rollback that put the marker back in a different encoding than the
-            # one it saved would be a change of its own. The try/catch replaces
-            # -ErrorAction SilentlyContinue verbatim -- WriteAllText throws, and anything
-            # escaping this function is reported as a failed environment restore.
+            # The saved bytes, verbatim: a rollback that put the marker back in another
+            # encoding or line ending than the one it saved would be a change of its
+            # own. The try/catch replaces -ErrorAction SilentlyContinue verbatim --
+            # WriteAllBytes throws, and anything escaping this function is reported as
+            # a failed environment restore.
             try {
-                [System.IO.File]::WriteAllText($markerFile,
-                    (([string]$script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") + "`n"),
-                    (New-Object System.Text.UTF8Encoding($false)))
+                [System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)
             } catch { }
         }
         $script:StudioUvMarkerSaved = $false

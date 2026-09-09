@@ -183,7 +183,7 @@ Describe 'the uv cache marker install.ps1 writes' {
             Should -Not -Throw
         $script:StudioUvMarkerSaved = $true
         $script:StudioUvMarkerExisted = $true
-        $script:StudioUvMarkerPrevious = "/previous/cache`n"
+        $script:StudioUvMarkerPrevious = [System.Text.Encoding]::UTF8.GetBytes("/previous/cache`n")
         { Restore-StudioUvCacheMarker -StudioRoot $script:Root } | Should -Not -Throw
     }
 }
@@ -197,13 +197,18 @@ Describe 'the marker writer source' {
     #>
 
     It 'writes the marker with an explicit BOM-less UTF8Encoding' {
-        # Two writes: the record and the rollback restore.
+        # One text write, the record. The rollback restore writes the saved bytes back
+        # and names no encoding because it decodes nothing.
         ([regex]::Matches($script:MarkerCode,
             [regex]::Escape('New-Object System.Text.UTF8Encoding($false)'))).Count |
-            Should -Be 2 -Because (
-                'both marker writes must name the encoder. Windows PowerShell 5.1 emits a ' +
+            Should -Be 1 -Because (
+                'the marker write must name the encoder. Windows PowerShell 5.1 emits a ' +
                 'UTF-8 BOM for -Encoding utf8 and PowerShell 7 does not, so anything that ' +
                 'leaves the encoding to the host writes a different file on each')
+        $script:MarkerCode | Should -Match ([regex]::Escape(
+            '[System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)')) -Because (
+                'the rollback puts back the bytes it saved, whichever writer produced them')
+        $script:MarkerCode | Should -Match ([regex]::Escape('[System.IO.File]::ReadAllBytes($markerFile)'))
     }
 
     It 'writes the marker with no host-encoded cmdlet at all' {
@@ -224,8 +229,9 @@ Describe 'the marker writer source' {
     It 'appends the trailing newline itself' {
         # WriteAllText adds none, and the contract is one path and one delimiter, so a
         # write that dropped it would join this record to whatever read it next.
+        # One: the record. The restore writes saved bytes, delimiter included.
         ([regex]::Matches($script:MarkerCode, [regex]::Escape('+ "`n"'))).Count |
-            Should -Be 2 -Because 'Set-Content supplied the newline; WriteAllText does not'
+            Should -Be 1 -Because 'Set-Content supplied the newline; WriteAllText does not'
         $script:MarkerCode | Should -Not -Match '\+ "`r`n"' -Because (
             'install.sh, unsloth_cli and _studio_stage all write LF, and the update ' +
             'digests these bytes')
