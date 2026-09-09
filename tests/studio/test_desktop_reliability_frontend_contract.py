@@ -488,7 +488,14 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
-    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
+    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
+    # of it. A rename is a refactor; dropping desktopAuthReady is the regression.
+    gate = re.search(r"const (\w+) = status === \"running\" && desktopAuthReady;", source)
+    assert gate, "no mount gate requires both a running status and desktopAuthReady"
+    assert re.search(
+        rf"{{\s*{gate.group(1)}\s*(?:&&|\?)", source
+    ), f"{gate.group(1)} is computed but does not condition the mount in the markup"
     assert "Preparing Unsloth" not in source
     assert "Signing in to desktop session" not in source
     assert "desktopBooting" not in source
