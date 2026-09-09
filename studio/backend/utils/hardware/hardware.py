@@ -5689,19 +5689,94 @@ def _resolve_model_identifier_for_gpu_estimate(
         return model_name
 
 
-# Trainer state saved beside the weights, in any format and with any shard counter:
-# optimizer.pt, optimizer-00001-of-00002.bin, optimizer.safetensors, rng_state_0.pth.
+_WEIGHT_EXTS = (".safetensors", ".bin", ".pt", ".pth")
+# Shard or copy counter closing a weight stem: model-00001-of-00004, consolidated.00.
+_WEIGHT_COUNTER = re.compile(r"(?:-\d+-of-\d+|\.\d+)$")
 _TRAINER_BOOKKEEPING = re.compile(
-    r"^(optimizer|scheduler|scaler|rng_state|training_args|trainer_state)(?:[._-]|$)"
+    r"^(?:optimizer|scheduler|scaler|rng_state|training_args|trainer_state)"
+    r"(?:[-_]\d+(?:-of-\d+)?)?$"
 )
-# A shard counter sits at the end of the stem or, with a variant, just before it:
-# model-00001-of-00004, model.fp16-00001-of-00002, model-00001-of-00002.fp16, consolidated.00.
-_WEIGHT_SHARD_INFIX = re.compile(r"(-\d+-of-\d+|\.\d+)(?=\.|$)")
-# model.fp16.safetensors is a precision variant of model.safetensors; a loader opens one.
-_WEIGHT_VARIANT_SUFFIX = re.compile(r"\.(fp16|bf16|fp32|non_ema)$")
-# pytorch_model.bin is the torch spelling of model.safetensors; consolidated.* is a
-# whole-model copy shipped beside the sharded transformers weights (Mistral, Meta).
-_WEIGHT_FAMILY_ALIASES = {"pytorch_model": "model", "consolidated": "model"}
+# The order from_pretrained tries, the direct file ahead of the index within each spelling.
+_WEIGHT_ARCHIVES = (
+    ("model", ".safetensors"),
+    ("pytorch_model", ".bin"),
+    ("consolidated", ".safetensors"),
+    ("consolidated", ".pth"),
+    ("adapter_model", ".safetensors"),
+    ("adapter_model", ".bin"),
+)
+
+
+def _indexed_archive(directories: list, base: str, ext: str, siblings: dict) -> tuple:
+    """The shards from_pretrained opens here, and every shard any of these indexes names."""
+    chosen: dict = {}
+    every: dict = {}
+    for directory in directories:
+        index = directory / f"{base}{ext}.index.json"
+        if not index.is_file():
+            continue
+        try:
+            weight_map = json.loads(index.read_text()).get("weight_map") or {}
+            named = {directory / name for name in weight_map.values()}
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        # Index targets need not carry a weight extension, so match every file beside it.
+        shards = {path: size for path, size in siblings.items() if path in named}
+        every.update(shards)
+        if shards and not chosen:
+            chosen = shards
+    return chosen, every
+
+
+def _archive_candidates(directories: list, pool: dict, siblings: dict) -> list:
+    """Every spelling of the weights present here, in the order from_pretrained tries them."""
+    candidates = []
+    for base, ext in _WEIGHT_ARCHIVES:
+        direct = {path: size for path, size in pool.items() if path.name == f"{base}{ext}"}
+        indexed, all_indexed = _indexed_archive(directories, base, ext, siblings)
+        # No index names these, but a pruned or unwritten index is still that model.
+        counted = {
+            path: size
+            for path, size in pool.items()
+            if path.suffix == ext and _WEIGHT_COUNTER.sub("", path.stem) == base
+        }
+        opens = direct or indexed
+        if opens or counted:
+            # Held back: the rest of a spelling is these same weights, never a component.
+            candidates.append((opens or counted, bool(opens), {**direct, **all_indexed, **counted}))
+    return candidates
+
+
+def _directory_weight_bytes(directories: list, sizes: dict, siblings: dict, vendor: set) -> int:
+    """One directory's weight cost: the archive it opens, plus the components beside it.
+
+    ``directories`` are the folders answering to it, the vendor's copy last; one decision
+    covers them all, because splitting it lets a single archive lose in halves.
+    """
+    candidates = _archive_candidates(directories, sizes, siblings)
+    # A vendor copy stands in only where the directory has none of its own, never outranking.
+    native_pool = {path: size for path, size in sizes.items() if path not in vendor}
+    native_siblings = {path: size for path, size in siblings.items() if path not in vendor}
+    native = _archive_candidates(directories, native_pool, native_siblings)
+
+    archive: dict = {}
+    for choices in (native, candidates):
+        if choices:
+            opens = [entry for entry in choices if entry[1]]
+            archive = (opens or choices)[0][0]
+            break
+
+    alternatives = {path for *_, held in candidates for path in held}
+    rest = {path: size for path, size in sizes.items() if path not in alternatives}
+    if archive:
+        # Trainer state is bookkeeping only beside an archive; alone it is the weights.
+        rest = {p: s for p, s in rest.items() if not _TRAINER_BOOKKEEPING.match(p.stem)}
+    # One stem under two extensions is one component saved twice; the loader reads safetensors.
+    components: dict = {}
+    ordered = sorted(rest.items(), key = lambda i: (i[0].suffix != ".safetensors", i[0].name))
+    for path, size in ordered:
+        components.setdefault(path.stem, size)
+    return sum(archive.values()) + sum(components.values())
 
 
 def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
@@ -5713,44 +5788,58 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     # checkpoint-*/global_step* snapshots, but export loads only the model at
     # the root, so counting them would multiply the estimate.
     skip_prefixes = ("checkpoint-", "global_step")
-    # (directory, weight family) -> {(format, stem, vendor_copy): bytes}. Files of one
-    # family in one directory are the same weights in alternative formats, so a family
-    # costs one copy: the largest one the loader reads, or the vendor's original/ copy
-    # when that is the only one. A differently named payload beside them (projector.pt,
-    # a tower's pytorch_model.bin in its own folder) is its own family and always counts.
-    copies_by_family: dict = {}
+    found = []
+    indexed_dirs = []
+    siblings_by_directory: dict = {}
+    homes_by_directory: dict = {}
+    vendor: set = set()
     for file in model_path.rglob("*"):
         if not file.is_file():
             continue
         rel = file.relative_to(model_path)
         if any(part.startswith(skip_prefixes) for part in rel.parts):
             continue
-        if _TRAINER_BOOKKEEPING.match(file.name):
-            continue
-        stem, ext = os.path.splitext(file.name)
-        if ext == ".safetensors":
-            kind = "safetensors"
-        elif ext in (".bin", ".pt", ".pth"):
-            kind = "torch"
-        else:
-            continue
-        stem = _WEIGHT_SHARD_INFIX.sub("", stem)
-        base = _WEIGHT_VARIANT_SUFFIX.sub("", stem)
-        family = _WEIGHT_FAMILY_ALIASES.get(base, base)
-        # A top-level original/ holds the vendor's copy of the root weights (Meta).
-        directory = rel.parent
-        vendor_copy = directory.parts[:1] == ("original",)
-        if vendor_copy:
-            directory = Path(*directory.parts[1:])
-        copies = copies_by_family.setdefault((directory, family), {})
-        copies[(kind, stem, vendor_copy)] = (
-            copies.get((kind, stem, vendor_copy), 0) + file.stat().st_size
-        )
+        # A top-level original/ answers to the directory above it, files and index alike.
+        # Its real location is recorded, since a nested component's vendor copy keeps shape.
+        is_vendor = rel.parts[:1] == ("original",)
+        home = Path(*rel.parent.parts[1:]) if is_vendor else rel.parent
+        if is_vendor:
+            vendor.add(file)
+        siblings_by_directory.setdefault(home, {})[file] = file.stat().st_size
+        homes_by_directory.setdefault(home, {})[model_path / rel.parent] = is_vendor
+        if file.suffix in _WEIGHT_EXTS:
+            found.append(rel)
+        elif file.name.endswith(".index.json"):
+            indexed_dirs.append(home)
 
-    total = 0
-    for copies in copies_by_family.values():
-        loaded = [size for (_, _, vendor_copy), size in copies.items() if not vendor_copy]
-        total += max(loaded) if loaded else max(copies.values())
+    # A vendor copy of a file the directory above already has is those weights renamed.
+    sizes_by_directory: dict = {}
+    for rel in sorted(found, key = lambda r: r.parts[:1] == ("original",)):
+        directory = Path(*rel.parent.parts[1:]) if rel.parts[:1] == ("original",) else rel.parent
+        sizes = sizes_by_directory.setdefault(directory, {})
+        if any(path.name == rel.name for path in sizes):
+            continue
+        sizes[model_path / rel] = siblings_by_directory[directory][model_path / rel]
+
+    # An index may name shards that carry no recognised suffix, so its directory is read too.
+    for directory in indexed_dirs:
+        sizes_by_directory.setdefault(directory, {})
+
+    total = sum(
+        _directory_weight_bytes(
+            [
+                folder
+                for folder, is_vendor in sorted(
+                    homes_by_directory.get(directory, {model_path / directory: False}).items(),
+                    key = lambda item: item[1],
+                )
+            ],
+            sizes,
+            siblings_by_directory.get(directory, {}),
+            vendor,
+        )
+        for directory, sizes in sizes_by_directory.items()
+    )
     return total if total > 0 else None
 
 
