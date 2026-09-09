@@ -752,6 +752,16 @@ def test_launch_files_names_every_sidecar_the_launch_uses(tmp_path):
     assert ss.launch_files(argv, str(weights)) == [str(weights), str(mmproj)]
 
 
+def test_launch_files_names_every_shard_not_just_the_one_in_argv(tmp_path):
+    # llama-server takes the first shard and opens the rest itself, so a peer holding only
+    # that one passes preflight and then fails the load.
+    shards = [tmp_path / f"m-{i:05d}-of-00003.gguf" for i in (1, 2, 3)]
+    for shard in shards:
+        shard.write_bytes(b"w")
+    argv = ["/b/llama-server", "-m", str(shards[0]), "-c", "4096"]
+    assert ss.launch_files(argv, str(shards[0])) == [str(s) for s in shards]
+
+
 def test_before_load_reuses_a_live_rpc_server_and_after_load_reconciles(
     cluster, monkeypatch, tmp_path
 ):

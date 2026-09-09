@@ -270,24 +270,32 @@ def plan_topology(
     return out
 
 
+def gguf_shard_paths(path: Optional[str]) -> List[str]:
+    """Every file a load of ``path`` reads. llama.cpp takes only the first shard on the command
+    line and opens the rest itself, so a caller that reasons about one name reasons about the
+    whole set (ggml-org/llama.cpp tools/gguf-split/README.md)."""
+    if not path:
+        return []
+    p = Path(path)
+    match = re.match(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", p.name)
+    if not match:
+        return [str(p)]
+    prefix, _first, count = match.groups()
+    return [str(p.with_name(f"{prefix}-{i:05d}-of-{count}.gguf")) for i in range(1, int(count) + 1)]
+
+
 def gguf_size_bytes(path: Optional[str]) -> Optional[int]:
     if not path:
         return None
     try:
-        p = Path(path)
-        if not p.is_file():
+        if not Path(path).is_file():
             return None
-        total = p.stat().st_size
-        match = re.match(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", p.name)
-        if match:
-            prefix, _first, count = match.groups()
-            total = 0
-            for index in range(1, int(count) + 1):
-                shard = p.with_name(f"{prefix}-{index:05d}-of-{count}.gguf")
-                try:
-                    total += shard.stat().st_size
-                except OSError:
-                    pass
+        total = 0
+        for shard in gguf_shard_paths(path):
+            try:
+                total += Path(shard).stat().st_size
+            except OSError:
+                pass
         return total
     except OSError:
         return None
@@ -492,11 +500,15 @@ def find_binary_script(candidates: List[str]) -> str:
 
 
 def launch_files(argv: List[str], gguf_path: str) -> List[str]:
-    """Every file the launch names; the replica needs all of them at the same path."""
-    files = [gguf_path]
+    """Every file the launch reads; the replica needs all of them at the same path. argv names
+    only the first shard, so expand it: a peer holding just that one passes preflight and then
+    fails the load."""
+    files = gguf_shard_paths(gguf_path)
+    seen = set(files)
     for arg in argv[1:]:
-        if arg != gguf_path and osp.isabs(arg) and osp.isfile(arg):
+        if arg not in seen and osp.isabs(arg) and osp.isfile(arg):
             files.append(arg)
+            seen.add(arg)
     return files
 
 
