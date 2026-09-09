@@ -25,6 +25,7 @@ from .preempt_fakes import (
     delta as _delta,
     done as _done,
     finish as _finish,
+    reasoning as _reasoning,
     run_tool_loop,
     tool_call as _tool_call_turn,
     tool_call_chunk as _tool_call,
@@ -603,3 +604,61 @@ class TestADeclinedContinuationTellsTheClient:
         assert 0 < refusals[0]["prompt_target"] < refusals[0]["context_length"] == 4096
         assert _tc_metadata(events)["finish_reason"] == "length"
         assert "<!DOCTYPE html>" in "".join(_texts(events, "content"))
+
+
+class TestAReasoningOnlyTurnPromotesTheWholeThought:
+    """A reasoning-only model's promoted fallback is its answer, and the tool loop resumes
+    by continuing the round, so the thought decoded before the pause must be carried."""
+
+    def _thinking(self, monkeypatch, streams, **kwargs):
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            streams,
+            signal = signal,
+            _supports_reasoning = True,
+            _reasoning_always_on = True,
+            **kwargs,
+        )
+        events = _run(
+            recorder.backend,
+            signal = signal,
+            policy = _RecordingPolicy(),
+            promote_reasoning_only = True,
+        )
+        return _content(events)[-1]
+
+    def test_the_answer_is_not_cut_to_its_second_half(self, monkeypatch):
+        final = self._thinking(
+            monkeypatch,
+            [
+                [_reasoning("The first half. "), _finish(), _done()],
+                [_reasoning("The second half."), _finish(), _done()],
+            ],
+        )
+        thought, _, fallback = final.partition("</think>")
+        assert "The first half. " in thought and "The second half." in thought, final
+        assert "The first half. " in fallback, f"built from the resumed attempt alone: {final!r}"
+        assert "The second half." in fallback
+
+    def test_an_uninterrupted_chat_is_unchanged(self, monkeypatch):
+        final = self._thinking(
+            monkeypatch,
+            [[_reasoning("Just the one."), _finish(), _done()]],
+            pause_attempts = [],
+        )
+        assert final == "<think>Just the one.</think>Just the one."
+
+    def test_a_thought_that_already_produced_prose_is_not_promoted(self, monkeypatch):
+        final = self._thinking(
+            monkeypatch,
+            [
+                [_reasoning("Thinking. "), _delta("Half one"), _finish(), _done()],
+                [_reasoning("More thought."), _finish(), _done()],
+            ],
+            pause_after = 2,
+        )
+        assert "Half one" in final, f"the paused prose was dropped: {final!r}"
+        _, _, fallback = final.rpartition("</think>")
+        assert "Thinking. " not in fallback, f"a thought the turn answered around was promoted: {final!r}"
+

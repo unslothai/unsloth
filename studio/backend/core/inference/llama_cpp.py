@@ -31471,7 +31471,7 @@ class LlamaCppBackend:
                 self._effective_context_length
             )
 
-        def _continuation_refusal_event() -> "Optional[dict]":
+        def _continuation_refusal_event(fit_max_tokens) -> "Optional[dict]":
             """The `context_truncated` the client needs when a continuation cannot be served: its own
             `shouldAutoContinue` guard under-counts code and auto-continued a turn just declined."""
             window = self._effective_context_length or 0
@@ -31484,8 +31484,9 @@ class LlamaCppBackend:
                 # "This conversation was compacted" toast for an eviction that never happened.
                 "dropped_messages": 0,
                 "context_length": window,
-                # Same formula the preflight's fit reports, so both sides stay on one scale.
-                "prompt_target": prompt_budget(window, max_tokens),
+                # Same formula and the same clamped reserve the pass's fit used, so the
+                # client stays on one scale.
+                "prompt_target": prompt_budget(window, fit_max_tokens),
             }
 
         def _loop_budget_left(spent_this_attempt: int) -> "Optional[int]":
@@ -31525,9 +31526,15 @@ class LlamaCppBackend:
         # `context_truncated` is not idempotent on the client, and the per-iteration list is
         # rebuilt by `continue`, so a truncation seen on a paused attempt rides across on this.
         _carried_truncations: list[dict] = []
-        # Seeds the resumed attempt's display so its snapshots extend the paused one's. Every
-        # consumer diffs snapshots, and a shorter one loses the first emission.
-        _preempt_display_seed: Optional[tuple[str, str, bool]] = None
+        # Seeds the resumed attempt's display so its snapshots extend the paused one's:
+        # every consumer diffs snapshots, and a shorter one loses the first emission.
+        _preempt_display_seed: Optional[tuple[str, str, bool, str]] = None
+        # The thought the paused attempts already decoded. A reasoning-only turn promotes
+        # its thought as the visible answer, and that promotion is built from the CURRENT
+        # attempt's `reasoning_accum`, which resets every round; without this the answer is
+        # only the half decoded after the pause. Rebound per iteration below, as
+        # `_last_emitted` is. Mirrors `_preempt_earlier_reasoning` on the plain path.
+        _preempt_earlier_reasoning = ""
         # A pause declined at the resume cap keeps its attempt: what it decoded is charged
         # against the final pass's allowance, and its partial is the turn the pass extends.
         _declined_charged = 0
@@ -31608,6 +31615,23 @@ class LlamaCppBackend:
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
             )
+            # What the wire will actually be allowed to emit: the clamp below caps the
+            # payload at the admitted share, so with eight slots a request may generate
+            # an eighth of the window while a fit reserving the caller's whole cap evicts
+            # history and cuts results that had room. Sizing only -- `payload["max_tokens"]`
+            # keeps its own path, as the final pass does with `_final_fit_max_tokens`.
+            # The re-cost below reassigns `admission_output_allowance` after the fit has
+            # run, so an iteration prices against the previous round's allowance.
+            _iteration_fit_max_tokens = (
+                min(
+                    _iteration_max_tokens
+                    if _iteration_max_tokens is not None
+                    else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR),
+                    admission_output_allowance,
+                )
+                if admission_output_allowance is not None
+                else _iteration_max_tokens
+            )
             _preflight_context_length = None
             _preflight_succeeded = False
             if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -31633,7 +31657,7 @@ class LlamaCppBackend:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
-                        max_tokens = _iteration_max_tokens,
+                        max_tokens = _iteration_fit_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
                                 messages_without_unpriced_media(fitted),
@@ -31689,7 +31713,7 @@ class LlamaCppBackend:
                             recall_budget_tokens = _retrieval_budget(
                                 self._effective_context_length,
                                 # As above: the cap this iteration will actually send.
-                                _iteration_max_tokens,
+                                _iteration_fit_max_tokens,
                                 truncation.get("prompt_tokens_after") or 0,
                                 reply_returns = True,
                             ),
@@ -31837,7 +31861,7 @@ class LlamaCppBackend:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
-                        max_tokens = _iteration_max_tokens,
+                        max_tokens = _iteration_fit_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
                                 messages_without_unpriced_media(fitted),
@@ -31938,10 +31962,18 @@ class LlamaCppBackend:
                 _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
+                # Cleared with the display: a round that was not resumed is a new turn.
+                _preempt_earlier_reasoning = ""
                 if _preempt_display_seed is not None:
-                    # Resumed after a pause: continue the display where it stopped. Only the
-                    # display; the accumulators stay per attempt, the checkpoint being built on them.
-                    cumulative_display, _last_emitted, in_thinking = _preempt_display_seed
+                    # The display and the thought so far: `content_accum` and
+                    # `reasoning_accum` stay per attempt, since the checkpoint and the
+                    # replay are built from them.
+                    (
+                        cumulative_display,
+                        _last_emitted,
+                        in_thinking,
+                        _preempt_earlier_reasoning,
+                    ) = _preempt_display_seed
                     _preempt_display_seed = None
                 # Provisional tool_start cards already shown, keyed by tool_call_id.
                 provisional_started_tool_calls: dict[str, str] = {}
@@ -31977,7 +32009,7 @@ class LlamaCppBackend:
                     # compact, and pricing a continuation as if it had the whole cap
                     # compacts a turn that had room.
                     _reply_target = prompt_budget(
-                        self._effective_context_length, _iteration_max_tokens
+                        self._effective_context_length, _iteration_fit_max_tokens
                     )
                     if (
                         estimate_messages_tokens_dense(
@@ -32062,7 +32094,7 @@ class LlamaCppBackend:
                                     else:
                                         cumulative_display = _finalize_reasoning_only_cumulative(
                                             cumulative_display,
-                                            reasoning_accum,
+                                            _preempt_earlier_reasoning + reasoning_accum,
                                             _iter_finish_reason,
                                             promote_reasoning_only,
                                         )
@@ -32634,7 +32666,7 @@ class LlamaCppBackend:
                                     yield _summary
                             cumulative_display = _finalize_reasoning_only_cumulative(
                                 cumulative_display,
-                                reasoning_accum,
+                                _preempt_earlier_reasoning + reasoning_accum,
                                 _iter_finish_reason,
                                 promote_reasoning_only,
                             )
@@ -32789,7 +32821,7 @@ class LlamaCppBackend:
                                     # Only the window case: a spent output cap belongs to THIS
                                     # request, and "does not fit" would hide a working Continue.
                                     if _cap_left_c != 0 and not _continuation_refusal_announced:
-                                        _refusal_c = _continuation_refusal_event()
+                                        _refusal_c = _continuation_refusal_event(_iteration_fit_max_tokens)
                                         if _refusal_c is not None:
                                             _continuation_refusal_announced = True
                                             yield _refusal_c
@@ -32902,7 +32934,7 @@ class LlamaCppBackend:
                                 # Same signal and the same exclusion for a cap the caller set: this
                                 # turn ends at the window, and a resume meets the preflight's refusal.
                                 if not _reasoning_cap_spent and not _continuation_refusal_announced:
-                                    _refusal_l = _continuation_refusal_event()
+                                    _refusal_l = _continuation_refusal_event(_iteration_fit_max_tokens)
                                     if _refusal_l is not None:
                                         _continuation_refusal_announced = True
                                         yield _refusal_l
@@ -33600,7 +33632,7 @@ class LlamaCppBackend:
                     if self._effective_context_length:
                         # This iteration's cap, like every other sizing decision in it.
                         _room_target = prompt_budget(
-                            self._effective_context_length, _iteration_max_tokens
+                            self._effective_context_length, _iteration_fit_max_tokens
                         )
                         # Cheap gate first. The exact count is a template render plus a
                         # tokenizer pass over the whole conversation, and this runs per
@@ -34074,7 +34106,7 @@ class LlamaCppBackend:
                                             # left had the result priced as if 1000 were
                                             # still to come, which reserves room away and can
                                             # starve a read the request had space for.
-                                            _iteration_max_tokens,
+                                            _iteration_fit_max_tokens,
                                             _spent + _pending_args,
                                         ) // (
                                             # Sequentially, call k divides by the calls still to
@@ -34134,7 +34166,7 @@ class LlamaCppBackend:
                                                     # or the rescue is measured against a
                                                     # different request from the one it is
                                                     # rescuing.
-                                                    _iteration_max_tokens,
+                                                    _iteration_fit_max_tokens,
                                                     _spent_after + _pending_args,
                                                 ) // (len(_pending) + 1)
                                                 logger.info(
@@ -34178,7 +34210,7 @@ class LlamaCppBackend:
                                         # allowance on a continuation that has a fraction
                                         # of it left returns a near-zero budget and drops
                                         # recall the request had room for.
-                                        _iteration_max_tokens,
+                                        _iteration_fit_max_tokens,
                                         _spent,
                                         reply_returns = True,
                                     )
@@ -34309,7 +34341,7 @@ class LlamaCppBackend:
                         _round_spent = _round_prompt_tokens(conversation)
                         _round_budget = tool_result_budget(
                             self._effective_context_length,
-                            _iteration_max_tokens,
+                            _iteration_fit_max_tokens,
                             _round_spent,
                         ) // max(1, _round_launched[0])
                         if _round_budget < _MIN_USEFUL_RESULT_TOKENS:
@@ -34323,7 +34355,7 @@ class LlamaCppBackend:
                                 _round_spent = _round_prompt_tokens(conversation)
                                 _round_budget = tool_result_budget(
                                     self._effective_context_length,
-                                    _iteration_max_tokens,
+                                    _iteration_fit_max_tokens,
                                     _round_spent,
                                 ) // max(1, _round_launched[0])
                         # Final before any driver starts: every worker takes this instead of
@@ -34641,7 +34673,15 @@ class LlamaCppBackend:
                     # Floored at 1: a request for zero tokens returns nothing at all, which
                     # would turn a pause into a silently empty turn.
                     _continuation_max_tokens = max(1, _preempt_cap_left)
-                _preempt_display_seed = (cumulative_display, _last_emitted, in_thinking)
+                _preempt_display_seed = (
+                    cumulative_display,
+                    _last_emitted,
+                    in_thinking,
+                    # Carried so the promoted answer is the WHOLE thought. Dropped once the
+                    # attempt has prose: the thought is then a thinking block, not the
+                    # answer, and the resume replays the prose instead.
+                    "" if content_accum else _preempt_earlier_reasoning + reasoning_accum,
+                )
                 continue
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
@@ -34773,7 +34813,11 @@ class LlamaCppBackend:
                         # The synthesized final answer never returns to the prompt.
                         recall_budget_tokens = _retrieval_budget(
                             self._effective_context_length,
-                            max_tokens,
+                            # The bound the wire is held to, like the fit above: the
+                            # caller's whole cap against an eighth-of-the-window lease
+                            # reserves a reply this request may not write, and the
+                            # recall is what pays for it.
+                            _final_fit_max_tokens,
                             truncation.get("prompt_tokens_after") or 0,
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -34901,7 +34945,9 @@ class LlamaCppBackend:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
-                    max_tokens = max_tokens,
+                    # Priced against the pre-respawn window, as the iteration refit is:
+                    # a new window is not a new reservation.
+                    max_tokens = _final_fit_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
                             messages_without_unpriced_media(fitted), None, self.markup_profile
@@ -35430,7 +35476,7 @@ class LlamaCppBackend:
                             # The final pass's twin of the in-loop decline: the turn ends at
                             # `length` holding a partial. Cap-spent excluded, that cap being ours.
                             if _next_cap != 0 and not _continuation_refusal_announced:
-                                _refusal_f = _continuation_refusal_event()
+                                _refusal_f = _continuation_refusal_event(_final_fit_max_tokens)
                                 if _refusal_f is not None:
                                     _continuation_refusal_announced = True
                                     yield _refusal_f
@@ -35559,7 +35605,7 @@ class LlamaCppBackend:
                                 }
                             else:
                                 if _next_cap_r != 0 and not _continuation_refusal_announced:
-                                    _refusal_r = _continuation_refusal_event()
+                                    _refusal_r = _continuation_refusal_event(_final_fit_max_tokens)
                                     if _refusal_r is not None:
                                         _continuation_refusal_announced = True
                                         yield _refusal_r

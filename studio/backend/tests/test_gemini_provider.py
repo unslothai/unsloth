@@ -2655,6 +2655,67 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(monkeypatch):
     assert captured["requests"][0]["host_header"] == "cdn.example.com"
 
 
+@pytest.mark.parametrize(
+    "configured,bypassed,proxied",
+    [(False, False, False), (True, False, True), (True, True, False)],
+)
+def test_safe_fetch_image_carries_the_addresses_only_on_a_direct_request(
+    monkeypatch, configured, bypassed, proxied
+):
+    """The URL pins the first validated address and all of them reach the connection,
+    where the fallback happens; a proxied request carries none. Routing is decided on
+    the hostname, since the pinned URL's IP matches no NO_PROXY entry."""
+    import socket
+    import urllib.error
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:4700::1", "104.16.0.1")
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host == "cdn.example.com":
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 0, "", (addresses[0], 0, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", (addresses[1], 0)),
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    captured: dict = {}
+
+    class _StubOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            captured["url"] = req.full_url
+            raise urllib.error.URLError(OSError(101, "Network is unreachable"))
+
+    def fake_build_opener(*handlers, **_kw):
+        captured["handlers"] = handlers
+        return _StubOpener()
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    proxies = {"https": "http://proxy.corp:3128"} if configured else {}
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: proxies)
+    # A bracketed host is the pinned IP: NO_PROXY matching it but not the hostname
+    # makes urllib's own decision disagree with the request's.
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: bypassed or host[0] == "[")
+    monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
+
+    _drive(ep_mod._safe_fetch_image_for_gemini("https://cdn.example.com/x.png", "image/png"))
+
+    assert captured["url"] == f"https://[{addresses[0]}]/x.png"
+    https = next(h for h in captured["handlers"] if isinstance(h, tools_mod._SNIHTTPSHandler))
+    assert https._addresses == (() if proxied else addresses)
+    opted_out = any(
+        isinstance(h, urllib.request.ProxyHandler) and not h.proxies for h in captured["handlers"]
+    )
+    assert opted_out is not proxied
+
+
 def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
     """Round 17: each redirect hop must re-validate the new host. A public hop
     that redirects to an internal address must be dropped."""
