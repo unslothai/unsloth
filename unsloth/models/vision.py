@@ -483,7 +483,6 @@ def _pin_device_to_decoder(model):
                 for param in self.parameters():
                     if param.device.type != "cpu":
                         return param.device
-                pass
             return original.fget(self)
 
         cls.device = property(_unsloth_device)
