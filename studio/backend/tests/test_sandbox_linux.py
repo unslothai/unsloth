@@ -269,7 +269,15 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
         (cache / name).mkdir(parents = True)
     (cache / "token").write_text("hf_A_REAL_LOOKING_TOKEN")
     (cache / "stored_tokens").write_text("{}")
-    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_model_cache_binds",
+        lambda workdir: {
+            name: str(cache / name)
+            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+            if (cache / name).is_dir()
+        },
+    )
 
     launch = sandbox_linux.prepare(_plan(tmp_path))
     try:
@@ -309,7 +317,15 @@ def test_the_cache_mount_points_are_made_here_and_left(tmp_path, monkeypatch):
     would let two overlapping calls in one session unlink each other's."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_model_cache_binds",
+        lambda workdir: {
+            name: str(cache / name)
+            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+            if (cache / name).is_dir()
+        },
+    )
     workdir = tmp_path / "session"
     workdir.mkdir()
 
@@ -327,7 +343,15 @@ def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, monkeypat
     make room for them."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_model_cache_binds",
+        lambda workdir: {
+            name: str(cache / name)
+            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+            if (cache / name).is_dir()
+        },
+    )
     workdir = tmp_path / "session"
     (workdir / ".cache" / "huggingface").mkdir(parents = True)
     (workdir / ".cache" / "notes.txt").write_text("the user's")
@@ -338,11 +362,13 @@ def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, monkeypat
 
 
 def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: None)
+    monkeypatch.setattr(sandbox_linux, "_model_cache_binds", lambda workdir: {})
     launch = sandbox_linux.prepare(_plan(tmp_path))
     try:
         assert "HF_HOME" not in launch.argv
-        assert _pairs(launch.argv, "--bind-try") == []
+        assert [
+            p for p in _pairs(launch.argv, "--bind") if p[0] != os.path.realpath(tmp_path)
+        ] == []
     finally:
         launch.cleanup()
 
@@ -878,30 +904,6 @@ def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_bound(tmp_path, monk
     assert not any(sandbox_linux._within(str(secret), path) for path in paths)
 
 
-def test_a_cache_ancestor_replaced_during_the_launch_is_not_followed_on_the_way_out(
-    tmp_path, monkeypatch
-):
-    """The other end of the same hazard. When no cache source exists the whole
-    generated tree is ordinary writable directories, so a tool call can empty it
-    and leave a symlink where .cache was; an rmdir by path afterwards would follow
-    that into a matching empty host directory."""
-    cache = tmp_path / "hostcache"
-    cache.mkdir()  # no subdirectories, so every --bind-try is skipped
-    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
-    workdir = tmp_path / "session"
-    workdir.mkdir()
-    outside = tmp_path / "outside"
-    (outside / "huggingface" / "hub").mkdir(parents = True)
-
-    launch = sandbox_linux.prepare(_plan(workdir))
-    # What a tool call can do from inside: empty the tree and point .cache away.
-    shutil.rmtree(workdir / ".cache")
-    (workdir / ".cache").symlink_to(outside)
-    launch.cleanup()
-    assert (outside / "huggingface" / "hub").is_dir(), "cleanup followed the planted symlink"
-    assert (workdir / ".cache").is_symlink()
-
-
 def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, monkeypatch):
     """os.mkdir follows an intermediate symlink, and the workdir scan deliberately
     permits directory symlinks, so a .cache a previous call pointed at the user's
@@ -912,7 +914,15 @@ def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_p
     failed call, not an unisolated one."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_model_cache_binds",
+        lambda workdir: {
+            name: str(cache / name)
+            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+            if (cache / name).is_dir()
+        },
+    )
     workdir = tmp_path / "session"
     workdir.mkdir()
     outside = tmp_path / "outside"
@@ -1094,7 +1104,15 @@ def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, 
     workspace content."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_model_cache_binds",
+        lambda workdir: {
+            name: str(cache / name)
+            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+            if (cache / name).is_dir()
+        },
+    )
     workdir = tmp_path / "session"
     (workdir / ".cache" / "huggingface").mkdir(parents = True)
     (workdir / ".cache" / "huggingface" / "hub").write_text("not a directory")
@@ -1121,23 +1139,26 @@ def test_an_unreadable_directory_is_refused(tmp_path):
 
 
 def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch):
-    """Moving the cache through Studio Settings deliberately leaves HF_HOME at the
-    default and puts the real paths in the component variables, so reading one
-    variable finds an empty default and re-downloads into every session."""
-    elsewhere = tmp_path / "models"
-    (elsewhere / "hub").mkdir(parents = True)
+    """HF_HUB_CACHE and HF_XET_CACHE can point anywhere -- HF_HUB_CACHE=/mnt/models
+    is not /mnt/models/hub -- so each component is bound where it actually is, and
+    only the two with no variable of their own are derived from the cache home."""
+    hub = tmp_path / "mnt" / "models"
+    xet = tmp_path / "fast" / "xet"
+    home = tmp_path / "cachehome"
+    for path in (hub, xet, home / "datasets", home / "assets"):
+        path.mkdir(parents = True)
     import utils.hf_cache_settings as cache_settings
 
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
         lambda: cache_settings.HuggingFaceCachePaths(
-            cache_home = elsewhere,
-            hub_cache = elsewhere / "hub",
-            xet_cache = elsewhere / "xet",
-            source = "studio",
+            cache_home = home, hub_cache = hub, xet_cache = xet, source = "studio"
         ),
     )
-    assert sandbox_linux._model_cache_path(str(tmp_path / "session")) == str(elsewhere)
-    # And still refused when the resolved root would be inside the workdir.
-    assert sandbox_linux._model_cache_path(str(elsewhere)) is None
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert binds["hub"] == str(hub)
+    assert binds["xet"] == str(xet)
+    assert binds["datasets"] == str(home / "datasets")
+    # And a component that would sit inside the workdir is dropped.
+    assert "hub" not in sandbox_linux._model_cache_binds(str(hub.parent))

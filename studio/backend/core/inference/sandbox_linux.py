@@ -426,29 +426,40 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
     return os.pathsep.join(part for part in (inherited, os.path.join(packages, "bin")) if part)
 
 
-def _model_cache_path(workdir: str) -> str | None:
-    """The host cache to share, which is where the SERVER's own downloads went.
+def _model_cache_binds(workdir: str) -> dict[str, str]:
+    """Inner cache subdirectory -> the host directory to share there.
 
     Asked of the cache-settings layer rather than read off HF_HOME: moving the
     cache through Studio Settings deliberately leaves HF_HOME at the default and
-    puts the real paths in HF_HUB_CACHE and HF_XET_CACHE, so reading one variable
-    finds an empty default and re-downloads the weights into every session, which
-    is the cost this hole exists to avoid. The child never sees any of those
-    variables -- _build_safe_env drops them as credential locations and the
-    backend sets its own -- so this is the only place they can be honoured.
+    puts the real paths in HF_HUB_CACHE and HF_XET_CACHE, and those two can point
+    anywhere -- HF_HUB_CACHE=/mnt/models is not /mnt/models/hub. So each component
+    is resolved and bound where it actually is, and only the two that have no
+    variable of their own are derived from the cache home.
+
+    Empty when the cache cannot be resolved or would sit inside the workdir. The
+    child never sees any of these variables -- _build_safe_env drops them as
+    credential locations and the backend sets its own -- so this is the only place
+    they can be honoured.
     """
+    binds: dict[str, str] = {}
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
-        path = os.path.abspath(str(get_hf_cache_paths().cache_home))
+
+        paths = get_hf_cache_paths()
+        home = os.path.abspath(str(paths.cache_home))
+        resolved = {"hub": str(paths.hub_cache), "xet": str(paths.xet_cache)}
     except Exception:  # noqa: BLE001 - a launch never fails over a cache lookup
         logger.debug("could not resolve the configured Hugging Face cache", exc_info = True)
-        home = os.path.expanduser("~")
-        if not os.path.isabs(home):
-            return None
-        path = os.path.join(home, _MODEL_CACHE_RELPATH)
-    if not os.path.isdir(path) or _within(path, workdir):
-        return None
-    return path
+        user_home = os.path.expanduser("~")
+        if not os.path.isabs(user_home):
+            return binds
+        home = os.path.join(user_home, _MODEL_CACHE_RELPATH)
+        resolved = {}
+    for name in _MODEL_CACHE_SUBDIRS:
+        path = os.path.abspath(resolved.get(name) or os.path.join(home, name))
+        if os.path.isdir(path) and not _within(path, workdir):
+            binds[name] = path
+    return binds
 
 
 def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
@@ -519,7 +530,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
     runtime_paths = _runtime_read_paths(workdir, system_roots)
-    model_cache = _model_cache_path(workdir)
+    model_cache = _model_cache_binds(workdir)
     # A runtime under /tmp has to be restored after the private tmpfs replaces it.
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))
 
@@ -593,15 +604,14 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             # for itself is not handed one the jail cannot open either.
             argv += ["--bind", workdir, workdir]
         argv += ["--chdir", inner]
-        if model_cache is not None:
+        if model_cache:
             inner_cache = os.path.join(inner, _MODEL_CACHE_RELPATH)
-            _make_cache_mountpoints(inner, _MODEL_CACHE_SUBDIRS)
-            for name in _MODEL_CACHE_SUBDIRS:
-                argv += [
-                    "--bind-try",
-                    os.path.join(model_cache, name),
-                    os.path.join(inner_cache, name),
-                ]
+            _make_cache_mountpoints(inner, tuple(model_cache))
+            for name, host_path in model_cache.items():
+                # --bind-try: the directory was there when this was resolved,
+                # and a bind that fails does so after Popen, where auto has no
+                # fallback left.
+                argv += ["--bind-try", host_path, os.path.join(inner_cache, name)]
             argv += ["--setenv", "HF_HOME", inner_cache]
         packages = os.path.join(inner, SESSION_PACKAGES_RELPATH)
         argv += [
