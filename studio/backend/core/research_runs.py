@@ -2128,6 +2128,8 @@ class ResearchSupervisor:
         document_sources: list[dict] = []
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
+        completed_steps = 0
+        step_error = ""
         question, conversation_context = await asyncio.to_thread(
             _research_question_context,
             run["threadId"],
@@ -2154,7 +2156,9 @@ class ResearchSupervisor:
             elif argument:
                 used_queries.add(argument)
             if step.get("status") != "completed":
+                step_error = str(result.get("error") or "") or step_error
                 continue
+            completed_steps += 1
             restored_state = _normalize_research_state(result.get("researchState"))
             if restored_state:
                 research_state = restored_state
@@ -2516,6 +2520,10 @@ class ResearchSupervisor:
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
             clean_result = strip_result_for_model(result, "web_search")
+            if step_failed:
+                step_error = clean_result[:500]
+            else:
+                completed_steps += 1
             step_result = {
                 "action": action["action"],
                 "input": argument,
@@ -2560,6 +2568,8 @@ class ResearchSupervisor:
             )
             await self._check_worker_write(run["id"], seq is not None)
         await self._check_active(run["id"])
+        if not completed_steps and not sources and not document_sources:
+            raise ValueError(f"No research step gathered any evidence. {step_error}".rstrip())
         source_catalog = "\n".join(
             f"{index}. Title: {_citation_title(source, source['url'])}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)
