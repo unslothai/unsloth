@@ -94,7 +94,12 @@ class _FakeTokenizer:
     pad_token_id = 2
     all_special_tokens: list = []
 
-    def __call__(self, _prompt, return_tensors = None, add_special_tokens = True):
+    def __call__(
+        self,
+        _prompt,
+        return_tensors = None,
+        add_special_tokens = True,
+    ):
         return _FakeEncoding(input_ids = _FakeTensor(_PROMPT_LEN))
 
 

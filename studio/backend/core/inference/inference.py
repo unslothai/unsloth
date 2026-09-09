@@ -2023,9 +2023,7 @@ class InferenceBackend:
             prompt_len = int(inputs["input_ids"].shape[1])
             # An unset client limit arrives as the whole context window, which no
             # nonempty prompt can also fit; generate raises rather than truncating.
-            max_new_tokens = generation_budget_within_context(
-                model, prompt_len, max_new_tokens
-            )
+            max_new_tokens = generation_budget_within_context(model, prompt_len, max_new_tokens)
 
             generation_kwargs = dict(
                 **inputs,

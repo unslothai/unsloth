@@ -74,9 +74,7 @@ def runtime_context_length(model: Any, fallback: Optional[int] = None) -> Option
 
 
 def generation_budget_within_context(
-    model: Any,
-    prompt_length: int,
-    max_new_tokens: Optional[int],
+    model: Any, prompt_length: int, max_new_tokens: Optional[int]
 ) -> Optional[int]:
     """Fit a generation budget into the context the prompt leaves free.
 
