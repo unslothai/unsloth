@@ -42,8 +42,26 @@ export type ExternalReasoningCapabilities = {
   )[];
 };
 
+/** Weakest -> strongest. Mirrors _REASONING_EFFORT_SCALE in backend
+ *  core/inference/llama_cpp.py; keep the two in sync. */
+const REASONING_EFFORT_SCALE = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies ExternalReasoningCapabilities["reasoningEffortLevels"];
+
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
- *  when only the latter is exposed (Claude 4.6). */
+ *  when only the latter is exposed (Claude 4.6).
+ *
+ *  A level the model does not offer lands on its nearest neighbour on the scale, not on
+ *  `effortLevels[0]`. That fallback was the weakest rung: Qwen3.8-27B ships low | medium |
+ *  xhigh, so a chat on High came back as Low. Prefer the nearest level below, so the clamp
+ *  never spends more compute than was asked for; only a level under everything on offer
+ *  climbs to the weakest rung, which is where it already went. */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
@@ -58,6 +76,22 @@ export function clampReasoningEffortToLevels(
   }
   if (effortLevels.includes(candidate)) {
     return candidate;
+  }
+  const rank = REASONING_EFFORT_SCALE.indexOf(
+    candidate as (typeof REASONING_EFFORT_SCALE)[number],
+  );
+  if (rank !== -1) {
+    // Scale order, not the order the provider table happens to list.
+    const offered = REASONING_EFFORT_SCALE.filter((level) =>
+      effortLevels.includes(level),
+    );
+    const below = offered.filter(
+      (level) => REASONING_EFFORT_SCALE.indexOf(level) < rank,
+    );
+    const nearest = below.length > 0 ? below[below.length - 1] : offered[0];
+    if (nearest !== undefined) {
+      return nearest;
+    }
   }
   return effortLevels[0] ?? "low";
 }

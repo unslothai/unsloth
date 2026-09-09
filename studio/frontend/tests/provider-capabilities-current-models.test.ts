@@ -92,6 +92,30 @@ test("Astra exposes mandatory reasoning with its full effort ladder", () => {
   assert.equal(clampReasoningEffortToLevels("max", caps.reasoningEffortLevels), "max");
 });
 
+// A local GGUF's ladder is whatever its template branches on, so it can skip rungs the scale
+// has. Qwen3.8-27B ships low | medium | xhigh, and High and Max are both real stored settings.
+test("a narrower local ladder clamps to the nearest rung, not to the weakest", () => {
+  const qwen38 = ["low", "medium", "xhigh"] as const;
+
+  // One rung off the top must not come back as the floor.
+  assert.equal(clampReasoningEffortToLevels("high", qwen38), "medium");
+  assert.equal(clampReasoningEffortToLevels("max", qwen38), "xhigh");
+  for (const effort of qwen38) {
+    assert.equal(clampReasoningEffortToLevels(effort, qwen38), effort);
+  }
+  // No lower neighbour, so the weakest rung is right.
+  assert.equal(clampReasoningEffortToLevels("none", qwen38), "low");
+  assert.equal(clampReasoningEffortToLevels("minimal", qwen38), "low");
+});
+
+test("the xhigh -> max alias still wins over the neighbour search", () => {
+  // Claude 4.6 renamed the rung rather than dropping it: same level, not a clamp.
+  assert.equal(
+    clampReasoningEffortToLevels("xhigh", ["low", "medium", "high", "max"]),
+    "max",
+  );
+});
+
 test("Astra reasoning does not enable unrelated model families", () => {
   for (const model of ["gpt-6-other", "gpt-60-astra"]) {
     assert.equal(getExternalReasoningCapabilities("openai_codex", model).supportsReasoning, false);
