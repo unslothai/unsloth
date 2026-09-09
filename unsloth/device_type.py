@@ -24,6 +24,8 @@ __all__ = [
     "clean_gpu_cache",
     "get_current_device",
     "resolve_hip_gpu_stats_name",
+    "arch_lacks_bf16",
+    "hip_visible_archs",
     "is_mlx_available",
 ]
 
@@ -58,13 +60,12 @@ def is_hip():
 
 @functools.cache
 def get_device_type():
-    # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here
-    # would NameError in get_device_count. Matches unsloth/__init__.py and
-    # unsloth_zoo.device_type, which both pick MLX ahead of the CPU fallback.
+    # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
+    # get_device_count. Matches unsloth/__init__.py and unsloth_zoo.device_type.
     if _IS_MLX:
         return "mlx"
-    # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda"
-    # branch behaves identically. Read once per process (function is cached).
+    # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda" branch behaves identically.
+    # Read once per process (function is cached).
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return "cuda"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
@@ -73,7 +74,6 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
@@ -108,28 +108,19 @@ def get_device_count():
 
 DEVICE_COUNT: int = get_device_count()
 
-# 4-bit quantization requires a block size of 64
-# | Device Type     | Warp Size | Block Size |
-# |-----------------|-----------|------------|
-# | CUDA            |    32     |     32     |
-# | Radeon (Navi)   |    32     |     32     |
-# | Instinct (MI)   |    64     |     32     |
-#
-# Since bitsandbytes 0.49.0, pre-quantized models with 64 blockwise now works
-# on Radeon GPUs, but not Instinct MI300x for eg
-# See https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1748
-#
-# Since bitsandbytes 0.49.2, blocksize=64 4-bit quantization is supported on
-# CDNA (MI Instinct / gfx9xx) GPUs as well
-# See https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1856
+# 4-bit quantization requires a block size of 64: Instinct (MI) has a warp size of 64 against 32
+# elsewhere. Since bitsandbytes 0.49.0 pre-quantized 64-blockwise models work on Radeon (Navi)
+# but not Instinct (bitsandbytes-foundation/bitsandbytes#1748); since 0.49.2 blocksize=64 4-bit
+# is supported on CDNA (MI Instinct / gfx9xx) too (#1856).
 
+# |-----------------|-----------|------------|
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
-# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader reads
-# before it picks a 4bit checkpoint. A guarded import, not find_spec, since importable
-# is not usable - from 0.46 a dead native library still resolves every ctypes handle to
-# a closure that raises only when called, so 4bit would die mid-run, not fall back here.
+# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader reads before it
+# picks a 4bit checkpoint. A guarded import, not find_spec, since importable is not usable: from
+# 0.46 a dead native library still resolves every ctypes handle to a closure that raises only when
+# called, so 4bit would die mid-run rather than fall back here.
 try:
     import bitsandbytes as _bnb_probe
 except Exception:
@@ -140,10 +131,8 @@ else:
         ALLOW_PREQUANTIZED_MODELS = False
         ALLOW_BITSANDBYTES = False
     del _bnb_probe
-# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this
-# legacy GCN arch (ROCm dropped it after 6.3) - compiled graphs crash or miscompile
-# while the eager path trains fine. Default compile off; setdefault so a user
-# override wins.
+# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
+# (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
 if DEVICE_TYPE == "hip":
     try:
         _gcn_arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0].strip().lower()
@@ -172,7 +161,7 @@ if DEVICE_TYPE == "hip":
             pass
         elif Version(bitsandbytes.__version__) >= Version("0.49.0"):
             try:
-                # Pre-quantized bitsandbytes models use blocksize 64, so we need to check the GPU
+                # Pre-quantized bitsandbytes models use blocksize 64.
                 from bitsandbytes.cextension import ROCM_WARP_SIZE_64
                 ALLOW_PREQUANTIZED_MODELS = not ROCM_WARP_SIZE_64
             except Exception as e:
@@ -187,6 +176,28 @@ if DEVICE_TYPE == "hip":
             from bitsandbytes.nn.modules import Params4bit
             if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
                 ALLOW_PREQUANTIZED_MODELS = False
+
+
+def arch_lacks_bf16(gcn_arch):
+    """gfx10 (RDNA 1/2) claims bf16 it lacks, and Triton's dot then kills the process in LLVM
+    with no Python exception (issue 7922). gfx11 has bf16, so the prefix must stay 5 chars."""
+    return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+
+
+def hip_visible_archs():
+    """Guarded per device: one unreadable device must not discard the archs beside it, or a
+    gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    archs = []
+    for i in range(count):
+        try:
+            archs.append(str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")))
+        except Exception:
+            continue
+    return archs
 
 
 def resolve_hip_gpu_stats_name(gpu_stats):

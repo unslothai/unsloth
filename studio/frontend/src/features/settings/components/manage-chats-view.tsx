@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   type ConvExportFormat,
   EXPORT_FORMATS_LIST,
   type SidebarItem,
@@ -329,7 +330,7 @@ export function ManageChatsView() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
-            {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+            {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
               <DropdownMenuItem
                 key={`m-${fmt}`}
                 onSelect={() => void handleExport(fmt, true)}

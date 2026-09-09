@@ -35,8 +35,9 @@ def _wait_for_device(device):
         except TypeError:  # torch.mps.synchronize takes no device argument
             synchronize()
     except Exception:
-        # An async device fault surfaces here as a RuntimeError. It belongs to generate(), whose
-        # caller reports it; a timing stamp must not pre-empt that or skip the cleanup after it.
+        # an async device fault belongs to generate(); a timing stamp must not pre-empt it or skip cleanup
+        # An async device fault surfaces here as a RuntimeError. It belongs to generate(), whose caller reports it; a
+        # timing stamp must not pre-empt that or skip the cleanup after it.
         pass
 
 

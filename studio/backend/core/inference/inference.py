@@ -3,6 +3,8 @@
 
 """Core inference backend."""
 
+from __future__ import annotations
+
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
 from transformers import TextIteratorStreamer, TextStreamer
@@ -34,7 +36,8 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
-    ReasoningChannelNormalizer,
+    build_dac_tts_prompt,
+    make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
     neutralize_control_markup_in_messages,
@@ -54,6 +57,12 @@ from loggers import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
+    if hf_token is False:
+        return False
+    return hf_token.strip() if isinstance(hf_token, str) and hf_token.strip() else None
 
 
 class HarmonyTextStreamer:
@@ -209,7 +218,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         self,
         tokenizer,
         *,
-        markers: tuple[str, str],
+        markers: tuple[str, ...],
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
@@ -218,7 +227,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
     ):
         decode_kwargs["skip_special_tokens"] = False
         super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
-        self._normalizer = ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
+        self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
 
@@ -248,6 +257,25 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
 
 class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
+
+
+def _prompt_already_has_bos(tokenizer, prompt):
+    """Did the rendered chat template emit BOS itself?
+
+    Most do, so the tokenizer must not add a second. Some do not (zephyr, tinyllama-chat), and
+    suppressing special tokens there drops BOS entirely.
+    """
+    tok = getattr(tokenizer, "tokenizer", tokenizer)
+    bos_token_id = getattr(tok, "bos_token_id", None)
+    if bos_token_id is None:
+        return False
+    try:
+        ids = tok(prompt, add_special_tokens = False)["input_ids"]
+    except Exception:
+        return False
+    while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    return bool(len(ids)) and ids[0] == bos_token_id
 
 
 class InferenceBackend:
@@ -334,9 +362,10 @@ class InferenceBackend:
         max_seq_length: int = 2048,
         dtype = None,
         load_in_4bit: bool = True,
-        hf_token: Optional[str] = None,
+        hf_token: Optional[str] | bool = None,
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        audio_codec_path: Optional[str] = None,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
         # Keep the token so the native-template fallback can fetch a
@@ -404,7 +433,7 @@ class InferenceBackend:
                         auto_model = CsmForConditionalGeneration,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -413,19 +442,16 @@ class InferenceBackend:
                     self.models[model_name]["processor"] = processor
                 elif audio_type == "bicodec":
                     import os
+                    from core.inference.audio_codecs import resolve_bicodec_repo_path
                     from unsloth import FastModel
 
                     if config.is_lora and config.base_model:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
                         base_path = config.base_model
-                        if os.path.isdir(base_path):
-                            abs_repo_path = os.path.abspath(os.path.dirname(base_path))
-                        else:
-                            # base_model is an HF ID — download it.
-                            from huggingface_hub import snapshot_download
-                            repo_path = snapshot_download(base_path)
-                            abs_repo_path = os.path.abspath(repo_path)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            base_path, hf_token = hf_token
+                        )
 
                         logger.info(
                             f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}"
@@ -433,9 +459,11 @@ class InferenceBackend:
                         model, tokenizer = FastModel.from_pretrained(
                             config.path,
                             dtype = torch.float32,
+                            # Flash Attention cannot run float32
+                            attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
-                            token = hf_token if hf_token and hf_token.strip() else None,
+                            token = _hf_token_for_loader(hf_token),
                             trust_remote_code = trust_remote_code,
                         )
                     elif config.is_local and os.path.isdir(config.path):
@@ -447,57 +475,21 @@ class InferenceBackend:
                         llm_path = os.path.join(config.path, "LLM")
                         if not os.path.isdir(llm_path):
                             llm_path = config.path
-                        base_repo = None
-                        try:
-                            meta_path = Path(config.path) / "export_metadata.json"
-                            if meta_path.exists():
-                                base_repo = json.loads(
-                                    meta_path.read_text(encoding = "utf-8-sig")
-                                ).get("base_model")
-                        except Exception:
-                            base_repo = None
-                        if base_repo and os.path.isdir(base_repo):
-                            # A base recorded as .../Spark-TTS-0.5B/LLM keeps BiCodec in its parent.
-                            abs_repo_path = os.path.abspath(
-                                os.path.dirname(base_repo)
-                                if os.path.basename(base_repo.rstrip("/\\")) == "LLM"
-                                else base_repo
-                            )
-                        elif base_repo:
-                            from huggingface_hub import snapshot_download
-
-                            # Registry alias ("Spark-TTS-0.5B/LLM") names a load
-                            # subdirectory, not a repo, so snapshot_download rejects it.
-                            # Same resolver the capability probe and the trainer preflight
-                            # use, rather than a second copy of the mapping.
-                            from utils.security import load_scan_target
-                            from utils.utils import canonical_model_repo_id
-
-                            hf_repo, _load_subdirs = load_scan_target(
-                                canonical_model_repo_id(base_repo), ()
-                            )
-                            hf_repo = hf_repo or base_repo
-                            # Same token as the load below: a private or gated base would
-                            # otherwise 401 here while resolving the BiCodec assets.
-                            abs_repo_path = os.path.abspath(
-                                snapshot_download(
-                                    hf_repo,
-                                    token = hf_token if hf_token and hf_token.strip() else None,
-                                )
-                            )
-                        else:
-                            abs_repo_path = os.path.abspath(config.path)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         logger.info(
                             f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
                         )
                     else:
                         # Base model: download full HF repo, load from /LLM subfolder
-                        from huggingface_hub import snapshot_download
-
-                        repo_path = snapshot_download(config.path)
-                        abs_repo_path = os.path.abspath(repo_path)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         llm_path = os.path.join(abs_repo_path, "LLM")
-                        logger.info(f"Spark-TTS: repo at {repo_path}, loading LLM from {llm_path}")
+                        logger.info(
+                            f"Spark-TTS: repo at {abs_repo_path}, loading LLM from {llm_path}"
+                        )
 
                     if not (config.is_lora and config.base_model):
                         # Shared by the merged-export and repo-root branches above: both resolve
@@ -505,9 +497,11 @@ class InferenceBackend:
                         model, tokenizer = FastModel.from_pretrained(
                             llm_path,
                             dtype = torch.float32,
+                            # Flash Attention cannot run float32
+                            attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
-                            token = hf_token if hf_token and hf_token.strip() else None,
+                            token = _hf_token_for_loader(hf_token),
                             trust_remote_code = trust_remote_code,
                         )
 
@@ -524,7 +518,7 @@ class InferenceBackend:
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -542,7 +536,7 @@ class InferenceBackend:
                         whisper_task = "transcribe",
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -570,7 +564,7 @@ class InferenceBackend:
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastLanguageModel.for_inference(model)
@@ -580,7 +574,9 @@ class InferenceBackend:
                 # Load external codec for TTS audio types
                 # (Whisper is ASR, audio_vlm is audio input — neither needs one)
                 if audio_type not in ("whisper", "audio_vlm"):
-                    model_repo_path = self.models[model_name].get("model_repo_path")
+                    model_repo_path = audio_codec_path or self.models[model_name].get(
+                        "model_repo_path"
+                    )
                     self._audio_codec_manager.load_codec(
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
@@ -612,7 +608,7 @@ class InferenceBackend:
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
-                    token = hf_token if hf_token and hf_token.strip() else None,
+                    token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                 )
 
@@ -644,7 +640,7 @@ class InferenceBackend:
 
                     processor = AutoProcessor.from_pretrained(
                         processor_source,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
@@ -661,7 +657,7 @@ class InferenceBackend:
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
-                    token = hf_token if hf_token and hf_token.strip() else None,
+                    token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                 )
 
@@ -969,30 +965,39 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
+        # The usage of the LATEST turn, so the loop can size a search against a real
+        # token count. Cleared before every turn and written when that turn ends, so a
+        # turn that failed or reported nothing leaves it empty rather than stale.
+        _turn_stats: dict = {}
+
         def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
             # tools such as render_html can be removed from later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
-            yield from self._generate_chat_response_inner(
-                messages = conv,
-                system_prompt = "",
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                min_p = min_p,
-                max_new_tokens = max_new_tokens,
-                repetition_penalty = repetition_penalty,
-                cancel_event = cancel_event,
-                tools = turn_tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                # Self-limiting: after a tool call the conversation ends on a tool
-                # result, so later turns render as ordinary new turns.
-                continue_final_message = continue_final_message,
-                presence_penalty = presence_penalty,
-            )
+            _turn_stats["stats"] = None
+            try:
+                yield from self._generate_chat_response_inner(
+                    messages = conv,
+                    system_prompt = "",
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    min_p = min_p,
+                    max_new_tokens = max_new_tokens,
+                    repetition_penalty = repetition_penalty,
+                    cancel_event = cancel_event,
+                    tools = turn_tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    # Self-limiting: after a tool call the conversation ends on a tool
+                    # result, so later turns render as ordinary new turns.
+                    continue_final_message = continue_final_message,
+                    presence_penalty = presence_penalty,
+                )
+            finally:
+                _turn_stats["stats"] = self.last_generation_stats
 
         initial = list(messages)
         if system_prompt:
@@ -1035,6 +1040,10 @@ class InferenceBackend:
             rag_scope = rag_scope,
             reasoning_prefilled = reasoning_prefilled,
             continue_final_message = continue_final_message,
+            # So a conversation search can be sized against what this model can hold.
+            context_length = _model_info.get("context_length"),
+            max_tokens = max_new_tokens,
+            generation_stats_holder = _turn_stats,
         )
 
     def generate_chat_response(
@@ -1141,6 +1150,7 @@ class InferenceBackend:
                     cancel_event = cancel_event,
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
+                    tools = tools,
                 )
                 return
             else:
@@ -1199,6 +1209,7 @@ class InferenceBackend:
         else:
             template_messages = messages
         reasoning_channel_markers_resolved = False
+        add_special_tokens = True
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -1243,6 +1254,8 @@ class InferenceBackend:
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
+            # Suppress the tokenizer's BOS only when the template already emitted one.
+            add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -1269,6 +1282,7 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
+            add_special_tokens = add_special_tokens,
         )
 
     def _generate_vision_response(
@@ -1285,6 +1299,7 @@ class InferenceBackend:
         cancel_event = None,
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1301,8 +1316,12 @@ class InferenceBackend:
         # prompts from the turn that asked the question.
         from core.inference.chat_template_helpers import (
             last_user_text,
+            messages_have_tool_history,
+            messages_with_attached_image,
+            render_advertising_tools,
             render_prompt_with_boundary,
             trailing_assistant_text,
+            vlm_prompt_issue,
         )
 
         user_message = last_user_text(messages)
@@ -1313,61 +1332,144 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            user_msg = {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": user_message},
-                ],
-            }
-            if system_prompt:
-                vision_messages = [
-                    {
-                        "role": "system",
-                        "content": [{"type": "text", "text": system_prompt}],
-                    },
-                    user_msg,
-                ]
-            else:
-                vision_messages = [user_msg]
-
-            # Resume the partial answer instead of opening a new turn.
-            if continue_partial:
-                vision_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": continue_partial}],
-                    }
-                )
-
-            # Processor's own template skips the choke point (#7066). Rebind user_msg
-            # so the no-system retry keeps the copy. Profiled from the processor, so a
-            # vision request is gated on the loaded model exactly as the text path is.
-            from core.inference.chat_template_helpers import markup_for_tokenizer
-
-            vision_messages = neutralize_control_markup_in_messages(
-                vision_messages, None, markup_for_tokenizer(processor)
+            # Ordinary vision turns keep the historic collapse; full history is unbounded.
+            has_tool_history = messages_have_tool_history(messages)
+            # Client-tools route signature: tool_choice="none" and a forced unknown name
+            # also arrive tools=None, and the catalog alone missed them (#10092).
+            folded_system = not system_prompt and any(
+                isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
-            user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
-
-            def _render_vision(msgs):
-                # Partial taken from the swept msgs, not the raw pre-sweep capture.
-                return render_prompt_with_boundary(
-                    processor, msgs, continue_final_message = bool(continue_partial)
+            if bool(tools) or has_tool_history or folded_system:
+                # Rebuilding from newest user TEXT dropped the system turn and the tool
+                # history an OpenAI tool loop replays (#10092).
+                vision_messages = messages_with_attached_image(
+                    messages,
+                    system_prompt = system_prompt,
+                    fallback_user_text = user_message,
+                    structured_content = True,
                 )
 
-            try:
-                input_text = _render_vision(vision_messages)
-            except Exception as e:
-                if system_prompt:
-                    logger.warning(
-                        f"Vision processor for '{self.active_model_name}' may not support "
-                        f"system messages; retrying without. Original error: {e}"
+                # The conversation the LAST render used, not the no-tools probe's (#10092).
+                rendered_with: dict = {"messages": vision_messages}
+
+                def _render_vision(catalog):
+                    rendered_with["messages"] = vision_messages
+                    try:
+                        rendered = self._apply_chat_template_for_generation(
+                            processor,
+                            vision_messages,
+                            tools = catalog,
+                            continue_final_message = bool(continue_partial),
+                        )
+                    except Exception as e:  # noqa: F841 -- read by the fallback below
+                        without_system = [
+                            m
+                            for m in vision_messages
+                            if not (isinstance(m, dict) and m.get("role") == "system")
+                        ]
+                        # Only where an unsupported system role is the last explanation.
+                        if (
+                            has_tool_history
+                            or rendered_with.get("system_ok")
+                            or len(without_system) == len(vision_messages)
+                        ):
+                            raise
+                        logger.warning(
+                            f"Vision processor for '{self.active_model_name}' may not support "
+                            f"system messages; retrying without. Original error: {e}"
+                        )
+                        rendered = self._apply_chat_template_for_generation(
+                            processor,
+                            without_system,
+                            tools = catalog,
+                            continue_final_message = bool(continue_partial),
+                        )
+                        rendered_with["messages"] = without_system
+                        return rendered
+                    else:
+                        # A render that kept the system turn proves the role is supported.
+                        if any(
+                            isinstance(m, dict) and m.get("role") == "system"
+                            for m in vision_messages
+                        ):
+                            rendered_with["system_ok"] = True
+                        return rendered
+
+                input_text, tools_advertised = render_advertising_tools(_render_vision, tools)
+                vision_messages = rendered_with["messages"]
+
+                prompt_issue = vlm_prompt_issue(input_text, vision_messages)
+                if prompt_issue and has_tool_history:
+                    raise RuntimeError(
+                        f"Vision chat template returned {prompt_issue} and cannot be recovered "
+                        "without dropping tool-call history."
                     )
-                    vision_messages = [m for m in vision_messages if m.get("role") != "system"]
-                    input_text = _render_vision(vision_messages)
+                if prompt_issue:
+                    raise RuntimeError(f"Vision chat template returned {prompt_issue}.")
+
+                if tools and not tools_advertised:
+                    # Served anyway: refusing turns an answerable question into an error.
+                    logger.warning(
+                        "Vision chat template for '%s' rendered the same prompt with and "
+                        "without the requested tools; serving the turn without the catalog.",
+                        self.active_model_name,
+                    )
+            else:
+                user_msg = {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": user_message},
+                    ],
+                }
+                if system_prompt:
+                    vision_messages = [
+                        {
+                            "role": "system",
+                            "content": [{"type": "text", "text": system_prompt}],
+                        },
+                        user_msg,
+                    ]
                 else:
-                    raise
+                    vision_messages = [user_msg]
+
+                # Resume the partial answer instead of opening a new turn.
+                if continue_partial:
+                    vision_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": continue_partial}],
+                        }
+                    )
+
+                # Processor's own template skips the choke point (#7066). Rebind user_msg
+                # so the no-system retry keeps the copy.
+                from core.inference.chat_template_helpers import markup_for_tokenizer
+
+                vision_messages = neutralize_control_markup_in_messages(
+                    vision_messages, None, markup_for_tokenizer(processor)
+                )
+                user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
+
+                def _render_collapsed_vision(msgs):
+                    # Partial taken from the swept msgs, not the raw pre-sweep capture.
+                    return render_prompt_with_boundary(
+                        processor, msgs, continue_final_message = bool(continue_partial)
+                    )
+
+                try:
+                    input_text = _render_collapsed_vision(vision_messages)
+                except Exception as e:
+                    # Safe here: no catalog and no tool history to hide a failure behind.
+                    if system_prompt:
+                        logger.warning(
+                            f"Vision processor for '{self.active_model_name}' may not support "
+                            f"system messages; retrying without. Original error: {e}"
+                        )
+                        vision_messages = [m for m in vision_messages if m.get("role") != "system"]
+                        input_text = _render_collapsed_vision(vision_messages)
+                    else:
+                        raise
             inputs = processor(
                 image,
                 input_text,
@@ -1380,7 +1482,11 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
-            inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            inputs = raw_tokenizer(
+                formatted_prompt,
+                return_tensors = "pt",
+                add_special_tokens = not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+            ).to(model.device)
             prompt_text = formatted_prompt
 
         # Stream with TextIteratorStreamer + background thread
@@ -1397,8 +1503,9 @@ class InferenceBackend:
                 protocol_source = processor,
                 # The text-only VLM fallback above did not render with the
                 # processor template, so its native markers do not describe
-                # this request's response protocol.
-                reasoning_channel_markers = detect_reasoning_channel_markers(processor)
+                # this request's response protocol. Passing *tools* matches the
+                # render: a named template selects "tool_use", not "default".
+                reasoning_channel_markers = detect_reasoning_channel_markers(processor, tools = tools)
                 if image
                 else None,
                 reasoning_channel_markers_resolved = True,
@@ -1856,8 +1963,12 @@ class InferenceBackend:
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
         continued: bool = False,
+        add_special_tokens: bool = True,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
+
+        Rendered chat prompts pass add_special_tokens=False; raw prompts keep
+        the tokenizer defaults, including BOS insertion for base models.
 
         _adapter_state: if not None, the background thread toggles adapters
         before model.generate(), under _generation_lock.
@@ -1878,7 +1989,9 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
-            inputs = tokenizer(prompt, return_tensors = "pt").to(model.device)
+            inputs = tokenizer(
+                prompt, return_tensors = "pt", add_special_tokens = add_special_tokens
+            ).to(model.device)
 
             import threading
 
@@ -2044,6 +2157,7 @@ class InferenceBackend:
 
     # ── Audio (TTS) Generation ────────────────────────────────────
 
+    # ── Audio (TTS) Generation ────────────────────────────────────
     def generate_audio_response(
         self,
         text: str,
@@ -2055,10 +2169,16 @@ class InferenceBackend:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        instructions: Optional[str] = None,
+        language: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         """Generate audio from text for TTS models.
         Returns (wav_bytes, sample_rate). Blocking — full audio before return.
         """
+        # Reserved for native audio architectures; codec-backed TTS models do
+        # not currently expose scene instructions or deterministic seeding.
+        del instructions, language, seed
         if not self.active_model_name:
             raise RuntimeError("No active model")
 
@@ -2250,11 +2370,7 @@ class InferenceBackend:
         # (same as the OuteTTS notebook) to avoid degenerate repetition.
         self._patch_repetition_penalty_processor()
 
-        prompt = (
-            "<|im_start|>\n<|text_start|>"
-            + text
-            + "<|text_end|>\n<|audio_start|><|global_features_start|>\n"
-        )
+        prompt = build_dac_tts_prompt(text)
 
         with torch.inference_mode():
             # Derive the autocast device from the loaded model, not from the
@@ -2832,7 +2948,29 @@ class InferenceBackend:
             "format_type": "generic",
             "special_tokens": {},
             "template_name": None,
+            # An image turn renders through the PROCESSOR, a different template file for
+            # most VLMs, and this mirrored dict is all the route ever sees (#10092, #7066).
+            "processor_template": None,
+            # Distinct from processor_template: a template-less processor still places
+            # the image, falling back to the tokenizer body.
+            "renders_image": False,
         }
+        processor = self.models[model_name].get("processor")
+        # Same predicate as the image-ignoring fallback: FastVisionModel may return a raw
+        # tokenizer, whose body an image render never selects.
+        try:
+            from transformers import ProcessorMixin
+            processes_images = processor is not None and (
+                isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
+            )
+        except Exception:
+            processes_images = processor is not None and hasattr(processor, "image_processor")
+        chat_template_info["renders_image"] = bool(processes_images)
+        if processes_images:
+            processor_template = getattr(processor, "chat_template", None)
+            # Narrowing the named-template list form away disables the image-turn override.
+            if isinstance(processor_template, (str, dict, list, tuple)) and processor_template:
+                chat_template_info["processor_template"] = processor_template
 
         try:
             from utils.datasets import MODEL_TO_TEMPLATE_MAPPER

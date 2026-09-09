@@ -1383,3 +1383,143 @@ def test_a_truncated_source_fails_the_lookup_instead_of_shrinking_the_map(monkey
     with _BodyServer(truncated) as server:
         monkeypatch.setattr(tl, "_RAW_URL", server.url + "?{ref}{name}")
         assert tl._fetch_remote_model_types("v5.15.0") is None
+
+
+def _hardware_module(device):
+    """Stand in for utils.hardware, whose import needs real hardware."""
+    import enum
+
+    module = _types.ModuleType("utils.hardware")
+
+    class DeviceType(str, enum.Enum):
+        CUDA = "cuda"
+        XPU = "xpu"
+        MLX = "mlx"
+        CPU = "cpu"
+
+    module.DeviceType = DeviceType
+    module.get_device = lambda: DeviceType(device)
+    return module
+
+
+@pytest.fixture(autouse = True)
+def _transformers_backend_host(monkeypatch):
+    """Pin a transformers-loading device so these tests do not depend on the
+    host: on MLX the upgrade check short-circuits by design."""
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
+
+
+@pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
+def test_transformers_backends_still_get_the_upgrade_offer(device, monkeypatch):
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module(device))
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "brandnew_arch"})
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+
+    offered = tl.check_upgrade_for_model("org/brandnew")
+
+    assert offered is not None and offered["model_type"] == "brandnew_arch"
+
+
+def test_mlx_host_is_never_offered_a_transformers_upgrade(monkeypatch):
+    """MLX picks its backend from hardware and never falls back to transformers,
+    so no install can make an architecture loadable there. Same inputs as the
+    transformers-backend test above, which does get an offer."""
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is not None
+
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
+
+
+def _bnb(model_type):
+    return {
+        "model_type": model_type,
+        "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True},
+    }
+
+
+def test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo(monkeypatch):
+    """mlx-lm cannot read bnb weights, so the MLX loader dequantizes them through
+    ``AutoModelForCausalLM.from_pretrained``. That call is transformers building the
+    architecture, and on a brand-new type it raises the very unrecognized-architecture
+    error this offer fixes -- so a bnb repo keeps the offer even on MLX."""
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+
+    # Control: the same architecture unquantized is MLX's own to load, and is skipped.
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
+
+    # A third-party bnb build of it goes through transformers, so the offer is real.
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
+    offered = tl.check_upgrade_for_model("someorg/Muse-Glimmer-30B-bnb-4bit")
+    assert offered is not None and offered["model_type"] == "muse_glimmer"
+
+
+def test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base(monkeypatch):
+    """An ``unsloth/*-bnb-4bit`` id is remapped to its full-precision base before
+    the loader looks at the weights, so MLX quantizes it and transformers is never
+    asked to build it. Those keep the skip -- they are most of the bnb rows Studio
+    suggests on a Mac, and offering an install for them is the annoyance this
+    short-circuit exists to remove."""
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+
+    for remapped in (
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+        "unsloth/Muse-Glimmer-30B-bnb-4bit",
+    ):
+        assert tl.check_upgrade_for_model(remapped) is None
+
+    # Same suffix, different owner: not remapped, so it still goes to transformers.
+    assert tl.check_upgrade_for_model("someorg/Muse-Glimmer-30B-bnb-4bit") is not None
+
+
+def test_upgrade_offer_survives_a_broken_hardware_import(monkeypatch):
+    """Detection is best effort: failing it must not silence a real offer."""
+    broken = _types.ModuleType("utils.hardware")
+
+    def _raise():
+        raise RuntimeError("no hardware")
+
+    broken.get_device = _raise
+    broken.DeviceType = object()
+    monkeypatch.setitem(sys.modules, "utils.hardware", broken)
+
+    assert tl._architecture_cannot_come_from_transformers() is False

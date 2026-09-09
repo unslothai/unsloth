@@ -7,7 +7,7 @@ Standalone speech-to-text (STT) sidecar for dictation.
 Loads a Whisper model (via Transformers) in a spawn child of its own, separate
 from the chat model's inference subprocess, so dictation works with any chat
 model without evicting it. Curated defaults plus any Transformers-compatible
-Whisper repo; weights come through Studio's Model Hub and stay warm briefly
+Whisper repo; weights come through Unsloth's Model Hub and stay warm briefly
 between dictations. CUDA runs float16; MPS and CPU run float32.
 
 Everything except the model itself stays here: device choice, the Hub cache,
@@ -18,6 +18,8 @@ must not be the process that takes one.
 """
 
 from __future__ import annotations
+
+from hub.utils.hf_tokens import normalize_token
 
 import gc
 import hashlib
@@ -38,8 +40,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Multilingual Whisper defaults: stable API/UI id -> Hub repository. A request
-# may instead pass a validated Hugging Face `owner/model` id.
+# stable API/UI id -> Hub repository; a request may instead pass a validated `owner/model` id
+# Multilingual Whisper defaults: stable API/UI id -> Hub repository. A request may instead pass a validated Hugging Face
+# `owner/model` id.
 STT_MODELS: dict[str, str] = {
     "tiny": "unsloth/whisper-tiny",
     "base": "unsloth/whisper-base",
@@ -52,17 +55,14 @@ STT_KEEP_ALIVE_SECONDS = 5 * 60
 _HF_REPO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _HF_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
-# Bound decoded PCM length so a crafted upload cannot exhaust memory (callers
-# also cap the encoded bytes).
+# Bound decoded PCM length so a crafted upload cannot exhaust memory (callers also cap the encoded bytes).
 _MAX_AUDIO_SECONDS = 30 * 60
 _TARGET_SAMPLE_RATE = 16000
 
-# Non-weight files WhisperProcessor/WhisperForConditionalGeneration may load.
-# Weight selection is built from pinned Hub metadata. A custom repo id is
-# attacker-controllable, so only safetensors weights are accepted: a
-# pytorch_model.bin is a pickle and executes code while Transformers
-# deserializes it (see utils/security/file_security.py), and this path skips
-# the malware gate the normal model loader applies.
+# Non-weight files WhisperProcessor/WhisperForConditionalGeneration may load. Weight selection is built from pinned Hub
+# metadata. A custom repo id is attacker-controllable, so only safetensors weights are accepted: a pytorch_model.bin is
+# a pickle and executes code while Transformers deserializes it (see utils/security/file_security.py), and this path
+# skips the malware gate the normal model loader applies.
 _STT_SNAPSHOT_SUPPORT_FILES = (
     "config.json",
     "generation_config.json",
@@ -270,7 +270,6 @@ def _known_whisper_languages() -> Optional[frozenset[str]]:
     try:
         from transformers.models.whisper.tokenization_whisper import LANGUAGES
     except Exception:
-        # Transformers unavailable or the constant moved: skip the check.
         return None
     return frozenset(LANGUAGES)
 
@@ -307,7 +306,7 @@ def resolve_model_id(model: Optional[str]) -> str:
     if _HF_REPO_ID.fullmatch(normalized):
         return normalized
     raise SttModelIdError(
-        "STT model must be one of Studio's defaults or a Hugging Face "
+        "STT model must be one of Unsloth's defaults or a Hugging Face "
         "repository in 'owner/model' form."
     )
 
@@ -347,7 +346,7 @@ def _active_hf_hub_cache() -> Path:
         from utils.hf_cache_settings import get_hf_cache_paths
 
         paths = get_hf_cache_paths()
-        # Studio's live cache setting takes precedence over environment defaults.
+        # Unsloth's live cache setting takes precedence over environment defaults.
         if paths.source == "studio":
             return Path(paths.hub_cache)
         explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
@@ -546,10 +545,10 @@ def _select_snapshot_files(info, load_index) -> tuple[_SelectedHubFile, ...]:
         shards = set(weight_map.values())
         if not all(isinstance(shard, str) and shard in siblings for shard in shards):
             raise SttModelCompatibilityError(f"Checkpoint index '{index_name}' has missing shards.")
-        # The index JSON is attacker-controlled: a safetensors index can name
-        # pytorch_model-*.bin shards, which Transformers still loads through
-        # torch.load (pickle) since it dispatches per shard by file extension.
-        # Require every shard to be safetensors so no pickle file is selected.
+        # The index JSON is attacker-controlled and a safetensors index can name.bin shards The index JSON is
+        # attacker-controlled: a safetensors index can name pytorch_model-*.bin shards, which Transformers still loads
+        # through torch.load (pickle) since it dispatches per shard by file extension. Require every shard to be
+        # safetensors so no pickle file is selected.
         if not all(shard.endswith(".safetensors") for shard in shards):
             raise SttModelCompatibilityError(
                 f"Checkpoint index '{index_name}' references non-safetensors shards."
@@ -589,8 +588,10 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
         raise SttModelCompatibilityError(
             f"Could not resolve an immutable revision for STT model '{model_id}'."
         )
-    # The commit that was validated; the download pins to it so the repo cannot
-    # be swapped between validation and snapshot_download (TOCTOU).
+    # the download pins to the validated commit so the repo cannot be swapped between validation and snapshot_download
+    # (TOCTOU)
+    # The commit that was validated; the download pins to it so the repo cannot be swapped between validation and
+    # snapshot_download (TOCTOU).
     return {"model": model_id, "repo": repo, "revision": revision}
 
 
@@ -618,14 +619,13 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
     tokenizer, and weights directly. is_file() follows cache symlinks, so a
     link from an interrupted blob download does not count.
     """
-    # Safetensors only: a cached pytorch_model.bin is a pickle load path and is
-    # never treated as a usable snapshot (a repo shipping only pickle weights
-    # re-resolves and fails closed in _select_snapshot_files).
+    # Safetensors only: a cached pytorch_model.bin is a pickle load path and is never treated as a usable snapshot (a
+    # repo shipping only pickle weights re-resolves and fails closed in _select_snapshot_files).
     index = snapshot / _STT_SAFETENSORS_INDEX
     if index.is_file():
-        # Sharded safetensors checkpoint: every shard must exist and be
-        # safetensors (a safe index naming .bin shards would still pickle-load
-        # them, matching the _select_snapshot_files guard).
+        # every shard must exist and be safetensors, since a safe index naming .bin shards would still pickle-load them
+        # Sharded safetensors checkpoint: every shard must exist and be safetensors (a safe index naming .bin shards
+        # would still pickle-load them, matching the _select_snapshot_files guard).
         weight_map = _read_json_object(index).get("weight_map")
         if not isinstance(weight_map, dict) or not weight_map:
             return False
@@ -635,8 +635,8 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
         has_weights = all((snapshot / shard).is_file() for shard in shards)
     else:
         has_weights = (snapshot / _STT_SAFETENSORS_WEIGHTS).is_file()
-    # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or
-    # the slow vocab.json + merges.txt pair.
+    # WhisperProcessor needs either the fast tokenizer.json or the slow vocab.json + merges.txt pair
+    # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or the slow vocab.json + merges.txt pair.
     has_tokenizer = (snapshot / "tokenizer.json").is_file() or (
         (snapshot / "vocab.json").is_file() and (snapshot / "merges.txt").is_file()
     )
@@ -686,9 +686,10 @@ class _SnapshotDownloadState:
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # Which model the cancel applies to. "model" goes None once the worker
-                # thread stops, so a settled cancellation was indistinguishable from an
-                # unrelated one and a deferred load restarted the whole download.
+                # "model" goes None once the worker thread stops
+                # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
+                # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
+                # download.
                 "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if show_progress else None,
             }
@@ -764,7 +765,7 @@ class _SnapshotDownloadState:
             terminate_download,
         )
 
-        process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
+        process = spawn_download(args, hf_token = normalize_token(hf_token), hub_cache = hub_cache)
         with self._lock:
             if self._cancelled:
                 terminate_download(process)
@@ -794,7 +795,6 @@ class _SnapshotDownloadState:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    # Joining a cancelling run would silently download nothing.
                     if not self._cancelled:
                         return
                     raise SttModelIdError(
@@ -835,7 +835,7 @@ class _SnapshotDownloadState:
         try:
             from huggingface_hub import HfApi, hf_hub_download
 
-            info = HfApi(token = hf_token or None).model_info(
+            info = HfApi(token = normalize_token(hf_token)).model_info(
                 repo,
                 revision = revision,
                 files_metadata = True,
@@ -848,8 +848,8 @@ class _SnapshotDownloadState:
                     f"Could not resolve an immutable revision for STT model '{repo}'."
                 )
 
-            # A cancel during metadata has no child to stop. Without these the
-            # run still reserves the repo and rewrites the cache after the stop.
+            # A cancel during metadata has no child to stop. Without these the run still reserves the repo and rewrites
+            # the cache after the stop.
             with self._lock:
                 if self._cancelled:
                     return
@@ -967,17 +967,26 @@ def _reported_device(device: Optional[str]) -> Optional[str]:
     return device
 
 
-def _pick_device():
+def _pick_device(preference: Optional[str] = None):
     """Return (device, torch_dtype) for the Whisper model.
 
     CUDA uses float16. MPS and CPU use float32: Whisper's decoder is unstable in
     float16 on MPS and degenerates into repeated tokens.
+
+    ``preference`` is the user's choice from ``core.inference.audio_device``.
+    ``cpu`` short-circuits detection entirely -- that is the whole point of the
+    option, so it must hold even on a machine with a working accelerator. ``gpu``
+    and ``auto`` both detect: preferring the GPU is what detection already does,
+    and the caller's CPU retry still covers a card that cannot take the model.
     """
+    from core.inference.audio_device import audio_device_forces_cpu
     try:
         import torch
 
-        # New loads use CPU during training; a resident GPU model may stay put
-        # when the training admission check confirms enough headroom.
+        if audio_device_forces_cpu(preference):
+            return "cpu", torch.float32
+        # new loads use CPU during training; a resident GPU model may stay put when the admission check confirms
+        # headroom
         training_active = _training_active()
         if not training_active and torch.cuda.is_available():
             return "cuda", torch.float16
@@ -1086,8 +1095,7 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         layout = "mono",
         rate = _TARGET_SAMPLE_RATE,
     )
-    # Group frames before resampling so short clips need one resampler call
-    # rather than one per codec frame.
+    # group frames before resampling so short clips need one resampler call rather than one per codec frame
     fifo = av.audio.fifo.AudioFifo()
 
     def write_frame(frame) -> None:
@@ -1111,7 +1119,6 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
                 except StopIteration:
                     break
                 except InvalidDataError:
-                    # Skip a corrupt frame rather than fail the whole transcription.
                     continue
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1146,6 +1153,7 @@ class WhisperSttSidecar:
         self._engine = None
         self._model_id: Optional[str] = None
         self._device: Optional[str] = None
+        self._device_preference: Optional[str] = None
         self._lock = threading.RLock()
         self._load_state_lock = threading.Lock()
         self._loading = False
@@ -1154,17 +1162,17 @@ class WhisperSttSidecar:
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
-        # Held only to keep its memory accounted: a worker that outlived its own
-        # kill answers nothing, so a later dictation cannot be handed it.
+        # Held only to keep its memory accounted: a worker that outlived its own kill answers nothing, so a later
+        # dictation cannot be handed it.
         self._survivor = False
-        # A child that outlived the kill start() gave it, handed from _build_model
-        # to the load that called it. Written and read under _lock.
+        # A child that outlived the kill start() gave it, handed from _build_model to the load that called it. Written
+        # and read under _lock.
         self._start_survivor = None
 
     @property
     def loaded_model(self) -> Optional[str]:
-        # A worker that died holds nothing, so reporting its model would make
-        # training admission reserve memory for a model that is not there.
+        # a worker that died holds nothing, so reporting its model would make training admission reserve memory for a
+        # model that is not there
         engine = self._engine
         if engine is not None and not _engine_is_alive(engine):
             return None
@@ -1172,8 +1180,9 @@ class WhisperSttSidecar:
 
     @property
     def device(self) -> Optional[str]:
-        # Reported, so name the backend a user recognises. Torch's ROCm build keeps the
-        # "cuda" device name for HIP, which made an AMD box report "Transformers - cuda".
+        # torch's ROCm build keeps the "cuda" device name for HIP
+        # Reported, so name the backend a user recognises. Torch's ROCm build keeps the "cuda" device name for HIP,
+        # which made an AMD box report "Transformers - cuda".
         return _reported_device(self._device)
 
     def is_loading(self) -> bool:
@@ -1286,6 +1295,7 @@ class WhisperSttSidecar:
             self._engine = None
             self._model_id = None
             self._device = None
+            self._device_preference = None
             self._survivor = False
         else:
             self._survivor = True
@@ -1394,11 +1404,21 @@ class WhisperSttSidecar:
             raise
         return worker
 
-    def _ensure_model_downloaded(self, model_id: str) -> _CachedSttSnapshot:
+    def _ensure_model_downloaded(
+        self,
+        model_id: str,
+        use_resident: bool = True,
+    ) -> _CachedSttSnapshot:
         """Validate the local snapshot before decode or model replacement.
 
         Returns the checkpoint's multilingual flag when local metadata provides
         it. Curated defaults are known multilingual.
+
+        ``use_resident = False`` skips the resident-model shortcut and resolves the
+        path on disk. The shortcut answers from the loaded model and returns no
+        path, which is right when that model is about to be reused and wrong when
+        the caller is replacing it with one on another device: the same model id is
+        resident, but the load still needs somewhere to read the weights from.
 
         A survivor is held for its memory alone, so it does not answer for the
         model the way a resident one does: the snapshot is looked up on disk, or
@@ -1407,7 +1427,7 @@ class WhisperSttSidecar:
         """
         model_id = resolve_model_id(model_id)
         with self._lock:
-            reusable = self._engine is not None and self._model_id == model_id
+            reusable = use_resident and self._engine is not None and self._model_id == model_id
             if reusable and not self._is_survivor_locked():
                 resident_model = (
                     self._engine[0] if isinstance(self._engine, (tuple, list)) else self._engine
@@ -1444,20 +1464,39 @@ class WhisperSttSidecar:
         self,
         model: Optional[str] = None,
         request_cancel_event: Optional[threading.Event] = None,
+        device: Optional[str] = None,
     ):
         """Load (or switch to) a model, reusing it if already resident.
 
+        ``device`` is the user's device preference (``auto``/``cpu``/``gpu``, see
+        ``core.inference.audio_device``). An explicit one that differs from the
+        resident model's reloads it, or the setting would be silently ignored.
+        ``None`` means no opinion: it takes the server default for a fresh load
+        and reuses whatever is resident, so a caller that never sends one cannot
+        move a model another surface placed.
+
         Returns a ``(model, processor)`` pair.
         """
+        from core.inference.audio_device import audio_device_default, normalize_audio_device
+
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
+        # None is "no opinion", not "auto": a caller sending none must not drag a model
+        # off the device another surface asked for.
+        requested = None if device is None else normalize_audio_device(device)
+        preference = audio_device_default() if requested is None else requested
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
             self._release_dead_engine_locked()
-            reusable = self._engine is not None and self._model_id == model_id
+            placement_matches = (
+                requested is None
+                or self._device_preference is None
+                or self._device_preference == requested
+            )
+            reusable = self._engine is not None and self._model_id == model_id and placement_matches
             if reusable and not self._is_survivor_locked():
                 self._schedule_idle_unload_locked()
                 return self._engine
@@ -1470,7 +1509,8 @@ class WhisperSttSidecar:
             self._start_survivor = None
             try:
                 self._raise_if_load_cancelled(cancel_event)
-                cached = self._ensure_model_downloaded(model_id)
+                # The resident shortcut returns no path, and this load replaces it.
+                cached = self._ensure_model_downloaded(model_id, use_resident = placement_matches)
                 snapshot_path = cached.path
                 if snapshot_path is None:
                     raise SttModelNotDownloadedError(
@@ -1478,10 +1518,10 @@ class WhisperSttSidecar:
                         "Download it in Settings, then Voice, before loading it."
                     )
                 self._raise_if_load_cancelled(cancel_event)
-                device, dtype = _pick_device()
+                device, dtype = _pick_device(preference)
                 if not self._release_engine_locked():
-                    # Starting a second child over one that never exited doubles
-                    # the memory this release was meant to give back.
+                    # starting a second child over one that never exited doubles the memory this release was meant to
+                    # give back
                     raise SttModelBusyError(
                         "The previous dictation worker did not exit and still holds its "
                         "memory. Try again shortly."
@@ -1510,11 +1550,10 @@ class WhisperSttSidecar:
                     if device == "cpu":
                         raise
                     if self._start_survivor is not None:
-                        # The attempt left a child that outlived its own kill and still
-                        # holds the device. A second child would sit beside it, and
-                        # installing that one would forget this one, which is what lets
-                        # training be admitted against memory that is not free. Refuse as
-                        # a release that could not kill its worker does; the timer retries.
+                        # The attempt left a child that outlived its own kill and still holds the device. A second child
+                        # would sit beside it, and installing that one would forget this one, which is what lets
+                        # training be admitted against memory that is not free. Refuse as a release that could not kill
+                        # its worker does; the timer retries.
                         raise SttModelBusyError(
                             "The previous dictation worker did not exit and still holds its "
                             "memory. Try again shortly."
@@ -1522,9 +1561,8 @@ class WhisperSttSidecar:
                     logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
                     retry_on_cpu = True
                 if retry_on_cpu:
-                    # Retry outside the handler: live exception state pins frames
-                    # referencing the partly loaded model, so leave it before
-                    # clearing the cache to release that memory.
+                    # Retry outside the handler: live exception state pins frames referencing the partly loaded model,
+                    # so leave it before clearing the cache to release that memory.
                     _clear_device_cache(device)
                     try:
                         candidate = self._build_model(
@@ -1548,6 +1586,7 @@ class WhisperSttSidecar:
                     self._engine = candidate
                     self._model_id = model_id
                     self._device = device
+                    self._device_preference = preference
                     self._survivor = False
                     self._load_cancel_event = None
                     self._load_owner_cancel_event = None
@@ -1556,44 +1595,39 @@ class WhisperSttSidecar:
                 logger.info("STT model %s ready on %s", model_id, device)
                 return self._engine
             except SttLoadCancelledError:
-                # cancel_pending_load() does not wait for the model lock, so the cancel
-                # can land after start() came back with a live child. Nothing installed
-                # the candidate, and dropping the handle does not end the process holding
-                # the context training is waiting for, so close it here.
+                # cancel_pending_load() does not wait for the model lock, so the cancel can land after start() came back
+                # with a live child. Nothing installed the candidate, and dropping the handle does not end the process
+                # holding the context training is waiting for, so close it here.
                 if self._start_survivor is not None:
-                    # start() ends its own child, so this one outlived terminate and kill
-                    # inside it and never became a candidate. It holds its memory all the
-                    # same and this is the only handle on the process, so keep it rather
-                    # than let the cancel report the memory given back; the timer retries.
+                    # start() ends its own child, so this one outlived terminate and kill inside it and never became a
+                    # candidate. It holds its memory all the same and this is the only handle on the process, so keep it
+                    # rather than let the cancel report the memory given back; the timer retries.
                     self._keep_survivor_locked(self._start_survivor, model_id, device)
                     _clear_device_cache(device)
                     raise
                 if not _close_engine(candidate):
-                    # It outlived terminate and kill, so it still holds the memory this
-                    # cancel was made to free. Keep it, for the same reason
-                    # _release_engine_locked keeps its own survivor: reporting nothing
-                    # resident is what lets training be admitted against memory that is
-                    # not free. Nothing is installed over, since a candidate exists only
-                    # after the resident was released.
+                    # It outlived terminate and kill, so it still holds the memory this cancel was made to free. Keep
+                    # it, for the same reason _release_engine_locked keeps its own survivor: reporting nothing resident
+                    # is what lets training be admitted against memory that is not free. Nothing is installed over,
+                    # since a candidate exists only after the resident was released.
                     self._keep_survivor_locked(candidate, model_id)
                     candidate = None
                     _clear_device_cache(device)
                     raise
                 candidate = None
                 if resident_released:
-                    # _release_engine_locked already collected, and the candidate was dropped
-                    # before it ran, so nothing has become garbage since. This second call is
-                    # only here to empty the cache of the device this LOAD picked, which need
-                    # not be the resident's, so it keeps the sweep and skips the collection.
+                    # _release_engine_locked already collected, and the candidate was dropped before it ran, so nothing
+                    # has become garbage since. This second call is only here to empty the cache of the device this LOAD
+                    # picked, which need not be the resident's, so it keeps the sweep and skips the collection.
                     self._release_engine_locked()
                     _clear_device_cache(device, collect = False)
                 else:
                     _clear_device_cache(device)
                 raise
             except BaseException:
-                # Same reasoning for any other failed load: this is the only handle on a
-                # child that outlived start()'s own kill and still holds its memory, and
-                # reporting nothing resident lets training be admitted against it.
+                # Same reasoning for any other failed load: this is the only handle on a child that outlived start()'s
+                # own kill and still holds its memory, and reporting nothing resident lets training be admitted against
+                # it.
                 if self._start_survivor is not None and self._engine is None:
                     self._keep_survivor_locked(self._start_survivor, model_id, device)
                     _clear_device_cache(device)
@@ -1627,8 +1661,8 @@ class WhisperSttSidecar:
         effective_generate_kwargs = dict(generate_kwargs)
         generation_config = getattr(engine, "generation_config", None)
         if getattr(generation_config, "is_multilingual", None) is False:
-            # English-only checkpoints fix language and task in their generation
-            # config, and Transformers rejects passing them here.
+            # English-only checkpoints fix language and task in their generation config, and Transformers rejects
+            # passing them here.
             effective_generate_kwargs.pop("task", None)
             effective_generate_kwargs.pop("language", None)
         window = 30 * _TARGET_SAMPLE_RATE
@@ -1658,15 +1692,13 @@ class WhisperSttSidecar:
         Accepts any container PyAV can decode: wav, mp3, opus/webm, ogg,
         m4a/aac. Returns {text, language, duration, model}.
         """
-        # Reject a missing runtime up front, before the cache and bounded decode.
         ensure_stt_available()
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        # A set language beats auto-detect. API takes BCP-47; Whisper wants short
-        # codes like en or fr.
+        # A set language beats auto-detect. API takes BCP-47; Whisper wants short codes like en or fr.
         lang = normalize_whisper_language(language)
-        # Pin the requested id: another request may switch the resident model
-        # mid-transcription, so sidecar state is not this request's identity.
+        # Pin the requested id: another request may switch the resident model mid-transcription, so sidecar state is not
+        # this request's identity.
         model_id = resolve_model_id(model)
         known_languages = _known_whisper_languages()
         if lang is not None and known_languages is not None and lang not in known_languages:
@@ -1681,8 +1713,7 @@ class WhisperSttSidecar:
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        # condition_on_prev_tokens=False stops a fresh clip inheriting prior
-        # context, which causes runaway repeats.
+        # condition_on_prev_tokens=False stops a fresh clip inheriting prior context, which causes runaway repeats.
         generate_kwargs = {
             "task": "transcribe",
             "condition_on_prev_tokens": False,
@@ -1693,7 +1724,6 @@ class WhisperSttSidecar:
         if fast:
             # Short voiced clips: greedy decoding drops beam search for latency.
             generate_kwargs["num_beams"] = 1
-        # Serialize inference with model switches and unloads.
         with self._lock:
             try:
                 if cancel_event is None:

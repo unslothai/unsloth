@@ -4,13 +4,13 @@
 "use client";
 
 import { Spinner } from "@/components/ui/spinner";
-import { authFetch } from "@/features/auth";
 
 import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
 import {
   preferSanitizedFullToolOutput,
   useChatRuntimeStore,
+  useChatPreferencesStore,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
@@ -19,9 +19,11 @@ import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo } from "react";
 import { pythonToolImagePath } from "./python-tool-image-path";
+import { useSandboxImage } from "./use-sandbox-image";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -57,77 +59,16 @@ function PythonToolImage({
   sessionId: string;
   filename: string;
 }) {
-  const imageKey = `${sessionId}\0${filename}`;
-  const [image, setImage] = useState<{ key: string; url: string } | null>(null);
-  const imageRef = useRef<HTMLImageElement>(null);
-  const [nearViewport, setNearViewport] = useState(
-    () => typeof IntersectionObserver === "undefined",
-  );
-
-  useEffect(() => {
-    if (nearViewport) {
-      return;
-    }
-    const element = imageRef.current;
-    if (!element) {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setNearViewport(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "200px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [nearViewport]);
-
-  useEffect(() => {
-    if (!nearViewport) {
-      return;
-    }
-    const controller = new AbortController();
-    let objectUrl: string | null = null;
-
-    const load = async () => {
-      const response = await authFetch(
-        pythonToolImagePath(sessionId, filename),
-        {
-          signal: controller.signal,
-        },
-      );
-      if (!response.ok) {
-        return;
-      }
-
-      const blob = await response.blob();
-      if (controller.signal.aborted) {
-        return;
-      }
-
-      objectUrl = URL.createObjectURL(blob);
-      setImage({ key: imageKey, url: objectUrl });
-    };
-    load().catch(() => {
-      // A failed or cancelled image stays as its accessible alt text.
-    });
-
-    return () => {
-      controller.abort();
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [filename, imageKey, nearViewport, sessionId]);
+  // The same hook assistant markdown uses for an on-disk image, so the authed fetch, the object URL
+  // and its revocation live in one place instead of two. A failed or cancelled image stays as its
+  // accessible alt text. Keyed by url inside the hook: a re-used element reads idle, not the
+  // previous file's blob, and a stale response cannot write state for a url it was not fetched for.
+  const { ref, state } = useSandboxImage(pythonToolImagePath(sessionId, filename));
 
   return (
     <img
-      ref={imageRef}
-      src={image?.key === imageKey ? image.url : undefined}
+      ref={ref}
+      src={state.status === "loaded" ? state.url : undefined}
       alt={filename}
       loading="lazy"
       className="max-w-full rounded border border-border"
@@ -141,9 +82,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const code = (args as { code?: string })?.code ?? "";
+  const code = toolArgText((args as { code?: unknown })?.code);
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
   // Args still streaming = the model is WRITING the code, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCode = isRunning && propStatus.code === "streaming";
@@ -178,30 +119,40 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   // written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCode && !awaitingApproval;
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const scriptCell = code ? (
+    <div className="mt-1 pl-5">
+      <ToolCodeCell
+        label="script"
+        code={code}
+        language="python"
+        downloadName="script.py"
+        streaming={isWriting}
+      />
+    </div>
+  ) : null;
 
   return (
     // Status, output and images collapse from history; the executed script
     // renders outside ToolFallbackContent so it stays visible on reopen
-    // (#7165). Terminal keeps its command inside the collapsible -- a one-line
-    // command is not the artifact a user comes back for, a script is.
-    <ToolFallbackRoot defaultOpen={isRunning}>
+    // (#7165) -- a script is an artifact, a one-line command is not.
+    // That holds only while collapseToolActivity is off; with it on the script
+    // moves inside the collapsible, behind one click. awaitingApproval is the
+    // exception: a decision about a script needs the script on screen.
+    <ToolFallbackRoot
+      defaultOpen={isRunning}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
         icon={CodeIcon}
       />
-      {code && (
-        <div className="mt-1 pl-5">
-          <ToolCodeCell
-            label="script"
-            code={code}
-            language="python"
-            downloadName="script.py"
-            streaming={isWriting}
-          />
-        </div>
-      )}
+      {!collapseByDefault && scriptCell}
       <ToolFallbackContent>
+        {collapseByDefault && scriptCell}
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {/* Output */}
           {isRunning ? (

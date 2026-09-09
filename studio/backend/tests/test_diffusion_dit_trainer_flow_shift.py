@@ -68,7 +68,7 @@ def test_flow_shift_explicit_values_and_validation():
         base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o", flow_shift = 2.2
     ).normalized()
     assert cfg.flow_shift == 2.2
-    # String numerics from the Studio config path coerce; "auto" passes through.
+    # String numerics from the Unsloth config path coerce; "auto" passes through.
     assert (
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "3.0")
         .normalized()

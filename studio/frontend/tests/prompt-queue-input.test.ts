@@ -177,6 +177,7 @@ test("a ready non-text attachment can be queued without composer text", () => {
       hasPendingAttachments: false,
       hasMaterializingImageAttachments: false,
       hasMaterializingAudioAttachments: false,
+      hasMaterializingVideoAttachments: false,
       disabled: false,
       overlay: false,
     }),
@@ -193,6 +194,7 @@ test("attachment queueing stays disabled until the attachment is ready", () => {
     hasPendingAttachments: false,
     hasMaterializingImageAttachments: false,
     hasMaterializingAudioAttachments: false,
+      hasMaterializingVideoAttachments: false,
     disabled: false,
     overlay: false,
   };
@@ -201,6 +203,7 @@ test("attachment queueing stays disabled until the attachment is ready", () => {
     "hasPendingAttachments",
     "hasMaterializingImageAttachments",
     "hasMaterializingAudioAttachments",
+    "hasMaterializingVideoAttachments",
     "hasPendingAudio",
     "isComposing",
     "disabled",

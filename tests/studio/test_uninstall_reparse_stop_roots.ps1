@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# A junction / directory-symlink Studio home must have its PHYSICAL path in the stop scan.
+# A junction / directory-symlink Unsloth home must have its PHYSICAL path in the stop scan.
 #
 # The backend resolves UNSLOTH_STUDIO_HOME (Path.resolve) before deriving
 # <home>\stable-diffusion.cpp, so sd-server's real image path is under the reparse TARGET.

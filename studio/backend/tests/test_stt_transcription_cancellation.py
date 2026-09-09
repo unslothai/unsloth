@@ -121,7 +121,12 @@ def test_disconnected_load_cancels_only_its_request_event(monkeypatch):
         sidecar._load_owner_cancel_event = sibling_owner
     cancelled_request = None
 
-    def load(_model, _engine, request_cancel_event):
+    def load(
+        _model,
+        _engine,
+        request_cancel_event,
+        device = None,
+    ):
         nonlocal cancelled_request
         cancelled_request = request_cancel_event
         assert request_cancel_event.wait(1), "disconnect must cancel this load request"
@@ -169,7 +174,12 @@ def test_disconnected_raw_transcription_cancels_its_sidecar(monkeypatch):
 
     loaded = []
 
-    def load(model, _engine, _request_cancel_event):
+    def load(
+        model,
+        _engine,
+        _request_cancel_event,
+        device = None,
+    ):
         # Stubbed for the same reason the sibling test above stubs it: the real
         # implicit load goes through the registry, which refuses with
         # SttModelNotDownloadedError (409) unless a snapshot happens to be on disk.

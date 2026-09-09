@@ -86,6 +86,88 @@ TERMINAL_BAD = {"ERROR", "CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED"}
 
 _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 
+# The slug is the ONLY record that survives the runner.
+#
+# Dispatch mode exits minutes after the push and a DIFFERENT job collects,
+# possibly days later, with no artifact or database between them. Kaggle's
+# kernel listing is that database, and a kernel carries exactly one field we
+# control: its name.
+#
+#   unsloth-t4-ci-n1a2b3c4d5e6f-9f8e
+#                 ^^^^^^^^^^^^^^^^^^
+#                 |||||||||||||  uniqueness, so two runs on one commit do not
+#                 ||||||||||||   collide (a re-run, or notebook slot 1 and 2)
+#                 |kind          which workflow to report against
+#                  sha12         which commit the result belongs to. Twelve,
+#                                not eight: two commits sharing eight hex
+#                                characters give indistinguishable kernels, and
+#                                the commits API then 422s the prefix on every
+#                                pass, so the status stays pending forever.
+#
+# `OWN_KERNEL_PREFIX` in gate.py is the first 14 characters and MUST keep
+# matching: it is how the survey tells our kernels from a human's, and one it
+# cannot recognise is not counted against Kaggle's 2-session cap.
+SLUG_PREFIX = "unsloth-t4-ci-"
+
+# One character each, so the slug survives `_slugify` and stays under Kaggle's
+# length limit. A wire format, not an enum: a collector reads it back days later.
+KIND_CODES = {"notebook": "n", "studio": "s"}
+CODE_KINDS = {v: k for k, v in KIND_CODES.items()}
+
+# Legacy slugs (`unsloth-t4-ci-<8 hex>`) are still OURS and must still be
+# reaped, but carry no commit to report against. The alternation reads 8 to 40
+# hex rather than making the collector guess from length.
+SLUG_SHA_LEN = 12
+# The `slot` input, when it is not 1, sits between the dash and the uid:
+# `-2<uid4>`. Slot 2 is a deliberate SECOND session on the same commit, so the
+# duplicate check has to say "this commit, this kind, THIS slot". Absent means
+# slot 1, so every slug pushed before the slot existed still reads.
+CI_SLUG_RE = re.compile(
+    r"^(?:(?P<owner>[^/]+)/)?"
+    + re.escape(SLUG_PREFIX)
+    + r"(?:(?P<kind>[a-z])(?P<sha>[0-9a-f]{8,40})-(?P<slot>[2-9])?(?P<uid>[0-9a-f]{4})"
+    r"|(?P<legacy>[0-9a-f]{8}))$"
+)
+
+
+def parse_slug(slug: str) -> dict | None:
+    """What a kernel name says about itself, or None if it is not ours.
+
+    None for anything unrecognised is the collector's safety property: it
+    enumerates a shared ACCOUNT and deletes what it collects, so a collector
+    that guessed would eventually delete someone's work.
+    """
+    match = CI_SLUG_RE.match(slug or "")
+    if match is None:
+        return None
+    return {
+        "owner": match.group("owner"),
+        "kind": CODE_KINDS.get(match.group("kind") or "", None),
+        "sha": match.group("sha"),
+        "slot": match.group("slot") or "1",
+        "legacy": match.group("legacy") is not None,
+    }
+
+
+def slug_name(
+    kind: str = "",
+    commit_sha: str = "",
+    slot: str = "1",
+) -> str:
+    """The name for a kernel about to be pushed.
+
+    Falls back to the legacy random form when no commit is named, as a local
+    probe or an older workflow does. A dispatched run always names one.
+    """
+    code = KIND_CODES.get(kind, "")
+    sha = (commit_sha or "").strip().lower()[:SLUG_SHA_LEN]
+    slot = str(slot or "1").strip()
+    mark = slot if len(slot) == 1 and slot in "23456789" else ""
+    if code and len(sha) == SLUG_SHA_LEN and all(c in "0123456789abcdef" for c in sha):
+        return f"{SLUG_PREFIX}{code}{sha}-{mark}{uuid.uuid4().hex[:4]}"
+    return f"{SLUG_PREFIX}{uuid.uuid4().hex[:8]}"
+
+
 PUSH_ATTEMPTS = 4
 PUSH_BACKOFF_SEC = 45
 
@@ -181,7 +263,11 @@ OUTPUT_PAGE_LIMIT = 20
 READ_CHUNK_BYTES = 1 << 16
 
 
-def worst_case_seconds(max_wait: int, kernels: int) -> int:
+def worst_case_seconds(
+    max_wait: int,
+    kernels: int,
+    dispatch: bool = False,
+) -> int:
     """Wall clock ONE invocation of this launcher can take, from its constants.
 
     Every phase that can keep a pushed kernel UP is in it, because a kernel
@@ -209,6 +295,11 @@ def worst_case_seconds(max_wait: int, kernels: int) -> int:
         + sum(PUSH_BACKOFF_SEC * 2**i for i in range(PUSH_ATTEMPTS - 1))
         + (PUSH_ATTEMPTS - 1) * one_delete
     )
+    if dispatch:
+        # Dispatch stops after the pushes, so the phases below are unreachable
+        # and counting them would make the pre-push guard demand ~2h for a job
+        # that exits in five. The retry _discard()s stay in: those run in push().
+        return kernels * per_push
     return (
         max(kernels * per_push, max_wait)
         + EVIDENCE_BUDGET_SEC
@@ -320,6 +411,27 @@ def _api():
     return api
 
 
+def username_of(api) -> str | None:
+    """The account this client authenticated as, as Kaggle itself reports it.
+
+    `_authenticate_with_access_token` introspects the token and records the name
+    that comes back, so this is not a guess. It matters because a kernel id is
+    `<owner>/<slug>`: pushing under a name the token does not own fails, and
+    DELETING under the wrong name silently reaps nothing while the real kernel
+    keeps billing. With more than one account in play the owner cannot be a
+    constant, so it is read from whichever token this process was handed.
+
+    Takes the client the caller already authenticated rather than building one:
+    a second `authenticate()` is a second network round trip on a path that is
+    already bounded, and it could answer for a different token than the one the
+    rest of the run uses.
+    """
+    try:
+        return api.config_values.get(api.CONFIG_NAME_USER) or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # A kernel this process pushed but has not yet deleted is recorded here, so a
 # LATER launch can reclaim it. This is the only cover for `kill -9`, where no
 # handler of ours ever runs. Deliberately keyed on pid: an entry whose owner
@@ -349,9 +461,22 @@ def _inflight_write(entries: list[dict]) -> None:
         pass  # bookkeeping only; never fail a run over it
 
 
-def _inflight_add(slug: str) -> None:
+def _inflight_add(slug: str, owner: str | None = None) -> None:
+    """File a slug, WITH the account that owns it.
+
+    The owner is recorded because the sweep below runs with whatever token the
+    NEXT job was handed, and CI now hands out more than one. A slug is
+    `<owner>/<name>`, so an entry filed by one account cannot be deleted by the
+    other; without the owner on the record the sweep cannot tell that it is
+    about to try, and a failed delete reads exactly like a kernel that was
+    already gone.
+    """
     entries = [e for e in _inflight_read() if e.get("slug") != slug]
-    entries.append({"slug": slug, "pid": os.getpid(), "at": time.time()})
+    entry = {"slug": slug, "pid": os.getpid(), "at": time.time()}
+    owner = owner or (slug.split("/", 1)[0] if "/" in slug else None)
+    if owner:
+        entry["owner"] = owner
+    entries.append(entry)
     _inflight_write(entries)
 
 
@@ -386,11 +511,18 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def sweep_orphans() -> list[str]:
+def sweep_orphans(owner: str | None = None) -> list[str]:
     """Delete kernels left behind by a launcher that was killed outright.
 
     Only entries whose owning process is gone are eligible, so a concurrent
     run is never disturbed. Returns the slugs reclaimed.
+
+    ``owner``, when given, is the account this process authenticated as, and an
+    entry belonging to a DIFFERENT account is left alone rather than attempted.
+    This token cannot delete that kernel, so trying would turn a real leak into
+    a log line indistinguishable from a kernel that was already gone -- and
+    would drop the record, which is the only thing that still knows the kernel
+    exists. Left filed, it is reclaimed by the next run that holds its account.
     """
     entries = _inflight_read()
     if not entries:
@@ -404,6 +536,14 @@ def sweep_orphans() -> list[str]:
         if entry.get("keep"):
             # --keep-kernel asked for this one to stay up.
             keep.append(entry)
+            continue
+        entry_owner = entry.get("owner") or (slug.split("/", 1)[0] if "/" in slug else None)
+        if owner and entry_owner and entry_owner != owner:
+            keep.append(entry)
+            _log(
+                f"leaving orphan {slug} filed: it belongs to {entry_owner} and this "
+                f"job holds {owner}, so this token cannot delete it"
+            )
             continue
         if isinstance(pid, int) and _pid_alive(pid) and pid != os.getpid():
             keep.append(entry)
@@ -450,6 +590,9 @@ def push(
     kernel_timeout_sec: int,
     accelerator: str = "NvidiaTeslaT4",
     attempted: list[str] | None = None,
+    kind: str = "",
+    commit_sha: str = "",
+    slot: str = "1",
 ) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
@@ -478,7 +621,6 @@ def push(
     ``MemoryError``) would otherwise take the slug of a push Kaggle may have
     ACCEPTED with it, leaving a kernel nothing will delete. See main().
     """
-    base = _slugify("unsloth t4 ci")[:32]
     attempted = [] if attempted is None else attempted
 
     def _discard(slug: str) -> None:
@@ -496,22 +638,23 @@ def push(
         for attempt in range(PUSH_ATTEMPTS):
             if attempted:
                 _discard(attempted[-1])
-            slug_name = f"{base}-{uuid.uuid4().hex[:8]}"
+            name = slug_name(kind, commit_sha, slot)
             # The slug derives from the TITLE, not the metadata id: a mismatch
-            # files the kernel at an unexpected address and every later
-            # status/output call 403s, so assert the round trip.
-            title = slug_name.replace("-", " ")
-            assert _slugify(title) == slug_name, f"title {title!r} slugifies to {_slugify(title)!r}"
-            attempted.append(f"{user}/{slug_name}")
+            # files the kernel at an unexpected address, every later
+            # status/output call 403s and no collector can attribute it. So
+            # assert the round trip.
+            title = name.replace("-", " ")
+            assert _slugify(title) == name, f"title {title!r} slugifies to {_slugify(title)!r}"
+            attempted.append(f"{user}/{name}")
 
             for stale in workdir.glob("*.ipynb"):
                 stale.unlink()
-            code_file = workdir / f"{slug_name}.ipynb"
+            code_file = workdir / f"{name}.ipynb"
             shutil.copy(notebook, code_file)
             (workdir / "kernel-metadata.json").write_text(
                 json.dumps(
                     {
-                        "id": f"{user}/{slug_name}",
+                        "id": f"{user}/{name}",
                         "title": title,
                         "code_file": code_file.name,
                         "language": "python",
@@ -601,8 +744,12 @@ def _already_gone(text: str) -> bool:
     return any(marker in text.lower() for marker in GONE_MARKERS)
 
 
-def delete_kernel(slug: str) -> bool:
+def delete_kernel(slug: str, deadline: float | None = None) -> bool:
     """Delete one kernel, and answer whether Kaggle actually deleted it.
+
+    ``deadline`` (absolute ``time.time()``) bounds the whole call: attempts are
+    clamped to what is left and none starts past it, so a release phase sharing
+    one deadline ends when it says it will rather than three attempts after.
 
     ``subprocess.run`` does not raise on a nonzero exit, so the caller used to
     record every slug as released whatever came back: a refused delete, an
@@ -637,12 +784,21 @@ def delete_kernel(slug: str) -> bool:
     this refuses needs a human, which is what the caller's warning is for.
     """
     for attempt in range(DELETE_ATTEMPTS):
+        timeout = DELETE_SUBPROCESS_TIMEOUT_SEC
+        if deadline is not None:
+            left = deadline - time.time()
+            if left <= 0:
+                _log(
+                    f"delete {slug}: budget spent before attempt {attempt + 1}; left for the next pass"
+                )
+                return False
+            timeout = min(timeout, left)
         try:
             proc = subprocess.run(
                 ["kaggle", "kernels", "delete", slug, "-y"],
                 capture_output = True,
                 text = True,
-                timeout = DELETE_SUBPROCESS_TIMEOUT_SEC,
+                timeout = timeout,
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"delete {slug} did not run: {type(exc).__name__}")
@@ -892,6 +1048,10 @@ def fetch_evidence(
             continue
         url = entry.get("url") or entry.get("urlNullable")
         if not url:
+            # Listed but not downloadable is missing evidence: judged without
+            # it, a lost failing payload reads as whatever survived.
+            _log(f"{name} was listed without a download URL; evidence incomplete")
+            truncated = True
             continue
         call_timeout = _time_left(deadline, timeout)
         if call_timeout is None:
@@ -970,6 +1130,10 @@ def extract_reports(outdir: Path) -> list[dict]:
                 parsed = json.loads(blob)
             except json.JSONDecodeError:
                 continue
+            # A report is an object; `.get` on anything else that parses raises
+            # out of the collector and wedges every later pass on this evidence.
+            if not isinstance(parsed, dict):
+                continue
             key = f"{parsed.get('label')}|{parsed.get('model')}"
             if key in seen:
                 continue
@@ -983,11 +1147,23 @@ def extract_reports(outdir: Path) -> list[dict]:
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        for cell in nb.get("cells", []):
-            for output in cell.get("outputs", []):
+        # Valid JSON is not necessarily a notebook, and one malformed file must
+        # not take its neighbours' reports with it: an exception here used to
+        # reach the collector, which then judged the kernel infra, posted
+        # success and released it, hiding a real failure behind a mangled file.
+        if not isinstance(nb, dict):
+            continue
+        for cell in nb.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            for output in cell.get("outputs") or []:
+                if not isinstance(output, dict):
+                    continue
                 text = output.get("text") or ""
                 if isinstance(text, list):
-                    text = "".join(text)
+                    text = "".join(str(t) for t in text)
+                if not isinstance(text, str):
+                    continue
                 _consume(text)
     for log_path in sorted(outdir.rglob("kernel.log")):
         raw = log_path.read_text(encoding = "utf-8", errors = "replace")
@@ -1070,7 +1246,19 @@ def main() -> int:
         help = "kernel notebook to push. Repeatable: all of them "
         "are pushed before any of them is waited on",
     )
-    ap.add_argument("--user", required = True)
+    # NOT required, and not a constant. The owner is a property of the TOKEN
+    # this process was handed, and CI now hands it one of several. Passing the
+    # name is still allowed -- the caller that selected the account knows it --
+    # but it is CHECKED against the token rather than trusted, because the one
+    # failure worth catching here is a name and a credential that disagree: the
+    # push fails, or worse, the cleanup deletes under a name that owns nothing
+    # and the real kernel bills on unwatched.
+    ap.add_argument(
+        "--user",
+        default = "",
+        help = "Kaggle account to push under. Defaults to the account the token "
+        "authenticates as; when given, it must MATCH that account",
+    )
     ap.add_argument("--outdir", required = True)
     ap.add_argument(
         "--expect", type = int, default = 2, help = "payload reports this kernel should produce"
@@ -1092,6 +1280,33 @@ def main() -> int:
         "--keep-kernel", action = "store_true", help = "do not delete the kernel after collecting"
     )
     ap.add_argument(
+        "--dispatch",
+        action = "store_true",
+        help = "push and EXIT, without waiting, collecting or deleting. The kernel "
+        "is collected later by collect.py, which finds it by its slug",
+    )
+    ap.add_argument(
+        "--commit-sha",
+        default = "",
+        help = "the commit under test. Written into the slug, which is the only "
+        "record a later collector has of what the result is about",
+    )
+    ap.add_argument(
+        "--kind",
+        default = "",
+        choices = ("", *KIND_CODES),
+        help = "which workflow is dispatching, so the collector knows which "
+        "commit status context to report the result under",
+    )
+    ap.add_argument(
+        "--slot",
+        default = "1",
+        choices = tuple("123456789"),
+        help = "the workflow's session slot. Written into the slug when it is not 1, "
+        "so a retry of a slot-2 run is recognised as the same session and a slot-2 "
+        "dispatch beside slot 1 is not",
+    )
+    ap.add_argument(
         "--deadline-epoch",
         type = int,
         default = 0,
@@ -1099,6 +1314,29 @@ def main() -> int:
         "worst_case_seconds() still fits before it. 0 disables the check",
     )
     args = ap.parse_args()
+
+    # A dispatched kernel is left running, which is exactly what --keep-kernel
+    # already means down to the registry bookkeeping. Reusing the flag rather
+    # than giving release() a second way not to delete: two conditions guarding
+    # one deletion is how one ends up wrong, and this one bills GPU quota.
+    if args.dispatch:
+        args.keep_kernel = True
+        # Refused rather than defaulted: a slug with no commit runs, costs quota
+        # and reports to nobody. A usage error at the only moment it is cheap.
+        if not args.commit_sha or not args.kind:
+            ap.error(
+                "--dispatch requires --commit-sha and --kind: without both, the "
+                "kernel runs and no collector can attribute its result"
+            )
+        # A commit, not a ref: `slug_name` carries only hex and falls back to
+        # the legacy unattributable form, so a branch or tag here bills and
+        # reports to nobody. The workflows resolve refs; this checks they did.
+        if not re.fullmatch(r"[0-9a-fA-F]{12,40}", args.commit_sha.strip()):
+            ap.error(
+                f"--commit-sha must be a hex commit id (12 to 40 characters), got "
+                f"{args.commit_sha!r}: a ref cannot be written into the slug, so "
+                "the kernel's result could never be attributed to a commit"
+            )
 
     # Before the first network call, and globally: the Kaggle client has no
     # per-call timeout of its own. See SOCKET_TIMEOUT_SEC.
@@ -1187,7 +1425,7 @@ def main() -> int:
         """
         if not args.deadline_epoch:
             return True
-        need = worst_case_seconds(args.max_wait, len(args.notebook))
+        need = worst_case_seconds(args.max_wait, len(args.notebook), dispatch = args.dispatch)
         left = int(args.deadline_epoch - time.time())
         if left >= need:
             _log(f"{left}s left of the job deadline, worst case {need}s ({after})")
@@ -1239,11 +1477,36 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
+    # WHO this token is, settled before anything is pushed and read off the
+    # client just authenticated. CI holds more than one account now, and both
+    # ways to get this wrong are silent: a name the token does not own makes
+    # every push fail for a reason that reads like a bad notebook, and a name
+    # belonging to the OTHER account makes the cleanup delete nothing while the
+    # kernel it filed bills on unwatched.
+    #
+    # Answered through finish() rather than a bare return, so this stand-down
+    # still writes launch_result.json -- the report step reads that file, and a
+    # launcher that exits without one is indistinguishable from a runner that
+    # died, which is the wrong story for a configuration error.
+    owner = username_of(api)
+    if not owner:
+        result["reason"] = "could not determine which Kaggle account this token belongs to"
+        return finish()
+    if args.user and args.user != owner:
+        result["reason"] = (
+            f"the account selected upstream ({args.user}) is not the account this token "
+            f"authenticates as ({owner}); refusing to push, because a kernel pushed "
+            "under one name cannot be deleted under the other"
+        )
+        return finish()
+    args.user = owner
+    _log(f"authenticated as {owner}")
+
     # Reclaim anything a previous launcher was killed outright before it
     # could delete. Done BEFORE pushing, so the freed session slots are
     # available to this run -- Kaggle allows only two GPU sessions at once,
     # and an orphan holds one until its ceiling.
-    for _slug in sweep_orphans():
+    for _slug in sweep_orphans(owner):
         _log(f"reclaimed orphaned kernel {_slug} from a killed launcher")
     # AGAIN, now that authentication is paid for and the next thing is a push.
     # The check above is not enough on its own: authenticate() reaches the
@@ -1312,6 +1575,9 @@ def main() -> int:
                 args.user,
                 args.kernel_timeout_sec,
                 attempted = entry["attempted"],
+                kind = args.kind,
+                commit_sha = args.commit_sha,
+                slot = args.slot,
             )
             entry["slug"] = pushed.get("slug")
             entry["push_error"] = (
@@ -1329,6 +1595,22 @@ def main() -> int:
         # Kept for the summary and for anything reading this file's previous
         # single-kernel shape.
         result["slug"] = live[0]["slug"]
+
+        # DISPATCH MODE ENDS HERE. `dispatched` is deliberately NOT `pass`: all
+        # this job proved is that Kaggle accepted a push. The real verdict comes
+        # later from collect.py as a commit status on the sha in the slug.
+        if args.dispatch:
+            result["verdict"] = "dispatched"
+            result["dispatched"] = [{"slug": k["slug"], "notebook": k["notebook"]} for k in live]
+            result["commit_sha"] = args.commit_sha
+            result["kind"] = args.kind
+            result["reason"] = (
+                f"{len(live)} kernel(s) pushed and left running: "
+                + ", ".join(k["slug"] for k in live)
+                + f". The result for {args.commit_sha[:8]} will be posted as a commit "
+                "status by the collector, not by this job"
+            )
+            return finish()
 
         # The deadline above is shared, not one per kernel: they run
         # concurrently, so consuming the ceiling per kernel would let a

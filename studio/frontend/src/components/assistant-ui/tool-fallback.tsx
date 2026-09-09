@@ -9,6 +9,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
+// eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
@@ -37,6 +39,13 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  isToolCallCancelled,
+  isToolCallRunning,
+  toolArgText,
+  toolFallbackLabel,
+} from "./tool-arg-text";
+import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
 
@@ -47,6 +56,12 @@ export type ToolFallbackRootProps = Omit<
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   defaultOpen?: boolean;
+  /**
+   * Parked on an allow/deny decision. Pins the card open above `open` and the
+   * collapse preference, so what is being approved stays readable. Groups do
+   * the same with `hasPendingConfirmation`.
+   */
+  awaitingApproval?: boolean;
 };
 
 function ToolFallbackRoot({
@@ -54,15 +69,34 @@ function ToolFallbackRoot({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   defaultOpen = false,
+  awaitingApproval = false,
   children,
   ...props
 }: ToolFallbackRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const [uncontrolledState, setUncontrolledState] = useState(
+    () => ({
+      collapseByDefault,
+      open: defaultOpen && !collapseByDefault,
+    }),
+  );
+  const syncedUncontrolledState = syncToolActivityPreference(
+    uncontrolledState,
+    collapseByDefault,
+    defaultOpen,
+  );
+  if (syncedUncontrolledState !== uncontrolledState) {
+    setUncontrolledState(syncedUncontrolledState);
+  }
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
+  const isOpen =
+    awaitingApproval ||
+    (isControlled ? controlledOpen : syncedUncontrolledState.open);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -70,11 +104,14 @@ function ToolFallbackRoot({
         lockScroll();
       }
       if (!isControlled) {
-        setUncontrolledOpen(open);
+        setUncontrolledState({
+          collapseByDefault,
+          open,
+        });
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
   );
 
   return (
@@ -122,19 +159,22 @@ function ToolFallbackTrigger({
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
-  toolName: string;
+  // Straight off the wire: provider SSE is relayed verbatim, and a non-string
+  // name matches nothing in thread.tsx's by_name map, which is exactly why it
+  // lands HERE, where formatMcpToolName calls `.startsWith` on it.
+  toolName: unknown;
   mcpServer?: string;
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
 }) {
   const statusType = status?.type ?? "complete";
-  const isRunning = statusType === "running";
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
+  const isRunning = isToolCallRunning(status);
+  const isCancelled = isToolCallCancelled(status);
 
   const StatusIcon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
-  const displayName = formatMcpToolName(toolName, mcpServer) ?? toolName;
+  const label = toolFallbackLabel(status);
+  const name = toolArgText(toolName);
+  const displayName = formatMcpToolName(name, mcpServer) ?? name;
 
   return (
     <CollapsibleTrigger
@@ -387,8 +427,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const mcpServer = mcpServerFromProvenance(
     (rest as { provenance?: unknown }).provenance,
   );
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
+  const isCancelled = isToolCallCancelled(status);
 
   return (
     <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>

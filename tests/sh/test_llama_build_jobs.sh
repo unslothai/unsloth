@@ -13,11 +13,9 @@ set -e
 unset UNSLOTH_LLAMA_BUILD_JOBS
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
-PASS=0
-FAIL=0
-
 # Extract the constants and the helper (same sed range as the other function tests).
 _FUNC_FILE=$(mktemp)
 sed -n '/^_LLAMA_BUILD_RESERVE_MB=/,/^_LLAMA_BUILD_MB_PER_JOB=/p' "$SETUP_SH" > "$_FUNC_FILE"
@@ -26,17 +24,6 @@ if [ ! -s "$_FUNC_FILE" ]; then
     echo "FAIL: could not extract _llama_jobs_for from setup.sh"
     exit 1
 fi
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # $1 = cores, $2 = total RAM MiB, $3 = UNSLOTH_LLAMA_BUILD_JOBS
 run_jobs() {

@@ -137,6 +137,94 @@ grep -qx 'torch==2.11.0+cu128' "$_merged" || _rc=1
 assert_true "inherited torch-trio lines are dropped; generated pin wins" "$_rc"
 rm -rf "$_ov_dir"
 
+# 5. The beside-the-caller override must not be world-readable: the merge copies every inherited
+#    requirement in, and a direct URL can carry credentials. The mktemp fallback is already 0600.
+_creation=$(sed -n '/_UNSLOTH_TORCH_OVERRIDES="$_ov_dir\/.unsloth-torch-overrides/,/^            fi$/p' "$INSTALL_SH")
+# `if`, not a bare pipeline: under `set -e` a failing grep would abort the suite, not report.
+if printf '%s' "$_creation" | grep -q 'umask 077'; then _rc=0; else _rc=1; fi
+assert_true "the adjacent override file is created under umask 077" "$_rc"
+
+if printf '%s' "$_creation" | grep -q 'chmod 600'; then _rc=0; else _rc=1; fi
+assert_true "and chmod'd too, since \`: >\` truncates without changing an existing mode" "$_rc"
+
+# Drive the real construct: a recycled-PID file is what the umask alone cannot fix.
+_mode_dir=$(mktemp -d)
+(
+    umask 022
+    _f="$_mode_dir/.unsloth-torch-overrides.$$.txt"
+    if (umask 077; : > "$_f") 2>/dev/null; then chmod 600 "$_f" 2>/dev/null || true; fi
+    stat -c %a "$_f" > "$_mode_dir/fresh"
+
+    _s="$_mode_dir/stale.txt"
+    : > "$_s"; chmod 644 "$_s"
+    if (umask 077; : > "$_s") 2>/dev/null; then
+        stat -c %a "$_s" > "$_mode_dir/stale_umask_only"
+        chmod 600 "$_s" 2>/dev/null || true
+    fi
+    stat -c %a "$_s" > "$_mode_dir/stale_both"
+)
+if [ "$(cat "$_mode_dir/fresh")" = "600" ]; then _rc=0; else _rc=1; fi
+assert_true "a freshly created override file is 0600 under umask 022" "$_rc"
+if [ "$(cat "$_mode_dir/stale_umask_only")" = "644" ]; then _rc=0; else _rc=1; fi
+assert_true "umask alone leaves a stale file 0644, so the chmod is load-bearing" "$_rc"
+if [ "$(cat "$_mode_dir/stale_both")" = "600" ]; then _rc=0; else _rc=1; fi
+assert_true "umask plus chmod brings a stale file back to 0600" "$_rc"
+rm -rf "$_mode_dir"
+
+# 6. UV_OVERRIDE is split unquoted, so field splitting is followed by globbing. uv reads the
+#    literal name (uv 0.11.32: "ov[1].txt" beside "ov1.txt" resolves the bracketed file), so
+#    without `set -f` both walks iterate the sibling and the merge carries wrong requirements.
+_arm=$(sed -n '/^        torch==\*)$/,/^            ;;$/p' "$INSTALL_SH")
+_arm_body=$(printf '%s\n' "$_arm" | sed '1d;$d')
+[ -n "$_arm_body" ]
+assert_true "the torch==* overrides arm was extracted from install.sh" "$?"
+
+_glob_dir=$(mktemp -d)
+printf 'idna==3.6\n' > "$_glob_dir/ov[1].txt"
+printf 'idna==3.7\n' > "$_glob_dir/ov1.txt"
+_glob_out=$(
+    UV_OVERRIDE="$_glob_dir/ov[1].txt"
+    _torch_trio_pins='torch==2.11.0+cu128'
+    eval "$_arm_body"
+    cat "$_UNSLOTH_TORCH_OVERRIDES"
+    rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+)
+if printf '%s\n' "$_glob_out" | grep -qx 'idna==3.6'; then _rc=0; else _rc=1; fi
+assert_true "a glob-metachar override path is read literally, not via its sibling" "$_rc"
+if printf '%s\n' "$_glob_out" | grep -qx 'idna==3.7'; then _rc=1; else _rc=0; fi
+assert_true "the unrelated sibling that the pattern matches is never folded in" "$_rc"
+if printf '%s\n' "$_glob_out" | grep -qx 'torch==2.11.0+cu128'; then _rc=0; else _rc=1; fi
+assert_true "the generated trio pin still leads the merged file" "$_rc"
+rm -rf "$_glob_dir"
+
+# set -f stops globbing but NOT field splitting, and uv takes UV_OVERRIDE as a space-separated
+# list, so multi-file must keep working. Quoting it instead would fold only the first file.
+_multi_dir=$(mktemp -d)
+printf 'idna==3.6\n' > "$_multi_dir/a.txt"
+printf 'certifi==2024.1.1\n' > "$_multi_dir/b.txt"
+_multi_out=$(
+    UV_OVERRIDE="$_multi_dir/a.txt $_multi_dir/b.txt"
+    _torch_trio_pins='torch==2.11.0+cu128'
+    eval "$_arm_body"
+    cat "$_UNSLOTH_TORCH_OVERRIDES"
+    rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+)
+if printf '%s\n' "$_multi_out" | grep -qx 'idna==3.6' &&
+   printf '%s\n' "$_multi_out" | grep -qx 'certifi==2024.1.1'; then _rc=0; else _rc=1; fi
+assert_true "every file of a space-separated UV_OVERRIDE is still folded in" "$_rc"
+rm -rf "$_multi_dir"
+
+# The guard must not leak: callers below rely on globbing (_dir_has_entries walks "$1"/*).
+_glob_state=$(
+    UV_OVERRIDE=""
+    _torch_trio_pins='torch==2.11.0+cu128'
+    eval "$_arm_body"
+    rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+    case $- in *f*) echo off ;; *) echo on ;; esac
+)
+if [ "$_glob_state" = on ]; then _rc=0; else _rc=1; fi
+assert_true "pathname expansion is restored after the arm" "$_rc"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

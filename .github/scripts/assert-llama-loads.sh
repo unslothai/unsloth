@@ -52,7 +52,7 @@ if ! "$SERVER" --version >/tmp/llama-server-version.txt 2>&1; then
   fail "llama-server failed to launch on macOS $HOST_VER (dyld load / symbol error)"
 fi
 
-# The launch above uses this shell's environment, not the one Studio builds for
+# The launch above uses this shell's environment, not the one Unsloth builds for
 # its child. That one was Linux-shaped on macOS (LD_LIBRARY_PATH, which dyld
 # ignores) while the installer's own validation set DYLD_LIBRARY_PATH, so the
 # defect could not show up at install time (#8566). A unit test with a
@@ -94,13 +94,13 @@ env = LlamaCppBackend._llama_server_env_for_binary(binary)
 got = env.get("DYLD_LIBRARY_PATH", "")
 print(f"DYLD_LIBRARY_PATH: {got or '<unset>'}")
 if not got:
-    sys.exit("Studio would launch llama-server with no DYLD_LIBRARY_PATH; dyld ignores LD_LIBRARY_PATH")
+    sys.exit("Unsloth would launch llama-server with no DYLD_LIBRARY_PATH; dyld ignores LD_LIBRARY_PATH")
 if got.split(os.pathsep)[0] != lib_dir:
     sys.exit(f"expected {lib_dir} first on DYLD_LIBRARY_PATH, got {got}")
 print("child launch environment is correct for dyld")
 PY
   then
-    fail "Studio's llama-server launch environment is wrong for macOS (see above)"
+    fail "Unsloth's llama-server launch environment is wrong for macOS (see above)"
   fi
 fi
 

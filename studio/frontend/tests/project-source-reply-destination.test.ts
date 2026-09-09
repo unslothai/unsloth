@@ -12,13 +12,11 @@
 // the way rag-availability-marker.test.ts does for the same file.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const src = await readFile(
-  new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const src = await readSrcAsync("components/assistant-ui/thread.tsx");
 
 /** The onSelect body of the "Save to project sources" action bar item. */
 function saveHandler(): string {

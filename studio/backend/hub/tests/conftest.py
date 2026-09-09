@@ -74,7 +74,23 @@ class _DummyLogger:
         return lambda *args, **kwargs: None
 
 
-sys.modules.setdefault(
+def _stub_unless_installed(name: str, stub) -> None:
+    """Stub *name* only when it is genuinely not installed.
+
+    ``setdefault`` alone stubs whenever the module is merely not imported yet, and these stubs
+    carry a few symbols each. Since they are never removed, one such stub decides the rest of
+    the process: anything importing ``routes`` afterwards dies on a name the stub omits, which
+    is most of ``studio/backend/tests``.
+    """
+    if name in sys.modules:
+        return
+    try:
+        __import__(name)
+    except ImportError:
+        sys.modules[name] = stub
+
+
+_stub_unless_installed(
     "pydantic",
     types.SimpleNamespace(
         BaseModel = _BaseModel,
@@ -82,7 +98,7 @@ sys.modules.setdefault(
         model_validator = _model_validator,
     ),
 )
-sys.modules.setdefault(
+_stub_unless_installed(
     "fastapi",
     types.SimpleNamespace(
         APIRouter = _APIRouter,

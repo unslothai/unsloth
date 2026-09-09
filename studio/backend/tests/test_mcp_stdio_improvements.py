@@ -46,6 +46,40 @@ def test_client_builds_stdio_when_enabled_without_spawning(monkeypatch):
     assert client is not None
 
 
+def test_client_builds_stdio_with_encoded_arguments_without_shell(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+
+    import fastmcp
+    from fastmcp.client import transports
+    from models.mcp_servers import McpStdioCommand
+
+    _enable(monkeypatch)
+    captured = {}
+
+    class CapturingStdioTransport:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(fastmcp, "Client", lambda transport: transport)
+    monkeypatch.setattr(transports, "StdioTransport", CapturingStdioTransport)
+    monkeypatch.setattr(mcp_client, "_stdio_argv", lambda parts, env: parts)
+
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(
+            command = "  python  ",
+            arguments = ["-m", "mod", "--name", "a b", "", "  keep padding  "],
+        ),
+        current_subject = "u",
+    )
+    mcp_client._client(encoded.url, {"API_KEY": "secret"})
+
+    assert captured["command"] == "python"
+    assert captured["args"] == ["-m", "mod", "--name", "a b", "", "  keep padding  "]
+    assert captured["env"]["API_KEY"] == "secret"
+    assert captured["keep_alive"] is False
+    assert set(captured) == {"command", "args", "env", "keep_alive"}
+
+
 def test_client_http_unaffected_by_gate(monkeypatch):
     _disable(monkeypatch)
     assert mcp_client._client("https://example.com/mcp", None) is not None
@@ -56,6 +90,7 @@ def test_client_http_unaffected_by_gate(monkeypatch):
 
 def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpServerCreate
 
     _reset_db(tmp_path, monkeypatch)
@@ -72,6 +107,7 @@ def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
 
 def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpServerCreate
 
     _reset_db(tmp_path, monkeypatch)
@@ -85,9 +121,34 @@ def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
     assert resp.use_oauth is True
 
 
-def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
+def test_connection_test_forces_oauth_off_for_stdio(monkeypatch):
     import routes.mcp_servers as routes_mcp
+
+    from models.mcp_servers import McpServerTestRequest
+
+    _enable(monkeypatch)
+    captured = {}
+
+    async def capture_probe(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", capture_probe)
+    result = asyncio.run(
+        routes_mcp.test_mcp_server(
+            McpServerTestRequest(url = "python server.py", use_oauth = True),
+            current_subject = "u",
+        )
+    )
+
+    assert result.ok is True
+    assert captured["use_oauth"] is False
+    assert captured["timeout"] == mcp_client.probe_timeout("python server.py", False)
+
+
+def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -106,8 +167,8 @@ def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
 
 
 def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -128,8 +189,8 @@ def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
 
 
 def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -150,8 +211,8 @@ def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
 
 
 def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
