@@ -589,6 +589,63 @@ def _inventory_physical_identity(raw_path: str) -> str:
     return gguf.local_path_physical_identity(raw_path)
 
 
+def _local_model_path_is_symlink(raw_path: str) -> bool:
+    try:
+        return Path(raw_path).is_symlink()
+    except OSError:
+        return False
+
+
+def _prefer_local_inventory_row(
+    candidate: LocalModelInfo,
+    existing: LocalModelInfo,
+) -> bool:
+    """True when *candidate* should replace *existing* for one physical model."""
+    if candidate.partial != existing.partial:
+        return not candidate.partial
+    if (candidate.active_cache is True) != (existing.active_cache is True):
+        return candidate.active_cache is True
+    candidate_link = _local_model_path_is_symlink(candidate.path)
+    existing_link = _local_model_path_is_symlink(existing.path)
+    if candidate_link != existing_link:
+        return not candidate_link
+    return _prefer_complete_larger(
+        candidate.partial,
+        candidate.size_bytes,
+        existing.partial,
+        existing.size_bytes,
+    )
+
+
+def _dedupe_custom_local_models(
+    custom_models: List[LocalModelInfo],
+) -> list[LocalModelInfo]:
+    """Collapse scanner overlap without folding distinct symlink aliases.
+
+    Multiple symlinks to the same on-disk model each appear as their own Hub row so
+    per-model settings can be remembered independently. A symlink plus the canonical
+    on-disk path still collapse to one row.
+    """
+    by_physical: dict[tuple[str, str], list[LocalModelInfo]] = {}
+    for model in custom_models:
+        physical = _inventory_physical_identity(model.path)
+        by_physical.setdefault((physical, model.model_format), []).append(model)
+
+    kept: list[LocalModelInfo] = []
+    for group in by_physical.values():
+        symlinks = [m for m in group if _local_model_path_is_symlink(m.path)]
+        non_symlinks = [m for m in group if not _local_model_path_is_symlink(m.path)]
+        if len(symlinks) >= 2 and not non_symlinks:
+            kept.extend(group)
+            continue
+        winner = group[0]
+        for candidate in group[1:]:
+            if _prefer_local_inventory_row(candidate, winner):
+                winner = candidate
+        kept.append(winner)
+    return kept
+
+
 def _coerce_scan_folder_path(raw_path: str) -> str:
     """Normalize a scan registration target; the registry stores directories, so a pasted weight-file path is reduced to its parent folder."""
     if not raw_path or not raw_path.strip():
@@ -869,7 +926,11 @@ async def _load_custom_folders() -> list[dict]:
 
 def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     deduped: dict[str, LocalModelInfo] = {}
+    custom_models: list[LocalModelInfo] = []
     for model in local_models:
+        if model.source == "custom":
+            custom_models.append(model)
+            continue
         if model.source == "hf_cache" and model.model_id:
             key = "\x00".join(
                 (
@@ -878,13 +939,6 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                     model.model_format,
                     model.format_variant or "",
                 )
-            )
-        elif model.source == "custom":
-            key = _local_inventory_id(
-                "custom",
-                model.model_format,
-                _inventory_physical_identity(model.path),
-                None,
             )
         else:
             row_key = model.inventory_id or model.id
@@ -906,7 +960,9 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    deduped_values = list(deduped.values())
+    deduped_values = list(deduped.values()) + _dedupe_custom_local_models(
+        custom_models
+    )
     custom_values = [model for model in deduped_values if model.source == "custom"]
     return sorted(
         [model for model in deduped_values if model.source != "custom"]
