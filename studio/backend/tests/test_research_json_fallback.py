@@ -19,7 +19,36 @@ from utils.api_errors import install_api_error_handlers
 from .test_sf_client_tools_passthrough import _ScriptedBackend, _fixed, _install
 
 
-_REFUSAL = {"error": {"code": "unsupported_parameter", "param": "response_format"}}
+# The whole refusal routes.inference sends for a backend with no grammar engine, message
+# included: the code and param alone do not identify it, so a fixture without the message
+# would assert a retry the worker no longer performs.
+_NO_GRAMMAR_ENGINE = (
+    "response_format needs the llama.cpp grammar engine; load a GGUF model to use it."
+)
+# The two refusals that share the code and param but not the cause. Both are quoted from
+# routes.inference; the real-route cases above keep these strings honest.
+_AUDIO_REFUSAL_MESSAGE = (
+    "response_format cannot be honored by an audio reply; send the request to a text model "
+    "to use guided decoding."
+)
+_TOOL_LOOP_REFUSAL_MESSAGE = (
+    "response_format is not supported with Unsloth tool execution; send the request without "
+    "enable_tools to use guided decoding."
+)
+
+
+def _refusal(message = _NO_GRAMMAR_ENGINE):
+    return {
+        "error": {
+            "message": message,
+            "type": "invalid_request_error",
+            "code": "unsupported_parameter",
+            "param": "response_format",
+        }
+    }
+
+
+_REFUSAL = _refusal()
 
 
 @pytest.fixture
@@ -154,6 +183,18 @@ def test_supported_json_mode_keeps_the_format(research_call, provider):
         (422, _REFUSAL, False, True),
         (400, _REFUSAL, True, True),
         (400, _REFUSAL, False, False),
+        # Same code and param, a cause a prompt-only re-send does not address. Dropping the
+        # contract here would re-send into an audio reply or Unsloth's tool loop instead of
+        # surfacing the refusal that names the real problem.
+        (400, _refusal(_AUDIO_REFUSAL_MESSAGE), False, True),
+        (400, _refusal(_TOOL_LOOP_REFUSAL_MESSAGE), False, True),
+        (400, _refusal(""), False, True),
+        (400, _refusal(None), False, True),
+    ],
+    ids = [
+        "other-param", "other-code", "string-error", "list-body", "not-json",
+        "wrong-status", "external-provider", "no-json-mode",
+        "audio-reply", "unsloth-tool-loop", "empty-message", "null-message",
     ],
 )
 def test_unrelated_errors_and_provider_contracts_are_not_retried(
@@ -177,6 +218,74 @@ def test_unrelated_errors_and_provider_contracts_are_not_retried(
     assert caught.value.response.status_code == status
     assert len(sent) == 1
     assert research_call.revoked == [1]
+
+
+def test_an_audio_model_is_refused_rather_than_re_sent(monkeypatch, research_call):
+    """The non-GGUF branch refuses the format before it routes audio, so this refusal
+    alone does not prove a prompt-only re-send would be answered with text. Re-sending
+    reaches text-to-speech instead, which synthesizes the planner prompt and then stalls
+    the run on a reply that carries no SSE."""
+    backend = _ScriptedBackend(_fixed('{"ok": true}'))
+    backend.models[backend.active_model_name].update(is_audio = True, audio_type = "tts")
+    _install(monkeypatch, backend)
+    # _install replaces the getter routes.inference holds; the probe reads the orchestrator
+    # getter that one is imported from, so point the double at both.
+    monkeypatch.setattr(research_runs, "_peek_inference_backend", lambda: backend)
+    app = FastAPI()
+    app.include_router(inference_route.router, prefix = "/v1")
+    install_api_error_handlers(app)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    statuses = []
+
+    class RecordingTransport(httpx.ASGITransport):
+        async def handle_async_request(self, request):
+            response = await super().handle_async_request(request)
+            statuses.append(response.status_code)
+            return response
+
+    research_call.install(RecordingTransport(app = app))
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        research_call.complete(phase = "planning", max_tokens = 32)
+    assert caught.value.response.status_code == 400
+    assert statuses == [400], "the guided-decoding refusal is the answer, not a retry"
+    assert not backend.calls
+    assert research_call.revoked == [1]
+
+
+def test_the_audio_probe_reads_both_local_backends(monkeypatch):
+    """Whichever backend is serving, the flag routes.inference branches on is the one read."""
+    from types import SimpleNamespace as _NS
+
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _NS(is_loaded = True, _is_audio = True)
+    )
+    assert research_runs._local_audio_model_loaded() is True
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _NS(is_loaded = True, _is_audio = False)
+    )
+    assert research_runs._local_audio_model_loaded() is False
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NS(is_loaded = False))
+    monkeypatch.setattr(
+        research_runs,
+        "_peek_inference_backend",
+        lambda: _NS(active_model_name = "m", models = {"m": {"is_audio": True}}),
+    )
+    assert research_runs._local_audio_model_loaded() is True
+    monkeypatch.setattr(
+        research_runs,
+        "_peek_inference_backend",
+        lambda: _NS(active_model_name = "m", models = {"m": {}}),
+    )
+    assert research_runs._local_audio_model_loaded() is False
+    # A run on an external connection is not served by either local backend.
+    assert research_runs._local_audio_model_loaded({"providerType": "openai"}) is False
+    # An unprobeable backend keeps the fallback, rather than disabling it on a failed read.
+    def boom():
+        raise RuntimeError("no orchestrator")
+
+    monkeypatch.setattr(research_runs, "_peek_inference_backend", boom)
+    assert research_runs._local_audio_model_loaded() is False
 
 
 def test_format_fallback_is_attempted_only_once(research_call):
@@ -261,12 +370,16 @@ def test_planning_after_fallback_still_validates_before_saving(monkeypatch, rese
 
 
 def test_json_fallback_does_not_restart_the_total_timeout(research_call):
-    research_call.run["config"]["budgets"]["modelTimeoutSeconds"] = 0.4
+    # Real time, so the numbers carry the margin rather than the minimum. The refusal lands at
+    # 1.0s, the retry is dispatched there and would answer at 2.0s, and the 1.6s wall clock cuts
+    # it off in between: 600ms of slack for scheduling, against the 150ms a 0.4s/0.25s pairing
+    # leaves. Under `-n 4` on a loaded runner that difference is the whole flake.
+    research_call.run["config"]["budgets"]["modelTimeoutSeconds"] = 1.6
     sent = []
 
     async def serve(request):
         sent.append(json.loads(request.content))
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(1.0)
         return httpx.Response(400, json = _REFUSAL) if len(sent) == 1 else _completion()
 
     research_call.install(httpx.MockTransport(serve))

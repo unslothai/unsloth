@@ -119,6 +119,9 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # A model that keeps disappearing would re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
+# routes.inference's refusal for a backend with no grammar engine, the one guided-decoding
+# refusal a prompt-only re-send can answer. Two other refusals carry the same code and param.
+_NO_GRAMMAR_ENGINE_DETAIL = "needs the llama.cpp grammar engine"
 # routes.inference reports the same unloaded state this way when auto-switch finds no local match.
 _MODEL_NOT_FOUND_CODE = "model_not_found"
 # routes.inference 503s with this while an auto-switch to the run's model is still loading.
@@ -393,6 +396,35 @@ def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | Non
     return None
 
 
+def _local_audio_model_loaded(inference: dict[str, Any] | None = None) -> bool:
+    """Whether the local backend serving this run answers with speech rather than text.
+
+    Same two probes as _loaded_context_length, reading the flags routes.inference itself
+    branches on: llama.cpp's ``_is_audio`` and the orchestrator's ``is_audio`` model info.
+    Only the guided-decoding fallback consults this, and only to refuse to negotiate: a
+    text-to-speech route cannot answer a research prompt whether or not the format is sent,
+    and re-sending without it swaps a refusal that names the problem for a synthesized clip.
+    Unknown reads as "not audio", so an unprobeable backend keeps today's behaviour."""
+    if _external_provider_run(inference):
+        return False
+    try:
+        from routes.inference import get_llama_cpp_backend
+        llama = get_llama_cpp_backend()
+        if getattr(llama, "is_loaded", False):
+            return bool(getattr(llama, "_is_audio", False))
+    except Exception:
+        logger.debug("research.audio_probe_llama_failed", exc_info = True)
+    try:
+        backend = _peek_inference_backend()
+        name = getattr(backend, "active_model_name", None)
+        models = getattr(backend, "models", {}) or {}
+        info = models.get(name) if (name and isinstance(models, dict)) else None
+        return bool((info or {}).get("is_audio"))
+    except Exception:
+        logger.debug("research.audio_probe_failed", exc_info = True)
+    return False
+
+
 def _estimate_prompt_tokens(messages: list[dict]) -> int:
     """Conservative prompt token estimate for max_tokens clamping.
 
@@ -594,6 +626,11 @@ async def _response_format_unsupported(response: httpx.Response) -> bool:
         isinstance(error, dict)
         and error.get("code") == "unsupported_parameter"
         and error.get("param") == "response_format"
+        # The code/param pair alone is not this refusal: routes.inference sends the same pair
+        # when the contract cannot be honored for a reason a prompt-only re-send does not
+        # address -- an audio reply, or Unsloth's own tool loop. Re-sending those drops the
+        # contract and still gets refused, or worse reaches a route that answers with speech.
+        and _NO_GRAMMAR_ENGINE_DETAIL in str(error.get("message") or "")
     )
 
 
@@ -1709,6 +1746,12 @@ class ResearchSupervisor:
                                 and payload.get("response_format") == {"type": "json_object"}
                                 and isinstance(exc, httpx.HTTPStatusError)
                                 and await _response_format_unsupported(exc.response)
+                                # The non-GGUF branch refuses the format before it reaches the
+                                # audio routing below it, so this refusal does not prove the
+                                # re-send would be answered as text.
+                                and not await asyncio.to_thread(
+                                    _local_audio_model_loaded, inference
+                                )
                             ):
                                 # MLX/transformers cannot enforce a grammar. Research already
                                 # prompts for JSON and validates it; retry once without guided
