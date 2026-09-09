@@ -407,6 +407,37 @@ def full_finetune_save_problem(full_finetune: bool, save: str, world: int) -> Op
     )
 
 
+def legacy_attention_problem(cfg, seq: int) -> Optional[str]:
+    """Why the legacy backend cannot reproduce this model's attention, or None.
+
+    Its forwards call decoder blocks with no `attention_mask`. That is correct for sdpa and
+    flash, which derive causality from `is_causal` when the mask is None, and for a sliding
+    window at or below its size, where every query already reaches every earlier token so the
+    two masks are the same matrix. It is wrong for eager, whose `eager_attention_forward` adds
+    a mask only `if attention_mask is not None`, so the run trains BIDIRECTIONALLY at a
+    flattering loss and saves something that is not a causal LM. And it is wrong above a
+    sliding window, where full causal is a different graph. The torch backend builds both
+    masks; this one is kept unchanged as a control arm, so it refuses what it cannot reproduce
+    rather than quietly training a different model."""
+    impl = getattr(cfg, "_attn_implementation", "sdpa")
+    if impl not in ("sdpa", "flash_attention_2", "flash_attention_3"):
+        return (
+            f"--pp-backend legacy calls decoder blocks without an attention mask, which is "
+            f"causal only under sdpa or flash. This model is loaded with {impl!r}, where "
+            f"attention with no mask is bidirectional: the run would train on future tokens "
+            f"at a flattering loss. Use --pp-backend torch, which builds the mask."
+        )
+    window = getattr(cfg, "sliding_window", None)
+    if isinstance(window, int) and window > 0 and seq > window:
+        return (
+            f"--pp-backend legacy does not reproduce sliding-window attention, and --seq "
+            f"{seq} is past this model's {window}-token window, so the run would train under "
+            f"full causal attention instead. Use --pp-backend torch, or --seq {window} or "
+            f"fewer."
+        )
+    return None
+
+
 def _tied_aliases(model) -> dict:
     """`{parameter name saved under another name: the name it is saved under}`.
 
@@ -1733,6 +1764,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if tied_problem:
         raise SystemExit(tied_problem)
+    if not use_torch_pp:
+        legacy_problem = legacy_attention_problem(base_config, int(args.seq))
+        if legacy_problem:
+            raise SystemExit(legacy_problem)
+    if args.data and getattr(tok, "chat_template", None) is None:
+        # `apply_chat_template` raises on a base tokenizer, and it did so only after both ranks
+        # had loaded and materialised the model. Nothing documents an instruction-tuned
+        # requirement -- the CLI says `{q, a}` JSONL -- so the check belongs here.
+        raise SystemExit(
+            f"--data formats each row with the tokenizer's chat template, and {args.model} "
+            f"has none (it is a base checkpoint). Point --model at an instruction-tuned "
+            f"checkpoint, or drop --data to train on synthetic ids."
+        )
     save_problem = full_finetune_save_problem(bool(args.full_finetune), args.save or "", world)
     if save_problem:
         raise SystemExit(save_problem)

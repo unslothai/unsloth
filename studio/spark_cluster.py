@@ -4090,6 +4090,10 @@ def _cmd_serve(
         )
         return 1
     engines = max(1, engines)
+    # These lines are printed to be pasted into a shell. A checkpoint path with a space or a
+    # shell metacharacter was interpolated bare, so the pasted command split it into several
+    # arguments or ran part of it. The pipeline command generator already quotes.
+    qmodel = shlex.quote(model)
 
     # Decide the topology from the model: the rule is not guessable, and the right answer
     # flips at the point where two copies stop fitting.
@@ -4139,7 +4143,7 @@ def _cmd_serve(
             print("")
             print(f"  {serving.get('reason', '')}")
             print("")
-            print(f"     {bin_dir}/llama-server -m {model} \\")
+            print(f"     {shlex.quote(str(bin_dir))}/llama-server -m {qmodel} \\")
             print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
             print(f"         --host 0.0.0.0 --port {port}")
             return 0
@@ -4151,7 +4155,7 @@ def _cmd_serve(
         print("  1.91x at 32. Below 8 concurrent users one Spark is as good as two.")
         print("")
         print("  1. This Spark:")
-        print(f"     {bin_dir}/llama-server -m {model} \\")
+        print(f"     {shlex.quote(str(bin_dir))}/llama-server -m {qmodel} \\")
         print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
         print(f"         --host 0.0.0.0 --port {local_port}")
         print("")
@@ -4228,7 +4232,7 @@ def _cmd_serve(
     # llama-server is, and the two need not share a directory.
     local_server = llama_server_binary() or f"{bin_dir}/llama-server"
     for i in range(engines):
-        print(f"     {local_server} -m {model} \\")
+        print(f"     {shlex.quote(local_server)} -m {qmodel} \\")
         print(f"         --rpc {peer_ip}:{rpc_port + i} -ngl 999 --ctx-size {ctx} \\")
         print(f"         -np {slots} -cb -ub 512 --host 127.0.0.1 --port {port + 1 + i}")
     print("")

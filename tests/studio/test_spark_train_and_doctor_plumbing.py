@@ -376,6 +376,63 @@ def test_a_run_without_save_collects_nothing(cluster, monkeypatch) -> None:
     assert cluster.run_pipeline(plan) == 0
 
 
+# ── what the legacy backend will not pretend to reproduce ───────────────────────
+
+
+class _Cfg:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_eager_attention_is_refused_on_the_legacy_backend() -> None:
+    """Its forwards pass no attention_mask, and `eager_attention_forward` adds one only
+    `if attention_mask is not None`, so the run would train bidirectionally."""
+    pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
+    problem = pipeline.legacy_attention_problem(_Cfg(_attn_implementation = "eager"), 512)
+    assert problem and "bidirectional" in problem
+
+
+@pytest.mark.parametrize("impl", ["sdpa", "flash_attention_2", "flash_attention_3"])
+def test_the_kernels_that_derive_causality_are_untouched(impl: str) -> None:
+    """No regression: with attention_mask None these select the causal kernel themselves,
+    which is why the legacy backend was correct for them and is kept as a control arm."""
+    pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
+    assert pipeline.legacy_attention_problem(_Cfg(_attn_implementation = impl), 4096) is None
+
+
+def test_a_sequence_past_the_sliding_window_is_refused() -> None:
+    pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
+    cfg = _Cfg(_attn_implementation = "sdpa", sliding_window = 1024)
+    assert pipeline.legacy_attention_problem(cfg, 2048)
+    # At or below the window the two masks are the same matrix.
+    assert pipeline.legacy_attention_problem(cfg, 1024) is None
+
+
+def test_a_model_that_cannot_fit_the_split_still_needs_a_full_finetune_refusal() -> None:
+    pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
+    assert pipeline.full_finetune_save_problem(True, "out", 2)
+    # Single node saves a complete checkpoint, and LoRA merges.
+    assert pipeline.full_finetune_save_problem(True, "out", 1) is None
+    assert pipeline.full_finetune_save_problem(False, "out", 2) is None
+    assert pipeline.full_finetune_save_problem(True, "", 2) is None
+
+
+def test_the_chat_template_requirement_is_checked_before_the_model_is_built() -> None:
+    """`apply_chat_template` raised on a base tokenizer, after both ranks had materialised."""
+    source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
+    lines = source.splitlines()
+    check = next(i for i, line in enumerate(lines) if 'getattr(tok, "chat_template", None)' in line)
+    build = next(i for i, line in enumerate(lines) if "model, cfg, _ = build_stage_model(" in line)
+    assert check < build, (check, build)
+
+
+def test_the_emitted_serve_commands_quote_the_model_path() -> None:
+    source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
+    serve = source.split("def _cmd_serve(")[1].split("\ndef ")[0]
+    assert "qmodel = shlex.quote(model)" in serve
+    assert "-m {model}" not in serve, "a bare model path is still interpolated into a command"
+
+
 def test_the_launch_records_the_pid_it_would_stop() -> None:
     source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
     launch = source.split("def run_pipeline(")[1].split("\ndef ")[0]
