@@ -3064,9 +3064,7 @@ class MLXInferenceBackend:
                             response.token, getattr(response, "text", None) or ""
                         )
                         # Generation ends on a stop id, so this one is trailing. Same rule as
-                        # the non-reasoning branch: drop it unless it closes a real tool
-                        # envelope, or an allowlisted control used as EOS ends the reply as
-                        # raw markup.
+                        # the non-reasoning branch: drop it unless it closes a tool envelope.
                         if (
                             _tok
                             and response.token in stop_token_ids

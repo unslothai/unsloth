@@ -133,9 +133,8 @@ def _is_rehearsal_prefix(
         # ``terminal_logs``, which IS promotable. Decide once the shape settles.
         return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
-        # Active by construction, so only the class is left. Use the shared gate, not the
-        # built-in three: an mcp__* name is refused too, and holding its suffix withheld
-        # visible text that a cancel before the next chunk would have lost.
+        # Active by construction, so only the class is left. The shared gate, not the built-in
+        # three: an mcp__* name is refused too, and holding its suffix withholds visible text.
         if not _markerless_promotable(name, None):
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
@@ -240,10 +239,8 @@ def _earliest_tool_signal(
                 # Bare/prose [ARGS]: skip it so a later real call in the same chunk is
                 # still found.
                 from_idx = p + len("[ARGS]")
-        # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
-        # mid-prose one is a boundary too. The catalogue is passed lazily: this runs per
-        # streamed delta, and materializing a large MCP tool list per token dominated
-        # ordinary completions.
+        # Bare Gemma is not in ``signals`` but the parser promotes it anywhere, so a mid-prose
+        # one is a boundary too. Lazy catalogue: this runs per streamed delta.
         gemma = promotable_gemma_call_pos(
             candidate,
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
@@ -760,9 +757,8 @@ def run_safetensors_tool_loop(
             is the final one, which removes promotable markup, so an aborted real call
             contributes only its surrounding prose."""
             # The buffer is folded into the display without being cleared, so add it only
-            # while that has not happened. Keying on BUFFERING instead missed the bare-JSON
-            # and bare-Gemma branches, which enter DRAINING without folding: the blocked
-            # prefix they hold is visible prose, and a cancel dropped it.
+            # while that has not happened. Keying on BUFFERING misses the bare-JSON and
+            # bare-Gemma branches, which enter DRAINING without folding.
             held = cumulative_display + ("" if buffer_in_display else content_buffer)
             if not held:
                 return ""

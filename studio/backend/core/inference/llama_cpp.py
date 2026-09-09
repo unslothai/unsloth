@@ -2112,10 +2112,8 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     would show a call that never runs. The ``"name":`` arm searches the whole prefix and so
     also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``; the markerless bare-JSON
     form cannot reach it, since ``strip_leading_bare_json_call`` refuses to drain it."""
-    # A blocked leading call will NOT run, so naming the card after it hands the client a
-    # terminal card that the real web_search call then reuses by id. Every markerless format
-    # has to be skipped, not just bare JSON: the unanchored ``"name":`` arm otherwise reads
-    # the blocked rehearsal's own arguments.
+    # A blocked leading call will NOT run, so naming the card after it hands the client a card
+    # the real call then reuses by id. Every markerless format is skipped, not just bare JSON.
     text = text[blocked_markerless_prefix_end(text, 0, enabled_names) :]
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
@@ -2137,9 +2135,8 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     for name in _gguf_active_tool_names(active_tools):
-        # Active by construction, so only the class is left. Use the shared gate, not the
-        # built-in three: an mcp__* name is refused too, and holding its suffix withheld
-        # visible text that a cancel before the next chunk would have lost.
+        # Active by construction, so only the class is left. The shared gate, not the built-in
+        # three: an mcp__* name is refused too, and holding its suffix withholds visible text.
         if not _markerless_promotable(name, None):
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
@@ -29385,9 +29382,8 @@ class LlamaCppBackend:
                     )
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
-            # Not cleared here: the callers measure len(content_buffer) right after to place
-            # the live-args window. Recorded instead, so the cancellation flush below does not
-            # add the same prefix a second time.
+            # Not cleared: the callers measure len(content_buffer) right after to place the
+            # live-args window. Recorded instead, so the cancel flush does not re-add it.
             _buffer_in_display = True
 
         def _cancelled_hold_text() -> str:

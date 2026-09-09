@@ -641,13 +641,9 @@ def blocked_markerless_prefix_end(text: str, start: int, enabled_tool_names) -> 
         return cursor + len(text[cursor:]) - len(text[cursor:].lstrip(" \t\n\r;"))
 
 
-# A blocked call is prose, so its arguments are text the model QUOTED, not markup it emitted.
-# The other passes do not know that: nested markup there was stripped out of the displayed body,
-# and a wrapped call inside it promoted -- reopening execution from quoted text, which is the
-# whole point of the block. Masking the body to an equal-length run of a character no pattern
-# matches keeps every offset (and so every anchor) intact while the passes run over it.
-# A private-use character: valid inside a JSON string (``\x00`` is not, and using it broke the
-# chain walk over a blocked object) and matched by no pattern here.
+# A blocked call's arguments are text the model QUOTED. Masking them to an equal-length run
+# keeps every offset (and so every anchor) exact while the other passes run over it.
+# Private-use, so it is valid inside a JSON string (``\x00`` is not) and matched by no pattern.
 _BLOCKED_BODY_MASK = ""
 _BLOCKED_BODY_MASK_RUN_RE = re.compile("+")
 # The aliases ``_parse_bare_json_call`` accepts for the argument object.
@@ -736,9 +732,8 @@ def _string_content_spans(text: str, start: int, end: int) -> list:
     return spans
 
 
-# A wrapper immediately in front makes the call trusted, not markerless: this mask runs before
-# the passes that consume those wrappers, so without this check it blanked the arguments of a
-# real ``<|tool_call>call:terminal{..}`` and the call stopped executing.
+# A wrapper immediately in front makes the call trusted, not markerless; this mask runs before
+# the passes that consume those wrappers.
 _MARKERLESS_TRUSTED_PREFIXES = (
     "<|tool_call>",
     "[TOOL_CALLS]",
@@ -766,10 +761,8 @@ def _strictly_inside(spans: list, pos: int) -> bool:
     return i >= 0 and spans[i][0] < pos < spans[i][1]
 
 
-# Wrappers this module parses that ``core.tool_healing`` does not know about. A blocked
-# candidate inside one of their argument objects is that call's DATA: masking it rewrote the
-# arguments a real tool then ran with (a DeepSeek search for ``call:terminal{command:id}``
-# reached the tool with the body replaced by U+E000).
+# Wrappers this module parses that ``core.tool_healing`` does not: a blocked candidate inside
+# one of their argument objects is that call's DATA, and masking it corrupts a real call.
 _INFERENCE_WRAPPER_OPENERS = (
     _LLAMA3_PYTHON_TAG,
     "<|content_invoke_tool_json|>",
@@ -822,16 +815,11 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
         candidates += [("rehearsal", m) for m in _tool_healing._REHEARSAL_RE.finditer(text)]
     if candidates:
         candidates.sort(key = lambda c: c[1].start())
-        # A candidate inside a trusted call's markup is that call's ARGUMENT text. Masking it
-        # rewrote the arguments the tool then ran with, so the code executed came back
-        # corrupted; only the immediate prefix was checked before.
-        # Merged and bisected, not scanned: the spans and the candidates both grow with the
-        # input, and testing every span per candidate is quadratic on a turn full of blocked
-        # rehearsals (``test_blocked_span_lookup_is_linear_in_the_gemma_scan``).
-        # Both span scans sweep the whole buffer, and the incremental strip calls this per
-        # snapshot, so they run only when a wrapper that could CONTAIN a candidate is present.
-        # The bare rehearsal literal is deliberately not in that set: a candidate is never
-        # excluded by its own span, and nesting is handled by ``covered`` below.
+        # A candidate inside a trusted call's markup is that call's ARGUMENT text. Merged and
+        # bisected because spans and candidates both grow with the input, so a scan is quadratic.
+        # Both scans sweep the whole buffer and the incremental strip calls this per snapshot,
+        # so they run only for a wrapper that could CONTAIN a candidate. The bare rehearsal
+        # literal is excluded: a candidate is never excluded by its own span.
         trusted = (
             _merge_spans(
                 _tool_healing._tool_call_markup_spans(text) + _inference_wrapper_spans(text)
@@ -845,16 +833,14 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             if (
                 m.start() < covered
                 # Strictly inside: a blocked rehearsal IS tool markup, so its own span starts
-                # where it does and an ``<=`` here excluded every one of them.
+                # where it does and ``<=`` would exclude every one of them.
                 or _strictly_inside(trusted, m.start())
                 or any(head.endswith(prefix) for prefix in _MARKERLESS_TRUSTED_PREFIXES)
                 or not _markerless_blocked_execution(m.group(1), enabled_tool_names)
             ):
                 continue
-            # An open body cannot close without a ``}`` behind its opening brace, and ``find``
-            # settles that in C. The walk below is Python and restarts at the brace, so on an
-            # append-only stream (this runs per snapshot from the incremental strip) a long
-            # quoted command made the whole thing quadratic.
+            # An open body cannot close without a ``}``, which ``find`` settles in C. The walk
+            # below restarts at the brace, so per-snapshot it would be quadratic.
             body_start = m.end() if kind == "gemma" else m.end() + 1
             if text.find("}", body_start) < 0:
                 end = None
@@ -863,17 +849,14 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             else:
                 end = _tool_healing._balanced_json_span(text, m.end())
             if end is None:
-                # Truncated: the rest of the text is this call's arguments, so nothing behind
-                # it is a sibling. Stopping here also keeps the walk linear, which is what
-                # ``test_blocked_span_collection_is_one_forward_pass`` pins.
+                # Truncated: the rest is this call's arguments, so nothing behind it is a
+                # sibling. Stopping here also keeps the walk linear.
                 spans.append((body_start, len(text)))
                 break
             spans.append((body_start, end))
             covered = end
     # The parser accepts Llama sentinels ahead of the object and a ``;`` chain behind it, so
-    # anchoring on one leading ``{`` masked neither the payload behind ``<|eot_id|>`` nor the
-    # second blocked object of a chain. Walk the chain the way the parser does; offsets stay
-    # in the caller's coordinates via ``shift``.
+    # walk the chain as it does; ``shift`` keeps offsets in the caller's coordinates.
     cursor = 0
     while cursor < len(text):
         rest = text[cursor:]
@@ -885,10 +868,8 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
         if _markerless_blocked_execution(
             _top_level_bare_json_name(probe[:lead]), enabled_tool_names
         ):
-            # The NAME lives in this body too, and the scans that decide the call is blocked
-            # (and anchor the peer behind it) read it from there, so only the ARGUMENTS are
-            # masked. ``arguments`` is accepted as an object or as a JSON string, and the
-            # string form went unmasked while still carrying an executable payload.
+            # Only the ARGUMENTS: the scans that decide the call is blocked read the NAME out
+            # of this same body. ``arguments`` is accepted as an object or as a JSON string.
             value = _top_level_args_value(probe, probe.index("{"), lead)
             if value is not None:
                 begin, stop, is_string = value
@@ -923,9 +904,8 @@ def _mask_blocked_bodies(
     path passes ``think=False`` and ``strip_outside_think`` handles it there."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
     if think:
-        # Merged, not just sorted: a blocked body may CONTAIN a reasoning block, and the
-        # masking walk moved its cursor backward over the enclosed span and re-appended the
-        # rest of the body unmasked, which put a rehearsal quoted there back in play.
+        # Merged, not just sorted: a blocked body may CONTAIN a reasoning block, and sorting
+        # alone moves the masking cursor backward and re-appends the rest of it unmasked.
         spans = _merge_spans(spans + _tool_healing._think_spans_outside_tool_markup(text))
     if not spans:
         return text, []
@@ -973,9 +953,8 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         out.append(text[:cursor])
     # Anchor origin, advanced only past calls this strip removed, so ``call:a{} call:b{}`` stays a pair while prose
     # after a call does not inherit its anchor.
-    # A blocked prefix in EITHER markerless format anchors too. Only the Gemma form did, so
-    # ``terminal[ARGS]{..} call:web_search{..}`` promoted the peer while leaving its raw text
-    # in the content, and the next tool iteration replayed the same call twice.
+    # A blocked prefix in EITHER markerless format anchors, or the peer behind it is promoted
+    # while its raw text stays in the content and the next iteration replays the call.
     floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
@@ -996,10 +975,8 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         if not closed:
             out.append(text[cursor:] if keep_as_prose else text[cursor : m.start()])
             break
-        # Both branches carry the anchor forward the same way: past whatever blocked markerless
-        # run and separators follow. Advancing only in the blocked branch made the strip
-        # non-idempotent, because a blocked call the first pass merely stepped over led the
-        # text on the second pass and anchored a peer the first pass had kept.
+        # Both branches carry the anchor past whatever blocked run and separators follow.
+        # Advancing only in the blocked branch makes the strip non-idempotent.
         if keep_as_prose:
             out.append(text[cursor:next_index])
             if blocked:
