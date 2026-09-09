@@ -3101,3 +3101,64 @@ def test_posix_still_answers_on_the_bit_and_the_bare_name(monkeypatch, tmp_path)
     server.chmod(0o755)
     monkeypatch.setattr(ss, "llama_server_binary", lambda: str(server))
     assert ss.rpc_server_binary() == str(plain)
+
+
+def test_the_replica_never_inherits_an_env_var_the_primary_refuses():
+    """The primary scrubs DENIED_ENV_VARS from a COPY of the environment, so they are still in
+    os.environ when replica_env reads it. Inheriting one puts the peer in a configuration the
+    primary would not run: an api key or TLS makes the router's plain-HTTP health probe fail
+    forever, and LLAMA_ARG_MODEL points the replica at a different model that answers fine."""
+    from core.inference.llama_server_args import DENIED_ENV_VARS
+
+    source = {
+        "LLAMA_ARG_CACHE_TYPE_K": "Q8_0",   # the whole point of replica_env: must cross
+        "LLAMA_ARG_HOST": "10.0.0.1",       # endpoint, deliberately not inherited
+        "LLAMA_ARG_PORT": "9999",
+        "PATH": "/usr/bin",                 # outside the namespace
+    }
+    for name in DENIED_ENV_VARS:
+        if name.startswith("LLAMA_ARG_"):
+            source[name] = "x"
+
+    out = ss.replica_env(source)
+    assert out == {"LLAMA_ARG_CACHE_TYPE_K": "q8_0"}, out
+    leaked = sorted(n for n in out if n in set(DENIED_ENV_VARS))
+    assert not leaked, f"the replica would launch with denied settings: {leaked}"
+
+
+def test_the_replica_gets_sidecar_paths_the_peer_can_actually_open(tmp_path):
+    """The preflight resolves sidecars against this process's cwd; the peer resolves a bare
+    name against its own login directory. They have to agree, or preflight passes and the
+    launch then dies on a file it just confirmed."""
+    argv = [
+        "/bundle/llama-server",
+        "-m", "/models/m.gguf",
+        "--lora", "adapter.gguf",
+        "--control-vector-scaled=cv.gguf:0.5,/abs/other.gguf:2",
+        "--mmproj", "/already/abs.gguf",
+        "--host", "127.0.0.1", "--port", "1",
+    ]
+    out = ss.replica_argv(
+        argv, binary = "/bundle/llama-server", host = "10.0.0.2", port = 9,
+        cwd = "/work",
+    )
+    assert "/work/adapter.gguf" in out, out
+    assert "--control-vector-scaled=/work/cv.gguf:0.5,/abs/other.gguf:2" in out, out
+    assert "/already/abs.gguf" in out, "an absolute path must be left alone"
+    assert "adapter.gguf" not in out, "the bare relative name must not reach the peer"
+    # the scale and list forms survive intact, and the endpoint is still repointed
+    assert out[-4:] == ["--host", "10.0.0.2", "--port", "9"], out[-4:]
+
+
+def test_a_missing_shard_reports_the_size_unknown_rather_than_short(tmp_path):
+    """Undercounting is the one error this must not make: a short total prices a 120 GiB model
+    as 30, plans `single`, and is found out as an OOM after the rest of the shards arrive.
+    None is handled -- before_load asks the hub instead."""
+    first = tmp_path / "m-00001-of-00003.gguf"
+    first.write_bytes(b"a" * 100)
+    (tmp_path / "m-00002-of-00003.gguf").write_bytes(b"b" * 100)
+    # third shard deliberately absent
+    assert ss.gguf_size_bytes(str(first)) is None
+
+    (tmp_path / "m-00003-of-00003.gguf").write_bytes(b"c" * 100)
+    assert ss.gguf_size_bytes(str(first)) == 300

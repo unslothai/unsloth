@@ -309,6 +309,14 @@ def gguf_shard_paths(path: Optional[str]) -> List[str]:
 
 
 def gguf_size_bytes(path: Optional[str]) -> Optional[int]:
+    """The model's size on disk, or None when it cannot be known from what is here.
+
+    A missing shard answers None rather than the sum of the ones present. The number is the
+    input to the topology decision, and None is handled -- ``before_load`` falls through to
+    ``remote_gguf_size_bytes`` and asks the hub -- while a short total is not: a half-downloaded
+    120 GiB split model would price as 30 GiB, plan ``single``, and be found out only after the
+    remaining shards arrive, as an out-of-memory on a node with 121.69 GiB shared between CPU
+    and GPU. Undercounting is the one error this function must not make."""
     if not path:
         return None
     try:
@@ -319,7 +327,7 @@ def gguf_size_bytes(path: Optional[str]) -> Optional[int]:
             try:
                 total += Path(shard).stat().st_size
             except OSError:
-                pass
+                return None
         return total
     except OSError:
         return None
@@ -768,19 +776,63 @@ def launch_files(argv: List[str], gguf_path: str) -> List[str]:
 _REPLICA_DROPPED_FLAGS = ("--port", "--host", "--slot-save-path")
 
 
-def replica_argv(local_argv: List[str], *, binary: str, host: str, port: int) -> List[str]:
-    """The local launch with only the binary, host and port changed: a replica differing in
-    any other flag would answer the same request differently."""
+def absolute_sidecar_operand(value: str, *, cwd: Optional[str] = None) -> str:
+    """One sidecar operand with every relative path in it made absolute, forms preserved.
+
+    Keeps the comma-separated list and the trailing ``:SCALE`` exactly as llama.cpp's
+    ``common_arg`` parses them, so only the path part moves."""
+    base = cwd or os.getcwd()
+    pieces: List[str] = []
+    for piece in str(value).split(","):
+        stripped = piece.strip()
+        if not stripped:
+            pieces.append(piece)
+            continue
+        head, sep, tail = stripped.rpartition(":")
+        if sep and head and _looks_like_a_scale(tail):
+            path, scale = head, ":" + tail
+        else:
+            path, scale = stripped, ""
+        pieces.append((path if osp.isabs(path) else osp.join(base, path)) + scale)
+    return ",".join(pieces)
+
+
+def replica_argv(
+    local_argv: List[str], *, binary: str, host: str, port: int, cwd: Optional[str] = None
+) -> List[str]:
+    """The local launch with only the binary, host, port and sidecar paths changed: a replica
+    differing in any other flag would answer the same request differently.
+
+    Sidecar operands are absolutised against this process's working directory, the same base
+    ``sidecar_files`` resolves them against for the preflight. Without it the two disagreed: the
+    preflight checked ``/cwd/adapter.gguf`` and passed, then the peer was handed the bare
+    ``adapter.gguf`` over ssh, which resolves against the login directory there, and the launch
+    died looking for a file the preflight had just confirmed. The failure surfaced as a
+    fall-back to ``single`` reporting that the peer "did not take host:port", which names
+    neither the file nor the reason."""
     out: List[str] = [binary]
     skip = 0
+    pending_sidecar = False
     for arg in local_argv[1:]:
         if skip:
             skip -= 1
+            continue
+        if pending_sidecar:
+            pending_sidecar = False
+            out.append(absolute_sidecar_operand(arg, cwd = cwd))
             continue
         if arg in _REPLICA_DROPPED_FLAGS:
             skip = 1
             continue
         if arg.startswith(tuple(f"{flag}=" for flag in _REPLICA_DROPPED_FLAGS)):
+            continue
+        name, sep, inline = arg.partition("=")
+        if name in _SIDECAR_FLAGS:
+            if sep:
+                out.append(f"{name}={absolute_sidecar_operand(inline, cwd = cwd)}")
+            else:
+                out.append(arg)
+                pending_sidecar = True
             continue
         out.append(arg)
     out += ["--host", host, "--port", str(port)]
@@ -807,11 +859,23 @@ def replica_env(source: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     replica served it. ssh carries no environment, so they go on the remote command line.
 
     Only the ``LLAMA_ARG_`` namespace, so nothing else in this process's environment crosses to
-    the peer, and never the endpoint, which the replica is given deliberately."""
+    the peer, and never the endpoint, which the replica is given deliberately.
+
+    ``DENIED_ENV_VARS`` is imported rather than mirrored, and imported here rather than at module
+    scope to keep this module free of an import cycle through the backend. The primary never runs
+    with those settings -- ``scrub_denied_env`` drops them from the environment it spawns with --
+    but it scrubs a COPY, so they are still in ``os.environ`` when this reads it. Mirroring the
+    list would let the peer drift into a configuration the primary refuses: ``LLAMA_ARG_API_KEY``
+    or ``LLAMA_ARG_SSL_*`` would leave the replica demanding auth or speaking TLS while the
+    router health-probes it over plain HTTP, and ``LLAMA_ARG_MODEL`` would point it at a
+    different model that answers perfectly well."""
+    from core.inference.llama_server_args import DENIED_ENV_VARS
+
+    denied = _REPLICA_ENV_DENY.union(DENIED_ENV_VARS)
     env = os.environ if source is None else source
     out: Dict[str, str] = {}
     for name, value in env.items():
-        if not name.startswith(_REPLICA_ENV_PREFIX) or name in _REPLICA_ENV_DENY:
+        if not name.startswith(_REPLICA_ENV_PREFIX) or name in denied:
             continue
         text = str(value).strip()
         if not text:
@@ -2291,15 +2355,12 @@ class SparkServing:
                 port,
             )
             reusable = False
-        if reusable:
-            # The rpc-server is model-agnostic, so the next load can reuse it.
-            self.plan = plan
-            self.reason = str(plan.get("reason", ""))
-            return _with_rpc_args(request)
-        # Before anything is torn down or started: an rpc-server on a GPU that is already
-        # holding somebody's work puts one of the two into an out-of-memory, and the plan was
-        # priced against the whole node budget. Our own is excluded, since a reuse that got
-        # this far has already been refused above.
+        # These two are properties of the REQUEST, not of the peer, so they are decided before
+        # the reuse shortcut and not after it. They used to sit below `if reusable:`, which meant
+        # a second load reusing a live rpc-server returned past both of them: the same request
+        # that correctly fell back to `single` on a cold start got `--rpc ... --device RPC0,CUDA0`
+        # appended on a warm one. Order-dependent placement is the worst version of this bug,
+        # because the first load looks like proof that the guard works.
         if getattr(request, "gpu_ids", None) is not None:
             # The backend strips every --device pass-through when gpu_ids is set, because the
             # pin owns placement. A split needs --device RPC0,CUDA0 to keep the output layer
@@ -2319,6 +2380,15 @@ class SparkServing:
                 "llama-server is being launched with a caller-supplied --rpc; leaving the "
                 "placement alone"
             )
+        if reusable:
+            # The rpc-server is model-agnostic, so the next load can reuse it.
+            self.plan = plan
+            self.reason = str(plan.get("reason", ""))
+            return _with_rpc_args(request)
+        # Before anything is torn down or started: an rpc-server on a GPU that is already
+        # holding somebody's work puts one of the two into an out-of-memory, and the plan was
+        # priced against the whole node budget. Our own is excluded, since a reuse that got
+        # this far has already been refused above.
         busy = await peer_gpu_conflict(
             peer, own_pids = [running.remote_pid] if running is not None else []
         )

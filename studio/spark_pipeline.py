@@ -1831,12 +1831,30 @@ def _main_data_parallel(args) -> int:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.model)
+    # The same two lines the layer-split path sets, for the same two reasons. They were missing
+    # here, so --data-parallel on a base decoder-only checkpoint raised "Asking to pad but the
+    # tokenizer does not have a padding token" out of make_token_batches -- after the whole model
+    # had been loaded and moved to the device -- and, where a pad token did exist, could pad on
+    # the left and break the assumption the label masking below is written against.
+    if tok.pad_token is None:
+        # Base decoder-only checkpoints ship without one, and padding then raises before
+        # the first step. EOS is the usual stand-in; the labels below mask it out anyway.
+        tok.pad_token = tok.eos_token
+    # Right padding keeps every real token preceded only by real tokens, so a causal model
+    # needs no padding mask for the representations; only the labels have to exclude pads.
+    tok.padding_side = "right"
     # rank 0 of a world of 1: the whole stack, embedding and head, on this device.
     model, cfg, _ = build_stage_model(
         args.model, 0, 1, device, shard_load = False, dtype = dtype, log = log
     )
     if not args.full_finetune:
         model = apply_lora(model, args.lora_r)
+    # from_pretrained hands back an eval-mode model, as the layer-split path notes where it does
+    # the same thing. LoRA here is built with lora_dropout = 0.0, so this changes nothing on the
+    # mainstream configs whose base dropout is also 0.0 -- but on a checkpoint with nonzero
+    # attention/hidden dropout the data-parallel arm would train without it while the pipeline
+    # arm trains with it, which quietly invalidates the comparison this file exists to make.
+    model.train()
     if args.grad_checkpoint:
         # The HF forward is what runs here, so transformers' own switch is honoured.
         base_model = getattr(model, "base_model", model)
