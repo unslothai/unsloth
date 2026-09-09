@@ -189,7 +189,11 @@ def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
     # Enumerating shared objects produces hundreds of binds and still misses
     # the one dlopen() wants, so every bind of a *file* has to be a named
     # config file or one of the two synthesised identities.
-    named = {*sandbox_linux._ETC_FILES, *sandbox_linux._NETWORK_FILES}
+    named = {
+        *sandbox_linux._ETC_FILES,
+        *sandbox_linux._ETC_FILES_IF_TRUSTED,
+        *sandbox_linux._NETWORK_FILES,
+    }
     identity_dir = prepared.cleanup_paths[0]
     for flag in ("--bind", "--ro-bind", "--ro-bind-try"):
         for source, _ in _pairs(prepared.argv, flag):
@@ -977,3 +981,91 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
     assert binds["datasets"] == str(home / "datasets")
     # And a component that would sit inside the workdir is dropped.
     assert "hub" not in sandbox_linux._model_cache_binds(str(hub.parent))
+
+
+def _real_cache(monkeypatch, home):
+    """Point the settings layer at *home* and let the REAL _model_cache_binds run.
+
+    _share_cache replaces _model_cache_binds outright, so a test that used it
+    would never reach the hazard check it is about.
+    """
+    import types
+
+    paths = types.SimpleNamespace(
+        cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet"
+    )
+    module = types.ModuleType("utils.hf_cache_settings")
+    module.get_hf_cache_paths = lambda: paths
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+
+
+def test_a_cache_component_holding_an_ipc_node_is_not_shared(tmp_path, monkeypatch):
+    """The bind is writable and the network namespace is shared, so a pathname
+    socket under it is connectable from inside: a read-only mount would not even
+    help, since MNT_READONLY governs write() and a socket is reached with send().
+    Measured against the real backend before this check existed."""
+    host = tmp_path / "hostcache"
+    (host / "hub").mkdir(parents = True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # Relative, because an AF_UNIX address is capped at ~108 bytes and pytest's
+    # tmp_path alone can exceed it.
+    monkeypatch.chdir(host / "hub")
+    sock.bind("leftover.sock")
+    try:
+        _real_cache(monkeypatch, host)
+        assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    finally:
+        sock.close()
+
+
+def test_a_cache_component_holding_an_external_hard_link_is_not_shared(tmp_path, monkeypatch):
+    """Same inode under two names, one of them outside the cache. The bind is
+    writable, so without this the file outside is writable through the cache name."""
+    host = tmp_path / "hostcache"
+    (host / "hub").mkdir(parents = True)
+    outside = tmp_path / "private.txt"
+    outside.write_text("secret")
+    os.link(outside, host / "hub" / "innocent.bin")
+    _real_cache(monkeypatch, host)
+    assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+
+
+def test_a_clean_cache_component_is_still_shared(tmp_path, monkeypatch):
+    """The negative control: the check above must not simply drop everything."""
+    host = tmp_path / "hostcache"
+    (host / "hub" / "models--x").mkdir(parents = True)
+    (host / "hub" / "models--x" / "weights.bin").write_text("w")
+    _real_cache(monkeypatch, host)
+    assert sandbox_linux._model_cache_binds(str(tmp_path / "session"))["hub"] == str(host / "hub")
+
+
+def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(tmp_path, monkeypatch):
+    """Dropping, never refusing. The cache is an optimisation, so the degraded
+    case is the re-download every call did before it was shared; refusing would
+    let anything able to write one socket end every later tool call."""
+    host = tmp_path / "hostcache"
+    (host / "hub").mkdir(parents = True)
+    os.mkfifo(host / "hub" / "pipe")
+    _real_cache(monkeypatch, host)
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        assert "HF_HOME" not in launch.argv
+    finally:
+        launch.cleanup()
+
+
+def test_a_trusted_system_gitconfig_is_bound_and_an_untrusted_one_is_not(tmp_path, monkeypatch):
+    """git reads /etc/gitconfig for a proxy, a CA path or a URL rewrite, and /etc
+    is fresh in the jail. Bound only when root owns it and no one else can write
+    it: a symlink into $HOME, or a user-writable file, would carry whatever it
+    aimed at back into a jail whose claim is that $HOME is unreadable."""
+    good = tmp_path / "gitconfig"
+    good.write_text("[http]\n")
+    link = tmp_path / "linked"
+    link.symlink_to(good)
+    assert sandbox_linux._trusted_system_file(str(link)) is False, "a symlink is followed"
+    assert sandbox_linux._trusted_system_file(str(tmp_path / "absent")) is False
+    os.chmod(good, 0o666)
+    assert sandbox_linux._trusted_system_file(str(good)) is False, "world-writable accepted"

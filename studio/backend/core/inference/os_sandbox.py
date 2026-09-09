@@ -179,66 +179,84 @@ def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) 
 
 WORKDIR_SCAN_ENTRIES = 50_000
 WORKDIR_SCAN_SECONDS = 5.0
+# The shared cache is walked per launch, so its budget is tighter than the
+# workdir's; a cache too big to check in it is simply not shared.
+CACHE_SCAN_ENTRIES = 50_000
+CACHE_SCAN_SECONDS = 3.0
 
 
-def scan_workdir_for_host_channels(workdir: str) -> None:
-    """Refuse a session workdir that carries a way out of itself.
+def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | None:
+    """Why *root* carries a way out of itself, or None. Never raises.
 
     A socket or device node under it is a channel no path rule closes, a hard link
     to an inode also named outside is a writable path out, and a nested mount is
-    storage both backends grant writes across. The workdir being a mount point
-    itself is fine. Sockets, FIFOs and exceeding the entry budget are refused
-    even though a tool call can create them, since the scan cannot tell those
-    apart from the host's.
+    storage both backends grant writes across. *root* being a mount point itself
+    is fine. Sockets, FIFOs and exceeding the budget count even though a tool call
+    can create them, since the scan cannot tell those apart from the host's.
     """
-    deadline = time.monotonic() + WORKDIR_SCAN_SECONDS
+    deadline = time.monotonic() + seconds
     entries = 0
     # Refusing every st_nlink > 1 would refuse any tree built by `cp -al`,
     # `git clone --local` or pip; only an unaccounted link leads outside.
     links: dict[tuple[int, int], list] = {}
+    unreadable: list[str] = []
 
-    def stop(exc: OSError) -> None:
-        raise WorkdirUnsafeError(
-            f"the session workdir cannot be fully inspected: {exc.filename or workdir}"
-        ) from exc
-
-    for base, dirs, names in os.walk(workdir, followlinks = False, onerror = stop):
+    for base, dirs, names in os.walk(
+        root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
+    ):
+        if unreadable:
+            return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):
             entries += 1
-            if entries > WORKDIR_SCAN_ENTRIES or time.monotonic() > deadline:
-                raise WorkdirUnsafeError(
-                    "the session workdir is too large to check for host channels before a "
-                    f"launch (over {WORKDIR_SCAN_ENTRIES} entries or "
-                    f"{WORKDIR_SCAN_SECONDS:.0f}s)"
-                )
+            if entries > max_entries or time.monotonic() > deadline:
+                return f"too large to check for host channels (over {max_entries} entries or {seconds:.0f}s)"
             path = os.path.join(base, name)
             try:
                 info = os.lstat(path)
-            except OSError as exc:
-                raise WorkdirUnsafeError(
-                    f"the session workdir changed during its safety scan: {path}"
-                ) from exc
+            except OSError:
+                return f"changed during its safety scan: {path}"
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
                 # Misses a same-filesystem bind mount; Linux also asks the mount table.
                 if os.path.ismount(path):
-                    raise WorkdirUnsafeError(
-                        f"the session workdir contains a nested host mount: {path}"
-                    )
+                    return f"contains a nested host mount: {path}"
                 continue
             if not stat.S_ISREG(info.st_mode):
-                raise WorkdirUnsafeError(
-                    f"the session workdir contains a device or IPC node: {path}"
-                )
+                return f"contains a device or IPC node: {path}"
             if info.st_nlink > 1:
                 found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
                 found[0] += 1
+    if unreadable:
+        return f"{unreadable[0]} cannot be fully inspected"
     for found, total, path in links.values():
         if found < total:
-            raise WorkdirUnsafeError(
-                f"the session workdir contains a file hard-linked from outside it: {path}"
-            )
+            return f"contains a file hard-linked from outside it: {path}"
+    return None
+
+
+def scan_workdir_for_host_channels(workdir: str) -> None:
+    """The writable session workdir. A hazard here fails the call."""
+    hazard = _host_channel_hazard(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+    if hazard is not None:
+        raise WorkdirUnsafeError(f"the session workdir {hazard}")
+
+
+def cache_share_hazard(path: str) -> str | None:
+    """Why this host cache directory must not be shared into the jail, or None.
+
+    Same hazards as the workdir and for the same reason: the model cache is bound
+    WRITABLE, so a pathname socket under it is connectable from inside (a
+    read-only bind does not stop connect(), and the network namespace is shared),
+    and a file hard-linked to one outside the cache is writable through the cache
+    name. Both measured before this existed.
+
+    A hazard DROPS the component from the binds rather than failing the launch.
+    The cache is an optimisation: without it the call re-downloads, which is what
+    every call did before the cache was shared at all. Refusing instead would let
+    anything able to write one socket into the cache end every later tool call.
+    """
+    return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS)
 
 
 _LINUX_REQUIRED_BINARIES = ("bwrap",)

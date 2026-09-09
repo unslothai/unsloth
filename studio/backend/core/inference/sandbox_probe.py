@@ -238,8 +238,12 @@ def _host_payload(workdir: str) -> str:
 def _probe_base() -> str:
     """A scratch root short enough for the fd-passing control's AF_UNIX address;
     failing that, the host control below reports the problem."""
-    roots: list[str | None] = [None]  # None = the platform default
-    roots.extend(root for root in ("/tmp", "/var/tmp") if os.path.isdir(root))
+    # Private roots FIRST, the environment-derived default last. TMPDIR can point
+    # inside a directory the backend deliberately exposes (/opt/tmp is enough),
+    # which puts the host sentinel under a read-only bind: the negative read then
+    # succeeds and a working backend is reported unavailable.
+    roots: list[str | None] = [root for root in ("/tmp", "/var/tmp") if os.path.isdir(root)]
+    roots.append(None)  # None = the platform default
     fallback = None
     for root in roots:
         try:

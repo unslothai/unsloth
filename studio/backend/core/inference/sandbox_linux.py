@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import site
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from .os_sandbox import (
     SandboxUnavailableError,
     ToolLaunchPlan,
     WorkdirUnsafeError,
+    cache_share_hazard,
     scan_workdir_for_host_channels,
 )
 
@@ -46,6 +48,16 @@ LIMITATIONS = (
     # Abstract AF_UNIX sockets live in the shared network namespace, so without
     # the Landlock scope (Linux 6.12+) a launch reaches the session bus and X.
     *(() if sandbox_landlock.abstract_scope_supported() else ("host_abstract_sockets_reachable",)),
+    # The same hole, through the filesystem rather than the abstract namespace. A
+    # read-only bind does not stop connect(): the mount flag governs write(), and
+    # a socket is reached with send() (Viro, LKML 2014, on MNT_READONLY; it is why
+    # a read-only docker.sock is still a full Docker API). So a pathname socket
+    # under a bound system root -- a service under /opt is the realistic one -- is
+    # reachable from inside. Named rather than scanned: the read-only roots are
+    # /usr and friends, and walking them on every tool call is not affordable.
+    # Unlike the writable cache, this is not a regression against a host launch,
+    # which could connect to the same socket directly.
+    "host_pathname_sockets_reachable",
     "shared_kernel",
 )
 
@@ -81,6 +93,11 @@ _ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
+# Bound only when it passes _trusted_system_file. git reads it for a corporate
+# proxy, a custom CA path or a URL rewrite, and /etc is fresh in the jail, so
+# without it an otherwise valid clone fails against defaults. macOS already binds
+# it; this is the Linux half.
+_ETC_FILES_IF_TRUSTED = ("/etc/gitconfig",)
 # Resolution and TLS trust. The PUBLIC halves one by one, never /etc/ssl or
 # /etc/pki whole: both carry private keys beside the certificates, and a miss
 # here breaks verification loudly where a miss in a mask list leaks a key quietly.
@@ -112,6 +129,23 @@ _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
 _MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
+
+
+def _trusted_system_file(path: str) -> bool:
+    """A real, root-owned, non-user-writable regular file, reached without a symlink.
+
+    The point of the checks is that this path is bound into a jail whose whole
+    claim is that the user's home is not readable. An /etc/gitconfig that is a
+    symlink into $HOME, or that the invoking user can rewrite, would carry
+    whatever they aimed it at straight back in.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode):
+        return False  # a symlink or anything else is not followed
+    return info.st_uid == 0 and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 
 
 def _within(path: str, root: str) -> bool:
@@ -318,8 +352,17 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         resolved = {}
     for name in _MODEL_CACHE_SUBDIRS:
         path = os.path.abspath(resolved.get(name) or os.path.join(home, name))
-        if os.path.isdir(path) and not _within(path, workdir):
-            binds[name] = path
+        if not os.path.isdir(path) or _within(path, workdir):
+            continue
+        # This bind is WRITABLE, so it is held to the workdir's rule: no IPC nodes
+        # and no hard link to an inode named outside it. A component that fails is
+        # dropped, never refused, so the worst case is the re-download every call
+        # did before the cache was shared.
+        hazard = cache_share_hazard(path)
+        if hazard is not None:
+            logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
+            continue
+        binds[name] = path
     return binds
 
 
@@ -420,7 +463,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         ]
         for root in system_roots:
             argv += ["--ro-bind-try", root, root]
-        for path in (*_ETC_FILES, *_NETWORK_FILES):
+        trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
+        for path in (*_ETC_FILES, *trusted, *_NETWORK_FILES):
             argv += ["--ro-bind-try", path, path]
         argv += ["--ro-bind", passwd, "/etc/passwd", "--ro-bind", group, "/etc/group"]
         for path in runtime_paths:
