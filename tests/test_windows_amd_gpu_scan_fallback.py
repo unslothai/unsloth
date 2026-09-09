@@ -524,10 +524,7 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
 
-# Every caller-shell variable the lifecycle block saves and restores, bar the ROCm handoff, which
-# the arch / inherited parametrisation already drives through `after` and `after_set`. Fourteen
-# here plus that one is all fifteen pairs in the block, and
-# test_every_saved_variable_in_the_block_is_covered keeps that true as the table grows.
+# The block's fifteen save/restore pairs bar the ROCm handoff, which the arch parametrisation drives.
 _CALLER_ENV_NAMES = (
     "SKIP_STUDIO_BASE",
     "UNSLOTH_STUDIO_HOME",
@@ -545,42 +542,14 @@ _CALLER_ENV_NAMES = (
     "UNSLOTH_SETUP_PYTHON",
 )
 
-# A DISTINCT sentinel each. One shared string would be satisfied by a finally that put every
-# variable back from the wrong save, so cross-wiring would read as a pass. None of these is an
-# input: no line in the block reads any of them, it only assigns or removes them.
+# Distinct per variable, or a finally restoring everything from the wrong save reads as a pass.
 _CALLER_ENV = tuple(
     (name, "outer-" + name.strip("_").lower().replace("_", "-")) for name in _CALLER_ENV_NAMES
 )
 assert len({sentinel for _, sentinel in _CALLER_ENV}) == len(_CALLER_ENV), "sentinels must differ"
 
-# Which variables the caller's shell already has. All-present and all-absent between them run both
-# arms of the finally, but they run the SAME arm for all fifteen at once, so every $hadPrevious*
-# flag holds the same value and a restore consulting the wrong variable's flag still lands on the
-# right branch by luck. Separating the flags is the only way that shows.
-#
-# The masks are a binary encoding: pattern k keeps the names whose index has bit k set. That
-# separates every unordered pair, which is not the property this needs. Substituting a flag is a
-# DIRECTED edit -- `if ($hadPreviousSkipStudioBase)` becoming `if ($hadPreviousTauriMode)` still
-# assigns $previousSkipStudioBase in the then-arm -- and only ONE of the two directions is
-# observable. With A present and B absent the mutant takes the else arm and REMOVES a variable the
-# caller had, which every assertion below catches. With A absent and B present it takes the then
-# arm and assigns A's saved $null, and assigning $null removes the variable, which is exactly what
-# the correct code does: nothing changed, nothing to see. So detecting a wrong flag in A's restore
-# requires a pattern where A is PRESENT and B is ABSENT, for that ordered pair specifically.
-#
-# The binary masks alone cannot supply that for every ordered pair. Index 0 is the extreme case: it
-# has no bit set, so it is absent from every mask and present only in "all", where everything else
-# is present too -- no pattern has SKIP_STUDIO_BASE present and any other name absent, and all 13
-# substitutions into its restore were invisible. More generally a mask supplies "A present, B
-# absent" only when index(A) is not a submask of index(B), and 43 of the 14*13 ordered pairs failed
-# that.
-#
-# Adding the COMPLEMENT of each mask fixes it exactly. Two distinct indices differ in some bit k:
-# whichever of them has bit k set is present in mask k with the other absent, and the ordering is
-# reversed in its complement. So both directions of every pair are covered, index 0 included, and
-# test_the_presence_masks_separate_every_ordered_pair asserts it rather than trusting this comment.
-# Ten patterns, not 2**14: exhaustive over ORDERED PAIRS, which is the failure mode, rather than
-# over subsets, which is not.
+# Which variables the caller already has. Presence has to vary PER variable: all-present and
+# all-absent give every $hadPrevious* flag the same value, so a wrong-flag restore passes by luck.
 _PRESENCE_MASK_BITS = max((len(_CALLER_ENV_NAMES) - 1).bit_length(), 1)
 _PRESENCE_PATTERNS = {
     "all": lambda i: True,
@@ -596,19 +565,10 @@ def _present_names(pattern: str) -> tuple[str, ...]:
 
 
 def test_the_presence_masks_separate_every_ordered_pair():
-    """The property the patterns are chosen for, asserted rather than claimed in a comment.
-
-    ORDERED, not unordered, and that is the whole correction. A restore of A that consults B's
-    $hadPrevious flag is only observable in the direction where A is present and B is absent: the
-    mutant then takes the else arm and removes a variable the caller had. The other direction
-    assigns A's saved $null, which removes the variable just as the correct code does, so it leaves
-    nothing to assert on. Requiring only that SOME pattern tells A apart from B accepted the half of
-    that which proves nothing, and 43 of the 182 directed substitutions between these names survived
-    under it -- every one of them into the restore of a variable no pattern made present while the
-    substituted flag's variable was absent.
-
-    If a name is added and the mask count no longer suffices, this names the pair instead of the
-    coverage quietly thinning."""
+    """ORDERED, not unordered: a restore of A reading B's $hadPrevious flag only shows where A is
+    present and B is absent, since the other direction assigns A's saved $null, which removes the
+    variable exactly as the correct code does. Under the unordered form 43 of the 182 directed
+    substitutions survived."""
     patterns = [_present_names(p) for p in _PRESENCE_PATTERNS]
     for a in _CALLER_ENV_NAMES:
         for b in _CALLER_ENV_NAMES:
@@ -621,23 +581,12 @@ def test_the_presence_masks_separate_every_ordered_pair():
 
 
 def _assert_caller_env_restored(out: dict, present: tuple[str, ...], what: str) -> None:
-    """The caller's shell is as it was: same values, or still no variable at all.
+    """The caller's shell as it was: same value, or still no variable at all.
 
-    Two arms, and they fail differently. With a previous value the finally restores it; with none
-    it must REMOVE the variable, which is where "a finally reached before its save clears a value
-    it never set" lives -- the hazard that decides where the saves may sit relative to `try {`.
-
-    Absence is asserted as `Test-Path Env:NAME` being false, not as an empty or null value.
-    PowerShell 7.5+ keeps an env var present when it is assigned "", so a restore that wrote ""
-    instead of removing would satisfy a value comparison while leaving the caller holding a
-    variable it never had. The `_set` flags are the whole point of the distinction.
-
-    Not asserted: a caller variable that was present but EMPTY. The block decides presence with
-    `$null -ne $previous`, which cannot tell "" from unset, so the answer is engine-dependent by
-    construction -- install.ps1 says as much at $env:UNSLOTH_INSTALLER_TORCH_TAG ("7.5+ keeps it
-    present and blank, 5.1 / 7.0-7.4 remove it"). The out-of-block UV_CACHE_DIR pair is the one
-    that gets this right, via [Environment]::GetEnvironmentVariables().ContainsKey. Asserting
-    either behaviour here would encode one engine's answer as the contract."""
+    Absence is `Test-Path Env:NAME` being false, not an empty value: 7.5+ keeps a variable present
+    when assigned "", so a restore writing "" instead of removing would pass a value check.
+    Present-but-EMPTY is unasserted: `$null -ne $previous` cannot tell "" from unset, so the answer
+    is engine-dependent."""
     for name, sentinel in _CALLER_ENV:
         key = name.lower()
         if name in present:
@@ -650,32 +599,26 @@ def _assert_caller_env_restored(out: dict, present: tuple[str, ...], what: str) 
 
 
 def _existing_llama_dir(tmp_path: Path) -> Path:
-    """A directory that really is there, for the success side of --with-llama-cpp-dir."""
     path = tmp_path / "llama.cpp"
     path.mkdir(exist_ok = True)
     return path
 
 
 def _studio_home_dir(tmp_path: Path) -> Path:
-    """The --studio-home destination an env-redirect install hands to the child."""
     path = tmp_path / "studio-home"
     path.mkdir(exist_ok = True)
     return path
 
 
 def _studio_repo_dir(tmp_path: Path) -> Path:
-    """The checkout a --local install hands to the child. DISTINCT from the studio home, so a
-    restore that swapped the two would show rather than reading as a pass."""
+    """DISTINCT from the studio home, so a restore that swapped the two shows rather than passing."""
     path = tmp_path / "studio-local-repo"
     path.mkdir(exist_ok = True)
     return path
 
 
-# The two variables the try does not always assign: UNSLOTH_STUDIO_HOME is set only under redirect
-# mode 'env' and STUDIO_LOCAL_REPO only under --local, and every other mode REMOVES them instead.
-# `default` is what an ordinary install does; `env_redirect_local` is the pair of modes that
-# actually set them, and without it their else-arm restores are never load-bearing -- see
-# test_the_optional_handoffs_are_restored_when_this_run_sets_them.
+# UNSLOTH_STUDIO_HOME and STUDIO_LOCAL_REPO are the only two the try does not always assign, so
+# only `env_redirect_local` makes their else-arm restores load-bearing.
 _STUDIO_MODES = ("default", "env_redirect_local")
 
 
@@ -692,7 +635,6 @@ def _studio_mode_lines(tmp_path: Path, studio_mode: str) -> list[str]:
 
 
 def _caller_env_report() -> str:
-    """PowerShell that reports each saved variable's value and whether it exists at all."""
     return "\n".join(
         f"  {name.lower()} = $(if (Test-Path Env:{name}) {{ $env:{name} }} else {{ $null }})\n"
         f"  {name.lower()}_set = [bool](Test-Path Env:{name})"
@@ -703,13 +645,8 @@ def _caller_env_report() -> str:
 def _handoff_lifecycle_block() -> str:
     """install.ps1's save / set / try / finally around the setup call, as shipped.
 
-    Anchored on the FIRST save, not on the ROCm one. Five pairs are saved above that point
-    (SKIP_STUDIO_BASE, UNSLOTH_STUDIO_HOME, UNSLOTH_TAURI_MODE and the two private handoffs), and
-    slicing below them meant the harness supplied their $previous* / $hadPrevious* itself. Their
-    restores were then measured against harness constants rather than against what install.ps1
-    actually saved, which cannot show a save-side bug at all. Starting at the top of the table
-    makes all fifteen pairs shipped code on both halves, and means a save added later needs no new
-    binding here."""
+    Anchored on the FIRST save, not the ROCm one: slicing below the five pairs above it left the
+    harness supplying their $previous*, so those restores were measured against harness constants."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     start = src.index("    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE")
     end = src.index("    if ($setupExit -ne 0) {", start)
@@ -735,15 +672,11 @@ def _run_handoff_lifecycle(
     # Loudly: a silent miss leaves the probe unrun and every assertion reading
     # "<never ran>" with nothing saying why.
     assert call in block, "install.ps1 no longer makes the setup call this harness replaces"
-    # Read at the point of the call, so these are what the child would inherit rather than what
-    # the finally later leaves behind. Recorded on the failure path too, before the throw: the
-    # environment the child would have seen is the same either way, and a case that claims to
-    # dirty a variable should be able to prove it whichever way the setup call ends.
+    # Read at the point of the call: what the child would inherit, not what the finally leaves.
     probe = (
         "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF; "
         "$script:SeenLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR; "
-        # Test-Path, not the bare value: these two are REMOVED rather than assigned in the
-        # default modes, and "absent" has to be distinguishable from "assigned empty".
+        # Test-Path, not the bare value: the default modes REMOVE these two.
         "$script:SeenStudioHome = $(if (Test-Path Env:UNSLOTH_STUDIO_HOME) "
         "{ $env:UNSLOTH_STUDIO_HOME } else { $null }); "
         "$script:SeenLocalRepo = $(if (Test-Path Env:STUDIO_LOCAL_REPO) "
@@ -755,8 +688,6 @@ def _run_handoff_lifecycle(
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                # The five $previous* / $hadPrevious* pairs that used to be bound here are gone:
-                # the block now starts above them, so install.ps1 does its own saving.
                 "$UnslothProxyHandoffJson = $null",
                 "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
                 # Installer inputs the block reads. Undefined, they throw under
@@ -766,10 +697,7 @@ def _run_handoff_lifecycle(
                 (
                     f"$WithLlamaCppDir = '{tmp_path / 'no-such-llama.cpp'}'"
                     if bails
-                    # A directory that EXISTS takes the other side of the same test, where the
-                    # block resolves it into UNSLOTH_LOCAL_LLAMA_CPP_DIR and carries on to the
-                    # setup call. Without this the only assignment to that variable in the whole
-                    # block never runs, so its restore was being satisfied by never being dirtied.
+                    # A directory that EXISTS reaches the block's only write to that variable.
                     else f"$WithLlamaCppDir = '{_existing_llama_dir(tmp_path)}'"
                     if with_llama_cpp_dir
                     else "$WithLlamaCppDir = $null"
@@ -807,10 +735,8 @@ def _run_handoff_lifecycle(
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
                 "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
-                # Every variable the block saves, value AND presence. STUDIO_PACKAGE_NAME and
-                # SKIP_STUDIO_BASE were reported here individually and are now two of the fifteen.
-                # Presence matters on its own: a variable assigned "" is still present on 7.5+, so
-                # only Test-Path separates "put back as it was" from "recreated empty".
+                # Value AND presence: a variable assigned "" is still present on 7.5+, so only
+                # Test-Path separates "put back as it was" from "recreated empty".
                 _caller_env_report(),
                 "} | ConvertTo-Json -Compress",
             ]
@@ -818,8 +744,7 @@ def _run_handoff_lifecycle(
         encoding = "utf-8",
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "UNSLOTH_ROCM_GFX_ARCH": "gfx90a"}
-    # Absent means absent: the child env is built from scratch here, so simply not adding a name
-    # leaves the block's own $previous* read seeing $null, which is the remove arm of the finally.
+    # Built from scratch, so a name simply not added reads back $null: the finally's remove arm.
     env.update({name: sentinel for name, sentinel in _CALLER_ENV if name in present})
     if inherited is not None:
         env[HANDOFF] = inherited
@@ -882,24 +807,11 @@ def test_the_caller_environment_survives_the_setup_call(
 )
 @pytest.mark.parametrize("fails", [False, True], ids = ["setup_ok", "setup_throws"])
 def test_the_optional_handoffs_are_restored_when_this_run_sets_them(tmp_path, fails, caller_env):
-    """UNSLOTH_STUDIO_HOME and STUDIO_LOCAL_REPO are the two the try does not always assign, and
-    the case above never made it assign them.
+    """UNSLOTH_STUDIO_HOME and STUDIO_LOCAL_REPO are the two the try does not always assign.
 
-    The block sets UNSLOTH_STUDIO_HOME only under redirect mode 'env' and STUDIO_LOCAL_REPO only
-    under --local; every other mode takes the `Remove-Item` arm instead. The runs above hard-code
-    mode 'none' and no local install, so for these two the try LEFT THE VARIABLE ABSENT, and the
-    finally's else arm -- the `Remove-Item` that a caller who never had the variable depends on --
-    had nothing to undo. Deleting that arm outright was invisible: the variable was already gone.
-    Every other saved variable is assigned unconditionally in the try, so the same deletion shows
-    up there immediately; these two were the only pair with the hole.
-
-    So this drives the modes that really do set them, which puts a value the caller never had into
-    the environment and makes the removal load-bearing. Both setup outcomes, because the failure
-    path is the one that rolls back and retries in the caller's own shell.
-
-    The two seen_* assertions are what stop this decaying back into the case it replaces: if a
-    later edit stops the block assigning either variable, this says so instead of quietly going
-    green again on an undirtied restore."""
+    The case above hard-codes redirect mode 'none' and no local install, so the try left these two
+    ABSENT and deleting the finally's else arm was invisible; every other saved variable is
+    assigned unconditionally, so the same deletion shows there at once."""
     out = _run_handoff_lifecycle(
         tmp_path,
         arch = "gfx1151",
@@ -920,19 +832,9 @@ def test_the_optional_handoffs_are_restored_when_this_run_sets_them(tmp_path, fa
 def test_every_save_sits_above_the_handoff_try():
     """Ordering, not just membership: a save that drifts INSIDE the try is a live hazard.
 
-    test_every_saved_variable_in_the_block_is_covered compares SETS, so moving
-    `$previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME` down next to its assignment still
-    matches. Nothing at runtime catches it either: the harness's injected failure is the setup
-    call and the --with-llama-cpp-dir bail is the missing directory, and both sit BELOW where such
-    a save would land, so the flag is always bound by the time the finally runs. The case that
-    bites is a throw ABOVE it -- Get-ExpectedTorchFlavorTag on the second statement of the try is
-    the real one -- which leaves $hadPrevious* unbound, hence $null, hence the else arm, and the
-    finally removes a value the caller owned. Only the save's POSITION rules that out, and only
-    for the saves that sit above every statement that can throw.
-
-    The older order check, in test_installer_restores_the_private_handoff_after_setup, covers the
-    ROCm handoff alone. This covers all fifteen, and the set assertion keeps it from passing
-    vacuously if the regex or the anchor stops matching."""
+    A set comparison still matches, and no runtime case catches it either, since both injected
+    failures sit BELOW where such a save would land. What bites is a throw ABOVE it, leaving
+    $hadPrevious* unbound, hence $null, hence the finally removing a value the caller owned."""
     block = _handoff_lifecycle_block()
     assert block.count("\n    try {") == 1, "the block no longer has exactly one handoff try"
     try_at = block.index("\n    try {")
@@ -956,23 +858,15 @@ def test_every_save_sits_above_the_handoff_try():
 
 
 def test_every_saved_variable_in_the_block_is_covered():
-    """The runtime cases are only as good as _CALLER_ENV, so it is checked against the source
-    rather than maintained by hand: add a save to the block and this names the variable whose
-    restore nothing exercises, instead of it quietly joining the list.
-
-    Out of scope, by construction rather than oversight: UV_CACHE_DIR is saved around line 3366 and
-    restored around 6981, so covering it means a slice spanning most of install.ps1 -- the venv
-    build, the torch install, the llama.cpp fetch -- and stubbing all of it. TMP and TEMP are the
-    same shape around the temp probe. All three sit outside this block on both ends."""
+    """_CALLER_ENV checked against the source, so a save added to the block names the variable
+    whose restore nothing exercises. UV_CACHE_DIR, TMP and TEMP are out of scope by construction:
+    saved and restored hundreds of lines outside this block, so covering them means slicing most
+    of install.ps1 and stubbing the venv build, the torch install and the llama.cpp fetch."""
     block = _handoff_lifecycle_block()
     covered = {name for name, _ in _CALLER_ENV} | {HANDOFF}
     saved = set(re.findall(r"\$previous\w+ = \$env:(\w+)", block))
-    # Driven from the RESTORE side too, and that half is what closes the anchor hole. The slice
-    # starts at whichever save happens to be first today, so a save PREPENDED above that line falls
-    # outside it and is invisible to a save-side check, including this guard, whose whole job is to
-    # notice such drift. Its restore cannot escape: the finally is inside the slice by
-    # construction. A prepended save therefore shows up here as a variable the block restores but
-    # never appears to save, which is what stops the anchor's identity being load-bearing.
+    # The restore side closes the anchor hole: a save PREPENDED above the anchor is invisible to
+    # any save-side check, but its restore cannot escape the finally.
     restored = set(re.findall(r"\$env:(\w+) = \$previous\w+", block))
     assert restored == covered, (
         "the block restores variables this file does not claim to cover: "
@@ -997,9 +891,8 @@ def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
     restored` still holds while the return walks out past the restore. So this takes the
     bail, with a directory that does not exist, and reads the environment afterwards.
 
-    The two variables asserted individually here before, STUDIO_PACKAGE_NAME and SKIP_STUDIO_BASE,
-    are now two of the fifteen the helper checks, in both directions rather than only for removal.
-    """
+    STUDIO_PACKAGE_NAME and SKIP_STUDIO_BASE, asserted individually here before, are now two of the
+    fifteen the helper checks, in both directions rather than only for removal."""
     out = _run_handoff_lifecycle(
         tmp_path,
         arch = "gfx1151",
@@ -1011,8 +904,7 @@ def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
     assert out["seen_by_child"] == "<never ran>", "the bail did not happen before the setup call"
     assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored by the bail"
     assert out["after_set"] is True
-    # Set above the bail and put back only by the finally, so a value still showing what
-    # install.ps1 wrote would mean the bail escaped the try.
+    # Put back only by the finally, so install.ps1's value still showing means the bail escaped.
     _assert_caller_env_restored(out, _present_names(caller_env), "the bail")
 
 
@@ -1023,11 +915,8 @@ def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
 def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_env):
     """The other side of the bail: --with-llama-cpp-dir naming a directory that is there.
 
-    `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path $WithLlamaCppDir).Path` is the only assignment
-    to that variable in the whole block, and nothing reached it: the bail case returns above it and
-    every other case passes $null. Its restore was therefore being satisfied by never being
-    dirtied, which is not the same as being correct. Here the block really does overwrite it and
-    the finally really does have something to put back."""
+    Nothing reached the block's only write to UNSLOTH_LOCAL_LLAMA_CPP_DIR, so its restore was
+    satisfied by never being dirtied, which is not the same as being correct."""
     out = _run_handoff_lifecycle(
         tmp_path,
         arch = "gfx1151",
@@ -1036,10 +925,8 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
         with_llama_cpp_dir = True,
         caller_env = caller_env,
     )
-    # Past the bail, unlike the case above: the directory exists, so the block runs on to the child.
     assert out["seen_by_child"] == "gfx1151", "the block did not reach the setup call"
-    # Reaching the child is not the same as handing it the directory. Asserted as the resolved
-    # path, since that is what the block writes and what setup.ps1 goes on to read.
+    # The RESOLVED path, since that is what the block writes and what setup.ps1 goes on to read.
     assert out["seen_llama_cpp_dir"] == str(
         _existing_llama_dir(tmp_path).resolve()
     ), "the child did not inherit the --with-llama-cpp-dir directory"
