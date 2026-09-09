@@ -364,6 +364,62 @@ def test_a_directory_matching_a_payload_pattern_is_not_a_library(tmp_path):
     assert ILP._runtime_payload_has(root, host, groups) is False
 
 
+@pytest.mark.parametrize("suffix", [".vir", ".quarantined", "_infected"])
+def test_a_library_renamed_in_place_no_longer_satisfies_its_group(tmp_path, suffix):
+    """Quarantine that renames rather than deletes. Every Linux group ends in ``.so*``, so
+    the renamed victim kept matching its own pattern: on a real b10840 install, renaming
+    libggml-base.so.0 to libggml-base.so.0.vir left this answering (True, "") while
+    llama-server exited with "cannot open shared object file: libggml-base.so.0" and
+    _existing_install_runs answered False. Preflight then reported Ready and the launch
+    failed at model load with no repair offered, which is the whole point of the probe."""
+    if os.name == "nt":
+        pytest.skip("the Windows groups name the extension, so a suffix misses them already")
+    root = _installed(tmp_path, binaries = True)
+    host = ILP.platform_only_host()
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    groups = ILP.runtime_payload_health_groups("linux-cpu")
+    for group in groups:
+        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("", encoding = "utf-8")
+    assert ILP._runtime_payload_has(root, host, groups) is True
+
+    soname = runtime_dir / f"{groups[0][0].replace('*', '')}.0"
+    soname.rename(soname.with_name(soname.name + suffix))
+    assert ILP._runtime_payload_has(root, host, groups) is False
+
+
+def test_a_renamed_library_does_not_stand_in_for_its_own_soname(tmp_path):
+    """The end-to-end verdict, not only the group test, and the entrypoints stay untouched so
+    the reason has to come from the payload rather than from the binaries check."""
+    if os.name == "nt":
+        pytest.skip("the Windows groups name the extension, so a suffix misses them already")
+    root = _installed(tmp_path, binaries = True)
+    host = ILP.platform_only_host()
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    published = ILP.runtime_payload_health_groups(
+        "linux-cpu", source_label = "published", tag = "b10830"
+    )
+    for group in published:
+        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("", encoding = "utf-8")
+    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+
+    victim = runtime_dir / "libggml-base.so.0"
+    victim.rename(runtime_dir / "libggml-base.so.0.vir")
+    assert ILP.installed_runtime_health(root, host = host) == (
+        False,
+        "llama_runtime_payload_incomplete",
+    )
+
+
+def test_an_entrypoint_is_still_a_file_the_loader_would_start(tmp_path):
+    """The rejection is keyed on ``.so`` in the name, so llama-server, llama-server.exe and
+    every .dll keep passing: reading them as unparseable library names would fail health on
+    a complete tree, which is the repair loop installed_runtime_health forbids."""
+    for name in ("llama-server", "llama-server.exe", "ggml-base.dll", "libggml.0.dylib"):
+        entry = tmp_path / name
+        entry.write_text("", encoding = "utf-8")
+        assert ILP._payload_match_is_loadable(entry) is True, name
+
+
 def _macos_host():
     host = ILP.platform_only_host()
     return type(host)(

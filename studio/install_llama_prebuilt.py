@@ -7192,7 +7192,14 @@ def _payload_match_is_loadable(path: Path) -> bool:
         return False
     match = _LINKER_NAME_RE.match(path.name) or _DYLIB_NAME_RE.match(path.name)
     if match is None:
-        return True
+        # A name carrying ``.so`` whose tail is not a version is not a name any
+        # loader asks for. The Linux groups all end in ``.so*``, so quarantine
+        # that renames in place rather than deleting left the group satisfied by
+        # its own victim: renaming libggml-base.so.0 to libggml-base.so.0.vir on
+        # a b10840 install kept this answering healthy while llama-server exited
+        # with "cannot open shared object file". Windows and macOS groups end in
+        # the extension itself, so a suffixed name misses them already.
+        return ".so" not in path.name
     depth = match.group("version").count(".")
     if depth > 1:
         # More components than a SONAME can carry, so this is the terminal file
