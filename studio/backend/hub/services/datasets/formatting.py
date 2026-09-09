@@ -309,10 +309,26 @@ def _load_any_cached_hf_preview_slice(
 ):
     # Both paths return real rows off disk without asking the Hub: the raw slice reads the
     # snapshot, the processed one loads with local_files_only=True and drops the falsy
-    # sentinel. Refuse the whole disk route here; the handler then answers 404.
+    # sentinel. Neither reaches the network, so read first and gate the answer: reading our
+    # own disk is not the leak, handing it back is. Gating first probed /auth-check for a
+    # prefer-local request that had ruled the network out and then missed the cache anyway.
+    cached_preview = _load_cached_hf_preview_slice(request, preview_size)
+    if cached_preview is None:
+        try:
+            cached_preview = _load_processed_hf_preview_slice(request, preview_size, hf_token)
+        except Exception as exc:
+            logger.debug(
+                "Processed dataset cache preview failed for %s: %s",
+                request.dataset_name,
+                exc,
+            )
+            return None
+    if cached_preview is None:
+        return None
     # The shared gate, not the raw check: the outer guard has already let a cached PUBLIC
     # dataset through for the anonymous sentinel, and vetoing it again here turned that into
-    # a local-cache-miss 404 for a preview the caller was entitled to.
+    # a local-cache-miss 404 for a preview the caller was entitled to. is_cached is True
+    # because the rows are in hand by now.
     if cached_read_refused(
         hf_token,
         repo_id = request.dataset_name,
@@ -320,18 +336,7 @@ def _load_any_cached_hf_preview_slice(
         is_cached = lambda: True,
     ):
         return None
-    cached_preview = _load_cached_hf_preview_slice(request, preview_size)
-    if cached_preview is not None:
-        return cached_preview
-    try:
-        return _load_processed_hf_preview_slice(request, preview_size, hf_token)
-    except Exception as exc:
-        logger.debug(
-            "Processed dataset cache preview failed for %s: %s",
-            request.dataset_name,
-            exc,
-        )
-        return None
+    return cached_preview
 
 
 def check_format_response(

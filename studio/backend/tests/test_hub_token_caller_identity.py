@@ -916,10 +916,21 @@ def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monk
     assert called["cache"] == 1
 
     assert formatting._load_any_cached_hf_preview_slice(request, 5, False) is None
-    _counting_probe(monkeypatch, False)
+    probes = _counting_probe(monkeypatch, False)
     assert formatting._load_any_cached_hf_preview_slice(request, 5, "hf_dummy") is None
-    assert called["cache"] == 1, "an unverified token reached the unauthenticated cache"
-    assert called["processed"] == 0, "the anonymous caller reached the processed cache"
+    assert called["processed"] == 0, "the raw slice answered; the processed cache is extra reach"
+
+    # The disk read runs first now, and the gate stands between it and the caller: reading our
+    # own disk is not the leak, returning it is. That ordering is also what keeps a cache-only
+    # request off the wire, since a miss never reaches the probe at all.
+    called["cache"] = 0
+    monkeypatch.setattr(formatting, "_load_cached_hf_preview_slice", lambda *_a, **_k: None)
+    monkeypatch.setattr(formatting, "_load_processed_hf_preview_slice", lambda *_a, **_k: None)
+    # The verdict above is memoized for 60s, which would hide the round trip this asserts.
+    hf_tokens.reset_repo_access_cache()
+    probes["n"] = 0
+    assert formatting._load_any_cached_hf_preview_slice(request, 5, "hf_dummy") is None
+    assert probes["n"] == 0, "a cache miss still put the caller's token on the wire"
 
 
 def test_an_anonymous_caller_does_not_read_a_cached_chat_template(monkeypatch):
@@ -1510,17 +1521,51 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
         ), f"{name} can still be answered from disk for a denied caller"
 
 
-def test_an_unreachable_hub_is_a_404_not_a_500():
+def test_an_unreachable_hub_is_a_503_not_a_404_and_not_a_500():
     """check-format has no refusal of its own: a denied caller returns None from the disk
     route, falls through to a Hub that cannot answer, and the pair below came back. They
     were not mapped, so the catch-all turned "I could not reach the Hub" into a 500.
-    seed/inspect raises its own 404; this is the same answer for the same condition."""
+
+    404 is the wrong repair. "I could not ask" is not "it is not there", and
+    ``openai_auto_download._admit_and_start`` calls ``_mark_not_servable`` for every 404,
+    which suppresses the repo for ten minutes. ``force_hf_offline`` flips
+    ``huggingface_hub.constants`` process-wide for the length of one unreachable download,
+    so a concurrent /v1 request really does see ``OfflineModeIsEnabled`` from a plain
+    ``model_info``. 503 is retryable, which is also what routes/training's preflight
+    already retries on."""
     from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
     from hub.utils.hf_errors import hf_error_status
 
-    assert hf_error_status(LocalEntryNotFoundError("no cache, no hub")) == 404
-    assert hf_error_status(OfflineModeIsEnabled("offline")) == 404
+    assert hf_error_status(LocalEntryNotFoundError("no cache, no hub")) == 503
+    assert hf_error_status(OfflineModeIsEnabled("offline")) == 503
     assert hf_error_status(RuntimeError("boom")) is None
+
+
+def test_a_forced_offline_window_does_not_quarantine_a_repo_for_ten_minutes():
+    """The regression the mapping above caused: ``_admit_and_start`` reads the status, and
+    404 both reports "not found on Hugging Face" and pins the repo in ``_not_servable``."""
+    from unittest import mock
+
+    import huggingface_hub
+    from huggingface_hub.errors import OfflineModeIsEnabled
+
+    from core.inference import openai_auto_download as auto
+
+    auto._not_servable.clear()
+
+    class _Api:
+        def __init__(self, *a, **k): pass
+        def model_info(self, *a, **k): raise OfflineModeIsEnabled("offline mode is enabled")
+
+    with mock.patch.object(huggingface_hub, "HfApi", _Api):
+        refusal = asyncio.run(
+            auto._admit_and_start(
+                "org/repo", "Q4_K_M", "org/repo:Q4_K_M", None, auto._Active(repo_id = "org/repo")
+            )
+        )
+
+    assert refusal is not None and refusal.status == 503, "a forced-offline window is retryable"
+    assert not auto._is_not_servable("org/repo", None), "an unreachable Hub quarantined the repo"
 
 
 def test_a_ui_sessions_marker_survives_the_route_level_token_normalizer():
@@ -2135,6 +2180,25 @@ def test_the_embedding_resolver_gates_the_base_repo_too(monkeypatch):
     plan = settings_routes._resolve_embedding_model_plan("acme/private", "hf_dummy")
 
     assert plan.cached is False, "the operator's cached copy was reported to a denied caller"
+
+
+def test_the_embedding_resolver_does_not_probe_before_a_cache_lookup(monkeypatch):
+    """Every cache lookup in the resolver is authorized against the repo it actually matched,
+    so gating the lookups on the requested id as well bought nothing and cost a /auth-check on
+    every resolve, including the local and sentence-transformers paths that never read the GGUF
+    cache. The probe is bounded at 10s against a 20s resolver deadline, so it was half the
+    budget spent to reach a miss."""
+    from routes import settings as settings_routes
+
+    probes = _counting_probe(monkeypatch, True)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
+    monkeypatch.setattr(settings_routes, "_local_sentence_transformer_is_present", lambda _m: True)
+
+    plan = settings_routes._resolve_embedding_model_plan("acme/local-st", "hf_dummy")
+
+    assert plan.cached is True
+    assert probes["n"] == 0, "a local sentence-transformers hit still probed the Hub"
 
 
 def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):

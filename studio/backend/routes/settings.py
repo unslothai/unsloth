@@ -2445,7 +2445,10 @@ def _resolve_embedding_model_plan(
             return False
         return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
 
-    cache_ok = _authorized(resolved)
+    # No pre-gate on ``resolved``: every cache lookup below is authorized against the repo it
+    # actually matched, so gating the lookup as well probed the Hub on every resolve, including
+    # the local and sentence-transformers paths that never consult it, and could spend half the
+    # resolver's deadline before a miss. It was also the wrong question, per the note above.
 
     # Resolve for the model being selected.
     on_llama = _llama_backend_active(resolved)
@@ -2534,7 +2537,7 @@ def _resolve_embedding_model_plan(
     candidates = _embedding_gguf_candidates(resolved)
     # Match the loader's online fast path exactly: only the preferred repo and
     # only the configured variant can suppress the download offer.
-    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True) if cache_ok else None
+    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True)
     if cached_repo and not _authorized(cached_repo):
         cached_repo = None
     if cached_repo:
@@ -2548,9 +2551,7 @@ def _resolve_embedding_model_plan(
     if plan is None:
         # The loader's offline fallback accepts any complete cached quant from
         # any candidate only after its bounded online listing fails.
-        cached_repo = (
-            _cached_embedding_gguf(candidates, require_variant = False) if cache_ok else None
-        )
+        cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
         if cached_repo and not _authorized(cached_repo):
             cached_repo = None
         if cached_repo:
