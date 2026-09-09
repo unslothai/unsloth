@@ -112,6 +112,7 @@ from .diffusion_transformer_quant import (
     select_transformer_quant_scheme,
 )
 from .diffusion import _memory_request_forces_offload
+from .diffusion_batched import is_oom_error
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -5786,6 +5787,21 @@ class VideoBackend:
                 }
             except Exception as exc:
                 self._gen = {"active": False}
+                if is_oom_error(exc):
+                    # Drop the captured graphs on ANY CUDA OOM, exactly as the image backend does. A live graph
+                    # pins its statics, its outputs and its slice of the private pool, and that pool is not
+                    # reusable by ordinary allocations while a graph lives, so empty_cache() cannot reclaim any of
+                    # it. An OOM raised past the denoise (a VAE decode at a larger frame count, say) would
+                    # otherwise leave the graphs held until unload and the user's next, smaller request would run
+                    # a step's worth of activations short of what the eager path would have had. The shape that
+                    # finally renders re-captures on its first step. A non-OOM failure leaves working graphs alone.
+                    try:
+                        from . import diffusion_cuda_graph
+                        diffusion_cuda_graph.reset_all(
+                            getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
+                        )
+                    except Exception:  # noqa: BLE001 -- cleanup must never mask the real failure
+                        pass
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:

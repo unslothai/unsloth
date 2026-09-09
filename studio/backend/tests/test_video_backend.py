@@ -9137,3 +9137,49 @@ def test_every_rebuilt_speed_target_carries_the_backend():
     for call in rebuilt:
         fields = {kw.arg for kw in call.keywords}
         assert "backend" in fields, f"video.py:{call.lineno} target lacks backend: {sorted(fields)}"
+
+
+class _GraphHandle:
+    """Stands in for a captured denoiser graph: only reset() matters to generate()."""
+
+    def __init__(self):
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
+        return self
+
+
+def test_h3_generate_oom_drops_the_graphs_before_raising(fake_runtime):
+    """H3 is the one video family that captures graphs, and a live graph pins its statics, its
+    outputs and its slice of the private pool, which ordinary allocations cannot reuse. Without a
+    reset on the way out, an OOM anywhere in pipe(**kwargs) would leave the graphs held until
+    unload and the user's next, smaller clip would run a step's worth of activations short."""
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    handle = _GraphHandle()
+    pipe._unsloth_cuda_graphs = (handle,)
+
+    def _oom(_n):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 1.70 GiB")
+
+    pipe.scheduler.on_step = _oom
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert handle.resets == 1, "the graphs stayed pinned across the raise"
+
+
+def test_h3_generate_non_oom_error_leaves_the_graphs_alone(fake_runtime):
+    """Only an OOM justifies throwing away working graphs; a bad shape does not."""
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    handle = _GraphHandle()
+    pipe._unsloth_cuda_graphs = (handle,)
+
+    def _boom(_n):
+        raise RuntimeError("shape mismatch")
+
+    pipe.scheduler.on_step = _boom
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert handle.resets == 0
