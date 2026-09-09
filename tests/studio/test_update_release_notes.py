@@ -1021,6 +1021,50 @@ def test_a_429_is_shared_as_a_rate_limit_despite_the_quota_header(notes_module, 
         notes_module.reset_release_notes_cache()
 
 
+def test_a_token_never_travels_over_plaintext_http(notes_module, monkeypatch):
+    """UNSLOTH_RELEASES_URL accepts http://, so a hostname-only check would put the
+    token on the wire in clear for http://api.github.com."""
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout = None):
+        seen.append(request.get_header("Authorization"))
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "http://api.github.com/repos/x/releases")
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+    assert seen == [None]
+
+
+def test_a_redirect_cannot_carry_the_token_off_the_api_host(notes_module, monkeypatch):
+    """urllib replays a request's headers on a redirect, but not its unredirected ones.
+    The token must be in the second set, or a 302 would hand it to the new host."""
+    import urllib.error
+
+    captured = []
+
+    def capture(request, timeout = None):
+        captured.append(request)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+
+    request = captured[0]
+    assert request.get_header("Authorization") == "Bearer ghp_secret"
+    # What urllib.request.HTTPRedirectHandler.redirect_request copies onto the new
+    # request is req.headers; unredirected_hdrs is exactly what it leaves behind.
+    assert "Authorization" not in request.headers
+    assert request.unredirected_hdrs.get("Authorization") == "Bearer ghp_secret"
+
+
 def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
     """GitHub says not to request again before X-RateLimit-Reset, so the reset
     wins over the back-off. Only the first wait used to be bounded, so the fetch

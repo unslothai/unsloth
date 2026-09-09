@@ -704,12 +704,20 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
     # lockout, so picking a different credential here would let one token's exhaustion
     # silence requests the other could still make.
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token and urllib.parse.urlparse(url).hostname == "api.github.com":
-        headers["Authorization"] = f"Bearer {token}"
+    parsed = urllib.parse.urlparse(url)
+    # https only, not merely the right hostname: the override above accepts http://, and
+    # http://api.github.com would put the token on the wire in plaintext for an on-path
+    # attacker before GitHub could redirect it.
+    send_token = bool(token) and parsed.scheme == "https" and parsed.hostname == "api.github.com"
     if _remote_etag:
         headers["If-None-Match"] = _remote_etag
 
     request = urllib.request.Request(url, headers = headers)
+    if send_token:
+        # Unredirected: urllib replays request headers on a redirect, and headers added
+        # this way are the ones it does NOT carry over, so a redirect off the API host
+        # cannot take the token with it.
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
     deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS
     try:
         with urllib.request.urlopen(request, timeout = RELEASES_TIMEOUT_SECONDS) as response:
