@@ -101,6 +101,7 @@ jobs:
         working-directory: studio/backend
         run: >-
           python -m pytest
+          tests/test_secure_cross_platform_tools.py::test_native_windows_project_mutation_round_trip
           tests/test_edit_file_tool.py
           tests/test_secure_cross_platform_tools.py
           tests/test_secure_process_supervisor.py

@@ -739,7 +739,9 @@ def _windows_error(message: str) -> OSError:
     if factory is None:
         return OSError(code, f"{message} (WinError {code})")
     error = factory(code)
-    error.args = (*error.args, message)
+    # OSError.__str__ uses strerror rather than additional args. Preserve the
+    # native error subclass/code while identifying the failing operation.
+    error.strerror = f"{message}: {error.strerror}"
     return error
 
 

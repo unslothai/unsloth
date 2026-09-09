@@ -585,11 +585,12 @@ def test_native_project_tools_kill_detached_descendants_before_lease_and_slot_re
     )
     if tool_name == "python":
         source = (
-            "import subprocess, sys, time; "
-            f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+            "import subprocess, time; "
+            f"child=subprocess.Popen([{sys.executable!r}, '-c', {child_code!r}], "
             "start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
             "print(child.pid, flush=True); time.sleep(30)"
         )
+        assert tools._check_code_safety(source) is None
         result = tools._python_exec(source, session_id = session_id, timeout = 0.2)
     else:
         command = (
