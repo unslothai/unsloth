@@ -31,6 +31,9 @@ from core.inference.api_monitor import ApiMonitor
 from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KV_BUDGET_ENV,
+    LlamaAdmissionConfig,
+    LlamaAdmissionQueue,
+    LlamaAdmissionRecostRefused,
     reset_llama_admission_queues,
 )
 from core.inference.llama_cpp import LlamaCppBackend
@@ -145,6 +148,7 @@ def _run_tool_loop(
     *,
     streams = None,
     backend = None,
+    events = None,
     **kwargs,
 ):
     if backend is None:
@@ -162,7 +166,7 @@ def _run_tool_loop(
         "core.inference.tools.execute_tool",
         lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
     )
-    list(
+    produced = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "Which kernel?"}],
             tools = [_TOOL],
@@ -171,6 +175,8 @@ def _run_tool_loop(
             **kwargs,
         )
     )
+    if events is not None:
+        events.extend(produced)
     return backend
 
 
@@ -359,6 +365,158 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads)[1:] == [_SHARE - 900, _SHARE - 100], _caps(payloads)
 
 
+def _refuse_on_call(index: int):
+    """A hook that grants every re-cost but the ``index``-th, which the ledger refuses."""
+    calls = {"n": -1}
+
+    def _hook(_conversation, _tools):
+        calls["n"] += 1
+        if calls["n"] == index:
+            raise LlamaAdmissionRecostRefused("no room")
+        return _SHARE - 100
+
+    return _hook
+
+
+def _finish_reasons(events: list) -> list:
+    return [
+        event["finish_reason"]
+        for event in events
+        if event.get("type") == "metadata" and event.get("finish_reason")
+    ]
+
+
+def _shown(events: list) -> str:
+    """The last content event, which is what the client is left displaying: these are
+    cumulative, so an event sent later replaces everything before it."""
+    texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    return texts[-1] if texts else ""
+
+
+class TestARefusedReCostDoesNotAuthoriseTheRequest:
+    """``recost_waiting`` returning False leaves the PREVIOUS round's figure in force, so
+    the prompt that asked for the growth is over the reservation. Handing it a freshly
+    computed wire cap authorised exactly the aggregate the lease refused to buy."""
+
+    def test_a_refused_round_sends_nothing_and_ends_the_turn_on_length(self, monkeypatch):
+        payloads: list[dict] = []
+        events: list[dict] = []
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            events = events,
+            admission_output_allowance = _SHARE,
+            on_conversation_grew = _refuse_on_call(0),
+        )
+
+        assert payloads == [], "a refused re-cost still sent the larger prompt"
+        assert _finish_reasons(events) == ["length"]
+        # Nothing had been shown, so the turn has to say why it stopped rather than
+        # render as an empty message.
+        assert _shown(events).strip()
+
+    def test_a_refused_final_attempt_keeps_the_partial_it_has(self, monkeypatch):
+        """The continuation is the growth being refused, so the first answer stands."""
+        payloads: list[dict] = []
+        events: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10 and then some"}), _finish("length"), _done()],
+                [_sse({"content": " more"}), _done()],
+            ],
+            payloads,
+        )
+        monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            backend = backend,
+            events = events,
+            admission_output_allowance = _SHARE,
+            # Round zero, the first final attempt, then the continuation.
+            on_conversation_grew = _refuse_on_call(2),
+        )
+
+        assert len(payloads) == 2, "the refused continuation was sent anyway"
+        assert _finish_reasons(events)[-1] == "length"
+        assert "6.10 and then some" in _shown(events), _shown(events)
+
+    def test_a_granted_re_cost_still_returns_the_clamped_cap(self, monkeypatch):
+        """The refusal path must not cost the ordinary one its bound."""
+        payloads: list[dict] = []
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            admission_output_allowance = _SHARE,
+            on_conversation_grew = _refuse_on_call(99),
+        )
+
+        assert _caps(payloads) == [_SHARE - 100, _SHARE - 100]
+
+
+class TestTheLedgerBoundsTheAggregate:
+    """The audited scenario, with the real queue and the real lease rather than a stub."""
+
+    @pytest.fixture(autouse = True)
+    def _isolate(self, monkeypatch):
+        monkeypatch.setenv(ADMISSION_CONTROL_ENV, "1")
+        monkeypatch.setenv(ADMISSION_KV_BUDGET_ENV, "1")
+        reset_llama_admission_queues()
+        yield
+        reset_llama_admission_queues()
+
+    def test_a_full_pool_refuses_the_grown_round_rather_than_pricing_it(self):
+        # The queue books its slots against the running loop, as a route would.
+        asyncio.run(self._refuses_the_grown_round())
+
+    async def _refuses_the_grown_round(self):
+        budget = 16384
+        queue = LlamaAdmissionQueue("recost-refusal")
+        reservations = [
+            queue.reserve(
+                capacity = 4,
+                config = LlamaAdmissionConfig(),
+                tokens = budget // 4,
+                budget = budget,
+            )
+            for _ in range(4)
+        ]
+        try:
+            # No idle clearing, so a round cannot yield its commitment to wait for room:
+            # Studio launches exactly that way on Windows under full GPU offload.
+            backend = SimpleNamespace(
+                context_length = budget,
+                _kv_cache_context_total = budget,
+                effective_parallel_slots = 4,
+                _kv_cache_unified = True,
+                idle_slot_clearing_active = False,
+            )
+            grown = [{"role": "tool", "content": "\u4e2d" * 4992}]
+            prompt = inf_mod.estimate_messages_tokens_dense(grown)
+            assert prompt > budget // 4, "the round has to have grown past its share"
+
+            with pytest.raises(LlamaAdmissionRecostRefused):
+                _openai_llama_admission_recost(
+                    reservations[0],
+                    grown,
+                    request = None,
+                    llama_backend = backend,
+                    payload = _chat(),
+                    output_tokens = None,
+                )
+
+            # The refusal is what keeps this true: the lease still holds its share, so
+            # the four leases plus this prompt would be over the pool if it were sent.
+            assert reservations[0].lease_nowait()._tokens == budget // 4
+            assert queue.snapshot().committed == budget
+            assert 3 * (budget // 4) + prompt > budget
+        finally:
+            for reservation in reservations:
+                reservation.lease_nowait().release()
+
+
 def _backend_stub(*, window, total, slots):
     return SimpleNamespace(
         context_length = window,
@@ -380,7 +538,8 @@ def _reservation():
 
     class _Lease:
         def recost_waiting(self, *_args, **_kwargs):
-            return None
+            # True is "the new figure is in force"; anything falsy is a refusal now.
+            return True
 
     return SimpleNamespace(lease_nowait = lambda: _Lease())
 

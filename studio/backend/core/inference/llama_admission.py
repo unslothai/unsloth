@@ -207,6 +207,14 @@ class LlamaAdmissionCancelled(LlamaAdmissionError):
     pass
 
 
+class LlamaAdmissionRecostRefused(LlamaAdmissionError):
+    """A started run asked to grow past its lease and was refused.
+
+    The lease still holds the figure it came in with, so the larger prompt is not
+    covered: the caller must end the turn with what it has rather than send.
+    """
+
+
 def _raw_env(name: str) -> Optional[str]:
     """Value for a canonical name, falling back to its legacy spelling."""
     value = os.environ.get(name)

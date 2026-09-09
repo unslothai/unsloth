@@ -108,6 +108,7 @@ from core.inference.llama_admission import (
     LlamaAdmissionConfig,
     LlamaAdmissionLease,
     LlamaAdmissionQueueFull,
+    LlamaAdmissionRecostRefused,
     LlamaAdmissionReservation,
     LlamaAdmissionTimeout,
     get_llama_admission_queue,
@@ -2304,8 +2305,11 @@ def _openai_llama_admission_enforced_max_tokens(
     allowance the ledger charged: a share for a prompt under one, and the flat unstated
     allowance above it, where the queue has already admitted fewer to pay for it.
     ``conversation`` prices it from the messages actually sent, which a translating route
-    must pass, else ``system`` is charged twice. None leaves a stated cap or a disabled
-    reservation alone.
+    must pass, else ``system`` is charged twice. None leaves a disabled reservation and
+    unpriceable media alone, and leaves a STATED cap alone only where it is positive and
+    strictly below the window: a cap at or above the window buys nothing the window did
+    not already bound, so it is treated as unstated and enforced like one, which is what
+    ``_openai_llama_admission_tokens`` charges such a request for.
     """
     share = _openai_llama_admission_share(request, llama_backend, capacity = capacity)
     if share is None:
@@ -2450,6 +2454,11 @@ def _openai_llama_admission_recost(
 
     Returns the wire cap this round earned, or None to leave the one in force alone.
     ``wire_tools`` is the catalogue this request sends, None on the final answer.
+
+    Raises ``LlamaAdmissionRecostRefused`` when the growth is declined: the lease then
+    still holds the previous round's figure, so there is no cap this round could be
+    handed that the ledger has actually paid for, and the caller must end the turn
+    rather than send.
     """
     if reservation is None:
         return None
@@ -2504,11 +2513,18 @@ def _openai_llama_admission_recost(
             share = share,
         )
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
-        lease.recost_waiting(
+        if not lease.recost_waiting(
             want,
             cancel_event = cancel_event,
             allow_yield = _openai_llama_admission_can_yield(llama_backend),
-        )
+        ):
+            # The lease still holds the PREVIOUS round's figure, so pricing a bound off
+            # this bigger prompt would authorise exactly the overcommit the re-cost
+            # exists to prevent. Raised rather than returned, since every "no bound"
+            # answer this helper can give leaves a stale allowance in force.
+            raise LlamaAdmissionRecostRefused(
+                f"the admission ledger refused {want} tokens for this round"
+            )
         # After the wait, so the bound matches the conversation the round waited on.
         return _openai_llama_admission_enforced_max_tokens(
             payload,
@@ -2519,6 +2535,8 @@ def _openai_llama_admission_recost(
             prompt_tokens = wire_prompt_tokens,
             capacity = capacity,
         )
+    except LlamaAdmissionRecostRefused:
+        raise
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
     return None

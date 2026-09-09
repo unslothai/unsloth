@@ -411,11 +411,13 @@ from utils.subprocess_compat import (
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from utils.process_lifetime import is_signalable_pid as _is_signalable_pid
+from core.inference.llama_admission import LlamaAdmissionRecostRefused
 from core.inference.tool_call_parser import (
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
+    admission_room_refused_message as _admission_room_refused_message,
     is_reprompt_repeat as _is_reprompt_repeat,
     is_reprompt_restatement as _is_reprompt_restatement,
     is_short_intent_without_action as _is_short_intent_without_action,
@@ -29338,6 +29340,19 @@ class LlamaCppBackend:
                 "finish_reason": finish_reason,
             }
 
+        def _admission_refused_ending(shown: str):
+            """End the turn on a refused re-cost, keeping what is on screen.
+
+            `length` is the finish the UI renders as Continue, not an error box. Content
+            events are cumulative, so the explanation goes out only over nothing.
+            """
+            yield {"type": "status", "text": ""}
+            if not (shown or "").strip():
+                yield {"type": "content", "text": _admission_room_refused_message()}
+            _meta = _build_metadata_event(None, None, "length")
+            if _meta is not None:
+                yield _meta
+
         def _flush_reasoning_and_buffer():
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
@@ -29595,6 +29610,9 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # Rebound per iteration below; bound here too because the re-cost at the top of a
+        # round reads what the PREVIOUS round left on screen, and round zero has none.
+        _last_emitted = ""
         iteration = -1
         while True:
             iteration += 1
@@ -29644,6 +29662,16 @@ class LlamaCppBackend:
                     _recosted_allowance = on_conversation_grew(conversation, safe_tools)
                     if _recosted_allowance is not None:
                         admission_output_allowance = _recosted_allowance
+                except LlamaAdmissionRecostRefused:
+                    # The lease still holds the previous round's figure, so this prompt
+                    # is not covered; sending it is the overcommit that kills every slot.
+                    logger.info(
+                        "Tool round %d: no cache room for this prompt; keeping the "
+                        "partial answer instead of sending it",
+                        iteration,
+                    )
+                    yield from _admission_refused_ending(_last_emitted)
+                    return
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop recost failed", exc_info = True)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
@@ -32588,6 +32616,15 @@ class LlamaCppBackend:
                     )
                     if _final_recosted_allowance is not None:
                         admission_output_allowance = _final_recosted_allowance
+                except LlamaAdmissionRecostRefused:
+                    # As in the loop: a refused attempt is not sent. On a continuation
+                    # that leaves the answer it has already shown, which Continue extends.
+                    logger.info(
+                        "Final answer: no cache room for this attempt; keeping the "
+                        "partial answer instead of sending it"
+                    )
+                    yield from _admission_refused_ending(_last_emitted)
+                    return
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop final recost failed", exc_info = True)
             # After it, so a continuation that rewrote the cap is bounded too. Rebuilt from

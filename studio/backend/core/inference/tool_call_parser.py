@@ -347,6 +347,23 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
     )
 
 
+def admission_room_refused_message() -> str:
+    """Shown when the KV ledger refused the room the turn's next request needs.
+
+    The only wall the user cannot widen from this chat: the shared cache is held by
+    other chats, so the request is not sent and the partial stays with Continue.
+    """
+    return (
+        "There was no room left in the shared model cache for the next step of this "
+        "reply, so it stopped here rather than send a request the server could not "
+        "serve.\n\n"
+        "To get past this:\n"
+        "- Press Continue once another chat has finished\n"
+        "- Or run fewer chats at the same time\n"
+        "- Or raise the context length, so more chats fit at once"
+    )
+
+
 def continue_after_length_message() -> str:
     """The user message appended when a turn ended inside its own reasoning.
 

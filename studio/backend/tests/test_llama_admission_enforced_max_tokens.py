@@ -105,6 +105,24 @@ class TestWhatIsLeftAlone:
         assert _enforced(_chat(max_tokens = 4096), backend) is None
 
 
+class TestWhereAStatedCapStopsBeingStated:
+    """The line the docstring draws, pinned: only a cap STRICTLY BELOW the window is a
+    promise to write less than the window. At or above it the caller has promised
+    nothing the window did not already say, and ``_openai_llama_admission_tokens``
+    charges such a request the unstated allowance, so the wire has to be bounded to
+    match or the charge is fiction again."""
+
+    def test_one_token_below_the_window_is_left_alone(self):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 16383), backend) is None
+
+    def test_at_or_above_the_window_is_enforced_like_an_unstated_cap(self):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        unstated = _enforced(_chat(), backend)
+        assert _enforced(_chat(max_tokens = 16384), backend) == unstated
+        assert _enforced(_chat(max_tokens = 999999), backend) == unstated
+
+
 class TestTheEdges:
     def test_a_prompt_past_its_share_keeps_the_allowance_it_reserved(self):
         """It does not fit a share either way, and the ledger already charged it
