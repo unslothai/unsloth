@@ -235,25 +235,31 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
-if sys.platform == "win32":
-    # Smart App Control blocks sentencepiece's compiled extension by reputation, and
-    # transformers decides the package is available from find_spec and metadata alone,
-    # so is_sentencepiece_available() answers True while every import of it raises. The
-    # quiet consequence is a model generating under a substituted chat template, since
-    # resolve_native_chat_template catches the failure. Corrected here, at the top of
-    # process, so no tokenizer is ever built while the flag still reads True.
-    #
-    # Windows only, so no other platform pays the probe, and a no-op unless the import
-    # really fails. Deliberately NOT unsloth.import_fixes, which carries the same guard
-    # for pip users: importing it would run unsloth/__init__.py, whose GPU branch pulls
-    # torch, Triton, transformers and the model stack into this long-lived parent and can
-    # open a competing GPU context. The ML work happens in spawned workers and the parent
-    # stays light. utils.sentencepiece_guard imports nothing heavy.
-    try:
-        from utils.sentencepiece_guard import disable_sentencepiece_if_blocked
-        disable_sentencepiece_if_blocked()
-    except Exception:
-        pass
+# Smart App Control blocks sentencepiece's compiled extension by reputation, and
+# transformers decides the package is available from find_spec and metadata alone, so
+# is_sentencepiece_available() answers True while every import of it raises. The quiet
+# consequence is a model generating under a substituted chat template, since
+# resolve_native_chat_template catches the failure. Corrected here, at the top of process,
+# so no tokenizer is ever built while the flag still reads True.
+#
+# As a temporary measure sentencepiece is off by DEFAULT on Windows rather than only when a
+# block is detected, so the extension is never touched there; UNSLOTH_DISABLE_SENTENCEPIECE=0
+# puts it back, and even then a genuinely refused import is still caught.
+#
+# Called on every platform rather than under a `win32` branch, because the flag is honoured
+# everywhere and a branch here would silently ignore it off Windows. It costs nothing there:
+# with no flag set the guard returns without importing anything.
+#
+# Deliberately NOT unsloth.import_fixes, which carries the same guard for pip users:
+# importing it would run unsloth/__init__.py, whose GPU branch pulls torch, Triton,
+# transformers and the model stack into this long-lived parent and can open a competing GPU
+# context. The ML work happens in spawned workers and the parent stays light.
+# utils.sentencepiece_guard imports nothing heavy.
+try:
+    from utils.sentencepiece_guard import disable_sentencepiece_if_blocked
+    disable_sentencepiece_if_blocked()
+except Exception:
+    pass
 
 import hashlib
 import ipaddress

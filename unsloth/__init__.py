@@ -81,8 +81,10 @@ else:
 # Smart App Control blocks _sentencepiece.cp313-win_amd64.pyd by reputation, while
 # transformers decides sentencepiece is available from find_spec and metadata alone, so every
 # path gated on that flag walks into a loader error. See
-# import_fixes.disable_sentencepiece_if_blocked; a no-op off Windows, and a no-op on Windows
-# unless the import really fails.
+# import_fixes.disable_sentencepiece_if_blocked. As a temporary measure sentencepiece is off
+# by default on Windows rather than only when a block is detected, so the extension is never
+# touched there; UNSLOTH_DISABLE_SENTENCEPIECE=0 puts it back, and even then a genuinely
+# refused import is still caught. Off Windows this is a no-op unless the flag is set truthy.
 #
 # Here rather than at the end of this file, and for the same reason the block above sits here:
 # transformers freezes derived state at import. models/auto/tokenization_auto.py evaluates

@@ -14,9 +14,11 @@ a tokenizer that will not build; the quiet one is Studio's ``get_native_chat_tem
 which catches any exception, logs a warning and returns None, leaving the model to
 generate under a substituted chat template.
 
-What is asserted here is the shape of the correction rather than the block itself: the
-guard fires only when the import really fails, only on Windows, and leaves a working
-install untouched.
+What is asserted here is the shape of the correction rather than the block itself. As a
+temporary measure the guard now fires on Windows by default, so the extension is never
+loaded there at all; ``UNSLOTH_DISABLE_SENTENCEPIECE=0`` opts back in, and a machine that
+has opted back in is still protected when the import really fails. Off Windows nothing
+happens unless the flag is set truthy.
 """
 
 import importlib
@@ -33,10 +35,18 @@ if str(PACKAGE_ROOT) not in sys.path:
 from unsloth import import_fixes  # noqa: E402
 
 
+VARIABLE = import_fixes._DISABLE_SENTENCEPIECE_VARIABLE
+
+
 @pytest.fixture(autouse = True)
-def _reset_guard():
-    """The guard caches its verdict for the process; each test starts from unknown."""
+def _reset_guard(monkeypatch):
+    """The guard caches its verdict for the process; each test starts from unknown.
+
+    The flag is cleared too, so an operator who exported it in the shell running pytest
+    cannot change what these tests mean.
+    """
     import_fixes._SENTENCEPIECE_GUARD_RESULT = None
+    monkeypatch.delenv(VARIABLE, raising = False)
     yield
     import_fixes._SENTENCEPIECE_GUARD_RESULT = None
 
@@ -53,7 +63,13 @@ def transformers_flag():
 
 
 def _blocked_import(monkeypatch, *, winerror = 577):
-    """A Windows box whose sentencepiece is installed and refuses to load."""
+    """A Windows box whose sentencepiece is installed and refuses to load.
+
+    With the flag set falsy, because that is the only configuration in which the import
+    probe still runs: unset, Windows disables sentencepiece by policy and never touches
+    the extension, so a blocked machine is already covered before this path is reached.
+    """
+    monkeypatch.setenv(VARIABLE, "0")
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
 
@@ -94,9 +110,11 @@ def test_a_blocked_extension_makes_transformers_say_sentencepiece_is_absent(
 
 
 def test_a_working_sentencepiece_is_left_alone(monkeypatch, transformers_flag):
-    """The 99.9% case, on the platform the guard runs on: an import that succeeds must
-    leave the flag exactly where it was, or a Windows machine with a healthy extension
-    loses every slow tokenizer for nothing."""
+    """A Windows machine that has opted back in: an import that succeeds must leave the
+    flag exactly where it was, or opting in would achieve nothing. The opt-in is required
+    here, since with the flag unset Windows disables sentencepiece by policy whether or
+    not the extension would have loaded."""
+    monkeypatch.setenv(VARIABLE, "0")
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
@@ -111,9 +129,44 @@ def test_a_working_sentencepiece_is_left_alone(monkeypatch, transformers_flag):
     assert caught == []
 
 
+def test_windows_disables_by_default_without_touching_the_extension(
+    monkeypatch, transformers_flag
+):
+    """The temporary Windows default, against the transformers actually installed here.
+
+    Disabled because the platform is Windows, not because anything was probed: the point
+    is that the extension is never loaded, so a machine whose loader would refuse it never
+    gives the loader the chance. Any import at all is the failure.
+
+    UNSLOTH_DISABLE_SENTENCEPIECE=0 is the way back, and is covered above.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+
+    def _explode(name, *args, **kwargs):
+        raise AssertionError("the Windows default must not import sentencepiece")
+
+    monkeypatch.setattr(importlib, "import_module", _explode)
+    transformers_flag._sentencepiece_available = True
+
+    assert import_fixes.sentencepiece_disabled_by_policy() == "windows"
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        assert import_fixes.disable_sentencepiece_if_blocked() is True
+
+    assert transformers_flag.is_sentencepiece_available() is False
+    assert caught == [], (
+        "every healthy Windows launch would print this, so it is logged rather than "
+        "warned; only a real block earns a warning"
+    )
+
+
 def test_a_sentencepiece_that_is_not_installed_is_not_a_block(monkeypatch, transformers_flag):
     """find_spec answering None is the ordinary uninstalled case. transformers already
-    reports it correctly, so there is nothing to correct and nothing to warn about."""
+    reports it correctly, so there is nothing to correct and nothing to warn about. Asked
+    with the flag off, which is where "is this a block?" is still a question."""
+    monkeypatch.setenv(VARIABLE, "0")
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
@@ -171,7 +224,9 @@ def test_the_state_is_not_what_decides(monkeypatch, transformers_flag):
     """Smart App Control blocks by reputation, one file at a time, so it is on for many
     machines whose sentencepiece loads perfectly and off on machines where an antivirus
     refuses the same file. Deciding on the state rather than on the import would take
-    the tokenizer away from the first group and leave the second broken."""
+    the tokenizer away from the first group and leave the second broken. Asked with the
+    flag off, since that is the only configuration in which the probe still runs."""
+    monkeypatch.setenv(VARIABLE, "0")
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())

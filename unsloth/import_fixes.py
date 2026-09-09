@@ -6066,6 +6066,41 @@ _BLOCKED_IMAGE_WINERRORS = frozenset({225, 577, 1260})
 
 _SENTENCEPIECE_GUARD_RESULT = None
 
+# On Windows the extension is disabled by DEFAULT, not only when its load is refused. A
+# deliberate temporary measure: the refusals arrive faster than they can be diagnosed one
+# machine at a time, they are silent (a substituted chat template, not an error), and the
+# cost of going without is now small. transformers 4.57.6 gates 67 tokenizer entries on
+# sentencepiece and 5.x gates 8; across the 93 models the Unsloth notebooks use, 3 break
+# without it on 4.57.6 and none on 5.5.0 or 5.10.4.
+#
+# The package stays installed and installable. This flag is the way back.
+_DISABLE_SENTENCEPIECE_VARIABLE = "UNSLOTH_DISABLE_SENTENCEPIECE"
+_SENTENCEPIECE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_SENTENCEPIECE_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def sentencepiece_disabled_by_policy():
+    """Why policy disables sentencepiece here, or None to leave it to the import probe.
+
+    ``"environment"`` when ``UNSLOTH_DISABLE_SENTENCEPIECE`` is truthy, which applies on
+    every platform, and ``"windows"`` for the platform default. Off Windows there is no
+    default, and WSL reports ``linux``, so a WSL session is treated as the Linux box it is
+    rather than inheriting a Windows policy that has no loader to justify it.
+
+    An unrecognised value falls back to the platform default rather than raising. This
+    runs inside ``import unsloth``, where a typo in an environment variable must not cost
+    the user the whole package.
+
+    A falsy value only says policy is not disabling it. It cannot re-enable an extension
+    the loader refuses, because the caller runs the block detection afterwards either way.
+    """
+    value = (os.environ.get(_DISABLE_SENTENCEPIECE_VARIABLE) or "").strip().lower()
+    if value in _SENTENCEPIECE_TRUTHY:
+        return "environment"
+    if value in _SENTENCEPIECE_FALSY:
+        return None
+    return "windows" if sys.platform == "win32" else None
+
 
 def smart_app_control_state():
     """Smart App Control's state: 0 off, 1 enforced, 2 evaluation, or None if unknown.
@@ -6127,6 +6162,37 @@ def sentencepiece_import_error():
     return None
 
 
+def _materialise_tokenizer_mapping(import_utils) -> None:
+    """Import transformers' auto tokenizer module before the flag is changed.
+
+    Ordering is load bearing, and the intuitive order is the wrong one. On 4.52 through
+    4.57, ``models/auto/tokenization_auto.py`` evaluates ``is_sentencepiece_available()``
+    while building ``TOKENIZER_MAPPING_NAMES`` (71 times in 4.57.6). Patch first and the
+    slow entries are built as ``None``; ``tokenizer_class_from_name`` then misses the
+    mapping and falls through to the dummy-class fallback, which does
+    ``importlib.import_module("transformers")`` and reaches an unguarded top level
+    ``import sentencepiece as spm`` in the slow tokenizer module. The user gets the raw
+    loader error the guard exists to prevent. Measured on 4.57.6 with the extension
+    blocked: no patch fails, patching first fails identically, patching after this import
+    loads the tokenizer.
+
+    On 5.x the mapping gates only 8 model types and every ordering works, so doing it
+    unconditionally costs nothing and keeps one code path.
+
+    Only for the real transformers module. The synthetic modules the parity tests pass in
+    must not drag the real package into the process, or the tests stop testing the shapes
+    they claim to.
+    """
+    if not getattr(import_utils, "__name__", "").startswith("transformers"):
+        return
+    try:
+        importlib.import_module("transformers.models.auto.tokenization_auto")
+    except Exception:
+        # A transformers too broken to import its own auto module is not something to
+        # fail on here; the caller still patches, and the flag is still corrected.
+        pass
+
+
 def _tell_transformers_sentencepiece_is_absent(import_utils) -> bool:
     """Make every consumer of ``is_sentencepiece_available`` answer False.
 
@@ -6159,6 +6225,10 @@ def _tell_transformers_sentencepiece_is_absent(import_utils) -> bool:
     original = getattr(import_utils, "is_sentencepiece_available", None)
     if original is None:
         return False
+
+    # Before anything is rebound. See the helper: on 4.x the mapping must already be
+    # built, or the correction sends the user into the loader error instead of past it.
+    _materialise_tokenizer_mapping(import_utils)
 
     # First, in case a future version reads a global again.
     if hasattr(import_utils, "_sentencepiece_available"):
@@ -6195,7 +6265,12 @@ def _tell_transformers_sentencepiece_is_absent(import_utils) -> bool:
     # requires_backends still tells the user how to install it.
     if isinstance(mapping, dict):
         for key, entry in list(mapping.items()):
-            if isinstance(entry, tuple) and entry and entry[0] is original:
+            if not isinstance(entry, tuple) or not entry:
+                continue
+            # By key as well as by identity. Identity alone misses an entry transformers
+            # built from a different callable, and key alone would rewrite an unrelated
+            # backend, so either match is enough but the name is checked too.
+            if entry[0] is original or str(key).split(">")[0].split("=")[0].strip() == "sentencepiece":
                 mapping[key] = (_sentencepiece_is_absent,) + tuple(entry[1:])
 
     try:
@@ -6205,7 +6280,11 @@ def _tell_transformers_sentencepiece_is_absent(import_utils) -> bool:
 
 
 def disable_sentencepiece_if_blocked():
-    """Tell transformers sentencepiece is absent when its extension will not load.
+    """Tell transformers sentencepiece is absent when policy or the loader says so.
+
+    Two triggers, checked in that order. ``sentencepiece_disabled_by_policy`` covers the
+    Windows default and the explicit flag; the block detection below covers a machine
+    whose extension is genuinely refused.
 
     Smart App Control blocks ``_sentencepiece.cp313-win_amd64.pyd`` by reputation, and
     ``transformers._is_package_available`` decides on ``find_spec`` plus installed
@@ -6222,15 +6301,19 @@ def disable_sentencepiece_if_blocked():
     shipping ``tokenizer.json``, and makes the models that genuinely need the extension
     fail with the backend message that names it instead of a loader error.
 
-    Returns True only when a real block was found and the flag was corrected. On every
-    other machine this is a no-op: not Windows, not installed, or it imported.
+    Returns True only when sentencepiece was actually turned off here. On every other
+    machine this is a no-op: policy is silent and the extension imported.
     """
     global _SENTENCEPIECE_GUARD_RESULT
     if _SENTENCEPIECE_GUARD_RESULT is not None:
         return _SENTENCEPIECE_GUARD_RESULT
 
-    exception = sentencepiece_import_error()
-    if exception is None:
+    # Policy first, and the probe strictly as a fallback. The Windows default exists so
+    # the extension is never touched, so probing first would hand the blocked file exactly
+    # the load the default is there to avoid.
+    policy = sentencepiece_disabled_by_policy()
+    exception = sentencepiece_import_error() if policy is None else None
+    if policy is None and exception is None:
         _SENTENCEPIECE_GUARD_RESULT = False
         return False
 
@@ -6243,6 +6326,30 @@ def disable_sentencepiece_if_blocked():
 
     if not _tell_transformers_sentencepiece_is_absent(_import_utils):
         return False
+
+    if exception is None:
+        # Logged, not warned. A block is a fault on one machine that the user has to act
+        # on, so it earns a warning. The policy default is the expected state of every
+        # healthy Windows box, and warnings.warn prints by default: a UserWarning on every
+        # import unsloth, in every script and every notebook cell, is the kind of noise
+        # that teaches people to stop reading Unsloth's warnings. The models that need the
+        # extension still fail loudly at the point of use with the backend message naming
+        # it, which is where the question is actually asked.
+        if policy == "environment":
+            logger.info(
+                f"Unsloth: sentencepiece is disabled because {_DISABLE_SENTENCEPIECE_VARIABLE} "
+                "is set. transformers will use fast tokenizers only."
+            )
+        else:
+            logger.info(
+                "Unsloth: sentencepiece is disabled by default on Windows, so transformers "
+                "will use fast tokenizers only. Nothing was blocked and nothing was "
+                "uninstalled; this is a temporary measure while the Windows loader "
+                f"refusals are worked through. Set {_DISABLE_SENTENCEPIECE_VARIABLE}=0 to "
+                "use it again."
+            )
+        _SENTENCEPIECE_GUARD_RESULT = True
+        return True
 
     winerror = getattr(exception, "winerror", None)
     if winerror in _BLOCKED_IMAGE_WINERRORS:
