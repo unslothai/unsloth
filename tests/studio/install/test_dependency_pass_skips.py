@@ -1480,3 +1480,29 @@ def test_an_unscannable_plugin_is_reinstalled(monkeypatch) -> None:
 def test_the_plugin_skip_consults_the_installed_payload() -> None:
     source = STACK_PATH.read_text(encoding = "utf-8")
     assert "and not _local_plugin_payload_is_damaged(plugin_dir.name)" in source
+
+
+def test_an_unreadable_requires_dist_makes_the_whole_index_unreadable(monkeypatch) -> None:
+    """A distribution whose Requires-Dist cannot be read is not a leaf; calling it one
+    would let a step skip over a closure the audit never walked."""
+    import importlib.metadata
+
+    class _Dist:
+        metadata = {"Name": "broken"}
+        version = "1.0"
+
+        @property
+        def requires(self):
+            raise ValueError("unreadable METADATA")
+
+    monkeypatch.setattr(stack.install_manifest, "_metadata_scan_paths", lambda: [])
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda **kw: [_Dist()])
+    assert stack.install_manifest.installed_dependency_index() is None
+
+
+def test_a_second_pass_in_one_process_starts_with_no_audited_steps() -> None:
+    """The reset block clears what the previous pass registered, so a step this pass
+    never reaches is not audited and recorded as known-unmet on its behalf."""
+    source = (stack.__file__ and open(stack.__file__, encoding = "utf-8").read()) or ""
+    reset = source.index("_STEP_RESULTS.clear()")
+    assert "_AUDITED_STEPS.clear()" in source[reset : reset + 400]

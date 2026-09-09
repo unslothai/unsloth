@@ -620,7 +620,8 @@ def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
     companion = arm[arm.index("$_companionProbe = Invoke-BoundedPythonProbe") :]
     companion = companion[: companion.index("while ($true)")]
     assert "('torchvision', 'torchaudio')" in companion
-    assert "t.startswith('cpu') or t.startswith('cu')" in companion
+    # +cpu, +cuNNN and +xpu companions beside a ROCm torch all force the trio.
+    assert "t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu')" in companion
     assert '$rocmForce = @("--force-reinstall")' in companion
     assert '"' not in companion[companion.index("-Code ") + 7 : companion.index("print(")]
 

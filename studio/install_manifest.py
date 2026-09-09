@@ -716,7 +716,10 @@ def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
             try:
                 requires = list(dist.requires or [])
             except Exception:
-                requires = []
+                # Fails closed with the rest of the audit: a distribution whose
+                # Requires-Dist cannot be read is not a leaf, and an index that called
+                # it one would let a step skip over a closure it never walked.
+                return None
             index[key] = (str(version), requires)
         return index
     except Exception:

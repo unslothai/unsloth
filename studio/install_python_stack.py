@@ -8647,6 +8647,9 @@ def install_python_stack() -> int:
     _BNB_ROCM_PASS_PROVENANCE = None
     _BNB_ROCM_PASS_ASSET = None
     _STEP_RESULTS.clear()
+    # Registered by the steps as they run: a stale entry from an earlier call in this
+    # process would be audited, and recorded as known-unmet, for a step this pass never reached.
+    _AUDITED_STEPS.clear()
     # An aborted earlier run leaves it set, and every _safe_print() consumes it --
     # the first message would get a stray newline.
     _PROGRESS_LINE_ACTIVE = False
