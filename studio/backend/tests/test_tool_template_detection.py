@@ -66,7 +66,9 @@ def test_executable_tool_templates_are_detected(template):
 
 
 def _published_template(name):
-    return (Path(__file__).parent / "data" / "chat_templates" / f"{name}.jinja").read_text()
+    return (Path(__file__).parent / "data" / "chat_templates" / f"{name}.jinja").read_text(
+        encoding = "utf-8"
+    )
 
 
 @pytest.mark.parametrize("name, detected", [("granite-3.3", True), ("phi-4-mini", False)])
@@ -458,32 +460,34 @@ def test_reviewed_paths_match_rendered_catalog(template, schema_flags):
     assert detect_reasoning_flags(template)["supports_tools"] is expected
 
 
-@pytest.mark.parametrize(
-    "label, template",
-    [
-        # Jinja parses expressions by recursive descent, so nesting alone exhausts the
-        # stack before this module ever sees a tree.
-        ("nested_if", "{% if tools %}" * 5000 + "{{ tools|tojson }}" + "{% endif %}" * 5000),
-        (
-            "parenthesised_guard",
-            "{% if " + "(" * 200 + "tools" + ")" * 200 + " %}{{ tools|tojson }}{% endif %}",
-        ),
+def _pathological(label):
+    """Built here rather than parametrized: pytest puts the node id in
+    PYTEST_CURRENT_TEST, and Windows caps an environment variable at 32767
+    characters, so a 70 KB template in the id errors the test at setup."""
+    if label == "nested_if":
+        # Jinja parses by recursive descent, so nesting alone exhausts the stack
+        # before this module ever sees a tree.
+        return "{% if tools %}" * 5000 + "{{ tools|tojson }}" + "{% endif %}" * 5000
+    if label == "parenthesised_guard":
+        return "{% if " + "(" * 200 + "tools" + ")" * 200 + " %}{{ tools|tojson }}{% endif %}"
+    if label == "wide_or":
         # A wide boolean guard recurses in the node repr used as a condition-fact key.
-        (
-            "wide_or",
+        return (
             "{% if " + " or ".join(f"v{i}" for i in range(2000)) + " %}"
-            "{{ tools|tojson }}{% endif %}",
-        ),
-        # A long attribute chain recurses in _value_aliases.
-        ("deep_attribute", "{{ tools" + ".a" * 3000 + " }}"),
-    ],
-)
-def test_pathological_templates_disable_tools_instead_of_raising(label, template):
+            "{{ tools|tojson }}{% endif %}"
+        )
+    # A long attribute chain recurses in _value_aliases.
+    return "{{ tools" + ".a" * 3000 + " }}"
+
+
+@pytest.mark.parametrize("label", ["nested_if", "parenthesised_guard", "wide_or", "deep_attribute"])
+def test_pathological_templates_disable_tools_instead_of_raising(label):
     """detect_reasoning_flags runs on the GGUF metadata read and the llama-server launch,
     so a template too deep to analyse must leave tools off rather than break the load.
     The substring scan this replaced could not raise at all."""
     from core.inference.llama_cpp import detect_reasoning_flags
 
+    template = _pathological(label)
     assert template_supports_tools(template) is False
     assert detect_reasoning_flags(template, f"vendor/{label}")["supports_tools"] is False
 
