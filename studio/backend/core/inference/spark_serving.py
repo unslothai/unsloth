@@ -19,6 +19,7 @@ so the Studio event loop never waits on the peer.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import getpass
 import glob
@@ -908,6 +909,49 @@ async def replica_build_mismatch(peer: str, peer_binary: str) -> Optional[str]:
     if not remote or remote == local:
         return None
     return f"this node runs llama-server {local} and {peer} runs {remote}"
+
+
+def generated_launch_files(files: Sequence[str]) -> List[str]:
+    """The launch files this process WROTE rather than found: the ones in the temp directory.
+
+    A chat-template override, or a repaired GGUF template, is written to a uniquely named
+    ``unsloth_chat_template_*.jinja`` per load and named in argv. The peer cannot already have
+    a file this process just created, so a preflight that demands every launch file be present
+    always failed and those loads never got replicas at all."""
+    try:
+        temp_root = osp.realpath(tempfile.gettempdir())
+    except OSError:
+        return []
+    out: List[str] = []
+    for path in files:
+        try:
+            if osp.realpath(osp.dirname(str(path))) == temp_root and osp.isfile(str(path)):
+                out.append(str(path))
+        except OSError:
+            continue
+    return out
+
+
+async def replicate_generated_files(peer: str, files: Sequence[str]) -> Optional[str]:
+    """Write each file to the peer at the SAME path, or name the first that would not go.
+
+    The same path, because the replica is launched from the primary's argv unchanged and that
+    identity is what the whole replica path rests on. The name is unique per load, so there is
+    nothing on the peer to collide with. Base64 rather than a heredoc: a Jinja template is full
+    of quotes and braces, and the transfer must not depend on any of them."""
+    for path in files:
+        try:
+            payload = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+        except OSError as exc:
+            return f"{path} could not be read ({exc})"
+        rc, _out, err = await ssh_run(
+            peer,
+            f"printf %s {shlex.quote(payload)} | base64 -d > {shlex.quote(path)}",
+            timeout = 25.0,
+        )
+        if rc != 0:
+            return f"{path} could not be written on {peer} ({(err or '').strip()[:120]})"
+    return None
 
 
 def redacted_argv(argv: List[str]) -> List[str]:
@@ -2476,7 +2520,21 @@ class SparkServing:
             return
         # Same argv, so every file it names has to exist at the same path on the peer.
         needed = launch_files(argv, str(gguf_path))
-        checks = " && ".join(f"test -f {shlex.quote(p)}" for p in needed)
+        generated = generated_launch_files(needed)
+        if generated:
+            failed = await replicate_generated_files(peer, generated)
+            if failed:
+                self.topology, self.reason = (
+                    "single",
+                    f"a generated launch file could not be put on {peer}: {failed}",
+                )
+                logger.warning("spark serving: %s", self.reason)
+                return
+            logger.info(
+                "spark serving: copied %d generated launch file(s) to %s", len(generated), peer
+            )
+        needed = [p for p in needed if p not in set(generated)]
+        checks = " && ".join(f"test -f {shlex.quote(p)}" for p in needed) or "true"
         rc, out, _ = await ssh_run(peer, f"{checks} && echo YES || echo NO", timeout = 25.0)
         self.peer_model_present = rc == 0 and out.strip().endswith("YES")
         if not self.peer_model_present:

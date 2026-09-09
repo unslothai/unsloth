@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 import threading
 import shutil
 import time
@@ -2980,3 +2981,48 @@ def test_an_explicit_gpu_pin_does_not_get_a_split_with_the_wrong_device_order(
     _calls, started = _patch_remote(monkeypatch)
     out = run(ss.before_load(_FakeRequest(str(model)), 4))
     assert started and "--rpc" in (out.llama_extra_args or [])
+
+
+def test_a_generated_chat_template_is_copied_rather_than_demanded(cluster, monkeypatch, tmp_path):
+    # A chat-template override is written to a uniquely named file per load and named in argv.
+    # The peer cannot already have a file this process just created, so demanding it meant
+    # those loads never got replicas at all.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    template = Path(tempfile.gettempdir()) / f"unsloth_chat_template_{os.getpid()}.jinja"
+    template.write_text("{% if x %}'quotes' and {braces}{% endif %}", encoding = "utf-8")
+
+    try:
+        _calls, started = _patch_remote(
+            monkeypatch,
+            binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server",
+            model_present = True,
+        )
+        backend = _FakeBackend(12345, str(model))
+        backend._process.args = list(backend._process.args) + [
+            "--chat-template-file",
+            str(template),
+        ]
+        run(ss.after_load(backend, 16))
+        assert started and ss.state().topology == "replicas"
+        copied = [c for c in _calls if "base64 -d" in c]
+        assert len(copied) == 1 and str(template) in copied[0]
+        # And it is NOT in the file-presence check, which it could never satisfy.
+        checks = [c for c in _calls if c.startswith("test -f")]
+        assert checks and str(template) not in checks[0]
+    finally:
+        template.unlink(missing_ok = True)
+
+
+def test_only_files_this_process_wrote_are_copied(tmp_path):
+    outside = tmp_path / "weights.gguf"
+    outside.write_bytes(b"x")
+    inside = Path(tempfile.gettempdir()) / f"unsloth_chat_template_probe_{os.getpid()}.jinja"
+    inside.write_text("x", encoding = "utf-8")
+    try:
+        found = ss.generated_launch_files([str(outside), str(inside), "/nope/missing.jinja"])
+        assert found == [str(inside)]
+    finally:
+        inside.unlink(missing_ok = True)
