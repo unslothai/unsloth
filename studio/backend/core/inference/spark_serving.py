@@ -1723,6 +1723,13 @@ class SparkServing:
         return _with_rpc_args(request)
 
     async def load_failed(self) -> None:
+        # Not every failed load leaves nothing running: the route validates and can raise 400/409
+        # before it unloads, so a rejected replacement leaves the previous model loaded and still
+        # being served. Tearing its topology down there would kill a working split or router over
+        # a request that never touched it.
+        backend = self.attached_backend
+        if backend is not None and getattr(backend, "is_loaded", False):
+            return
         self.mtp, self.mtp_reason = "unknown", "the load failed; nothing is running"
         if self.peer_process is not None or self.router is not None:
             await self.detach()

@@ -2030,3 +2030,25 @@ def test_relaunch_budget_resets_after_a_peer_recovers(monkeypatch):
 
     assert state.relaunch_attempts == 0
     assert not state.relaunch_gave_up
+
+
+def test_load_failed_keeps_a_topology_whose_model_is_still_loaded():
+    # The route validates before it unloads, so a rejected replacement load leaves the previous
+    # model serving. Its split or router must survive that.
+    import asyncio
+
+    state = ss.SparkServing()
+    detached = []
+
+    async def _detach():
+        detached.append(True)
+
+    state.detach = _detach
+    state.peer_process = object()
+    state.attached_backend = type("B", (), {"is_loaded": True})()
+    asyncio.run(state.load_failed())
+    assert not detached, "tore down a topology whose model is still loaded"
+
+    state.attached_backend = type("B", (), {"is_loaded": False})()
+    asyncio.run(state.load_failed())
+    assert detached, "kept a topology after the model really went away"
