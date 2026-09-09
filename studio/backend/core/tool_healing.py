@@ -892,7 +892,6 @@ def parse_tool_calls_from_text(
     # defined there because the Gemma and bare-JSON scanners live there.
     try:
         from core.inference.tool_call_parser import _blocked_markerless_body_spans
-
         _blocked_spans = _blocked_markerless_body_spans(content, enabled_tool_names)
     except Exception:  # noqa: BLE001 -- no spans just means the old, unmasked behaviour
         _blocked_spans = []
@@ -901,8 +900,7 @@ def parse_tool_calls_from_text(
         return any(begin <= pos < stop for begin, stop in _blocked_spans)
 
     markers = [
-        mk for mk in _build_markers(content)
-        if not _in_think(mk[0]) and not _in_blocked(mk[0])
+        mk for mk in _build_markers(content) if not _in_think(mk[0]) and not _in_blocked(mk[0])
     ]
     coverage = _marker_coverage(content, markers)
     covered_until = -1
