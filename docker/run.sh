@@ -49,8 +49,10 @@ esac
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
+DATA_DIR="${UNSLOTH_DATA_DIR:-}"
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
+[[ -n "$DATA_DIR" ]] && mkdir -p "$DATA_DIR"
 
 # Docker resolves --gpus in the DAEMON, before the container exists: on a host with
 # no NVIDIA GPU it dies with "failed to discover GPU vendor from CDI: no known GPU
@@ -134,6 +136,7 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
 [[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
+[[ -n "${UNSLOTH_DATA_DIR:-}"  ]] && ENV_FORWARD+=(-e UNSLOTH_DATA_DIR)
 # read by studio_launch.sh; without these it uses a random password and no sshd
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
@@ -146,6 +149,11 @@ declare -a PORT_FLAGS=()
 if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     # shellcheck disable=SC2206  # intentional word splitting of "-p X -p Y"
     PORT_FLAGS=(${UNSLOTH_PORTS})
+fi
+
+declare -a DATA_FLAGS=()
+if [[ -n "${UNSLOTH_DATA_DIR:-}" ]]; then
+    DATA_FLAGS=(-v "$UNSLOTH_DATA_DIR":/data)
 fi
 
 # CI / piped invocations otherwise hit "the input device is not a TTY"
@@ -161,6 +169,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     --ipc=host \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
+    ${DATA_FLAGS[@]+"${DATA_FLAGS[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \

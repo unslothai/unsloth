@@ -1,0 +1,41 @@
+# Unsloth Docker Compose configuration
+# Usage:
+#   docker compose up -d
+#
+# Studio:     http://localhost:8000
+# JupyterLab: http://localhost:8888
+#
+# Persistence:
+#   Single-volume persistence mounts ./data on host to /data in the container (#4396).
+#   All Hugging Face model downloads, compiled Triton kernels, fine-tuned model outputs,
+#   GGUF exports, authentication database (auth.db), and notebooks persist across
+#   container restarts and updates without clobbering pre-baked venvs or llama.cpp.
+
+services:
+  unsloth:
+    image: ${UNSLOTH_IMAGE:-unsloth/unsloth:latest}
+    container_name: unsloth
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ports:
+      - "${UNSLOTH_STUDIO_PORT:-8000}:8000"
+      - "${JUPYTER_PORT:-8888}:8888"
+    environment:
+      - UNSLOTH_STUDIO_PASSWORD=${UNSLOTH_STUDIO_PASSWORD:-}
+      - JUPYTER_PASSWORD=${JUPYTER_PASSWORD:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - UNSLOTH_ALLOW_CPU=${UNSLOTH_ALLOW_CPU:-0}
+    volumes:
+      - ${UNSLOTH_DATA_DIR:-./data}:/data
+      - ${UNSLOTH_HOST_DIR:-./work}:/workspace/host
+    restart: unless-stopped

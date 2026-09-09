@@ -52,13 +52,108 @@ sync_notebooks() {
     fi
 }
 
+err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
+warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
+
+# Set up persistent storage root and symlinks for models, outputs, exports, and auth (#4396).
+# Prevents container crashes caused by mounting over /opt/unsloth-studio and unifies caches.
+setup_data_dir() {
+    local studio_home="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
+    local base_venv="${UNSLOTH_BASE_VENV:-/opt/unsloth-venv}"
+    local data_dir="${UNSLOTH_DATA_DIR:-/data}"
+
+    # Guard: Warn if someone bind-mounted over the baked studio home or /workspace/studio directly
+    if [[ -d "${studio_home}" ]] && [[ ! -d "${studio_home}/unsloth_studio" && -d "${base_venv}" ]]; then
+        warn "The directory '${studio_home}' appears empty or overwritten by a host mount."
+        warn "Bind-mounting over Studio's root removes pre-installed venvs and binaries."
+        warn "To persist data, mount to /data instead (-v /host/path:/data). See #4396."
+    fi
+
+    if [[ "${data_dir}" == "none" || "${data_dir}" == "0" || "${UNSLOTH_ENABLE_DATA_DIR:-1}" == "0" ]]; then
+        return 0
+    fi
+
+    # Initialize data directory structure if /data is available or root is writable
+    if [[ -d "${data_dir}" ]] || [[ -n "${UNSLOTH_DATA_DIR:-}" ]] || [[ -w "/" ]]; then
+        mkdir -p "${data_dir}/cache/huggingface" \
+                 "${data_dir}/cache/triton" \
+                 "${data_dir}/cache/torch" \
+                 "${data_dir}/outputs" \
+                 "${data_dir}/exports" \
+                 "${data_dir}/auth" \
+                 "${data_dir}/runs" \
+                 "${data_dir}/work" 2>/dev/null || true
+    fi
+
+    # Export canonical cache variables pointing to the persistent volume
+    if [[ -d "${data_dir}/cache" ]]; then
+        export HF_HOME="${HF_HOME:-${data_dir}/cache/huggingface}"
+        export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${data_dir}/cache/huggingface}"
+        export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${data_dir}/cache/triton}"
+        export TORCH_HOME="${TORCH_HOME:-${data_dir}/cache/torch}"
+        export UNSLOTH_DATA_DIR="${data_dir}"
+    fi
+
+    _safe_symlink() {
+        local container_path="$1"
+        local target="$2"
+
+        [[ -d "${target}" ]] || return 0
+
+        # Do not overwrite if container_path is already a direct mountpoint
+        if grep -qs " ${container_path} " /proc/mounts 2>/dev/null; then
+            return 0
+        fi
+
+        # If already pointing to the target, nothing to do
+        if [[ -L "${container_path}" ]]; then
+            if [[ "$(readlink "${container_path}" 2>/dev/null)" == "${target}" ]]; then
+                return 0
+            fi
+            rm -f "${container_path}" 2>/dev/null || true
+        fi
+
+        # If it is an existing directory, copy over any files before switching to symlink
+        if [[ -d "${container_path}" ]]; then
+            if [[ -z "$(ls -A "${target}" 2>/dev/null)" ]]; then
+                cp -rn "${container_path}/." "${target}/" 2>/dev/null || true
+            fi
+            rm -rf "${container_path}" 2>/dev/null || true
+        fi
+
+        mkdir -p "$(dirname "${container_path}")" 2>/dev/null || true
+        ln -sf "${target}" "${container_path}" 2>/dev/null || true
+    }
+
+    if [[ -d "${data_dir}" ]]; then
+        _safe_symlink "/workspace/.cache/huggingface" "${data_dir}/cache/huggingface"
+        _safe_symlink "/workspace/.cache/triton" "${data_dir}/cache/triton"
+        _safe_symlink "/root/.cache/huggingface" "${data_dir}/cache/huggingface"
+        _safe_symlink "/root/.cache/triton" "${data_dir}/cache/triton"
+
+        # Runtime directories under Studio home
+        _safe_symlink "${studio_home}/outputs" "${data_dir}/outputs"
+        _safe_symlink "${studio_home}/exports" "${data_dir}/exports"
+        _safe_symlink "${studio_home}/auth" "${data_dir}/auth"
+        _safe_symlink "${studio_home}/runs" "${data_dir}/runs"
+
+        # Also link /workspace/studio subdirs if that directory exists and is distinct
+        if [[ "${studio_home}" != "/workspace/studio" && -d "/workspace/studio" ]]; then
+            _safe_symlink "/workspace/studio/outputs" "${data_dir}/outputs"
+            _safe_symlink "/workspace/studio/exports" "${data_dir}/exports"
+            _safe_symlink "/workspace/studio/auth" "${data_dir}/auth"
+            _safe_symlink "/workspace/studio/runs" "${data_dir}/runs"
+        fi
+
+        _safe_symlink "/workspace/work" "${data_dir}/work"
+    fi
+}
+setup_data_dir || true
+
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
     sync_notebooks
     exec "$@"
 fi
-
-err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
-warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
 # CPU mode covers Jupyter, GGUF tooling and Studio chat, but NOT training or loading
 # a model. A visible GPU still runs the checks below.
