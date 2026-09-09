@@ -48,8 +48,7 @@ def test_rmsnorm_backward_gradient_layout(gemma, layout, dtype):
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_rmsnorm_forward_column_strided_input(gemma, dtype):
-    """The forward reshapes X the same way, so a column-strided X is read with the
-    wrong offsets too: `x[..., ::2]` reshapes to a view of stride 2, not a copy."""
+    """`x[..., ::2]` reshapes to a stride-2 view, not a copy, so the forward reads it wrong too."""
     from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm
 
     torch.manual_seed(42)
