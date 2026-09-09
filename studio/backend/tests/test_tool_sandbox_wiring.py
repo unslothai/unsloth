@@ -190,6 +190,15 @@ def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
 def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     """Asserted about the OUTER process: under bubblewrap the payload is not a
     session leader, so asking it about its own sid only passes on a fallback."""
+    # One call OUTSIDE the window first. Everything this platform initialises
+    # lazily then happens before anything is counted: the capability probe spawns
+    # a real launch, and on macOS _developer_paths() shells out to xcode-select.
+    # Both are one-time, and counting them made this fail 4 == 2 on macos-14
+    # while passing on Linux. What the assertion is for is per-CALL behaviour, so
+    # a warm-up is what separates the two: a genuine per-call spawn survives it,
+    # which is how the extra fork this test caught before was found.
+    tools._python_exec("pass", None, 60, _SESSION)
+
     seen = []
     real = subprocess.Popen
 
