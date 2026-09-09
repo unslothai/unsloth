@@ -7243,6 +7243,33 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
     return tool_execution_mode
 
 
+def _with_session_packages(env: dict, workdir: str) -> dict:
+    """Keep a session's installed packages importable on a launch that is not isolated.
+
+    The backends point PIP_TARGET at ``<workdir>/.unsloth-packages``, so a package
+    an isolated call installed lives there. A later call in the same session can
+    still land here -- bwrap removed by a package update, the planner breaking --
+    and losing the package and its console scripts halfway through a chat is the
+    visible half of that.
+
+    Only when the directory exists, so a host that never isolated is handed back
+    exactly the environment it handed in. The bin directory goes LAST on PATH for
+    the reason the backends put it last: it is writable by the tool call, and a
+    binary planted there must not shadow a bare command the approval logic treats
+    as safe.
+    """
+    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+    if not os.path.isdir(packages):
+        return env
+    updated = dict(env)
+    for key, value in (
+        ("PYTHONPATH", packages),
+        ("PATH", os.path.join(packages, "bin")),
+    ):
+        updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
+    return updated
+
+
 def _software_safeguards_launch(plan, fault: str):
     """The launch ``auto`` falls back to when no OS boundary can be built.
 
@@ -7254,7 +7281,7 @@ def _software_safeguards_launch(plan, fault: str):
     return os_sandbox.PreparedSandboxLaunch(
         argv = plan.argv,
         workdir = plan.workdir,
-        env = plan.env,
+        env = _with_session_packages(plan.env, plan.workdir),
         preexec_fn = plan.preexec_fn,
         backend = "software-safeguards",
         timeout_seconds = plan.timeout_seconds,

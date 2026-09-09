@@ -752,3 +752,41 @@ def test_a_backend_that_has_just_stopped_being_available_still_falls_back(monkey
     assert tools._last_tool_execution_record.os_isolation is False
     # Forced, or the stale verdict answers it.
     assert probes and probes[-1] is True
+
+
+def test_a_package_installed_in_an_isolated_call_survives_the_fallback(monkeypatch):
+    """The backends point PIP_TARGET at <workdir>/.unsloth-packages, so a package
+    an isolated call installed lives there. A later call in the same session can
+    still fall back -- bwrap removed by a package update -- and losing the package
+    halfway through a chat is the visible half of that."""
+    workdir = tools._get_workdir(_SESSION)
+    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+    os.makedirs(os.path.join(packages, "bin"), exist_ok = True)
+    with open(os.path.join(packages, "installed_by_an_earlier_call.py"), "w") as handle:
+        handle.write("VALUE = 'from the session package directory'\n")
+    _declining_backend(monkeypatch, "bubblewrap (bwrap) is not installed on this host")
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kwargs: os_sandbox.SandboxCapability(
+            backend = "none", available = False, reason = "bwrap is gone"
+        ),
+    )
+    try:
+        out = tools._python_exec(
+            "import installed_by_an_earlier_call as m; print('IMPORTED', m.VALUE)",
+            None,
+            60,
+            _SESSION,
+        )
+        assert "from the session package directory" in out, out
+    finally:
+        shutil.rmtree(packages, ignore_errors = True)
+
+
+def test_a_host_that_never_isolated_is_handed_back_what_it_handed_in():
+    """The other half: the package directory only joins the path when it exists."""
+    workdir = tools._get_workdir(_SESSION)
+    shutil.rmtree(os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH), ignore_errors = True)
+    handed_in = {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}
+    assert tools._with_session_packages(handed_in, workdir) == handed_in
