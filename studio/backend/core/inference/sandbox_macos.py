@@ -491,6 +491,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     for root in (posixpath.abspath(workdir), os.path.realpath(workdir)):
         if root not in roots:
             roots.append(root)
+    canonical_root = os.path.realpath(workdir)
     inside: list[str] = []
     # "Python" is the framework build's top-level dyld image, which
     # runtime_read_paths already names: omitted here it stayed writable under the
@@ -498,20 +499,23 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python"):
             candidate = posixpath.join(prefix, name)
-            absolute = posixpath.abspath(candidate)
-            if not os.path.exists(absolute):
+            if not os.path.exists(candidate):
                 continue
+            # The RESOLVED path decides. Pairing the two lexical tests per root
+            # answered a different question: an alias-prefixed path is not
+            # beneath the canonical root and a canonical one is not beneath the
+            # alias, so every path was rejected either way round -- and a venv
+            # invoked through a symlink keeps that alias in sys.prefix.
             resolved = os.path.realpath(candidate)
-            for root in roots:
-                if not _within(absolute, root) or not _within(resolved, root):
-                    continue
-                # Denied under every spelling of the workdir, since Seatbelt
-                # judges the path as written and the allowance covers them all.
-                relative = posixpath.relpath(absolute, root)
-                for other in roots:
-                    spelling = posixpath.join(other, relative)
-                    if spelling not in inside:
-                        inside.append(spelling)
+            if not _within(resolved, canonical_root):
+                continue
+            # Denied under every spelling of the workdir, since Seatbelt judges
+            # the path as written and the allowance covers them all.
+            relative = posixpath.relpath(resolved, canonical_root)
+            for other in roots:
+                spelling = posixpath.join(other, relative)
+                if spelling not in inside:
+                    inside.append(spelling)
     return tuple(inside)
 
 

@@ -226,21 +226,34 @@ def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
     sys.executable runs that code with the server's authority. They are re-bound
     read-only after the writable bind instead.
 
-    Only when both spellings stay inside the workdir. One that RESOLVES outside is
-    the symlink case, and it needs no rule: nothing is bound at the far end, so
-    inside the jail it dangles.
+    Judged on the RESOLVED path, not the spelling. A venv invoked through a
+    symlinked path keeps that alias in sys.prefix -- measured on CPython 3.12,
+    where <alias>/venv/bin/python reports sys.prefix = <alias>/venv, not the
+    resolved form -- while the caller hands in the canonical workdir. A lexical
+    test against either spelling alone rejects the other, and with an
+    alias-valued sys.prefix that left nothing protected: a tool call overwrote
+    the interpreter's sitecustomize through both spellings, under bubblewrap
+    0.11 in a container.
+
+    One that RESOLVES outside still gets no rule, which is the <workdir>/venv/lib
+    symlinked at ~/.ssh case: nothing is bound at the far end, so inside the jail
+    it dangles.
     """
+    canonical_root = os.path.realpath(workdir)
     inside: list[str] = []
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl"):
             candidate = os.path.join(prefix, name)
-            absolute = os.path.abspath(candidate)
-            if not _within(absolute, workdir) or not os.path.exists(absolute):
+            if not os.path.exists(candidate):
                 continue
-            if not _within(os.path.realpath(candidate), workdir):
-                continue
-            if absolute not in inside:
-                inside.append(absolute)
+            # The RESOLVED path decides, and it is also what gets bound. Testing
+            # the spelling as written answered a different question -- an
+            # alias-prefixed path is not lexically beneath the canonical root,
+            # and a canonical one is not beneath the alias -- so pairing the two
+            # tests per root rejected every path either way round.
+            resolved = os.path.realpath(candidate)
+            if _within(resolved, canonical_root) and resolved not in inside:
+                inside.append(resolved)
     return tuple(inside)
 
 

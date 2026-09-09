@@ -698,3 +698,19 @@ def test_an_editable_checkout_is_listable_but_not_readable(tmp_path, monkeypatch
     assert f'(literal "{checkout}")' in profile
     assert f'(subpath "{checkout}")' not in profile
     assert f'(subpath "{package}")' in profile
+
+
+def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(
+    tmp_path, monkeypatch
+):
+    """The macOS half of the same miss. A venv invoked through a symlinked path
+    reports the alias in sys.prefix, and pairing the two lexical tests per root
+    rejected it either way round, so no denial was emitted at all."""
+    real = tmp_path / "real"
+    (real / "venv" / "lib").mkdir(parents = True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    profile = _profile_for(alias, monkeypatch, alias / "venv")
+    deny = _rule(profile, "(deny file-write* ")
+    for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
+        assert f'(subpath "{spelling}")' in deny, deny

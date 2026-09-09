@@ -1133,13 +1133,15 @@ def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path,
     assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
 
 
-def _fake_editable(tmp_path, monkeypatch, source: str):
+def _fake_editable(tmp_path, monkeypatch, source: str, top_level: str | None = None):
     """A dist-info recording an editable install, the way an installer writes it."""
     site_dir = tmp_path / "sitepkgs"
     info = site_dir / "demo-1.0.dist-info"
     info.mkdir(parents = True)
     (info / "METADATA").write_text("Name: demo\nVersion: 1.0\n", encoding = "utf-8")
     (info / "RECORD").write_text("", encoding = "utf-8")
+    if top_level is not None:
+        (info / "top_level.txt").write_text(top_level + "\n", encoding = "utf-8")
     (info / "direct_url.json").write_text(
         json.dumps({"url": f"file://{source}", "dir_info": {"editable": True}}),
         encoding = "utf-8",
@@ -1226,3 +1228,67 @@ def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings
                 assert min(landed) > last_bind, f"{spelling} is bound before the last --bind"
     finally:
         launch.cleanup()
+
+
+def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(
+    tmp_path, monkeypatch
+):
+    """The spelling CPython actually reports, which the test above did not use.
+
+    A venv invoked as <alias>/venv/bin/python reports sys.prefix = <alias>/venv,
+    not the resolved form; measured on CPython 3.12. The caller hands in the
+    canonical workdir, so a lexical containment test rejected every runtime path
+    and nothing was re-bound: under bubblewrap 0.11 in a container a tool call
+    then overwrote the interpreter's sitecustomize through both spellings.
+    """
+    real = tmp_path / "real"
+    (real / "venv" / "lib").mkdir(parents = True)
+    (real / "venv" / "bin").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    # The alias spelling, exactly as an invoked venv reports it.
+    monkeypatch.setattr(sys, "prefix", str(alias / "venv"))
+    monkeypatch.setattr(sys, "exec_prefix", str(alias / "venv"))
+
+    under = sandbox_linux._runtime_paths_under(str(real))
+    assert str(real / "venv" / "lib") in under, under
+    assert str(real / "venv" / "bin") in under, under
+
+    launch = sandbox_linux.prepare(_plan(alias))
+    try:
+        argv = list(launch.argv)
+        last_bind = max(i for i, item in enumerate(argv) if item == "--bind")
+        for leg in ("lib", "bin"):
+            for spelling in (real / "venv" / leg, alias / "venv" / leg):
+                landed = [
+                    i for i in range(len(argv))
+                    if argv[i] == "--ro-bind" and argv[i + 2] == str(spelling)
+                ]
+                # The LAST one is what stands: an earlier read-only bind is fine
+                # and is covered by the writable bind that follows it, which is
+                # exactly why the post-bind one has to exist.
+                assert landed and max(landed) > last_bind, f"{spelling} unprotected"
+    finally:
+        launch.cleanup()
+
+
+def test_an_editable_namespace_package_is_granted_without_an_init(tmp_path, monkeypatch):
+    """A PEP 420 namespace package has no __init__.py by design, so presence of
+    one cannot be the only test: the package imports in Studio's environment and
+    would fail only inside a tool call. top_level.txt names it."""
+    source = tmp_path / "checkout"
+    namespace = source / "acme"
+    (namespace / "widget").mkdir(parents = True)
+    (namespace / "widget" / "__init__.py").write_text("", encoding = "utf-8")
+    (source / ".env").write_text("AWS_SECRET_ACCESS_KEY=real\n", encoding = "utf-8")
+    (source / "fixtures").mkdir()
+    _fake_editable(tmp_path, monkeypatch, str(source), top_level = "acme")
+    try:
+        granted = os_sandbox.editable_source_roots()
+        assert str(namespace) in granted, granted
+        # Still only what the distribution declares, so the checkout does not
+        # come with it.
+        assert not any("fixtures" in path or ".env" in path for path in granted), granted
+        assert str(source) not in granted, granted
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()

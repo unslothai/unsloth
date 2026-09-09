@@ -8,6 +8,7 @@ import functools
 import hashlib
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -330,7 +331,7 @@ def editable_source_roots() -> tuple[str, ...]:
             continue
         if path in ("/", "/usr") or not os.path.isdir(path):
             continue
-        for importable in _importable_entries(path):
+        for importable in _importable_entries(path, _declared_names(distribution)):
             if importable not in roots:
                 roots.append(importable)
     return tuple(roots)
@@ -350,7 +351,30 @@ def editable_import_roots() -> tuple[str, ...]:
     return tuple(dict.fromkeys(os.path.dirname(path) for path in editable_source_roots()))
 
 
-def _importable_entries(project_root: str) -> tuple[str, ...]:
+def _declared_names(distribution) -> frozenset[str]:
+    """Top-level names the distribution itself declares.
+
+    A PEP 420 namespace package has no __init__.py on purpose, so presence of one
+    cannot be the only test or an editable namespace package is importable in
+    Studio and missing inside a tool call. top_level.txt names it; the project
+    name normalised is the fallback for a wheel built without one.
+    """
+    names: set[str] = set()
+    try:
+        raw = distribution.read_text("top_level.txt") or ""
+        names.update(line.strip() for line in raw.splitlines() if line.strip())
+    except Exception:  # noqa: BLE001 - a missing or unreadable record is not fatal
+        pass
+    try:
+        project = (distribution.metadata["Name"] or "").strip()
+    except Exception:  # noqa: BLE001
+        project = ""
+    if project:
+        names.add(re.sub(r"[-_.]+", "_", project).lower())
+    return frozenset(name for name in names if name and "/" not in name and name != "..")
+
+
+def _importable_entries(project_root: str, declared: frozenset[str] = frozenset()) -> tuple[str, ...]:
     """The importable entries under an editable checkout, not the checkout.
 
     direct_url.json names the PROJECT root, and a checkout holds more than its
@@ -389,8 +413,15 @@ def _importable_entries(project_root: str) -> tuple[str, ...]:
             if name.startswith(".") or name.endswith((".egg-info", ".dist-info")):
                 continue
             entry = os.path.join(import_root, name)
-            package = os.path.isdir(entry) and os.path.exists(os.path.join(entry, "__init__.py"))
-            if (package or name.endswith(".py")) and entry not in found:
+            # Declared, or carrying an __init__.py. The second alone missed PEP
+            # 420 namespace packages, which have none by design.
+            package = os.path.isdir(entry) and (
+                name in declared or os.path.exists(os.path.join(entry, "__init__.py"))
+            )
+            module = name.endswith(".py") and (
+                name in declared or name[:-3] in declared or os.path.isfile(entry)
+            )
+            if (package or module) and entry not in found:
                 found.append(entry)
     return tuple(found)
 
