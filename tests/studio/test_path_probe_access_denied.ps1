@@ -491,6 +491,9 @@ Write-Host "CAN_DENY: `$oldFormTerminated"
 # Both override forms must switch to user-supplied wording.
 if (`$args[2] -eq "supplied") { `$WithLlamaCppDir = `$dir }
 if (`$args[2] -eq "env") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = `$dir }
+# A build supplied from inside the managed tree goes with it when the tree is
+# moved or deleted, so the tree is not ours to touch either.
+if (`$args[2] -eq "nested") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = Join-Path `$dir "custom" }
 # Renaming needs DELETE on the folder plus write on its parent. Taking either
 # away is the denial that the move cannot recover, and the one the guidance is
 # still written for.
@@ -539,7 +542,7 @@ else { chmod 755 `$dir 2>`$null }
     # that mode ran against and not the first mode's.
     $preflightHomes = @{}
     try {
-        foreach ($mode in @("managed", "supplied", "env", "unmovable", "link")) {
+        foreach ($mode in @("managed", "supplied", "env", "nested", "unmovable", "link")) {
             $runHome = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_home_" + [guid]::NewGuid().ToString("N"))
             New-Item -ItemType Directory -Force -Path $runHome | Out-Null
             if ($mode -eq "managed") { $preflightHome = $runHome }
@@ -606,14 +609,18 @@ else { chmod 755 `$dir 2>`$null }
             $out -notmatch "SUCCESS: The file \(or folder\)" -and
             $out -notmatch "processed file:")
 
-        # Overrides may name the managed location itself; never call it disposable.
-        foreach ($mode in @("supplied", "env")) {
+        # Overrides may name the managed location itself, or a build inside it;
+        # never call either disposable, and never move the tree out from under
+        # one, which the later --with-llama-cpp-dir check would then abort on.
+        foreach ($mode in @("supplied", "env", "nested")) {
             $supplied = $preflightRuns[$mode]
             Check "a tree the user named ($mode) still stops the install" (
                 $supplied -match "DENIED_VERDICT: stop")
             Check "a tree the user named ($mode) is not called a cache we own" (
                 $supplied -match "DENIED_REASON: .*point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build" -and
                 $supplied -notmatch "DENIED_REASON: .*Delete or rename")
+            Check "a tree the user named ($mode) is left where it is" (
+                $supplied -match "ASIDE_COUNT: 0" -and $supplied -match "ORIGINAL_EXISTS: True")
         }
         Check "the managed cache is still called one" (
             $out -match "DENIED_REASON: .*Delete or rename that folder")

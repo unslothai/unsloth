@@ -2099,7 +2099,11 @@ exit 1
 
         # Ordered by how much each one changes the fix. takeown/icacls cannot help
         # with any of the first three, so name them before falling back to ACLs.
-        if ($attrs -band [System.IO.FileAttributes]::Encrypted) {
+        # On a directory this attribute only means new descendants are encrypted
+        # by default, so listing it never needs the key and a denial there is an
+        # ACL. Only a file's own streams are unreadable without the certificate.
+        $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
+        if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
             return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
         }
         # Offline plus either recall attribute is a cloud placeholder, typically
@@ -2124,19 +2128,21 @@ exit 1
         return ""
     }
 
-    # Whether security software, rather than an ACL, is denying this path.
+    # Which security software could be denying this path, as a possibility.
     #
-    # It has to be named apart from an ACL because takeown and icacls cannot
-    # clear it and elevation does not either: the block is enforced by a filter
-    # driver, not by permissions. A user whose antivirus is holding the folder is
-    # otherwise sent round the takeown loop for as long as they are willing.
+    # Worth naming because takeown and icacls cannot clear a filter-driver block
+    # and elevation does not either, so a user whose antivirus is holding the
+    # folder is otherwise sent round the takeown loop for as long as they are
+    # willing. Nothing readable from here attributes the specific denial though,
+    # so this names the candidate and the log that settles it and never
+    # contradicts the ACL advice it follows.
     #
     # Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
     # 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
-    # 1 blocks file access; 3 and 4 are direct disk-sector writes rather than
+    # 1 gates file access; 3 and 4 are direct disk-sector writes rather than
     # files, so neither explains a denied folder.
     #
-    # When Defender is not the cause, name whichever antivirus is registered
+    # When Defender is not it, name whichever antivirus is registered and running
     # instead: third-party suites ship the same feature under their own names
     # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
     # user cannot act on advice that does not say which product to open.
@@ -2151,19 +2157,24 @@ exit 1
             }
         } catch { $mode = $null }
         if ($mode -eq 1) {
-            return "Controlled folder access is ON, and it denies this path whatever your privileges are, so takeown and icacls will not help: allow Unsloth under Virus & threat protection > Ransomware protection > Allow an app, or exclude this folder"
+            return "Controlled folder access is ON here, and it gates writes to protected folders whatever your privileges are, so where it is the cause takeown and icacls will not clear it: Windows Defender Operational events 1123 and 1124 say whether it stopped this path, and Virus & threat protection > Ransomware protection > Allow an app is where to allow Unsloth"
         }
         # SecurityCenter2 is the registration every consumer antivirus makes, and
-        # it is absent on Server SKUs, so this stays best-effort.
+        # it is absent on Server SKUs, so this stays best-effort. productState
+        # packs the running state in 0xF000: 0x1000 on, 0x2000 snoozed, 0 off.
+        # A product that is not running cannot be holding the folder and naming it
+        # sends the user to the wrong console; a state we cannot read proves
+        # nothing either way, so it is kept.
         $others = @()
         try {
             $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+                Where-Object { $state = $_.productState -as [uint32]; ($null -eq $state) -or (($state -band 0xF000) -eq 0x1000) } |
                 ForEach-Object { [string]$_.displayName } |
                 Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
         } catch { $others = @() }
         if ($others.Count -gt 0) {
             $names = ($others | Select-Object -Unique) -join ", "
-            return "$names is the active antivirus here: its ransomware or protected-folder feature denies paths whatever your privileges are, so takeown and icacls will not help. Add an exclusion for this folder, and for Unsloth itself, in $names"
+            return "$names is running here, and its ransomware or protected-folder feature can deny a path whatever your privileges are. If takeown and icacls do not clear this, look in $names for a block on this folder, and add an exclusion for it and for Unsloth"
         }
         if ($mode -eq 2) {
             return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
@@ -2267,10 +2278,29 @@ exit 1
         Write-StudioLine ""
         # A denied custom home cannot be claimed as an Unsloth-managed cache.
         $homeIsCustom = Test-StudioHomeIsCustom
-        # Preserve user-supplied wording when either override names this tree.
+        # Preserve user-supplied wording when either override names this tree, or
+        # names a build inside it: moving or deleting this folder takes that build
+        # with it, and the later --with-llama-cpp-dir check then aborts on a path
+        # we made disappear.
         $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
-        $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
-            ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+        # Walking the ancestors beats comparing the two canonical strings: an
+        # override that does not exist yet cannot be resolved, so a prefix test
+        # would compare a resolved path against an unresolved one and miss.
+        $userSupplied = $false
+        if (-not [string]::IsNullOrWhiteSpace($suppliedDir)) {
+            $canonicalDir = [string](Get-CanonicalDir -Path $dir)
+            $probe = [string](Get-CanonicalDir -Path $suppliedDir)
+            while (-not [string]::IsNullOrWhiteSpace($probe)) {
+                if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {
+                    $userSupplied = $true
+                    break
+                }
+                $parent = ""
+                try { $parent = [string](Split-Path -Parent $probe) } catch { $parent = "" }
+                if ($parent -eq $probe) { break }
+                $probe = $parent
+            }
+        }
 
         # Only the default branch below tells the user to delete this folder, so
         # only that case may move it. A user-supplied build is not ours to touch,
@@ -2307,6 +2337,10 @@ exit 1
                 Write-StudioLine ""
                 return $null
             }
+            # This runs before the install lock, so a second run can have moved
+            # the folder in between. Re-probe rather than report a denial for a
+            # path that is no longer there and stop an install that can proceed.
+            if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
         }
 
         $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `

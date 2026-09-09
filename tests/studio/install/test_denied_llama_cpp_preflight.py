@@ -232,8 +232,11 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
     )
-    # Compare canonical paths, including denied paths whose spelling differs.
-    assert "(Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir)" in body
+    # Compare canonical paths, including denied paths whose spelling differs,
+    # and every ancestor of the override: a build supplied from inside the
+    # managed tree is the user's too.
+    assert "$probe = [string](Get-CanonicalDir -Path $suppliedDir)" in body
+    assert "if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {" in body
     assert "$LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)" in SETUP_PS1
     assert (
         "Exit-PathAccessDenied -Path $ResolvedLocal"
@@ -330,6 +333,11 @@ def test_the_denial_detail_survives_a_directory_it_cannot_open() -> None:
         assert "Encrypted" in body
         assert "cloud placeholder" in body
         assert "ReparsePoint" in body
+        # Every caller passes a directory, where Encrypted only means new
+        # descendants are encrypted by default. Listing never needs the key, so
+        # claiming EFS there sends an ordinary ACL denial after a certificate.
+        assert body.index("FileAttributes]::Directory") < body.index("FileAttributes]::Encrypted")
+        assert "-not $isDirectory" in body
         # RECALL_ON_OPEN and RECALL_ON_DATA_ACCESS are missing from the
         # FileAttributes enum on Windows PowerShell 5.1.
         assert "0x00040000" in body and "0x00400000" in body
@@ -342,6 +350,15 @@ def test_the_security_software_holding_the_folder_is_named() -> None:
     "antivirus can deny this" cannot tell which product to open."""
     for text in (INSTALL_PS1, SETUP_PS1):
         body = _function_source(text, "Get-SecuritySoftwareNote")
+        # Neither branch correlates the block with this path, so neither may say
+        # the ACL repair printed above it is pointless. Controlled folder access
+        # gates writes, and a registered antivirus need not be involved at all.
+        assert "will not help" not in body
+        # A product that is not running cannot be holding the folder, and naming
+        # it sends the user to the wrong console: 0xF000 carries the run state.
+        assert "productState" in body and "0xF000" in body
+        # Name the log that can actually attribute a Defender block.
+        assert body.count("1123 and 1124") == 2
         # Absent Defender must read the same as a Defender that says no.
         assert "Get-Command Get-MpPreference -ErrorAction SilentlyContinue" in body
         # Every failure to tell must answer "" rather than guess: no Defender
@@ -386,6 +403,17 @@ def test_a_denied_cache_is_moved_aside_only_when_it_is_ours_to_move() -> None:
         assert "$isLink = $true" in body
         # A failed move falls through to the guidance rather than stopping.
         assert body.index(guard) < body.index("Write-PathAccessDenied -Path $dir")
+        # A build supplied from inside this tree goes with it, and the later
+        # --with-llama-cpp-dir check then aborts on a path we made disappear, so
+        # containment counts as user-supplied and not just an exact match.
+        assert "Split-Path -Parent $probe" in body
+        assert body.index("$probe = $parent") < body.index(guard)
+        # This runs before the install lock, so a second run can move the folder
+        # first; reporting a denial for a path that is gone stops an install
+        # that could have carried on.
+        reprobe = '(Get-LlamaCppInstallReadState -Path $dir) -ne "Denied"'
+        assert body.count(reprobe) == 2
+        assert body.rindex(reprobe) < body.index("Write-PathAccessDenied -Path $dir")
 
 
 def test_the_shared_helpers_have_a_sync_script() -> None:
@@ -416,3 +444,11 @@ def test_a_denied_node_cache_gets_the_same_guidance_as_the_llama_cache() -> None
     assert "$nodeExit -eq 4" in caller
     assert 'Exit-PathAccessDenied -Path $NodeDir -Label "Node install"' in caller
     assert caller.index("$nodeExit -eq 4") < caller.index("https://nodejs.org/")
+    # The install lock and the .staging root live in the parent, so half of the
+    # denials that reach exit 4 are not on the cache at all. Deleting the cache
+    # cannot make a parent writable, and the parent is never ours to offer up.
+    assert 'DENIED_SCOPE_MARKER = "denied-scope: "' in node
+    assert 'DENIED_SCOPE_PARENT = "parent"' in node
+    assert '$nodeOut -match "denied-scope: parent"' in caller
+    assert "Exit-PathAccessDenied -Path $NodeParent" in caller
+    assert "-OwnershipUnverified" in caller

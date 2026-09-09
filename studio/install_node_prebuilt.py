@@ -13,7 +13,7 @@ Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json
 (committed in-tree), not a checksum re-fetched from the same origin as the archive.
 
 Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
-Exit codes: 0 success, 1 error, 2 fallback, 3 busy. A re-run that already matches
+Exit codes: 0 success, 1 error, 2 fallback, 3 busy, 4 access denied. A re-run that already matches
 logs "already matches" and returns 0 without downloading (the scripts grep it).
 """
 
@@ -57,6 +57,16 @@ EXIT_BUSY = 3
 # caller's advice for that one is "install Node yourself or check your network",
 # which is wrong here and sends people to look at the wrong thing.
 EXIT_DENIED = 4
+# setup.ps1 reads these back out to diagnose the object that was actually
+# refused. The install lock and the .staging root live in the install
+# directory's parent, so "delete or rename the Node cache" is the wrong advice
+# for half of the denials that reach exit 4, and the directory it names may not
+# even exist. Classified here, where the install directory is known, rather than
+# re-derived from a path string on the PowerShell side.
+DENIED_PATH_MARKER = "denied-path: "
+DENIED_SCOPE_MARKER = "denied-scope: "
+DENIED_SCOPE_INSTALL_DIR = "install-dir"
+DENIED_SCOPE_PARENT = "parent"
 
 # Node 24 LTS bundles npm 11, clearing Vite 8's floor (Node ^20.19 || >=22.12, npm >= 11).
 NODE_MIN_LTS_MAJOR = 24
@@ -943,19 +953,40 @@ def main(argv: list[str] | None = None) -> int:
         log(f"prebuilt unavailable: {exc}")
         return EXIT_FALLBACK
     except PermissionError as exc:
-        log(_access_denied_message(exc))
-        return EXIT_DENIED
+        return _report_access_denied(exc, install_dir)
     except OSError as exc:
         # Windows reports the ACL and filter-driver denials that matter here as
         # winerror 5, which does not always arrive as PermissionError.
         if getattr(exc, "winerror", None) == 5 or exc.errno == errno.EACCES:
-            log(_access_denied_message(exc))
-            return EXIT_DENIED
+            return _report_access_denied(exc, install_dir)
         log(f"unexpected error: {exc}")
         return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001
         log(f"unexpected error: {exc}")
         return EXIT_ERROR
+
+
+def _report_access_denied(exc: OSError, install_dir: Path) -> int:
+    """Log the denial, and say which object was refused so the caller can name it."""
+    path = getattr(exc, "filename", None) or ""
+    if path:
+        log(f"{DENIED_PATH_MARKER}{path}")
+        scope = DENIED_SCOPE_INSTALL_DIR if _within(path, install_dir) else DENIED_SCOPE_PARENT
+        log(f"{DENIED_SCOPE_MARKER}{scope}")
+    log(_access_denied_message(exc))
+    return EXIT_DENIED
+
+
+def _within(path: str, root: Path) -> bool:
+    """Whether path is root or sits under it, by spelling alone.
+
+    Both sides come from the same --install-dir string, so normalizing without
+    resolving links keeps them comparable; resolving would need the very access
+    that was just denied.
+    """
+    normalized = os.path.normcase(os.path.abspath(path))
+    base = os.path.normcase(os.path.abspath(root))
+    return normalized == base or normalized.startswith(base.rstrip(os.sep) + os.sep)
 
 
 def _access_denied_message(exc: OSError) -> str:
