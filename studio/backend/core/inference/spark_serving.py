@@ -740,6 +740,21 @@ async def peer_gpu_conflict(peer: str, *, own_pids: Sequence[int] = ()) -> Optio
     return f"the peer GPU is already in use ({used})"
 
 
+def argv_or_env_rpc(argv: Sequence[str], env: Optional[Dict[str, str]] = None) -> bool:
+    """Whether this llama-server is already an RPC split, however it was told to be.
+
+    ``LLAMA_ARG_RPC`` is a supported way to say it and llama.cpp's common_arg reads it
+    directly, so it never appears in argv. Reading argv alone calls such a server unsplit, and
+    at replica concurrency that means launching a full peer replica onto a GPU already serving
+    the split: contention or an out-of-memory, and routing between two incompatible layouts."""
+    for arg in argv or ():
+        name = str(arg).partition("=")[0]
+        if name == "--rpc":
+            return True
+    source = os.environ if env is None else env
+    return bool(str(source.get("LLAMA_ARG_RPC") or "").strip())
+
+
 def redacted_argv(argv: List[str]) -> List[str]:
     out = list(argv)
     for index, arg in enumerate(out):
@@ -1904,7 +1919,12 @@ class SparkServing:
             ),
         )
         if mtp is not None:
-            reconcile_split_speculation(
+            # to_thread like pipeline_groups_plan above it: this reaches
+            # llama_server_accepts_groups_with_drafter, whose first call for a binary is a
+            # subprocess.run with a 30 s timeout, and a wedged binary would hold the whole
+            # event loop, every active stream with it, for that long.
+            await asyncio.to_thread(
+                reconcile_split_speculation,
                 groups,
                 mtp,
                 speculative_type = getattr(request, "speculative_type", None),
@@ -1984,6 +2004,15 @@ class SparkServing:
         # holding somebody's work puts one of the two into an out-of-memory, and the plan was
         # priced against the whole node budget. Our own is excluded, since a reuse that got
         # this far has already been refused above.
+        if argv_or_env_rpc(_effective(request)):
+            # Their placement, not ours. Appending a second --rpc plus a managed device order,
+            # split mode and tensor split either overrides a working manual split or reaches
+            # llama-server as two conflicting placements, and starting a peer rpc-server for it
+            # takes memory nothing will use. after_load records it, but that is after the fact.
+            return _fall_back(
+                "llama-server is being launched with a caller-supplied --rpc; leaving the "
+                "placement alone"
+            )
         busy = await peer_gpu_conflict(
             peer, own_pids = [running.remote_pid] if running is not None else []
         )
@@ -2085,7 +2114,7 @@ class SparkServing:
             argv = list(getattr(process, "args", None) or [])
             port = getattr(llama_backend, "_port", None)
             self._record_launched_mtp(argv)
-            if "--rpc" in argv or any(str(a).startswith("--rpc=") for a in argv):
+            if argv_or_env_rpc(argv):
                 # A user-supplied --rpc is recorded, not managed.
                 if self.router is not None:
                     await self.detach()

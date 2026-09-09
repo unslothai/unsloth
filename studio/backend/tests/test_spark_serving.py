@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import shutil
 import time
 from pathlib import Path
@@ -2645,3 +2646,73 @@ def test_our_own_peer_process_does_not_count_as_the_gpu_being_busy(cluster, monk
     }
     assert run(ss.peer_gpu_conflict("127.0.0.1")) is not None
     assert run(ss.peer_gpu_conflict("127.0.0.1", own_pids = [777])) is None
+
+
+def test_an_rpc_split_configured_by_environment_is_not_treated_as_unsplit(
+    cluster, monkeypatch, tmp_path
+):
+    # LLAMA_ARG_RPC is a supported way to ask for a split and common_arg reads it directly, so
+    # it never reaches argv. Calling that server unsplit launches a full peer replica onto a
+    # GPU already serving the split.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    monkeypatch.setenv("LLAMA_ARG_RPC", "192.168.200.13:50052")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert not started, "no replica on a GPU already serving a split"
+    assert ss.state().topology == "layer_split"
+    assert "user-supplied --rpc" in ss.state().reason
+
+    assert ss.argv_or_env_rpc(["llama-server", "--rpc", "h:1"], env = {}) is True
+    assert ss.argv_or_env_rpc(["llama-server", "--rpc=h:1"], env = {}) is True
+    assert ss.argv_or_env_rpc(["llama-server"], env = {"LLAMA_ARG_RPC": "h:1"}) is True
+    assert ss.argv_or_env_rpc(["llama-server"], env = {"LLAMA_ARG_RPC": "  "}) is False
+    assert ss.argv_or_env_rpc(["llama-server"], env = {}) is False
+
+
+def test_a_caller_who_placed_their_own_rpc_keeps_it(cluster, monkeypatch, tmp_path):
+    # Appending a second --rpc plus a managed device order either overrides a working manual
+    # split or reaches llama-server as two conflicting placements.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+
+    request = _FakeRequest(str(model), llama_extra_args = ["--rpc", "10.0.0.5:50052"])
+    out = run(ss.before_load(request, 4))
+    assert out is request
+    assert not started, "no peer rpc-server started for a placement we do not own"
+    assert ss.state().topology == "single"
+    assert "caller-supplied --rpc" in ss.state().reason
+    assert out.llama_extra_args == ["--rpc", "10.0.0.5:50052"]
+
+
+def test_the_combined_capability_probe_does_not_run_on_the_event_loop(
+    cluster, monkeypatch, tmp_path
+):
+    # Its first call for a binary is a subprocess.run with a 30 s timeout, and the loop holds
+    # every active stream.
+    cluster.topology = "layer_split"
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+
+    loop_threads = []
+    real = ss.reconcile_split_speculation
+
+    def recording(*args, **kwargs):
+        loop_threads.append(threading.current_thread().name)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ss, "reconcile_split_speculation", recording)
+    main = threading.current_thread().name
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert loop_threads and all(name != main for name in loop_threads), loop_threads
