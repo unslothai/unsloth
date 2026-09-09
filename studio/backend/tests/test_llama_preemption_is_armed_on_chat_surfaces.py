@@ -74,9 +74,10 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
     def test_a_streaming_raw_holder_is_measured_at_its_first_data_line(self):
         """Registered measured before its prefill, the residency sample swallowed its prompt.
         Only the non-streaming passthrough, with no data line to mark itself at, is."""
-        source = ROUTES.read_text(encoding = "utf-8")
+        # Whitespace folded: the formatter wraps the signature.
+        source = " ".join(ROUTES.read_text(encoding = "utf-8").split())
         arm = source.index(
-            "def _arm_anthropic(reservation, *, raw: bool = False, measured: bool = False)"
+            "def _arm_anthropic( reservation, *, raw: bool = False, measured: bool = False"
         )
         stream = source.index("_arm_anthropic(reservation, raw = raw)", arm)
         non_streaming = source.index("_arm_anthropic(reservation, raw = raw, measured = raw)", arm)
