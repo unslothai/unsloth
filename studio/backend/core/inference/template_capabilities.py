@@ -40,9 +40,9 @@ class _State:
     # Names bound to a constant, so a subscript written through one resolves to a
     # single field rather than to every field.
     consts: dict = field(default_factory = dict)
-    # name -> the name it shares a container with, so a mutation through one alias
-    # is seen through the others.
-    same: dict = field(default_factory = dict)
+    # Set when the path hit break or continue, so a literal loop stops simulating
+    # further items for it.
+    terminated: bool = False
     budget: list = field(default_factory = lambda: [8192])
 
     def copy(self, scoped = False):
@@ -54,7 +54,7 @@ class _State:
             set() if scoped else self.mutated.copy(),
             self.constructed.copy(),
             self.consts.copy(),
-            self.same.copy(),
+            self.terminated,
             self.budget,
         )
 
@@ -280,6 +280,11 @@ def _value_aliases(value, state, active):
                 for branch in _assume(value.left, truth, state)
             )
         )
+    if isinstance(value, nodes.Call) and isinstance(value.node, nodes.Getattr):
+        # `catalog.pop('schema')` evaluates to whatever sat at that field.
+        removed = _removed_key(value.node.attr, value)
+        if removed is not None:
+            return _select(_value_aliases(value.node.node, state, active), removed)
     if isinstance(value, nodes.Call) and isinstance(value.node, nodes.Name):
         if value.node.name == "namespace":
             result = set().union(*(_value_aliases(arg, state, active) for arg in value.args))
@@ -345,22 +350,10 @@ def _bind(
             if isinstance(value, (nodes.Name, nodes.Getattr, nodes.Getitem))
             else None
         )
-        # Rebinding a name detaches it from whatever it shared, in BOTH directions: an
-        # alias made earlier still refers to the old container, not to this one.
-        state.same.pop(key, None)
-        for name in [n for n, other in state.same.items() if other == key]:
-            state.same.pop(name, None)
         if _constructs_object(value):
+            _mark_constructed(key, value, state)
+        elif source_key is not None and source_key in state.constructed:
             state.constructed.add(key)
-        elif source_key is not None:
-            # Binding one reference to another does not copy the container, so both
-            # now denote the same object. This holds for a member as much as a name:
-            # `{% set alias = ns.catalog %}` shares the list, not a copy of it.
-            state.same[key] = state.same.get(source_key, source_key)
-            if source_key in state.constructed:
-                state.constructed.add(key)
-            else:
-                state.constructed.discard(key)
         else:
             state.constructed.discard(key)
     if isinstance(target, nodes.Name):
@@ -371,6 +364,25 @@ def _bind(
     truth = _constant_truth(value, source) if value is not None else None
     if isinstance(target, nodes.Name) and truth is not None:
         state.facts[repr(nodes.Name(target.name, "load"))] = (truth, {target.name})
+
+
+def _mark_constructed(key, value, state):
+    """A literal and everything nested in it were all built by the template."""
+    state.constructed.add(key)
+    pairs = []
+    if isinstance(value, nodes.Dict):
+        pairs = [
+            (pair.key.value, pair.value)
+            for pair in value.items
+            if isinstance(pair.key, nodes.Const)
+        ]
+    elif isinstance(value, (nodes.List, nodes.Tuple)):
+        pairs = list(enumerate(value.items))
+    elif isinstance(value, nodes.Call):
+        pairs = [(keyword.key, keyword.value) for keyword in value.kwargs]
+    for member, item in pairs:
+        if _constructs_object(item):
+            _mark_constructed((*key, member), item, state)
 
 
 def _constructs_object(value):
@@ -402,12 +414,6 @@ def _bind_paths(target, paths, state):
         state.mutated.add(key)
 
 
-def _same_object(key, state):
-    """Every name bound to the same container as `key`, `key` included."""
-    root = state.same.get(key, key)
-    return {key, root} | {name for name, other in state.same.items() if other == root}
-
-
 def _mutate(call, state, active):
     if not isinstance(call, nodes.Call) or not isinstance(call.node, nodes.Getattr):
         return
@@ -431,19 +437,16 @@ def _mutate(call, state, active):
     removed = _removed_key(method, call)
     if method != "clear" and removed is None and not paths:
         return
-    # Mutation goes through the object, not the name, so every name currently bound
-    # to this container sees it.
-    for target in _same_object(key, state):
-        if method == "clear" or removed is _UNKNOWN:
-            _replace(state.aliases, target, set())
-        elif removed is not None:
-            # pop/remove/discard take the value back out, so its provenance goes too.
-            _replace(state.aliases, (*target, removed), set())
-        else:
-            state.aliases.update((*target, *suffix) for suffix in paths)
-        if target[0] not in state.assigned:
-            state.mutated.add(target)
-        _forget(target, state)
+    if method == "clear" or removed is _UNKNOWN:
+        _replace(state.aliases, key, set())
+    elif removed is not None:
+        # pop/remove/discard take the value back out, so its provenance goes too.
+        _replace(state.aliases, (*key, removed), set())
+    else:
+        state.aliases.update((*key, *suffix) for suffix in paths)
+    if key[0] not in state.assigned:
+        state.mutated.add(key)
+    _forget(key, state)
 
 
 # Filters that reduce their input to a measurement or a single element, so whatever
@@ -531,6 +534,7 @@ def _scan_loop(node, state, active, guarded):
     literal = isinstance(node.iter, (nodes.List, nodes.Tuple))
     values = node.iter.items if literal else [None]
     states = [state]
+    finished = []
     if not values:
         emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded)
         return emits, [_export_scope(state, child) for child in children]
@@ -554,7 +558,15 @@ def _scan_loop(node, state, active, guarded):
                 )
                 if emits:
                     return True, []
-                results.extend(_export_scope(parent, child) for child in children)
+                for child in children:
+                    exported = _export_scope(parent, child)
+                    if child.terminated:
+                        # break/continue ended this path, so later items of a literal
+                        # iterable never run for it: park it instead of simulating on.
+                        exported.terminated = False
+                        finished.append(exported)
+                    else:
+                        results.append(exported)
             if node.test is not None:
                 results.extend(
                     _export_scope(parent, child) for child in _assume(node.test, False, local)
@@ -568,7 +580,7 @@ def _scan_loop(node, state, active, guarded):
         if emits:
             return True, []
         states.extend(_export_scope(state, child) for child in children)
-    return False, states
+    return False, states + finished
 
 
 def _scan(
@@ -594,8 +606,10 @@ def _scan(
             elif isinstance(node, nodes.Assign):
                 # `{% set _ = xs.append(...) %}` is how templates mutate without the do
                 # extension, so the call mutates even though this is an assignment.
-                _mutate(node.node, current, active)
+                # Bind first: `{% set x = catalog.pop('schema') %}` hands x the value the
+                # mutation is about to take out of catalog.
                 _bind(node.target, node.node, current, active)
+                _mutate(node.node, current, active)
             elif isinstance(node, nodes.ExprStmt):
                 _mutate(node.node, current, active)
             elif isinstance(node, nodes.Macro):
@@ -618,6 +632,7 @@ def _scan(
             elif isinstance(node, (nodes.Break, nodes.Continue)):
                 # Nothing after this in the body runs, so the path stops being scanned.
                 # It still carries whatever it already mutated, which outlives the loop.
+                current.terminated = True
                 stopped.append(current)
                 continue
             elif isinstance(node, nodes.CallBlock):
