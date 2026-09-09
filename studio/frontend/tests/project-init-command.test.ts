@@ -211,6 +211,9 @@ test("adapter intercepts init before inference and token counts carry workspace 
     "const sessionId = sandboxSessionIdFor",
     extras,
   );
-  const firstReturn = adapter.indexOf("if (!supportsTools) {", extras);
+  const firstReturn = adapter.indexOf(
+    "if (!supportsTools) {",
+    extras,
+  );
   assert.ok(extras >= 0 && session > extras && firstReturn > session);
 });
