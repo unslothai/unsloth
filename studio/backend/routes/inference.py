@@ -2605,7 +2605,13 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         """
         try:
             controller = get_preemption_controller(_preempt_key(llama_backend))
-            _gguf_refresh_residency(controller)
+            # A solo chat has nobody to preempt and nobody waiting for its cells, so the
+            # synchronous `/slots` round trip this makes every 32 chunks can decide nothing.
+            # The ledger below is still updated, or the first chat to join it would be
+            # planned against a figure that stopped moving. Admission and the resume wait
+            # pass `force`, so both fresh-read barriers still read.
+            if controller.contended():
+                _gguf_refresh_residency(controller)
             victims = controller.observe(completion_id, generated)
             if victims:
                 # Dead residue first: erasing an idle slot costs a future prefix-cache hit,

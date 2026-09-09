@@ -1260,6 +1260,32 @@ class PreemptionController:
         winner.consecutive_preemptions = 0
         return winner
 
+    def _contended_locked(self) -> bool:
+        """Whether anybody else could want the room this backend is holding."""
+        holders = 0
+        for participant in self._participants.values():
+            if participant.state in (ParticipantState.QUEUED, ParticipantState.PAUSED):
+                # Somebody is waiting for room, which is when a reading decides something.
+                return True
+            if participant.holds_kv:
+                holders += 1
+                if holders > 1:
+                    return True
+        return False
+
+    def contended(self) -> bool:
+        """Cheap enough for the token path: no HTTP, one lock, no arithmetic.
+
+        A chat alone on the cache has nobody to preempt and nobody waiting for its cells,
+        so the synchronous ``/slots`` read the sweep otherwise makes every 32 chunks buys
+        no decision. Admission and the resume wait read afresh regardless, since those are
+        the boundaries where a stale figure would hand out room that is not there.
+        """
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return False
+            return self._contended_locked()
+
     def plan_preemptions(self, *, needed: int = 0) -> List[Participant]:
         """Who must stop so ``needed`` more tokens fit. Empty when nothing must.
 
@@ -1269,6 +1295,10 @@ class PreemptionController:
         """
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return []
+            if not self._contended_locked():
+                # One holder and nobody waiting: the loop below always leaves one standing,
+                # so the scan can only ever return nothing.
                 return []
             buffer = self._buffer_locked()
             ceiling = max(0, self._budget - buffer)
