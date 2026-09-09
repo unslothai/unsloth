@@ -257,6 +257,7 @@ import {
   createContinuationMerger,
   type IncompleteReason,
   readIncompleteInfo,
+  resolveIncompleteReason,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
@@ -2083,6 +2084,13 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  *  first, then cached safetensors. */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+// A refused preflight costs no load attempt, so without its own cap a device holding many blocked
+// repos (trust-remote-code, security review) POSTs /validate once per cached repo and never stops.
+// Counted are the preflights that do NOT go on to spend a load attempt: a refusal, and a rejection
+// (dead backend, dismissed token dialog). A preflight that PASSES is deliberately not counted, since
+// it reaches loadAttempts on the very next statement and MAX_AUTO_LOAD_ATTEMPTS already bounds it;
+// charging it here would only cut the sweep short before it reached a model it can actually load.
+const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -2952,6 +2960,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  // Per cascade, like loadAttempts: a module-level counter would leave the second auto-load of the
+  // session with a spent budget.
+  let validateFailures = 0;
   const skippedAutoLoadCandidates = new Set<string>();
   // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
   const loadFailure: {
@@ -3004,12 +3015,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
   }): Promise<boolean> {
+    // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
+    }).catch((error: unknown) => {
+      // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
+      // The sweep keeps going after a transport failure on purpose, so without this a dead backend
+      // POSTs /validate once per cached repo, which is the runaway this budget exists to stop.
+      validateFailures += 1;
+      throw error;
     });
     options?.abortSignal?.throwIfAborted();
     // A background auto-load never runs custom code or Hub-flagged unsafe files; both need the
@@ -3019,11 +3037,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validation.requires_security_review
     ) {
       blockedByTrustRemoteCode = true;
+      validateFailures += 1;
       return false;
     }
     // Never install packages from a background load; explicit loads raise the upgrade dialog.
     if (validation.requires_transformers_upgrade) {
       hadNonTrustFailure = true;
+      validateFailures += 1;
       return false;
     }
     return true;
@@ -3058,7 +3078,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
-    if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (
+      autoLoadCancelled ||
+      loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+      validateFailures >= MAX_AUTO_VALIDATE_FAILURES
+    ) {
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
@@ -3527,7 +3551,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // row resolved nothing at all.
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
-      if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+      if (
+        autoLoadCancelled ||
+        loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+        validateFailures >= MAX_AUTO_VALIDATE_FAILURES
+      ) {
+        break;
+      }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
       const isRemembered = lastLoaded
@@ -3544,7 +3574,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       try {
         // A repo can hold several downloaded quants: each failure marks that quant tried, so one
         // corrupt file does not cost the whole repo.
-        while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+        while (
+          !autoLoadCancelled &&
+          loadAttempts < MAX_AUTO_LOAD_ATTEMPTS &&
+          validateFailures < MAX_AUTO_VALIDATE_FAILURES
+        ) {
           const candidate = await resolveAutoLoadCandidate(
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
@@ -5155,13 +5189,17 @@ export function createOpenAIStreamAdapter(
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
+      // Declared above the live metadata that reads it, or it is in its temporal dead zone.
+      let contextWindowExceeded = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
-      // rebuilds messages as "complete".
+      // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
-        incomplete: { reason: "cancelled" as const },
+        incomplete: {
+          reason: resolveIncompleteReason("cancelled" as const, contextWindowExceeded),
+        },
         ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -6499,6 +6537,25 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "context_window_exceeded") {
+                  contextWindowExceeded = true;
+                  // assistant-ui saves the last STREAMED yield and drops everything after an
+                  // abort, and the finish chunk that follows carries no delta, so nothing
+                  // between here and `[DONE]` need yield. Unconditional because redacted
+                  // thinking renders as no text: this publishes why the turn ended, not a body.
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                  continue;
+                }
                 if (toolEvent.type === "tool_output") {
                   // Incremental stdout from a running tool: append to the live store so the card renders it.
                   // The final result arrives via tool_end.
@@ -7736,6 +7793,10 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
+        const finalIncompleteReason = resolveIncompleteReason(
+          incompleteReason,
+          contextWindowExceeded,
+        );
         yield {
           content: [
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
@@ -7750,8 +7811,8 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
-              incomplete: incompleteReason
-                ? { reason: incompleteReason }
+              incomplete: finalIncompleteReason
+                ? { reason: finalIncompleteReason }
                 : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
@@ -7883,15 +7944,18 @@ export function createOpenAIStreamAdapter(
                 custom: {
                   ...reasoningDurationTracker.metadata(),
                   contextTruncation,
-                  // This partial is unfinished too, so it also offers Continue.
+                  // Unfinished too, so it also offers Continue -- unless the provider already
+                  // said why the model stopped.
                   incomplete: {
-                    reason:
+                    reason: resolveIncompleteReason(
                       err instanceof GenerationLengthError
-                        ? "length"
+                        ? ("length" as const)
                         : err instanceof ChatGenerationTerminalError &&
                             err.generationStatus === "cancelled"
-                          ? "cancelled"
-                          : "interrupted",
+                          ? ("cancelled" as const)
+                          : ("interrupted" as const),
+                      contextWindowExceeded,
+                    ),
                   },
                   timing: partialTiming,
                   ...generationCustom(),
