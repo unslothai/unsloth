@@ -170,7 +170,10 @@ def chat(
     max_new_tokens: Optional[int] = typer.Option(
         None,
         "--max-new-tokens",
-        help = "Cap on generated tokens. Unset generates until the model stops.",
+        help = "Cap on generated tokens. Unset generates until the model stops against "
+        "a server or a GGUF loaded in process; the in-process transformers and MLX "
+        "backends use 2048, the same default the server applies to a request that "
+        "omits the limit.",
     ),
     repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
     system_prompt: str = typer.Option(
