@@ -115,6 +115,7 @@ def main() -> int:
     print()
 
     failures = 0
+    inconclusive = 0
     checked = 0
     print(f"{'pair':>10}  {'size':>8}  {'peer access':>11}  verdict")
     for src in range(count):
@@ -127,16 +128,28 @@ def main() -> int:
                 worst_dropped = 0
                 worst_wrong = 0
                 error = None
+                setup_error = None
                 for _ in range(args.repeats):
                     s = d = None
                     try:
-                        s = torch.arange(elements, dtype = torch.float32, device = f"cuda:{src}")
-                        d = torch.full(
-                            (elements,),
-                            SENTINEL,
-                            dtype = torch.float32,
-                            device = f"cuda:{dst}",
-                        )
+                        try:
+                            s = torch.arange(
+                                elements, dtype = torch.float32, device = f"cuda:{src}"
+                            )
+                            d = torch.full(
+                                (elements,),
+                                SENTINEL,
+                                dtype = torch.float32,
+                                device = f"cuda:{dst}",
+                            )
+                        except Exception as alloc_exc:  # noqa: BLE001
+                            # Could not even build the buffers, usually because a
+                            # model is resident. No transfer was attempted, so this
+                            # is inconclusive, NOT evidence that peer copies drop
+                            # data: reporting it as failure would tell the user to
+                            # turn off an optimisation that was never tested.
+                            setup_error = alloc_exc
+                            break
                         d.copy_(s)
                         torch.cuda.synchronize(src)
                         torch.cuda.synchronize(dst)
@@ -160,7 +173,13 @@ def main() -> int:
                 checked += 1
                 pair = f"{src}->{dst}"
                 access = "yes" if can else "no"
-                if error is not None:
+                if setup_error is not None:
+                    inconclusive += 1
+                    print(
+                        f"{pair:>10}  {str(mib) + ' MiB':>8}  {access:>11}  "
+                        f"SKIPPED (could not allocate): {setup_error}"
+                    )
+                elif error is not None:
                     failures += 1
                     print(f"{pair:>10}  {str(mib) + ' MiB':>8}  {access:>11}  ERROR: {error}")
                 elif worst_wrong:
@@ -195,6 +214,20 @@ def main() -> int:
             "iommu=pt) is the usual remedy where that is acceptable."
         )
         return 1
+
+    if inconclusive:
+        # Exit 1 is reserved for copies that were tested and lost data. Nothing
+        # was tested here, so saying "unsafe" would push someone off a working
+        # optimisation over a busy GPU.
+        print(
+            f"INCONCLUSIVE: {inconclusive} of {checked} tests could not allocate "
+            "their buffers,\n"
+            f"and {checked - inconclusive} completed intact. No peer copy was "
+            "shown to lose data,\n"
+            "but the host was not fully tested. Free the GPUs (stop any resident\n"
+            "model) and re-run, or lower --sizes-mib."
+        )
+        return 2
 
     print(
         f"PASS: all {checked} peer-copy tests transferred intact.\n"

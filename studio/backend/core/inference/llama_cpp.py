@@ -9330,12 +9330,23 @@ class LlamaCppBackend:
             # No explicit selection: the child uses every VISIBLE GPU. nvidia-smi
             # ignores CUDA_VISIBLE_DEVICES (verified: it lists all 8 cards on a
             # host masked to one), so the matrix covers devices the child will
-            # never touch. Without this filter, a mask exposing a clean NVLinked
-            # pair on a partially bridged box is vetoed by a PCIe edge to a hidden
-            # device, losing the speedup for no reason.
+            # never touch, and filtering it to the mask keeps a clean NVLinked
+            # pair from being vetoed by a PCIe edge to a hidden device.
+            #
+            # That filter is only sound when the mask and the matrix share an
+            # index space. Numeric mask entries are CUDA ordinals while the matrix
+            # is PCI physical indices, and CUDA reorders under the default
+            # FASTEST_FIRST, so mask "0,1" can mean physical 0,2. Trusting it
+            # there could confirm NV# for a pair that is not the one being used
+            # and enable P2P across a real PCIe link. _cuda_compute_caps declines
+            # the same mapping on the same grounds. Unmappable means check the
+            # whole box, which is conservative and merely costs the optimisation.
             visible = cls._resolve_visible_physical_ids()
+            mappable = os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
             selected = (
-                [i for i in gpu_ids if i in set(visible)] if visible is not None else list(gpu_ids)
+                [i for i in gpu_ids if i in set(visible)]
+                if visible is not None and mappable
+                else list(gpu_ids)
             )
 
         if len(selected) < 2:
@@ -24106,11 +24117,24 @@ class LlamaCppBackend:
                 # A multi-GPU box that is NOT a datacenter part never reaches the
                 # block below, so warn here or not at all: the 2x RTX 3090 case,
                 # whose own truthy GGML_CUDA_P2P rides through to the child.
+                # Computed here rather than at its use below because a deliberate
+                # zero-offload load is masked to CUDA_VISIBLE_DEVICES=-1 and moves
+                # no tensors between GPUs at all. Probing its topology, or warning
+                # it about peer-copy corruption, is noise about traffic it will
+                # never generate.
+                _cpu_only_zero_offload = (
+                    gpu_memory_mode == "manual"
+                    and gpu_layers == 0
+                    and not is_vulkan_backend
+                    and not self._zero_offload_keeps_gpu_visible(cmd, env)
+                )
+
                 # Only when the fabric is NOT confirmed: on a verified NV# pair the
                 # flag is the benchmarked configuration, and warning there would
                 # push users off a working optimisation.
                 if (
                     env.get("GGML_CUDA_P2P")
+                    and not _cpu_only_zero_offload
                     and self._effective_gpu_count(gpu_indices) > 1
                     and not LlamaCppBackend._warned_no_nvlink
                 ):
@@ -24133,7 +24157,7 @@ class LlamaCppBackend:
                 # multi-GPU selection has a CONFIRMED NVLink fabric (#10613). Opt
                 # out with UNSLOTH_DISABLE_DC_TUNING=1, or UNSLOTH_DISABLE_DC_P2P=1
                 # for the peer flag alone.
-                if not is_vulkan_backend:
+                if not (is_vulkan_backend or _cpu_only_zero_offload):
                     self._apply_datacenter_env(
                         env,
                         gpu_indices,
@@ -24152,12 +24176,6 @@ class LlamaCppBackend:
                 # pin (extras or an inherited LLAMA_ARG_DEVICE) keeps control of its
                 # own devices, the child aborting on a pin it cannot see. The
                 # draft-device forms count too: parsed with no drafter loaded.
-                _cpu_only_zero_offload = (
-                    gpu_memory_mode == "manual"
-                    and gpu_layers == 0
-                    and not is_vulkan_backend
-                    and not self._zero_offload_keeps_gpu_visible(cmd, env)
-                )
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()

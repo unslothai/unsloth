@@ -870,16 +870,27 @@ def test_pcie_warning_still_fires_on_an_unverified_fabric(monkeypatch):
     assert [m for m in seen if "peer copies stay" in m], seen
 
 
-def test_masked_visible_devices_ignores_hidden_gpus_in_the_matrix(monkeypatch):
+def test_masked_visible_devices_filter_needs_a_shared_index_space(monkeypatch):
     """nvidia-smi ignores CUDA_VISIBLE_DEVICES, so the matrix covers cards the
-    child never touches. With no explicit selection, a mask exposing a clean
-    NVLinked pair must not be vetoed by a PCIe edge to a hidden device."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2))
+    child never touches and filtering it to the mask recovers a clean NVLinked
+    pair. That is only sound under PCI_BUS_ID: numeric mask entries are CUDA
+    ordinals, and under FASTEST_FIRST mask "0,1" can mean physical 0,2, so
+    trusting it could confirm NV# for a pair that is not the one in use."""
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2)
+    )
     _use_topo(monkeypatch, TOPO_BRIDGED_4X)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     assert LlamaCppBackend._p2p_veto_reason(None) is None
     # A mask spanning the islands is still correctly refused.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2")
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason(None) is not None
+    # Without a shared index space the mask is not trusted at all: the whole box
+    # has to qualify, which the bridged fixture does not.
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     assert LlamaCppBackend._p2p_veto_reason(None) is not None
 
