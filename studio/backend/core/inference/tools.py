@@ -7351,14 +7351,18 @@ def _session_key(session_id: "str | None") -> str:
 
 
 @contextlib.contextmanager
-def _session_in_flight(session_id: "str | None"):
+def _session_in_flight(session_id: "str | None", *, cancel_event = None, deadline = None):
     key = _session_key(session_id)
     with _sessions_free:
         # A removal for this session runs with the lock released, so a call
         # starting in that window would be handed the directory it is about to
         # rename away. Only this session waits; every other chat is untouched.
         while key in _removing_sessions:
-            _sessions_free.wait()
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Project workspace wait was cancelled.")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Project workspace wait exceeded its preparation limit.")
+            _sessions_free.wait(timeout = 0.05 if cancel_event is not None or deadline is not None else None)
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
     try:
         yield
@@ -10401,6 +10405,10 @@ def _render_html_result(arguments: dict) -> str:
     )
 
 
+from core.agent_workspace.hook_runtime import with_project_tool_hooks
+
+
+@with_project_tool_hooks
 def execute_tool(
     name: str,
     arguments: dict,

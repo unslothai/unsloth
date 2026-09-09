@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { latestVerificationText, parseVerificationCommand } from "../utils/verification-command";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   clearedServerTuningState,
@@ -2051,6 +2052,33 @@ export async function resolveProjectId(
     // The send records it, not this: a poll landing mid-navigation would pin the run to whichever project is on screen.
   }
   return composerProjectId ?? null;
+}
+
+export async function executeProjectVerificationCommand(
+  command: "run" | "help",
+  options: { threadId?: string; composerProjectId?: string | null; abortSignal?: AbortSignal } = {},
+): Promise<string> {
+  if (command === "help") return "Usage: `/verify`. Configure and save checks under the project's Checks & hooks tab first.";
+  try {
+    if (options.abortSignal?.aborted) return "Verification request cancelled.";
+    const projectId = await resolveProjectId(options.threadId, undefined, {
+      rethrowReadFailure: true,
+      composerProjectId: options.composerProjectId,
+    });
+    if (!projectId) return "The `/verify` command is available only inside a project.";
+    const { getProjectVerificationConfig, startProjectVerification } = await import("./project-verification-api");
+    const config = await getProjectVerificationConfig(projectId);
+    if (!config.workspaceAvailable || !config.active) return "Save and bind verification checks to this workspace in Checks & hooks first.";
+    if (!config.checks.length) return "No verification checks are configured. Add and save checks in Checks & hooks first.";
+    if (!config.execution.available) return config.execution.reason ?? "Secure project verification is unavailable.";
+    if (options.abortSignal?.aborted) return "Verification request cancelled.";
+    const run = await startProjectVerification(projectId, {
+      configRevision: config.revision, workspaceRevision: config.workspaceRevision,
+    });
+    return `Verification ${run.status} as run \`${run.id}\`. Open Checks & hooks for output, cancellation, and history. Source freshness is unverified.`;
+  } catch (error) {
+    return `Could not start project verification: ${error instanceof Error ? error.message : "Unknown error"}`;
+  }
 }
 
 async function resolveSandboxSessionId(
@@ -7968,6 +7996,16 @@ export function createOpenAIStreamAdapter(
         adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
       }
       try {
+        const verificationCommand = parseVerificationCommand(latestVerificationText(args.messages));
+        if (verificationCommand) {
+          const claim = args.unstable_threadId ? readThreadCreationClaim(args.unstable_threadId) : undefined;
+          const composerProjectId = claim ? claim.projectId : (useChatRuntimeStore.getState().activeProjectId ?? null);
+          const response = await executeProjectVerificationCommand(verificationCommand, {
+            threadId: args.unstable_threadId, composerProjectId, abortSignal: args.abortSignal,
+          });
+          yield { content: [{ type: "text" as const, text: response }] };
+          return;
+        }
         yield* adapter.run(args);
       } catch (error) {
         if (!args.abortSignal.aborted) {

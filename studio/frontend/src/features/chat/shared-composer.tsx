@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { executeProjectVerificationCommand } from "./api/chat-adapter";
+import { parseVerificationCommand, runCompareVerificationCommand } from "./utils/verification-command";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import {
   clearedServerTuningState,
@@ -205,6 +207,7 @@ export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
   /** Append a user message without triggering generation. */
   appendMessage: (content: CompareMessagePart[]) => void;
+  appendAssistantMessage: (text: string) => void;
   /** Trigger generation on the current thread (after appendMessage). */
   startRun: () => void;
   cancel: () => void;
@@ -412,6 +415,8 @@ export function RegisterCompareHandle({
             createdAt: new Date(),
             startRun: false,
           } as never),
+      appendAssistantMessage: (text) =>
+        aui.thread().append({ role: "assistant", content: [{ type: "text", text }], createdAt: new Date(), startRun: false } as never),
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -1091,6 +1096,31 @@ export function SharedComposer({
     const submittedCompareCheckpoint = requireStableCheckpoint
       ? useChatRuntimeStore.getState().params.checkpoint
       : undefined;
+
+    const verificationCommand = submittedImages.length === 0 && !submittedAudio
+      ? parseVerificationCommand(msg) : null;
+    if (hasCompareHandles && verificationCommand) {
+      const panes = Object.values(handlesRef.current);
+      if (panes.length !== 2) {
+        toast.info("Wait for both comparison panes to finish opening.");
+        resetPromptQueue();
+        return;
+      }
+      const composerProjectId = useChatRuntimeStore.getState().activeProjectId ?? null;
+      setComparing(true);
+      try {
+        await runCompareVerificationCommand<CompareMessagePart[]>([{ type: "text", text: msg }], panes, () =>
+          executeProjectVerificationCommand(verificationCommand, {
+            threadId: model1ThreadId ?? model2ThreadId, composerProjectId,
+          }),
+        );
+        setText("");
+      } finally {
+        setComparing(false);
+        resetPromptQueue();
+      }
+      return;
+    }
 
     // Generalized compare requires both panes to have a model: a half-selected send either races to
     // an empty bubble with bogus tok/s (#5569) or leaves the empty pane with a dangling prompt.

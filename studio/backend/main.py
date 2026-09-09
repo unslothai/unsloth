@@ -316,6 +316,8 @@ from routes import (
     video_openai_router,
     youtube_router,
 )
+from routes.project_hooks import router as project_hooks_router
+from routes.project_verification import router as project_verification_router
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
@@ -672,6 +674,12 @@ async def lifespan(app: FastAPI):
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors = True)
 
+    try:
+        from core.agent_workspace.verification_state import reconcile_interrupted_verification_runs
+        await asyncio.to_thread(reconcile_interrupted_verification_runs)
+    except Exception as exc:
+        _lifespan_log.warning("project verification recovery failed at startup: %s", exc)
+
     # Hardware detection and MLX autorepair moved out of this lifespan: both import heavy
     # runtimes and uvicorn binds only once this returns, so they held the login screen.
 
@@ -845,6 +853,14 @@ async def lifespan(app: FastAPI):
     _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
     if _chat_generation_supervisor is not None:
         await _chat_generation_supervisor.stop()
+
+    try:
+        from core.agent_workspace.verification import shutdown_project_verifications
+        unfinished_verifications = await asyncio.to_thread(shutdown_project_verifications)
+        if unfinished_verifications:
+            _lifespan_log.warning("project verification cleanup remains pending: %s", unfinished_verifications)
+    except Exception as exc:
+        _lifespan_log.warning("project verification cleanup failed at shutdown: %s", exc)
 
     from core.inference.llama_http import aclose as _close_llama_http
 
@@ -1466,6 +1482,8 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(project_hooks_router, prefix = "/api/agent", tags = ["agent"])
+app.include_router(project_verification_router, prefix = "/api/agent", tags = ["agent"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(
     chat_generation_runs_router,
