@@ -638,6 +638,39 @@ RPC_DEFAULT_PORT = 50052
 
 # The legacy `rpc-server` name predates the ggml- prefix; macOS carries a versioned dylib.
 _RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
+# What Windows will actually run. `os.access(path, os.X_OK)` is not that test: on Windows it
+# succeeds for ANY existing file, so it accepted a text file as a server binary. The extension
+# is the real permission there, and it is a fixed set rather than PATHEXT because the only
+# thing being resolved is a binary this project ships.
+_WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
+
+
+def _on_windows(windows: Optional[bool] = None) -> bool:
+    return (os.name == "nt") if windows is None else bool(windows)
+
+
+def _is_executable_file(path, windows: Optional[bool] = None) -> bool:
+    """Whether this host would run `path`. POSIX means the exec bit; Windows means the suffix."""
+    try:
+        if not os.path.isfile(path):
+            return False
+        if _on_windows(windows):
+            return os.path.splitext(str(path))[1].lower() in _WINDOWS_EXECUTABLE_SUFFIXES
+        return os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def rpc_server_names(windows: Optional[bool] = None) -> Tuple[str, ...]:
+    """`_RPC_SERVER_NAMES` with the platform's own spelling first.
+
+    The list is POSIX-shaped, extensionless names leading, and the search takes the first hit.
+    On Windows that let a stray extensionless `ggml-rpc-server` sitting beside the real
+    `ggml-rpc-server.exe` win, so the resolution could report success while returning the wrong
+    file. Ordering by platform is what stops that; rejecting non-executables alone would not."""
+    suffixed = tuple(n for n in _RPC_SERVER_NAMES if n.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES))
+    plain = tuple(n for n in _RPC_SERVER_NAMES if n not in suffixed)
+    return (suffixed + plain) if _on_windows(windows) else (plain + suffixed)
 _RPC_LIB_NAMES = ("libggml-rpc.so", "libggml-rpc.dylib", "libggml-rpc.0.dylib", "ggml-rpc.dll")
 _BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
 
@@ -671,7 +704,7 @@ def _find_in_bundle(
             try:
                 if not candidate.is_file():
                     continue
-                if executable and not os.access(candidate, os.X_OK):
+                if executable and not _is_executable_file(candidate):
                     continue
             except OSError:
                 continue
@@ -685,7 +718,7 @@ def rpc_server_binary() -> Optional[str]:
     build/bin and build/bin/Release lead ``_BUNDLE_SUBDIRS`` to match the installer."""
     roots = [llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"]
     for root in roots:
-        found = _find_in_bundle(root, _RPC_SERVER_NAMES, executable = True)
+        found = _find_in_bundle(root, rpc_server_names(), executable = True)
         if found is not None:
             return str(found)
     return shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
@@ -748,7 +781,7 @@ def llama_bundle_identity(root: Optional[Path] = None) -> Dict[str, Any]:
     if lib is not None:
         out["rpc_lib"] = str(lib)
         out["rpc_lib_md5"] = _file_md5(lib)
-    server = _find_in_bundle(root, _RPC_SERVER_NAMES, executable = True)
+    server = _find_in_bundle(root, rpc_server_names(), executable = True)
     if server is not None:
         out["rpc_server"] = str(server)
     return out
@@ -773,12 +806,23 @@ libs = {libs!r}
 servers = {servers!r}
 out = {{"root": root, "present": os.path.isdir(root), "version": "unknown",
        "rpc_lib": None, "rpc_lib_md5": None, "rpc_server": None}}
+win = os.name == "nt"
+exts = (".exe", ".com", ".bat", ".cmd")
+def runnable(c):
+    if win:
+        return os.path.splitext(c)[1].lower() in exts
+    return os.access(c, os.X_OK)
+def order(names):
+    # The peer decides for itself: it may not be the platform that launched this probe.
+    suffixed = [n for n in names if n.lower().endswith(exts)]
+    plain = [n for n in names if n not in suffixed]
+    return (suffixed + plain) if win else (plain + suffixed)
 def find(names, executable):
     for parts in subs:
         base = os.path.join(root, *parts) if parts else root
-        for name in names:
+        for name in order(names):
             c = os.path.join(base, name)
-            if os.path.isfile(c) and (not executable or os.access(c, os.X_OK)):
+            if os.path.isfile(c) and (not executable or runnable(c)):
                 return c
     return None
 if out["present"]:
