@@ -2655,7 +2655,9 @@ class FastLlamaModel:
                         and not _head.weight.is_floating_point()
                     ):
                         _head.to(dtype)
-                # Attach dispatch hooks for bnb multi-device loads.
+                # Attach dispatch hooks for bnb multi-device loads. The hooks stand aside only when vLLM
+                # owns the weights, which it never does here: vLLM has no classification head, so this
+                # branch loaded the weights in-process even though the caller asked for fast_inference.
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
 
                 _attach_bnb_multidevice_hooks(
@@ -2663,7 +2665,7 @@ class FastLlamaModel:
                     load_in_4bit = load_in_4bit,
                     load_in_8bit = kwargs.get("load_in_8bit", False),
                     offload_embedding = False,
-                    fast_inference = fast_inference,
+                    fast_inference = _vllm_will_load_weights(fast_inference, num_labels),
                 )
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200), reading
                 # scales from the same revision as the weights.
@@ -2987,8 +2989,9 @@ class FastLlamaModel:
 
         # LAST: post_patch replaces the embedding modules and the QKV/MLP patching below replaces the
         # forwards a hook wraps, so an earlier attach is lost. Skipped under vLLM, which owns the
-        # weights.
-        if not fast_inference:
+        # weights. Not the raw flag: a num_labels load stayed in-process above, so the weights this
+        # repairs are the weights that run.
+        if not _vllm_will_load_weights(fast_inference, num_labels):
             try:
                 from unsloth.models.vision import _repair_dispatch_hooks
                 _repaired = _repair_dispatch_hooks(model)

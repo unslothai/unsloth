@@ -220,9 +220,9 @@ def _drive_krea(
     with_transformer = True,
 ):
     """Assemble a Krea pipeline against fakes, recording what each component was asked for."""
-    from core.inference.diffusion_krea2 import load_krea2_pipeline
-
     import huggingface_hub
+
+    from core.inference.diffusion_krea2 import load_krea2_pipeline
 
     index = tmp_path / "model_index.json"
     index.write_text(json.dumps({"patch_size": 2}), encoding = "utf-8")

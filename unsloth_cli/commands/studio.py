@@ -3269,8 +3269,9 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         # -NoProfile unconditionally: install.ps1 hands off from a tty console, and a profile aliasing uv or python would break setup.ps1.
         powershell_args.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            powershell_args.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
-        # -Command + `*>&1` (not -File) so setup.ps1's Write-Host output merges into stdout.
+            # Match install.rs: avoid the Hidden/Bypass detection pair; CREATE_NO_WINDOW below already hides the console.
+            powershell_args.extend(["-NoLogo", "-NonInteractive"])
+        # -Command + `*>&1` (not -File) so setup.ps1's Write-Host output merges into stdout; -File drops it when stdout is a pipe. Single quotes are doubled for paths with apostrophes.
         script_pwsh_literal = str(script).replace("'", "''")
         powershell_args.extend(
             [
@@ -3429,7 +3430,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # -NoProfile unconditionally, as in _run_setup_script: the visible console path loads a profile.
         ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
+            # Avoid the same Hidden/Bypass detection pair as setup above;
+            # both local and fetched runners set CREATE_NO_WINDOW.
+            ps_argv.extend(["-NoLogo", "-NonInteractive"])
 
         # Stops at the first candidate that launched; only an unlaunchable one moves on.
         if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):

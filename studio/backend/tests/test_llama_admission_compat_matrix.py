@@ -205,9 +205,8 @@ class TestOldCallers:
         assert queue._reparking == 0, "the non-blocking path must never touch the wait line"
 
     def test_the_route_recost_helper_accepts_no_cancel_event(self):
-        import routes.inference as routes_inference
-
         # Reservation None is the "not admitted yet" case every call site can hit.
+        import routes.inference as routes_inference
         routes_inference._openai_llama_admission_recost(
             None,
             [{"role": "user", "content": "hi"}],
@@ -240,8 +239,9 @@ class TestOldCallers:
         ), f"the hook must be last; signature ends {names[-3:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
-        assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0
         import inspect
+
+        assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0
 
         from core.inference.llama_admission import LlamaAdmissionLease
 
