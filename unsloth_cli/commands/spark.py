@@ -918,6 +918,11 @@ def train(
         typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
         raise typer.Exit(2)
     if layer_split:
+        # Before the modulo: `--microbatches 0` raised ZeroDivisionError out of this line, so
+        # the user saw a traceback instead of the pipeline's own "must be >= 1".
+        if microbatches < 1:
+            typer.echo(f"--microbatches ({microbatches}) must be at least 1.")
+            raise typer.Exit(2)
         if batch % microbatches:
             typer.echo(
                 f"--batch ({batch}) must be a multiple of --microbatches ({microbatches}); "

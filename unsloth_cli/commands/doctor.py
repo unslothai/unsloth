@@ -134,15 +134,20 @@ def parity_probe_source(deep: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _activate() -> str:
-    """Where the peer's venv activate lives, resolved rather than assumed: UNSLOTH_STUDIO_HOME
-    moves it, and a hardcoded path sources nothing, so the probe runs without the venv and
-    doctor reports "could not measure NCCL bandwidth" on a perfectly healthy pair."""
+def _activate_sh() -> str:
+    """Where the peer's venv activate lives, as ONE shell word.
+
+    Resolved rather than assumed, because UNSLOTH_STUDIO_HOME moves it and a hardcoded path
+    sources nothing, which reads as "could not measure NCCL bandwidth" on a healthy pair. And
+    quoted, because a custom home with a space produced
+    `[ -f /path with space/bin/activate ]`, a five-argument test: activation was skipped
+    without a word of complaint and the probe ran under whichever python3 was on PATH, so a
+    supported custom location reported false package and parity results."""
     try:
-        from studio.spark_cluster import venv_activate
-        return venv_activate()
+        from studio.spark_cluster import venv_activate_sh
+        return venv_activate_sh()
     except Exception:
-        return "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+        return '"$HOME/.unsloth/studio/unsloth_studio/bin/activate"'
 
 
 def _probe_wrapper(source: str) -> str:
@@ -151,7 +156,7 @@ def _probe_wrapper(source: str) -> str:
     import base64
 
     blob = base64.b64encode(source.encode()).decode()
-    act = _activate()
+    act = _activate_sh()
     return f"[ -f {act} ] && . {act}; " f"echo {blob} | base64 -d | python3 -"
 
 
@@ -591,10 +596,12 @@ def _ssh_login() -> str:
 
 
 def _install_lines(node: str, peer_ip: str, spec: str) -> list:
-    act = _activate()
+    act = _activate_sh()
     if node == "local":
         return [f". {act}", f'python3 -m pip install "{spec}"']
-    inner = f'. {act}; python3 -m pip install \\"{spec}\\"'
+    # These are pasted by a user. `act` is already one double-quoted word, and it is going
+    # inside another double-quoted string, so its quotes are escaped like the spec's.
+    inner = f'. {act.replace(chr(34), chr(92) + chr(34))}; python3 -m pip install \\"{spec}\\"'
     return [f'ssh {_ssh_login()}@{peer_ip} "{inner}"']
 
 

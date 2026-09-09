@@ -1110,7 +1110,11 @@ def rpc_hello_probe_detail(
     read_timeout: float = 3.0,
 ) -> Dict[str, Any]:
     """Send one HELLO and classify the reply. Never raises, always bounded. ``closed`` means a
-    listener hung up without replying, which is what a protocol-mismatched server does."""
+    listener hung up without replying, which is what a protocol-mismatched server does.
+
+    ``timeout`` (nothing answered the CONNECT) and ``silent`` (it accepted, then never replied)
+    are separate states, because they mean opposite things for a launch: the first is an
+    unreachable or filtered host, the second is an OCCUPIED port a new server cannot bind."""
     import struct
 
     out: Dict[str, Any] = {"host": host, "port": port, "state": "refused", "version": None}
@@ -1141,7 +1145,7 @@ def rpc_hello_probe_detail(
         out["version"] = (body[0], body[1], body[2])
         return out
     except (socket.timeout, TimeoutError):
-        out["state"] = "timeout"
+        out["state"] = "silent"
         return out
     except Exception:
         out["state"] = "garbled"
@@ -1195,6 +1199,15 @@ def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[s
                 f"the listener on {where} at {live['host']}:{port} is not a ggml-rpc-server "
                 f"(its HELLO reply was malformed). Free the port or pick another with "
                 f"--rpc-port."
+            )
+        elif state == "silent":
+            # Held by something, so a new server cannot bind it -- the one outcome this
+            # preflight exists to prevent. It used to fall through with `refused`, which is
+            # the normal pre-launch state, and the command printed a launch on that port.
+            keep.append(
+                f"something on {where} accepted a connection at {live['host']}:{port} and "
+                f"never answered the HELLO. The port is held, so a new ggml-rpc-server "
+                f"cannot bind it. Stop that process, or pick another port with --rpc-port."
             )
     if len(seen) == 2 and seen["the peer"] != seen["this Spark"]:
         a, b = seen["this Spark"], seen["the peer"]
@@ -1319,6 +1332,18 @@ def rail_plan_report(
         )
     if not rails:
         problems.append("no cabled ConnectX rail found on this node")
+    # A Spark's ConnectX presents TWO PCIe functions, and one /24 drives one function: with a
+    # single rail the pair runs at about half the advertised bandwidth. That is a working
+    # cluster, so it is not refused, but it was not reported either -- the plan applied, the
+    # cluster read as configured, and `nccl_env` advertised the one HCA without comment.
+    degraded = bool(rails) and len(rails) < len(DEFAULT_SUBNETS)
+    if degraded:
+        notes.append(
+            f"DEGRADED: {len(rails)} of {len(DEFAULT_SUBNETS)} ConnectX rail functions are "
+            f"cabled and up, so this plan addresses one. One subnet drives one function, so "
+            f"expect roughly half the two-rail bandwidth. Check the second cable and that "
+            f"both PCIe functions appear in `ibv_devices`."
+        )
     if n_nodes > 2 and switched:
         notes.append(
             "Assuming a switched RoCE fabric with all rails in the same broadcast domain, "
@@ -1342,6 +1367,7 @@ def rail_plan_report(
         "problems": problems,
         "notes": notes,
         "plan": plan,
+        "degraded": degraded,
         "node_index": node_index,
         "n_nodes": n_nodes,
         "switched": switched,
@@ -1453,10 +1479,17 @@ def nccl_bandwidth(
         return None
 
     env = " ".join(f"{k}={v}" for k, v in nccl_env().items())
-    common = (
-        f"{env} SPARK_PROBE_MB={mb} torchrun --nnodes=2 --nproc_per_node=1 "
-        f"--master_addr={local_ip} --master_port={port}"
-    )
+    def _common(trun: str) -> str:
+        return (
+            f"{env} SPARK_PROBE_MB={mb} {trun} --nnodes=2 --nproc_per_node=1 "
+            f"--master_addr={local_ip} --master_port={port}"
+        )
+
+    # The peer sources `activate`, so the bare name is right there. Rank 0 runs from whatever
+    # shell the user is in, where it is not: this ran no local rank at all, and doctor reported
+    # the pair as unverified with no bandwidth on a healthy link.
+    common = _common("torchrun")
+    local_common = _common(managed_torchrun())
     # Non-interactive ssh has no venv on PATH: without this, torchrun is missing on the
     # peer, so it never starts and the local side hangs at the rendezvous.
     activate = venv_activate_sh()
@@ -1488,7 +1521,7 @@ def nccl_bandwidth(
         time.sleep(4)  # let the peer's rendezvous come up before we dial in
         try:
             out = subprocess.run(
-                f"env {common} --node_rank=0 {local_probe}",
+                f"env {local_common} --node_rank=0 {shlex.quote(local_probe)}",
                 shell = True,
                 capture_output = True,
                 text = True,
@@ -3435,12 +3468,17 @@ def _serve_commands(
     model: str = "<model>",
 ) -> List[str]:
     env = 'eval "$(unsloth spark env)"   # GB10 NCCL settings; NCCL_NET_GDR_LEVEL=0 is mandatory'
+    # These lines exist to be pasted into a shell, so a local checkpoint path with a space or a
+    # metacharacter has to survive the paste. `spark serve` already quotes; `spark plan` printed
+    # the same paths bare and split them into several arguments. The placeholder stays bare so
+    # the example still reads as a placeholder.
+    qmodel = model if model == "<model>" else shlex.quote(model)
     if axis == "tensor-parallel":
         return [
             env,
             "ray start --head --port=6379            # on THIS Spark",
             "ray start --address=<this-spark>:6379   # on each of the other Sparks",
-            f"vllm serve {model} --tensor-parallel-size {n_nodes} "
+            f"vllm serve {qmodel} --tensor-parallel-size {n_nodes} "
             f"--distributed-executor-backend ray",
         ]
     # llama.cpp opens a GGUF FILE. A cached repo id or a safetensors directory is accepted by
@@ -3459,7 +3497,7 @@ def _serve_commands(
         if not gguf:
             return [
                 env,
-                f"vllm serve {model} --host 0.0.0.0 --port 8081     # run on EACH Spark",
+                f"vllm serve {qmodel} --host 0.0.0.0 --port 8081     # run on EACH Spark",
                 f"python -m studio.spark_lb --port 8080 {backends}     # one front door",
             ]
         # The real server, on the port the load balancer is told about. This used to say
@@ -3468,14 +3506,14 @@ def _serve_commands(
         # advertised was closed.
         return [
             env,
-            f"{server} -m {model} -ngl 999 --host 0.0.0.0 --port 8081     # run on EACH Spark",
+            f"{shlex.quote(server)} -m {qmodel} -ngl 999 --host 0.0.0.0 --port 8081     # run on EACH Spark",
             f"python -m studio.spark_lb --port 8080 {backends}     # one front door",
         ]
     if axis in ("pipeline-parallel", "layer-split"):
         if not gguf:
             return [
                 env,
-                f"vllm serve {model} --pipeline-parallel-size {n_nodes} "
+                f"vllm serve {qmodel} --pipeline-parallel-size {n_nodes} "
                 f"--distributed-executor-backend ray",
             ]
         return [
@@ -3483,14 +3521,14 @@ def _serve_commands(
             # This one stays a `spark serve`: the RPC split needs the peer's bundle probed and
             # the protocol checked before a launch is worth printing, which is what that
             # command does. It PRINTS those commands; it does not start them.
-            f"unsloth spark serve --model {model} --engines 1   # prints the RPC split launch",
-            f"# or, with vLLM:  vllm serve {model} --pipeline-parallel-size {n_nodes} "
+            f"unsloth spark serve --model {qmodel} --engines 1   # prints the RPC split launch",
+            f"# or, with vLLM:  vllm serve {qmodel} --pipeline-parallel-size {n_nodes} "
             f"--distributed-executor-backend ray",
         ]
     if axis == "single":
         if not gguf:
-            return [f"vllm serve {model} --host 0.0.0.0 --port 8080"]
-        return [f"{server} -m {model} -ngl 999 --host 0.0.0.0 --port 8080"]
+            return [f"vllm serve {qmodel} --host 0.0.0.0 --port 8080"]
+        return [f"{shlex.quote(server)} -m {qmodel} -ngl 999 --host 0.0.0.0 --port 8080"]
     return []
 
 
@@ -3572,7 +3610,14 @@ def plan_deployment(
         out["command"] = "\n".join(out["commands"])
         return out
 
-    if size_gib > nodes * budget:
+    # KV counted here, not only in `recommend_topology`: a layer split spreads the KV with the
+    # layers, so what has to fit across the pair is model plus every user's KV. Weights alone
+    # let a model that needs more than the pair holds through as `layer-split`, and `serve`
+    # then printed an RPC launch that OOMs during load. The per-node classes below keep their
+    # weight-only meaning; `recommend_topology` prices KV for those.
+    split_need = size_gib + max(0.0, float(kv_gib_per_user or 0)) * max(1, int(concurrency or 1))
+    out["split_need_gib"] = split_need
+    if split_need > nodes * budget:
         topology = "too-large"
     elif not fits_one:
         topology = "layer-split"
@@ -3617,16 +3662,27 @@ def plan_deployment(
             f"({nodes * budget:.0f} GiB total), which means it has to be sharded somehow."
         )
     else:
+        need_nodes = _nodes_needed(split_need, budget)
+        # Say which of the two it was. "34 GiB exceeds 243 GiB" reads as a bug when the
+        # weights fit and it is the KV for the requested concurrency that does not.
+        what = (
+            f"{size_gib:.1f} GiB of weights plus KV for {concurrency} "
+            f"({split_need:.1f} GiB)"
+            if split_need > size_gib
+            else f"{size_gib:.1f} GiB"
+        )
         out["summary"] = (
-            f"{size_gib:.1f} GiB exceeds all {nodes} Sparks together ({nodes * budget:.0f} "
-            f"GiB usable). At least {min_nodes} nodes would be needed, or a smaller quant."
+            f"{what} exceeds all {nodes} Sparks together ({nodes * budget:.0f} "
+            f"GiB usable). At least {need_nodes} nodes would be needed, or a smaller quant."
         )
 
     if topology == "too-large":
+        need_nodes = _nodes_needed(split_need, budget)
         out.update(axis = "none", expected = expected_gain("none", 1, concurrency), commands = [])
         out["recommendation"] = (
-            f"No topology helps: {size_gib:.1f} GiB does not fit in {nodes} x "
-            f"{budget:.0f} GiB. Add nodes until you have {min_nodes}, or quantise smaller."
+            f"No topology helps: {split_need:.1f} GiB does not fit in {nodes} x "
+            f"{budget:.0f} GiB. Add nodes until you have {need_nodes}, quantise smaller, or "
+            f"serve fewer concurrent users."
         )
     elif not fits_one:
         # It must be sharded to run at all; PP/layer-split is the fallback if TP is absent.
@@ -4372,7 +4428,13 @@ def _cmd_serve(
     print("")
     print(f"  1. Start {engines} rpc-server(s) on the peer, one per engine:")
     for i in range(engines):
-        print(f"     ssh {peer_ip} '{peer_command} " f"-H 0.0.0.0 -p {rpc_port + i} -c'")
+        # Bound to the rail, not 0.0.0.0. ggml-rpc-server has no authentication and executes
+        # graphs on whoever connects, and llama-server reaches it only over `peer_ip`, so
+        # every other interface the peer has -- LAN, Wi-Fi -- was exposure with no purpose.
+        # Double quotes, not shlex.quote: the whole remote command already sits inside the
+        # single quotes ssh is given, where a single-quoted word would end that quoting.
+        quoted_server = '"' + peer_command.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        print(f"     ssh {peer_ip} '{quoted_server} -H {peer_ip} -p {rpc_port + i} -c'")
     print("")
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
     # Resolved on its own: an rpc-server found in a source tree says nothing about where
@@ -4483,13 +4545,23 @@ def pipeline_launch_plan(
     }
 
 
-def _local_launch(command: str) -> str:
-    """Run rank 0 out of the managed venv. `~/.local/bin/unsloth` is only a symlink to the
-    venv's console script, so it never puts the venv's `bin` on PATH and a bare `torchrun`
-    is usually not found; the peer command already sources `activate` for the same reason."""
+def managed_torchrun() -> str:
+    """The managed venv's `torchrun`, as one shell word, or the bare name if it is not there.
+
+    The installer puts only `~/.local/bin/unsloth` on PATH -- a symlink to a console script,
+    which does not add the venv's `bin` to anything -- so `torchrun` is not on the PATH of an
+    ordinary post-install shell, nor of a non-interactive ssh login on the peer. Anything that
+    runs or PRINTS a torchrun command has to resolve it or say `. activate` first."""
     torchrun = _studio_root() / "unsloth_studio" / "bin" / "torchrun"
-    if torchrun.exists() and command.startswith("torchrun "):
-        return f"{shlex.quote(str(torchrun))} {command[len('torchrun '):]}"
+    return shlex.quote(str(torchrun)) if torchrun.exists() else "torchrun"
+
+
+def _local_launch(command: str) -> str:
+    """Run rank 0 out of the managed venv; the peer command sources `activate` for the same
+    reason."""
+    trun = managed_torchrun()
+    if trun != "torchrun" and command.startswith("torchrun "):
+        return f"{trun} {command[len('torchrun '):]}"
     return command
 
 
@@ -4706,9 +4778,14 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # timeout, which makes the next provisioning run refuse the peer as busy and the next
     # launch collide with a job nobody is watching. `setsid` makes it a process group leader,
     # so the negative kill takes torchrun's children with it.
+    # Quoted ONCE, here, rather than wrapped in hand-written single quotes: `node1` comes back
+    # from `stage_run_inputs` already `shlex.join`ed, so a staged path with a space carries its
+    # own quotes, and those closed the outer `bash -c '...'` early. Rank 1 then ran a fragment
+    # or nothing, and rank 0 reported only the rendezvous timeout.
+    inner = f"[ -f {activate} ] && . {activate}; {env}; exec {node1}"
     remote = (
-        f'cd "$HOME" && setsid nohup bash -c \'[ -f {activate} ] && . {activate}; '
-        f"{env}; exec {node1}' > {log_peer} 2>&1 < /dev/null & "
+        f'cd "$HOME" && setsid nohup bash -c {shlex.quote(inner)} '
+        f"> {shlex.quote(log_peer)} 2>&1 < /dev/null & "
         f"echo $! > {_PEER_STAGE_PID}"
     )
     try:
@@ -4805,16 +4882,28 @@ def _cmd_pipeline(
     print("  Two-Spark layer-split training (capacity, not throughput -- this is how a")
     print("  model too large for one Spark gets trained; add --shard-load for those).")
     print("")
-    print("  Export on BOTH nodes:")
+    _print_launch(plan)
+    return 0
+
+
+def _print_launch(plan: Dict[str, Any]) -> None:
+    """The two commands, with the one line that makes them runnable.
+
+    They start with a bare `torchrun`, which is in the managed venv and not on the PATH of an
+    ordinary post-install shell (the installer exposes only the `unsloth` shim), so a user who
+    followed these exactly got `torchrun: command not found` on both nodes. Activation is
+    printed with them rather than assumed."""
+    activate = venv_activate_sh()
+    print("  Export on BOTH nodes, and activate the managed environment:")
     for key, value in plan["env"].items():
         print(f"    export {key}={value}")
+    print(f"    . {activate}")
     print("")
     print(f"  On this Spark ({plan['local_ip']}):")
     print(f"    {plan['node0']}")
     print(f"  On the peer ({plan['peer_ip']}):")
     print(f"    {plan['node1']}")
     print("")
-    return 0
 
 
 def _cmd_train(script: str, port: int = 29500) -> int:
@@ -4829,15 +4918,7 @@ def _cmd_train(script: str, port: int = 29500) -> int:
     print("  Two-Spark DDP training (throughput, not capacity -- the model must")
     print("  still fit on ONE Spark; use `unsloth spark serve` to split a model).")
     print("")
-    print("  Export on BOTH nodes:")
-    for key, value in plan["env"].items():
-        print(f"    export {key}={value}")
-    print("")
-    print(f"  On this Spark ({plan['local_ip']}):")
-    print(f"    {plan['node0']}")
-    print(f"  On the peer ({plan['peer_ip']}):")
-    print(f"    {plan['node1']}")
-    print("")
+    _print_launch(plan)
     print("  Both nodes must have the SAME Unsloth/torch versions and the same")
     print("  optional kernels installed, or the ranks disagree on which path to run.")
     return 0

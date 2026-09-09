@@ -364,8 +364,13 @@ def build_stage_model(
         for i in range(n):
             if i not in keep:
                 layers[i] = torch.nn.Identity()
-    if not keep_all_layers and not want_embed and hasattr(owner, "embed_tokens"):
-        owner.embed_tokens = torch.nn.Identity()
+    if not keep_all_layers and not want_embed:
+        # By the architecture's own name, not `embed_tokens`: `find_layers` accepts GPT-NeoX,
+        # whose table is `embed_in`, so every rank kept and materialised the whole embedding
+        # while believing it had dropped it. `_PPStageModule` already resolves it this way.
+        embed_name, _ = _first_named(owner, _EMBED_NAMES)
+        if embed_name:
+            setattr(owner, embed_name, torch.nn.Identity())
     if not keep_all_layers and not want_head:
         if hasattr(owner, "norm"):
             owner.norm = torch.nn.Identity()
@@ -1996,7 +2001,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for r in rows
         ]
         enc = tok(
-            texts, return_tensors = "pt", padding = "max_length", truncation = True, max_length = args.seq
+            texts,
+            return_tensors = "pt",
+            padding = "max_length",
+            truncation = True,
+            max_length = args.seq,
+            # The template already rendered BOS/EOS into the text. Tokenizing with the default
+            # `add_special_tokens=True` added a second set -- a duplicated BOS on Llama-style
+            # templates -- so every supervised example was a sequence the model never sees at
+            # inference.
+            add_special_tokens = False,
         )
         ids = enc.input_ids
         # Padded positions are not text. Without this the target is the padded input, so a short

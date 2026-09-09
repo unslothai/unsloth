@@ -422,3 +422,30 @@ def test_a_bad_peer_listener_still_blocks(cluster, monkeypatch) -> None:
         },
     )
     assert cluster.rpc_protocol_preflight("192.168.200.13", 50052)["problems"]
+
+
+def test_a_split_is_refused_when_the_kv_does_not_fit_across_the_pair(cluster) -> None:
+    """The aggregate gate counted weights only, so a model whose KV pushes the pair over its
+    total was still planned as a layer split and `serve` printed an RPC launch that OOMs at
+    load. Context is never divided: every one of the requested users gets the full context, so
+    the KV that follows is priced at full and refused when it does not fit."""
+    budget = cluster.SPARK_USABLE_GIB - cluster.SERVE_OVERHEAD_GIB
+    weights = budget * 1.5  # does not fit one node, fits the pair on weights alone
+    plan = cluster.plan_deployment(weights, two_sparks = True, concurrency = 1)
+    assert plan["topology"] == "layer-split" and plan["fits"] is True
+
+    per_user = (budget * 2 - weights) / 8 + 1.0
+    tight = cluster.plan_deployment(
+        weights, two_sparks = True, concurrency = 8, kv_gib_per_user = per_user
+    )
+    assert tight["topology"] == "too-large" and tight["fits"] is False
+    # The refusal has to say which of the two it was.
+    assert "KV for 8" in tight["summary"]
+    assert tight["split_need_gib"] > 2 * budget
+
+    # A single node is unaffected: it returns before the aggregate gate and keeps its
+    # weight-only class, so nothing changes for one Spark.
+    solo = cluster.plan_deployment(
+        weights, two_sparks = False, concurrency = 8, kv_gib_per_user = per_user
+    )
+    assert solo["topology"] == "single"
