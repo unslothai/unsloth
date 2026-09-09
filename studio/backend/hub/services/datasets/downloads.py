@@ -274,6 +274,9 @@ async def download_dataset_response(
             # partial.
             "cancel_transport": registry.job_cancel_transport(key),
         }
+    # Record ownership with the claim, not at launch: retirement scans this registry, and an
+    # unattributed job makes its cancel raise "Download not found" and abort the deletion.
+    download_lifecycle.record_download_account(registry, key)
     download_manifest.clear_cancel_marker(
         "dataset",
         repo_id,

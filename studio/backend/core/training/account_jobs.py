@@ -387,10 +387,12 @@ def retire_account_jobs(account: AccountContext) -> None:
     )
     from core.rag import folder_sync, ingestion
     from core.research_runs import retire_account_research
+    from routes.inference import retire_stt_downloads
 
     for cancel in (
         retire_account_downloads,
         retire_account_model_downloads,
+        retire_stt_downloads,
         ingestion.retire_account_ingestions,
         folder_sync.retire_account_sync,
         lambda: retire_account_research(account),

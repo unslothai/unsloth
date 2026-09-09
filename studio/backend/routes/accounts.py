@@ -69,26 +69,28 @@ def retire_account_roots(account: AccountContext) -> None:
     }
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     moved: list[tuple[Path, Path]] = []
-    try:
-        for root in sorted(roots, key = lambda path: len(path.parts), reverse = True):
-            # Rename a symlink itself; never resolve it into another account's data.
-            if not root.exists() and not root.is_symlink():
-                continue
-            destination = root.with_name(f"{root.name}-deleted-{stamp}")
-            suffix = 0
-            while destination.exists() or destination.is_symlink():
-                suffix += 1
-                destination = root.with_name(f"{root.name}-deleted-{stamp}-{suffix}")
-            Path.rename(root, destination)
-            moved.append((root, destination))
-    except OSError:
-        # All or nothing: reactivation restores no roots, so a half-retired account comes back with an empty workspace.
-        for root, destination in reversed(moved):
-            try:
-                Path.rename(destination, root)
-            except OSError:
-                pass
-        raise
+    # Same lock as ensure_account_dir: the rename never lands between its check and mkdir.
+    with storage_roots.root_retirement_lock:
+        try:
+            for root in sorted(roots, key = lambda path: len(path.parts), reverse = True):
+                # Rename a symlink itself; never resolve it into another account's data.
+                if not root.exists() and not root.is_symlink():
+                    continue
+                destination = root.with_name(f"{root.name}-deleted-{stamp}")
+                suffix = 0
+                while destination.exists() or destination.is_symlink():
+                    suffix += 1
+                    destination = root.with_name(f"{root.name}-deleted-{stamp}-{suffix}")
+                Path.rename(root, destination)
+                moved.append((root, destination))
+        except OSError:
+            # All or nothing: reactivation restores no roots, so a half-retired account comes back with an empty workspace.
+            for root, destination in reversed(moved):
+                try:
+                    Path.rename(destination, root)
+                except OSError:
+                    pass
+            raise
 
 
 @router.get("", response_model = AccountListResponse)

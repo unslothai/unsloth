@@ -22,7 +22,7 @@ from hub.schemas.downloads import DownloadDatasetRequest, DownloadModelRequest
 from hub.services import download_lifecycle
 from hub.services.datasets import downloads as dataset_downloads
 from hub.services.models import account_access as access, downloads
-from hub.utils import download_registry
+from hub.utils import download_manifest, download_registry
 from utils.account_context import AccountContext, run_as
 
 ALICE = AccountContext("a" * 32, "alice")
@@ -115,6 +115,44 @@ def test_dataset_download_cannot_launch_after_retirement_reported_success(monkey
 
     monkeypatch.setattr(dataset_downloads, "resolve_cached_repo_id_case", blocking_case)
     monkeypatch.setattr(access, "authorize_download", lambda *a, **k: None)
+
+    def fake_spawn(args, hf_token, **kwargs):
+        proc = subprocess.Popen(["sleep", "3"])
+        spawned.append((proc, hf_token))
+        return proc
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn)
+    monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
+
+    result = _retire_while_blocked(
+        blocked,
+        release,
+        lambda: dataset_downloads.download_dataset_response(
+            DownloadDatasetRequest(repo_id = "org/private-ds", use_xet = False),
+            hf_token = "alice-secret-token",
+        ),
+    )
+    for proc, _ in spawned:
+        proc.kill()
+    assert not spawned, f"a dataset worker was launched for a retired account: {spawned}"
+    assert result.get("error") == (403, "Account is retired"), result
+
+
+def test_dataset_retirement_cancels_a_job_claimed_but_not_yet_launched(monkeypatch):
+    """Ownership must be recorded with the claim: retirement scans the per-account registry, and an
+    unattributed job makes its cancel raise "Download not found" and abort the whole deletion."""
+    blocked, release, spawned = threading.Event(), threading.Event(), []
+    monkeypatch.setattr(downloads, "retire_account_downloads", lambda: None)
+    monkeypatch.setattr(dataset_downloads, "_registry", download_registry.DownloadRegistry())
+    monkeypatch.setattr(dataset_downloads, "resolve_cached_repo_id_case", lambda r, **k: r)
+    monkeypatch.setattr(access, "authorize_download", lambda *a, **k: None)
+
+    def blocking_clear(*args, **kwargs):
+        # Between the claim and launch_worker: the route clears the cancel marker here.
+        blocked.set()
+        release.wait(timeout = 30)
+
+    monkeypatch.setattr(download_manifest, "clear_cancel_marker", blocking_clear)
 
     def fake_spawn(args, hf_token, **kwargs):
         proc = subprocess.Popen(["sleep", "3"])

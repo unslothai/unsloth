@@ -7059,6 +7059,16 @@ async def _lease_ollama_model_ref(
     return lease.path
 
 
+def _defers_access_to_native_grant(request) -> bool:
+    """A native selection sends a display label; the account check waits for the lease's
+    canonical path, which the account roots are checked against."""
+    return bool(
+        account_access.managed_account()
+        and getattr(request, "native_path_lease", None)
+        and not is_ollama_manifest_ref(request.model_path)
+    )
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
@@ -14197,7 +14207,8 @@ async def _load_model_impl(
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
 ):
-    if account_access.managed_account():
+    native_access_deferred = _defers_access_to_native_grant(request)
+    if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     if account_access.managed_account():
         request = request.model_copy(
@@ -14291,6 +14302,8 @@ async def _load_model_impl(
                 resolved_ollama_path = resolved_ollama_path,
             )
         )
+        if native_access_deferred:
+            await asyncio.to_thread(account_access.require_model_access, model_identifier)
 
         # Keep the inventory ref public while loading the materialized artifact.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
@@ -15454,7 +15467,8 @@ async def validate_model(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    if account_access.managed_account():
+    native_access_deferred = _defers_access_to_native_grant(request)
+    if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
@@ -15478,6 +15492,8 @@ async def validate_model(
                 resolved_ollama_path = resolved_ollama_path,
             )
         )
+        if native_access_deferred:
+            await asyncio.to_thread(account_access.require_model_access, model_identifier)
 
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
@@ -16422,7 +16438,8 @@ async def estimate_memory(
     fourfold on the cache dtype alone. Where the header cannot supply the dims this
     answers ``kv_estimable = false`` rather than quoting an assumed total.
     """
-    if account_access.managed_account():
+    native_access_deferred = _defers_access_to_native_grant(request)
+    if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import _effective_tensor_parallel
@@ -16441,6 +16458,8 @@ async def estimate_memory(
     except HTTPException:
         # An expired lease is not worth a red error under a settings panel.
         return EstimateMemoryResponse(available = False, reason = "unsupported_source")
+    if native_access_deferred:
+        await asyncio.to_thread(account_access.require_model_access, model_identifier)
 
     # Blank Parallel Slots means the server default (4 in a standard launch), not one,
     # and /load resolves it the same way: pricing 1 underestimated the KV cache and the
@@ -18372,7 +18391,13 @@ def _start_account_stt_download(
     args = (model, hf_token, revision) if engine == "transformers" else (model, hf_token)
     if account_access.account_scope() is None:
         return module.start_model_download(*args)
+    from core.training.account_jobs import account_is_retired
+
     with _stt_download_lock:
+        # Shares this lock with retire_stt_downloads: a start admitted before the sweep is
+        # cancelled by it, one admitted after sees the tombstone here.
+        if account_is_retired():
+            raise HTTPException(status_code = 403, detail = "Account is retired")
         if module.download_status().get("downloading"):
             if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
                 raise HTTPException(
@@ -18416,6 +18441,38 @@ def _start_account_stt_download(
                 settled.set()
 
         account_thread(target = watch, name = f"stt-grant-{engine}", daemon = True).start()
+
+
+def retire_stt_downloads() -> None:
+    """Cancel and reap this account's dictation downloads, which keep their own registry."""
+    if account_access.account_scope() is None:
+        return
+    account = current_account_id()
+    claimed = []
+    with _stt_download_lock:
+        for engine, owner in list(_stt_download_accounts.items()):
+            if owner != account:
+                continue
+            module = _stt_download_module(engine)
+            try:
+                module.cancel_model_download()
+            finally:
+                _stt_download_accounts.pop(engine, None)
+            claimed.append((engine, module))
+    stragglers = []
+    for engine, module in claimed:
+        deadline = time.monotonic() + 10
+        while module.download_status().get("downloading"):
+            if time.monotonic() >= deadline:
+                stragglers.append(engine)
+                break
+            time.sleep(0.1)
+        else:
+            _stt_grant_pending.pop(engine, None)
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account dictation downloads have not stopped: {sorted(stragglers)}"
+        )
 
 
 def _cancel_account_stt_download(module, engine):

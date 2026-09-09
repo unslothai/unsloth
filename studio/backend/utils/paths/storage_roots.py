@@ -8,6 +8,7 @@ import ntpath
 import os
 import re
 import sys
+import threading
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable
 import tempfile
@@ -263,14 +264,22 @@ class RetiredAccountError(RuntimeError):
     """A write arrived for an account whose private roots have already been retired."""
 
 
+# Held across the rename-aside and every guarded directory creation.
+root_retirement_lock = threading.RLock()
+
+
 def ensure_account_dir(path: Path) -> Path:
     """``ensure_dir`` inside the acting account's workspace. A finalizer outliving deletion
-    would recreate the renamed-aside roots; refuse once the tombstone is set and they are gone."""
-    if not is_owner_context() and not workspace_root().exists():
-        from core.training.account_jobs import account_is_retired
-        if account_is_retired():
-            raise RetiredAccountError(f"account has been deleted; refusing to recreate {path!s}")
-    return ensure_dir(path)
+    would recreate the renamed-aside roots; refuse once the tombstone is set and they are gone.
+    Check and creation share ``root_retirement_lock`` with the rename."""
+    with root_retirement_lock:
+        if not is_owner_context() and not workspace_root().exists():
+            from core.training.account_jobs import account_is_retired
+            if account_is_retired():
+                raise RetiredAccountError(
+                    f"account has been deleted; refusing to recreate {path!s}"
+                )
+        return ensure_dir(path)
 
 
 def legacy_hf_cache_dir() -> Path:

@@ -36,6 +36,8 @@ _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _SSE_POLL_SECONDS = 1.0
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 
+_RETIRE_JOIN_SECONDS = 10.0
+
 
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
@@ -769,7 +771,8 @@ def get_job_status(job_id: str) -> dict | None:
 
 
 def retire_account_ingestions() -> None:
-    """Stop renewing this account's jobs; workers check retirement between stages."""
+    """Stop renewing this account's jobs, then reap their workers before the roots move:
+    a thread parked in a long parse only notices retirement at its next checkpoint."""
     with _jobs_lock:
         keys = [
             key
@@ -779,3 +782,17 @@ def retire_account_ingestions() -> None:
         ]
     for key in keys:
         job_leases.release(job_leases.INGESTION, key if isinstance(key, str) else key[1])
+    stragglers = []
+    for key in keys:
+        with _jobs_lock:
+            worker = _workers.get(key)
+        # Never join from the worker itself.
+        if worker is None or worker is threading.current_thread():
+            continue
+        worker.join(timeout = _RETIRE_JOIN_SECONDS)
+        if worker.is_alive():
+            stragglers.append(key if isinstance(key, str) else key[1])
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account ingestion workers have not stopped: {sorted(stragglers)}"
+        )

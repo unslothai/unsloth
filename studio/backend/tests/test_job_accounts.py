@@ -1470,3 +1470,202 @@ def test_a_late_finalizer_cannot_recreate_a_deleted_accounts_workspace(monkeypat
     worker.join(10)
     assert len(refused) == 2
     assert not root.exists()
+
+
+def test_retirement_reaps_stt_downloads_and_fences_a_parked_start(tmp_path, monkeypatch):
+    """A dictation download of a deleted account is cancelled, its engine is freed for other
+    accounts, and a start parked on remote validation cannot spawn a worker afterwards."""
+    import subprocess
+    import sys
+
+    from core import research_runs
+    from core.rag import folder_sync, ingestion
+    from hub.services.datasets import downloads as dataset_downloads
+    from hub.services.models import account_access as access, downloads as model_downloads
+    from routes import inference
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(jobs, "_services", [])
+    monkeypatch.setattr(ingestion, "retire_account_ingestions", lambda: None)
+    monkeypatch.setattr(folder_sync, "retire_account_sync", lambda: None)
+    monkeypatch.setattr(research_runs, "retire_account_research", lambda account: None)
+    monkeypatch.setattr(dataset_downloads, "retire_account_downloads", lambda: None)
+    monkeypatch.setattr(model_downloads, "retire_account_downloads", lambda: None)
+    monkeypatch.setattr(inference, "_stt_download_accounts", {})
+    monkeypatch.setattr(inference, "_stt_grant_pending", {})
+    monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
+    monkeypatch.setattr(access, "authorize_download", lambda *a: None)
+    monkeypatch.setattr(access, "account_hf_token", lambda token: "alice-token")
+
+    # A sidecar-shaped module whose transfer is a real child process.
+    handles = {"proc": None, "tokens": []}
+
+    def start_model_download(
+        model,
+        hf_token = None,
+        revision = None,
+    ):
+        handles["tokens"].append(hf_token)
+        handles["proc"] = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"], stderr = subprocess.PIPE
+        )
+
+    def cancel_model_download():
+        proc = handles["proc"]
+        if proc is None or proc.poll() is not None:
+            return False
+        proc.terminate()
+        proc.wait(timeout = 10)
+        return True
+
+    module = SimpleNamespace(
+        start_model_download = start_model_download,
+        download_status = lambda: {
+            "downloading": handles["proc"] is not None and handles["proc"].poll() is None
+        },
+        cancel_model_download = cancel_model_download,
+        is_model_downloaded = lambda model: False,
+    )
+    monkeypatch.setattr(inference, "_stt_download_module", lambda engine: module)
+    monkeypatch.setattr(inference, "_resolve_serving_stt_engine", lambda engine: "transformers")
+
+    try:
+        run_as(
+            ALICE,
+            inference._start_account_stt_download,
+            module,
+            "transformers",
+            "org/private",
+            "alice-token",
+        )
+        worker = handles["proc"]
+        assert worker.poll() is None
+        jobs.retire_account_jobs(ALICE)
+        assert worker.poll() is not None, "the retired account's dictation worker is still running"
+        assert inference._stt_download_accounts == {}
+        # The engine must not stay claimed by an account that no longer exists.
+        run_as(
+            BOB,
+            inference._start_account_stt_download,
+            module,
+            "transformers",
+            "org/other",
+            "bob-token",
+        )
+        handles["proc"].kill()
+
+        # A start parked on remote validation when retirement lands must not reach the worker.
+        jobs.restore_account_jobs(ALICE.account_id)
+        handles["proc"], handles["tokens"] = None, []
+        parked, release = threading.Event(), threading.Event()
+
+        def validate_remote_model(model, token = None):
+            parked.set()
+            assert release.wait(20)
+            return {"revision": "0" * 40}
+
+        from core.inference import stt_sidecar
+        from models.inference import SttLoadRequest
+
+        monkeypatch.setattr(stt_sidecar, "validate_remote_model", validate_remote_model)
+        outcome = []
+        request = SttLoadRequest(model = "org/private", engine = "transformers")
+        thread = threading.Thread(
+            target = lambda: outcome.append(
+                _catch(
+                    HTTPException,
+                    lambda: asyncio.run(
+                        arun_as(
+                            ALICE,
+                            inference.stt_download(request, current_subject = "alice", hf_token = None),
+                        )
+                    ),
+                )
+            ),
+            daemon = True,
+        )
+        thread.start()
+        assert parked.wait(20)
+        jobs.retire_account_jobs(ALICE)
+        release.set()
+        thread.join(30)
+        assert not thread.is_alive()
+        assert isinstance(outcome[0], HTTPException) and outcome[0].status_code == 403
+        assert handles["proc"] is None, "a download spawned for an account retired mid-validation"
+        assert handles["tokens"] == []
+    finally:
+        for handle in (handles["proc"],):
+            if handle is not None and handle.poll() is None:
+                handle.kill()
+
+
+def test_a_creation_in_flight_cannot_outlive_the_rename_that_retires_the_roots(
+    monkeypatch, tmp_path
+):
+    """The tombstone is only consulted once the roots are gone, so the check and the mkdir must
+    share the retirement lock: otherwise a finalizer that passed the check recreates the account."""
+    from routes.accounts import retire_account_roots
+    from state import active_generations
+    from utils.paths import storage_roots
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(jobs, "_services", weakref.WeakSet())
+    for module, name in (
+        ("hub.services.datasets.downloads", "retire_account_downloads"),
+        ("hub.services.models.downloads", "retire_account_downloads"),
+        ("core.rag.ingestion", "retire_account_ingestions"),
+        ("core.rag.folder_sync", "retire_account_sync"),
+    ):
+        monkeypatch.setattr(importlib.import_module(module), name, lambda: None)
+    monkeypatch.setattr("core.research_runs.retire_account_research", lambda account: None)
+    monkeypatch.setattr("core.inference.mcp_client.close_mcp_sessions", lambda: None)
+    monkeypatch.setattr("core.inference.mcp_client.invalidate_tool_cache", lambda: None)
+    active_generations.reset_for_tests()
+    root = run_as(ALICE, storage_roots.workspace_root)
+    root.mkdir(parents = True)
+
+    checked, release = threading.Event(), threading.Event()
+    real_ensure_dir = storage_roots.ensure_dir
+
+    def slow_ensure_dir(path):
+        # Past the existence gate of ensure_account_dir; hand the CPU to the deleting thread.
+        checked.set()
+        assert release.wait(10)
+        return real_ensure_dir(path)
+
+    monkeypatch.setattr(storage_roots, "ensure_dir", slow_ensure_dir)
+    outcome, retirement = {}, {}
+
+    def finalizer():
+        try:
+            outcome["path"] = run_as(
+                ALICE,
+                lambda: storage_roots.ensure_account_dir(storage_roots.account_path("images")),
+            )
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    def deleter():
+        try:
+            retire_account_roots(ALICE)
+        except BaseException as exc:  # noqa: BLE001
+            retirement["error"] = exc
+
+    worker = threading.Thread(target = finalizer, daemon = True)
+    worker.start()
+    try:
+        assert checked.wait(10)
+        remover = threading.Thread(target = deleter, daemon = True)
+        remover.start()
+        remover.join(2)
+        assert remover.is_alive(), "the rename ran while a directory creation was mid-flight"
+    finally:
+        release.set()
+    worker.join(10)
+    remover.join(10)
+    assert not retirement, retirement
+    assert not root.exists(), f"the deleted private root was recreated: {outcome}"
+    aside = [p for p in (tmp_path / "home" / "accounts").iterdir() if p.name != ALICE.account_id]
+    assert aside and (aside[0] / "images").exists(), "the in-flight creation was not renamed aside"
