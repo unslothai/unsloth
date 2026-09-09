@@ -150,7 +150,9 @@ def test_a_valid_sidecar_missing_tiktoken_is_topped_up_once(tmp_path, monkeypatc
     root.mkdir()
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: True)
     installed: list[tuple[str, str]] = []
-    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append((pkg, target)) or False)
+    monkeypatch.setattr(
+        tv, "_install_to_dir", lambda pkg, target: installed.append((pkg, target)) or False
+    )
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == [("tiktoken", str(root))]
@@ -176,7 +178,9 @@ def test_latest_sidecar_activation_tops_up_a_missing_tiktoken(tmp_path, monkeypa
     monkeypatch.setattr(tv, "_latest_pin_data", lambda: {"version": "9.9.9", "packages": packages})
     monkeypatch.setattr(tv, "_venv_dir_health", lambda *a, **k: (True, True))
     installed = []
-    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append((pkg, target)) or True)
+    monkeypatch.setattr(
+        tv, "_install_to_dir", lambda pkg, target: installed.append((pkg, target)) or True
+    )
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     assert tv._ensure_venv_t5_latest_exists() is True
     assert installed == [("tiktoken", str(latest))]

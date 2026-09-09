@@ -2495,12 +2495,10 @@ def _optional_top_up_lock(venv_dir: str):
         handle = open(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), "a+b")
         if sys.platform == "win32":
             import msvcrt
-
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
-
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         if handle is not None:
@@ -2513,12 +2511,10 @@ def _optional_top_up_lock(venv_dir: str):
         try:
             if sys.platform == "win32":
                 import msvcrt
-
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
-
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:
             pass
