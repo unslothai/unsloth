@@ -2138,17 +2138,24 @@ _sidecar_current() {
     _sc_ver="$2"
     [ -d "$_sc_dir" ] || return 1
     # No venv interpreter is the Colab path (_COLAB_NO_VENV), where the backend deps go
-    # into system Python and $VENV_DIR/bin/python never exists. Reporting every sidecar
-    # stale there rebuilt all three -- three wipes and twelve --target installs -- on
-    # every single run, so fall back to the version grep instead of answering "stale":
-    # it is the same answer this function gives for any other tree it cannot ask.
-    if [ ! -x "$VENV_DIR/bin/python" ]; then
+    # into system Python and $VENV_DIR/bin/python never exists. The shim is stdlib-only,
+    # so the `python` the installer itself runs under there asks it the same question;
+    # the version grep this replaced sees only transformers, and a sidecar install
+    # interrupted after transformers landed read as current on every later run. Only a
+    # tree with no interpreter to ask at all falls back to the grep.
+    _sc_python="$VENV_DIR/bin/python"
+    if [ ! -x "$_sc_python" ]; then
+        _sc_python=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
+    fi
+    if [ -z "$_sc_python" ]; then
+        unset _sc_python
         _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
         return $?
     fi
     # shellcheck disable=SC2086 - the pins are a deliberate word-split list
-    _sc_out=$("$VENV_DIR/bin/python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+    _sc_out=$("$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
         "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+    unset _sc_python
     # The marker, not the exit code alone. An install_manifest.py predating the shim has
     # no __main__ block at all, so running it exits 0 with no output -- and reading that
     # silence as "current" would retire the sidecar rebuild entirely.

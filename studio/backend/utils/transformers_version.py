@@ -2026,6 +2026,17 @@ _VENV_T5_550_PACKAGES = (
 # Backwards-compat alias
 _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 
+# Packages a sidecar is complete without. setup.sh and setup.ps1 install tiktoken into
+# every sidecar on a best-effort basis (a Python with no compatible wheel gets the
+# sidecar without it, and only Qwen tokenizers notice), and record that sidecar as
+# complete. The runtime has to agree, or the first model on that tier would find the
+# sidecar "incomplete", delete it, and retry the same install that could not be done.
+_OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
+
+
+def _sidecar_package_is_optional(pkg_spec: str) -> bool:
+    return pkg_spec.split("==", 1)[0].strip().lower().replace("_", "-") in _OPTIONAL_SIDECAR_PACKAGES
+
 
 _SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 
@@ -2268,6 +2279,8 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
         if not any(
             (Path(venv_dir) / d).is_dir() for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
         ):
+            if _sidecar_package_is_optional(pkg_spec):
+                continue
             return False
         # Unpinned packages: existence is enough.
         if pkg_version is None:
@@ -2424,6 +2437,13 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     for idx, pkg in enumerate(packages, start = 1):
         logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
         if not _install_to_dir(pkg, venv_dir):
+            if _sidecar_package_is_optional(pkg):
+                logger.warning(
+                    "%s could not be installed into %s; continuing without it (Qwen tokenizers may fail)",
+                    pkg,
+                    venv_dir,
+                )
+                continue
             return False
     logger.info("Installed %s to %s", label, venv_dir)
     return True
