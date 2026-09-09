@@ -40,3 +40,12 @@ and ordinary-conversation tests cover their separate existing paths.
 
 Native receipts are reported for the published head in the PR description. Model
 integration, packaged desktop behavior and release qualification are separate gates.
+
+## Optional task routing
+
+A private task-context hook lets the separate task-command layer resolve a durable
+owned-worktree binding. Public command APIs still accept no root, environment or
+boundary injection. Task execution masks the root `.git` marker with a read-only
+empty mount and retains the same supervised process lease, mutation slot and
+monitor-held project flock through cleanup or quarantine. Ordinary project
+commands keep their existing behavior.

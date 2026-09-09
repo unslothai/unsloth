@@ -392,6 +392,7 @@ def test_linux_boundary_uses_an_empty_root_instead_of_binding_the_host(monkeypat
     boundary._root_fd = 11
     boundary._scratch_fd = 12
     boundary._sandbox_root_fd = 13
+    boundary._git_mask_fd = None
     boundary._runtime_directories = []
     boundary._linux_system_mounts = [(Path("/usr"), Path("/usr"), True)]
     boundary.recheck = lambda: None

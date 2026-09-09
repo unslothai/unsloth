@@ -453,6 +453,8 @@ class ProjectExecutionBoundary:
             )
         self._closed = False
         self._slot = False
+        self._git_mask_fd = None
+        self._git_marker_identity = None
         self.backend = status.backend
         workspace = root if hasattr(root, "root") else None
         requested_root = Path(workspace.root if workspace is not None else root)
@@ -522,6 +524,25 @@ class ProjectExecutionBoundary:
                 shutil.rmtree(self._container, ignore_errors = True)
             raise
 
+    def protect_git_metadata(self) -> None:
+        """Mask a task checkout's root .git file with a read-only empty mount."""
+        if self.backend != "bubblewrap" or not self._slot:
+            raise ProjectExecutionUnavailable(
+                "Task Git protection requires an owned Linux boundary."
+            )
+        self.recheck()
+        metadata = os.stat(".git", dir_fd = self._root_fd, follow_symlinks = False)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ProjectExecutionUnavailable("The task Git marker is unsafe.")
+        if self._git_mask_fd is None:
+            self._git_mask_fd = os.open(
+                "task-git-mask",
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o400,
+                dir_fd = self._scratch_fd,
+            )
+            self._git_marker_identity = (metadata.st_dev, metadata.st_ino)
+
     @classmethod
     def open(
         cls,
@@ -544,6 +565,7 @@ class ProjectExecutionBoundary:
         descriptors = [
             self._scratch_fd,
             self._root_fd,
+            *((self._git_mask_fd,) if self._git_mask_fd is not None else ()),
             *(fd for _runtime, fd in self._runtime_directories),
         ]
         if self._sandbox_root_fd is not None:
@@ -595,6 +617,15 @@ class ProjectExecutionBoundary:
         if self._closed:
             raise ProjectExecutionUnavailable("The project execution boundary is closed.")
         self._assert_path_identity(self.root, self._root_fd, self.root_identity)
+        if self._git_marker_identity is not None:
+            marker = os.stat(".git", dir_fd = self._root_fd, follow_symlinks = False)
+            if (
+                not stat.S_ISREG(marker.st_mode)
+                or (marker.st_dev, marker.st_ino) != self._git_marker_identity
+            ):
+                raise ProjectExecutionUnavailable(
+                    "The task Git marker changed before command execution."
+                )
         self._assert_path_identity(self.scratch, self._scratch_fd, self._scratch_identity)
         if self._sandbox_root_fd is not None:
             self._assert_path_identity(
@@ -666,6 +697,10 @@ class ProjectExecutionBoundary:
             ]
             for destination, descriptor, mode in exposed:
                 options.extend([mode, f"/proc/self/fd/{descriptor}", str(destination)])
+            if self._git_mask_fd is not None:
+                options.extend(
+                    ["--ro-bind", f"/proc/self/fd/{self._git_mask_fd}", str(self.root / ".git")]
+                )
             options.extend(["--chdir", str(self.root), "--", *command])
             return options
         raise ProjectExecutionUnavailable("Project command execution is unavailable.")
@@ -677,6 +712,7 @@ class ProjectExecutionBoundary:
         descriptors = [
             self._root_fd,
             self._scratch_fd,
+            *((self._git_mask_fd,) if self._git_mask_fd is not None else ()),
             *(fd for _runtime, fd in self._runtime_directories),
         ]
         if self._sandbox_root_fd is not None:

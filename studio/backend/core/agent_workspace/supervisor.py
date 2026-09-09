@@ -59,6 +59,8 @@ except OSError:
     _libc = None
 
 
+TASK_PROCESS_PROTOCOL = 1
+
 DEFAULT_OUTPUT_LIMIT_BYTES = 256 * 1024
 MAX_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
 MAX_TIMEOUT_SECONDS = 3600.0
@@ -1448,6 +1450,7 @@ def _run_project_process(
     cancel_event: Optional[threading.Event],
     output_callback,
     before_start = None,
+    _task_context = None,
 ) -> ProjectProcessResult:
     timeout = _timeout(timeout_seconds)
     limit = _output_limit(output_limit_bytes)
@@ -1464,7 +1467,13 @@ def _run_project_process(
             status.reason or "Secure supervised project commands are unavailable."
         )
 
-    lease = common.project_workspace_access(project_id)
+    if _task_context is None:
+        lease = common.project_workspace_access(project_id)
+    else:
+        # The optional task layer resolves its own durable binding. There is
+        # no generic caller-supplied root, boundary, environment or lease.
+        from .task_commands import command_workspace_access
+        lease = command_workspace_access(project_id, _task_context)
     lease_entered = False
     boundary = None
     lifecycle: Optional[_BubblewrapLifecycle] = None
@@ -1510,6 +1519,8 @@ def _run_project_process(
             raise ProjectExecutionUnavailable(
                 "The project process-tree fence is unavailable."
             ) from exc
+        if _task_context is not None:
+            boundary.protect_git_metadata()
         lifecycle = _BubblewrapLifecycle()
         lifecycle.attach_execution_fence(execution_fence_fd)
         if python_source is not None:
