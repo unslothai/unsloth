@@ -13,17 +13,15 @@
 // module-stubs.ts: only tests that need the TypeScript compiler should pay to load it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import ts from "typescript";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const source = ts.createSourceFile(
   "runtime-provider.tsx",
-  readFileSync(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  ),
+  readSrc("features/chat/runtime-provider.tsx"),
   ts.ScriptTarget.ES2022,
   true,
   ts.ScriptKind.TSX,
