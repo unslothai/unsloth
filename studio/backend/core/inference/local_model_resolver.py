@@ -343,7 +343,12 @@ def _local_gguf_entry(
         # weights depending on which resolver answered it. The qualified rows stay advertised; they are not what a bare
         # id means.
         unqualified = tuple(q for q in quants if "/" not in q)
-        best = preferred_quant(unqualified or quants)
+        # Same collapse the remote resolver applies, for the same reason: several root builds at
+        # one quant tie in preferred_quant, and the two resolvers see them in different orders.
+        from hub.utils.gguf import collapse_same_quant_root_builds
+
+        ranked = tuple(collapse_same_quant_root_builds(list(unqualified)))
+        best = preferred_quant(ranked or unqualified or quants)
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
         return _LocalGgufEntry(

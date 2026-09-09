@@ -907,6 +907,41 @@ def variant_spellings_may_name_one_build(a: Optional[str], b: Optional[str]) -> 
     return False
 
 
+def collapse_same_quant_root_builds(keys: Iterable[str]) -> list[str]:
+    """One key per quant token among ROOT-level builds, for DEFAULT selection only.
+
+    Giving a repo's second build at one quant its own row puts both keys into the default
+    ranking, and ``preferred_quant`` ranks on the quant TEXT: the pair ties, so the winner falls
+    out of input order. The remote map is in Hub listing order while the local and picker
+    listings are size-sorted, so a bare ``org/repo`` could mean the plain build from one resolver
+    and the tagged build from the other -- and change weights once the repo was downloaded.
+
+    Every build stays advertised and individually selectable; this only decides what the
+    UNqualified id means, and it means the plain build wherever the repo publishes one. Ties
+    among tagged-only builds fall to the lexicographically first key, which is deterministic and
+    is the family the grouped row used to pick.
+    """
+    groups: dict[str, list[str]] = {}
+    passthrough: list[str] = []
+    for key in keys:
+        token = extract_quant_token(key)
+        if token is None or "/" in (key or "").replace("\\", "/"):
+            passthrough.append(key)
+            continue
+        groups.setdefault(token.lower(), []).append(key)
+    winners = []
+    for token, members in groups.items():
+        if len(members) == 1:
+            winners.append(members[0])
+            continue
+        bare = [k for k in members if not is_qualified_gguf_variant_key(k)]
+        winners.append(sorted(bare)[0] if bare else sorted(members)[0])
+    # Input order is preserved for everything that was not collapsed, so callers that care about
+    # listing order see no other change.
+    keep = set(winners)
+    return [k for k in keys if k in keep or k in passthrough]
+
+
 def _is_quant_directory(segment: str) -> bool:
     """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
 

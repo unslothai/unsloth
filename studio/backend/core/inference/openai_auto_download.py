@@ -933,7 +933,15 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
     # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way. A repo with nothing at
     # the root falls back to the whole set rather than refusing.
     unqualified = {name: size for name, size in variants.items() if "/" not in name}
-    return preferred_quant(unqualified or variants)
+    # Collapse a repo's several root builds at ONE quant to a single candidate first: they tie in
+    # preferred_quant, so otherwise the winner comes out of listing order and this resolver and
+    # the local one can disagree about what a bare org/repo means.
+    from hub.utils.gguf import collapse_same_quant_root_builds
+
+    ranked = {
+        name: unqualified[name] for name in collapse_same_quant_root_builds(list(unqualified))
+    }
+    return preferred_quant(ranked or unqualified or variants)
 
 
 async def _dispatch(

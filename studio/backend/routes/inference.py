@@ -8024,6 +8024,29 @@ def _resident_id_is_namespaced() -> bool:
     return any("/" in (public_model_id(c) or "") for c in candidates if c)
 
 
+def _resident_variant_matches(base: str, requested_variant: str, loaded_variant: str) -> bool:
+    """Whether the resident *loaded_variant* is what *requested_variant* names for *base*.
+
+    Exact first. Otherwise the request may be the legacy bare spelling of the resident build's
+    qualified key, which the download and loader paths both still accept -- so resolve it the way
+    they do, against what is actually on disk. Inventory-aware rather than a loose string
+    compare: where a plain row owns the bare quant beside a tagged one they are different
+    checkpoints, and calling them equal here reports the wrong model as already serving.
+    """
+    left = (loaded_variant or "").strip().lower()
+    right = (requested_variant or "").strip().lower()
+    if not right or left == right:
+        return True
+    try:
+        from core.inference.local_model_resolver import resolve_local_gguf
+
+        hit = resolve_local_gguf(f"{base}:{requested_variant}", allow_scan = False)
+    except Exception:
+        return False
+    resolved = hit[1] if hit and len(hit) > 1 and hit[1] else None
+    return bool(resolved) and resolved.strip().lower() == left
+
+
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
@@ -8049,7 +8072,9 @@ def _loaded_satisfies(requested: str) -> bool:
         if not looks_like_quant(variant):
             # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
             return True
-        return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
+        return _resident_variant_matches(
+            base, variant, getattr(llama_backend, "hf_variant", None) or ""
+        )
     backend = get_inference_backend()
     active = getattr(backend, "active_model_name", None)
     if not active:
@@ -8741,13 +8766,14 @@ async def _maybe_auto_switch_model(
             if bare:
                 return True
             if variant:
-                from hub.utils.gguf import variant_spellings_may_name_one_build
-
-                # Either side may hold the bare or the qualified spelling of one build, and
-                # comparing them literally tore down a model that was already serving the
-                # request in order to reload the very same checkpoint.
-                loaded_variant = getattr(backend, "hf_variant", None) or ""
-                return variant_spellings_may_name_one_build(loaded_variant, variant)
+                # EXACT, deliberately. ``variant`` is the resolver's selected identity (see the
+                # ``target_id, variant, override_id = resolved`` unpack above), not the request's
+                # spelling, so it is already the on-disk key -- as is the loaded ``hf_variant``.
+                # An alias-tolerant compare here would call a resident ``model-Q4_K_M-mtp`` a
+                # match for a request the resolver pointed at the plain ``Q4_K_M`` row, and skip
+                # the switch: the reply would come from a checkpoint nobody asked for.
+                loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+                return loaded_variant == variant.lower()
             return True
 
         def _record_serving_alias() -> None:

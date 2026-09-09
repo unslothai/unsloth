@@ -513,3 +513,62 @@ def test_a_saved_recipe_still_recognises_the_loaded_build():
     assert variant_spellings_may_name_one_build("q4_0", "gemma-4-31B_q4_0-it") is True
     assert variant_spellings_may_name_one_build("gemma-4-31B_q4_0-it", "q4_0") is True
     assert variant_spellings_may_name_one_build("Q8_0", "gemma-4-31B_q4_0-it") is False
+
+
+# --------------------------------------------------------------------------------------
+# What a BARE org/repo means, once one quant has two root builds
+# --------------------------------------------------------------------------------------
+
+
+def test_the_default_for_a_bare_repo_id_does_not_depend_on_listing_order():
+    """``preferred_quant`` ranks on the quant TEXT, so two root builds of one quant tie and the
+    winner falls out of input order. The remote map is in Hub listing order while the local and
+    picker listings are size-sorted, so a bare ``org/repo`` could mean the plain build from one
+    resolver and the tagged build from the other -- and change weights after a download."""
+    from core.inference.openai_auto_download import preferred_quant
+    from hub.utils.gguf import collapse_same_quant_root_builds
+
+    keys = ["Hy3-Q4_K_M-mtp", "Q4_K_M", "Hy3-IQ1_M-mtp", "IQ1_M"]
+    forward = preferred_quant(collapse_same_quant_root_builds(keys))
+    backward = preferred_quant(collapse_same_quant_root_builds(list(reversed(keys))))
+    assert forward == backward == "Q4_K_M"
+
+
+def test_the_collapse_prefers_the_plain_build_and_is_deterministic_without_one():
+    from hub.utils.gguf import collapse_same_quant_root_builds
+
+    # A plain row owns the bare quant, so it is what the unqualified id means. The tagged name
+    # here sorts BEFORE the bare one, so a winner picked by plain lexicographic order would be
+    # the tagged build -- which is the live shape (``Hy3-Q4_K_M-mtp`` beside ``Q4_K_M``) and the
+    # reason this cannot be asserted with a pair whose case ordering hides it.
+    assert sorted(["Hy3-Q4_K_M-mtp", "Q4_K_M"])[0] == "Hy3-Q4_K_M-mtp"
+    assert collapse_same_quant_root_builds(["Hy3-Q4_K_M-mtp", "Q4_K_M"]) == ["Q4_K_M"]
+    assert collapse_same_quant_root_builds(["Q4_K_M", "Hy3-Q4_K_M-mtp"]) == ["Q4_K_M"]
+    # No plain row: still one deterministic winner, whichever order they arrive in.
+    both = ["m-Q4_K_M-mtp", "m-Q4_K_M-fp16"]
+    assert collapse_same_quant_root_builds(both) == collapse_same_quant_root_builds(both[::-1])
+    # Different quants are never collapsed together, and a path-qualified key passes through.
+    assert set(collapse_same_quant_root_builds(["Q4_K_M", "Q8_0"])) == {"Q4_K_M", "Q8_0"}
+    assert collapse_same_quant_root_builds(["distilled/m-Q6_K"]) == ["distilled/m-Q6_K"]
+
+
+def test_the_collapse_only_decides_the_default_not_what_is_advertised():
+    """Every build stays individually selectable; this narrows the ranking input alone."""
+    rows = group_gguf_variant_files(MTP_FILES)
+    assert len(rows) == len(MTP_FILES)
+
+
+def test_a_resident_build_is_not_confused_with_the_row_the_resolver_chose():
+    """``variant_spellings_may_name_one_build`` is deliberately loose and is only safe where a
+    false match FAILS CLOSED, as in the delete guard. Where a repo publishes a plain row beside a
+    tagged one the two spellings name different checkpoints, so the already-serving and recipe
+    checks resolve against the inventory instead of comparing the strings loosely."""
+    from hub.utils.gguf import resolve_variant_alias, variant_spellings_may_name_one_build
+
+    inventory = ["Q4_K_M", "model-Q4_K_M-mtp"]
+    # Loose: would call the resident tagged build a match for the plain row.
+    assert variant_spellings_may_name_one_build("model-Q4_K_M-mtp", "Q4_K_M") is True
+    # Inventory-aware: the plain row owns the bare quant, so it resolves to itself.
+    assert resolve_variant_alias(inventory, "Q4_K_M") == "Q4_K_M"
+    # And with no plain row the bare spelling still reaches the one tagged build.
+    assert resolve_variant_alias(["gemma-4-31B_q4_0-it"], "q4_0") == "gemma-4-31B_q4_0-it"

@@ -162,6 +162,22 @@ def _loaded_local_model_identity() -> tuple[bool, str, str]:
     return False, "", ""
 
 
+def _resolved_local_variant(target: str, variant: str) -> Optional[str]:
+    """The on-disk variant key *variant* names for *target*, or None when it names none.
+
+    The resolver applies the same unambiguous bare-quant alias the download and loader paths do,
+    so a recipe saved under a legacy spelling still finds its build -- while a bare quant that a
+    plain row already owns keeps resolving to that row rather than to a tagged sibling.
+    """
+    try:
+        from core.inference.local_model_resolver import resolve_local_gguf
+
+        hit = resolve_local_gguf(f"{target}:{variant}", allow_scan = False)
+    except Exception:
+        return None
+    return hit[1] if hit and len(hit) > 1 and hit[1] else None
+
+
 def _ensure_selected_local_model_loaded(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
@@ -175,14 +191,14 @@ def _ensure_selected_local_model_loaded(
 
     target, gguf_variant = selection
     # A recipe saved before the same-quant split holds the legacy bare spelling, while loading
-    # the build from its newly advertised row records the qualified key. Compared literally, the
-    # recipe rejected the checkpoint that WAS loaded and asked the user to reload it -- which the
-    # picker can no longer offer under the old spelling.
-    from hub.utils.gguf import variant_spellings_may_name_one_build
-
-    variant_matches = not gguf_variant or variant_spellings_may_name_one_build(
-        active_variant, gguf_variant
-    )
+    # the build from its newly advertised row records the qualified key, so a literal comparison
+    # rejected the checkpoint that WAS loaded. Resolve the saved spelling against what the repo
+    # actually publishes rather than comparing the two strings loosely: where a plain row owns
+    # the bare quant BESIDE a tagged one, the two name different checkpoints and a loose match
+    # would run the recipe against the wrong weights.
+    variant_matches = not gguf_variant or (active_variant or "").strip().lower() == (
+        _resolved_local_variant(target, gguf_variant) or gguf_variant
+    ).strip().lower()
     if active_model.lower() != target.lower() or not variant_matches:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model
