@@ -323,12 +323,91 @@ def build_stage_model(
     return model, cfg, mine
 
 
+def _has_parameter(model, name: str) -> bool:
+    """Whether `name` names a parameter this stage still owns; a dropped module does not."""
+    node = model
+    parts = name.split(".")
+    for part in parts[:-1]:
+        node = getattr(node, part, None)
+        if node is None:
+            return False
+    return getattr(node, parts[-1], None) is not None
+
+
+def tied_split_problem(
+    tied: bool, full_finetune: bool, world: int, stage_to_rank: Optional[dict] = None
+) -> Optional[str]:
+    """Why a tied embedding must not be split across ranks, or None when it is not.
+
+    A tied checkpoint holds ONE tensor that is read twice. Split across ranks it becomes two
+    parameters on two optimizers, fed by disjoint gradients -- the input side on the first
+    stage, the output side on the last -- with nothing keeping them equal. Nothing raises: the
+    run trains, and saves a model whose input and output embeddings have drifted apart, which
+    is a different model from the one the architecture describes.
+
+    Pure so it can be checked without torch, a cluster or a checkpoint. LoRA is exempt because
+    the base weights are frozen, and a V layout is exempt because it puts the first and last
+    stage on the same rank, which is one parameter again."""
+    if not tied or not full_finetune or world < 2:
+        return None
+    if stage_to_rank:
+        first = stage_to_rank[min(stage_to_rank)]
+        last = stage_to_rank[max(stage_to_rank)]
+    else:
+        first, last = 0, world - 1
+    if first == last:
+        return None
+    return (
+        f"this checkpoint ties its input embedding to its lm_head, and --full-finetune would "
+        f"put them on different ranks ({first} and {last}) as two independently optimized "
+        f"copies, which drift apart with nothing to keep them equal. Use --schedule zbv or "
+        f"dualpipev, which keep the first and last stage on one rank, or drop --full-finetune, "
+        f"where the tied weights are frozen"
+    )
+
+
+def _tied_aliases(model) -> dict:
+    """`{parameter name saved under another name: the name it is saved under}`.
+
+    transformers states this itself, in two shapes: 5.x carries a `{alias: source}` mapping,
+    4.57 carries a bare list of aliases and leaves the source implied. For the list the source
+    is the input embedding, located by object identity rather than by assuming a name, since
+    that name is `model.embed_tokens.weight` on Llama and `transformer.wte.weight` elsewhere."""
+    declared = getattr(type(model), "_tied_weights_keys", None)
+    if declared is None:
+        declared = getattr(model, "_tied_weights_keys", None)
+    if not declared:
+        return {}
+    if isinstance(declared, dict):
+        return dict(declared)
+
+    source = None
+    embeddings = model.get_input_embeddings() if hasattr(model, "get_input_embeddings") else None
+    if embeddings is not None:
+        for name, module in model.named_modules():
+            if module is embeddings:
+                source = f"{name}.weight" if name else "weight"
+                break
+    return {alias: source for alias in declared}
+
+
 def _materialise(model, model_name, cfg, device, dtype, log):
     import torch
     from huggingface_hub import snapshot_download
     from safetensors import safe_open
 
     wanted = {k for k, _ in model.named_parameters()} | {k for k, _ in model.named_buffers()}
+    # A tied head is not saved under its own name: a checkpoint whose lm_head is the embedding
+    # stores only the embedding key, so an exact-name filter looked for `lm_head.weight`, found
+    # nothing, and the meta check below refused the load. That is most models, and --shard-load
+    # is exactly the path where refetching is not an option. Aliases are read from transformers'
+    # own tie metadata, which is a {alias: source} mapping on 5.x and a list of aliases on 4.57.
+    # Not filtered by what `wanted` holds: `named_parameters` deduplicates, so a tie that is
+    # still intact hides the alias from that set entirely, and then `assign = True` replaces the
+    # source tensor and leaves the alias pointing at the old meta one, breaking the tie. Naming
+    # the alias explicitly in the state dict both materialises it and keeps it shared.
+    aliases = {alias: src for alias, src in _tied_aliases(model).items() if src}
+    wanted |= set(aliases.values())
     # snapshot_download takes a repo id, so handing it a path fails before a tensor is read.
     # Local checkpoints matter most here: --shard-load exists for models too large to refetch.
     snap = (
@@ -346,6 +425,12 @@ def _materialise(model, model_name, cfg, device, dtype, log):
                     # copies of ~70 GiB, and the OOM killer leaves no Python traceback.
                     loaded[k] = sf.get_tensor(k).to(dtype).to(device, non_blocking = False)
                     seen += 1
+    for alias, src in aliases.items():
+        # The SAME tensor object, not a copy: where a stage keeps both the embedding and the
+        # head, they must stay one parameter or training would update two halves of a weight
+        # the model requires to be shared.
+        if alias not in loaded and src in loaded and _has_parameter(model, alias):
+            loaded[alias] = loaded[src]
     model.load_state_dict(loaded, strict = False, assign = True)
 
     # Non-persistent buffers (rotary inv_freq, causal masks) are never in safetensors, so
@@ -1535,6 +1620,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except RuntimeError as exc:
             raise SystemExit(str(exc))
         my_plan = plan_for_rank(plan, rank)
+
+    # Checked before the model is built, so a run that cannot be correct stops in seconds
+    # rather than after a 70B load.
+    from transformers import AutoConfig as _AutoConfig
+
+    tied_problem = tied_split_problem(
+        bool(getattr(_AutoConfig.from_pretrained(args.model), "tie_word_embeddings", False)),
+        bool(args.full_finetune),
+        world,
+        plan["stage_to_rank"] if plan else None,
+    )
+    if tied_problem:
+        raise SystemExit(tied_problem)
 
     # Multi-stage layouts own non-contiguous chunks, so the contiguous drop-to-Identity would
     # remove layers this rank needs; the legacy interleaved path has no such set and keeps
