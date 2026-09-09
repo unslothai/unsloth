@@ -497,9 +497,8 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"other order leaves the reinstall announced but unreachable"
         )
 
-    @pytest.mark.parametrize("force_var", ["$xpuForce", "$cpuForce"])
+    @pytest.mark.parametrize("force_var", ["$rocmForce", "$xpuForce", "$cpuForce"])
     def test_every_conditional_force_gate_reads_the_flag(self, force_var):
-        # The ROCm arm forces unconditionally, so only these two have a gate to miss.
         assignments = [
             line
             for line in _SETUP_SRC.splitlines()
@@ -515,13 +514,6 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"{force_var} never forces on a definitively unimportable wheel, so the "
             f"resolver keeps it: its on-disk tag is unchanged and the range is satisfied"
         )
-
-    def test_the_rocm_arm_needs_no_gate(self):
-        rocm = _SETUP_SRC[_SETUP_SRC.index("if ($ROCmIndexUrl) {") :]
-        rocm = rocm[: rocm.index("if ($XpuIndexUrl) {")]
-        assert (
-            "--force-reinstall" in rocm and "$rocmForce" not in rocm
-        ), "the ROCm arm forces every time, so a broken wheel is already replaced there"
 
     def test_the_flag_is_still_raised_where_the_import_definitively_failed(self):
         assert "$script:TorchImportDefinitivelyFailed = $true" in _SETUP_SRC
@@ -607,3 +599,19 @@ class TestPinProvenanceMustBeABoolean:
             encoding = "utf-8",
         )
         assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is True
+
+
+def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
+    """The ROCm arm used to pass --force-reinstall unconditionally, so every update on a
+    Windows ROCm venv re-resolved torch, torchvision and torchaudio against the ROCm index
+    and moved their resolved dependencies. It now keys the flag on the same three facts
+    the XPU and CPU arms read."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index('substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."')
+    end = text.index('substep "GPU ROCm PyTorch installed', start)
+    arm = text[start:end]
+    assert "--force-reinstall --index-url $ROCmIndexUrl" not in arm
+    assert arm.count("@rocmForce --index-url $ROCmIndexUrl") == 2
+    assert 'if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }' in arm
+    assert "if ($script:PinChangedForceReinstall) { $rocmForce" in arm
+    assert "if ($script:TorchImportDefinitivelyFailed) { $rocmForce" in arm

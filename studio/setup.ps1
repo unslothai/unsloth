@@ -5333,16 +5333,24 @@ if ($ROCmIndexUrl) {
             $_rocmKeptActive = $true
         }
     }
+    # Same rule as the XPU and CPU arms: force only when the resident torch is not this
+    # family, the pin moved or the import failed. An unconditional --force-reinstall made
+    # every update re-resolve the trio against the ROCm index and rewrite its resolved
+    # dependencies (fsspec moved forward here and back in the core step, every time).
+    $rocmForce = @()
+    if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }
+    if ($script:PinChangedForceReinstall) { $rocmForce = @("--force-reinstall") }
+    if ($script:TorchImportDefinitivelyFailed) { $rocmForce = @("--force-reinstall") }
     while ($true) {
         # Built here, not in the verbose branch (a splat assigned there is unset on the other path).
         $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)
         if ($WinArm64NoAudio) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
         if ($script:UnslothVerbose) {
-            Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            Fast-Install @_rocmTrio @rocmForce --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
             $torchInstallExit = $LASTEXITCODE
             $output = ""
         } else {
-            $output = Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | Out-String
+            $output = Fast-Install @_rocmTrio @rocmForce --index-url $ROCmIndexUrl | Out-String
             $torchInstallExit = $LASTEXITCODE
         }
         if ($torchInstallExit -eq 0 -or -not $_rocmKeptActive) { break }

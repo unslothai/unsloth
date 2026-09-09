@@ -703,10 +703,13 @@ $_cuTag = if ($setupText -match $_cuTagPat) { $Matches[1] } else { "" }
 Check "the index selection was found"      ($_cuTag -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_cuTagPat))
 # The two install arms that force torch back on their own. Their CONDITIONS are extracted and
-# evaluated below, so "the kept wheel survives" is answered by the shipped gates. The AMD arm's
-# --force-reinstall is unconditional inside its block; the XPU arm's is keyed off the installed tag.
-Check "the AMD arm still force-reinstalls unconditionally" (
-    $setupText -match 'Fast-Install @_rocmTrio --force-reinstall --index-url \$ROCmIndexUrl')
+# evaluated below, so "the kept wheel survives" is answered by the shipped gates. Both arms key
+# --force-reinstall off the installed tag; the AMD arm used to force unconditionally, which made
+# every update re-resolve the trio against the ROCm index.
+Check "the AMD arm forces on any non-rocm tag" (
+    $setupText -match 'if \(\$installedTorchTag -ne "rocm"\) \{ \$rocmForce = @\("--force-reinstall"\) \}')
+Check "the AMD arm no longer forces unconditionally" (
+    -not ($setupText -match 'Fast-Install @_rocmTrio --force-reinstall'))
 Check "the XPU arm forces on any non-xpu tag" (
     $setupText -match 'if \(\$installedTorchTag -ne "xpu"\) \{ \$xpuForce = @\("--force-reinstall"\) \}')
 $_amdGate = if ($setupText -match '(?m)^if \((-not \$TorchIndexPinned -and \(\$HasROCm -or \$ROCmGfxArch\) -and \$CuTag -eq "cpu")\) \{$') { $Matches[1] } else { "" }
