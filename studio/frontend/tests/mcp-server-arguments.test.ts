@@ -19,6 +19,14 @@ import {
   waitForPendingMcpServerMutations,
 } from "../src/features/chat/api/mcp-server-mutation-tracker.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
+const MCP_SERVERS_API = readSrc("features/chat/api/mcp-servers-api.ts");
+const CHAT_MCP_SERVERS_DIALOG = readSrc(
+  "features/chat/chat-mcp-servers-dialog.tsx",
+);
+const MCP_COMPOSER_BUTTON = readSrc("features/chat/mcp-composer-button.tsx");
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -96,100 +104,111 @@ test("command, order, value, and intentional empty argument changes require enco
 });
 
 test("the helper never parses, splits, joins, trims, or quotes commands", () => {
-  const helper = readFileSync(
-    new URL("../src/features/chat/mcp-server-form.ts", import.meta.url),
-    "utf8",
-  );
+  const helper = readSrc("features/chat/mcp-server-form.ts");
   assert.doesNotMatch(helper, /\.(?:split|join|trim)\s*\(/);
   assert.doesNotMatch(helper, /JSON\.stringify|replace\s*\(/);
 });
 
 test("the dialog wires backend codec calls, stale guards, and a stdio-only editor", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const api = readFileSync(
-    new URL("../src/features/chat/api/mcp-servers-api.ts", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(api, /mcpRequest\("\/stdio\/decode"/);
-  assert.match(api, /mcpRequest\("\/stdio\/encode"/);
-  assert.match(dialog, /await decodeMcpStdioCommand\(server\.url\)/);
-  assert.match(dialog, /await encodeMcpStdioCommand\(\{/);
-  assert.match(dialog, /formGenerationRef\.current !== generation/);
-  assert.match(dialog, /activeEditIdRef\.current !== server\.id/);
+  assert.match(MCP_SERVERS_API, /mcpRequest\("\/stdio\/decode"/);
+  assert.match(MCP_SERVERS_API, /mcpRequest\("\/stdio\/encode"/);
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
+    /await decodeMcpStdioCommand\(server\.url\)/,
+  );
+  assert.match(CHAT_MCP_SERVERS_DIALOG, /await encodeMcpStdioCommand\(\{/);
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
+    /formGenerationRef\.current !== generation/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
+    /activeEditIdRef\.current !== server\.id/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
     /function handleOpenChange[\s\S]*formGenerationRef\.current \+= 1;[\s\S]*onOpenChange\(next\)/,
   );
-  assert.match(dialog, /addressIsCommand && \(\s*<ArgumentsEditor/);
-  assert.match(dialog, /const addressIsCommand = form\.transport === "stdio"/);
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
+    /addressIsCommand && \(\s*<ArgumentsEditor/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
+    /const addressIsCommand = form\.transport === "stdio"/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
     /function formWithAddress[\s\S]*transportFromAddress\([\s\S]*preservePartialHttp \? form\.credentialTransport : null[\s\S]*headers: transportChanged \? \[\] : form\.headers/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setView\(\{ kind: "list" \}\)/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /function ArgumentsEditor[\s\S]*\{ id: newRowId\(\), value: "" \}/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /form\.transport === "http" && \([\s\S]*Use OAuth sign-in/,
   );
-  assert.match(dialog, /const decision = resolveMcpStdioUrl\(/);
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
+    /const decision = resolveMcpStdioUrl\(/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
     /decision\.kind === "reuse"[\s\S]*url = view\.kind === "edit" \? undefined : decision\.url/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /const url = stdio\s*\? await encodeStdioForGeneration\([\s\S]*testMcpServer\(\{\s*url,/,
   );
-  assert.match(dialog, /return rows\.map\(\(row\) => row\.value\)/);
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
+    /return rows\.map\(\(row\) => row\.value\)/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
     /function ArgumentsEditor[\s\S]*data-reload-snapshot-sensitive/,
   );
-  assert.match(api, /export function testMcpServer[\s\S]*body: \{\s*url:/);
+  assert.match(
+    MCP_SERVERS_API,
+    /export function testMcpServer[\s\S]*body: \{\s*url:/,
+  );
   assert.doesNotMatch(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /npx -y @modelcontextprotocol\/server-filesystem \/tmp/,
   );
-  assert.match(dialog, /URL or executable/);
-  assert.match(dialog, /https:\/\/example\.com\/mcp or npx/);
-  assert.match(dialog, /Add local arguments in the Arguments rows/);
+  assert.match(CHAT_MCP_SERVERS_DIALOG, /URL or executable/);
+  assert.match(CHAT_MCP_SERVERS_DIALOG, /https:\/\/example\.com\/mcp or npx/);
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
+    /Add local arguments in the Arguments rows/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
     /setForm\(\(prev\) => formWithAddress\(prev, url, true\)\)/,
   );
-  assert.doesNotMatch(dialog, /form\.url\.(?:split|join)\s*\(/);
-  assert.doesNotMatch(dialog, /form\.arguments[^;\n]*\.join\s*\(/);
+  assert.doesNotMatch(
+    CHAT_MCP_SERVERS_DIALOG,
+    /form\.url\.(?:split|join)\s*\(/,
+  );
+  assert.doesNotMatch(
+    CHAT_MCP_SERVERS_DIALOG,
+    /form\.arguments[^;\n]*\.join\s*\(/,
+  );
 });
 
 test("every mutable MCP form editor is locked for the full pending interval", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   const argumentsEditor = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "function ArgumentsEditor",
     "function HeadersEditor",
   );
   const headersEditor = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "function HeadersEditor",
     "export interface ChatMcpServersDialogProps",
   );
@@ -205,122 +224,99 @@ test("every mutable MCP form editor is locked for the full pending interval", ()
     "header/env add, key, value, and remove must all be locked",
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /const formPending = importing \|\| codecPending \|\| testing \|\| saving/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /id="mcp-display-name"[\s\S]*?disabled=\{formPending\}[\s\S]*?\/>/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /id="mcp-url"[\s\S]*?disabled=\{formPending\}[\s\S]*?\/>/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /<ArgumentsEditor[\s\S]*?disabled=\{formPending\}[\s\S]*?\/>/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /id="mcp-oauth"[\s\S]*?disabled=\{formPending\}[\s\S]*?\/>/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /<HeadersEditor[\s\S]*?disabled=\{formPending\}[\s\S]*?\/>/,
   );
 });
 
 test("a decode error is announced and executable edits unlock manual recovery", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /id="mcp-url"[\s\S]*?onChange=\{\(e\) => \{[\s\S]*?setCodecError\(null\)[\s\S]*?formWithAddress/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /role="alert"\s*aria-live="assertive"[\s\S]*?\{codecError\}/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /aria-busy=\{decodingCommand\}[\s\S]*role="status"\s*aria-live="polite"[\s\S]*Reading local command…/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /codecError && \([\s\S]*view\.kind === "edit"[\s\S]*void startEdit\(server\)[\s\S]*Retry/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /disabled=\{\s*formPending \|\|\s*codecError !== null \|\|\s*form\.transport === "unknown" \|\|\s*!form\.url\.trim\(\)/,
   );
 });
 
 test("dialog actions and reconciliation stop when the dialog closes", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /useEffect\(\(\) => \{\s*if \(!open\) \{[\s\S]*subscribeToMcpServerMutationSettlements/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /actionGenerationRef\.current !== generation \|\| !openRef\.current/,
   );
-  assert.match(dialog, /open=\{open && confirmingDelete !== null\}/);
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
+    /open=\{open && confirmingDelete !== null\}/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
     /<Button size="sm" onClick=\{startCreate\} disabled=\{importing \|\| blenderBusy\}>/,
   );
 });
 
 test("pending MCP actions remain keyed to their own server", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(composer, /pendingUrlsRef = useRef\(new Set<string>\(\)\)/);
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
+    /pendingUrlsRef = useRef\(new Set<string>\(\)\)/,
+  );
+  assert.match(
+    MCP_COMPOSER_BUTTON,
     /pendingUrlsRef\.current\.delete\(norm\);\s*setPendingUrls\(new Set\(pendingUrlsRef\.current\)\)/,
   );
-  assert.match(dialog, /refreshingIdsRef = useRef\(new Set<string>\(\)\)/);
-  assert.match(dialog, /togglingIdsRef = useRef\(new Set<string>\(\)\)/);
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
+    /refreshingIdsRef = useRef\(new Set<string>\(\)\)/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
+    /togglingIdsRef = useRef\(new Set<string>\(\)\)/,
+  );
+  assert.match(
+    CHAT_MCP_SERVERS_DIALOG,
     /if \(!togglingIdsRef\.current\.has\(row\.id\)\) return row;[\s\S]*is_enabled: optimistic\.is_enabled/,
   );
 });
 
 test("dialog closure is blocked while a CRUD mutation is in flight", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   const closeHandler = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "function handleOpenChange",
     "async function encodeStdioForGeneration",
   );
@@ -331,99 +327,82 @@ test("dialog closure is blocked while a CRUD mutation is in flight", () => {
     "the in-flight mutation guard must run before close invalidates the form generation",
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /<DialogContent[\s\S]*?showCloseButton=\{!blenderBusy && !\(saving && !codecPending\) && busyIds\.size === 0\}[\s\S]*?>/,
     "the built-in close control must disappear during the same mutation window",
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /onClick=\{cancelForm\}[\s\S]*?disabled=\{saving && !codecPending\}/,
     "the visible Cancel action must use the same mutation boundary",
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /async function encodeStdioForGeneration[\s\S]*setCodecPending\(true\);[\s\S]*await encodeMcpStdioCommand/,
     "codec encoding remains distinguishable so it can still be cancelled before CRUD starts",
   );
 });
 
 test("composer applies mutation responses before releasing each preset", () => {
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
-
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /const applyServer = useCallback[\s\S]*setServers\(\(current\)[\s\S]*candidate\.id === server\.id/,
   );
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /applyServer\(\s*await createMcpServer\([\s\S]*pendingUrlsRef\.current\.delete\(norm\)/,
   );
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /applyServer\(\s*await updateMcpServer\([\s\S]*pendingUrlsRef\.current\.delete\(norm\)/,
   );
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /const \[serversLoaded, setServersLoaded\] = useState\(false\)[\s\S]*const hasLoadedServerSnapshotRef = useRef\(false\);[\s\S]*setServersLoaded\(false\);[\s\S]*setServers\(rows\);\s*hasLoadedServerSnapshotRef\.current = true;\s*setServersLoaded\(true\)/,
   );
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /catch \{\s*if \(\s*listRefreshGenerationRef\.current === generation &&\s*hasLoadedServerSnapshotRef\.current\s*\) \{\s*setServersLoaded\(true\);/,
   );
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /disabled=\{!serversLoaded \|\| pendingUrls\.has\(normalizeMcpUrl\(opts\.url\)\)\}/,
   );
 });
 
 test("MCP configuration remains reachable when the loaded model lacks tools", () => {
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
-
-  assert.doesNotMatch(composer, /aria-disabled=\{true\}/);
-  assert.match(composer, /The loaded model cannot use MCP tools/);
-  assert.doesNotMatch(composer, /disabled=\{[^}]*!usable/);
+  assert.doesNotMatch(MCP_COMPOSER_BUTTON, /aria-disabled=\{true\}/);
+  assert.match(MCP_COMPOSER_BUTTON, /The loaded model cannot use MCP tools/);
+  assert.doesNotMatch(MCP_COMPOSER_BUTTON, /disabled=\{[^}]*!usable/);
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /<DropdownMenuItem\s+onSelect=\{\(\) => \{\s*setMenuOpen\(false\);\s*setDialogOpen\(true\);/,
   );
 });
 
 test("full unmount invalidates cancellable stdio encode continuations", async () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   const refsAndCleanup = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "const formGenerationRef = useRef(0)",
     "const refresh = useCallback",
   );
   const openLifecycle = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "useEffect(() => {\n    formGenerationRef.current += 1;",
     "function startCreate",
   );
   const encode = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "async function encodeStdioForGeneration",
     "async function testConnection",
   );
   const testContinuation = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "async function testConnection",
     "async function submitForm",
   );
   const crudContinuation = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "async function submitForm",
     "async function onImportFile",
   );
@@ -737,33 +716,18 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   const chatRoot = fileURLToPath(
     new URL("../src/features/chat/", import.meta.url),
   );
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const api = readFileSync(
-    new URL("../src/features/chat/api/mcp-servers-api.ts", import.meta.url),
-    "utf8",
-  );
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
   const listApi = sourceBetween(
-    api,
+    MCP_SERVERS_API,
     "export function listMcpServers",
     "export function createMcpServer",
   );
   const dialogRefresh = sourceBetween(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     "const refresh = useCallback",
     "useEffect(() =>",
   );
   const composerRefresh = sourceBetween(
-    composer,
+    MCP_COMPOSER_BUTTON,
     "const refresh = useCallback",
     "// Load the server list on mount",
   );
@@ -785,7 +749,7 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   ]);
 
   assert.equal(
-    api.match(/return trackMcpServerMutation\(/g)?.length,
+    MCP_SERVERS_API.match(/return trackMcpServerMutation\(/g)?.length,
     5,
     "create, update, delete, import, and managed Blender updates must register at the API boundary",
   );
@@ -822,11 +786,11 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
     /await listMcpServers\(\{\s*waitForPendingMutations,\s*minimumMutationEpoch,\s*\}\)/,
   );
   assert.match(
-    dialog,
+    CHAT_MCP_SERVERS_DIALOG,
     /subscribeToMcpServerMutationSettlements\(\(epoch\) => \{\s*void refresh\(false, epoch\)/,
   );
   assert.match(
-    composer,
+    MCP_COMPOSER_BUTTON,
     /subscribeToMcpServerMutationSettlements\(\(epoch\) => \{\s*void refresh\(false, epoch\)/,
   );
   assert.match(
@@ -837,8 +801,11 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
     composerRefresh,
     /listRefreshGenerationRef\.current !== generation/,
   );
-  assert.doesNotMatch(dialog, /waitForPendingMcpServerMutations/);
-  assert.doesNotMatch(composer, /waitForPendingMcpServerMutations/);
-  assert.doesNotMatch(dialog, /await refresh\(\)/);
-  assert.doesNotMatch(composer, /await refresh\(\)/);
+  assert.doesNotMatch(
+    CHAT_MCP_SERVERS_DIALOG,
+    /waitForPendingMcpServerMutations/,
+  );
+  assert.doesNotMatch(MCP_COMPOSER_BUTTON, /waitForPendingMcpServerMutations/);
+  assert.doesNotMatch(CHAT_MCP_SERVERS_DIALOG, /await refresh\(\)/);
+  assert.doesNotMatch(MCP_COMPOSER_BUTTON, /await refresh\(\)/);
 });

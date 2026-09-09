@@ -417,6 +417,21 @@ jobs:
           done
           pip install -e . --no-deps
 
+      # tests/test_formatter_fixed_point.py runs the real formatting hook, and it
+      # skips when the installed ruff is not the one the repo is formatted with,
+      # because another ruff answers a different question. Without this the guard
+      # would be permanently skipped here, which is the failure mode it exists to
+      # stop. The version is read out of .pre-commit-config.yaml rather than
+      # pinned a second time: a stale copy would silently disable the guard.
+      - name: Install the pinned ruff (formatter fixed-point guard)
+        run: |
+          pin="$(python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print(r.pinned_ruff_version(r.CONFIG.read_text(encoding = "utf-8")) or "")')"
+          if [ -z "$pin" ]; then
+            echo "::error::.pre-commit-config.yaml no longer pins a ruff for ruff-format-with-kwargs"
+            exit 1
+          fi
+          pip install "ruff==$pin"
+
       - name: Repo tests (CPU, auto-discovered)
         env:
           # tests/python/* import install_python_stack from studio/.

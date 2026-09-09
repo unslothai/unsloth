@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -118,13 +117,9 @@ import {
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 
-const pickerSource = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/pickers.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const pickerSource = readSrc("features/model-picker/components/model-selector/pickers.tsx");
 
 test("fresh Hub pipeline metadata routes media picks before stale inventory", () => {
   assert.equal(
@@ -775,13 +770,7 @@ test("the audio page asks the GGUF-aware TTS predicate for trained rows", () => 
   // GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has no CSM decoder. Calling
   // isTtsAudioType without the flag answered off the wider Transformers list and offered
   // a csm GGUF export that fails at load.
-  const source = readFileSync(
-    new URL(
-      "../src/features/audio/audio-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/audio/audio-page.tsx");
   assert.match(
     source,
     /isTtsAudioType\(\s*lora\.audio_type,\s*lora\.export_type === "gguf",?\s*\)/,
