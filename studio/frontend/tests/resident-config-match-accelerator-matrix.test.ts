@@ -20,12 +20,10 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const { residentRuntimeMatchesConfig: matchesWithStanding } = await import(
@@ -436,15 +434,7 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
 
 test("every PerModelConfig field is either compared or deliberately excluded", () => {
   // A new setting not classified here is one an adopted pick would drop silently.
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/model-config/per-model-config.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/model-picker/model-config/per-model-config.ts");
   const body = source.slice(
     source.indexOf("export interface PerModelConfig {"),
     source.indexOf("export const DEFAULT_PER_MODEL_CONFIG"),

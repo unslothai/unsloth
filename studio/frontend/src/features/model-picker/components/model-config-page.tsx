@@ -48,11 +48,11 @@ import {
 import {
   DEFAULT_VRAM_FRACTION,
   aggregateUsableFreeVramGb,
+  aggregateVramReserveDeficitGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
   type Ref,
@@ -63,6 +63,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
@@ -74,16 +75,12 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import { type MemoryEstimate } from "../api/memory-estimate";
 import { resolveEstimateContext } from "../model-config/estimate-context";
+import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
 import {
-  type MemoryFitVerdict,
-  formatMemoryGb,
-  glueNoteItems,
-  resolveDraftCacheNote,
-  resolveKvNote,
-  resolveMemoryFit,
-} from "../model-config/memory-fit";
+  resolveResidentEstimateRequest,
+  selectResidentEstimateSettings,
+} from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadModelOverride,
@@ -149,6 +146,7 @@ import {
   vramPercentToFraction,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
+import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
 import {
   NumericValueInput,
@@ -165,7 +163,7 @@ const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
-const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
@@ -904,223 +902,6 @@ function AdvancedSettingsToggle({
         onCheckedChange={onCheckedChange}
         aria-label="Show advanced settings"
       />
-    </div>
-  );
-}
-
-const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
-  fits: "text-nav-fg",
-  tight: "text-amber-500",
-  exceeds: "text-red-500",
-  unknown: "text-nav-fg",
-};
-
-/** One "GPU 29.41 GB" pill: dim caption, figure on the shared control surface. */
-function MemoryFigure({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: string;
-}) {
-  return (
-    <div className="flex shrink-0 items-center gap-1.5">
-      <span className="text-ui-11 font-medium leading-none tracking-nav text-muted-foreground">
-        {label}
-      </span>
-      <span
-        className={`inline-flex h-6 items-center ${CONTROL_SURFACE} px-2 text-ui-12 font-medium tabular-nums ${tone ?? "text-nav-fg"}`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function MemoryBreakdownLine({
-  label,
-  value,
-  note,
-  muted,
-}: {
-  label: string;
-  value: string;
-  note?: string;
-  muted?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="min-w-0 text-ui-11 leading-relaxed text-muted-foreground">
-        {label}
-        {note ? (
-          <span className="ml-1 text-muted-foreground/70">{glueNoteItems(note)}</span>
-        ) : null}
-      </span>
-      <span
-        className={`shrink-0 text-ui-11 tabular-nums ${muted ? "text-muted-foreground" : "text-nav-fg"}`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-/** "Estimated Memory Usage": what the settings above would cost, before they are run. Figures
- *  come from the loader's own sizing, not a weights-times-a-constant rule of thumb, so KV
- *  gets its own line and an unsizable header quotes a floor instead of a confident total. */
-function MemoryEstimateRow({
-  estimate,
-  loading,
-  stale,
-  gpuCapacityGb,
-  totalCapacityGb,
-  systemRamCapacityGb,
-  freeGpuCapacityGb,
-  usableSystemRamGb,
-  isUnifiedMemory,
-  singleMemoryPool,
-  expanded,
-  onExpandedChange,
-}: {
-  estimate: MemoryEstimate | null;
-  loading: boolean;
-  stale: boolean;
-  /** VRAM available, or the shared pool where there is only one. 0 when unknown. */
-  gpuCapacityGb: number;
-  /** GPU plus host RAM, the ceiling an offloaded load works against. 0 when unknown. */
-  totalCapacityGb: number;
-  /** Host RAM alone. The bytes a load pins OUTSIDE the GPU have to fit in this, and unused VRAM cannot help them. */
-  systemRamCapacityGb: number;
-  /** VRAM free on the usable cards right now. Warns only: see the note at the call site. 0 when nothing was probed. */
-  freeGpuCapacityGb: number;
-  /** Host RAM the machine can hand out right now, less the reserve the loader keeps. Warns only,
-   *  for the same reason. 0 when unknown. */
-  usableSystemRamGb: number;
-  isUnifiedMemory: boolean;
-  /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
-  singleMemoryPool: boolean;
-  expanded: boolean;
-  onExpandedChange: (next: boolean) => void;
-}) {
-  const contentId = useId();
-  if (!estimate?.available) {
-    // Nothing honest to show. Silent while loading too, so the row does not flicker.
-    return null;
-  }
-  // Every verdict and the one advisory paragraph, resolved in ../model-config/memory-fit. Kept
-  // out of this file so the node test runner can reach it: while it lived here an arm that
-  // could never be taken shipped unnoticed.
-  const { gpuFit, totalFit, prefix, advisory } = resolveMemoryFit(estimate, {
-    gpuCapacityGb,
-    totalCapacityGb,
-    systemRamCapacityGb,
-    freeGpuCapacityGb,
-    usableSystemRamGb,
-    singleMemoryPool,
-  });
-  const kvNote = resolveKvNote(estimate);
-  const draftCacheNote = resolveDraftCacheNote(
-    estimate.drafterRuntimeGpuBytes,
-    estimate.drafterRuntimeBytes,
-  );
-  return (
-    <div className="space-y-2">
-      {/* Wraps, unlike the other rows, because this is the only header carrying a title AND two
-          figures: under a ~460px window the title absorbed the whole shortfall and truncated to
-          "E..." at 320px. The panel is w-[min(468px,...)], so it shrinks with the viewport while
-          the figures do not. Letting them drop to their own line is identical above that. */}
-      <div className={`${ROW_CLASS} flex-wrap gap-y-1`}>
-        <button
-          type="button"
-          onClick={() => onExpandedChange(!expanded)}
-          aria-expanded={expanded}
-          aria-controls={contentId}
-          className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <span className={LABEL_CLASS}>Estimated Memory Usage</span>
-          <span className="shrink-0 rounded-full bg-black/[0.06] px-1.5 py-px text-ui-10 font-medium uppercase leading-[1.4] tracking-wider text-muted-foreground dark:bg-white/[0.08]">
-            Beta
-          </span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            className={`size-3 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
-            strokeWidth={1.75}
-          />
-        </button>
-        {/* ml-auto so that on the wrapped line, where justify-between has nothing to push against, the
-            figures still sit under the right edge they had. */}
-        <div
-          className={`ml-auto flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
-        >
-          {/* One pool: offloading a layer moves it within the same memory rather than out of it, so the
-              honest single figure is the total. The GPU share let a zero-layer load read as free. */}
-          <MemoryFigure
-            label={singleMemoryPool ? (isUnifiedMemory ? "Unified" : "Shared") : "GPU"}
-            value={`${prefix}${formatMemoryGb(
-              singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
-            )}`}
-            tone={MEMORY_VALUE_TONE[singleMemoryPool ? totalFit : gpuFit]}
-          />
-          {singleMemoryPool ? null : (
-            <MemoryFigure
-              label="Total"
-              value={`${prefix}${formatMemoryGb(estimate.totalBytes)}`}
-              tone={MEMORY_VALUE_TONE[totalFit]}
-            />
-          )}
-        </div>
-      </div>
-      {expanded && (
-        <div id={contentId} className="space-y-1 pl-0.5">
-          <MemoryBreakdownLine
-            label="Weights"
-            value={formatMemoryGb(estimate.weightsBytes)}
-            note={
-              estimate.gpuLayers != null && estimate.layerCount != null
-                ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
-                : undefined
-            }
-          />
-          <MemoryBreakdownLine
-            label="KV cache"
-            value={
-              estimate.kvEstimable ? formatMemoryGb(estimate.kvBytes) : "unknown"
-            }
-            note={estimate.kvEstimable ? kvNote : undefined}
-            muted={!estimate.kvEstimable}
-          />
-          <MemoryBreakdownLine
-            label="Compute buffers"
-            value={formatMemoryGb(estimate.computeBytes)}
-          />
-          {/* The encoder's buffers, about 1.3x the projector file. Only on a vision load, and named
-              separately since the file is already in Weights. */}
-          {estimate.projectorRuntimeBytes > 0 && (
-            <MemoryBreakdownLine
-              label="Vision encoder"
-              value={formatMemoryGb(estimate.projectorRuntimeBytes)}
-            />
-          )}
-          {/* Only when speculation loads a separate drafter, and it is the term most likely to surprise:
-              its cache grows with context like the target's. */}
-          {estimate.drafterRuntimeBytes > 0 && (
-            <MemoryBreakdownLine
-              label="Draft cache"
-              value={formatMemoryGb(estimate.drafterRuntimeBytes)}
-              note={draftCacheNote}
-            />
-          )}
-        </div>
-      )}
-      {advisory && (
-        <p
-          className={`text-ui-11 leading-relaxed ${advisory.tone === "warn" ? "text-amber-500" : "text-muted-foreground"}`}
-        >
-          {advisory.text}
-        </p>
-      )}
     </div>
   );
 }
@@ -1980,6 +1761,13 @@ export function ModelConfigPage({
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
+  const loadedLlamaExtraArgs = useChatRuntimeStore((s) => s.loadedLlamaExtraArgs);
+  const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
+  const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
+  const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const residentEstimateSettings = useChatRuntimeStore(
+    useShallow(selectResidentEstimateSettings),
+  );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -2720,6 +2508,43 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // No resident credit without a reported context; pending settings cannot price it.
+  const residentContext = servedWindow(activeLoadedContext);
+  const residentEstimateRequest = resolveResidentEstimateRequest(
+    isActiveModel ? memoryEstimateRequest : null,
+    residentEstimateSettings,
+    residentContext,
+  );
+  const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
+    refreshMemory: true,
+  });
+  // Only settled estimates can establish resident credit.
+  const reclaimableEstimate =
+    residentEstimateRequest &&
+    residentEstimate.estimate?.available &&
+    !residentEstimate.loading &&
+    !residentEstimate.stale
+      ? residentEstimate.estimate
+      : null;
+  const reclaimableCredit = resolveReclaimableMemoryCredit(
+    reclaimableEstimate,
+    { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
+    {
+      ids: runtimeConfig.selectedGpuIds ?? null,
+      indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
+    },
+    {
+      cpuFallback: loadedCpuFallback,
+      devices: gpuDevices,
+      // Fitted placement does not report its final layer count.
+      gpuPlacementKnown:
+        residentEstimateRequest?.gpuMemoryMode === "manual" &&
+        residentEstimateRequest.gpuLayers != null &&
+        residentEstimateRequest.gpuLayers >= 0 &&
+        !loadedLlamaExtraArgs?.length,
+      appleUnifiedMemory: isAppleUnifiedMemory,
+    },
+  );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only draw on the cards it names, so the verdict is measured against those: judging
@@ -2786,7 +2611,15 @@ export function ModelConfigPage({
     0,
     (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
   );
-  const memoryFreeGpuCapacityGb = useMemo(() => {
+  const memorySystemRamReserveDeficitGb = Math.max(
+    0,
+    2 - (inferenceGpu.systemRamAvailableHostGb || 0),
+  );
+  const {
+    gb: memoryFreeGpuCapacityGb,
+    known: memoryFreeGpuCapacityKnown,
+    reserveDeficitGb: memoryFreeGpuReserveDeficitGb,
+  } = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
         ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
@@ -2799,6 +2632,9 @@ export function ModelConfigPage({
       pinned,
       memoryEffectiveBudgetFraction,
     );
+    const freeVramKnown =
+      pinned.length > 0 &&
+      pinned.every((device) => device.memoryFreeKnown === true);
     // On a ROCm APU this figure is the free space inside a BIOS-carved window, and resolveMemoryFit
     // asks it the WHOLE-LOAD question as soon as the pool is single, so together they warned
     // that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free. The pool's real free
@@ -2806,9 +2642,25 @@ export function ModelConfigPage({
     // Those two together warned that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free,
     // purely because it exceeds a 48 GiB window.
     if (hasUnifiedMemory && !isAppleUnifiedMemory) {
-      return Math.max(freeVram, memoryUsableSystemRamGb);
+      return {
+        gb: inferenceGpu.systemRamAvailableKnown ? memoryUsableSystemRamGb : 0,
+        known: inferenceGpu.systemRamAvailableKnown === true,
+        reserveDeficitGb: memorySystemRamReserveDeficitGb,
+      };
     }
-    return freeVram;
+    const residentDevices = loadedGpuIds?.length
+      ? pinned.filter((device) =>
+          device.indexKind === loadedGpuIndexKind &&
+          loadedGpuIds.includes(device.index))
+      : pinned;
+    return {
+      gb: freeVram,
+      known: freeVramKnown,
+      reserveDeficitGb: aggregateVramReserveDeficitGb(
+        residentDevices,
+        memoryEffectiveBudgetFraction,
+      ),
+    };
   }, [
     gpuDevices,
     pinnedGpuIds,
@@ -2816,6 +2668,10 @@ export function ModelConfigPage({
     hasUnifiedMemory,
     isAppleUnifiedMemory,
     memoryUsableSystemRamGb,
+    memorySystemRamReserveDeficitGb,
+    inferenceGpu.systemRamAvailableKnown,
+    loadedGpuIds,
+    loadedGpuIndexKind,
   ]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
@@ -3065,9 +2921,15 @@ export function ModelConfigPage({
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+              freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
+              freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
               usableSystemRamGb={memoryUsableSystemRamGb}
+              usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
+              systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}
               isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
+              reclaimableTotalBytes={reclaimableCredit.totalBytes}
+              reclaimableGpuBytes={reclaimableCredit.gpuBytes}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
             />

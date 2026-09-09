@@ -294,7 +294,8 @@ class TestStepThirteenWiring:
         # spec and the leaf are read from. Nothing else may join the set.
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
-            + repairs + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+            + repairs
+            + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
 

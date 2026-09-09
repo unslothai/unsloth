@@ -2,21 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
+import { readSrc } from "./helpers/kit.ts";
+
 type Load = { status: string; url?: string };
 
 function imageHook() {
-  const source = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/use-sandbox-image.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("components/assistant-ui/use-sandbox-image.ts");
   const code = ts.transpileModule(source.replace(/^import .*$/gm, ""), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,

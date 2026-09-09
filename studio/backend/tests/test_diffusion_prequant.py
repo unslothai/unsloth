@@ -28,6 +28,19 @@ from core.inference.diffusion_prequant import (
 )
 
 
+def _prequant_source(**overrides):
+    """A prequantized checkpoint source, with per-test overrides."""
+    return PrequantSource(
+        **{
+            "kind": "repo",
+            "location": "unsloth/Z-Image-Turbo-FP8",
+            "filename": "Z-Image-Turbo-FP8.pt",
+            "fallback_filename": "transformer_fp8.pt",
+            **overrides,
+        }
+    )
+
+
 @pytest.fixture(autouse = True)
 def _pin_prequant_safe_globals(real_prequant_safe_globals):
     """Apply the shared stand-in allowlist (see conftest) to every test in this module."""
@@ -1062,12 +1075,7 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
     monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
 
-    source = PrequantSource(
-        kind = "repo",
-        location = "org/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt",
-        fallback_filename = "transformer_fp8.pt",
-    )
+    source = _prequant_source(location = "org/Z-Image-Turbo-FP8")
     result = load_prequantized_transformer(
         _FakeTransformer,
         "Tongyi-MAI/Z-Image-Turbo",
@@ -1241,12 +1249,7 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     ckpt.write_bytes(b"weights")
     legacy = tmp_path / "transformer_fp8.pt"
     legacy.write_bytes(b"weights")
-    source = PrequantSource(
-        kind = "repo",
-        location = "unsloth/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt",
-        fallback_filename = "transformer_fp8.pt",
-    )
+    source = _prequant_source()
     asked: list = []
 
     def _cache(
@@ -1283,12 +1286,7 @@ def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatc
     live.mkdir()
     ckpt = live / "Z-Image-Turbo-FP8.pt"
     ckpt.write_bytes(b"weights")
-    source = PrequantSource(
-        kind = "repo",
-        location = "unsloth/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt",
-        fallback_filename = "transformer_fp8.pt",
-    )
+    source = _prequant_source()
 
     def _cache(
         repo_id,
@@ -1320,12 +1318,7 @@ def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatc
 
 
 def _other_root_source():
-    return PrequantSource(
-        kind = "repo",
-        location = "unsloth/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt",
-        fallback_filename = "transformer_fp8.pt",
-    )
+    return _prequant_source()
 
 
 def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypatch, tmp_path):
@@ -1470,12 +1463,7 @@ def test_a_cached_legacy_file_does_not_pre_empt_the_canonical_one(monkeypatch, t
 
     legacy = tmp_path / "transformer_fp8.pt"
     legacy.write_bytes(b"stale")
-    source = PrequantSource(
-        kind = "repo",
-        location = "unsloth/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt",
-        fallback_filename = "transformer_fp8.pt",
-    )
+    source = _prequant_source()
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         lambda repo_id, filename, cache_dir = None: (
@@ -1507,12 +1495,7 @@ def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypa
 
     from core.inference.diffusion_prequant import _resolve_checkpoint_path
 
-    source = PrequantSource(
-        kind = "repo",
-        location = "unsloth/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt",
-        fallback_filename = "transformer_fp8.pt",
-    )
+    source = _prequant_source()
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     asked: list = []
 
@@ -1544,12 +1527,7 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
     default_root.mkdir()
     legacy = default_root / "transformer_fp8.pt"
     legacy.write_bytes(b"weights")
-    source = PrequantSource(
-        kind = "repo",
-        location = "unsloth/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt",
-        fallback_filename = "transformer_fp8.pt",
-    )
+    source = _prequant_source()
 
     def _cache(
         repo_id,

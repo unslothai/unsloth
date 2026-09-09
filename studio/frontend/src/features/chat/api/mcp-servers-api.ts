@@ -13,6 +13,7 @@ import {
 
 export interface McpServerConfig {
   id: string;
+  builtin_id: string | null;
   display_name: string;
   url: string;
   headers: Record<string, string>;
@@ -26,6 +27,45 @@ export interface McpServerProbeResult {
   ok: boolean;
   tool_count: number;
   error: string | null;
+}
+
+export interface McpBuiltinConfig {
+  builtin_id: "blender";
+  display_name: string;
+  server_id: string | null;
+  is_enabled: boolean;
+  available: boolean;
+  unavailable_reason: string | null;
+  port: number;
+  blender_path: string;
+  min_blender_version: string;
+}
+
+export interface BlenderMcpSettings {
+  port: number;
+  blender_path: string;
+}
+
+export function listMcpBuiltins(waitForPendingMutations = true): Promise<McpBuiltinConfig[]> {
+  const read = () => mcpRequest<McpBuiltinConfig[]>("/builtins");
+  return waitForPendingMutations
+    ? readAfterPendingMcpServerMutations(read)
+    : readMcpServerMutationSnapshot(read);
+}
+
+export function updateBlenderMcp(
+  payload: BlenderMcpSettings & { is_enabled: boolean; consent: boolean },
+): Promise<McpBuiltinConfig> {
+  return trackMcpServerMutation(
+    mcpRequest("/builtins/blender", { method: "PUT", body: payload }),
+  );
+}
+
+export function testBlenderMcp(payload: BlenderMcpSettings & { consent: boolean }): Promise<McpServerProbeResult & {
+  blender_ready?: boolean;
+  blender_error?: string | null;
+}> {
+  return mcpRequest("/builtins/blender/test", { method: "POST", body: payload });
 }
 
 export interface McpServerImportResult {

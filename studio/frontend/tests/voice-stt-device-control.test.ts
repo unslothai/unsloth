@@ -2,20 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const voiceTab = readFileSync(
-  new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
-  "utf8",
-);
-const adapter = readFileSync(
-  new URL(
-    "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 
 test("changing the dictation device releases only this tab's model", () => {
   // Unscoped, the unload can tear down a model this tab never owned.
