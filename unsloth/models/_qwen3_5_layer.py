@@ -28,10 +28,8 @@ recompute and backward per micro-step. Here a layer is:
 Weights are inputs, so one graph per region kind serves every layer. Every op keeps its
 original dtype boundaries, so the numbers match the stock path. Training path only
 (`past_key_values is None`); vanilla single-adapter LoRA or plain Linear; anything else
-falls back to the original layer forward. `UNSLOTH_DISABLE_QWEN3_5_LAYER_FUSION=1`
-turns it off.
+falls back to the original layer forward.
 """
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -45,9 +43,9 @@ _BASE_OPTIONS = {
     # instead of Python; roughly halves the CPU time per region call (another ~11% off the step
     # here). Off by default: in a real training process its GEMM outputs differ from the Python
     # wrapper's at the bf16 rounding level (~1e-5 per projection, ~2% on the final hidden states
-    # after 32 layers), so it does not reproduce the stock path bit for bit. Opt in with
-    # UNSLOTH_QWEN3_5_CPP_WRAPPER=1 when rounding-level differences are acceptable.
-    "cpp_wrapper": os.environ.get("UNSLOTH_QWEN3_5_CPP_WRAPPER", "0") == "1",
+    # after 32 layers), so it does not reproduce the stock path bit for bit. Flip to True when
+    # rounding-level differences are acceptable.
+    "cpp_wrapper": False,
     "epilogue_fusion": True,
     "max_autotune": False,
     "shape_padding": True,
@@ -368,8 +366,6 @@ def _fused_decoder_layer_forward(
 def patch_qwen3_5_decoder_layers(model):
     """Install the fused two-region forward on every Qwen3_5DecoderLayer in `model`.
     Returns the number of layers that will take it."""
-    if os.environ.get("UNSLOTH_DISABLE_QWEN3_5_LAYER_FUSION", "0") == "1":
-        return 0
     n = 0
     for module in model.modules():
         cls = type(module)

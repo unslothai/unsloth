@@ -3322,11 +3322,8 @@ def patch_checkpoint_rng_state(model):
     checkpointed layer (forward and recompute) so dropout replays identically. With no dropout
     anywhere in the model that is ~170 us of Python per layer per micro-step for nothing.
     Default `preserve_rng_state=False` for the checkpoint call when the forward consumes no RNG;
-    an explicit `preserve_rng_state` from the caller still wins. UNSLOTH_KEEP_CHECKPOINT_RNG=1
-    keeps the stock behaviour.
+    an explicit `preserve_rng_state` from the caller still wins.
     """
-    if os.environ.get("UNSLOTH_KEEP_CHECKPOINT_RNG", "0") == "1":
-        return False
     try:
         if not _model_uses_no_rng_in_forward(model):
             return False
