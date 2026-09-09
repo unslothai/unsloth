@@ -24,6 +24,7 @@ can still send it. Keeping that gap honest is why the record says
 
 from __future__ import annotations
 import errno
+import functools
 import hashlib
 import os
 import platform
@@ -315,8 +316,15 @@ _LINUX_REQUIRED_BINARIES = ("bwrap",)
 _FALLBACK_NOTE = "Python and Terminal still run, with software safeguards only and no OS isolation."
 
 
+@functools.lru_cache(maxsize = 1)
 def _linux_userns_blocked_by_apparmor() -> bool:
     """Whether this host has Ubuntu's AppArmor restriction on unprivileged user namespaces.
+
+    Cached for the process. The diagnosis forks ``unshare``, and it is reached
+    from the remediation string every capability snapshot builds, so without the
+    cache a host that cannot isolate pays an extra fork and exec on every single
+    tool call, forever. The answer cannot change without an operator editing an
+    AppArmor profile or a sysctl, at which point Studio is restarted anyway.
 
     Ubuntu 23.10+ ships ``kernel.apparmor_restrict_unprivileged_userns=1``, which
     denies ``unshare(CLONE_NEWUSER)`` to any binary without a permitting profile.
