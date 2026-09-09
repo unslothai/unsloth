@@ -135,6 +135,10 @@ VRAM_SETTLE_POLL_S = 2.5
 VRAM_SETTLE_SAMPLES = 12
 # Driver readings jitter by a few MiB between samples; only a real drop counts.
 VRAM_SETTLE_TOLERANCE_MIB = 16.0
+# Intervals the total must hold still before wait_for_card_to_settle believes it. One is a
+# stall as easily as a finished reclaim, and reading a stall as settled hands assert_cli_run
+# a baseline with the previous model still in it.
+VRAM_SETTLE_QUIET_POLLS = 2
 
 CANARY = "__UNSLOTH_STUDIO__!!!"
 
@@ -406,11 +410,12 @@ def wait_for_card_to_settle() -> None:
     than proven"; and its retained memory inflates the baseline, so the same run's device
     delta reads as "served from the CPU".
 
-    Waiting for the total to stop falling is not enough on its own, because at the moment
-    of the call the driver may not have started giving it back: two equal samples would
-    then read as settled. The pid is the thing to wait ON. Every pid the card carries here
-    is either the server just stopped or a genuine co-tenant, so the condition is that none
-    of THEM is left -- a pid arriving afterwards is somebody else's and is not waited for.
+    Two things have to go quiet, because either alone is satisfied too early. The pid is
+    waited ON: every pid the card carries here is the server just stopped or a genuine
+    co-tenant, so none of THEM may be left -- one arriving afterwards is somebody else's.
+    And the total must hold still across VRAM_SETTLE_QUIET_POLLS intervals, not one: if the
+    pid is already gone at entry and reclaim has not begun, a single flat interval is a
+    stall, not a settled card, and the baseline would carry the old model's allocation.
 
     A real co-tenant never leaves and spends the whole 30s budget. That is accepted rather
     than special-cased: a shared card is exactly the run where card_is_shared() withdraws
@@ -419,6 +424,7 @@ def wait_for_card_to_settle() -> None:
     listing = nvidia_compute_apps_listing()
     resident = listing[1] if listing else set()
     previous_mib = nvidia_used_mib()
+    quiet = 0
     for _ in range(VRAM_SETTLE_SAMPLES):
         time.sleep(VRAM_SETTLE_POLL_S)
         listing = nvidia_compute_apps_listing()
@@ -429,7 +435,9 @@ def wait_for_card_to_settle() -> None:
             and current_mib < previous_mib - VRAM_SETTLE_TOLERANCE_MIB
         )
         previous_mib = current_mib
-        if not fell and not (resident & (listing[1] if listing else set())):
+        quiet = 0 if fell else quiet + 1
+        still_there = resident & (listing[1] if listing else set())
+        if quiet >= VRAM_SETTLE_QUIET_POLLS and not still_there:
             return
 
 

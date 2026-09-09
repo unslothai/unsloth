@@ -2855,21 +2855,27 @@ class TestTheCardIsGivenTimeToSettleAfterAStop:
     def test_it_waits_for_the_stopped_server_to_leave_the_listing(self):
         """Two equal samples are not proof of a settled card when the driver has not begun
         giving the memory back, which is why the pid is what is waited on."""
-        assert self._settle([(3400.0, [4242]), (3400.0, [4242]), (200.0, []), (200.0, [])]) == 4
+        assert self._settle([(3400.0, [4242]), (3400.0, [4242]), (200.0, []), (200.0, [])]) == 5
 
     def test_it_waits_for_the_memory_to_come_back(self):
         """The pid can go while the driver is still returning the allocation."""
-        assert self._settle([(3400.0, []), (1800.0, []), (200.0, []), (200.0, [])]) == 4
+        assert self._settle([(3400.0, []), (1800.0, []), (200.0, []), (200.0, [])]) == 5
 
-    def test_a_settled_card_is_not_waited_on(self):
-        assert self._settle([(200.0, [])]) == 2
+    def test_a_stalled_reclaim_with_no_pid_to_wait_on_is_not_settled(self):
+        """The pid can also be gone BEFORE the first sample, leaving nothing to wait on. One
+        flat interval is then a stall as easily as a finished reclaim, and taking it as
+        settled hands assert_cli_run a baseline with the old model still in it."""
+        assert self._settle([(3400.0, []), (3400.0, []), (200.0, []), (200.0, [])]) == 5
+
+    def test_a_settled_card_costs_only_the_quiet_window(self):
+        assert self._settle([(200.0, [])]) == run_studio_gpu.VRAM_SETTLE_QUIET_POLLS + 1
 
     def test_a_co_tenant_arriving_afterwards_does_not_hold_the_run(self):
         """Only the pids the card carried at entry are the stop's to wait for."""
-        assert self._settle([(200.0, []), (2600.0, [777]), (2600.0, [777])]) == 2
+        assert self._settle([(200.0, []), (2600.0, [777]), (2600.0, [777])]) == 3
 
     def test_an_unanswering_smi_is_not_waited_on(self):
-        assert self._settle([(None, None)]) == 2
+        assert self._settle([(None, None)]) == 3
 
     def test_the_wait_is_bounded(self):
         """A co-tenant never leaves, and a card somebody else is draining never settles."""
