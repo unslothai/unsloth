@@ -2287,6 +2287,23 @@ def _plan_at(
         )
         return needed, budget, floor
 
+    def shortfall(k: _Knobs, kv_floor: int) -> Optional[str]:
+        """Why the split cannot be shown to fit at these knobs with nothing spilled."""
+        return _per_device_shortfall(
+            layout,
+            opts,
+            n_ctx,
+            {},
+            False,
+            vram_bytes_per_device,
+            quantised = quantised,
+            kv_bytes_floor = kv_floor,
+            split_weights_per_device = split_weights_per_device,
+            kv_layer_weights = kv_layer_weights,
+            extra_on_device0 = _outside_layout_bytes(opts, k),
+            n_seq = k.n_parallel,
+        )
+
     knobs = _Knobs(n_parallel = max(1, opts.n_parallel))
     priced = price(knobs)
     assert priced is not None  # the caller's own slot count is always priceable
@@ -2326,7 +2343,6 @@ def _plan_at(
         needed, budget, floor = price(knobs)  # type: ignore[misc]
 
     if needed <= budget:
-        gave_up = _knob_description(knobs, opts)
         if n_devices > 1:
             # A pooled fit is not a per-device fit, and a plan that spills nothing
             # is still emitted as ``-ngl -1 --fit off`` whenever it reshapes the
@@ -2338,29 +2354,84 @@ def _plan_at(
             # allocate %s buffer" in llama_model_base::load_tensors) rather than
             # loading slowly. Spilling plans already run this check; run it for
             # every fit across a split.
-            uneven = _per_device_shortfall(
-                layout,
-                opts,
-                n_ctx,
-                {},
-                False,
-                vram_bytes_per_device,
-                quantised = quantised,
-                kv_bytes_floor = floor,
-                split_weights_per_device = split_weights_per_device,
-                kv_layer_weights = kv_layer_weights,
-                extra_on_device0 = _outside_layout_bytes(opts, knobs),
-                n_seq = knobs.n_parallel,
-            )
+            uneven = shortfall(knobs, floor)
             if uneven is not None:
-                return Plan(
-                    n_ctx = n_ctx,
+                # One card is over on a load the pool fits: the lopsided pair the
+                # row split lands too many bytes on. Handing it straight back gave
+                # up on it before trying anything, so walk rungs 0 to 2 here as
+                # well -- each relieves a device without moving a weight -- and
+                # then let the per-device selector move that card's own rows.
+
+                def take(cand: _Knobs) -> bool:
+                    """Adopt ``cand`` if it changes the arithmetic, and re-check."""
+                    nonlocal knobs, needed, budget, floor, uneven
+                    got = price(cand)
+                    if got is None or (got[0] >= needed and got[1] <= budget):
+                        return False
+                    knobs, (needed, budget, floor) = cand, got
+                    uneven = shortfall(knobs, floor)
+                    return True
+
+                if uneven is not None and opts.mmproj_movable and opts.mmproj_bytes > 0:
+                    take(_Knobs(knobs.n_parallel, True, knobs.draft_dropped))
+                while (
+                    uneven is not None
+                    and not opts.kv_unified
+                    and slots_repriceable_per_device
+                    and knobs.n_parallel > max(1, opts.min_parallel)
+                ):
+                    step = _Knobs(knobs.n_parallel - 1, knobs.mmproj_to_host, knobs.draft_dropped)
+                    if not take(step):
+                        break
+                if uneven is not None and opts.draft_droppable and opts.draft_bytes > 0:
+                    take(_Knobs(knobs.n_parallel, knobs.mmproj_to_host, True))
+            if uneven is not None:
+                gave_up = _knob_description(knobs, opts)
+                after = f" after {gave_up}" if gave_up else ""
+                # Rungs spent and the card still over: spill from ITS rows. This is
+                # the one partial multi-device pick whose row arithmetic is known,
+                # and _select_units_per_device re-checks every device itself.
+                per_device = _select_units_per_device(
+                    layout,
+                    opts,
+                    n_ctx,
+                    vram_bytes_per_device,
+                    quantised = quantised,
+                    kv_bytes_floor = floor,
+                    split_weights_per_device = split_weights_per_device,
+                    kv_layer_weights = kv_layer_weights,
+                    extra_on_device0 = _outside_layout_bytes(opts, knobs),
+                    n_seq = knobs.n_parallel,
+                )
+                if not per_device:
+                    return Plan(
+                        n_ctx = n_ctx,
+                        reason = (
+                            f"the pooled budget fits{after}, but {uneven}, and no rung "
+                            "covers it device by device; leaving llama.cpp's own fitter "
+                            "to place it"
+                        ),
+                    )
+                moved_gib = sum(u.nbytes for u in per_device) / GIB
+                return _finish(
+                    layout,
+                    opts,
+                    n_ctx,
+                    per_device,
+                    False,
+                    host_ram_bytes,
+                    quantised = quantised,
+                    kv_bytes_floor = floor,
+                    budget = budget,
+                    knobs = knobs,
+                    requested_ctx = requested_ctx,
                     reason = (
-                        "the pooled budget fits"
-                        + (f" after {gave_up}" if gave_up else "")
-                        + f", but {uneven}; leaving llama.cpp's own fitter to place it"
+                        f"the pooled budget fits{after}, but {uneven}; spilled "
+                        f"{_rung_description(per_device, layout)} ({moved_gib:.2f} GiB) "
+                        "device by device to cover it"
                     ),
                 )
+        gave_up = _knob_description(knobs, opts)
         return _finish(
             layout,
             opts,

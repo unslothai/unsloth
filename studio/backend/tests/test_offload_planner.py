@@ -2195,7 +2195,14 @@ def test_a_knob_only_fit_is_checked_device_by_device():
     """Moving the projector can make the POOLED budget fit while the small card
     stays over. That plan reshapes the launch, so the seam emits
     ``-ngl -1 --fit off`` and llama.cpp's own per-device fitter never runs; the
-    over card then throws on load rather than loading slowly. Abstain instead."""
+    over card then throws on load rather than loading slowly.
+
+    This used to abstain the moment the shortfall was seen. Abstaining is the
+    LAST answer, not the first: the card is over by less than one of its own
+    blocks, so the per-device selector covers it from that card's rows and the
+    load is served. What the test still pins is that the over card is never
+    waved through -- the plan that comes out has to pass the same check.
+    """
     layout = _mixed_card_vision_layout()
     opts = PlanOptions(
         overhead_bytes_per_device = 1 * GIB,
@@ -2226,11 +2233,25 @@ def test_a_knob_only_fit_is_checked_device_by_device():
     )
 
     plan = plan_placement(layout, vram, 128 * GIB, 8192, opts = opts)
-    assert not plan.mmproj_to_host
-    assert not plan.reshapes_launch
-    assert not plan.spills_anything
-    assert plan_to_args(plan) == []
+    assert plan.mmproj_to_host and plan.spilled_blocks, plan.reason
     assert "device 1" in plan.reason
+    # Only rows the over card owns, and the card fits once they move.
+    assert all(index >= 25 for index in plan.spilled_blocks), plan.spilled_blocks
+    assert (
+        _per_device_shortfall(
+            layout,
+            opts,
+            8192,
+            {i: layout.blocks[i].spillable_bytes for i in plan.spilled_blocks},
+            False,
+            vram,
+            quantised = False,
+            kv_bytes_floor = 0,
+            split_weights_per_device = vram,
+            extra_on_device0 = 0,
+        )
+        is None
+    )
 
 
 # ------------------------------------- the context bound and where the cache is
@@ -2769,14 +2790,20 @@ def test_a_fit_across_a_split_is_checked_device_by_device_even_with_nothing_give
     the launch, and a context the ladder shrank or the seam restores above the
     Auto cap reshapes it as much as a knob does; the per-device check ran only
     when a knob had been given up, so a pooled fit could pin a row split one
-    card cannot hold and the server threw on load."""
+    card cannot hold and the server threw on load.
+
+    The check now covers the shortfall from the over card's own rows instead of
+    abstaining on sight, so what this pins is that the check RUNS and the split
+    that comes out of it holds.
+    """
     layout = _mixed_card_vision_layout()
     opts = PlanOptions(overhead_bytes_per_device = 1 * GIB, pipeline_overhead_bytes = 0)
     vram = [24 * GIB, 8 * GIB]
     assert all_resident_bytes(layout, 8192) <= 30 * GIB  # the pool says yes
     split = plan_placement(layout, vram, 128 * GIB, 8192, opts = opts)
-    assert not split.priced and not split.spills_anything and not split.changed
-    assert "device 1" in split.reason and "fitter" in split.reason, split.reason
+    assert split.priced and split.spilled_blocks, split.reason
+    assert "device 1" in split.reason, split.reason
+    assert all(index >= 25 for index in split.spilled_blocks), split.spilled_blocks
     # One card holding the same pool is a plain fit.
     whole = plan_placement(layout, [32 * GIB], 128 * GIB, 8192, opts = opts)
     assert whole.priced and "fits in VRAM" in whole.reason
@@ -2945,3 +2972,133 @@ def test_a_card_the_requested_context_leaves_nothing_of_still_reaches_the_ladder
     # Asked for the same context with the context pinned, the answer is unchanged.
     pinned = plan_placement(layout, card, 64 * GIB, 262144, opts = PlanOptions(**shape))
     assert "no creditable VRAM" in pinned.reason, pinned.reason
+
+
+# ------------------------------------- a pooled fit with one card short
+
+
+def _lopsided_pair_layout(n_blocks: int = 16, per_block: int = 384 * MIB) -> ModelLayout:
+    """Uniform blocks and no output-row weight, so the row split is the only
+    thing that decides which card is over."""
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = per_block, resident_bytes = 0) for i in range(n_blocks)
+    )
+    return ModelLayout(
+        arch = "qwen35",
+        n_layers = n_blocks,
+        n_attention_layers = n_blocks,
+        blocks = blocks,
+        lm_head_bytes = 0,
+        token_embd_bytes = 64 * MIB,
+        kv_bytes_per_token_f16 = 1,
+        recurrent_bytes = 0,
+        n_ctx_train = 65536,
+        complete = True,
+    )
+
+
+def _lopsided_pair_args(**kwargs):
+    layout = _lopsided_pair_layout()
+    vram = [3 * GIB, 5 * GIB]
+    options = PlanOptions(
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+        pipeline_overhead_bytes = 0,
+        n_parallel = 4,
+        kv_bytes_floor_by_parallel = {4: 2 * GIB, 3: 3 * GIB // 2, 2: GIB, 1: GIB // 2},
+        **kwargs,
+    )
+    return dict(
+        layout = layout,
+        vram_bytes_per_device = vram,
+        host_ram_bytes = 64 * GIB,
+        requested_ctx = 4096,
+        opts = options,
+        kv_bytes_floor = 2 * GIB,
+        split_weights_per_device = vram,
+        kv_layer_weights = [1] * layout.n_layers,
+    )
+
+
+def _plan_lopsided(**kwargs) -> Plan:
+    args = _lopsided_pair_args(**kwargs)
+    return plan_placement(
+        args["layout"],
+        args["vram_bytes_per_device"],
+        args["host_ram_bytes"],
+        args["requested_ctx"],
+        opts = args["opts"],
+        kv_bytes_floor = args["kv_bytes_floor"],
+        split_weights_per_device = args["split_weights_per_device"],
+        kv_layer_weights = args["kv_layer_weights"],
+    )
+
+
+def test_a_pooled_fit_with_one_card_short_tries_the_rungs_before_it_gives_up():
+    """8 GiB of model against 3 GiB + 5 GiB: the pool fits exactly and the row
+    split puts 3.5 GiB on the 3 GiB card. Handing that back to --fit on gave up
+    before trying anything, and one slot fewer covers it: this is the lopsided
+    pair the planner is for."""
+    args = _lopsided_pair_args()
+    layout, vram = args["layout"], args["vram_bytes_per_device"]
+    # The pool really does fit, and device 0 really is over.
+    assert all_resident_bytes(layout, 4096, kv_bytes_floor = 2 * GIB) == 8 * GIB
+    assert (
+        _per_device_shortfall(
+            layout,
+            args["opts"],
+            4096,
+            {},
+            False,
+            vram,
+            quantised = False,
+            kv_bytes_floor = 2 * GIB,
+            split_weights_per_device = vram,
+            kv_layer_weights = args["kv_layer_weights"],
+            extra_on_device0 = 0,
+            n_seq = 4,
+        )
+        is not None
+    )
+
+    plan = _plan_lopsided()
+    assert plan.priced and plan.changed, plan.reason
+    assert 0 < plan.n_parallel < 4, plan.reason
+    assert not plan.spills_anything, plan.reason
+
+
+def test_a_pooled_fit_with_one_card_short_spills_that_card_when_no_rung_is_left():
+    """With the slot count pinned there is nothing above the weights to give, so
+    the short card's own rows pay for it. A pooled pick would have relieved
+    whichever card its rows happened to sit on."""
+    plan = _plan_lopsided(min_parallel = 4)
+    assert plan.priced and plan.spilled_blocks, plan.reason
+    args = _lopsided_pair_args(min_parallel = 4)
+    layout = args["layout"]
+    # Everything it moved sits on the card that was over.
+    assert all(index <= 6 for index in plan.spilled_blocks), plan.spilled_blocks
+    assert (
+        _per_device_shortfall(
+            layout,
+            args["opts"],
+            4096,
+            {i: layout.blocks[i].spillable_bytes for i in plan.spilled_blocks},
+            False,
+            args["vram_bytes_per_device"],
+            quantised = False,
+            kv_bytes_floor = 2 * GIB,
+            split_weights_per_device = args["vram_bytes_per_device"],
+            kv_layer_weights = args["kv_layer_weights"],
+            extra_on_device0 = 0,
+            n_seq = 4,
+        )
+        is None
+    )
+
+
+def test_a_pooled_fit_with_a_card_no_rung_can_reach_still_abstains():
+    """The remedies are not unlimited: a card whose own rows cannot cover its
+    shortfall is still handed back to llama.cpp's own fitter."""
+    plan = _plan_lopsided(min_parallel = 4, extra_resident_bytes = 3 * GIB)
+    assert not plan.changed and not plan.spills_anything, plan.reason
+    assert "fitter" in plan.reason
