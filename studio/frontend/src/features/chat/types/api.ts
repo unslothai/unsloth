@@ -236,6 +236,10 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  /** What the running llama-server does about exact concurrency: "on", "off" or "unavailable". */
+  exact_concurrency?: string | null;
+  /** The exact-concurrency setting the load resolved to (auto/off/on): what was asked for. */
+  requested_exact_concurrency?: string | null;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
