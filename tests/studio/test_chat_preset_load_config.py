@@ -110,9 +110,9 @@ def test_diffusion_suppresses_reasoning_without_dropping_gguf_context():
     capture = source[source.index("export function capturePresetLoadConfig") :]
     capture = capture[: capture.index("\n}")]
     gguf_test = capture[capture.index("const isGguf") : capture.index("const capturesReasoning")]
-    assert "loadedIsDiffusion" not in gguf_test, (
-        "a diffusion GGUF is still a GGUF; its resolved context has to capture"
-    )
+    assert (
+        "loadedIsDiffusion" not in gguf_test
+    ), "a diffusion GGUF is still a GGUF; its resolved context has to capture"
     assert "const capturesReasoning = isGguf && !store.loadedIsDiffusion" in capture
 
 
@@ -131,9 +131,9 @@ def test_preset_summary_marks_a_budget_message():
         "a message-only preset summarises to null, so the Preset section shows no "
         "load settings at all for a config that is not default"
     )
-    assert "${config.reasoningBudgetMessage}" not in body, (
-        "the message is free prose up to 8 KiB; the summary takes a marker only"
-    )
+    assert (
+        "${config.reasoningBudgetMessage}" not in body
+    ), "the message is free prose up to 8 KiB; the summary takes a marker only"
 
 
 def test_preset_sheet_reacts_to_a_reasoning_budget_change():
@@ -150,9 +150,9 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
             "does not re-render the component whose memos capture it"
         )
         # Both memos: hasUnsavedPresetChanges (dirty state) and currentLoadSummary.
-        assert sheet.count(f"\n    {field},\n") + sheet.count(f"\n      {field},\n") == 2, (
-            f"{field} is missing from a capturePresetLoadConfig() memo dependency list"
-        )
+        assert (
+            sheet.count(f"\n    {field},\n") + sheet.count(f"\n      {field},\n") == 2
+        ), f"{field} is missing from a capturePresetLoadConfig() memo dependency list"
 
 
 def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
