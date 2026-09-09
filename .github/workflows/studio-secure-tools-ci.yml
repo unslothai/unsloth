@@ -92,9 +92,9 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r studio/backend/requirements/studio.txt
           python -m pip install \
-            python-multipart aiofiles sqlalchemy psutil pyyaml requests \
+            fastapi httpx typer packaging structlog huggingface-hub \
+            pyjwt cryptography python-multipart aiofiles sqlalchemy psutil pyyaml requests \
             pytest pytest-timeout
 
       - name: Run secure project tool tests

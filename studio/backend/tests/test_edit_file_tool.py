@@ -61,6 +61,7 @@ class TestReplacement:
         target = workdir / "a.py"
         target.write_text("def a():\n    return 1\n")
         result = _edit(path = "a.py", old_string = "return 1", new_string = "return 42")
+        assert not result.startswith("Error:"), result
         assert target.read_text() == "def a():\n    return 42\n"
         assert "1 replacement" in result
 

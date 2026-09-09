@@ -16,6 +16,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -857,11 +858,12 @@ def test_windows_containment_preserves_a_drive_root():
 )
 def test_windows_project_mutation_rejects_ambiguous_or_escaping_paths_portably(target):
     with pytest.raises((AgentWorkspaceError, WindowsMutationRejected, OSError, ValueError)):
-        ProjectFileMutation.open(
+        with ProjectFileMutation.open(
             _windows_workspace(),
             target,
             _windows_ops = _UnusedWindowsOps(),
-        )
+        ):
+            pass
 
 
 class _ReparseWindowsOps(_UnusedWindowsOps):
@@ -1172,3 +1174,25 @@ def test_command_preflight_refuses_an_oversized_workspace(tmp_path, monkeypatch)
             execution._assert_regular_file_links_are_internal(descriptor, identity)
     finally:
         os.close(descriptor)
+
+
+def test_persisted_managed_workspace_routes_edits_and_holds_deletion_lease(tmp_path, monkeypatch):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    project = studio_db.upsert_chat_project(
+        {"id": "persisted-secure", "name": "Secure project", "createdAt": 1, "updatedAt": 1}
+    )
+    session_id = tools.project_session_id(project["id"])
+    with common.project_workspace_access(project["id"]) as workspace:
+        assert workspace.kind == "managed"
+        assert workspace.root == Path(project["sandboxPath"])
+        assert tools.wait_for_sessions_idle([session_id], timeout = 0) is False
+        result = tools.execute_tool(
+            "edit_file",
+            {"path": "src/value.py", "edits": [{"old_string": "", "new_string": "VALUE = 1\n"}]},
+            session_id = session_id,
+        )
+        assert result.startswith("Created"), result
+        assert (workspace.root / "src/value.py").read_text(encoding = "utf-8") == "VALUE = 1\n"
+    assert tools.wait_for_sessions_idle([session_id], timeout = 0) is True
