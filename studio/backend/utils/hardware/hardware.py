@@ -5792,6 +5792,10 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
     for base, ext in table:
         direct = {path: size for path, size in pool.items() if path.name == f"{base}{ext}"}
         indexed, all_indexed = _indexed_archive(directories, base, ext, tree)
+        if base == "diffusion_pytorch_model" and ext == ".bin":
+            # A default diffusers load resolves the safetensors index only; its pickle fallback
+            # asks for the unsharded .bin and never opens a .bin.index.json beside it.
+            indexed = {}
         # No index names these, but a pruned or unwritten index is still that model. A
         # precision variant is held back with the rest of the spelling, never opened.
         counted: dict = {}
@@ -5809,7 +5813,10 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
         names_the_direct_file = bool(direct) and set(direct) <= set(indexed)
         # diffusers is the other way round: its index settles a component whenever it exists,
         # and the direct file is only tried when there is none.
-        index_first = names_the_direct_file or base == "diffusion_pytorch_model"
+        index_first = names_the_direct_file or (base, ext) == (
+            "diffusion_pytorch_model",
+            ".safetensors",
+        )
         opens = indexed if (indexed and index_first) else (direct or indexed)
         # Held back: the rest of a spelling is these same weights, never a component, and a
         # spelling present only as a variant is one no default load opens at all.
@@ -5882,13 +5889,25 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     for path, size in ordered:
         components.setdefault(path.stem, size)
     here = {folder for folder, _ in homes}
-    return sum(archive.values()) + sum(components.values()), {
-        path for path in alternatives if path.parent in here
-    } | set(archive)
+    accounted = {path for path in alternatives if path.parent in here} | set(archive)
+    # An index that reaches into a subfolder claims that shard family there whole: a sibling
+    # the map no longer names (model-00003-of-00002) is an obsolete shard, not a component.
+    for shard in [path for path in archive if path.parent not in here]:
+        base, _ = _archive_stem(shard.stem)
+        accounted |= {
+            path
+            for path in tree["files"]
+            if path.parent == shard.parent
+            and path.suffix == shard.suffix
+            and _archive_stem(path.stem)[0] == base
+        }
+    return sum(archive.values()) + sum(components.values()), accounted
 
 
 def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
-    model_path = Path(model_name)
+    # Lexical, like the index targets it is compared against: a `..` in an accepted path must
+    # not make a shard the index names look like it sits outside the model.
+    model_path = Path(os.path.normpath(model_name))
     if not model_path.exists():
         return None
 

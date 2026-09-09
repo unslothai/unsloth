@@ -503,6 +503,39 @@ def test_an_undeclared_folder_holding_both_spellings_charges_both_payloads(tmp_p
     assert _get_local_weight_size_bytes(str(tmp_path)) == 4035
 
 
+def test_a_dotdot_in_the_model_path_keeps_the_indexed_shards(tmp_path):
+    model = tmp_path / "existing" / "model"
+    _write(model / "shard.bin", 600)
+    _write(model / "payload", 400)
+    (model / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "shard.bin", "b": "payload"}}'
+    )
+    (tmp_path / "existing" / "other").mkdir()
+    dotted = str(tmp_path / "existing" / "other" / ".." / "model")
+    assert _get_local_weight_size_bytes(dotted) == 1000
+
+
+def test_a_diffusers_pickle_index_is_never_opened(tmp_path):
+    unet = tmp_path / "unet"
+    _write(unet / "diffusion_pytorch_model.bin", 100)
+    _write(unet / "diffusion_pytorch_model-00001-of-00001.bin", 5000)
+    (unet / "diffusion_pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "diffusion_pytorch_model-00001-of-00001.bin"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 100
+
+
+def test_nested_indexed_shards_hold_their_obsolete_sibling(tmp_path):
+    _write(tmp_path / "weights" / "model-00001-of-00002.safetensors", 600)
+    _write(tmp_path / "weights" / "model-00002-of-00002.safetensors", 400)
+    _write(tmp_path / "weights" / "model-00003-of-00002.safetensors", 999)
+    (tmp_path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "weights/model-00001-of-00002.safetensors",'
+        ' "b": "weights/model-00002-of-00002.safetensors"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
 def test_variant_only_shards_are_summed(tmp_path):
     _write(tmp_path / "model-00001-of-00002.fp16.safetensors", 300)
     _write(tmp_path / "model-00002-of-00002.fp16.safetensors", 200)
