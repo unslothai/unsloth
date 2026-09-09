@@ -2226,3 +2226,57 @@ def test_split_reload_reads_an_inherited_flag_the_groups_are_refused_with(
     )
     assert ss.PIPELINE_GROUPS_FLAG not in out.llama_extra_args
     assert ss.state().pipeline_groups in (0, 1)
+
+
+def test_group_rounding_never_costs_the_caller_slots(cluster, monkeypatch):
+    # _start_layer_split writes this slot count straight into request.n_parallel, so rounding
+    # down to fit the cap used to silently serve fewer concurrent users than were asked for.
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag: True)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "40")
+    plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX, [])
+    assert plan["pipeline_groups"] == 0
+    assert plan["slots"] == ss.PARALLEL_MAX
+    assert "rounding down" in plan["reason"]
+
+    # A group count that divides is untouched, and so is one that rounds up within the cap.
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
+    plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX, [])
+    assert plan["pipeline_groups"] == 2 and plan["slots"] == ss.PARALLEL_MAX
+    plan = ss.pipeline_groups_plan(3, [])
+    assert plan["pipeline_groups"] == 2 and plan["slots"] == 4
+
+    # A one-slot rounding loss is worth the groups, which measured about 1.4x.
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "3")
+    plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX, [])
+    assert plan["pipeline_groups"] == 3 and plan["slots"] == 63
+
+    # A request already over the maximum was going to be clamped either way, so the clamp
+    # there is not the groups' doing and does not count against them.
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
+    plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX * 2, [])
+    assert plan["pipeline_groups"] == 2 and plan["slots"] == ss.PARALLEL_MAX
+
+
+def test_an_undecided_mtp_verdict_is_left_to_the_backend(cluster, monkeypatch):
+    # mtp_plan returns "unknown" when the GGUF is not on disk yet, which is what an uncached
+    # repo forced to a layer split always is. Writing "off" took automatic MTP away from a
+    # model that does have a head.
+    monkeypatch.setattr(ss, "llama_server_accepts_groups_with_drafter", lambda groups: True)
+    groups = {"pipeline_groups": 2, "slots": 4, "requested_slots": 4, "reason": None}
+    mtp = {"mtp": "unknown", "reason": "GGUF not on disk before the load", "request": {}}
+    ss.reconcile_split_speculation(groups, mtp)
+    assert mtp["request"].get("speculative_type") is None
+
+    # A GGUF that is on disk and has no head is still turned off: that verdict is decided.
+    groups = {"pipeline_groups": 2, "slots": 4, "requested_slots": 4, "reason": None}
+    mtp = {"mtp": "no head", "reason": "no nextn_predict_layers", "request": {}}
+    ss.reconcile_split_speculation(groups, mtp)
+    assert mtp["request"]["speculative_type"] == "off"
+
+    # And so is "unknown" on a server that refuses the groups together with a drafter, where
+    # leaving it undecided would fail the load rather than lose a speedup.
+    monkeypatch.setattr(ss, "llama_server_accepts_groups_with_drafter", lambda groups: False)
+    groups = {"pipeline_groups": 2, "slots": 4, "requested_slots": 4, "reason": None}
+    mtp = {"mtp": "unknown", "reason": "GGUF not on disk before the load", "request": {}}
+    ss.reconcile_split_speculation(groups, mtp)
+    assert mtp["request"]["speculative_type"] == "off"

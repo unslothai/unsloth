@@ -123,6 +123,9 @@ GROUPS_X_MTP_MIN_ROWS = 16  # spark_cluster.GROUPS_X_MTP_CROSSOVER_ROWS
 GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
 GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
 SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
+# Slots kept, as a fraction of the slots asked for, below which the groups are not worth the
+# concurrency the rounding costs. 1/1.4, the measured split speedup from two groups.
+GROUPS_WORTH_SLOTS_RATIO = 1.0 / 1.4
 # Capped because the throughput table alone says 128 and p90 TTFT says that is unshippable.
 # Oversizing is not safe either: a 128-slot server driven at 32 is slower AND worse on TTFT.
 SPLIT_ROWS_INTERACTIVE_MAX = 64
@@ -1068,12 +1071,33 @@ def reconcile_split_speculation(
     if callers:
         # Their "off" is left exactly as they wrote it.
         return
+    if (
+        verdict == "unknown"
+        and split_mtp_wins(rows)
+        and llama_server_accepts_groups_with_drafter(planned)
+    ):
+        # "unknown" is not "no head": the GGUF is not on disk yet, so mtp_plan deliberately
+        # declines to answer and the backend reads the header itself after the download.
+        # Writing "off" here would take automatic MTP away from a model that does have a head,
+        # which is what an uncached repo forced to a layer split always is. Left undecided only
+        # where the answer could still be yes: this llama-server takes the groups together with
+        # a drafter, and the rows are below the count where a split measured faster with none.
+        groups["split_config_reason"] = (
+            f"{PIPELINE_GROUPS_FLAG} {planned}, speculation left to the backend: "
+            f"{mtp.get('reason') or verdict}"
+        )
+        return
     request = mtp.setdefault("request", {})
     if request.get("speculative_type") != "off":
         request["speculative_type"] = "off"
+        no_head = (
+            "which this GGUF has no head for and "
+            if verdict == "no head"
+            else ""
+        )
         mtp["reason"] = (
             f"{mtp.get('reason')}; speculation off for {PIPELINE_GROUPS_FLAG} "
-            f"{groups['pipeline_groups']}, which this GGUF has no head for and which a "
+            f"{groups['pipeline_groups']}, {no_head}which a "
             f"sidecar drafter loses on from 4 users on this pair"
         )
 
@@ -1241,6 +1265,20 @@ def pipeline_groups_plan(
             out["reason"] = (
                 f"{PIPELINE_GROUPS_FLAG} not added: {groups} groups do not fit in the "
                 f"{PARALLEL_MAX}-slot maximum"
+            )
+            return out
+        if base <= PARALLEL_MAX and slots < base * GROUPS_WORTH_SLOTS_RATIO:
+            # _start_layer_split writes this straight into request.n_parallel, so rounding down
+            # to fit the cap silently serves fewer concurrent users than were asked for. That
+            # is a trade, not a bug, and it is only worth making while the groups are worth
+            # more than the concurrency given up for them: they measured about 1.4x on this
+            # pair, so keep them down to 1/1.4 of the request and drop them below that. A
+            # ``base`` already over the maximum is not this trade at all, since that request
+            # was going to be clamped with or without the groups.
+            out["reason"] = (
+                f"{PIPELINE_GROUPS_FLAG} not added: {groups} groups need {base} slots rounded "
+                f"up to a multiple, which is over the {PARALLEL_MAX}-slot maximum, and "
+                f"rounding down would drop {base - slots} of the {base} slots asked for"
             )
             return out
     out["pipeline_groups"] = groups
