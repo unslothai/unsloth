@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionCard } from "@/components/section-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -169,6 +170,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 }
 
 export function ExportPage() {
+  const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
       hfToken: s.token,
@@ -381,8 +383,8 @@ export function ExportPage() {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [isLoadingLocalModels, loadingCheckpoints]);
+    signalReady();
+  }, [isLoadingLocalModels, loadingCheckpoints, signalReady]);
 
   // ---- Derived state ----
   const selectedModelData = useMemo(
