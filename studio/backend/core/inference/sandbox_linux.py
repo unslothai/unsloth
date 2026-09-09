@@ -299,11 +299,8 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
 def _model_cache_binds(workdir: str) -> dict[str, str]:
     """Inner cache subdirectory -> the host directory to share there.
 
-    Asked of the cache-settings layer, not HF_HOME: moving the cache in Settings
-    leaves HF_HOME at the default and puts the real paths in HF_HUB_CACHE and
-    HF_XET_CACHE, which can point anywhere -- HF_HUB_CACHE=/mnt/models is NOT
-    /mnt/models/hub, so each component is bound where it actually is. The child
-    never sees these variables, so this is the only place they can be honoured.
+    Each component is resolved separately because HF_HUB_CACHE=/mnt/models is NOT
+    /mnt/models/hub.
     """
     binds: dict[str, str] = {}
     try:
@@ -446,9 +443,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             inner_cache = os.path.join(inner, _MODEL_CACHE_RELPATH)
             _make_cache_mountpoints(inner, tuple(model_cache))
             for name, host_path in model_cache.items():
-                # --bind-try: the directory was there when this was resolved,
-                # and a bind that fails does so after Popen, where auto has no
-                # fallback left.
+                # --bind-try: it existed when this was resolved, and a failed
+                # bind lands after Popen where auto has no fallback left.
                 argv += ["--bind-try", host_path, os.path.join(inner_cache, name)]
             argv += ["--setenv", "HF_HOME", inner_cache]
         packages = os.path.join(inner, SESSION_PACKAGES_RELPATH)

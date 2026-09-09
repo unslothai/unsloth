@@ -19,8 +19,7 @@ import sys
 import tempfile
 from typing import BinaryIO
 
-# machine -> (AUDIT_ARCH, socket, socketpair). Anything else is refused rather
-# than left unfiltered.
+# machine -> (AUDIT_ARCH, socket, socketpair); anything else is refused.
 _ABIS = {
     "x86_64": (0xC000003E, 41, 53),
     "amd64": (0xC000003E, 41, 53),
@@ -55,7 +54,6 @@ _ALLOW = 0x7FFF0000
 
 
 def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int, int, int], ...]:
-    """Classic BPF instructions for one native ABI."""
     key = machine.lower()
     if key not in _ABIS or sys.byteorder != "little":
         raise RuntimeError(
@@ -101,7 +99,6 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
 
 
 def program_bytes(*, block_userns: bool = False, machine: str | None = None) -> bytes:
-    """The program as the array of struct sock_filter that bwrap reads off the fd."""
     instructions = program(machine or platform.machine(), block_userns = block_userns)
     return b"".join(struct.pack("=HBBI", *instruction) for instruction in instructions)
 

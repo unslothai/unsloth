@@ -3,10 +3,9 @@
 
 """Landlock ABI 6 scoping, which blocks host abstract AF_UNIX sockets.
 
-Those live in the shared network namespace, not the filesystem, so no mount or
-bind rule hides them and seccomp cannot close it either (the address is behind a
-pointer). Best effort: on a pre-6.12 kernel nothing is applied and
-``sandbox_linux.LIMITATIONS`` says so.
+Those live in the shared network namespace, so no mount or bind rule hides them
+and seccomp cannot close it either (the address is behind a pointer). Best
+effort: on a pre-6.12 kernel nothing is applied and ``LIMITATIONS`` says so.
 """
 
 from __future__ import annotations

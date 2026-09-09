@@ -4,8 +4,7 @@
 """The live probe that decides whether a sandbox backend actually confines anything.
 
 Every control is paired with the same control run on the HOST first, so a typo
-in a path cannot read as a boundary and a quirk of the machine cannot read as a
-broken sandbox.
+in a path cannot read as a boundary, nor a quirk of the machine as a breakage.
 
 "A write outside the workdir must raise" is wrong: bwrap mounts a private tmpfs
 over /tmp, where this probe's scratch root usually lives. What must not happen
@@ -246,7 +245,7 @@ def _probe_base() -> str:
         try:
             base = tempfile.mkdtemp(prefix = "unsloth-probe-", dir = root)
         except OSError:
-            continue  # an unwritable candidate is not a failure
+            continue
         if len(base) <= _MAX_PROBE_BASE_LEN:
             if fallback is not None:
                 shutil.rmtree(fallback, ignore_errors = True)
@@ -327,8 +326,7 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         base = _probe_base()
         workdir = os.path.join(base, "work")
         os.mkdir(workdir)
-        # As a real launch gets: the host's would test a directory the sandbox
-        # is not meant to expose.
+        # The host's would test a directory the sandbox must not expose.
         temp_dir = os.path.join(workdir, "tmp")
         os.mkdir(temp_dir)
         sentinel = os.path.join(base, "host-sentinel.txt")

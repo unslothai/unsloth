@@ -305,8 +305,7 @@ def test_the_launch_is_built_by_the_backend_not_by_the_probe():
 
     sandbox_probe.probe(_Backend("capture", capture))
     assert isinstance(plan, ToolLaunchPlan)
-    # A real tool launch plan, not a bespoke probe struct, so the probe exercises
-    # the code path that runs.
+    # A real launch plan, so the probe exercises the code path that runs.
     assert plan.execution_kind == "python"
     assert plan.env["HOME"] == plan.workdir
     assert plan.env["TMPDIR"].startswith(plan.workdir + os.sep)

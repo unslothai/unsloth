@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio tool launch contract and the OS-isolation backends (bwrap, Seatbelt).
-
-The boundary is the write side plus the user's home. The network is NOT
-confined, which is why the record carries ``network_policy = "unrestricted"``.
-"""
+"""Studio tool launch contract and the OS-isolation backends (bwrap, Seatbelt)."""
 
 from __future__ import annotations
 import functools
@@ -153,7 +149,6 @@ class PreparedSandboxLaunch:
     cleanup_diagnostics: list[str] = field(default_factory = list)
 
     def cleanup(self) -> None:
-        """Release everything in LIFO order, never stopping at the first failure."""
         while self.cleanup_callbacks:
             callback = self.cleanup_callbacks.pop()
             try:
@@ -194,7 +189,7 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
     storage both backends grant writes across. The workdir being a mount point
     itself is fine. Sockets, FIFOs and exceeding the entry budget are refused
     even though a tool call can create them, since the scan cannot tell those
-    apart from the host's; the cost is availability, not safety.
+    apart from the host's.
     """
     deadline = time.monotonic() + WORKDIR_SCAN_SECONDS
     entries = 0
@@ -252,9 +247,8 @@ _FALLBACK_NOTE = "Python and Terminal still run, with software safeguards only a
 
 @functools.lru_cache(maxsize = 1)
 def _linux_userns_blocked_by_apparmor() -> bool:
-    """Whether Ubuntu 23.10+'s ``apparmor_restrict_unprivileged_userns`` denies
-    this host the user namespace bwrap needs. Cached because it forks ``unshare``
-    and every capability snapshot reaches it."""
+    """Whether Ubuntu 23.10+'s ``apparmor_restrict_unprivileged_userns`` denies the
+    user namespace bwrap needs. Cached: it forks, and every snapshot reaches it."""
     try:
         with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding = "utf-8") as f:
             if f.read().strip() != "1":
@@ -394,8 +388,8 @@ def _record(
 
 
 def _software_only_limitations() -> tuple[str, ...]:
-    # Unconditional off Windows: teardown is killpg on the captured group, which
-    # a tool that calls setsid and closes stdout survives.
+    # Teardown is killpg on the captured group, which a tool that calls setsid
+    # and closes stdout survives.
     limitations = ["no_os_isolation", "host_files_readable", "unrestricted_network"]
     if sys.platform != "win32":
         limitations.append("detached_descendant_cleanup_unverified")

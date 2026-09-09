@@ -67,7 +67,6 @@ def test_the_executors_take_the_mode_keyword_only_and_default_it(function):
     parameters = inspect.signature(function).parameters
     assert parameters["tool_execution_mode"].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters["tool_execution_mode"].default == "auto"
-    # Everything that existed before stays positional-or-keyword.
     positional = [
         name
         for name, parameter in parameters.items()
@@ -131,7 +130,6 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
                 != 0
             )
             if blocked:
-                # The condition itself: an operator can act on the profile name.
                 assert "apparmor_restrict_unprivileged_userns" in capability.remediation
                 assert "bwrap-userns-restrict" in capability.remediation
 
@@ -152,7 +150,6 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
         assert record.os_isolation is False
         assert "process_guard" in record.retained_safeguards
         assert "no_os_isolation" in record.limitations
-        # The network is not confined in either mode.
         assert record.network_policy == "unrestricted"
 
     def test_required_refuses_and_runs_nothing(self):
@@ -161,7 +158,6 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
         )
         assert "SHOULD_NOT_RUN" not in out
         assert "OS_ISOLATION_UNAVAILABLE" in out
-        # The person reading the remediation is the one who can fix the host.
         assert os_sandbox.capability_snapshot().remediation.split(".")[0] in out
 
     def test_required_raises_out_of_the_planner_itself(self):
@@ -295,8 +291,6 @@ def test_the_path_remap_shim_still_heals_an_invented_absolute_path():
 
 
 class _Recorder:
-    """A prepared launch that reports when it was cleaned up."""
-
     def __init__(self):
         self.cleaned = 0
         self.spawn_kwargs = None
@@ -484,7 +478,6 @@ def test_the_tool_descriptions_are_untouched_by_this_change():
     disabled."""
     note = tools._build_sandbox_paths_note()
     assert "isolation" not in note.lower()
-    # Full access still strips every sandbox claim out of the description.
     full = tools._to_full_access(
         "Execute Python code in a sandbox and return stdout/stderr." + note, "python"
     )
@@ -492,10 +485,9 @@ def test_the_tool_descriptions_are_untouched_by_this_change():
     assert "sandbox is disabled" in full
 
 
-# A backend can decline a specific launch long after the capability probe
-# said yes, and an ML project workdir crosses the 50,000-entry limit as a
-# matter of course. In auto that must be a fallback, not the end of the
-# session.
+# A backend can decline a specific launch long after the probe said yes, and an
+# ML project workdir crosses the 50,000-entry limit as a matter of course. In
+# auto that must be a fallback, not the end of the session.
 
 
 def _declining_backend(

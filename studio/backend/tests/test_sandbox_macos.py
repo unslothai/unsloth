@@ -63,7 +63,6 @@ def test_module_imports_and_exports_the_backend_contract():
     assert isinstance(backend.PROFILE_ID, str) and backend.PROFILE_ID
     assert isinstance(backend.LIMITATIONS, tuple)
     assert all(isinstance(item, str) for item in backend.LIMITATIONS)
-    # The execution record has to keep saying the network is not confined.
     assert "unrestricted_network" in backend.LIMITATIONS
     assert callable(backend.prepare)
 
@@ -94,7 +93,6 @@ def test_every_rule_is_a_balanced_s_expression(profile):
             assert depth >= 0, f"unbalanced ) at offset {index}"
     assert depth == 0, f"{depth} unclosed ( in the profile"
     assert not in_string, "the profile ends inside a quoted string"
-    # Every top-level line opens and closes its own rule.
     for line in profile.splitlines():
         assert line == "" or line.startswith("(") or line.startswith("  ("), line
 
@@ -130,7 +128,6 @@ def test_both_private_spellings_are_emitted_for_the_workdir(profile):
 
 def test_optional_literals_are_allowed_even_though_they_do_not_exist(profile):
     literals = _literals(_rule(profile, _OPTIONAL_PREFIX))
-    # Every optional literal, present or not, in both spellings.
     for path in backend._OPTIONAL_READ_LITERALS:
         assert path in literals, f"{path} lost its unconditional read allowance"
     assert {"/private/etc/gitconfig", "/private/etc/gitattributes"} <= literals
@@ -180,7 +177,6 @@ def test_workdir_and_private_tmp_are_the_only_writable_subpaths(profile):
     assert writable == {_WORKDIR, f"/private{_WORKDIR}", _PRIVATE_TMP, f"/private{_PRIVATE_TMP}"}
     for forbidden in ("/", "/usr", "/tmp", "/private/tmp", str(Path.home())):
         assert forbidden not in writable
-    # Devices get file-write-data by literal, never a writable subpath.
     assert not _subpaths(_rule(profile, "(allow file-read* file-test-existence file-write-data "))
 
 
@@ -199,8 +195,7 @@ def test_no_read_root_reaches_the_users_home(profile):
     for path in tables:
         assert not path.startswith("/Users/"), path
         assert "~" not in path, path
-    # Only the SYSTEM keychains, for TLS trust; the login one is under the
-    # unreadable home and must stay there.
+    # SYSTEM keychains only; the login one is under the unreadable home.
     assert "/System/Library/Keychains" in backend._TLS_TRUST_PATHS
     assert not any("Library/Keychains" in path and path.startswith(home) for path in tables)
 
@@ -212,7 +207,6 @@ def test_ip_egress_is_unrestricted_but_unix_sockets_are_not(profile):
     # Neither direction may be unconditional: an unfiltered grant covers AF_UNIX.
     assert "(allow network-outbound)" not in lines
     assert "(allow network-bind)" not in lines
-    # Host and port wildcards, so TCP and UDP over v4 and v6 stay open.
     assert '(allow network-outbound (remote ip "*:*"))' in lines
     assert '(allow network-bind (local ip "*:*"))' in lines
     assert "localhost" not in profile
@@ -225,7 +219,6 @@ def test_ip_egress_is_unrestricted_but_unix_sockets_are_not(profile):
     assert '(allow network-outbound (literal "/private/var/run/mDNSResponder")' in profile
     assert "(allow network-outbound (remote unix-socket (literal " in profile
     assert '(literal "/var/run/mDNSResponder")' in profile
-    # Nothing grants a host socket such as Docker's.
     assert "docker.sock" not in profile
 
 
@@ -242,7 +235,6 @@ def test_pip_gets_a_writable_target_inside_the_workdir():
     )
     packages = f"{_WORKDIR}/{backend.SESSION_PACKAGES_RELPATH}"
     assert env["PIP_TARGET"] == packages
-    # Appended, never first: the sandbox_site startup shim must stay unshadowable.
     assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
 
 
@@ -400,8 +392,7 @@ def test_available_never_raises_on_a_host_without_the_launcher():
         assert backend.SANDBOX_EXEC in reason
 
 
-# Everything above asserts on text; nothing above proves the kernel accepts the
-# profile.
+# Everything above asserts on text; none of it proves the kernel accepts it.
 
 _darwin_only = pytest.mark.skipif(
     sys.platform != "darwin" or not os.path.exists(backend.SANDBOX_EXEC),
@@ -433,7 +424,6 @@ def test_home_is_unreadable_inside_the_sandbox(tmp_path):
     canary = Path(os.path.expanduser("~")) / ".unsloth-seatbelt-canary"
     canary.write_text("UNSLOTH_CANARY_HOME_READABLE")
     try:
-        # Positive control: the same command, unsandboxed, on this host.
         argv = ("/bin/sh", "-c", f"cat {shlex.quote(str(canary))}")
         host = subprocess.run(argv, capture_output = True, text = True, timeout = 60, check = False)
         assert host.returncode == 0 and "UNSLOTH_CANARY_HOME_READABLE" in host.stdout, (
@@ -504,5 +494,4 @@ def test_a_framework_build_gets_its_dyld_image(monkeypatch, tmp_path):
         monkeypatch.setattr(sys, name, str(prefix))
     paths = backend.runtime_read_paths()
     assert str(prefix / "Python") in paths
-    # And still not the prefix itself.
     assert str(prefix) not in paths
