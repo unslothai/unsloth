@@ -41,7 +41,11 @@ export const BUDGET = {
   // Raised for the audio placement control: same build both sides, merge base
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  transferBytes: 1_620_000,
+  // Raised again for durable agentic turns (#10365): same build both sides, merge
+  // base 191b69c1 at 1,582.0 KB transfer / 5,295.8 KB raw against the branch at
+  // 1,583.9 KB / 5,301.0 KB — the replay/gate code sits inside the chat chunk,
+  // which is entry-static, so it crossed the old 1,620.0 ceiling by 1.9 KB.
+  transferBytes: 1_622_000,
   rawBytes: 5_500_000,
 };
 
