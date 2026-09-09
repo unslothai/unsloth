@@ -929,19 +929,45 @@ def _wait_for_server(
     return False
 
 
+def _cli_api_key_secret_path(name: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name).strip("_")
+    if not safe:
+        safe = "cli"
+    return STUDIO_HOME / "auth" / f".cli_api_key_{safe[:64]}"
+
+
+def _read_cli_api_key_secret(name: str) -> str:
+    try:
+        return _cli_api_key_secret_path(name).read_text(encoding = "utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _revoke_api_keys_named(storage, name: str) -> None:
+    username = storage.DEFAULT_ADMIN_USERNAME
+    for row in storage.list_api_keys(username):
+        if row.get("name") == name and row.get("is_active"):
+            storage.revoke_api_key(username, row["id"])
+
+
 def _create_api_key_inprocess(name: str) -> str:
-    """Create an API key via direct storage call (no HTTP needed).
+    """Return a raw API key for *name*, minting only when the cached one is dead.
 
     Bypasses the ``must_change_password`` gate that blocks HTTP
     ``POST /api/auth/api-keys`` on fresh installs.  Safe because the
     CLI already has filesystem access to ``~/.unsloth/studio``.
     """
     storage = _load_backend_auth_storage()
+    cached = _read_cli_api_key_secret(name)
+    if cached and storage.validate_api_key_with_credential(cached, touch = False):
+        return cached
 
+    _revoke_api_keys_named(storage, name)
     raw_key, _row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = name,
     )
+    _write_auth_secret(_cli_api_key_secret_path(name), raw_key)
     return raw_key
 
 
@@ -2554,7 +2580,7 @@ def run(
         "cli",
         "--api-key-name",
         rich_help_panel = _RUN_PANEL_ADVANCED,
-        help = "Label for the auto-generated API key",
+        help = "Label for the API key reused across runs",
     ),
     port: int = typer.Option(8888, "--port", "-p", rich_help_panel = _RUN_PANEL_SERVER),
     host: str = typer.Option("127.0.0.1", "--host", "-H", rich_help_panel = _RUN_PANEL_SERVER),
