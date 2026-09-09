@@ -6048,7 +6048,12 @@ def _requirement_pins(req: "Path | None") -> "dict[str, list[str]]":
 # the direct line does not stop the sdist arriving transitively.
 WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
     "tensorboard": ("grpcio",),
-    "librosa": ("llvmlite", "numba"),
+    # soxr as well as the numba pair: librosa 0.11.0 requires soxr>=0.3.2, and soxr has never
+    # published a win_arm64 wheel in any release. Without it here, hosting cp313 numba and
+    # llvmlite would un-skip librosa and the extras pass would then build soxr from an sdist,
+    # which is the outcome the skip list exists to prevent.
+    "librosa": ("llvmlite", "numba", "soxr"),
+    # openai-whisper does not depend on soxr; its metadata asks for numba and tiktoken only.
     "openai_whisper": ("llvmlite", "numba", "tiktoken"),
 }
 
@@ -6059,6 +6064,7 @@ WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
 WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
     "grpcio": (">=1.74.0", "tensorboard", "2.21.0"),
     "numba": (">=0.51.0", "librosa", "0.11.0"),
+    "soxr": (">=0.3.2", "librosa", "0.11.0"),
 }
 
 

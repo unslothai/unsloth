@@ -338,7 +338,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_a_blocker_with_no_floor_keeps_the_name_only_answer(self, ips, wheelhouse):
         """llvmlite has no entry: nothing states a floor for it, so a guess is not made."""
-        for dist, version in (("llvmlite", "0.1.0"), ("numba", "0.62.0")):
+        for dist, version in (("llvmlite", "0.1.0"), ("numba", "0.62.0"), ("soxr", "1.0.0")):
             (wheelhouse / _wheel(dist, TAG, TAG, version = version)).write_bytes(b"")
         req = self._req(wheelhouse.parent, "librosa==0.11.0\n")
         assert "librosa" not in ips._windows_arm64_skip_packages(req)
@@ -834,10 +834,31 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        # soxr publishes no win_arm64 wheel upstream, so answer for it: this test is about
+        # the interpreter tag deciding availability, not about soxr. test_librosa_still_needs_soxr covers that on its own.
+        _published = ips._public_index_win_arm64_versions
+        monkeypatch.setattr(
+            ips,
+            "_public_index_win_arm64_versions",
+            lambda name: {"1.0.0"} if name == "soxr" else _published(name),
+        )
         assert "librosa" not in ips._windows_arm64_skip_packages()
         # And still dropped where the wheels are not published for this build.
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: False)
         ips._find_links_wheel_versions.cache_clear()
+        assert "librosa" in ips._windows_arm64_skip_packages()
+
+    def test_librosa_still_needs_soxr(self, ips, tmp_path, monkeypatch):
+        """The numba pair is not enough on its own.
+
+        librosa 0.11.0 requires soxr>=0.3.2, and soxr has published no win_arm64 wheel in any
+        release, latest included. Unblocking on llvmlite and numba alone put librosa back in
+        the extras pass, where soxr would then be built from an sdist: exactly what the skip
+        list exists to avoid. Nothing is hosted here, so the index answers, and it has no soxr.
+        """
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
         assert "librosa" in ips._windows_arm64_skip_packages()
 
     def test_openai_whisper_still_needs_tiktoken(self, ips, tmp_path, monkeypatch):
@@ -853,6 +874,15 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
         monkeypatch.delenv("UV_FIND_LINKS", raising = False)
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        # With nothing hosted, every blocker has to come off the index, and soxr publishes no
+        # win_arm64 wheel at all. Answering for it is what leaves this test about the early
+        # return rather than about soxr.
+        published = ips._public_index_win_arm64_versions
+        monkeypatch.setattr(
+            ips,
+            "_public_index_win_arm64_versions",
+            lambda name: {"1.0.0"} if name == "soxr" else published(name),
+        )
         assert "librosa" not in ips._windows_arm64_skip_packages()
         assert "mecab" in ips._windows_arm64_skip_packages(), "the rest still drop"
 
@@ -943,6 +973,14 @@ class TestThePublicIndexClaimNeedsTheIndex:
 
     def test_librosa_goes_back_to_the_skip_list_offline(self, ips, monkeypatch, tmp_path):
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        # soxr publishes no win_arm64 wheel upstream, so answer for it: this test is about
+        # losing the index offline, not about soxr. test_librosa_still_needs_soxr covers that on its own.
+        _published = ips._public_index_win_arm64_versions
+        monkeypatch.setattr(
+            ips,
+            "_public_index_win_arm64_versions",
+            lambda name: {"1.0.0"} if name == "soxr" else _published(name),
+        )
         assert "librosa" not in ips._windows_arm64_skip_packages()
         monkeypatch.setenv("UV_OFFLINE", "1")
         ips._find_links_wheel_versions.cache_clear()
