@@ -900,8 +900,15 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
             for line in (_out.stdout or "").splitlines()
             if "=>" in line and line.strip()
         }
-        if _names:
-            _ld_cache_sonames_cached = frozenset(_names)
+        # Unconditionally, including the empty case: glibc's ldconfig prints
+        # "0 libs found in cache" and exits 0 for a cache that is present and empty, and
+        # exits 1 with nothing on stdout when the cache file is absent. The non-zero arm
+        # above is what separates those, so storing only a non-empty set collapsed the
+        # distinction this function's contract is built on -- a fresh container whose cache
+        # has not been built read as "cannot enumerate", and _a_bare_soname_resolves then
+        # answered True for a soname that is on no search path and in no cache, which
+        # withholds the reinstall half of the repair rather than offering it.
+        _ld_cache_sonames_cached = frozenset(_names)
         return _ld_cache_sonames_cached
     return _ld_cache_sonames_cached
 

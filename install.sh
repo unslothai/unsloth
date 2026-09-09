@@ -5610,6 +5610,13 @@ esac
 # The kernel-stack hint is suppressed by a closed /dev/kfd, not by any closed node: that
 # node existing is the evidence the stack IS loaded. A host whose /dev/kfd is ABSENT while
 # a render node is closed needs both repairs, and gets both.
+# Two arms rather than one for the same reason: /dev/kfd IS the amdkfd char device, so its
+# presence proves the kernel stack is loaded and a reinstall repairs nothing. The closed-node
+# guard alone does not separate the states -- a node that is absent is not closed either --
+# so an openable /dev/kfd reached a sentence saying there was none. Split rather than
+# excluded, since the diagnosis still holds where the userspace cannot read the card and
+# suppressing it there would withdraw the only repair on offer. Sibling arms, not a nested
+# `if`: the harnesses lift this block by walking back to the `if` above a sentence.
 #
 # The runtime half's needs_kfd, for the installer: /dev/kfd is opened by ROCm and nothing
 # else. SKIP_TORCH alone does not settle it, since --no-torch still installs a GGUF bundle
@@ -5755,7 +5762,18 @@ if [ "$_amd_node_diag_route" = true ] && \
 elif [ "$_amd_node_diag_route" = true ] && \
    _run_may_open_kfd && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
-   ! _has_amd_rocm_gpu ignore-nvidia && _amd_gpu_present_via_pci; then
+   ! _has_amd_rocm_gpu ignore-nvidia && _amd_gpu_present_via_pci && \
+   [ -e /dev/kfd ]; then
+        substep "An AMD GPU is on the PCI bus and /dev/kfd is present and openable, so" "$C_WARN"
+        substep "  the kernel stack is already loaded and reinstalling it changes nothing."
+        substep "  What is missing is the ROCm userspace that reads the card: install"
+        substep "  rocminfo and amd-smi (rocminfo, rocm-smi-lib) and re-run. Strix Halo"
+        substep "  (gfx1151/gfx1150) also needs a recent kernel (6.11+) and ROCm 7.x."
+elif [ "$_amd_node_diag_route" = true ] && \
+   _run_may_open_kfd && [ "$OS" != "macos" ] && \
+   ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
+   ! _has_amd_rocm_gpu ignore-nvidia && _amd_gpu_present_via_pci && \
+   [ ! -e /dev/kfd ]; then
         substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
         substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
         substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."

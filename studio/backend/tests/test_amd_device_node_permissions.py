@@ -5217,3 +5217,87 @@ def test_a_version_the_loader_does_not_recognise_is_still_a_driver(tmp_path):
         encoding = "utf-8",
     )
     assert amd._icd_manifest_is_usable(str(path)) is True
+
+
+def _ldconfig_answering(monkeypatch, *, returncode: int, stdout: str) -> None:
+    """A host whose only ldconfig answers exactly this, with the cache read state reset."""
+    monkeypatch.setattr(amd, "_ld_cache_read", False)
+    monkeypatch.setattr(amd, "_ld_cache_sonames_cached", None)
+    monkeypatch.setattr(amd.shutil, "which", lambda _name: "/sbin/ldconfig")
+    monkeypatch.setattr(amd.os.path, "exists", lambda _p: True)
+    monkeypatch.setattr(
+        amd.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], returncode, stdout, ""),
+    )
+
+
+def test_a_cache_that_is_readable_and_empty_is_an_answer_not_a_failure(monkeypatch, linux):
+    """glibc separates the two states by EXIT STATUS, not by row count: a cache that is
+    present and empty prints "0 libs found in cache" and exits 0, while an absent cache file
+    exits 1 with nothing on stdout. Storing only a non-empty set collapsed them, so a fresh
+    container whose cache has not been built read as "cannot enumerate"."""
+    _ldconfig_answering(
+        monkeypatch, returncode = 0, stdout = "0 libs found in cache `/etc/ld.so.cache\'\n"
+    )
+    assert amd._ld_cache_sonames() == frozenset()
+
+
+def test_an_ldconfig_that_fails_still_answers_unknown(monkeypatch, linux):
+    """The control, and the direction the contract exists for: a non-zero exit is the
+    absent-cache case, which must stay None so a live driver is never called stale."""
+    _ldconfig_answering(monkeypatch, returncode = 1, stdout = "")
+    assert amd._ld_cache_sonames() is None
+
+
+def test_a_bare_soname_is_stale_when_the_readable_cache_does_not_carry_it(
+    monkeypatch, linux, tmp_path
+):
+    """What the distinction is for. The soname is on no directory ld.so searches and in a
+    cache that could be read, so it does not resolve -- and the manifest naming it is a
+    registration with no driver behind it. Read as unknown, it answered usable, which is
+    the arm that withholds the reinstall half of the repair."""
+    manifest = _bare_soname_manifest(tmp_path, "radeon_icd.json", "libvulkan_radeon.so")
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
+    _ldconfig_answering(
+        monkeypatch, returncode = 0, stdout = "0 libs found in cache `/etc/ld.so.cache\'\n"
+    )
+    assert amd._icd_manifest_is_usable(manifest) is False
+
+
+def _kernel_stack_hint_block() -> str:
+    """The whole diagnosis chain, from its `if` through the closing `fi`."""
+    lines = _install_sh_lines()
+    end = _install_sh_anchor(lines, _PCI_SENTENCE)
+    start = _install_sh_if_above(lines, end)
+    close = next(i for i in range(end + 1, len(lines)) if lines[i] == "fi")
+    return "\n".join(lines[start : close + 1])
+
+
+def test_the_kernel_stack_advice_is_gated_on_the_node_being_absent():
+    """The chain's guard is that /dev/kfd is not CLOSED, which is equally true when the node
+    is absent and when it is open, so an openable /dev/kfd reached a sentence saying there
+    was none -- and /dev/kfd IS the amdkfd char device, so its presence proves the stack is
+    loaded and a reinstall repairs nothing.
+
+    Read off install.sh because a host with the node cannot be fabricated here: the test
+    operator is live by design, and the arm below skips without one. A revert removes the
+    `[ -e /dev/kfd ]` arm and this raises rather than passing quietly.
+    """
+    block = _kernel_stack_hint_block()
+    present = block.index("[ -e /dev/kfd ]; then")
+    absent = block.index("[ ! -e /dev/kfd ]; then")
+    assert present < block.index("kernel stack is already loaded") < absent
+    assert absent < block.index("Install the ROCm kernel stack")
+
+
+def test_the_installer_names_the_userspace_when_the_node_is_already_there():
+    """The executed half, on a host that has the node. Skipped rather than dropped: a device
+    node cannot be created by a test, and the assertion is about what a real AMD host is
+    told."""
+    if not os.path.exists(amd._KFD_NODE):
+        pytest.skip("this arm needs a host WITH /dev/kfd, and cannot create a device node")
+    out = _kernel_stack_hint_text(topology = False)
+    assert "Install the ROCm kernel stack" not in out
+    assert "kernel stack is already loaded" in out
+    assert "rocminfo" in out
