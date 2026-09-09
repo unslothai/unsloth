@@ -77,6 +77,9 @@ class VideoFamily:
     bf16_components_gb: Optional[tuple[float, float, float]] = None
     # true when the DiT compiles cleanly with regional torch.compile (declares _repeated_blocks)
     supports_torch_compile: bool = True
+    # Opt-in to the CUDA-graph capture of the denoiser forward (diffusion_cuda_graph.py): only for a family that runs
+    # ONE forward per step with no CFG and no step cache, so a capture has one stable input tree to replay.
+    supports_cuda_graph: bool = False
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
@@ -170,6 +173,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # recompiles across captions of 19 to 402 tokens. The loader engages this only when the denoiser is RESIDENT;
         # compiling inside a full CPU-offload rotation measured slower than eager.
         supports_torch_compile = True,
+        supports_cuda_graph = True,
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through its own
         # from_pretrained, so there is no dense module to quantise in place: these are the ONLY way to run the 66.3 GB
