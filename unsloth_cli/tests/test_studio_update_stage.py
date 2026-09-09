@@ -94,13 +94,55 @@ def test_make_relocatable_rewrites_shell_wrapper_for_path_with_spaces(tmp_path):
     assert text.endswith("print('pip')\n")
 
 
-def test_managed_helper_root_matches_default_and_custom_layout(monkeypatch, tmp_path):
-    monkeypatch.setattr(_studio_stage.Path, "home", lambda: tmp_path)
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shebangs")
+def test_make_relocatable_never_shrinks_a_script_below_its_recorded_size(tmp_path):
+    """RECORD keeps the size the installer wrote, and `install_manifest.verify_install`
+    calls anything smaller damage. The relocatable shebang is 82 bytes, so a venv path
+    past ~68 characters would shrink every console script in the venv."""
+    long_root = tmp_path / ("d" * 60) / ("e" * 60)
+    long_root.mkdir(parents = True)
+    venv = _make_venv(long_root)
+    originals = {
+        name: (venv / "bin" / name).stat().st_size
+        for name in ("unsloth", "pip", "activate", "env-script", "native")
+    }
+    assert len(str(venv)) > 68
 
-    assert _studio_stage.managed_helper_root(tmp_path / ".unsloth" / "studio") == (
-        tmp_path / ".unsloth"
-    )
-    assert _studio_stage.managed_helper_root(tmp_path / "custom") == tmp_path / "custom"
+    assert _studio_stage.make_relocatable(venv) == 2
+
+    for name, original in originals.items():
+        assert (venv / "bin" / name).stat().st_size >= original, name
+    # Padded, not truncated: the script still ends in what the installer wrote, and
+    # the pad between the shebang and the body is a comment to Python and unread by
+    # /bin/sh, which never gets past the exec on line 2.
+    text = (venv / "bin" / "unsloth").read_text(encoding = "utf-8")
+    assert text.startswith(_studio_stage.RELOCATABLE_SHEBANG)
+    assert text.endswith("print('cli')\n")
+    assert text.splitlines()[3].startswith("# ")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shebangs")
+def test_a_finalised_stage_under_a_long_path_passes_the_record_size_check(tmp_path):
+    """The end-to-end shape of the regression: an 805-807 shell finalises a stage with
+    this module, and the size comparison `install_manifest` runs afterwards is what
+    decides whether every later update repeats the whole dependency pass."""
+    stage_root = tmp_path / ("l" * 70) / "studio" / _studio_stage.STAGE_DIR_NAME
+    stage_root.mkdir(parents = True)
+    venv = _make_venv(stage_root)
+    python = venv / "bin" / "python"
+    python.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    python.chmod(0o755)
+    (venv / "bin" / "unsloth").chmod(0o755)
+    # What RECORD holds for the console scripts, as sizes rather than a real wheel.
+    recorded = {name: (venv / "bin" / name).stat().st_size for name in ("unsloth", "pip")}
+    assert len(str(venv)) > 68
+
+    _studio_stage.finalize_for_activation(stage_root)
+
+    damaged = [
+        name for name, size in recorded.items() if (venv / "bin" / name).stat().st_size < size
+    ]
+    assert damaged == []
 
 
 def test_child_environment_points_the_staged_cli_at_the_stage_root(monkeypatch, tmp_path):
@@ -200,15 +242,52 @@ def test_stage_is_refused_and_records_what_the_old_shell_asked_for(monkeypatch, 
     assert not (home / _studio_stage.STAGE_DIR_NAME).exists()
 
 
-def test_a_refusal_without_a_shell_version_records_a_null_one(monkeypatch, tmp_path):
+def test_a_refusal_clears_a_stage_an_earlier_shell_left_behind(monkeypatch, tmp_path):
+    """805-807 report `partial` for any stage directory before they read the failure
+    marker, and `partial` maps straight back to `stage`, so an orphan left here has
+    the same shell asking again at every recheck."""
     home = tmp_path / "studio"
-    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
+    stage = home / _studio_stage.STAGE_DIR_NAME
+    (stage / _studio_stage.VENV_NAME / "bin").mkdir(parents = True)
+    (stage / _studio_stage.VENV_NAME / "bin" / "python").write_text("x", encoding = "utf-8")
+    monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, "0.1.805-beta")
+
+    result = _invoke_stage(monkeypatch, home)
+
+    assert result.exit_code == 1, result.output
+    assert not stage.exists()
+    # Neither the stage nor the trash name it may have been renamed to survives.
+    assert [p.name for p in home.iterdir() if p.name.startswith(".update-")] == [
+        ".update-failed.json"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("  0.1.806-beta  ", "0.1.806-beta"),
+    ],
+)
+def test_a_refusal_records_the_shell_version_or_nothing(
+    monkeypatch, tmp_path, environment, expected
+):
+    """`StagedVersions.shell_version` is an `Option<String>`, so null parses; those
+    shells skip a repeat only when the recorded version equals the one they are
+    offering, which a placeholder would fail exactly as null does."""
+    home = tmp_path / "studio"
+    if environment is None:
+        monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, environment)
 
     result = _invoke_stage(monkeypatch, home)
 
     assert result.exit_code == 1, result.output
     marker = json.loads((home / ".update-failed.json").read_text(encoding = "utf-8"))
-    assert marker["shell_version"] is None
+    assert marker["shell_version"] == expected
     assert isinstance(marker["backend_version"], str)
 
 

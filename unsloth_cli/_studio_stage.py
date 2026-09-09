@@ -48,15 +48,6 @@ def runtime_root(studio_home: Path) -> Path:
     return Path(override) if override else studio_home
 
 
-def managed_helper_root(studio_home: Path) -> Path:
-    legacy = Path.home() / ".unsloth" / "studio"
-    try:
-        is_legacy = studio_home.resolve() == legacy.resolve()
-    except (OSError, ValueError):
-        is_legacy = studio_home == legacy
-    return studio_home.parent if is_legacy else studio_home
-
-
 def venv_python(venv: Path) -> Path:
     if platform.system() == "Windows":
         return venv / "Scripts" / "python.exe"
@@ -79,6 +70,31 @@ def _is_venv_python_shell_wrapper(lines: list[bytes]) -> bool:
         and b'"$0" "$@"' in lines[1]
         and lines[2] == b"' '''"
     )
+
+
+def _relocatable_script(body: bytes, original: int) -> bytes:
+    """The rewritten script, never shorter than the one the installer recorded.
+
+    `RELOCATABLE_SHEBANG` is 82 bytes; the shebang it replaces is
+    `#!<venv>/bin/python`, so every venv path past about 68 characters makes the
+    rewrite SHORTER than what RECORD says. `studio/install_manifest.py` calls any
+    payload file smaller than its recorded size damage, so on those installs
+    `setup.sh` forces the full dependency pass at every update and a deep
+    verification never passes -- the whole cost of the check falling on exactly the
+    users whose Studio path is long.
+
+    The padding goes between the shebang and the body rather than after it, so the
+    script still ends in whatever the installer wrote. `/bin/sh` never reads past
+    the exec on line 2, and to Python it is one more comment.
+    """
+    shebang = RELOCATABLE_SHEBANG.encode("utf-8")
+    deficit = original - len(shebang) - len(body)
+    if deficit <= 0:
+        return shebang + body
+    # `# ` and the newline are 3 bytes, so a smaller deficit is covered by the
+    # shortest comment line there is. Longer than the original is fine; only
+    # shorter is read as damage.
+    return shebang + b"# " + b"#" * max(deficit - 3, 0) + b"\n" + body
 
 
 def make_relocatable(venv: Path) -> int:
@@ -104,7 +120,7 @@ def make_relocatable(venv: Path) -> int:
             body = b"".join(lines[3:])
         else:
             continue
-        script.write_bytes(RELOCATABLE_SHEBANG.encode("utf-8") + body)
+        script.write_bytes(_relocatable_script(body, len(data)))
         rewritten += 1
     return rewritten
 
