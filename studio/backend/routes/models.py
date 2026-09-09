@@ -2595,8 +2595,23 @@ async def scan_model_remote_code(
         # only the prefer_local path below left the scan running anyway. Fail closed HERE
         # rather than in _repo_in_any_hf_cache, whose other caller needs its False.
         def _repo_maybe_cached(repo: str) -> bool:
+            """Whether the scan could be answered off disk for this repo.
+
+            config.json, not the repo directory: has_remote_code is read from its auto_map
+            and the Python files are reached through it, so a snapshot holding only weights
+            can answer nothing and refusing it costs a valid token the scan a mirror would
+            have served. Fails closed on any error.
+            """
             try:
-                return _repo_in_any_hf_cache(repo)
+                if not _repo_in_any_hf_cache(repo):
+                    return False
+            except Exception:
+                return True
+            try:
+                from huggingface_hub import try_to_load_from_cache
+                return isinstance(
+                    try_to_load_from_cache(repo_id = repo, filename = "config.json"), str
+                )
             except Exception:
                 return True
 
@@ -2737,6 +2752,18 @@ async def scan_model_remote_code(
                 hf_token,
                 load_subdirs = consent_load_subdirs[_target],
             ):
+                # Discovered from the primary's config AFTER the loop above authorized the
+                # targets it knew, and the preflight below downloads and scans it with the
+                # same token, so its cached Python files reach the response as source
+                # snippets. Refused rather than skipped, for the same reason as the base:
+                # an unscanned auto_map repo under-reports has_remote_code.
+                if not is_local_path(_ext) and cached_read_refused(
+                    hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+                ):
+                    raise HTTPException(
+                        status_code = 404,
+                        detail = "This model is not available to an unauthorized caller.",
+                    )
                 external_refs.append(_ext)
                 _mark_scan_created(_ext)
         decision = preflight_remote_code_consent_for_targets(

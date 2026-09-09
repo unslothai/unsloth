@@ -1667,6 +1667,10 @@ def test_the_remote_code_scan_refuses_a_cached_repo_it_cannot_authorize(monkeypa
     _counting_probe(monkeypatch, False)
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+    # config.json cached, which is what makes the scan answerable off disk.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
+    )
 
     async def _call():
         return await models_routes.scan_model_remote_code(
@@ -2098,6 +2102,10 @@ def test_every_scan_target_is_authorized_not_only_the_one_named(monkeypatch):
     )
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+    # config.json cached, which is what makes the scan answerable off disk.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
+    )
     monkeypatch.setattr(
         "core.inference.native_audio.native_audio_security_targets",
         lambda target, **_k: [target, "acme/private-base"],
@@ -2142,6 +2150,10 @@ def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):
     _counting_probe(monkeypatch, False)
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+    # config.json cached, which is what makes the scan answerable off disk.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
+    )
 
     def _must_not_run(*_a, **_k):
         raise AssertionError("target expansion ran for a caller that was already refused")
@@ -2404,3 +2416,99 @@ def test_a_resolved_gguf_plan_does_not_report_an_unauthorized_cache(monkeypatch)
 
     assert plan.cached is not True, "the operator's cached GGUF was reported to a denied caller"
     assert reported == [], "the cache was consulted for a repo nothing had authorized"
+
+
+def test_a_weights_only_cache_does_not_block_the_scan(monkeypatch):
+    """config.json, not the repo directory: has_remote_code comes from its auto_map and the
+    Python files are reached through it, so a snapshot holding only weights can answer
+    nothing. Refusing it cost a valid token the scan a mirror would have served, in exactly
+    the case the probe is unavailable rather than negative."""
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: None)
+
+    reached: list = []
+    monkeypatch.setattr(
+        "core.inference.native_audio.native_audio_security_targets",
+        lambda target, **_k: reached.append(target) or [target],
+    )
+
+    try:
+        asyncio.run(
+            models_routes.scan_model_remote_code(
+                model_name = "acme/weights-only",
+                hf_token = "hf_dummy",
+                allow_ambient_token = False,
+                current_subject = "alice",
+            )
+        )
+    except Exception:
+        # Whatever the scan does next needs the network; getting there is the assertion.
+        pass
+
+    assert reached == ["acme/weights-only"], "a weights-only cache was treated as an answer"
+
+
+def test_an_external_auto_map_repo_is_authorized_before_it_is_scanned(monkeypatch):
+    """auto_map repos are read out of the primary's config, so they are discovered after the
+    target loop has authorized what it knew. The preflight downloads and scans each one with
+    the same token, and its cached Python files reach the response as source snippets."""
+    import fastapi
+
+    reachable = {"acme/adapter"}
+    monkeypatch.setattr(
+        hf_tokens, "_probe_repo_access", lambda repo_id, *_a, **_k: repo_id in reachable
+    )
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
+    )
+    monkeypatch.setattr(
+        "core.inference.native_audio.native_audio_security_targets",
+        lambda target, **_k: [target],
+    )
+    monkeypatch.setattr(
+        "utils.security.remote_code_scan.external_auto_map_repos",
+        lambda *_a, **_k: ["acme/private-code"],
+    )
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        asyncio.run(
+            models_routes.scan_model_remote_code(
+                model_name = "acme/adapter",
+                hf_token = "hf_dummy",
+                allow_ambient_token = False,
+                current_subject = "alice",
+            )
+        )
+    assert excinfo.value.status_code == 404
+
+
+def test_the_cached_alias_is_looked_up_before_the_literal_name_is_judged(monkeypatch):
+    """A slashless alias caches under sentence-transformers/, so gating the lookup on the
+    literal name's verdict skipped it entirely when that name has no repo to authorize, and
+    a public alias already fully cached came back as a download to run."""
+    from routes import settings as settings_routes
+
+    reachable = {"sentence-transformers/all-MiniLM-L6-v2"}
+    monkeypatch.setattr(
+        hf_tokens, "_probe_repo_access", lambda repo_id, *_a, **_k: repo_id in reachable
+    )
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
+    monkeypatch.setattr(
+        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
+    )
+    monkeypatch.setattr(
+        settings_routes,
+        "_cached_st_source",
+        lambda _m: ("sentence-transformers/all-MiniLM-L6-v2", Path("/cache/snap")),
+    )
+    monkeypatch.setattr(settings_routes, "_st_weight_source", lambda *_a, **_k: None)
+
+    plan = settings_routes._resolve_embedding_model_plan("all-MiniLM-L6-v2", "hf_dummy")
+
+    assert plan.cached is True, "a cached, authorized alias was offered as a download"
+    assert plan.download_repo == "sentence-transformers/all-MiniLM-L6-v2"

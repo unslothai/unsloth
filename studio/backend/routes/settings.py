@@ -2456,9 +2456,12 @@ def _resolve_embedding_model_plan(
             )
         # The alias-aware predicate alone, which already pairs the ST file family with the loadable check per candidate;
         # the repo the cache hit came from is what the PUT verifies and scans.
-        cached_source = _cached_st_source(resolved) if cache_ok else None
-        # Learning WHICH repo answered is not the leak; handing its state back is, and for
-        # an alias that repo is not the one just authorized.
+        # Looked up BEFORE any authorization: for a slashless alias the snapshot is filed
+        # under sentence-transformers/, so gating on the literal name's verdict skipped the
+        # lookup entirely and a public alias that is fully cached came back as a download.
+        # Learning WHICH repo answered is not the leak; handing its state back is, and that
+        # repo is the one authorized here.
+        cached_source = _cached_st_source(resolved)
         if cached_source is not None and not _authorized(cached_source[0]):
             cached_source = None
         cached = cached_source is not None

@@ -1282,8 +1282,11 @@ async def get_gguf_variants_answer(
         # `offline` passed in: a cache-only request must not pay a probe it will not use.
         # The shared gate rather than the raw check, so the forced-anonymous sentinel keeps
         # a cached PUBLIC repo instead of falling through to the network for one it was
-        # always entitled to. is_cached is True because each read below tests its own
-        # directory; the question here is only whether this caller may be told.
+        # always entitled to.
+        # is_cached is True rather than a directory probe. Every narrower predicate here
+        # has to consult one of the cache accessors below, which are the reads this gate
+        # exists to withhold, and the lister has a cache path of its own that no predicate
+        # can see before it runs. The cost is one memoized probe per repo and token.
         cache_reads_authorized = not hub_cached_read_refused(
             hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
         )
