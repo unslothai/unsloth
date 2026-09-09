@@ -442,15 +442,16 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     installed = []
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
-    for name, value in (("UV_OFFLINE", "1"), ("HF_HUB_OFFLINE", "true")):
-        monkeypatch.delenv("UV_OFFLINE", raising = False)
-        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    for value in ("1", "t", "Y", "true", "on"):
+        monkeypatch.setenv("UV_OFFLINE", value)
         assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
         assert (root / "keep.txt").is_file()
         assert installed == []
-    monkeypatch.delenv("UV_OFFLINE", raising = False)
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    # The HF offline switches turn off Hub access, not the package index: a damaged tier
+    # is still rebuilt under them, or the tier stays unusable while PyPI answers.
     monkeypatch.setenv("UV_OFFLINE", "0")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert tv._runtime_repair_is_offline() is False
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
