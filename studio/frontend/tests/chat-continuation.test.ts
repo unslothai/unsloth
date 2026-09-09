@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
@@ -23,13 +24,17 @@ const {
   createAutoContinueTab,
   budgetImpliesTruncation,
   incompleteLabel,
+  incompleteRemedy,
   isContinuableContent,
+  isProviderReportedReason,
   isRestart,
   joinContinuation,
   modeAllowsContinuation,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
+  resolveIncompleteReason,
+  restoredAssistantStatus,
   claimAutoContinue,
   recordAutoContinue,
   rejectsAssistantPrefill,
@@ -182,6 +187,172 @@ test("every stop reason has a label", () => {
   assert.equal(incompleteLabel("length"), "Response hit the Max Tokens limit");
   assert.equal(incompleteLabel("cancelled"), "Response stopped");
   assert.equal(incompleteLabel("interrupted"), "Response interrupted");
+  assert.equal(
+    incompleteLabel("context_window"),
+    "Response filled the model's context window",
+  );
+});
+
+test("the provider's own reason outranks every reason the client infers", () => {
+  // The event ends Anthropic's turn, so the model has already stopped. A null reason
+  // matters most: it reads as a completed answer.
+  assert.equal(resolveIncompleteReason("length", true), "context_window");
+  assert.equal(resolveIncompleteReason(null, true), "context_window");
+  assert.equal(resolveIncompleteReason("cancelled", true), "context_window");
+  assert.equal(resolveIncompleteReason("interrupted", true), "context_window");
+  assert.equal(resolveIncompleteReason("length", false), "length");
+  assert.equal(resolveIncompleteReason("cancelled", false), "cancelled");
+  assert.equal(resolveIncompleteReason("interrupted", false), "interrupted");
+  assert.equal(resolveIncompleteReason(null, false), null);
+});
+
+test("a provider-reported reason is the one a cancelled status cannot overrule", () => {
+  assert.equal(isProviderReportedReason("context_window"), true);
+  assert.equal(isProviderReportedReason("length"), false);
+  assert.equal(isProviderReportedReason("cancelled"), false);
+  assert.equal(isProviderReportedReason("interrupted"), false);
+  assert.equal(isProviderReportedReason(null), false);
+  assert.equal(isProviderReportedReason(undefined), false);
+});
+
+test("a window-exhausted turn is stamped apart from a Max Tokens cut", () => {
+  resetAutoContinue();
+  // `length` either way; only the out-of-band signal separates budget from window.
+  assert.equal(resolveIncompleteReason("length", false), "length");
+  const reason = resolveIncompleteReason("length", true);
+  assert.equal(reason, "context_window");
+  assert.deepEqual(readIncompleteInfo({ custom: { incomplete: { reason } } }), {
+    reason: "context_window",
+  });
+  assert.deepEqual(restoredAssistantStatus({ custom: { incomplete: { reason } } }), {
+    type: "incomplete",
+    reason: "length",
+  });
+});
+
+test("a window-exhausted turn is never resumed automatically", () => {
+  resetAutoContinue();
+  // The `fits` guard cannot catch this: that metadata is only emitted by local models.
+  assert.equal(
+    shouldAutoContinue(resolveIncompleteReason("length", true), "parent-1"),
+    false,
+  );
+  assert.equal(
+    shouldAutoContinueMessage(
+      "m1",
+      resolveIncompleteReason("length", true),
+      "parent-1",
+    ),
+    false,
+  );
+  assert.equal(autoContinueCount("parent-1"), 0);
+});
+
+test("the adapter latches the backend window-exhaustion event", () => {
+  // The mapping lives in the streaming loop, which cannot be imported here.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /toolEvent\.type === "context_window_exceeded"[\s\S]{0,120}contextWindowExceeded = true/,
+    "the backend event is no longer latched",
+  );
+  assert.match(
+    adapter,
+    /resolveIncompleteReason\(\s*incompleteReason,\s*contextWindowExceeded,\s*\)/,
+    "the latched signal no longer reaches the stamped reason",
+  );
+  assert.match(
+    adapter,
+    /incomplete: finalIncompleteReason\s*\?\s*\{ reason: finalIncompleteReason \}/,
+    "the resolved reason no longer reaches the persisted metadata",
+  );
+  assert.match(
+    adapter,
+    /reason: resolveIncompleteReason\([\s\S]{0,400}contextWindowExceeded,\s*\)/,
+    "the error path decides a reason without asking what the provider reported",
+  );
+  assert.match(
+    adapter,
+    /incomplete: \{\s*reason: resolveIncompleteReason\("cancelled" as const, contextWindowExceeded\),\s*\}/,
+    "an abort saves a bare cancelled again, losing what the provider reported",
+  );
+  // The finish chunk carries no delta, so nothing between here and `[DONE]` need yield.
+  const handler = adapter.slice(
+    adapter.indexOf('toolEvent.type === "context_window_exceeded"'),
+    adapter.indexOf('toolEvent.type === "tool_output"'),
+  );
+  assert.ok(handler.length > 0, "the handler moved; this assertion reads nothing");
+  assert.match(
+    handler,
+    /yield \{[\s\S]*custom: liveCustom\(\),/,
+    "the latched signal is no longer published when it arrives",
+  );
+  // Redacted thinking renders as no text, so a length check would drop the reason.
+  assert.doesNotMatch(
+    handler,
+    /\.length > 0/,
+    "publishing the reason depends on renderable content again",
+  );
+});
+
+test("only the cut no continuation can undo carries a way out", () => {
+  assert.equal(incompleteRemedy("length"), null);
+  assert.equal(incompleteRemedy("cancelled"), null);
+  assert.equal(incompleteRemedy("interrupted"), null);
+  // A hosted window is fixed, so not the "Context Length" lever local models point at.
+  assert.equal(
+    incompleteRemedy("context_window"),
+    "Start a new chat, or shorten this one, to keep going",
+  );
+});
+
+test("a tool-using turn that fills the window is the case the bar must not miss", () => {
+  // A continuation runs as a sibling, without the call or its result, so a tool-calling
+  // turn is never continuable -- and a big tool result is a likely way to fill the window.
+  const content = [
+    { type: "tool-call", toolName: "web_search", toolCallId: "t1", args: {} },
+    { type: "text", text: "Based on those results, the three main causes are, first, the" },
+  ];
+  assert.equal(isContinuableContent(content), false);
+  const reason = resolveIncompleteReason("length", true);
+  assert.equal(reason, "context_window");
+  assert.notEqual(incompleteRemedy(reason!), null);
+});
+
+test("the bar offers the way out in place of a Continue that cannot help", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    thread,
+    /const remedy = reason \? incompleteRemedy\(reason\) : null/,
+    "the bar no longer asks whether resuming can help",
+  );
+  assert.match(
+    thread,
+    /if \(!reason \|\| \(!remedy && !resumable\)\) \{\n\s*return null;/,
+    "the way out is gated on the turn being resumable again",
+  );
+  // Reading the cancelled status first shows "Response stopped" and offers Continue.
+  assert.match(
+    thread,
+    /cancelled && !isProviderReportedReason\(stamped\?\.reason\)/,
+    "a cancelled status overrules the provider's own reason again",
+  );
+  assert.match(
+    thread,
+    /\{incompleteLabel\(reason\)\}\.\{remedy \? ` \$\{remedy\}\.` : ""\}/,
+    "the way out is no longer rendered beside the reason",
+  );
+  assert.match(
+    thread,
+    /\{remedy \? null : \([\s\S]{0,400}Continue\n\s*<\/Button>/,
+    "Continue is offered again for a cut it cannot help",
+  );
 });
 
 test("a continuation request is read only when it carries text", () => {

@@ -272,24 +272,31 @@ def create_document(
     archive_messages: int | None = None,
     archive_ordinal: int | None = None,
     created_at: str | None = None,
+    rowid: int | None = None,
     commit: bool = True,
 ) -> str:
-    """``created_at`` is for a REWRITE of a row that already exists, and nothing else.
+    """``created_at`` and ``rowid`` are for a REWRITE of a row that already exists.
 
     A re-embed deletes the old row and inserts a new one for the same content, so stamping
     it with the current time would say the turn was archived when its vectors were
     rebuilt. That is not a cosmetic difference for an archived turn: an archive written
     before `archive_ordinal` existed is ordered by `created_at` alone, so a rewrite that
-    takes a fresh timestamp moves that turn to the end of its own conversation. Omitted,
-    this is byte for byte what every other caller has always got.
+    takes a fresh timestamp moves that turn to the end of its own conversation.
+
+    ``rowid`` carries over one level down: rows archived in the same clock tick share a
+    `created_at` (routine on Windows, ~15.6 ms tick), so insertion order is all that
+    separates them and a fresh rowid sorts the rewritten turns behind the untouched ones.
+    Omitted, both arguments leave this byte for byte what every other caller has always
+    got: a NULL rowid is assigned exactly as if the column were not named.
     """
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
+        "INSERT INTO documents(rowid, id, scope, kb_id, thread_id, project_id, filename, sha256, "
         "status, stored_path, created_at, embedding_model, linked_folder_id, "
         "linked_relative_path, archive_messages, archive_ordinal) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
+            rowid,
             document_id,
             scope,
             kb_id,
@@ -384,6 +391,17 @@ def next_archive_ordinal(conn: sqlite3.Connection, scope: str) -> int:
 
 def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def document_rewrite_identity(conn: sqlite3.Connection, document_id: str) -> dict | None:
+    """What a re-embed carries over from the row it replaces. Separate from `get_document`
+    because `SELECT *` omits the implicit rowid and widening it would add the key to every
+    caller's dict.
+    """
+    row = conn.execute(
+        "SELECT rowid, archive_ordinal, created_at FROM documents WHERE id=?", (document_id,)
+    ).fetchone()
     return dict(row) if row else None
 
 
@@ -547,9 +565,14 @@ def search_lexical(
     `newest_first` breaks TIES the other way round. FTS5 floors the IDF of a term the
     whole index shares, so every hit on a per-thread archive's own subject scores the
     same, and `ORDER BY s LIMIT k` then returns the k OLDEST rows: past k chunks on that
-    subject the newest assignment is unreachable at any k. Ordering is by rowid, which is
-    insertion order rather than exact conversation order, so this widens the candidate
-    set and does not decide anything; the caller still orders what it gets.
+    subject the newest assignment is unreachable at any k.
+
+    Both ordered forms SELECT rather than arrange: under the `LIMIT` they decide which rows
+    the caller is offered at all. So the tiebreak has to be
+    `conversation_archive._conversation_order` component for component, and ending it on a
+    chunk id ends it on a uuid4 -- which on a legacy archive, every ordinal NULL and one
+    clock tick over every row, IS the whole cut.
+    `test_the_candidate_window_is_cut_in_conversation_order` pins the two orders together.
     """
     mq = match_query if match_query is not None else _match_query(query)
     if not mq:
@@ -568,25 +591,26 @@ def search_lexical(
         # The filtered form runs both subqueries for every matched row BEFORE the LIMIT, and with nothing
         # linked that work is provably wasted (linked_folder_rows_exist).
         if oldest_first:
-            # Order by archive ordinal, not rowid, which a re-embed scrambles; NULLs first as oldest, then
-            # created_at and chunk id, else on a legacy archive both halves return the same subset.
+            # `_conversation_order` component for component. The DOCUMENT rowid, not the
+            # chunk one: a re-embed rewrites the chunk rows and only the document's own
+            # rowid survives it (`create_document`'s `rowid`).
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
                 f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
                 f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC, "
-                f"d.created_at ASC, chunks_fts.chunk_id ASC LIMIT ?"
+                f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
         elif newest_first:
-            # rowid is insertion order and a re-embed reinserts a chunk, so a rowid DESC window missed the newest turn.
+            # The mirror of the clause above, so the two halves cut the run at opposite ends.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
                 f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
                 f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC, "
-                f"d.created_at DESC, chunks_fts.chunk_id DESC LIMIT ?"
+                f"d.created_at DESC, d.rowid DESC, c.chunk_index DESC LIMIT ?"
             )
         elif linked_folder_rows_exist(conn):
             sql = (
@@ -737,7 +761,8 @@ def chunks_by_id(conn: sqlite3.Connection, ids) -> dict:
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
         f"SELECT c.id, c.text, c.document_id, c.chunk_index, c.page_number, "
-        f"c.source_page_index, d.filename, d.archive_ordinal, d.created_at "
+        f"c.source_page_index, d.filename, d.archive_ordinal, d.created_at, "
+        f"d.rowid AS document_rowid "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
         f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "

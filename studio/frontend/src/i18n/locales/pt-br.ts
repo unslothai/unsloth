@@ -1288,9 +1288,8 @@ export const ptBR = {
       docs: "Documentação",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1733,7 +1732,7 @@ export const ptBR = {
         desktopAvailable:
           "A versão {version} do aplicativo de desktop está disponível",
         desktopAvailableDescription:
-          "Atualize agora para preparar em segundo plano. Você continua trabalhando e reinicia quando estiver pronto.",
+          "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
         desktopExternalServer:
           "Execute `unsloth studio update` no terminal usado para iniciar o servidor.",
         desktopManualInstall:
@@ -1744,20 +1743,11 @@ export const ptBR = {
         desktopCurrent: "O aplicativo de desktop está atualizado",
         desktopCurrentDescription:
           "O Unsloth continuará verificando automaticamente.",
-        desktopPreparingDescription:
-          "A atualização está sendo preparada em segundo plano. Você pode continuar trabalhando.",
-        desktopReadyToRestartDescription:
-          "Tudo pronto. Reinicie para concluir a instalação da atualização.",
-        desktopReadyToInstallDescription:
-          "A atualização do aplicativo foi baixada. Conclua a atualização do backend para instalá-la.",
         checkForUpdates: "Verificar se há atualizações",
         checkAgain: "Verificar novamente",
         retryCheck: "Tentar novamente",
         checking: "Verificando...",
-        preparing: "Preparando...",
         updateNow: "Atualizar agora",
-        restartToUpdate: "Reiniciar para atualizar",
-        finishUpdate: "Concluir atualização",
         openReleasePage: "Abrir página de lançamentos",
         unknownInstall:
           "Não foi possível detectar como o Unsloth foi instalado. Para instalações via instalador ou PyPI, use os comandos acima.",
