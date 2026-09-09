@@ -2104,7 +2104,29 @@ _target_has_pkg_version() {
 # directory (six.py has no directory at all; pillow's is PIL). A pin whose payload is
 # neither -- nothing recorded either -- reads as stale forever, and then every update
 # deletes and refetches a healthy several-hundred-MB sidecar.
-_SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2 tiktoken"
+#
+# tiktoken is deliberately not a pin. Both shells treat its install as optional (no wheel
+# for the interpreter is a warning, not a failure), so a sidecar without it is a finished
+# sidecar; as a pin it would read stale on every update and be wiped and refetched three
+# times over, for a package the rebuild would fail to add again. _sidecar_top_up_tiktoken
+# retries it alone instead.
+_SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
+
+_sidecar_top_up_tiktoken() {
+    _stt_dir="$1"
+    _stt_label="$2"
+    for _stt_meta in "$_stt_dir"/tiktoken-*.dist-info/METADATA; do
+        if [ -f "$_stt_meta" ]; then
+            unset _stt_meta
+            return 0
+        fi
+    done
+    unset _stt_meta
+    if ! fast_install_sidecar --target "$_stt_dir" --no-deps "tiktoken" >/dev/null 2>&1; then
+        substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
+    fi
+    return 0
+}
 
 _sidecar_current() {
     # One predicate for both shells: install_manifest.py answers, setup.ps1 asks the same
@@ -2157,7 +2179,11 @@ _install_sidecar() {
     run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
     run_quiet "install huggingface_hub for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"
+    # Optional, as in setup.ps1: a missing tiktoken wheel must not fail the whole setup,
+    # and it is retried by _sidecar_top_up_tiktoken on later updates.
+    if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
+        substep "could not install tiktoken into the $_is_label sidecar -- Qwen tokenizers may fail"
+    fi
     step "transformers" "$_is_ver pre-installed"
 }
 
@@ -2189,16 +2215,19 @@ if [ "$_NEED_T5_530" = true ]; then
     _install_sidecar "$VENV_T5_530_DIR" "5.3.0" "5.3"
 else
     step "transformers" "5.3.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
 fi
 if [ "$_NEED_T5_550" = true ]; then
     _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
 else
     step "transformers" "5.5.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
 fi
 if [ "$_NEED_T5_510" = true ]; then
     _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
 else
     step "transformers" "5.10.2 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
 fi
 fi
 
