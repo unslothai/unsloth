@@ -126,9 +126,11 @@ def create_studio_mcp() -> FastMCP:
 
     @mcp.tool
     async def start_training(config: dict[str, Any]) -> dict[str, Any]:
-        """Start a validated Unsloth training job from a TrainingStartRequest-shaped object. The config
-        is validated by the same Pydantic model used by the Unsloth UI. Call get_training_status
-        first and do not start work while another job runs."""
+        """Start a validated Unsloth training job from a TrainingStartRequest-shaped object.
+
+        The config is validated by the same Pydantic model used by the Unsloth UI.
+        Call get_training_status first and do not start work while another job runs.
+        """
         from models import TrainingStartRequest
         from routes.training import start_training as start
 
@@ -195,9 +197,12 @@ def create_studio_mcp() -> FastMCP:
         approved_remote_code_fingerprint: str | None = None,
         hf_token: str | None = None,
     ) -> dict[str, Any]:
-        """Load a checkpoint into the export backend. Export runs in its own subprocess and coexists with training
-        and inference; it does not unload them, so a load can fail with a clear out-of-memory error if the GPU is
-        already full. Pass hf_token to load a gated checkpoint, and approved_remote_code_fingerprint to retry a
+        """Load a checkpoint into the export backend.
+
+        Export runs in its own subprocess and coexists with training and
+        inference; it does not unload them, so a load can fail with a clear
+        out-of-memory error if the GPU is already full. Pass hf_token to load a
+        gated checkpoint, and approved_remote_code_fingerprint to retry a
         trust_remote_code load that was blocked pending review.
         """
         from models import LoadCheckpointRequest
@@ -226,9 +231,12 @@ def create_studio_mcp() -> FastMCP:
         gguf_shard_size: str | None = None,
     ) -> dict[str, Any]:
         """Export the loaded model to GGUF using Unsloth's existing path validation.
-        quantization_method may be a single method or a list to produce several GGUFs from one load.
-        Pass hf_token when push_to_hub is set (the backend rejects a Hub upload without it). Set
-        imatrix (or imatrix_path) for the IQ low-bit quants that require an importance matrix."""
+
+        quantization_method may be a single method or a list to produce several
+        GGUFs from one load. Pass hf_token when push_to_hub is set (the backend
+        rejects a Hub upload without it). Set imatrix (or imatrix_path) for the
+        IQ low-bit quants that require an importance matrix.
+        """
         from models import ExportGGUFRequest
         from routes.export import export_gguf as export
 
