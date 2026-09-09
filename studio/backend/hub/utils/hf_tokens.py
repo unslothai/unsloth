@@ -355,6 +355,33 @@ def _probe_endpoint() -> str:
         return HfApi().endpoint
 
 
+def _same_probe_target(answered: str, asked: str) -> bool:
+    """Whether two URLs address the same endpoint, up to the spellings a client may change.
+
+    Case in the host and a default port carry no meaning; the path, query and everything
+    else do, so a redirect to ``?next=login`` on the same path is still a different target.
+    """
+    from urllib.parse import urlsplit
+
+    def _parts(url: str):
+        parsed = urlsplit(url)
+        scheme = (parsed.scheme or "").lower()
+        port = parsed.port or {"http": 80, "https": 443}.get(scheme)
+        return (
+            scheme,
+            (parsed.hostname or "").lower(),
+            port,
+            parsed.path.rstrip("/"),
+            parsed.query,
+        )
+
+    try:
+        return _parts(answered) == _parts(asked)
+    except ValueError:
+        # An unparseable final URL is not proof that the right repo answered.
+        return False
+
+
 def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> bool:
     try:
         from huggingface_hub import constants
@@ -385,8 +412,14 @@ def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> bo
         # And get_session DOES follow them (httpx.Client(follow_redirects=True)), so the
         # check above never fires: a redirect to a login page returns an approving 200 for
         # somewhere else. Only the repo we asked about may answer for it.
+        if getattr(response, "history", None):
+            return False
+        # Belt and braces for a client that does not record history. Compared on parts, not
+        # as strings: httpx canonicalises response.url (lower-cases the host, drops an
+        # explicit :443) while the configured HF_ENDPOINT keeps its spelling, so a raw
+        # comparison denied every mirror written as HF-MIRROR.example or with the port.
         final_url = getattr(response, "url", None)
-        if final_url is not None and str(final_url) != path:
+        if final_url is not None and not _same_probe_target(str(final_url), path):
             return False
         return True
     except Exception as exc:

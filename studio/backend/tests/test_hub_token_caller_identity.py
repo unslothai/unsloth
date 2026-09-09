@@ -2502,3 +2502,50 @@ def test_the_cached_alias_is_looked_up_before_the_literal_name_is_judged(monkeyp
 
     assert plan.cached is True, "a cached, authorized alias was offered as a download"
     assert plan.download_repo == "sentence-transformers/all-MiniLM-L6-v2"
+
+
+@pytest.mark.parametrize(
+    "endpoint, final_url, authorized",
+    [
+        # httpx lower-cases the host and drops an explicit default port while HF_ENDPOINT
+        # keeps its spelling, so comparing the strings denied these mirrors outright.
+        ("https://HF-MIRROR.example", "https://hf-mirror.example/api/models/org/repo/auth-check", True),
+        ("https://mirror.example:443", "https://mirror.example/api/models/org/repo/auth-check", True),
+        ("https://mirror.example", "https://mirror.example/api/models/org/repo/auth-check/", True),
+        # Still not the target we asked about.
+        ("https://mirror.example", "https://mirror.example/login", False),
+        ("https://mirror.example", "https://mirror.example/api/models/org/other/auth-check", False),
+        # Same path, but a query is where a login hand-off hides.
+        ("https://mirror.example", "https://mirror.example/api/models/org/repo/auth-check?next=login", False),
+    ],
+    ids = ["uppercase-host", "default-port", "trailing-slash", "login-page", "other-repo", "query-added"],
+)
+def test_the_probe_compares_targets_not_spellings(monkeypatch, endpoint, final_url, authorized):
+    """A 200 only counts when it came from the repo that was asked about, and the client
+    is free to rewrite the parts of a URL that carry no meaning."""
+    _hub_reachable(monkeypatch)
+    monkeypatch.setenv("HF_ENDPOINT", endpoint)
+    _patch_auth_check_get(
+        monkeypatch,
+        lambda *_a, **_k: SimpleNamespace(
+            status_code = 200, raise_for_status = lambda: None, url = final_url
+        ),
+    )
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is authorized
+
+
+def test_a_recorded_redirect_is_refused_whatever_the_final_url(monkeypatch):
+    """The direct signal, for the clients that keep it: any hop at all means the answer
+    came from somewhere other than the endpoint the memo is keyed on."""
+    _hub_reachable(monkeypatch)
+    _patch_auth_check_get(
+        monkeypatch,
+        lambda *_a, **_k: SimpleNamespace(
+            status_code = 200,
+            raise_for_status = lambda: None,
+            history = [SimpleNamespace(status_code = 302)],
+        ),
+    )
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is False
