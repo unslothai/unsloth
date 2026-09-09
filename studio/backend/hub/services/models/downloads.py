@@ -31,6 +31,7 @@ from hub.utils.paths import (
 )
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
+from hub.services import load_downloads
 from hub.services.models import cache_inventory, gguf_variants
 
 logger = get_logger(__name__)
@@ -384,6 +385,11 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
+    if load_downloads.is_load_owned(_registry, key):
+        raise HTTPException(
+            status_code = 409,
+            detail = "This repo is being fetched by a model load; cancel the load instead.",
+        )
 
     state = download_lifecycle.cancel_worker(
         _registry,

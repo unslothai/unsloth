@@ -23,7 +23,7 @@ import time
 import traceback
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = get_logger(__name__)
 from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
@@ -392,6 +392,34 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+def _load_download_repos(mc, load_in_4bit: bool, backend) -> list[str]:
+    from utils.paths import is_local_path
+
+    repos = [str(mc.identifier)]
+    base = getattr(mc, "base_model", None)
+    if base:
+        repos.append(str(base))
+        if getattr(backend, "device", None) != "mlx":
+            try:
+                from unsloth.models.loader_utils import get_model_name
+
+                mapped = get_model_name(str(base), load_in_4bit = load_in_4bit)
+            except Exception:
+                mapped = None
+            if mapped:
+                repos.append(str(mapped))
+    return [repo for repo in dict.fromkeys(repos) if repo.count("/") == 1 and not is_local_path(repo)]
+
+
+def _hub_cache_dir() -> Optional[str]:
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        return str(get_hf_cache_paths().hub_cache)
+    except Exception:
+        return None
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -462,6 +490,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
 
+        _send_response(
+            resp_queue,
+            {
+                "type": "downloads",
+                "repo_ids": _load_download_repos(mc, load_in_4bit, backend),
+                "xet_disabled": os.environ.get("HF_HUB_DISABLE_XET") == "1",
+                "hub_cache": _hub_cache_dir(),
+            },
+        )
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
             on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),

@@ -3,7 +3,6 @@
 
 """`unsloth start` — launch a coding agent against a running Unsloth server."""
 
-import ast
 import atexit
 import base64
 import contextlib
@@ -11,7 +10,6 @@ import errno
 import functools
 import hashlib
 import http.client
-import importlib.util
 import json
 import os
 import re
@@ -27,7 +25,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, Optional
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import urlencode, urlparse
 
 import click
 import typer
@@ -881,33 +879,7 @@ _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
-# A 200 that reports no adapter can also be a failed inspection, so the answer is never
-# final. The endpoint runs several hub probes per request, so re-asking backs off instead
-# of stopping: giving up for good would leave a server that recovers later untracked.
-_COMPANION_LOOKUP_RETRY_S = 60.0
-_COMPANION_LOOKUP_MAX_RETRY_S = 300.0
-# The only answers that settle the question: the request itself was refused. Everything
-# else can be a server that is briefly offline or busy.
-_DEFINITIVE_HTTP_STATUS = frozenset((400, 401, 403, 405, 410, 422))
-# What the router says when nothing is registered at the path, as opposed to what the
-# handler says when it declines to answer.
-_ABSENT_ROUTE_DETAIL = "not found"
-
-
-def _is_absent_route(exc: urllib.error.HTTPError) -> bool:
-    """Whether a 404 came from the router rather than from the handler.
-
-    A handler that declines gives its own reason -- this route's is "cannot be authorized
-    without network access" -- while an unregistered path gets the framework's bare
-    "Not Found". Only the second is worth giving up on.
-    """
-    try:
-        detail = json.loads(exc.read().decode("utf-8", "replace")).get("detail")
-    except Exception:
-        return False
-    return isinstance(detail, str) and detail.strip().lower() == _ABSENT_ROUTE_DETAIL
-
-
+_LOAD_DOWNLOAD_OWNER = "load"
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -1070,256 +1042,6 @@ def _active_reading(
     return active if _in_flight_bytes(active[1]) > 0 else readings[0]
 
 
-_QUANT_MAPPERS: Optional[list[dict]] = None
-
-
-def _unsloth_package_dirs() -> list[Path]:
-    """Every `unsloth` package directory this CLI can see.
-
-    The server does the downloading, and it need not be this interpreter: `unsloth run`
-    re-execs into the managed Studio venv, which may hold a different Unsloth than the one
-    the CLI was launched from. Reading only the parent's tables would resolve a base by a
-    version the worker is not using, so both are read and their answers pooled.
-    """
-    dirs: list[Path] = []
-    try:
-        spec = importlib.util.find_spec("unsloth")
-        for location in list(spec.submodule_search_locations) if spec else []:
-            dirs.append(Path(location))
-    except Exception:
-        pass
-    try:
-        from unsloth_cli.commands.studio import STUDIO_HOME
-
-        venv = Path(STUDIO_HOME) / "unsloth_studio"
-        dirs.extend(venv.glob("lib/python*/site-packages/unsloth"))
-        dirs.append(venv / "Lib" / "site-packages" / "unsloth")
-    except Exception:
-        pass
-    # And ask that venv itself. `unsloth studio update --local` installs Unsloth with
-    # `-e`, which leaves a PEP 660 finder rather than a package directory, so the globs
-    # above see nothing. `find_spec` locates it without importing it, so this costs a
-    # short-lived interpreter and never loads torch.
-    try:
-        from unsloth_cli.commands.studio import _studio_venv_python
-        python = _studio_venv_python()
-        if python is not None:
-            found = subprocess.run(
-                [
-                    str(python),
-                    "-c",
-                    "import importlib.util as u;s=u.find_spec('unsloth');"
-                    "print(next(iter(s.submodule_search_locations)) if s else '')",
-                ],
-                capture_output = True,
-                text = True,
-                timeout = 20,
-                # Away from the caller's directory: an `unsloth/` folder in the cwd is on
-                # that interpreter's path too, and would answer for the venv's install.
-                cwd = str(python.parent),
-            ).stdout.strip()
-            if found:
-                dirs.append(Path(found))
-    except Exception:
-        pass
-    seen: set = set()
-    unique = []
-    for directory in dirs:
-        key = str(directory)
-        if key not in seen and directory.is_dir():
-            seen.add(key)
-            unique.append(directory)
-    return unique
-
-
-def _module_literal(path: Path, name: str) -> object:
-    """A module-level literal assignment, read without running the file.
-
-    The last binding wins, matching how the module would have ended up had it run.
-    """
-    found = None
-    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
-        targets = getattr(node, "targets", [])
-        if not any(isinstance(t, ast.Name) and t.id == name for t in targets):
-            continue
-        try:
-            found = ast.literal_eval(node.value)
-        except Exception:
-            continue
-    return found
-
-
-def _unsloth_quant_mappers() -> list[dict]:
-    """What repo the loader may swap for another, per install, read without running anything.
-
-    `mapper.py` is discovered on `sys.path`, which can include the directory the CLI was
-    started in -- `unsloth start` opens a coding agent on a repository that is not
-    necessarily trusted -- so the file is parsed for its data and never imported. The
-    package makes the same distinction itself: `build_mappers` exists so that a mapper
-    fetched from GitHub "only ever supplies data".
-
-    Only `__INT_TO_FLOAT_MAPPER` is read, and every name in one of its entries is treated
-    as swappable for every other, since they are one model at different precisions. That
-    is the relation the derived tables express, without re-deriving them.
-    """
-    global _QUANT_MAPPERS
-    if _QUANT_MAPPERS is None:
-        _QUANT_MAPPERS = []
-        for directory in _unsloth_package_dirs():
-            path = directory / "models" / "mapper.py"
-            try:
-                if not path.is_file():
-                    continue
-                source = _module_literal(path, "__INT_TO_FLOAT_MAPPER")
-                if not isinstance(source, dict):
-                    continue
-                relation: dict = {}
-                for key, values in source.items():
-                    names: set = set()
-                    _flattened_repo_ids(key, names)
-                    _flattened_repo_ids(values, names)
-                    # Nothing in the inference path passes `load_in_fp8`, so an fp8 repo is
-                    # never what the worker fetches and polling it would only cost requests.
-                    names = {name for name in names if "fp8" not in name.lower()}
-                    for name in names:
-                        # Both spellings on both sides: `__get_model_name` looks the base
-                        # up lower-cased and returns whatever that entry holds, so the repo
-                        # it names can differ in case from the one written here.
-                        others = {
-                            spelling
-                            for other in names - {name}
-                            for spelling in (other, other.lower())
-                        }
-                        for spelling in (name, name.lower()):
-                            relation.setdefault(spelling, set()).update(others)
-                if relation:
-                    _QUANT_MAPPERS.append({k: tuple(v) for k, v in relation.items()})
-            except Exception:
-                # Nothing here is required; the recorded base alone is still worth polling.
-                continue
-    return _QUANT_MAPPERS
-
-
-def _without_prequantized_suffix(repo: str) -> str:
-    """`loader._strip_unsloth_bnb_4bit_suffix`: the rewrite applied when a device forbids
-    pre-quantized repos (`ALLOW_PREQUANTIZED_MODELS` is false on several ROCm paths)."""
-    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
-        if len(repo) >= len(suffix) and repo.lower().endswith(suffix):
-            repo = repo[: -len(suffix)]
-    return repo
-
-
-def _flattened_repo_ids(value: object, found: set) -> None:
-    if isinstance(value, str):
-        found.add(value)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            _flattened_repo_ids(item, found)
-    elif isinstance(value, dict):
-        for item in value.values():
-            _flattened_repo_ids(item, found)
-
-
-_BAD_MAPPINGS: Optional[list[dict]] = None
-
-
-def _literal_text(node: object) -> Optional[str]:
-    """A string literal, or a literal with `.lower()` applied, as written in the source."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "lower"
-        and not node.args
-    ):
-        inner = _literal_text(node.func.value)
-        return inner.lower() if inner is not None else None
-    return None
-
-
-def _unsloth_bad_mappings() -> list[dict]:
-    """One `unsloth.models.loader_utils.BAD_MAPPINGS` per install, read out of the source.
-
-    The loader rewrites a mapped name a second time through this table, so a candidate set
-    built from the mapper alone stops one step short. Unlike the mapper this module cannot
-    be executed for its data -- it imports torch -- so the literal is read from the syntax
-    tree instead.
-    """
-    global _BAD_MAPPINGS
-    if _BAD_MAPPINGS is None:
-        _BAD_MAPPINGS = []
-        for directory in _unsloth_package_dirs():
-            path = directory / "models" / "loader_utils.py"
-            try:
-                if not path.is_file():
-                    continue
-                for node in ast.parse(path.read_text(encoding = "utf-8")).body:
-                    targets = getattr(node, "targets", [])
-                    if not any(isinstance(t, ast.Name) and t.id == "BAD_MAPPINGS" for t in targets):
-                        continue
-                    if not isinstance(node.value, ast.Dict):
-                        continue
-                    table: dict = {}
-                    for key, value in zip(node.value.keys, node.value.values):
-                        name, mapped = _literal_text(key), _literal_text(value)
-                        if name and mapped:
-                            table[name] = mapped
-                    if table:
-                        # One table per install, not one merged dict: two installs can
-                        # disagree on the same key, and the worker's answer is as real as
-                        # the parent's, so both targets stay candidates.
-                        _BAD_MAPPINGS.append(table)
-            except Exception:
-                # Nothing here is required; the mapper candidates are still worth polling.
-                continue
-    return _BAD_MAPPINGS
-
-
-def _base_model_candidates(base_model: str) -> list[str]:
-    """`base_model` plus every repo the loader may download in its place.
-
-    `get_model_name` rewrites a PEFT adapter's recorded base before fetching it, so the
-    recorded name on its own can name a repo that never moves while the real download runs
-    unwatched. Which substitution applies depends on the precision the worker settles on,
-    which the CLI cannot see: `_resolve_lora_4bit` turns 4-bit on for a QLoRA adapter and
-    off for a plain LoRA one. Rather than replicate that resolution and drift from it, take
-    every repo any table pairs with this base -- in practice the 16-bit and pre-quantized
-    Unsloth builds. Polling one repo too many is a measured zero; missing the right one
-    costs the user their server.
-    """
-    tables = _unsloth_quant_mappers()
-    bad_tables = _unsloth_bad_mappings()
-    # The strip is applied after mapping, and an unmapped base falls through mapping
-    # unchanged, so the recorded name itself is a subject of it.
-    seeds = {base_model, _without_prequantized_suffix(base_model)}
-    found: set = seeds - {base_model}
-    pending = list(seeds)
-    # Followed to a fixed point: the loader maps a name, then rewrites the result through
-    # BAD_MAPPINGS, so the repo it downloads can be two steps from the recorded base.
-    while pending:
-        current = pending.pop()
-        step: set = set()
-        # Both cases: the tables carry the name as written and a lower-cased copy, and
-        # `__get_model_name` looks up the lower-cased one, so it can return a repo id whose
-        # case differs from the entry reached by the recorded spelling.
-        for key in (current, current.lower()):
-            for table in tables:
-                if key in table:
-                    _flattened_repo_ids(table[key], step)
-            for bad in bad_tables:
-                if key in bad:
-                    step.add(bad[key])
-        # The loader strips the 4-bit suffix after mapping when the device forbids
-        # pre-quantized repos, so the fetched name can be a third step out.
-        step.update(_without_prequantized_suffix(repo) for repo in list(step))
-        for repo in step:
-            if repo not in found and repo != base_model:
-                found.add(repo)
-                pending.append(repo)
-    return [base_model] + sorted(repo for repo in found if _is_hub_model_id(repo))
-
-
 class _ModelDownloadProgress:
     """Best-effort polling of the model download endpoints."""
 
@@ -1336,11 +1058,8 @@ class _ModelDownloadProgress:
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
-        self._companions: Optional[list[str]] = None
         self._repo_bytes: dict[str, int] = {}
-        self._companion_lookups = 0
-        self._companion_retry_at = 0.0
-        self._companion_retry_s = _COMPANION_LOOKUP_RETRY_S
+        self._companions_listed = True
 
     def _is_gguf(self) -> bool:
         return bool(self._variant) or "gguf" in self._model.lower()
@@ -1385,45 +1104,32 @@ class _ModelDownloadProgress:
                 # Older servers lack this endpoint; byte progress is still useful.
                 pass
 
-    def _companion_repos(self) -> Optional[list[str]]:
-        # A resolved quant, not the name: `_is_gguf` is true for any repo with "gguf" in
-        # its id, and an adapter that happens to be named that way still has a base to
-        # watch. `_configure` only resolves a variant for a repo that really carries them.
-        if self._variant:
+    def _companion_repos(self) -> list[str]:
+        if not self._companions_listed:
             return []
         try:
-            info = _http_json(
+            listing = _http_json(
                 "GET",
-                f"{self._base}/api/models/config/{quote(self._model)}",
+                f"{self._base}{self._progress_prefix}/active-downloads",
                 self._key,
                 timeout = 10,
             )
         except urllib.error.HTTPError as exc:
-            # Only a status about the request itself is final. 404 is two answers: this
-            # route raises it when it judges the hub unreachable and the caller anonymous
-            # (routes/models.py:2417), which is worth retrying, and a server too old to
-            # carry the route raises it forever, which is not. The body separates them.
-            if exc.code in _DEFINITIVE_HTTP_STATUS:
-                return []
-            if exc.code == 404 and _is_absent_route(exc):
-                return []
-            return None
+            if exc.code == 404:
+                self._companions_listed = False
+            return []
         except Exception:
-            return None
-        if not info.get("is_lora"):
-            # The server reports is_lora=False both for a plain model and for an adapter
-            # whose adapter_config.json it could not read, so this answer is not final.
-            return None
-        base_model = str(info.get("base_model") or "")
-        if base_model != self._model and _is_hub_model_id(base_model):
-            return _base_model_candidates(base_model)
-        return []
+            return []
+        repos: list[str] = []
+        for item in listing.get("downloads") or []:
+            repo = str(item.get("repo_id") or "")
+            if item.get("owner") != _LOAD_DOWNLOAD_OWNER or repo.lower() == self._model.lower():
+                continue
+            if repo not in repos and _is_hub_model_id(repo):
+                repos.append(repo)
+        return repos
 
-    def _read(
-        self,
-        repo: str,
-        gguf: bool = False,
-    ) -> dict:
+    def _read(self, repo: str, gguf: bool = False) -> dict:
         if gguf:
             params = urlencode(
                 {"repo_id": repo, "variant": self._variant, "expected_bytes": self._expected_bytes}
@@ -1435,13 +1141,6 @@ class _ModelDownloadProgress:
         return _http_json("GET", url, self._key, timeout = 10)
 
     def _companion_reading(self, repo: str) -> Optional[dict]:
-        """A companion's reading, or None when its request failed.
-
-        Isolated on purpose: a companion is an extra request per poll against the same
-        server that is busy downloading, so a slow or failed one must not discard the
-        model's own good reading. Dropping the companion's bytes only ever lowers the
-        total, and the liveness baseline never follows a reading down.
-        """
         try:
             return self._read(repo)
         except Exception:
@@ -1455,18 +1154,6 @@ class _ModelDownloadProgress:
         if time.monotonic() < self._retry_at:
             return
         try:
-            if self._companions is None and time.monotonic() >= self._companion_retry_at:
-                self._companions = self._companion_repos()
-                if self._companions is None:
-                    # Every unresolved answer is rationed, errors included: retrying once a
-                    # second would load the server doing the downloading. The wait doubles
-                    # to a ceiling rather than running out, so a config route that is slow
-                    # or rate-limited for a few minutes does not cost the whole startup.
-                    self._companion_lookups += 1
-                    self._companion_retry_at = time.monotonic() + self._companion_retry_s
-                    self._companion_retry_s = min(
-                        self._companion_retry_s * 2.0, _COMPANION_LOOKUP_MAX_RETRY_S
-                    )
             try:
                 reading = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
@@ -1475,46 +1162,23 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            companions = [(repo, self._companion_reading(repo)) for repo in self._companions or []]
+            companions = [(repo, self._companion_reading(repo)) for repo in self._companion_repos()]
             readings = [(self._model, reading)] + [
                 (repo, item) for repo, item in companions if item is not None
             ]
-            # Only one candidate base is ever fetched, so once one is demonstrably moving
-            # the rest are dead weight and need not cost a request per poll. Growth against
-            # a reading already taken, never bytes merely being present: an abandoned
-            # transfer leaves `.incomplete` blobs behind, and pruning to a corpse would
-            # discard the repo the worker is about to fetch.
-            # Every candidate is polled for the whole load, deliberately. Narrowing to the
-            # one that looks live saves a few requests a second against a server on the
-            # same machine, and costs the user their server whenever the guess is wrong:
-            # bytes present are not bytes moving, a cache root appearing is not a transfer,
-            # an abandoned `.incomplete` blob looks exactly like a live one, and an
-            # unreadable root reports a lower bound that rebounds later. A candidate that
-            # is not being fetched answers with a measured zero, which is cheap and always
-            # right, so the extra requests buy correctness that no predicate here can.
-            # The liveness baseline only ever rises. A reading falls for reasons that are
-            # not "bytes left the disk": an incomplete scan reporting a lower bound, a
-            # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
-            # measured absence, not an error), an XET run purging its partial. Following a
-            # reading down would make the recovery back to the same figure look like fresh
-            # growth and renew the deadline for a server that is downloading nothing, and a
-            # flapping mount could do that forever. The cost is that a transfer which truly
-            # restarts is not counted again until it passes its own high mark; that failure
-            # is bounded and says so, where a false renewal is an unbounded wait.
             grown = frozenset(
                 repo
                 for repo, item in readings
                 if repo in self._repo_bytes
                 and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
             )
+            # The liveness baseline only ever rises: a reading can fall for reasons that
+            # are not bytes leaving the disk, and following it down would let the same
+            # bytes count as fresh growth on the way back up.
             for repo, item in readings:
                 self._repo_bytes[repo] = max(
                     self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
                 )
-            # Per repo, and kept after a candidate is dropped: an alternative base already
-            # complete in the cache contributes its bytes to the first total, so forgetting
-            # it would drop the sum below a high mark the live download may never reach on
-            # its own, and the deadline would never renew again.
             self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0

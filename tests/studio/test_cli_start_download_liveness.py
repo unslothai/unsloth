@@ -136,8 +136,10 @@ class Harness:
         timeout = 30,
         error = None,
     ):
-        if f"/api/models/config/{ADAPTER}" in url:
-            return {"is_lora": True, "base_model": ADAPTER_BASE}
+        if url.endswith("/active-downloads"):
+            if self.model != ADAPTER:
+                return {"downloads": []}
+            return {"downloads": [{"repo_id": ADAPTER_BASE, "owner": "load", "state": "running"}]}
         if "download-progress" in url and urlencode({"repo_id": ADAPTER}) in url:
             return {
                 "downloaded_bytes": ADAPTER_BYTES,
