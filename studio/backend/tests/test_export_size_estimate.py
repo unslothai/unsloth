@@ -635,6 +635,17 @@ def test_the_directory_a_weight_index_sits_in_is_tried_before_the_vendor_copy(tm
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
 
 
+def test_a_weight_index_names_its_shards_in_utf8(tmp_path):
+    # Decoded under the operator's locale, the name stops matching the file, and the stale
+    # shard beside it is charged instead. U+00DF has no decomposed form to normalise away.
+    _write(tmp_path / "model\u00df.safetensors", 1000)
+    _write(tmp_path / "model-00001-of-00001.safetensors", 7777)
+    (tmp_path / "model.safetensors.index.json").write_bytes(
+        b'{"weight_map": {"a": "model\xc3\x9f.safetensors"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
 def test_a_subfolder_shard_with_no_weight_suffix_is_not_found(tmp_path):
     # An index is read only against the files beside it; nothing else marks this as weights.
     _write(tmp_path / "shards" / "payload", 28702)
