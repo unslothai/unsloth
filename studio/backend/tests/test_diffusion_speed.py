@@ -1162,14 +1162,22 @@ def _dit(*block_classes):
     return dit
 
 
-def test_class_merges_streams_by_name_and_by_source():
-    # On the explicit list: recognised without reading source at all.
+def test_class_merges_streams_is_crash_confirmed_names_only_by_default():
+    # The merge is necessary but NOT sufficient: HunyuanImage-2.1 and FLUX.2-klein have the identical
+    # cat and both compile fine under dynamic=True (measured), so source shape alone must not flag a
+    # family and cost it a recompile per shape.
     assert ds_mod._class_merges_streams(FluxSingleTransformerBlock) is True
-    # Not on the list, but the source shows the merge -- in either argument order.
-    assert ds_mod._class_merges_streams(_MergingByArgOrderA) is True
-    assert ds_mod._class_merges_streams(_MergingByArgOrderB) is True
-    # A dual-stream block that never joins the two sequences keeps its dynamic compile.
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA) is False
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB) is False
     assert ds_mod._class_merges_streams(_DualStreamBlock) is False
+
+
+def test_class_merges_streams_broad_sweep_is_opt_in():
+    # The escape hatch for a NEW family that crashes before its class can be named.
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB, True) is True
+    # Even the broad sweep does not flag a block that keeps the two sequences apart.
+    assert ds_mod._class_merges_streams(_DualStreamBlock, True) is False
 
 
 def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeypatch):
@@ -1178,9 +1186,21 @@ def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeyp
 
     monkeypatch.setattr(inspect, "getsource", lambda _obj: (_ for _ in ()).throw(OSError("no source")))
     ds_mod._class_merges_streams.cache_clear()
-    assert ds_mod._class_merges_streams(_MergingByArgOrderA) is False
-    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is False
+    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock, True) is True
     ds_mod._class_merges_streams.cache_clear()
+
+
+def test_dits_merge_streams_honours_the_opt_in_env(monkeypatch):
+    # Off by default even though the block source shows the merge...
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
+    # ...and on when asked for explicitly. The env is read per call, never memoised with the answer.
+    monkeypatch.setenv(ds_mod._STREAM_MERGE_DETECT_ENV, "1")
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is True
+    # A crash-confirmed class needs no opt-in either way.
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(FluxSingleTransformerBlock)]) is True
 
 
 def test_dits_merge_streams_scans_every_denoiser():
@@ -1188,6 +1208,8 @@ def test_dits_merge_streams_scans_every_denoiser():
     # A DiT with no _repeated_blocks (a U-Net) is not a stream-merging DiT.
     assert ds_mod._dits_merge_streams([types.SimpleNamespace()]) is False
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock)]) is False
+    # Source-only merge: not flagged without the opt-in.
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock, FluxSingleTransformerBlock)]) is True
     # A dual-DiT family: the SECOND expert alone merging is enough, both are compiled together.
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock), _dit(FluxSingleTransformerBlock)]) is True
