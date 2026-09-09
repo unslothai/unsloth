@@ -171,13 +171,19 @@ def test_a_blank_master_root_counts_as_unset(tmp_path):
 BUILD_WHISPER = REPO_ROOT / "scripts" / "build_whisper_cpp.sh"
 
 
+def _whisper_root_block() -> str:
+    """The shipped root selection, from the normalizer down to the INSTALL_DIR it decides."""
+    src = BUILD_WHISPER.read_text(encoding = "utf-8")
+    return _slice(src, "_root_value() {", "STUDIO_OWNED_MARKER=")
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 def test_the_whisper_builder_installs_under_the_master_root(tmp_path):
     """setup.sh runs this with UNSLOTH_STUDIO_HOME=<root>/studio still inherited, so a builder
     that preferred it would install a level below _managed_whisper_cpp_dir()."""
     root = tmp_path / "portable"
     src = BUILD_WHISPER.read_text(encoding = "utf-8")
-    block = _slice(src, "STUDIO_HOME=\"${UNSLOTH_HOME", "STUDIO_OWNED_MARKER=")
+    block = _whisper_root_block()
     script = "\n".join(("set -eu", block, 'printf "%s\\n" "$INSTALL_DIR"'))
     completed = subprocess.run(
         ["bash", "-c", script],
@@ -199,7 +205,7 @@ def test_the_whisper_builder_installs_under_the_master_root(tmp_path):
 def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path):
     studio = tmp_path / "elsewhere" / "studio"
     src = BUILD_WHISPER.read_text(encoding = "utf-8")
-    block = _slice(src, "STUDIO_HOME=\"${UNSLOTH_HOME", "STUDIO_OWNED_MARKER=")
+    block = _whisper_root_block()
     script = "\n".join(("set -eu", block, 'printf "%s\\n" "$INSTALL_DIR"'))
     completed = subprocess.run(
         ["bash", "-c", script],
@@ -214,3 +220,71 @@ def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path):
     )
     assert completed.returncode == 0, completed.stderr
     assert Path(completed.stdout.strip()) == studio / "whisper.cpp"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path):
+    """${VAR:-} only treats the EMPTY string as unset, so an unstripped whitespace value would
+    win the new precedence and name a relative "   /whisper.cpp"."""
+    studio = tmp_path / "elsewhere" / "studio"
+    completed = subprocess.run(
+        ["bash", "-c", "\n".join((
+            "set -eu", _whisper_root_block(), 'printf "%s\\n" "$INSTALL_DIR"',
+        ))],
+        env = {
+            "HOME": str(tmp_path / "home"),
+            "PATH": "/usr/bin:/bin",
+            "UNSLOTH_HOME": "   ",
+            "UNSLOTH_STUDIO_HOME": str(studio),
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) == studio / "whisper.cpp"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path):
+    home = tmp_path / "home"
+    completed = subprocess.run(
+        ["bash", "-c", "\n".join((
+            "set -eu", _whisper_root_block(), 'printf "%s\\n" "$INSTALL_DIR"',
+        ))],
+        env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "UNSLOTH_HOME": "~/portable"},
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) == home / "portable" / "whisper.cpp"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
+    """Node is chosen before setup.sh's first `cd "$SCRIPT_DIR"` and llama.cpp after it, so a
+    value left relative names two different directories and the backend's neither."""
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    script = "\n".join((
+        "set -u",
+        _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
+        'printf "%s\\n" "$_MASTER_ROOT"',
+    ))
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        cwd = str(caller),
+        env = {
+            "HOME": str(tmp_path / "home"),
+            "PATH": "/usr/bin:/bin",
+            "PWD": str(caller),
+            "UNSLOTH_HOME": "not-created-yet",
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) == caller / "not-created-yet"

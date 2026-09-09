@@ -1019,6 +1019,14 @@ if [ -n "$_MASTER_ROOT" ]; then
         "~") _MASTER_ROOT="$HOME" ;;
         "~/"*) _MASTER_ROOT="$HOME/${_MASTER_ROOT#'~/'}" ;;
     esac
+    # Made absolute against the CALLER's directory even when it does not exist yet, as
+    # Path.resolve() does. Node is chosen before the first `cd "$SCRIPT_DIR"` and llama.cpp
+    # after it, so a value left relative would name two different directories and match the
+    # backend's neither.
+    case "$_MASTER_ROOT" in
+        /*) ;;
+        *) _MASTER_ROOT="$PWD/$_MASTER_ROOT" ;;
+    esac
     if [ -d "$_MASTER_ROOT" ]; then
         # Keep the expanded value when it cannot be canonicalized, as the Python resolver does:
         # dropping it here would send the runtimes to a root nothing else agrees on.
