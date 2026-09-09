@@ -133,7 +133,7 @@ def test_list_runs_includes_config_json_for_resume_policy(monkeypatch, tmp_path)
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     config_json = json.dumps({"dataset_source": "s3", "s3_dataset": {"bucket": "training-data"}})
 
     studio_db.create_run(
@@ -154,7 +154,7 @@ def test_crashed_run_with_persisted_output_dir_is_resumable(monkeypatch, tmp_pat
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -196,7 +196,7 @@ def test_completed_run_keeps_output_dir_and_rejects_stale_cancel(monkeypatch, tm
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.create_run(
         id = "r",
@@ -229,7 +229,7 @@ def test_finish_run_clears_output_dir_for_stop_without_save(monkeypatch, tmp_pat
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.create_run(
         id = "r",
@@ -270,7 +270,7 @@ def test_finish_run_clears_output_dir_on_cancel_error_finalize(monkeypatch, tmp_
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.create_run(
         id = "r",
@@ -301,7 +301,7 @@ def test_finish_run_preserves_output_dir_for_interrupted_stop_and_save(monkeypat
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.create_run(
         id = "r",
@@ -331,7 +331,7 @@ def test_resumed_errored_run_is_not_offered_again(monkeypatch, tmp_path):
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -403,7 +403,7 @@ def test_running_continuation_blocks_older_resume(monkeypatch, tmp_path):
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -452,7 +452,7 @@ def test_stop_save_checkpoint_failure_keeps_error_status(monkeypatch, tmp_path):
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.create_run(
         id = "run-failed-save",
@@ -492,7 +492,7 @@ def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(mon
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -532,7 +532,7 @@ def test_user_stop_error_without_checkpoint_ack_is_blocked(monkeypatch, tmp_path
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.create_run(
         id = "run-user-stop",

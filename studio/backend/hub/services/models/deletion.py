@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+
 import asyncio
 import errno
 from pathlib import Path
@@ -794,6 +796,7 @@ async def delete_cached_model_response(
     *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
     become an installed checkpoint since the list the caller is acting on was built.
     """
+    account_access.require_installation_owner()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None

@@ -763,7 +763,7 @@ def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
     mcp_servers_db.create_server(id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True)
 
@@ -796,7 +796,7 @@ def test_execute_tool_config_check_tracks_row(tmp_path, monkeypatch):
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
     mcp_servers_db.create_server(id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True)
 

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Admission control for local llama-server generation requests.
-
-The helpers in this module deliberately know nothing about FastAPI, SSE, or the
-OpenAI-compatible route shape. They only coordinate how many upstream generation
-requests may be active for one llama-server backend and provide a cancellable
-FIFO queue for excess requests.
-"""
+"""Admission control for local llama-server generation requests: queues are keyed by the resident server, never by account, since all accounts share its slots and KV budget."""
 
 from __future__ import annotations
 
@@ -1116,6 +1110,17 @@ def peek_llama_admission_snapshot(key: str) -> Optional[LlamaAdmissionSnapshot]:
     with _QUEUES_LOCK:
         queue = _QUEUES.get(key)
     return queue.snapshot() if queue is not None else None
+
+
+def estimate_gpu_retry_after() -> int:
+    with _QUEUES_LOCK:
+        queues = tuple(_QUEUES.values())
+    waves = 1
+    for queue in queues:
+        snapshot = queue.snapshot()
+        capacity = max(1, snapshot.capacity)
+        waves = max(waves, (snapshot.active + snapshot.queued + capacity - 1) // capacity)
+    return min(120, 15 * waves)
 
 
 def reset_llama_admission_queues() -> None:

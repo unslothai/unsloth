@@ -13,6 +13,7 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 
 from __future__ import annotations
 
+from utils.account_context import account_thread
 import contextlib
 import errno
 import structlog
@@ -149,13 +150,13 @@ def _setup_log_capture(resp_queue: Any) -> None:
             except Exception:
                 pass
 
-    t_out = threading.Thread(
+    t_out = account_thread(
         target = _reader,
         args = (r_out, "stdout", saved_out_fd),
         daemon = True,
         name = "export-log-stdout",
     )
-    t_err = threading.Thread(
+    t_err = account_thread(
         target = _reader,
         args = (r_err, "stderr", saved_err_fd),
         daemon = True,

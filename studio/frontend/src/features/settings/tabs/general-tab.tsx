@@ -58,6 +58,7 @@ import {
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
+import { useIsAccountOwner } from "@/features/auth/account-session";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -178,6 +179,7 @@ function resetAllPrefs() {
 }
 
 export function GeneralTab() {
+  const isOwner = useIsAccountOwner();
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
@@ -507,10 +509,10 @@ export function GeneralTab() {
             ) : null}
           </div>
         </SettingsRow>
-        {/* The desktop app authenticates via desktop auto-auth with a generated
-            secret, so this password only governs remote browsers and is managed
-            in Remote access instead. Web only. */}
-        {isTauri ? null : (
+        {/* The desktop owner authenticates via desktop auto-auth with a generated
+            secret, so the owner password only governs remote browsers and is
+            managed in Remote access instead. Managed accounts sign in here. */}
+        {isTauri && isOwner ? null : (
           <SettingsRow
             label={t("settings.general.password")}
             description={t("settings.general.passwordDescription")}

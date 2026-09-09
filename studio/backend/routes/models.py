@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import sys
-import threading
 import time
 import uuid
 import weakref
@@ -26,6 +25,7 @@ from core.inference.memory_contract import (
     project_kv_cache_estimate,
 )
 from core.inference.model_ids import display_model_name
+from hub.services.models import account_access
 from hub.services.models import catalog_classification as _catalog_classification
 from utils import gguf_archs as _gguf_archs
 from hub.services.models.catalog_classification import (
@@ -75,6 +75,7 @@ _gguf_family_buildable = _catalog_classification._gguf_family_buildable
 _is_h3_bundle_gguf_hint = _catalog_classification._is_h3_bundle_gguf_hint
 SPEECH_GGUF_ARCHS = _gguf_archs.SPEECH_GGUF_ARCHS
 is_speech_gguf_architecture = _gguf_archs.is_speech_gguf_architecture
+from utils.account_context import account_thread
 from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re
@@ -212,6 +213,7 @@ def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> 
     returning ``header_token`` itself would return whatever a caller that bypassed
     FastAPI's injection left in the parameter -- an unresolved ``Depends`` object.
     """
+    header_token = account_access.account_hf_token(header_token)
     explicit = _normalize_hf_token(header_token) or _normalize_hf_token(query_token)
     if explicit:
         return explicit
@@ -1437,6 +1439,8 @@ async def list_local_models(
 
     try:
         models = await _shared_compat_local_inventory_scan(models_root, sources)
+        if account_access.managed_account():
+            models = await asyncio.to_thread(account_access.filter_model_rows, models)
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -1470,6 +1474,8 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
+    if account_access.managed_account():
+        body = body.model_copy(update = {"path": account_access.private_directory(body.path, "")})
     from storage.studio_db import add_scan_folder_with_status
 
     try:
@@ -1603,6 +1609,7 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
     weights are returned, so an empty LM Studio/Ollama scaffold no longer
     shows up as a suggestion.
     """
+    account_access.require_installation_owner()
     from utils.paths.storage_roots import lmstudio_model_dirs
 
     folders: list[str] = []
@@ -2062,6 +2069,9 @@ def browse_folders(
     so traversal can't escape. Sorting: model-bearing dirs, then plain,
     then hidden (if ``show_hidden=true``).
     """
+    if account_access.managed_account():
+        from utils.paths.storage_roots import workspace_root
+        path = account_access.private_directory(path or str(workspace_root()), "")
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from utils.paths import external_media
     from storage.studio_db import (
@@ -2241,9 +2251,20 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models
+        if account_access.managed_account():
+            default_models = [
+                m
+                for m in default_models
+                if await asyncio.to_thread(account_access.model_visible, m)
+            ]
 
         loaded_models = []
+        hide_resident = account_access.resident_hidden(
+            "chat", getattr(inference_backend, "active_model_name", None)
+        )
         for model_name, model_data in inference_backend.models.items():
+            if hide_resident:
+                continue
             _is_vision = model_data.get("is_vision", False)
             _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
@@ -2264,7 +2285,10 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
+        hide_resident = hide_resident or account_access.resident_hidden(
+            "chat", getattr(llama_backend, "model_identifier", None)
+        )
+        if not hide_resident and llama_backend.is_loaded and llama_backend.model_identifier:
             display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
             loaded_models.append(
                 ModelDetails(
@@ -2436,9 +2460,14 @@ async def get_model_config(
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    if local_path:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, local_path)
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, model_name)
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
     from utils.models.model_config import shared_hub_model_info
@@ -2603,6 +2632,11 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    if account_access.managed_account():
+        for ref in (model_name, model_local_path, model_snapshot_path, model_snapshot_repo_id):
+            if isinstance(ref, str) and ref:
+                await asyncio.to_thread(account_access.require_model_access, ref)
+        allow_ambient_token = False
     # Without this an absent body token reads as None, i.e. ambient-authorized, and the
     # scan returns source snippets from a cached private repo.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
@@ -2808,6 +2842,7 @@ async def discard_remote_code_download(
     ``*.gguf``) -- i.e. a model the user actually downloaded. The frontend only
     calls this when the scan reported ``created_by_scan``.
     """
+    account_access.require_installation_owner()
     if is_local_path(model_name):
         return {"deleted": False, "reason": "local"}
     if not _is_valid_repo_id(model_name):
@@ -2945,6 +2980,8 @@ async def scan_loras(
     Returns training outputs (outputs_dir) and exported models
     (exports_dir) in one list, distinguished by the source field.
     """
+    exports_dir = account_access.private_directory(exports_dir, "exports")
+    outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
@@ -3021,6 +3058,8 @@ async def scan_diffusion_loras(
     from core.inference import diffusion_lora
 
     entries = diffusion_lora.list_loras(family = family)
+    if account_access.managed_account():
+        entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
         "loras": [
             {
@@ -3054,6 +3093,8 @@ async def scan_diffusion_controlnets(
     from core.inference import diffusion_controlnet
 
     entries = diffusion_controlnet.list_controlnets(family = family)
+    if account_access.managed_account():
+        entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
         "controlnets": [
             {
@@ -3529,6 +3570,8 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
     This endpoint wraps the backend get_base_model_from_lora function.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, lora_path)
     try:
         base_model = get_base_model_from_lora(lora_path)
 
@@ -3568,9 +3611,11 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, model_name)
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
     try:
         logger.info(f"Checking if vision model: {model_name}")
@@ -3614,9 +3659,11 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, model_name)
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
     try:
         logger.info(f"Checking if embedding model: {model_name}")
@@ -3709,7 +3756,7 @@ async def _read_native_context_length_bounded(model: str, is_local: bool) -> Opt
         slots.release()
         return None
     try:
-        threading.Thread(target = worker, name = "native-ctx", daemon = True).start()
+        account_thread(target = worker, name = "native-ctx", daemon = True).start()
     except RuntimeError:
         slots.release()  # thread never ran, so it will never release
         return None
@@ -3981,6 +4028,8 @@ async def get_kv_cache_estimate(
     null for ngram, which drafts from the generated text and costs no VRAM, and
     for models with no drafter -- the caller draws no segment either way.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
 
     # The header read, the HF cache walk in _resolve_quant_gguf, the drafter
     # lookup and the capability probe are all blocking disk work, and this
@@ -4563,6 +4612,8 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
@@ -5114,9 +5165,11 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
                 continue
     # Newest download first; stable repo_id tie-break for equal/missing mtimes.
-    return sorted(
-        seen_lower.values(),
-        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+    return account_access.filter_model_rows(
+        sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
     )
 
 
@@ -5423,9 +5476,11 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 continue
 
     # Local-only list path: update checks are GGUF-only and happen lazily when variants are viewed.
-    return sorted(
-        seen_lower.values(),
-        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+    return account_access.filter_model_rows(
+        sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
     )
 
 
@@ -5446,7 +5501,9 @@ async def delete_cached_model(
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache deletion service."""
+    account_access.require_installation_owner()
     from hub.services.models import deletion
+
     return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 
 
@@ -5552,6 +5609,8 @@ async def get_cached_model_path(
     current_subject: str = Depends(get_current_subject),
 ):
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
@@ -5565,6 +5624,9 @@ async def reveal_cached_model(
     current_subject: str = Depends(get_current_subject),
 ):
     """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
+    account_access.require_installation_owner()
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, repo_id)
     from utils.paths.path_utils import reveal_in_file_manager
 
     if not _is_valid_repo_id(repo_id):
@@ -5591,6 +5653,7 @@ async def list_checkpoints(
 
     Scans the outputs folder for training runs and their checkpoints.
     """
+    outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
@@ -5625,7 +5688,7 @@ async def list_checkpoints(
 
 
 # Successful estimates only, keyed by model id. Failures aren't cached so they can recover.
-_EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
+_EXPORT_SIZE_CACHE: dict[object, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
@@ -5681,7 +5744,11 @@ def _export_size_cached(
     Memoizes successful results by model id; never raises (failures return
     (None, None, "unavailable") and are not cached). Blocking I/O; call off-thread.
     """
-    cached = _EXPORT_SIZE_CACHE.get(model)
+    # Keyed per managed account: a relative model name is private to a workspace.
+    cache_key = (
+        (account_access.current_account_id(), model) if account_access.managed_account() else model
+    )
+    cached = _EXPORT_SIZE_CACHE.get(cache_key)
     if cached is not None:
         return cached
     try:
@@ -5701,7 +5768,7 @@ def _export_size_cached(
         if not fp16_bytes or fp16_bytes <= 0:
             return None, None, source or "unavailable"
         result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
-        _EXPORT_SIZE_CACHE[model] = result
+        _EXPORT_SIZE_CACHE[cache_key] = result
         return result
     except Exception as e:  # a size hint must never break export
         logger.warning("Could not estimate export size for '%s': %s", model, e)
@@ -5719,6 +5786,8 @@ async def get_export_size(
     Returns nulls with HTTP 200 when the size can't be determined. The HF token
     (for gated repos) comes from the X-HF-Token header so it never hits URLs/logs.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, model)
     if is_local_path(model):
         if not _is_sizable_local_path(model):
             return ExportSizeResponse(

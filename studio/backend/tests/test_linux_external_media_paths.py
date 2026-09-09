@@ -62,7 +62,6 @@ def _stub_linux_path_checks(monkeypatch, module):
 
 
 def _stub_hub_scan_folder_db(monkeypatch):
-    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
     monkeypatch.setattr(scan_folders, "get_connection", _ExistingScanFolderConn)
 
 

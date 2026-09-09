@@ -75,7 +75,7 @@ runs:
     - name: Refuse a frontend cache key that hashes nothing
       shell: bash
       env:
-        FE_KEY: ${{ hashFiles(format('{0}studio/frontend/*', inputs.path-prefix), format('{0}studio/frontend/src/**', inputs.path-prefix), format('{0}studio/frontend/public/**', inputs.path-prefix), format('!{0}studio/frontend/tests/**', inputs.path-prefix), format('!{0}studio/frontend/scripts/**', inputs.path-prefix)) }}
+        FE_KEY: ${{ hashFiles(format('{0}studio/frontend/*', inputs.path-prefix), format('{0}studio/frontend/src/**', inputs.path-prefix), format('{0}studio/frontend/public/**', inputs.path-prefix), format('!{0}studio/frontend/tests/**', inputs.path-prefix), format('!{0}studio/frontend/scripts/**', inputs.path-prefix), format('!{0}studio/frontend/e2e/**', inputs.path-prefix)) }}
         FE_PREFIX: ${{ inputs.path-prefix }}
       run: |
         # hashFiles returns "" when a glob matches no file, which would collapse
@@ -99,7 +99,7 @@ runs:
         # of the wheels, which is most of the win. A near-miss dist is a bundle
         # built from DIFFERENT source: wrong, not partial. Only an exact match may
         # be served.
-        key: fe-dist-${{ runner.os }}-${{ hashFiles(format('{0}studio/frontend/*', inputs.path-prefix), format('{0}studio/frontend/src/**', inputs.path-prefix), format('{0}studio/frontend/public/**', inputs.path-prefix), format('!{0}studio/frontend/tests/**', inputs.path-prefix), format('!{0}studio/frontend/scripts/**', inputs.path-prefix)) }}
+        key: fe-dist-${{ runner.os }}-${{ hashFiles(format('{0}studio/frontend/*', inputs.path-prefix), format('{0}studio/frontend/src/**', inputs.path-prefix), format('{0}studio/frontend/public/**', inputs.path-prefix), format('!{0}studio/frontend/tests/**', inputs.path-prefix), format('!{0}studio/frontend/scripts/**', inputs.path-prefix), format('!{0}studio/frontend/e2e/**', inputs.path-prefix)) }}
 
     # THE STEP THE WHOLE CACHE RESTS ON, and the one that is silent when wrong.
     #

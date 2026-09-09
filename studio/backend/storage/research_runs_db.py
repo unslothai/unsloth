@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_is_retired
 import hashlib
 import json
 import sqlite3
@@ -13,7 +14,7 @@ import time
 from typing import Any
 
 from core.inference.web_access_policy import check_url_access
-from storage.studio_db import get_connection
+from storage.studio_db import get_connection as _studio_connection
 
 ACTIVE_STATUSES = frozenset(
     {"planning", "awaiting_approval", "queued", "running", "paused", "cancelling"}
@@ -21,6 +22,12 @@ ACTIVE_STATUSES = frozenset(
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
+
+
+def get_connection():
+    if account_is_retired():
+        raise RuntimeError("Account is retired")
+    return _studio_connection()
 
 
 class ResearchConflictError(RuntimeError):

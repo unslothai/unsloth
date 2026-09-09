@@ -10,6 +10,7 @@ context-var integration, log-level filtering, and logger caching.
 import logging
 import os
 import sys
+import threading
 from typing import Optional
 
 import structlog
@@ -484,6 +485,31 @@ def quiet_third_party_progress_bars() -> None:
     _redirect_every_bar_output()
 
 
+_STDOUT_LOCK = threading.Lock()
+
+
+class _CurrentStdoutLogger:
+    """A structlog logger that resolves ``sys.stdout`` per record, since ``PrintLogger`` binds the stream at build time and loses records once a tee or capture replaces stdout."""
+
+    def msg(self, message: str) -> None:
+        stream = sys.stdout
+        if stream is None:
+            return
+        with _STDOUT_LOCK:
+            stream.write(message + "\n")
+            stream.flush()
+
+    log = debug = info = warn = warning = msg
+    fatal = failure = err = error = critical = exception = msg
+
+    def __repr__(self) -> str:
+        return "<CurrentStdoutLogger>"
+
+
+def _current_stdout_logger_factory(*args) -> _CurrentStdoutLogger:
+    return _CurrentStdoutLogger()
+
+
 class LogConfig:
     """Structured logging configuration for the application."""
 
@@ -547,7 +573,7 @@ class LogConfig:
                 ),
             ],
             wrapper_class = structlog.make_filtering_bound_logger(log_level),
-            logger_factory = structlog.PrintLoggerFactory(file = sys.stdout),
+            logger_factory = _current_stdout_logger_factory,
             cache_logger_on_first_use = True,
         )
 
