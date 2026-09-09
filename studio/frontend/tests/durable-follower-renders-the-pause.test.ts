@@ -19,10 +19,20 @@ const source = readFileSync(
   "utf8",
 );
 
-test("the follower renders a relayed pause through the live adapter's label", () => {
+// The chunk branch, from the status read to the `continue` that closes it: located
+// structurally, since a fixed-length slice stopped short as the branch grew.
+function chunkBranch(): string {
   const start = source.indexOf("chunk._admissionStatus !== undefined");
   assert.notEqual(start, -1, "the chunk branch reads _admissionStatus");
-  const branch = source.slice(start, start + 800);
+  const call = source.indexOf("setToolStatus(", start);
+  assert.notEqual(call, -1, "the chunk branch sets the tool status");
+  const end = source.indexOf("continue;", call);
+  assert.notEqual(end, -1, "the chunk branch ends in a continue");
+  return source.slice(start, end + "continue;".length);
+}
+
+test("the follower renders a relayed pause through the live adapter's label", () => {
+  const branch = chunkBranch();
   assert.match(branch, /setToolStatus\(\s*threadId,\s*admissionStatusLabel\(chunk\._admissionStatus\),\s*serverCancel,?\s*\)/);
   assert.match(branch, /continue;/);
   assert.match(source, /import \{\s*type AdmissionStatus,\s*admissionStatusLabel,\s*\} from "\.\/utils\/admission-status"/);
@@ -31,8 +41,7 @@ test("the follower renders a relayed pause through the live adapter's label", ()
 test("a recompute marks the thread instead of rewriting the status line", () => {
   // It arrives after the resume it qualifies, so the run is generating again: showing a
   // pause label for it would say the opposite of what happened.
-  const start = source.indexOf("chunk._admissionStatus !== undefined");
-  const branch = source.slice(start, start + 800);
+  const branch = chunkBranch();
   assert.match(branch, /chunk\._admissionStatus === "recomputed"/);
   assert.match(branch, /notePreemptRecompute\(threadId\)/);
   assert.ok(
