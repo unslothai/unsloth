@@ -41,11 +41,13 @@ from ._gated_delta_net import _fast_path_applicable as _gdn_applicable
 __all__ = ["patch_qwen3_5_decoder_layers"]
 
 _BASE_OPTIONS = {
-    # C++ wrapper: the graph's kernel launches, allocations and extern GEMM calls are issued from
-    # generated C++ instead of Python. Same kernels, same numbers; roughly halves the CPU time per
-    # region call, which is what bounds this launch-bound job. Costs more compile time on a cold
-    # inductor cache. UNSLOTH_QWEN3_5_CPP_WRAPPER=0 turns it off.
-    "cpp_wrapper": os.environ.get("UNSLOTH_QWEN3_5_CPP_WRAPPER", "1") == "1",
+    # C++ wrapper: kernel launches, allocations and extern GEMM calls issued from generated C++
+    # instead of Python; roughly halves the CPU time per region call (another ~11% off the step
+    # here). Off by default: in a real training process its GEMM outputs differ from the Python
+    # wrapper's at the bf16 rounding level (~1e-5 per projection, ~2% on the final hidden states
+    # after 32 layers), so it does not reproduce the stock path bit for bit. Opt in with
+    # UNSLOTH_QWEN3_5_CPP_WRAPPER=1 when rounding-level differences are acceptable.
+    "cpp_wrapper": os.environ.get("UNSLOTH_QWEN3_5_CPP_WRAPPER", "0") == "1",
     "epilogue_fusion": True,
     "max_autotune": False,
     "shape_padding": True,
