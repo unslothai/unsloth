@@ -214,6 +214,35 @@ def _host_mount_points() -> tuple[str, ...]:
     return tuple(points)
 
 
+def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
+    """Interpreter directories that sit INSIDE the session workdir.
+
+    _runtime_read_paths drops these, correctly: binding them by name would follow
+    a <workdir>/venv/lib symlinked at ~/.ssh straight back in. But dropping alone
+    leaves them under the recursive WRITABLE workdir bind, so when Studio's own
+    virtualenv lives beneath the workdir a tool call can write its site-packages
+    or its interpreter, and the next server subprocess launched with
+    sys.executable runs that code with the server's authority. They are re-bound
+    read-only after the writable bind instead.
+
+    Only when both spellings stay inside the workdir. One that RESOLVES outside is
+    the symlink case, and it needs no rule: nothing is bound at the far end, so
+    inside the jail it dangles.
+    """
+    inside: list[str] = []
+    for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl"):
+            candidate = os.path.join(prefix, name)
+            absolute = os.path.abspath(candidate)
+            if not _within(absolute, workdir) or not os.path.exists(absolute):
+                continue
+            if not _within(os.path.realpath(candidate), workdir):
+                continue
+            if absolute not in inside:
+                inside.append(absolute)
+    return tuple(inside)
+
+
 def _validate_workdir(workdir: str) -> str:
     """The mount table is re-read here because the shared scan's ``os.path.ismount``
     compares device numbers and misses a same-filesystem bind mount, which is what
@@ -358,7 +387,14 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         # and no hard link to an inode named outside it. A component that fails is
         # dropped, never refused, so the worst case is the re-download every call
         # did before the cache was shared.
-        hazard = cache_share_hazard(path)
+        # The mount table, for the same reason _validate_workdir re-reads it: the
+        # shared scan's os.path.ismount compares device numbers and misses a
+        # same-filesystem bind mount, which this recursive WRITABLE bind would
+        # otherwise carry in.
+        nested = next(
+            (m for m in _host_mount_points() if m != path and _within(m, path)), None
+        )
+        hazard = f"contains a nested host mount: {nested}" if nested else cache_share_hazard(path)
         if hazard is not None:
             logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
             continue
@@ -420,6 +456,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     model_cache = _model_cache_binds(workdir)
     # A runtime under /tmp has to be restored after the tmpfs replaces it.
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))
+    workdir_runtime_paths = _runtime_paths_under(workdir)
 
     disable_userns = _bwrap_supports(bwrap, "--disable-userns")
     try:
@@ -480,6 +517,10 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
         argv += ["--bind", workdir, inner]
+        # After the writable bind, so the server's own runtime is read-only even
+        # when it lives under the workdir; see _runtime_paths_under.
+        for path in workdir_runtime_paths:
+            argv += ["--ro-bind", path, path]
         if inner != workdir:
             argv += ["--bind", workdir, workdir]
         argv += ["--chdir", inner]

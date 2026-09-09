@@ -7232,6 +7232,16 @@ def _with_session_packages(env: dict, workdir: str) -> dict:
     if not os.path.isdir(packages):
         return env
     updated = dict(env)
+    # site imports `usercustomize` from sys.path at interpreter startup whenever
+    # ENABLE_USER_SITE is on, which it is for any non-venv interpreter. This
+    # directory is writable by the tool call, so without this a call could leave a
+    # usercustomize.py behind and have it execute on the host at the START of
+    # every later unisolated call, before that call's own script was analysed.
+    # Measured on a system python3: the payload ran ahead of the script, and this
+    # variable is what stops it. `sitecustomize` needs no equivalent because
+    # _build_safe_env puts the shim directory FIRST on PYTHONPATH, so the shipped
+    # one is found before anything planted here; the test pins that ordering.
+    updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
         ("PYTHONPATH", packages),
         ("PATH", os.path.join(packages, "bin")),

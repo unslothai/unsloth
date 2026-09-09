@@ -1069,3 +1069,65 @@ def test_a_trusted_system_gitconfig_is_bound_and_an_untrusted_one_is_not(tmp_pat
     assert sandbox_linux._trusted_system_file(str(tmp_path / "absent")) is False
     os.chmod(good, 0o666)
     assert sandbox_linux._trusted_system_file(str(good)) is False, "world-writable accepted"
+
+
+def test_a_runtime_under_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
+    """Studio's own venv living beneath the session workdir must not be writable.
+
+    _runtime_read_paths drops these deliberately, but the recursive workdir bind
+    is WRITABLE, so dropping alone let a tool call rewrite site-packages or the
+    interpreter and the next server subprocess launched with sys.executable ran
+    it with the server's authority. Re-bound read-only AFTER the writable bind.
+    """
+    workdir = tmp_path / "session"
+    venv = workdir / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "exec_prefix", str(venv))
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        argv = launch.argv
+        writable = argv.index("--bind")
+        ro_after = [
+            source
+            for index, source in enumerate(argv)
+            if index > writable and argv[index - 1] == "--ro-bind"
+        ]
+        assert str(venv / "lib") in ro_after, "the runtime stayed writable"
+        assert str(venv / "bin") in ro_after
+    finally:
+        launch.cleanup()
+
+
+def test_a_runtime_symlinked_out_of_the_workdir_is_not_re_bound(tmp_path, monkeypatch):
+    """The negative control for the rule above. A <workdir>/venv/lib aimed at the
+    user's home must NOT be bound by name; inside the jail it simply dangles."""
+    workdir = tmp_path / "session"
+    (workdir / "venv").mkdir(parents = True)
+    secret = tmp_path / "home" / ".ssh"
+    secret.mkdir(parents = True)
+    (workdir / "venv" / "lib").symlink_to(secret)
+    monkeypatch.setattr(sys, "prefix", str(workdir / "venv"))
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        for flag in ("--bind", "--ro-bind", "--ro-bind-try"):
+            for source, _ in _pairs(launch.argv, flag):
+                assert not sandbox_linux._within(str(secret), source), source
+    finally:
+        launch.cleanup()
+
+
+def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path, monkeypatch):
+    """os.path.ismount compares device numbers and misses a same-filesystem bind
+    mount, which is why _validate_workdir re-reads /proc/self/mountinfo. The
+    writable cache bind needs the same check, or it carries the nested mount in."""
+    host = tmp_path / "hostcache"
+    (host / "hub" / "nested").mkdir(parents = True)
+    _real_cache(monkeypatch, host)
+    monkeypatch.setattr(
+        sandbox_linux, "_host_mount_points", lambda: (str(host / "hub" / "nested"),)
+    )
+    assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))

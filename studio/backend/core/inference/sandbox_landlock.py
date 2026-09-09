@@ -56,25 +56,34 @@ def abstract_scope_supported() -> bool:
         return False
     if not _abi_reports_scope():
         return False
+    # The listener is bound HERE, in the unscoped parent, so it sits outside the
+    # child's Landlock domain. That is the whole test: the scope stops a domain
+    # reaching sockets outside itself and leaves its own alone, so a child that
+    # binds and connects its own name is permitted and proves nothing. Measured:
+    # scoped child -> parent's socket is EPERM, scoped child -> its own socket
+    # connects.
+    import socket as _socket
+
+    name = b"\0unsloth-scope-" + os.urandom(6).hex().encode()
+    listener = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        listener.bind(name)
+        listener.listen(1)
+    except OSError:
+        listener.close()
+        return False
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid == 0:  # pragma: no cover - the child never returns
         try:
             os.close(read_fd)
+            listener.close()
             apply_abstract_scope()
-            # Applied or not, the child cannot tell by asking. Bind an abstract
-            # name and try to reach it: under the scope that connect is refused.
-            import socket as _socket
-
-            name = b"\0unsloth-scope-" + os.urandom(6).hex().encode()
-            listener = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-            listener.bind(name)
-            listener.listen(1)
             client = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
             client.settimeout(2)
             try:
                 client.connect(name)
-                os.write(write_fd, b"n")  # reachable, so nothing was applied
+                os.write(write_fd, b"n")  # reached it, so nothing was applied
             except OSError:
                 os.write(write_fd, b"y")  # refused, so the scope is in force
         except BaseException:
@@ -91,6 +100,7 @@ def abstract_scope_supported() -> bool:
         answer = b""
     finally:
         os.close(read_fd)
+        listener.close()
         try:
             os.waitpid(pid, 0)
         except OSError:
