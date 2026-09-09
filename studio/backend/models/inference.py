@@ -4283,6 +4283,13 @@ class DiffusionStatusResponse(BaseModel):
         description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
         "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
     )
+    transformer_quant_backend: Optional[str] = Field(
+        None,
+        description = "Which NVFP4 kernel path the loaded DiT actually runs: flashinfer | "
+        "torchao | null (null for every scheme but nvfp4). The scheme alone does not say: "
+        "flashinfer is selected per device and falls back to torchao on a preflight failure, so "
+        "this is the only place a render's speed can be attributed to the backend that served it.",
+    )
     attention_backend: Optional[str] = Field(
         None,
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
