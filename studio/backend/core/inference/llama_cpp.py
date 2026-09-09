@@ -2552,7 +2552,8 @@ _TOOL_TEMPLATE_MARKERS = (
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
 # discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max', Inkling
 # uses the full 'none'..'max' ladder) so we only ever offer levels the template
-# actually understands.
+# actually understands. Must stay in sync with REASONING_EFFORT_SCALE in
+# studio/frontend/src/features/chat/provider-capabilities.ts.
 _REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # Match a Qwen3.8 path/repo segment without treating future names such as

@@ -6,45 +6,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
 NO_TORCH_RT="$SCRIPT_DIR/../../studio/backend/requirements/no-torch-runtime.txt"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_not_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  FAIL: $_label (found '$_needle' but should not)"
-        FAIL=$((FAIL + 1))
-    else
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    fi
-}
-
 # ── Helper: create a mock python that reports a given minor version ──
 make_mock_python() {
     _minor="$1"

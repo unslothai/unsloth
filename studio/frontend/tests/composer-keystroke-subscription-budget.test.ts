@@ -23,15 +23,12 @@
 // checks.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function source(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
 
-const markdown = source("components/assistant-ui/markdown-text.tsx");
-const thread = source("components/assistant-ui/thread.tsx");
+const markdown = readSrc("components/assistant-ui/markdown-text.tsx");
+const thread = readSrc("components/assistant-ui/thread.tsx");
 
 /** The body of the named function or component declaration, up to its closing brace. */
 function body(text: string, start: string, terminator = "\n}"): string {

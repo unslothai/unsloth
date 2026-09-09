@@ -235,6 +235,16 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
+# Same rule as unsloth/__init__.py, reached through Studio's own copy because this parent must
+# not import unsloth: that runs unsloth/__init__.py, whose GPU branch pulls torch, Triton,
+# transformers and the model stack into a long-lived process that exists to stay light, and can
+# open a competing GPU context. Before anything imports transformers, which reads sentencepiece
+# availability during its own import. UNSLOTH_DISABLE_SENTENCEPIECE=0 opts out.
+from utils.sentencepiece_guard import disable_sentencepiece_on_windows as _no_sentencepiece
+
+_no_sentencepiece()
+del _no_sentencepiece
+
 import hashlib
 import ipaddress
 import mimetypes

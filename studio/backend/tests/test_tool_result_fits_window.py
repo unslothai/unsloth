@@ -2095,7 +2095,7 @@ class TestWhatTheLoopAppendsIsPricedToo:
         from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
 
         # The same length, so the only thing between them is the nudge one of them will be
-        # given: "Error" is a `TOOL_ERROR_PREFIXES` entry and "Alpha" is not.
+        # given: "Error: " opens with a `TOOL_ERROR_PREFIXES` entry and "Alpha: " does not.
         failed = self._fitted(monkeypatch, "Error: ")
         fine = self._fitted(monkeypatch, "Alpha: ")
 

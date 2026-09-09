@@ -6,10 +6,9 @@
 // setting is next, the default is still Auto, and the row spells out the difference.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -17,21 +16,17 @@ const { DEFAULT_TRANSPORT_MODE, TRANSPORT, pickTransportMode } = await import(
   "../src/features/hub/download-manager/constants.ts"
 );
 
-function read(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
-
-const ROW = read("features/settings/components/download-transport-row.tsx");
-const PREFERENCE = read(
+const ROW = readSrc("features/settings/components/download-transport-row.tsx");
+const PREFERENCE = readSrc(
   "features/hub/download-manager/transport-preference.ts",
 );
-const GENERAL_TAB = read("features/settings/tabs/general-tab.tsx");
-const TOGGLE = read("features/hub/catalog/transport-toggle.tsx");
-const API = read("features/settings/api/download-transport.ts");
-const POLL_LOOP = read("features/hub/download-manager/poll-loop.ts");
-const SEARCH = read("features/settings/settings-search.ts");
-const GENERAL_TAB_SRC = read("features/settings/tabs/general-tab.tsx");
-const EN = read("i18n/locales/en.ts");
+const GENERAL_TAB = readSrc("features/settings/tabs/general-tab.tsx");
+const TOGGLE = readSrc("features/hub/catalog/transport-toggle.tsx");
+const API = readSrc("features/settings/api/download-transport.ts");
+const POLL_LOOP = readSrc("features/hub/download-manager/poll-loop.ts");
+const SEARCH = readSrc("features/settings/settings-search.ts");
+const GENERAL_TAB_SRC = readSrc("features/settings/tabs/general-tab.tsx");
+const EN = readSrc("i18n/locales/en.ts");
 
 test("this browser's own choice beats the install setting", () => {
   assert.equal(pickTransportMode("xet", "http"), TRANSPORT.XET);
@@ -57,8 +52,8 @@ test("a download waits for the install setting before picking a transport", () =
   // getTransportMode() answers from what is known, so reading it before the settings fetch
   // landed missed a transport picked in another browser.
   for (const source of [
-    read("features/hub/download-manager/poll-loop.ts"),
-    read("features/hub/download-manager/transport-conflict.ts"),
+    readSrc("features/hub/download-manager/poll-loop.ts"),
+    readSrc("features/hub/download-manager/transport-conflict.ts"),
   ]) {
     assert.match(source, /await resolveTransportMode\(\)/);
     assert.ok(
@@ -103,7 +98,6 @@ test("the copy explains the difference, not just the names", () => {
   assert.match(downloads, /cancel/i);
   assert.match(downloads, /hf_xet/);
 });
-
 
 // The four below are source assertions, in this file's idiom: they pin the shape of a fix
 // rather than its behaviour, so each names the failure it exists for.
