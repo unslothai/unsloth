@@ -2515,7 +2515,9 @@ export function ModelConfigPage({
     residentEstimateSettings,
     residentContext,
   );
-  const residentEstimate = useMemoryEstimate(residentEstimateRequest);
+  const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
+    refreshMemory: true,
+  });
   // Only settled estimates can establish resident credit.
   const reclaimableEstimate =
     residentEstimateRequest &&

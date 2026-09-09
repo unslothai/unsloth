@@ -6,6 +6,7 @@ import type { MemoryEstimateRequest } from "../api/memory-estimate.ts";
 
 type ResidentState = Pick<
   ReturnType<typeof useChatRuntimeStore.getState>,
+  | "modelLoading"
   | "loadedKvCacheDtype"
   | "loadedNParallel"
   | "loadedNBatch"
@@ -29,6 +30,7 @@ type ResidentState = Pick<
 /** Editable controls can already describe the next load. */
 export function selectResidentEstimateSettings(state: ResidentState) {
   if (
+    state.modelLoading ||
     state.loadedGpuMemoryMode == null ||
     state.loadedSpeculativeType == null ||
     state.loadedTensorParallel == null ||
