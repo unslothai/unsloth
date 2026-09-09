@@ -900,3 +900,63 @@ def test_the_moe_long_prompt_veto_falls_through_at_the_context_asked_for():
     assert not got.spills_anything and not got.changed, got.reason
     assert got.n_ctx == 65536, got.reason
     assert "tokens per slot" in got.reason and "--fit on" in got.reason, got.reason
+
+
+def big_head_layout(n_blocks: int = 8) -> ModelLayout:
+    """A layout whose output head outweighs everything the fitter can move.
+
+    ``_fit_fallback_placement`` walks whole layers, and llama.cpp keeps the output
+    row on the device for any ``n_gpu_layers >= 1``, so with every layer moved the
+    head and the output norms are still resident. When those alone are over budget
+    the loop runs out of layers and answers None. The planner has a rung the fitter
+    does not -- lm_head through ``-ot`` -- so it can place what the fitter cannot,
+    which is exactly the shape that reached the gate with nothing to rank against.
+    """
+    blocks = tuple(BlockLayout(i, int(0.1 * GIB), int(0.05 * GIB)) for i in range(n_blocks))
+    return ModelLayout(
+        arch = "qwen3",
+        n_layers = n_blocks,
+        n_attention_layers = n_blocks,
+        blocks = blocks,
+        lm_head_bytes = 3 * GIB,
+        token_embd_bytes = int(0.1 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 1024,
+        n_ctx_train = 32768,
+        complete = True,
+    )
+
+
+def test_a_fallback_that_cannot_be_modelled_declines_rather_than_waves_the_spill_through():
+    """An unranked spill is what the gate exists to stop.
+
+    ``fallback is None`` was an ACCEPT, so the one class of layout this loop
+    cannot walk got its spill taken with no comparison at all -- the layouts whose
+    arithmetic is least trustworthy, passed through the check meant to catch it.
+    llama.cpp still places these loads; it is only the MODEL of that placement
+    that is missing, so the honest answer is to leave it to --fit on.
+    """
+    layout = big_head_layout()
+    opts = gated(
+        host = HostProfile(threads = 6),
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+    )
+    assert (
+        _fit_fallback_placement(
+            layout, opts, 3 * GIB, 8192, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+        )
+        is None
+    ), "the fixture must reach the unmodellable branch"
+    got = plan_placement(layout, [3 * GIB], 94 * GIB, 8192, opts = opts)
+    assert got.declined_by_gate and not got.spills_anything, got.reason
+    assert "could not be modelled" in got.reason and "--fit on" in got.reason, got.reason
+    # Ungated, the planner still answers what it CAN place: lm_head is its own rung.
+    ungated = plan_placement(
+        layout,
+        [3 * GIB],
+        94 * GIB,
+        8192,
+        opts = PlanOptions(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0),
+    )
+    assert ungated.spilled_lm_head, ungated.reason

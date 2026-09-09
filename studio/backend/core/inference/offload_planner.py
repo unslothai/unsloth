@@ -2766,14 +2766,30 @@ def _cost_gate(
         n_seq = n_slots,
     )
     if fallback is None:
-        # Nothing to COMPARE to. This is not the same as "the fitter cannot place
+        # Nothing to COMPARE to, which is not the same as "the fitter cannot place
         # this load": on a MoE where moving every expert is still short,
         # common/fit.cpp does not fail, it simply stops after step 3 with fewer
         # dense-only layers on the device (fit.cpp: `if (hp_nex == 0 ||
         # global_surplus_cpu_moe <= 0) { set_ngl_tensor_split_tbo(...); return; }`),
-        # and that placement is not modelled here. Only the RANKING is skipped;
-        # the measured vetoes above still apply.
-        return None, 0.0, 0.0
+        # and that placement is not modelled here.
+        #
+        # So this is a DECLINE, not an accept. Passing the spill through unranked
+        # took it on exactly the layouts whose arithmetic is least trustworthy --
+        # the ones this loop cannot walk -- and the gate exists because an unranked
+        # spill measured up to 8x slower than the fit it replaced. llama.cpp places
+        # what this cannot price.
+        return (
+            Plan(
+                n_ctx = n_ctx,
+                declined_by_gate = True,
+                reason = (
+                    "llama.cpp's own placement for this load could not be modelled, so "
+                    "the spill has nothing to be ranked against; left to --fit on"
+                ),
+            ),
+            0.0,
+            0.0,
+        )
 
     # The workload is a request, and a request does not get longer because the
     # server takes fewer of them at once: rung 1 lowering the slot count leaves
