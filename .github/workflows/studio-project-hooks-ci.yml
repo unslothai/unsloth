@@ -1,0 +1,123 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Qualify review/history standalone and real execution with the secure-tools prerequisite.
+# No models, credentials, or generated frontend assets are needed.
+
+name: Studio reviewed project hooks
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/inference/tools.py'
+      - 'studio/backend/routes/project_verification.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
+      - 'studio/backend/tests/test_project_hook*.py'
+      - 'studio/backend/routes/project_hooks.py'
+      - 'studio/backend/storage/project_hook_trust_db.py'
+      - 'scripts/compose_project_hook_review.py'
+      - 'studio/backend/main.py'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/workflows/studio-project-hooks-ci.yml'
+  merge_group:
+  push:
+    branches: [main, 'codex/project-hooks-*']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: verification (${{ matrix.os }}, ${{ matrix.variant }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-15]
+        variant: [lifecycle, secure-tools]
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+      UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE: '1'
+      UNSLOTH_VERIFICATION_NATIVE_REQUIRED: ${{ matrix.variant == 'secure-tools' && matrix.os == 'ubuntu-22.04' && '1' || '0' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Compose the verification engine and its review surfaces
+        shell: bash
+        run: |
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git eff7844bf7101762554ab43d33c390ee6ab4156e
+          if ! git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD; then
+            python scripts/compose_project_hook_review.py
+            git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' commit --no-edit
+          fi
+
+      - name: Compose project lifecycle support
+        shell: bash
+        run: |
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 31327e51f71055215b6d67fb4de9b6eb38494a73
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
+
+      - name: Compose confined edits and supervised commands
+        if: matrix.variant == 'secure-tools'
+        shell: bash
+        run: |
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git a5d144019bb585e246d0752c11d325807d0bfb19
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
+          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 9d25a218f4dc335a952b8817588a0d023479c6de
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the Linux project boundary
+        if: runner.os == 'Linux' && matrix.variant == 'secure-tools'
+        shell: bash
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends bubblewrap || { apt-get update -qq && apt-get install -y --no-install-recommends bubblewrap; }'
+
+      - name: Verify the Linux namespace facility
+        if: runner.os == 'Linux' && matrix.variant == 'secure-tools'
+        shell: bash
+        run: |
+          bwrap --version
+          bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev -- /bin/true
+
+      - name: Install focused backend dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            fastapi httpx typer packaging structlog huggingface-hub \
+            pyjwt cryptography python-multipart aiofiles sqlalchemy psutil pyyaml requests \
+            pytest pytest-timeout
+
+      - name: Run hook contracts
+        working-directory: studio/backend
+        run: >-
+          python -m pytest
+          tests/test_project_hooks.py
+          tests/test_project_hook_trust_db.py
+          tests/test_project_hooks_routes.py
+          tests/test_project_hook_runtime.py
+          tests/test_project_hooks_native.py
+          -q --tb=short --timeout=60 --maxfail=5
