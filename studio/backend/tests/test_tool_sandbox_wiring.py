@@ -598,47 +598,6 @@ def _declining_backend(monkeypatch, reason: str) -> None:
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", decline)
 
 
-@pytest.mark.parametrize(
-    "run,expected",
-    [
-        (lambda: tools._python_exec("print(6 * 7)", None, 60, _SESSION), "42"),
-        (lambda: tools._bash_exec("echo 42", None, 60, _SESSION), "42"),
-    ],
-    ids = ["python", "terminal"],
-)
-def test_a_declined_launch_falls_back_only_where_nothing_could_have_isolated(
-    monkeypatch, run, expected
-):
-    """The fallback belongs to a host that cannot build a sandbox at all. Where one
-    COULD have been built, a refusal is a failed call: the subject of every backend
-    refusal is the session workdir, which is the one thing a tool call can write
-    to, so answering those with "run on the host" hands model-authored code a
-    switch for its own boundary."""
-    _declining_backend(monkeypatch, "the session workdir contains a device node")
-    monkeypatch.setattr(
-        os_sandbox,
-        "capability_snapshot",
-        lambda **kwargs: os_sandbox.SandboxCapability(
-            backend = "none", available = False, reason = "stubbed for this test"
-        ),
-    )
-    tools._last_tool_execution_record = None
-    out = run()
-    assert expected in out
-    assert "Execution error" not in out
-    record = tools._last_tool_execution_record
-    assert record.effective_mode == "software_safeguards"
-    assert record.os_isolation is False
-    # The same set the unavailable-host fallback discloses, plus the fault: this
-    # launch is that launch, so the record must not depend on which door it came
-    # through.
-    assert record.limitations == (
-        *os_sandbox._software_only_limitations(),
-        "sandbox_declined_this_launch",
-    )
-    assert "host_files_readable" in record.limitations
-
-
 @pytest.mark.skipif(
     not os_sandbox.capability_snapshot().available, reason = "this host cannot isolate"
 )
@@ -660,39 +619,6 @@ def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatc
     )
     assert "SHOULD_NOT_RUN" not in out
     assert "device node" in out
-
-
-@pytest.mark.skipif(True, reason = "superseded: a refusal on a capable host is now a failed call")
-@pytest.mark.parametrize("kind", ["hardlink"])
-def test_a_workdir_the_backend_refuses_does_not_take_the_tools_away(kind):
-    """End to end, through the real planner: the conditions the Linux backend
-    refuses are ordinary things to find in a project directory, and in auto none
-    of them may cost the user Python and Terminal."""
-    workdir = tools._get_workdir(_SESSION)
-    # Beside the workdir, not in tmp_path: a hard link cannot cross a filesystem,
-    # and /tmp is a separate one on most hosts.
-    outside = os.path.join(os.path.dirname(workdir), "sandbox-wiring-outside.txt")
-    holder = None
-    if kind == "socket":
-        planted = os.path.join(workdir, "declining.sock")
-        holder = socket.socket(socket.AF_UNIX)
-        holder.bind(planted)
-    else:
-        with open(outside, "w", encoding = "utf-8") as handle:
-            handle.write("host file")
-        planted = os.path.join(workdir, "declining.txt")
-        os.link(outside, planted)
-    try:
-        tools._last_tool_execution_record = None
-        out = tools._python_exec("print(6 * 7)", None, 60, _SESSION)
-        assert "42" in out, out
-        assert tools._last_tool_execution_record.os_isolation is False
-    finally:
-        if holder is not None:
-            holder.close()
-        os.unlink(planted)
-        if os.path.exists(outside):
-            os.unlink(outside)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
@@ -803,44 +729,3 @@ def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
     else:
         assert "detached_descendant_cleanup_unverified" in limitations
     assert not hasattr(os_sandbox, "descendant_sweep_supported")
-
-
-def test_a_package_installed_in_an_isolated_call_survives_a_fallback(monkeypatch):
-    """The backends put PIP_TARGET at <workdir>/.unsloth-packages and keep it on
-    PYTHONPATH, so a package an isolated call installed lives there. A later call
-    in the same session can still fall back, and losing the package halfway
-    through a chat is the visible half of that."""
-    workdir = tools._get_workdir(_SESSION)
-    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
-    os.makedirs(os.path.join(packages, "bin"), exist_ok = True)
-    with open(os.path.join(packages, "installed_by_an_earlier_call.py"), "w") as handle:
-        handle.write("VALUE = 'from the session package directory'\n")
-    _declining_backend(monkeypatch, "the session workdir contains a device node")
-    monkeypatch.setattr(
-        os_sandbox,
-        "capability_snapshot",
-        lambda **kwargs: os_sandbox.SandboxCapability(
-            backend = "none", available = False, reason = "stubbed for this test"
-        ),
-    )
-    try:
-        out = tools._python_exec(
-            "import installed_by_an_earlier_call as m; print('IMPORTED', m.VALUE)",
-            None,
-            60,
-            _SESSION,
-        )
-        assert "from the session package directory" in out, out
-        path = tools._bash_exec("printf '%s' \"$PATH\"", None, 60, _SESSION)
-        assert path.strip().split(os.pathsep)[-1] == os.path.join(packages, "bin")
-    finally:
-        shutil.rmtree(packages, ignore_errors = True)
-
-
-def test_a_host_that_never_isolated_keeps_main_s_environment(monkeypatch):
-    """The other half: the package directory only joins the path when it exists,
-    so a host with no sandbox at all is handed back exactly what it handed in."""
-    workdir = tools._get_workdir(_SESSION)
-    shutil.rmtree(os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH), ignore_errors = True)
-    handed_in = {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}
-    assert tools._session_packages_env(handed_in, workdir) == handed_in

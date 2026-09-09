@@ -167,7 +167,7 @@ def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
     writable and `pip install X` failed with a read-only filesystem error. The
     session-local target is on PYTHONPATH so the install imports in the same call."""
     argv = prepared.argv
-    packages = os.path.join(prepared.workdir, sandbox_linux._PACKAGE_TARGET_RELPATH)
+    packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
     assert argv[argv.index("PIP_TARGET") + 1] == packages
     pythonpath = argv[argv.index("PYTHONPATH") + 1].split(os.pathsep)
     assert packages in pythonpath
@@ -925,7 +925,7 @@ def test_the_pip_targets_script_directory_is_last_on_path(prepared):
     cannot shadow a bare command the approval logic treats as safe."""
     argv = prepared.argv
     entries = argv[argv.index("PATH") + 1].split(os.pathsep)
-    packages = os.path.join(prepared.workdir, sandbox_linux._PACKAGE_TARGET_RELPATH)
+    packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
     assert entries[-1] == os.path.join(packages, "bin")
     assert "/usr/bin" in entries[:-1]
 

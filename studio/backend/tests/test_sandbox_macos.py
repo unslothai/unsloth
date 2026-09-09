@@ -300,7 +300,7 @@ def test_pip_gets_a_writable_target_inside_the_workdir():
     env = backend._sandbox_environment(
         {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}, _WORKDIR, _PRIVATE_TMP
     )
-    packages = f"{_WORKDIR}/{backend.PACKAGE_TARGET_RELPATH}"
+    packages = f"{_WORKDIR}/{backend.SESSION_PACKAGES_RELPATH}"
     assert env["PIP_TARGET"] == packages
     # Appended, never first: the sandbox_site startup shim must stay unshadowable.
     assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
@@ -554,7 +554,7 @@ def test_pip_console_scripts_are_reachable_and_never_shadow_a_system_command():
     env = backend._sandbox_environment(
         {"PATH": "/usr/bin:/bin", "PYTHONPATH": "/shim"}, _WORKDIR, _PRIVATE_TMP
     )
-    packages = f"{_WORKDIR}/{backend.PACKAGE_TARGET_RELPATH}"
+    packages = f"{_WORKDIR}/{backend.SESSION_PACKAGES_RELPATH}"
     assert env["PATH"].split(os.pathsep) == ["/usr/bin", "/bin", f"{packages}/bin"]
 
 

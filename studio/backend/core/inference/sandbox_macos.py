@@ -97,9 +97,6 @@ LIMITATIONS = (
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
-# Where `pip install` writes, relative to the session workdir. Shared spelling
-# with the Linux backend so a chat behaves the same on both.
-PACKAGE_TARGET_RELPATH = SESSION_PACKAGES_RELPATH
 
 _READ_ROOTS = (
     "/Library/Apple/System/Library/Frameworks",
@@ -724,7 +721,7 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
     # in the write set, so `pip install X` would fail on a permission error. It
     # goes to a session-local target on PYTHONPATH instead, appended so a package
     # installed in here cannot shadow the sandbox_site startup shim.
-    packages = posixpath.join(workdir, PACKAGE_TARGET_RELPATH)
+    packages = posixpath.join(workdir, SESSION_PACKAGES_RELPATH)
     sanitized.update(
         {
             "HOME": workdir,

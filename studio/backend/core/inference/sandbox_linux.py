@@ -152,7 +152,6 @@ _NETWORK_FILES = (
 # and the next one. Better than main, where the same command mutates the venv the
 # Unsloth server itself runs from. A dot directory so _snapshot_workdir_files
 # does not offer site-packages to the user as artifacts of their tool call.
-_PACKAGE_TARGET_RELPATH = SESSION_PACKAGES_RELPATH
 # The one deliberate hole in the home mask. Model weights are gigabytes and a
 # private empty cache per tool call would re-download them every time, which is
 # how a sandbox gets turned off. Bound at the jail's own HOME so the default
@@ -161,14 +160,11 @@ _PACKAGE_TARGET_RELPATH = SESSION_PACKAGES_RELPATH
 # A dot directory on purpose: tools.py's _snapshot_workdir_files skips those, so
 # the cache never presents as an artifact the model created.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
-# The DATA subdirectories only, never the cache root. huggingface_hub keeps the
+# The DATA subdirectories only, never the cache root: huggingface_hub keeps the
 # access token at $HF_HOME/token and $HF_HOME/stored_tokens, which tools.py
-# already treats as credentials (_BYPASS_ENV_CRED_LOCATION_NAMES drops HF_HOME
-# for exactly this reason). Binding the root and then pointing HF_HOME at it
-# would put a live token at the first path a script looks in, inside a sandbox
-# whose network is open by design. Anything not named here resolves to the
-# session workdir, so a new cache file is written per-session instead of leaking
-# a credential the next release happens to add.
+# already treats as credentials. Anything not named here resolves to the session
+# workdir, so a cache file a future release adds is written per-session rather
+# than shared.
 _MODEL_CACHE_SUBDIRS = ("hub", "datasets", "modules", "xet", "assets")
 # NixOS keeps glibc and every interpreter dependency here, so an interpreter from
 # the store cannot dynamically link anything without it.
@@ -476,12 +472,10 @@ class _CacheMountpoints:
     def _mkdir(self, name: str) -> None:
         """``mkdir`` in the innermost directory, recorded only if it was made here.
 
-        An entry that already exists but is not a plain directory is REFUSED, and
-        nothing of the user's is deleted to make room. Symlinking a cache leaf at
-        another volume is a legitimate layout, and these names are not reserved
-        from workspace content. Refusing is safe again because a refusal no longer
-        de-isolates anything: on a host that can isolate, _prepare_tool_launch
-        turns it into a failed call rather than an unisolated one.
+        An entry that exists but is not a plain directory is refused, and nothing
+        of the user's is deleted to make room: symlinking a cache leaf at another
+        volume is a legitimate layout and these names are not reserved from
+        workspace content.
         """
         try:
             os.mkdir(name, dir_fd = self._fds[-1])
@@ -530,13 +524,11 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if not plan.argv:
         raise SandboxUnavailableError("a sandboxed launch needs a command to run")
     workdir = _validate_workdir(plan.workdir)
-    # The spelling the CALLER used, which is the one tools.py built the scratch
-    # script path, HOME and TMPDIR from. When the sandbox home is reached through
-    # a symlink -- UNSLOTH_STUDIO_SANDBOX_HOME pointing at another volume is a
-    # supported override -- binding only the canonical form starts bwrap fine and
-    # then Python cannot open its own argv, after Popen, where auto can no longer
-    # fall back. Everything inside the jail is spelled this way; the canonical
-    # form stays the bind SOURCE and the one every safety check is made against.
+    # The spelling the CALLER used: tools.py built the scratch script path, HOME
+    # and TMPDIR from it, and a sandbox home reached through a symlink
+    # (UNSLOTH_STUDIO_SANDBOX_HOME at another volume) would leave Python unable to
+    # open its own argv. The canonical form stays the bind SOURCE and the one
+    # every safety check is made against.
     inner = os.path.abspath(plan.workdir)
     system_roots = tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path))
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
@@ -621,7 +613,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     os.path.join(inner_cache, name),
                 ]
             argv += ["--setenv", "HF_HOME", inner_cache]
-        packages = os.path.join(inner, _PACKAGE_TARGET_RELPATH)
+        packages = os.path.join(inner, SESSION_PACKAGES_RELPATH)
         argv += [
             "--setenv",
             "HOME",

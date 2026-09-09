@@ -239,20 +239,14 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
     mount UNDER it. Backend-agnostic on purpose: the invariant is the boundary
     both profiles claim, not a bubblewrap detail.
 
-    Nothing it raises on can be created from INSIDE the jail, and that is the
-    property that makes it safe rather than an incident: ``auto`` answers a
-    refusal here by running the next call unisolated, so any condition sandboxed
-    code could plant would be a two-line way for a tool call to switch the
-    boundary off for the rest of the session. A unix socket and a FIFO are
-    therefore not refused -- a tool call can make one, and one inside the workdir
-    addresses nothing outside it -- while a device node still is, because the
-    kernel refuses mknod of one in a user namespace. Nor does running out of
-    budget refuse: a tool call can write 50,000 files. The scan stops and the
-    launch proceeds, because "I could not finish looking" is not "I found
-    something".
+    Nothing it raises on can be created from inside the jail. A socket or a FIFO
+    is not refused: a tool call can make one and one inside the workdir addresses
+    nothing outside it. A device node is, because the kernel refuses mknod of one
+    in a user namespace. Running out of budget is not a refusal either, since a
+    tool call can write 50,000 files; the scan stops, having accounted for what it
+    did reach.
 
-    Raises ``SandboxUnavailableError``. In ``auto`` the caller turns that into a
-    software-safeguards launch rather than a refusal.
+    Raises ``SandboxUnavailableError``, which fails the call.
     """
     deadline = time.monotonic() + WORKDIR_SCAN_SECONDS
     entries = 0
@@ -265,11 +259,9 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
 
     def stop(exc: OSError) -> None:
         if exc.errno in (errno.EACCES, errno.EPERM):
-            # A directory a tool call chmodded to 000. Unreadable to the scan and
-            # equally unreadable to anything the bind carries it into, so it is
-            # not a channel; skipped rather than refused, because refusing on
-            # something sandboxed code can create is how one call reaches into
-            # the next one's isolation.
+            # A directory a tool call chmodded to 000: unreadable to the scan and
+            # equally unreadable to whatever the bind carries it into, so not a
+            # channel, and not something to refuse a launch over.
             logger.info("Skipped an unreadable session workdir entry: %s", exc.filename)
             return
         raise SandboxUnavailableError(
@@ -300,9 +292,9 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
-                # os.path.ismount rather than the mount table: it is two stats on
-                # a directory the walk has already reached, it needs no /proc, and
-                # it is the same answer on both platforms.
+                # Two stats on a directory the walk already reached, and the same
+                # answer on both platforms. Linux asks the mount table as well,
+                # since this misses a same-filesystem bind mount.
                 if os.path.ismount(path):
                     raise SandboxUnavailableError(
                         f"the session workdir contains a nested host mount: {path}"

@@ -7243,35 +7243,6 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
     return tool_execution_mode
 
 
-def _session_packages_env(env: dict, workdir: str) -> dict:
-    """Keep a session's installed packages importable on a launch that is not isolated.
-
-    The backends point PIP_TARGET at ``<workdir>/.unsloth-packages`` and put it on
-    PYTHONPATH, so a package installed by an isolated call lives there. A later
-    call in the same session can still fall back -- a socket appears in the
-    workdir, the tree crosses the scan limit -- and without this it would lose the
-    package and its console scripts halfway through a chat.
-
-    Only when the directory already exists, which is what keeps a host that never
-    isolates byte-identical to main: nothing ever created one there, so nothing is
-    added and pip still installs where it always did.
-    """
-    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
-    if not os.path.isdir(packages):
-        return env
-    updated = dict(env)
-    updated["PYTHONPATH"] = os.pathsep.join(
-        part for part in (updated.get("PYTHONPATH", ""), packages) if part
-    )
-    # Last, for the reason the backends put it last: the directory is writable by
-    # the tool call, and a planted binary must not shadow a bare command the
-    # approval logic treats as safe.
-    updated["PATH"] = os.pathsep.join(
-        part for part in (updated.get("PATH", ""), os.path.join(packages, "bin")) if part
-    )
-    return updated
-
-
 def _software_safeguards_launch(plan, fault: str):
     """The launch ``auto`` falls back to when no OS boundary can be built.
 
@@ -7283,10 +7254,7 @@ def _software_safeguards_launch(plan, fault: str):
     return os_sandbox.PreparedSandboxLaunch(
         argv = plan.argv,
         workdir = plan.workdir,
-        # The other two doors into a launch without OS isolation come back from
-        # os_sandbox and are handled in _prepare_tool_launch; this is the one that
-        # builds its own.
-        env = _session_packages_env(plan.env, plan.workdir),
+        env = plan.env,
         preexec_fn = plan.preexec_fn,
         backend = "software-safeguards",
         timeout_seconds = plan.timeout_seconds,
@@ -7329,15 +7297,11 @@ def _prepare_tool_launch(plan):
     """``os_sandbox.prepare_tool_launch``, except that ``auto`` cannot fail.
 
     ``auto`` promises that nothing which ran yesterday stops running, and that
-    promise has to survive both the sandbox machinery breaking -- a backend
-    module that is not importable on this build, a probe that raises something
-    nobody anticipated -- and a backend declining this particular launch. The
-    Linux backend refuses a workdir holding a socket, a nested mount, an
-    external hard link or more than 50,000 entries, and an ML project workdir
-    reaches that last one routinely; in ``auto`` none of those may take Python
-    and Terminal away. All of them become a software-safeguards launch identical
-    to what main does, with the fault named in the record. ``required`` asked to
-    be refused rather than run unisolated, so it still is.
+    promise has to survive the sandbox machinery itself breaking: a probe that
+    raises something nobody anticipated, a backend module that is not importable
+    on this build. Those become a software-safeguards launch identical to what
+    main does, with the fault named in the record. A backend REFUSING a workdir
+    is the other thing entirely and is not covered by it -- see the handler.
     """
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
@@ -7352,34 +7316,16 @@ def _prepare_tool_launch(plan):
                 prepared.backend,
             )
             prepared.preexec_fn = plan.preexec_fn
-        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
-            # Covers all three shapes a launch without OS isolation arrives in:
-            # a host that cannot isolate, a backend that declined this launch, and
-            # a planner that broke. The isolated path already has it from the
-            # backend, which is also what put the packages there.
-            prepared.env = _session_packages_env(prepared.env, plan.workdir)
         return prepared
     except os_sandbox.SandboxUnavailableError:
-        # Refused, and on a host that CAN isolate a refusal never becomes an
-        # unisolated launch. The subject of every one of those refusals is the
-        # session workdir, which is the one thing a tool call can write to, so
-        # answering them with "run the next call on the host" hands model-authored
-        # code a switch for its own boundary. auto's promise was always about a
-        # host that cannot build a sandbox at all -- no bwrap, no user namespace,
-        # not this platform -- and that path does not come through here.
-        #
-        # An unknown mode is a caller error rather than a host that cannot
-        # isolate, and is never swallowed either.
-        known = plan.requested_mode in os_sandbox.TOOL_EXECUTION_MODES
-        if plan.requested_mode == "required" or not known:
-            raise
-        if os_sandbox.capability_snapshot().available:
-            raise
-        logger.warning(
-            "The sandbox backend declined this launch, running with software safeguards",
-            exc_info = True,
-        )
-        return _software_safeguards_launch(plan, "sandbox_declined_this_launch")
+        # Never turned into an unisolated launch. os_sandbox only reaches a
+        # backend once the capability probe has passed, so every refusal from one
+        # is about the session workdir -- the single thing a tool call can write
+        # to -- and answering those by running the next call on the host would
+        # hand model-authored code a switch for its own boundary. The fallback
+        # auto promises belongs to a host that cannot build a sandbox at all, and
+        # os_sandbox returns that itself without raising.
+        raise
     except Exception as exc:  # noqa: BLE001 - auto never refuses; see the docstring
         logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
         if plan.requested_mode == "required":
