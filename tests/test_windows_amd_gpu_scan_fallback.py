@@ -524,10 +524,86 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
 
+# Every caller-shell variable the lifecycle block saves and restores, bar the ROCm handoff, which
+# the arch / inherited parametrisation already drives through `after` and `after_set`. Fourteen
+# here plus that one is all fifteen pairs in the block, and
+# test_every_saved_variable_in_the_block_is_covered keeps that true as the table grows.
+_CALLER_ENV_NAMES = (
+    "SKIP_STUDIO_BASE",
+    "UNSLOTH_STUDIO_HOME",
+    "UNSLOTH_TAURI_MODE",
+    "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF",
+    "_UNSLOTH_PS_PROXY_DEFAULTS",
+    "STUDIO_PACKAGE_NAME",
+    "UNSLOTH_NO_TORCH",
+    "UNSLOTH_INSTALLER_TORCH_TAG",
+    "SKIP_STUDIO_FRONTEND",
+    "STUDIO_LOCAL_INSTALL",
+    "STUDIO_LOCAL_REPO",
+    "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
+    "UNSLOTH_INSTALL_ROLLBACK_MANAGED",
+    "UNSLOTH_SETUP_PYTHON",
+)
+
+# A DISTINCT sentinel each. One shared string would be satisfied by a finally that put every
+# variable back from the wrong save, so cross-wiring would read as a pass. None of these is an
+# input: no line in the block reads any of them, it only assigns or removes them.
+_CALLER_ENV = tuple(
+    (name, "outer-" + name.strip("_").lower().replace("_", "-")) for name in _CALLER_ENV_NAMES
+)
+assert len({sentinel for _, sentinel in _CALLER_ENV}) == len(_CALLER_ENV), "sentinels must differ"
+
+
+def _assert_caller_env_restored(out: dict, present: bool, what: str) -> None:
+    """The caller's shell is as it was: same values, or still no variable at all.
+
+    Two arms, and they fail differently. With a previous value the finally restores it; with none
+    it must REMOVE the variable, which is where "a finally reached before its save clears a value
+    it never set" lives -- the hazard that decides where the saves may sit relative to `try {`.
+
+    Absence is asserted as `Test-Path Env:NAME` being false, not as an empty or null value.
+    PowerShell 7.5+ keeps an env var present when it is assigned "", so a restore that wrote ""
+    instead of removing would satisfy a value comparison while leaving the caller holding a
+    variable it never had. The `_set` flags are the whole point of the distinction.
+
+    Not asserted: a caller variable that was present but EMPTY. The block decides presence with
+    `$null -ne $previous`, which cannot tell "" from unset, so the answer is engine-dependent by
+    construction -- install.ps1 says as much at $env:UNSLOTH_INSTALLER_TORCH_TAG ("7.5+ keeps it
+    present and blank, 5.1 / 7.0-7.4 remove it"). The out-of-block UV_CACHE_DIR pair is the one
+    that gets this right, via [Environment]::GetEnvironmentVariables().ContainsKey. Asserting
+    either behaviour here would encode one engine's answer as the contract."""
+    for name, sentinel in _CALLER_ENV:
+        key = name.lower()
+        if present:
+            assert out[key + "_set"] is True, f"{what} removed {name}, which the caller had set"
+            assert out[key] == sentinel, f"{what} left {name} as install.ps1 set it"
+        else:
+            assert (
+                out[key + "_set"] is False
+            ), f"{what} left {name} behind in a shell that never had it, as {out[key]!r}"
+
+
+def _caller_env_report() -> str:
+    """PowerShell that reports each saved variable's value and whether it exists at all."""
+    return "\n".join(
+        f"  {name.lower()} = $(if (Test-Path Env:{name}) {{ $env:{name} }} else {{ $null }})\n"
+        f"  {name.lower()}_set = [bool](Test-Path Env:{name})"
+        for name, _ in _CALLER_ENV
+    )
+
+
 def _handoff_lifecycle_block() -> str:
-    """install.ps1's save / set / try / finally around the setup call, as shipped."""
+    """install.ps1's save / set / try / finally around the setup call, as shipped.
+
+    Anchored on the FIRST save, not on the ROCm one. Five pairs are saved above that point
+    (SKIP_STUDIO_BASE, UNSLOTH_STUDIO_HOME, UNSLOTH_TAURI_MODE and the two private handoffs), and
+    slicing below them meant the harness supplied their $previous* / $hadPrevious* itself. Their
+    restores were then measured against harness constants rather than against what install.ps1
+    actually saved, which cannot show a save-side bug at all. Starting at the top of the table
+    makes all fifteen pairs shipped code on both halves, and means a save added later needs no new
+    binding here."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    start = src.index("    $previousRocmGfxHandoff = $env:")
+    start = src.index("    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE")
     end = src.index("    if ($setupExit -ne 0) {", start)
     return src[start:end]
 
@@ -539,6 +615,7 @@ def _run_handoff_lifecycle(
     inherited: str | None,
     fails: bool,
     bails: bool = False,
+    caller_env_present: bool = True,
 ) -> dict:
     call = "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs"
     block = _handoff_lifecycle_block()
@@ -556,11 +633,8 @@ def _run_handoff_lifecycle(
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                # Not under test, but the shipped finally restores these too and needs them bound.
-                "$previousUnslothStudioHome = $null; $hadPreviousUnslothStudioHome = $false",
-                "$previousTauriMode = $null; $hadPreviousTauriMode = $false",
-                "$previousSetupRuntimeGateHandoff = $null; $hadPreviousSetupRuntimeGateHandoff = $false",
-                "$previousProxyHandoff = $null; $hadPreviousProxyHandoff = $false",
+                # The five $previous* / $hadPrevious* pairs that used to be bound here are gone:
+                # the block now starts above them, so install.ps1 does its own saving.
                 "$UnslothProxyHandoffJson = $null",
                 "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
                 # Installer inputs the block reads. Undefined, they throw under
@@ -602,16 +676,21 @@ def _run_handoff_lifecycle(
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
                 "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
-                # Set at the top of the block's try, above the bail: gone afterwards
-                # is what says the finally ran.
-                "  package_name = $(if (Test-Path Env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { $null })",
-                "  skip_base = $(if (Test-Path Env:SKIP_STUDIO_BASE) { $env:SKIP_STUDIO_BASE } else { $null })",
+                # Every variable the block saves, value AND presence. STUDIO_PACKAGE_NAME and
+                # SKIP_STUDIO_BASE were reported here individually and are now two of the fifteen.
+                # Presence matters on its own: a variable assigned "" is still present on 7.5+, so
+                # only Test-Path separates "put back as it was" from "recreated empty".
+                _caller_env_report(),
                 "} | ConvertTo-Json -Compress",
             ]
         ),
         encoding = "utf-8",
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "UNSLOTH_ROCM_GFX_ARCH": "gfx90a"}
+    # Absent means absent: the child env is built from scratch here, so simply not adding these
+    # leaves the block's own $previous* reads seeing $null, which is the remove arm of the finally.
+    if caller_env_present:
+        env.update({name: sentinel for name, sentinel in _CALLER_ENV})
     if inherited is not None:
         env[HANDOFF] = inherited
     proc = subprocess.run(
@@ -639,39 +718,79 @@ def _run_handoff_lifecycle(
 
 
 @requires_pwsh
+@pytest.mark.parametrize(
+    "caller_env_present", [True, False], ids = ["caller_env_set", "caller_env_absent"]
+)
 @pytest.mark.parametrize("fails", [False, True], ids = ["setup_ok", "setup_throws"])
 @pytest.mark.parametrize(
     "arch, inherited",
     [(None, None), ("gfx1151", None), (None, "gfx1030"), ("gfx1151", "gfx1030")],
     ids = ["nothing", "resolved", "inherited", "resolved_over_inherited"],
 )
-def test_the_caller_environment_survives_the_setup_call(tmp_path, arch, inherited, fails):
+def test_the_caller_environment_survives_the_setup_call(
+    tmp_path, arch, inherited, fails, caller_env_present
+):
     """`irm ... | iex` runs install.ps1 in the caller's own shell, so anything set for the child
-    has to be put back -- on the failure path too, which is the one that rolls back and retries."""
-    out = _run_handoff_lifecycle(tmp_path, arch = arch, inherited = inherited, fails = fails)
+    has to be put back -- on the failure path too, which is the one that rolls back and retries,
+    and whether or not the caller had the variable to begin with."""
+    out = _run_handoff_lifecycle(
+        tmp_path,
+        arch = arch,
+        inherited = inherited,
+        fails = fails,
+        caller_env_present = caller_env_present,
+    )
     assert out["after_set"] is (inherited is not None), "the handoff outlived the setup call"
     assert out["after"] == inherited
     assert out["public"] == "gfx90a", "a user's own override must come back untouched"
+    _assert_caller_env_restored(out, caller_env_present, "the setup call")
+
+
+def test_every_saved_variable_in_the_block_is_covered():
+    """The runtime cases are only as good as _CALLER_ENV, so it is checked against the source
+    rather than maintained by hand: add a save to the block and this names the variable whose
+    restore nothing exercises, instead of it quietly joining the list.
+
+    Out of scope, by construction rather than oversight: UV_CACHE_DIR is saved around line 3366 and
+    restored around 6981, so covering it means a slice spanning most of install.ps1 -- the venv
+    build, the torch install, the llama.cpp fetch -- and stubbing all of it. TMP and TEMP are the
+    same shape around the temp probe. All three sit outside this block on both ends."""
+    saved = set(re.findall(r"\$previous\w+ = \$env:(\w+)", _handoff_lifecycle_block()))
+    covered = {name for name, _ in _CALLER_ENV} | {HANDOFF}
+    assert saved == covered, (
+        "the block saves variables whose restore nothing checks: "
+        f"{sorted(saved - covered)}; and checks ones it no longer saves: {sorted(covered - saved)}"
+    )
 
 
 @requires_pwsh
-def test_the_bail_restores_the_caller_environment(tmp_path):
+@pytest.mark.parametrize(
+    "caller_env_present", [True, False], ids = ["caller_env_set", "caller_env_absent"]
+)
+def test_the_bail_restores_the_caller_environment(tmp_path, caller_env_present):
     """The --with-llama-cpp-dir bail returns from inside the try, so the finally still runs.
 
     Textual ordering cannot show that: move the try below the bail and `saved < bail <
     restored` still holds while the return walks out past the restore. So this takes the
     bail, with a directory that does not exist, and reads the environment afterwards.
+
+    The two variables asserted individually here before, STUDIO_PACKAGE_NAME and SKIP_STUDIO_BASE,
+    are now two of the fifteen the helper checks, in both directions rather than only for removal.
     """
     out = _run_handoff_lifecycle(
-        tmp_path, arch = "gfx1151", inherited = "gfx1030", fails = False, bails = True
+        tmp_path,
+        arch = "gfx1151",
+        inherited = "gfx1030",
+        fails = False,
+        bails = True,
+        caller_env_present = caller_env_present,
     )
     assert out["seen_by_child"] == "<never ran>", "the bail did not happen before the setup call"
     assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored by the bail"
     assert out["after_set"] is True
-    # Set above the bail and removed only by the finally, so still set in the caller
-    # would mean the bail escaped the try.
-    assert out["package_name"] is None, "STUDIO_PACKAGE_NAME leaked past the bail"
-    assert out["skip_base"] is None, "SKIP_STUDIO_BASE leaked past the bail"
+    # Set above the bail and put back only by the finally, so a value still showing what
+    # install.ps1 wrote would mean the bail escaped the try.
+    _assert_caller_env_restored(out, caller_env_present, "the bail")
 
 
 @requires_pwsh
