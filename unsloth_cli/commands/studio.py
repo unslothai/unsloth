@@ -4639,6 +4639,29 @@ def update(
     _refresh_desktop_shortcuts(verbose = verbose)
 
 
+def _discard_orphaned_stage() -> None:
+    """Take a leftover `.update-stage` out of an 805-807 shell's way.
+
+    Those shells call any stage directory a `partial` stage BEFORE they read
+    `.update-failed.json`, and their `stagingDecision` maps `partial` to `stage`, so
+    an orphan left here has the shell re-spawning `--stage` on every periodic recheck
+    no matter what the marker says. Renamed rather than unlinked first: the tree is a
+    clone of the managed venv, so the name the shell reads is gone the instant the
+    rename lands, and a delete that then fails leaves only trash the desktop already
+    sweeps at launch.
+    """
+    stage = STUDIO_HOME / _studio_stage.STAGE_DIR_NAME
+    if not os.path.lexists(stage):
+        return
+    aside = STUDIO_HOME / f".update-rollback-stage-{os.getpid()}"
+    try:
+        os.replace(stage, aside)
+    except OSError:
+        shutil.rmtree(stage, ignore_errors = True)
+    else:
+        shutil.rmtree(aside, ignore_errors = True)
+
+
 def _refuse_staged_update() -> None:
     """Fail fast for a 805-807 desktop shell asking this wheel to stage.
 
@@ -4648,10 +4671,18 @@ def _refuse_staged_update() -> None:
     instead of preparing again. Their `StagedVersions` types `backend_version` as a
     plain String, so a version lookup that fails is spelled out rather than left
     null, which would make the whole marker unparseable and undo the point of it.
+    `shell_version` is an `Option<String>` there and null parses, so it stays null
+    when the shell named none: those shells skip a repeat only when the recorded
+    shell version equals the one being offered, and a placeholder would fail that
+    comparison exactly as null does while claiming a version nothing ran.
 
     No runtime gate, no idle scan, no launcher transaction: nothing here touches
     the environment. The non-zero exit reaches the shell as a failed backend
     preparation, which drops it onto the classic update.
+
+    The marker lands under the Python STUDIO_HOME, which is the shell's studio
+    directory in every case but a desktop-configured custom home. That divergence
+    is not new: 805-807 wrote their own READY.json the same way.
     """
     from importlib.metadata import version as package_version
 
@@ -4662,6 +4693,7 @@ def _refuse_staged_update() -> None:
     if not isinstance(backend_version, str) or not backend_version:
         backend_version = "unknown"
     shell_version = (os.environ.get(_studio_stage.SHELL_VERSION_ENV) or "").strip() or None
+    _discard_orphaned_stage()
     marker = STUDIO_HOME / ".update-failed.json"
     payload = (
         json.dumps({"backend_version": backend_version, "shell_version": shell_version}, indent = 2)
