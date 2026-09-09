@@ -42,7 +42,9 @@ class TestAResumeIsSizedByWhatItReplays:
         assert participant.replay_tokens() == 4000
 
     def test_the_wait_asks_for_the_replay(self):
-        source = " ".join(inspect.getsource(preemption.ControllerPreemptionPolicy.await_resume).split())
+        source = " ".join(
+            inspect.getsource(preemption.ControllerPreemptionPolicy.await_resume).split()
+        )
         assert "want = max(0, int(participant.replay_tokens() or 0))" in source
         assert "participant.tokens or 0" not in source
 
