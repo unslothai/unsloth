@@ -57,6 +57,10 @@ on:
       - 'scripts/install*.ps1'
       - 'scripts/uninstall*.sh'
       - 'scripts/uninstall*.ps1'
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/studio/test_uninstall_legacy_layout_gate.ps1'
+      - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
       - 'setup*.sh'
@@ -129,6 +133,10 @@ on:
       - 'scripts/install*.ps1'
       - 'scripts/uninstall*.sh'
       - 'scripts/uninstall*.ps1'
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/studio/test_uninstall_legacy_layout_gate.ps1'
+      - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
       - 'setup*.sh'
@@ -287,6 +295,17 @@ jobs:
       - name: Application Control CLI fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
+      # AST-based: they parse scripts/uninstall.ps1 instead of running it, so every row hosts them.
+      - name: Uninstaller prebuilt parity tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_uninstall_prebuilt_parity.ps1
+      # The runner is an administrator, so this covers the symlink kind, not just the junction.
+      - name: Uninstaller reparse stop-root tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_uninstall_reparse_stop_roots.ps1
+      - name: Uninstaller ownership gate tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
       # Linux on purpose, and the only lane that can run it. Reflection emit succeeds on
       # this engine so the types build exactly as they do on 5.1, while kernel32 and
       # shell32 do not resolve, so every call through them fails the way it does on a
@@ -298,6 +317,9 @@ jobs:
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh
+      - name: POSIX uninstaller ownership gate tests
+        if: runner.os == 'Linux'
+        run: bash tests/sh/test_uninstall_legacy_layout_gate.sh
       # bash, not sh: the helper under test is extracted from install.sh, which is bash.
       - name: install.sh XPU flavor probe tests
         if: runner.os != 'Windows'
