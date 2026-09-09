@@ -176,7 +176,7 @@ test("a recompute in this chat is named in the chip, whatever the load reports",
   const on = exactConcurrencyChip("on", { recomputed: true });
   assert.ok(on);
   assert.match(on.title, /re-prefilled after a park the server could not hold/);
-  assert.match(on.title, /not byte-identical/);
+  assert.match(on.title, /not guaranteed byte-identical/);
   assert.notEqual(on.label, "Exact");
   const unavailable = exactConcurrencyChip("unavailable", { recomputed: true });
   assert.ok(unavailable);

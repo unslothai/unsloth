@@ -27,7 +27,7 @@ const EXACT_MEANING =
 /** Appended when the server said this thread took a recompute: the mode is running, but one
  *  answer here did not get the guarantee, and a chip that stayed silent would overstate it. */
 const RECOMPUTED_NOTE =
-  "This answer was re-prefilled after a park the server could not hold, so it is not byte-identical.";
+  "This answer was re-prefilled after a park the server could not hold, so it is not guaranteed byte-identical.";
 
 /** What the header chip shows, or null when there is nothing to say. `off` is the default and
  *  the common case, so a chip for it would be noise on every load. `recomputed` is this thread's,

@@ -2081,12 +2081,15 @@ def _exact_parking_need_mib(
     """The ``--preempt-ram`` every park fits in, in MiB.
 
     A park saves a sequence's TARGET and DRAFT (MTP) state together, and the server holds the
-    parked sequences' state at once, so the bound is both pools, shared out per slot so the
-    rounding favours the parks, plus the margin. It refuses a rotation it cannot hold."""
+    parked sequences' state at once. Under the unified cache any one sequence can have grown to
+    the whole pool before it was parked, and parked history lives outside the pool, so up to
+    P - 1 parked histories plus the one being written can each be the whole pool: the bound is
+    both pools times the slot count, plus the margin. Sharing the pool out per slot, the earlier
+    bound, accepted a budget three near-pool histories overflow, and the overflow is re-prefilled."""
     slots = max(int(parallel or 1), 1)
     total = max(int(kv_bytes), 0) + max(int(draft_bytes), 0)
-    per_slot = -(-total // (1024 * 1024 * slots))
-    return per_slot * (max(slots - 1, 0) + 1) + _PARKING_MARGIN_MIB
+    pool_mib = -(-total // (1024 * 1024))
+    return pool_mib * slots + _PARKING_MARGIN_MIB
 
 
 def _exact_parking_budget_mib(
