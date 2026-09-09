@@ -921,8 +921,8 @@ def test_auto_selected_launch_pins_pci_bus_id(monkeypatch):
     before = src[:idx]
     assert marker in before
     # The pin must not sit behind the explicit-pick condition.
-    tail = before[before.rindex(marker):]
-    assert "if gpu_ids" not in before[before.rindex("elif gpu_indices is not None"):]
+    tail = before[before.rindex(marker) :]
+    assert "if gpu_ids" not in before[before.rindex("elif gpu_indices is not None") :]
 
 
 def test_datacenter_box_warns_once_not_twice(monkeypatch):
@@ -930,9 +930,7 @@ def test_datacenter_box_warns_once_not_twice(monkeypatch):
     A datacenter box reaches it, and its veto branch warns about the same variable,
     so letting both fire double-warns on the first load."""
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     assert LlamaCppBackend._is_datacenter_gpu([0, 1]) is True
     seen = _capture_warnings(monkeypatch)
