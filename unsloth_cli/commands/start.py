@@ -929,6 +929,7 @@ class _DownloadProgressDisplay:
             # download that starts near zero after an adapter finished near the top.
             self._source = source
             self._samples.clear()
+            self._last_expected = 0
             # Not `_shown`: `_last_bucket = -1` already lets the next line through, while
             # clearing it would strand a finished bar below 100% and drop the closing
             # newline, since `complete()` and `close()` both gate on it.
@@ -1123,7 +1124,8 @@ class _ModelDownloadProgress:
         repos: list[str] = []
         for item in listing.get("downloads") or []:
             repo = str(item.get("repo_id") or "")
-            if item.get("owner") != _LOAD_DOWNLOAD_OWNER or repo.lower() == self._model.lower():
+            loading = item.get("owner") == _LOAD_DOWNLOAD_OWNER or bool(item.get("load_attached"))
+            if not loading or repo.lower() == self._model.lower():
                 continue
             if repo not in repos and _is_hub_model_id(repo):
                 repos.append(repo)

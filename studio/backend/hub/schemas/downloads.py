@@ -102,6 +102,7 @@ class ActiveDownload(BaseModel):
     transport: Optional[str] = None
     cancel_transport: Optional[str] = None
     owner: Optional[str] = None
+    load_attached: Optional[bool] = None
     state: str
     files: Optional[List[str]] = Field(
         None,

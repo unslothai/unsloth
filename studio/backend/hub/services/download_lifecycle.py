@@ -1356,6 +1356,7 @@ def active_download_refs(
                     metadata.cancel_marker_transport if metadata is not None else None
                 ),
                 owner = metadata.owner if metadata is not None else None,
+                load_attached = metadata.load_attached if metadata is not None else None,
                 state = ref.state,
                 generation = ref.generation,
                 files = scoped_files or None,

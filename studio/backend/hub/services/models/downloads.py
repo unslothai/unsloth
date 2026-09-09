@@ -148,6 +148,17 @@ def _reject_if_load_in_flight(repo_id: str) -> None:
         raise _load_in_flight_error(repo_id)
 
 
+def _reject_if_load_owned(key: str) -> None:
+    if load_downloads.is_load_owned(_registry, key):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "A model load is fetching this repo. Wait for the load to finish "
+                "(or cancel it), then start the download."
+            ),
+        )
+
+
 def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
@@ -218,6 +229,7 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
     key = _download_job_key(repo_id, variant)
+    _reject_if_load_owned(key)
     # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
     # makes that outlast its 3s budget while every other request waits behind it.
     use_xet, transport_reason = await asyncio.to_thread(

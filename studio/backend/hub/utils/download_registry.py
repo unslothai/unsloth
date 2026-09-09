@@ -1252,6 +1252,7 @@ class DownloadMetadata:
     # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
     scoped_files: tuple[str, ...] = ()
     owner: Optional[str] = None
+    load_attached: bool = False
 
 
 @dataclass(frozen = True)
@@ -1451,6 +1452,14 @@ class DownloadRegistry:
             if metadata is None or metadata.transport == transport:
                 return
             self._metadata[key] = replace(metadata, transport = transport)
+
+    def mark_load_attached(self, key: str, attached: bool) -> None:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.load_attached == attached:
+                return
+            self._metadata[key] = replace(metadata, load_attached = attached)
 
     def release_active_slot(self, key: str) -> None:
         key = normalize_job_key(key)

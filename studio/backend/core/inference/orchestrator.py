@@ -1763,7 +1763,7 @@ class InferenceOrchestrator:
                     if isinstance(_tpl_info, dict):
                         self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
-                    self._release_load_downloads("complete")
+                    self._release_load_downloads()
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
@@ -1775,7 +1775,7 @@ class InferenceOrchestrator:
 
         except Exception as exc:
             self.loading_models.discard(model_name)
-            self._release_load_downloads("error")
+            self._release_load_downloads()
             from utils.transformers_version import SidecarSwapInProgress
 
             if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
@@ -1792,11 +1792,11 @@ class InferenceOrchestrator:
                 logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
         finally:
-            self._release_load_downloads("cancelled")
+            self._release_load_downloads()
 
     def _claim_load_downloads(self, resp: dict) -> None:
         from hub.services.load_downloads import claim_load_downloads
-        self._release_load_downloads("cancelled")
+        self._release_load_downloads()
         try:
             self._load_download_keys = claim_load_downloads(
                 resp.get("repo_ids") or [],
@@ -1806,14 +1806,14 @@ class InferenceOrchestrator:
         except Exception as exc:
             logger.warning("Could not register the load's downloads: %s", exc)
 
-    def _release_load_downloads(self, state: str) -> None:
+    def _release_load_downloads(self) -> None:
         keys, self._load_download_keys = self._load_download_keys, []
         if not keys:
             return
         from hub.services.load_downloads import release_load_downloads
 
         try:
-            release_load_downloads(keys, state)
+            release_load_downloads(keys)
         except Exception as exc:
             logger.warning("Could not release the load's downloads: %s", exc)
 

@@ -41,20 +41,41 @@ def test_a_load_claims_running_jobs_the_active_list_reports(registry):
     assert metadata.hub_cache == "/cache/hub"
     assert metadata.transport == "http"
 
-    load_downloads.release_load_downloads(keys, "complete")
+    load_downloads.release_load_downloads(keys)
 
     assert _active(registry) == []
-    assert registry.get_job(keys[0]).state == "complete"
+    assert registry.get_job(keys[0]).state == "idle"
+    assert registry.claim(keys[0], "http", repo_type = "model", repo_id = "owner/adapter")[0]
 
 
-def test_a_load_leaves_a_hub_download_of_the_same_repo_alone(registry):
+def test_a_load_attaches_to_a_hub_download_of_the_same_repo(registry):
     assert registry.claim("owner/base::", "http", repo_type = "model", repo_id = "owner/base")[0]
 
-    assert load_downloads.claim_load_downloads(["owner/base"]) == []
-    load_downloads.release_load_downloads(["owner/base::"], "complete")
+    keys = load_downloads.claim_load_downloads(["owner/base"])
 
-    assert registry.get_job("owner/base::").state == "running"
-    assert _active(registry) == [("owner/base", None, "running")]
+    assert keys == ["owner/base::"]
+    ref = download_lifecycle.active_download_refs(registry, None, with_variant = False)[0]
+    assert (ref.owner, ref.load_attached, ref.state) == (None, True, "running")
+    assert not load_downloads.is_load_owned(registry, "owner/base::")
+
+    load_downloads.release_load_downloads(keys)
+
+    ref = download_lifecycle.active_download_refs(registry, None, with_variant = False)[0]
+    assert (ref.load_attached, ref.state) == (False, "running")
+
+
+def test_an_explicit_download_of_a_load_placeholder_is_refused(registry, monkeypatch):
+    from hub.services.models import downloads
+
+    monkeypatch.setattr(downloads, "_registry", registry)
+    load_downloads.claim_load_downloads(["owner/base"])
+
+    with pytest.raises(HTTPException) as excinfo:
+        downloads._reject_if_load_owned("owner/base::")
+    assert excinfo.value.status_code == 409
+
+    load_downloads.release_load_downloads(["owner/base::"])
+    downloads._reject_if_load_owned("owner/base::")
 
 
 def test_cancelling_a_load_owned_job_is_refused(registry, monkeypatch):
@@ -102,10 +123,10 @@ def test_the_orchestrator_registers_the_downloads_a_load_reports(registry, monke
         ("owner/base", "load", "running"),
     ]
 
-    orchestrator._release_load_downloads("complete")
+    orchestrator._release_load_downloads()
 
     assert _active(registry) == []
-    orchestrator._release_load_downloads("complete")
+    orchestrator._release_load_downloads()
 
 
 def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
@@ -154,4 +175,26 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
         "owner/adapter",
         "owner/base",
         "unsloth/base",
+    ]
+    loader.ALLOW_PREQUANTIZED_MODELS = True
+
+    audio = SimpleNamespace(identifier = "owner/tts-lora", base_model = "owner/base", audio_type = "snac")
+    assert worker._load_download_repos(audio, True, cuda, ["owner/tts-lora", "owner/codec"]) == [
+        "owner/tts-lora",
+        "owner/codec",
+        "owner/base",
+        "hubertsiuzdak/snac_24khz",
+    ]
+    spark = SimpleNamespace(identifier = "owner/spark-lora", base_model = "unsloth/Spark-TTS-0.5B/LLM", audio_type = "bicodec")
+    monkeypatch.setattr(worker, "_load_download_repos", worker._load_download_repos)
+    import utils.security.file_security as file_security
+
+    monkeypatch.setattr(
+        file_security,
+        "load_scan_target",
+        lambda name, subdirs: ("unsloth/Spark-TTS-0.5B", ("LLM",)) if name.endswith("/LLM") else (name, subdirs),
+    )
+    assert worker._load_download_repos(spark, True, SimpleNamespace(device = "mlx")) == [
+        "owner/spark-lora",
+        "unsloth/Spark-TTS-0.5B",
     ]

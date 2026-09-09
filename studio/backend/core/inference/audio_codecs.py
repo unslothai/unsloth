@@ -22,6 +22,8 @@ import numpy as np
 import torch
 
 from utils.third_party_source import (
+    SNAC_REPOSITORY,
+    SPARK_TTS_REPOSITORY,
     deactivate_pinned_package,
     ensure_dac_speech_weights,
     ensure_outetts_source,
@@ -31,7 +33,7 @@ from utils.third_party_source import (
 )
 
 logger = get_logger(__name__)
-_SPARK_TTS_REPO = "unsloth/Spark-TTS-0.5B"
+_SPARK_TTS_REPO = SPARK_TTS_REPOSITORY
 _MAX_SPARK_EXPORT_METADATA_BYTES = 1_000_000
 
 
@@ -178,7 +180,7 @@ class AudioCodecManager:
         # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
             SNAC.from_pretrained(
-                model_repo_path or "hubertsiuzdak/snac_24khz",
+                model_repo_path or SNAC_REPOSITORY,
                 cache_dir = active_hf_hub_cache(),
             )
             .to(device)

@@ -392,10 +392,13 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
-def _load_download_repos(mc, load_in_4bit: bool, backend) -> list[str]:
+def _load_download_repos(mc, load_in_4bit: bool, backend, companions = ()) -> list[str]:
     from utils.paths import is_local_path
+    from utils.security.file_security import load_scan_target
+    from utils.third_party_source import SPEECH_CODEC_REPOSITORIES
 
-    repos = [str(mc.identifier)]
+    audio_type = getattr(mc, "audio_type", None)
+    repos = [str(mc.identifier), *(str(repo) for repo in companions)]
     base = getattr(mc, "base_model", None)
     if base:
         repos.append(str(base))
@@ -404,16 +407,20 @@ def _load_download_repos(mc, load_in_4bit: bool, backend) -> list[str]:
                 from unsloth.models import loader
                 from unsloth.models.loader_utils import get_model_name
 
-                mapped = get_model_name(str(base), load_in_4bit = load_in_4bit)
+                mapped = get_model_name(str(base), load_in_4bit = load_in_4bit and audio_type is None)
                 if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
                     mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:
                 mapped = None
             if mapped:
                 repos.append(str(mapped))
-    return [
-        repo for repo in dict.fromkeys(repos) if repo.count("/") == 1 and not is_local_path(repo)
-    ]
+    repos.extend(SPEECH_CODEC_REPOSITORIES.get(audio_type, ()))
+    hub_ids: list[str] = []
+    for repo in repos:
+        repo, _subdirs = load_scan_target(repo, ())
+        if repo.count("/") == 1 and not is_local_path(repo) and repo not in hub_ids:
+            hub_ids.append(repo)
+    return hub_ids
 
 
 def _hub_cache_dir() -> Optional[str]:
@@ -498,7 +505,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             resp_queue,
             {
                 "type": "downloads",
-                "repo_ids": _load_download_repos(mc, load_in_4bit, backend),
+                "repo_ids": _load_download_repos(mc, load_in_4bit, backend, targets),
                 "xet_disabled": os.environ.get("HF_HUB_DISABLE_XET") == "1",
                 "hub_cache": _hub_cache_dir(),
             },
