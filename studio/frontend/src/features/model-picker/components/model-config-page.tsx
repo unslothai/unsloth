@@ -63,6 +63,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
@@ -76,6 +77,10 @@ import {
 } from "../api/llama-flags";
 import { resolveEstimateContext } from "../model-config/estimate-context";
 import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
+import {
+  resolveResidentEstimateRequest,
+  selectResidentEstimateSettings,
+} from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadModelOverride,
@@ -1760,8 +1765,9 @@ export function ModelConfigPage({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
-  const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
-  const mmprojFallbackReason = useChatRuntimeStore((s) => s.mmprojFallbackReason);
+  const residentEstimateSettings = useChatRuntimeStore(
+    useShallow(selectResidentEstimateSettings),
+  );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -2504,40 +2510,11 @@ export function ModelConfigPage({
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
   // No resident credit without a reported context; pending settings cannot price it.
   const residentContext = servedWindow(activeLoadedContext);
-  const residentEstimateRequest =
-    memoryEstimateRequest &&
-    isActiveModel &&
-    loadedConfig &&
-    // Requested settings cannot reconstruct a fallback's actual allocations.
-    !loadedCpuFallback &&
-    !specFallbackReason &&
-    !mmprojFallbackReason &&
-    residentContext != null
-      ? {
-          ...memoryEstimateRequest,
-          nCtx: residentContext,
-          cacheTypeKv: loadedConfig.kvCacheDtype,
-          nParallel: loadedConfig.nParallel,
-          nBatch: loadedConfig.nBatch,
-          nUbatch: loadedConfig.nUbatch,
-          ctxCheckpoints: loadedConfig.ctxCheckpoints ?? null,
-          speculativeType:
-            loadedConfig.speculativeType ?? speculativeFallback ?? null,
-          specDraftNMax: loadedConfig.specDraftNMax,
-          specDraftCacheType: loadedConfig.specDraftCacheDtype ?? null,
-          tensorParallel: loadedConfig.tensorParallel,
-          disableVision: loadedConfig.disableVision,
-          gpuMemoryMode: loadedConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
-          gpuLayers:
-            loadedConfig.gpuLayers != null &&
-            loadedConfig.gpuLayers !== GPU_LAYERS_AUTO
-              ? loadedConfig.gpuLayers
-              : null,
-          nCpuMoe: loadedConfig.nCpuMoe ?? null,
-          selectedGpuIds: loadedGpuIds,
-          llamaExtraArgs: loadedLlamaExtraArgs,
-        }
-      : null;
+  const residentEstimateRequest = resolveResidentEstimateRequest(
+    isActiveModel ? memoryEstimateRequest : null,
+    residentEstimateSettings,
+    residentContext,
+  );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest);
   // Only settled estimates can establish resident credit.
   const reclaimableEstimate =
