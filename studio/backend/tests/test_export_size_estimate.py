@@ -392,8 +392,7 @@ def test_variant_after_the_shard_counter_is_the_same_archive(tmp_path):
 
 
 def test_diffusers_sharded_component_is_charged_by_its_index_once(tmp_path):
-    # genmo/mochi-1-preview: a sharded denoiser with bf16 twins beside the default shards,
-    # and single-file components carrying their own variants and a .bin spelling.
+    # genmo/mochi-1-preview: sharded denoiser with bf16 twins, components with variants and .bin.
     shards = {
         "diffusion_pytorch_model-00001-of-00002.safetensors": 3000,
         "diffusion_pytorch_model-00002-of-00002.safetensors": 2000,
@@ -485,7 +484,7 @@ def test_a_declared_diffusers_component_never_opens_a_stray_model_safetensors(tm
 
 def test_a_declared_transformers_component_never_opens_a_stray_diffusion_file(tmp_path):
     # linyq/kiwi-edit-5b-instruct-only-diffusers/mllm_encoder: a transformers archive with a
-    # 35 MB diffusion_pytorch_model.safetensors dropped beside it.
+    # 35 MB diffusion_pytorch_model.safetensors beside it.
     component = tmp_path / "mllm_encoder"
     component.mkdir()
     (component / "config.json").write_text('{"architectures": ["Qwen2ForCausalLM"]}')
@@ -546,8 +545,7 @@ def test_root_bookkeeping_beside_component_archives_is_dropped(tmp_path):
 
 
 def test_trainer_state_beside_a_freely_named_payload_alone_still_counts(tmp_path):
-    # No loadable archive anywhere: nothing says weights.pth is the model and optimizer.pt
-    # its state, so both stay what they are on main.
+    # No loadable archive marks weights.pth the model or optimizer.pt its state, so both count.
     _write(tmp_path / "weights.pth", 4000)
     _write(tmp_path / "optimizer.pt", 8000)
     assert _get_local_weight_size_bytes(str(tmp_path)) == 12000
@@ -600,8 +598,7 @@ def test_an_adapter_is_charged_on_top_of_the_base_model_it_adapts(tmp_path):
 
 
 def test_an_adapter_never_stands_in_for_bare_shards_beside_it(tmp_path):
-    # The shards carry no index, so nothing opens them by name. The adapter does, and
-    # charging it alone reports a 50-byte model where a 1000-byte one sits.
+    # Nothing opens the bare shards by name; charging the adapter alone reports 50 bytes for 1000.
     _write(tmp_path / "model-00001-of-00002.safetensors", 600)
     _write(tmp_path / "model-00002-of-00002.safetensors", 400)
     _write(tmp_path / "adapter_model.safetensors", 50)
@@ -663,9 +660,8 @@ def test_a_direct_safetensors_file_outranks_a_stale_index(tmp_path):
 
 
 def test_an_index_that_names_the_direct_file_is_not_stale(tmp_path):
-    # unsloth/Qwen3.8-27B-NVFP4 ships model.safetensors beside an 0.85 GB MTP head and
-    # its index names both. Reading the direct file as the whole archive drops the head,
-    # so an index that includes the direct file decides instead.
+    # unsloth/Qwen3.8-27B-NVFP4 ships model.safetensors beside an 0.85 GB MTP head its index
+    # names too, so reading the direct file as the whole archive would drop the head.
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "model_mtp.safetensors", 50)
     (tmp_path / "model.safetensors.index.json").write_text(

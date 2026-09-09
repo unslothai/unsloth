@@ -5696,10 +5696,8 @@ _TRAINER_BOOKKEEPING = re.compile(
     r"^(?:optimizer|scheduler|scaler|rng_state|training_args|trainer_state)"
     r"(?:[-_]\d+(?:-of-\d+)?)?$"
 )
-# A variant of an archive: model.fp16.safetensors, model-00001-of-00002.fp8.safetensors or
-# model.non_ema-00001-of-00002.safetensors are these weights again, and a load passing no
-# variant never opens them. Anything after the default name is a variant, the same reading
-# core/inference/diffusion.py gives a pipeline's files; a numeric tail is a shard counter.
+# A variant (model.fp16.safetensors, model-00001-of-00002.fp8.safetensors) is these weights
+# again and a load passing no variant never opens it; a numeric tail is a shard counter.
 _WEIGHT_VARIANT = re.compile(r"\.([A-Za-z][\w-]*)$")
 # The order from_pretrained tries, the direct file ahead of the index within each spelling.
 _TRANSFORMERS_ARCHIVES = (
@@ -5709,14 +5707,13 @@ _TRANSFORMERS_ARCHIVES = (
     ("consolidated", ".pth"),
 )
 # diffusers resolves one name per component, its index or the direct file, safetensors first.
-# Which of the two tables a folder loads by is the folder's declared class, not a fixed order.
+# Which table a folder loads by is its declared class, not a fixed order.
 _DIFFUSERS_ARCHIVES = (
     ("diffusion_pytorch_model", ".safetensors"),
     ("diffusion_pytorch_model", ".bin"),
 )
 _MODEL_ARCHIVES = _TRANSFORMERS_ARCHIVES + _DIFFUSERS_ARCHIVES
-# peft's own order, in a table of its own: an adapter is not another spelling of the base
-# model but a second payload loaded on top of it, so it never stands in for one.
+# peft's own table: an adapter loads on top of the base model, so it never stands in for one.
 _ADAPTER_ARCHIVES = (
     ("adapter_model", ".safetensors"),
     ("adapter_model", ".bin"),
@@ -5794,10 +5791,9 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
         indexed, all_indexed = _indexed_archive(directories, base, ext, tree)
         if base == "diffusion_pytorch_model" and ext == ".bin":
             # A default diffusers load resolves the safetensors index only; its pickle fallback
-            # asks for the unsharded .bin and never opens a .bin.index.json beside it.
+            # asks for the unsharded .bin, so the default path never reaches a .bin.index.json.
             indexed = {}
-        # No index names these, but a pruned or unwritten index is still that model. A
-        # precision variant is held back with the rest of the spelling, never opened.
+        # No index names these, but a pruned or unwritten index is still that model.
         counted: dict = {}
         variants: dict = {}
         for path, size in pool.items():
@@ -5806,20 +5802,17 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
             stem, variant = _archive_stem(path.stem)
             if stem == base:
                 (variants if variant else counted)[path] = size
-        # A stale index names other files and the direct one is opened instead. An index
-        # that names the direct file is not stale: it is saying that file is one part of
-        # the archive, so it decides, and a head stored beside the weights (the MTP file
-        # next to model.safetensors in Qwen's NVFP4 repos) is charged with them.
+        # A stale index names other files, so the direct one is opened instead. An index naming
+        # the direct file is not stale: it says that file is one part of the archive, so it
+        # decides, and Qwen's NVFP4 MTP head beside model.safetensors is charged with it.
         names_the_direct_file = bool(direct) and set(direct) <= set(indexed)
-        # diffusers is the other way round: its index settles a component whenever it exists,
-        # and the direct file is only tried when there is none.
+        # diffusers is the other way round: its index settles a component whenever one exists.
         index_first = names_the_direct_file or (base, ext) == (
             "diffusion_pytorch_model",
             ".safetensors",
         )
         opens = indexed if (indexed and index_first) else (direct or indexed)
-        # Held back: the rest of a spelling is these same weights, never a component, and a
-        # spelling present only as a variant is one no default load opens at all.
+        # The rest of a spelling is these weights again; a variant-only one is never opened.
         held.update({**direct, **all_indexed, **counted, **variants})
         if opens or counted:
             candidates.append((opens or counted, bool(opens)))
@@ -5855,10 +5848,9 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     splitting them lets a single archive lose in halves. ``tree`` carries every file, since an
     index may name a shard below itself; the second return is what it accounted for.
     """
-    # Tables resolved apart: a base model and an adapter saved beside it are both loaded, so
-    # an 80 MB adapter must never stand in for the 8 GB model it adapts. The transformers and
-    # diffusers spellings are two payloads too, unless the folder declares which class loads
-    # it: then the other spelling is one this load never opens and is held, not charged.
+    # Tables resolved apart: an 80 MB adapter must never stand in for the 8 GB model it adapts.
+    # The transformers and diffusers spellings are two payloads too, unless the folder declares
+    # which class loads it: the other spelling is then one this load never opens, held not charged.
     transformers_model, transformers_held = _selected_archive(
         homes, sizes, tree, vendor, _TRANSFORMERS_ARCHIVES
     )
@@ -5876,8 +5868,7 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     adapter, adapter_held = _selected_archive(homes, sizes, tree, vendor, _ADAPTER_ARCHIVES)
     archive = {**model, **adapter}
 
-    # A same-stem file under an unlisted extension (model.pt beside model.safetensors) is that
-    # archive serialized again, the same call the component loop below makes for two components.
+    # model.pt beside model.safetensors is that archive serialized again, not a second payload.
     alternatives = model_held | adapter_held
     archive_stems = {(path.parent, path.stem) for path in archive}
     alternatives |= {path for path in sizes if (path.parent, path.stem) in archive_stems}
@@ -5895,8 +5886,8 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     for path, size in ordered:
         components.setdefault(path.stem, size)
     accounted = {path for path in alternatives if path.parent in here} | set(archive)
-    # An index that reaches into a subfolder claims that shard family there whole: a sibling
-    # the map no longer names (model-00003-of-00002) is an obsolete shard, not a component.
+    # An index reaching into a subfolder claims that shard family whole: a sibling it no longer
+    # names (model-00003-of-00002) is an obsolete shard, not a component.
     for shard in [path for path in archive if path.parent not in here]:
         base, _ = _archive_stem(shard.stem)
         accounted |= {
@@ -5910,8 +5901,7 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
 
 
 def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
-    # Lexical, like the index targets it is compared against: a `..` in an accepted path must
-    # not make a shard the index names look like it sits outside the model.
+    # Lexical, so a `..` cannot make a shard the index names look like it sits outside the model.
     model_path = Path(os.path.normpath(model_name))
     if not model_path.exists():
         return None
@@ -5926,9 +5916,8 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     weight_sizes: dict = {}
     homes_by_directory: dict = {}
     vendor: set = set()
-    # Where a folder sits is a property of the folder, so it is settled once per folder
-    # rather than once per file: a model directory holds a handful of folders and, if the
-    # user also keeps datasets or logs there, a great many files.
+    # Where a folder sits is settled once per folder rather than once per file: a model
+    # directory holds a handful of folders and, beside datasets or logs, a great many files.
     placed: dict = {}
     for file in model_path.rglob("*"):
         if not file.is_file():
@@ -5936,8 +5925,8 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         parent = file.parent
         if parent not in placed:
             rel_parent = parent.relative_to(model_path)
-            # A top-level original/ answers to the directory above it, files and index alike.
-            # Its real location is recorded, since a nested component's vendor copy keeps shape.
+            # A top-level original/ answers to the directory above it, files and index alike; its
+            # real location is kept too, since a nested component's vendor copy keeps its shape.
             is_vendor = rel_parent.parts[:1] == ("original",)
             placed[parent] = (
                 any(part.startswith(skip_prefixes) for part in rel_parent.parts),
@@ -5980,9 +5969,8 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
 
     # A shallower index can name a shard inside a deeper folder, so it decides first, and by
     # stem: the twin of a claimed shard is that weight saved twice, not a second component.
-    # Only the weights and what an index actually names are measured; a folder's other files
-    # are left unread, so sizing a model kept beside a dataset costs one stat per weight. The
-    # indexes are read once here and handed on, so no later pass opens them again.
+    # Only the weights and index-named paths are stat()ed, so a model kept beside a dataset
+    # costs one stat per weight. The indexes are read once here and handed on.
     files = dict(weight_sizes)
     read: dict = {}
     for index in index_files:
