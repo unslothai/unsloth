@@ -4857,10 +4857,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     #
     # Not `exec`: the status has to be recorded after the stage exits, and a group leader is
     # already what `setsid` gives us, so the negative kill still takes the children.
-    inner = (
-        f"[ -f {activate} ] && . {activate}; {env}; {node1}; "
-        f"echo $? > {_PEER_STAGE_RC}"
-    )
+    inner = f"[ -f {activate} ] && . {activate}; {env}; {node1}; " f"echo $? > {_PEER_STAGE_RC}"
     remote = (
         f'cd "$HOME" && rm -f {_PEER_STAGE_RC} {_PEER_STAGE_PID}; '
         f"setsid nohup bash -c {shlex.quote(inner)} "

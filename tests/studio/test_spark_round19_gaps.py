@@ -60,9 +60,7 @@ def test_the_public_plan_passes_the_gguf_kv_through(monkeypatch) -> None:
             prefill_heavy = False,
             kv_gib_per_user = 0.0,
         ):
-            seen.update(
-                n_nodes = n_nodes, concurrency = concurrency, kv_gib_per_user = kv_gib_per_user
-            )
+            seen.update(n_nodes = n_nodes, concurrency = concurrency, kv_gib_per_user = kv_gib_per_user)
             return {"topology": "replicas"}
 
     cmd._plan_deployment(_SC, 105.0, 2, concurrency = 16, kv_gib_per_user = 1.0)
@@ -71,7 +69,7 @@ def test_the_public_plan_passes_the_gguf_kv_through(monkeypatch) -> None:
     source = (REPO / "unsloth_cli" / "commands" / "spark.py").read_text()
     body = source.split('@spark_app.command("plan")')[1].split("@spark_app.command")[0]
     assert "serving_kv_gib_per_user(model, ctx)" in body
-    assert "kv_gib_per_user = kv.get(\"gib\") or 0.0" in body
+    assert 'kv_gib_per_user = kv.get("gib") or 0.0' in body
 
 
 def test_a_planned_rail_that_disappears_is_drift(cluster, monkeypatch) -> None:
@@ -125,7 +123,7 @@ def test_the_ddp_script_path_is_quoted(cluster, monkeypatch) -> None:
 
 def test_the_peer_replica_executable_is_quoted() -> None:
     source = (REPO / "studio" / "spark_cluster.py").read_text()
-    assert 'peer_server_cmd = f\'"{peer_bin_dir}/llama-server"\'' in source
+    assert "peer_server_cmd = f'\"{peer_bin_dir}/llama-server\"'" in source
 
 
 def test_a_shared_parameter_is_scaled_once() -> None:

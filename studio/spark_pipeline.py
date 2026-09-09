@@ -2004,11 +2004,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # `dataset_problem()` accepts a file with a trailing blank line, since it only needs
         # one nonblank row; this used to hand every raw line to `json.loads`, so the
         # JSONDecodeError arrived after both ranks had materialised the model.
-        rows = [
-            json.loads(line)
-            for line in open(args.data, encoding = "utf-8")
-            if line.strip()
-        ]
+        rows = [json.loads(line) for line in open(args.data, encoding = "utf-8") if line.strip()]
         texts = [
             tok.apply_chat_template(
                 [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],
