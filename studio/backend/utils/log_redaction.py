@@ -54,7 +54,8 @@ _SECRET_KEYS = (
     # Provider prefixes may run into a camelCase credential suffix.
     r"[a-z][a-z0-9]*(?:api[-_]?key|access[-_]?key|access[-_]?token|auth[-_]?token|"
     r"bearer[-_]?token|client[-_]?secret|private[-_]?key(?:[-_]?data)?|"
-    r"refresh[-_]?token|session[-_]?token|(?:secret|signing|encryption|ssh)[-_]?key)"
+    r"refresh[-_]?token|session[-_]?token|(?:secret|signing|encryption|ssh)[-_]?key|"
+    r"password|passwd|passphrase)"
 )
 # "credentials" groups a mapping as often as it holds a secret, so only a scalar value is masked and a mapping keeps
 # its field names for the keys above to handle one by one
@@ -67,7 +68,7 @@ _FLAG_SECRET_KEYS = _SECRET_KEYS + "|token"
 _KEY_START = r"(?<![A-Za-z0-9])"
 # every rule below needs one of these fragments, so a line without any is returned untouched before the regex passes
 _TRIGGER_RE = re.compile(
-    r"(?i)key|token|secret|pass|pwd|auth|cookie|credential|connstr|connectionstring|signature|[?&]sig=|"
+    r"(?i)key|token|secret|pass|pwd|auth|bearer|cookie|credential|connstr|connectionstring|signature|[?&]sig=|"
     r"hf_|sk-|gsk_|xai-|gh[pousr]_|github_pat_|glpat-|xox[abpsr]-|ya29\.|aiza|akia|asia|eyj|://|-----begin|"
     r"ld_preload|ssh_agent|gpg_agent|gnupghome|kubeconfig|docker_host|"
     r"aws_|azure_|google_|gcp_|gcloud_|dyld_|[\x1b\x90\x98\x9b\x9d-\x9f]"
@@ -133,12 +134,18 @@ _QUOTED_VALUE = r"(?:\\.|(?P=quote)(?P=quote)|(?!(?P=quote))[^\\\n])*"
 _UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
 # python string prefixes: bytes, raw and unicode, so r"..." is read as a quoted value rather than a plain "r"
 _PYTHON_BYTES_PREFIX = r"(?:[bB][rR]?|[rR][bB]?|[uU])"
+# PowerShell escapes a quote inside a quoted string as `", so a value logged from a -Command line reads as `"...`"
+# and the pair is its delimiter; the plain-value rules skip it or they would mask the backtick alone
+_QUOTE = r"(?P<quote>`?[\"'])"
+_NOT_A_QUOTE = r"(?!`[\"'])"
 _SHELL_WORD_SUFFIX = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|\\[^\r\n]|[^\s\\'\";&|<>()])*"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P<sep>[ \t]*=[ \t]*)(?:(?P<value_bytes>"
     + _PYTHON_BYTES_PREFIX
-    + r")?(?P<quote>[\"'])(?P<quoted>"
+    + r")?"
+    + _QUOTE
+    + r"(?P<quoted>"
     + _QUOTED_VALUE
     + r")(?P=quote)(?P<suffix>"
     + _SHELL_WORD_SUFFIX
@@ -156,8 +163,11 @@ _STRUCTURED_ENV_KV_RE = re.compile(
 # a triple quote is left to _TRIPLE_QUOTED_KV_RE, or the first two would read as an empty value
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?"
-    r"(?P<quote>[\"'])(?!(?P=quote)(?P=quote))"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value_bytes>"
+    + _PYTHON_BYTES_PREFIX
+    + r")?"
+    + _QUOTE
+    + r"(?!(?P=quote)(?P=quote))"
     r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
 _UNTERMINATED_QUOTED_KV_RE = re.compile(
@@ -174,8 +184,11 @@ _CONTAINER_KV_START_RE = re.compile(
 _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)"
-    r"(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
-    r"(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
+    r"(?!"
+    + _PYTHON_BYTES_PREFIX
+    + r"[\"'])"
+    + _NOT_A_QUOTE
+    + r"(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
 )
 _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))\b"
@@ -202,8 +215,11 @@ _QUOTED_ENV_PAIR_RE = re.compile(
 _PAIR_SECRET_KEY_RE = re.compile(r"(?i)(?:" + _SECRET_KEYS + r"|(?:set-)?cookie)")
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
-    r"(?P<val>[^\"'\s,}\]]+)"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!"
+    + _PYTHON_BYTES_PREFIX
+    + r"[\"'])"
+    + _NOT_A_QUOTE
+    + r"(?P<val>[^\"'\s,}\]]+)"
 )
 # toml triple quotes: the ordinary quoted rule would take the first two as an empty value and leave the secret after them
 _TRIPLE_QUOTED_KV_RE = re.compile(
@@ -217,13 +233,16 @@ _QUOTED_SCALAR_ONLY_RE = re.compile(
 )
 _PLAIN_SCALAR_ONLY_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SCALAR_ONLY_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
-    r"(?P<val>[^\"'\s|>,}\]{\[(][^\"'\r\n,}\]]*)"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!"
+    + _PYTHON_BYTES_PREFIX
+    + r"[\"'])"
+    + _NOT_A_QUOTE
+    + r"(?P<val>[^\"'\s|>,}\]{\[(][^\"'\r\n,}\]]*)"
 )
 # a flag takes its value after whitespace or "=": --token=<value> is as common as --token <value>
 _QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
-    r"(?P<sep>\s+|=)(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
+    r"(?P<sep>\s+|=)" + _QUOTE + r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
 _UNTERMINATED_QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
@@ -231,7 +250,11 @@ _UNTERMINATED_QUOTED_FLAG_RE = re.compile(
     re.MULTILINE,
 )
 _FLAG_RE = re.compile(
-    r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))(?P<sep>\s+|=)(?P<val>[^\s\"']+)"
+    r"(?i)(?P<key>--(?:"
+    + _FLAG_SECRET_KEYS
+    + r"))(?P<sep>\s+|=)"
+    + _NOT_A_QUOTE
+    + r"(?P<val>[^\s\"']+)"
 )
 # a posix or windows path root, which is what the shell's PWD holds and a password does not
 _PATH_START_RE = re.compile(r"(?:[/~]|[A-Za-z]:[\\/])")

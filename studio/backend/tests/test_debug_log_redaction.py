@@ -141,6 +141,9 @@ def test_connection_field_boundaries_preserve_only_separate_fields(line, expecte
         "awsSecretAccessKey",
         "providerAccessToken",
         "providerPrivateKey",
+        "dbPassword",
+        "dbPasswd",
+        "smtpPassphrase",
     ],
 )
 @pytest.mark.parametrize(
@@ -152,6 +155,31 @@ def test_provider_prefixed_secret_keys_are_masked(name, template):
     expected = template.format(name = name, value = REDACTED)
     assert redact_log_text(line) == expected
     assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ('PASSWORD=`"correct horse battery`" -Verbose', f'PASSWORD=`"{REDACTED}`" -Verbose'),
+        ("password = `'correct horse`' status=ok", f"password = `'{REDACTED}`' status=ok"),
+        (
+            'llama-server --api-key `"correct horse`" --port 8080',
+            f'llama-server --api-key `"{REDACTED}`" --port 8080',
+        ),
+    ],
+)
+def test_a_powershell_escaped_quote_delimits_the_whole_value(line, expected):
+    """A -Command line logs its quotes as `", so the value runs to the closing pair, not the first space."""
+    assert redact_log_text(line) == expected
+    assert StreamingLogRedactor().redact_record(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+def test_a_bare_bearer_token_is_masked_without_another_trigger():
+    """The scheme rule has no key word of its own, so the pre-scan must let "Bearer" through."""
+    line = "Bearer AbCdEfGhIjKlMnOpQrStUvWx0123"
+    assert redact_log_text(line) == f"Bearer {REDACTED}"
+    assert StreamingLogRedactor().redact_record(line) == f"Bearer {REDACTED}"
 
 
 @pytest.mark.parametrize("name", ["NPM_CONFIG__AUTH", "REDISCLI_AUTH"])
@@ -389,6 +417,8 @@ KEEP = [
     "secret_sauce_path=/data/recipes/default.yaml",
     "PRIVATE_KEY_PATH=/etc/ssl/private/server.key",
     "HF_TOKEN_PATH=/home/dan/.cache/huggingface/token",
+    "passwordLength: 8",
+    "maxPasswordAge: 90",
 ]
 
 

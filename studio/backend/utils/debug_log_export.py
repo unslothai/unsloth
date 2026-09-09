@@ -11,7 +11,6 @@ import re
 import stat
 import tempfile
 import zipfile
-from pathlib import Path
 from typing import BinaryIO, Iterable
 
 from utils.debug_log_sources import LogSource
@@ -34,9 +33,19 @@ def _safe_text(value: str) -> str:
     return value.encode("utf-8", errors = "backslashreplace").decode("utf-8")
 
 
+_SEPARATOR_RE = re.compile(r"[\\/]+")
+
+
+def _member_base_name(label: str) -> str:
+    """The last component under either separator, so a POSIX name holding a
+    backslash cannot read as a traversal to a Windows extractor."""
+    name = _safe_text(_SEPARATOR_RE.split(label)[-1]).strip()
+    return "log.txt" if name in ("", ".", "..") else name
+
+
 def _unique_archive_name(source: LogSource, used: set[str]) -> str:
     """A relative, collision-free member name without exposing the host path."""
-    base = _safe_text(Path(source.label).name) or "log.txt"
+    base = _member_base_name(source.label)
     family = _safe_text(source.family)
     candidate = f"{family}/{base}"
     if candidate in used:
@@ -219,7 +228,7 @@ def build_debug_log_archive(sources: Iterable[LogSource]) -> BinaryIO:
                             _copy_redacted(log_file, archived, source.size_bytes)
                 except (OSError, ValueError) as exc:
                     failures.append(
-                        f"{_safe_text(source.family)}/{_safe_text(Path(source.label).name)}: "
+                        f"{_safe_text(source.family)}/{_member_base_name(source.label)}: "
                         f"{_safe_error_summary(exc)}"
                     )
 

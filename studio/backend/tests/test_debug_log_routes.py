@@ -1083,6 +1083,44 @@ def test_export_warning_does_not_expose_a_source_realpath(tmp_path):
     assert "server/missing.log: FileNotFoundError (errno 2)" in warning
 
 
+def test_export_member_names_stay_inside_the_archive(tmp_path):
+    """A POSIX filename may hold backslashes or dots that a Windows extractor reads
+    as directories, so a member name is only ever the last component."""
+    from utils.debug_log_export import build_debug_log_archive
+    from utils.debug_log_sources import LogSource
+
+    payload = tmp_path / "payload.log"
+    payload.write_text("hello\n", encoding = "utf-8")
+
+    def source(id: str, label: str, realpath: Path) -> LogSource:
+        return LogSource(
+            id = id,
+            family = "server",
+            label = label,
+            realpath = str(realpath),
+            size_bytes = payload.stat().st_size,
+            modified_at = 0,
+            is_current = False,
+        )
+
+    sources = [
+        source("server:one", "server-x\\..\\..\\payload.log", payload),
+        source("server:two", "../../payload.log", payload),
+        source("server:dot", "..", tmp_path / "missing.log"),
+    ]
+    output = build_debug_log_archive(sources)
+    try:
+        with zipfile.ZipFile(output) as archive:
+            names = archive.namelist()
+            warning = archive.read("EXPORT_WARNINGS.txt").decode("utf-8")
+    finally:
+        output.close()
+    assert "server/payload.log" in names
+    assert "server/payload-two.log" in names
+    assert not any("\\" in name or ".." in name for name in names)
+    assert "server/log.txt: FileNotFoundError (errno 2)" in warning
+
+
 def test_the_endpoints_stay_out_of_the_access_log():
     """Load bearing, not tidiness. These paths are polled while the tab is open
     and they read the very file the access log writes to, so without the
