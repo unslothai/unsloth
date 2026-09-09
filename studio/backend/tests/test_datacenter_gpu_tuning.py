@@ -868,3 +868,34 @@ def test_pcie_warning_still_fires_on_an_unverified_fabric(monkeypatch):
     env = {"GGML_CUDA_P2P": "1"}
     LlamaCppBackend._apply_datacenter_env(env, [0, 1])
     assert [m for m in seen if "peer copies stay" in m], seen
+
+
+def test_masked_visible_devices_ignores_hidden_gpus_in_the_matrix(monkeypatch):
+    """nvidia-smi ignores CUDA_VISIBLE_DEVICES, so the matrix covers cards the
+    child never touches. With no explicit selection, a mask exposing a clean
+    NVLinked pair must not be vetoed by a PCIe edge to a hidden device."""
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2)
+    )
+    _use_topo(monkeypatch, TOPO_BRIDGED_4X)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert LlamaCppBackend._p2p_veto_reason(None) is None
+    # A mask spanning the islands is still correctly refused.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2")
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason(None) is not None
+
+
+def test_explicit_p2p_opt_out_does_not_warn_about_corruption(monkeypatch):
+    """UNSLOTH_DISABLE_DC_P2P=1 returns before the topology is inspected, so
+    calling the fabric unconfirmed would warn about corruption on a box that may
+    be perfectly healthy, at someone who already decided."""
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setenv("UNSLOTH_DISABLE_DC_P2P", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    seen = _capture_warnings(monkeypatch)
+    env: dict = {}
+    LlamaCppBackend._apply_datacenter_env(env, [0, 1])
+    assert "GGML_CUDA_P2P" not in env
+    assert not [m for m in seen if "without a confirmed NVLink" in m], seen

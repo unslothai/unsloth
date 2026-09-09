@@ -9323,9 +9323,22 @@ class LlamaCppBackend:
         # PCIe-crossing selection into an NVLinked-looking one and enable the very
         # flag this gate exists to withhold. The invariant holds wherever this
         # runs: a usable matrix means nvidia-smi answered, so the selection came
-        # from its branch too. With no selection, check the whole visible box
-        # rather than guessing which pair is meant.
-        selected = sorted(set(gpu_indices)) if gpu_indices is not None else list(gpu_ids)
+        # from its branch too.
+        if gpu_indices is not None:
+            selected = sorted(set(gpu_indices))
+        else:
+            # No explicit selection: the child uses every VISIBLE GPU. nvidia-smi
+            # ignores CUDA_VISIBLE_DEVICES (verified: it lists all 8 cards on a
+            # host masked to one), so the matrix covers devices the child will
+            # never touch. Without this filter, a mask exposing a clean NVLinked
+            # pair on a partially bridged box is vetoed by a PCIe edge to a hidden
+            # device, losing the speedup for no reason.
+            visible = cls._resolve_visible_physical_ids()
+            selected = (
+                [i for i in gpu_ids if i in set(visible)]
+                if visible is not None
+                else list(gpu_ids)
+            )
 
         if len(selected) < 2:
             return "fewer than two GPUs resolved in the interconnect matrix"
@@ -9465,6 +9478,12 @@ class LlamaCppBackend:
                     env["GGML_CUDA_P2P"],
                     veto,
                 )
+            elif p2p_opted_out or os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1":
+                # Asked for off and got off. The fabric was never inspected, so
+                # saying it is unconfirmed would be a corruption warning about a
+                # box that may be perfectly healthy, aimed at someone who already
+                # made the decision.
+                logger.info("GGML_CUDA_P2P left unset: %s", veto)
             elif not LlamaCppBackend._warned_no_nvlink:
                 LlamaCppBackend._warned_no_nvlink = True
                 logger.warning(

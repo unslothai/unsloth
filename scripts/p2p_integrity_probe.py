@@ -199,7 +199,17 @@ def main() -> int:
     print(
         f"PASS: all {checked} peer-copy tests transferred intact.\n"
         "P2P is safe on this host. Unsloth Studio still gates GGML_CUDA_P2P on\n"
-        "verified NVLink; set UNSLOTH_FORCE_DC_P2P=1 to enable it here anyway."
+        "verified NVLink, so to enable it here anyway:\n"
+        "\n"
+        "  data-center cards (A100, H100, L40S, RTX 6000 Ada, ...):\n"
+        "      UNSLOTH_FORCE_DC_P2P=1\n"
+        "  anything else, including GeForce:\n"
+        "      GGML_CUDA_P2P=1\n"
+        "\n"
+        "UNSLOTH_FORCE_DC_P2P only reaches the fabric check, which sits behind the\n"
+        "data-center gate, so it does nothing on a consumer card. Setting\n"
+        "GGML_CUDA_P2P yourself is passed through on every card (any value enables\n"
+        "it upstream, so unset it to turn it back off; 0 will NOT)."
     )
     return 0
 
