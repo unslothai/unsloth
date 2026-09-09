@@ -78,8 +78,8 @@ def test_single_leaf_regex_targets_only_that_projection():
 
 
 def test_auto_regex_mlp_tag_block_discovers_moe_on_fused_models():
-    # get_peft_regex on a fused-expert model lists only attention Linears as
-    # leaves; the mlp tag block is the remaining signal of MLP finetune intent.
+    # get_peft_regex on a fused-expert model lists only attention Linears as leaves; the mlp tag block is the remaining
+    # signal of MLP finetune intent.
     from unsloth.models._utils import get_moe_target_parameters
     both_auto = (
         r"(?:\bmodel\.layers\.[\d]{1,}\."
@@ -93,12 +93,9 @@ def test_auto_regex_mlp_tag_block_discovers_moe_on_fused_models():
 
 
 def test_explicit_attention_only_list_does_not_discover_moe_parameters():
-    # An explicit attention-only leaf list names no MLP projection, so experts
-    # must never be targeted. get_peft_model routes this ORIGINAL list (not the
-    # scoped regex) into detection precisely because family scoping makes
-    # get_peft_regex emit its full "mlp|feed_forward|ffn|dense" component block
-    # even for an attention-only request (see the regex below), which the
-    # string fallback cannot distinguish from the fused-expert auto regex.
+    # An explicit attention-only leaf list names no MLP projection, so experts must never be targeted.
+    # get_peft_model routes this ORIGINAL list (not the scoped regex) into detection precisely because family scoping
+    # makes get_peft_regex emit its full "mlp|feed_forward|ffn|dense" component block even for an attention-only request
     from unsloth.models._utils import get_moe_target_parameters
 
     attn_only_list = ["q_proj", "k_proj", "v_proj", "o_proj"]
@@ -120,11 +117,11 @@ def test_explicit_attention_only_list_does_not_discover_moe_parameters():
 
 
 def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
-    # Regression: an explicit list that names MLP leaves together with
-    # finetune_mlp_modules=False must NOT train experts. get_peft_regex scopes
-    # the MLP leaves out (its emitted regex carries no mlp tag block), so
-    # detection has to key on that SCOPED regex -- keying on the original list
-    # would let its gate/up/down leaves silently re-enable the frozen experts.
+    # Regression: an explicit list that names MLP leaves together with finetune_mlp_modules=False must NOT train
+    # experts.
+    # get_peft_regex scopes the MLP leaves out (its emitted regex carries no mlp tag block), so detection has to key on
+    # that SCOPED regex -- keying on the original list would let its gate/up/down leaves silently re-enable the frozen
+    # experts.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
@@ -139,8 +136,8 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
         "up_proj",
         "down_proj",
     ]
-    # Representative of what get_peft_regex emits for that list under
-    # finetune_mlp_modules=False: attention-only path, no mlp component block.
+    # Representative of what get_peft_regex emits for that list under finetune_mlp_modules=False: attention-only
+    # path, no mlp component block.
     scoped_regex = (
         r"(?:.*?(?:language|text).*?"
         r"(?:self_attn|attention|attn|mixer).*?"
@@ -157,8 +154,8 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
 
 
 def test_frozen_language_full_list_does_not_discover_moe_parameters():
-    # Vision-only request (finetune_language_layers=False) with a full leaf list
-    # must not reach the language-model experts either.
+    # Vision-only request (finetune_language_layers=False) with a full leaf list must not reach the language-model
+    # experts either.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
@@ -213,10 +210,9 @@ def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
 
 
 def test_attention_only_list_prefers_original_when_in_scope():
-    # The case the PR originally fixed: an attention-only list routed through
-    # get_peft_regex under a family scope (e.g. vision-off) still keeps experts
-    # off, because with MLP+language in scope detection uses the original
-    # attention-only list rather than the regex's spurious mlp component block.
+    # The case the PR originally fixed: an attention-only list routed through get_peft_regex under a family scope (e.g.
+    # vision-off) still keeps experts off, because with MLP+language in scope detection uses the original attention-only
+    # list rather than the regex's spurious mlp component block.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,

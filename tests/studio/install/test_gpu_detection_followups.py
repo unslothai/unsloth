@@ -284,9 +284,9 @@ class TestBackendExportLeafClassification:
     def test_export_block_uses_leaf(self, install_src):
         anchor = install_src.find("_torch_index_leaf=")
         assert anchor >= 0, "backend export must classify on the final path segment"
-        # Window spans the leaf-normalization prelude (query/frag drop + all-slash trim loop)
-        # through the export case arms.
-        window = install_src[anchor : anchor + 900]
+        # Wide enough to clear the provenance check that now sits between the leaf normalisation
+        # and the case arms.
+        window = install_src[anchor : anchor + 1600]
         assert 'export UNSLOTH_TORCH_BACKEND="rocm"' in window
         assert 'export UNSLOTH_TORCH_BACKEND="cpu"' in window
         assert 'export UNSLOTH_TORCH_BACKEND="cuda"' in window

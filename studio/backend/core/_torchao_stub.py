@@ -28,9 +28,7 @@ from typing import Optional
 _STUB_SENTINEL = object()
 
 
-# Metaclass for stub types so isinstance(x, StubClass) returns False instead of
-# raising TypeError -- peft's lora/torchao.py does isinstance() against torchao
-# types, which fails if those names resolve to stub modules rather than types.
+# isinstance() against a stub module raises TypeError; peft's lora/torchao.py needs it to return False.
 class _StubTypeMeta(type):
     def __instancecheck__(cls, instance):
         return False
@@ -122,6 +120,7 @@ _HIP_LINE_RE = re.compile(r"^hip\s*(?::[^=]*)?=\s*(.+?)\s*$", re.MULTILINE)
 
 def _version_is_rocm_tagged() -> Optional[bool]:
     """Whether the installed wheel's version carries a rocm tag. None if unreadable."""
+    # Neither on-disk signal was readable, so importing is the only way left.
     try:
         from importlib.metadata import version
         return "rocm" in version("torch").lower()
@@ -169,23 +168,24 @@ def _installed_torch_is_rocm() -> Optional[bool]:
     return False if (tagged is False and hip is False) else None
 
 
-def _is_windows_rocm() -> bool:
-    """True on a Windows host whose active torch is a ROCm build."""
-    # Gate on the active torch runtime, not env vars: HIP_PATH/ROCM_PATH outlive a revert to CUDA.
-    if sys.platform != "win32":
-        return False
+def torch_is_rocm() -> bool:
+    """True when the active torch is a ROCm/HIP build, using import-free checks when possible."""
     mod = sys.modules.get("torch")
     if mod is not None:
         return _module_is_rocm(mod)
     verdict = _installed_torch_is_rocm()
     if verdict is not None:
         return verdict
-    # Neither on-disk signal was readable, so importing is the only way left.
     try:
         import torch
     except Exception:
         return False
     return _module_is_rocm(torch)
+
+
+def _is_windows_rocm() -> bool:
+    """True on a Windows host whose active torch is a ROCm build."""
+    return sys.platform == "win32" and torch_is_rocm()
 
 
 def _ensure_finder() -> None:

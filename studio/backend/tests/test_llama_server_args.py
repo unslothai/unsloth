@@ -236,7 +236,7 @@ def test_a_bare_positional_is_rejected():
         # Startup output is how a bad GGUF is told from an OOM from a rejected flag.
         "--log-file",
         "--log-disable",
-        # Slot-state dir: Studio owns it for KV persistence across idle unload.
+        # Slot-state dir: Unsloth owns it for KV persistence across idle unload.
         "--slot-save-path",
         # These print and exit instead of serving.
         "-h",
@@ -1128,7 +1128,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     # pairs that mattered, so a name dropped from the denylist, or a twin dropped
     # from the scrub, is a red test rather than a back door found later.
     #
-    # llama.cpp applies the environment BEFORE argv, so the ones Studio always emits
+    # llama.cpp applies the environment BEFORE argv, so the ones Unsloth always emits
     # are overridden anyway; the rest are the reason this exists.
     for env_var, flag in (
         ("LLAMA_ARG_UI_MCP_PROXY", "--ui-mcp-proxy"),
@@ -1159,7 +1159,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     for kept in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
         assert kept not in _lsa.DENIED_ENV_VARS, kept
     # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
-    # Studio's own downloads use, not a llama-server behaviour switch, and the child
+    # Unsloth's own downloads use, not a llama-server behaviour switch, and the child
     # is always given a local -m path rather than a repo to fetch.
     assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
     _lsa.scrub_denied_env(env)
@@ -1187,3 +1187,228 @@ def test_the_projector_env_twins_survive_the_scrub():
     # the corrupt path it is undoing, and it does that itself.
     assert "LLAMA_ARG_MMPROJ" not in _lsa.DENIED_ENV_VARS
     assert "LLAMA_ARG_MMPROJ_URL" not in _lsa.DENIED_ENV_VARS
+
+
+# ------------------------------------- an inherited loader mode is a real choice
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({}, False),
+        (None, False),
+        # The enum itself is handler_string, so any value assigns the mode.
+        ({"LLAMA_ARG_LOAD_MODE": "mmap"}, True),
+        ({"LLAMA_ARG_LOAD_MODE": "dio"}, True),
+        # Set but empty selects nothing; upstream would reject it, not default.
+        ({"LLAMA_ARG_LOAD_MODE": "  "}, False),
+        # --mlock is handler_void: only a truthy value assigns anything.
+        ({"LLAMA_ARG_MLOCK": "1"}, True),
+        ({"LLAMA_ARG_MLOCK": "0"}, False),
+        # The deprecated boolean twins assign the whole mode either way.
+        ({"LLAMA_ARG_MMAP": "on"}, True),
+        ({"LLAMA_ARG_MMAP": "off"}, True),
+        ({"LLAMA_ARG_DIO": "1"}, True),
+        # Negative aliases count by PRESENCE: get_value_from_env forces "0".
+        ({"LLAMA_ARG_NO_MMAP": "0"}, True),
+        ({"LLAMA_ARG_NO_DIO": ""}, True),
+        ({"LLAMA_ARG_FIT": "off", "LLAMA_ARG_DEVICE": "none"}, False),
+    ],
+)
+def test_memory_env_selects_load_mode(env, expected):
+    assert _lsa.memory_env_selects_load_mode(env) is expected
+
+
+# --- the shared "is this ctx flag the user's opt-in?" test ----------------------
+# Both stripping paths (model_override_load_kwargs on the API auto-switch, and
+# _resolve_inherited_extra_args on /load) ask this one function, so a value that
+# survives one reload survives the other.
+
+
+def test_matching_ctx_override_confirms_only_an_exact_positive_int():
+    assert _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], 100352)
+    assert _lsa.matches_explicit_ctx_override(["-c", "100352"], 100352)
+    # llama.cpp folds the underscore spelling, and so does the matcher.
+    assert _lsa.matches_explicit_ctx_override(["--ctx_size", "100352"], 100352)
+    # Last-wins, exactly as the launch parses it.
+    assert _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "8192", "--ctx-size", "100352"], 100352
+    )
+    assert not _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "100352", "--ctx-size", "8192"], 100352
+    )
+    # A different value is a stale shadow, not an opt-in.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "8192"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(["--top-k", "40"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(None, 100352)
+
+
+def test_matching_ctx_override_is_total_over_stored_junk():
+    # Override rows are coerced on write but returned verbatim on read, so this is
+    # reached with whatever JSON an older build, the API or a hand edit left behind.
+    # None of it may raise inside a load, and none of it counts as confirmed.
+    for n_ctx in (None, 0, -1, "100352", "", "x", 100352.0, True, False, [100352], {"v": 1}):
+        assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], n_ctx), n_ctx
+    # A malformed flag raises in parse_ctx_override; the matcher answers False.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "--top-k"], 100352)
+
+
+# ── The pageable override never resurrects a shadowed lock ──────────────────
+# force_pageable_load rewrites an oversized non-mmap launch so the weights page in
+# from disk instead of being allocated whole in host RAM. llama.cpp resolves these
+# options last-wins, so `--mlock --no-mmap` runs UNLOCKED and unmapped: the strip has
+# to read the EFFECTIVE state, not the tokens. Dropping only the selector and leaving
+# the earlier --mlock standing hands the child mmap+mlock and page-locks the whole
+# oversized mapping into the RAM the override exists to keep pageable.
+
+
+def _rewritten_state(argv, env = None):
+    """``((mlock, reserves_ram), argv, env)`` after the pageable rewrite."""
+    env = dict(env or {})
+    out, overridden = _lsa.force_pageable_load(list(argv), env)
+    return _lsa.resolve_effective_memory_state(out, env), out, env, overridden
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--mlock", "--no-mmap"],
+        ["--mlock", "--no-direct-io"],
+        ["--mlock", "--load-mode", "none"],
+        ["--load-mode", "mlock", "--no-mmap"],
+        ["--load-mode=mlock", "--no-mmap"],
+        # The mapped spelling of the lock. It holds no unmapped copy of its own, so
+        # the rewrite has no reason to touch it -- until a later reserving selector
+        # shadows it, where leaving it standing is what re-locks the mapping.
+        ["--load-mode", "mmap+mlock", "--no-mmap"],
+        ["--load-mode=mmap+mlock", "--no-mmap"],
+        ["--load-mode", "mmap+mlock", "--no-direct-io"],
+    ],
+    ids = [
+        "no-mmap",
+        "no-dio",
+        "load-mode-none",
+        "load-mode-mlock",
+        "load-mode-mlock-equals",
+        "load-mode-mmap-mlock",
+        "load-mode-mmap-mlock-equals",
+        "load-mode-mmap-mlock-no-dio",
+    ],
+)
+def test_a_shadowed_lock_is_not_resurrected_by_the_pageable_rewrite(argv):
+    # The pre-rewrite child is already unlocked, so there is no lock to carry.
+    assert _lsa.resolve_effective_memory_state(argv) == (False, True)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert overridden, f"the unmapped launch was not rewritten at all: {out}"
+    assert not reserves, f"the child still holds a full unmapped copy: {out}"
+    assert not mlock, f"the rewrite page-locked the oversized mapping: {out}"
+
+
+@pytest.mark.parametrize(
+    "argv, expect_tokens",
+    [
+        (["--no-mmap", "--mlock"], ["--mlock"]),
+        (["--load-mode", "mlock"], ["--load-mode", "mmap+mlock"]),
+        (["--load-mode=mlock"], ["--load-mode", "mmap+mlock"]),
+    ],
+    ids = ["no-mmap-then-mlock", "load-mode-mlock", "load-mode-mlock-equals"],
+)
+def test_an_effective_lock_survives_the_pageable_rewrite(argv, expect_tokens):
+    """The control. "Keep this in RAM" is a real request when nothing shadowed it, so
+    it is carried onto a mapping (mmap+mlock) rather than discarded."""
+    assert _lsa.resolve_effective_memory_state(argv) == (True, True)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert overridden, f"the unmapped launch was not rewritten at all: {out}"
+    assert (mlock, reserves) == (True, False), f"the lock was dropped or kept unmapped: {out}"
+    assert out == expect_tokens, out
+
+
+def test_the_env_twin_of_a_shadowed_lock_goes_too():
+    """llama.cpp reads LLAMA_ARG_* before argv and the negative alias after the
+    affirmative one, so LLAMA_ARG_MLOCK=1 beside LLAMA_ARG_NO_MMAP is shadowed exactly
+    as the argv pair is. Leaving the var behind locks the child through the environment
+    with nothing in the argv to show it."""
+    env = {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_NO_MMAP": "1"}
+    assert _lsa.resolve_effective_memory_state([], env) == (False, True)
+
+    (mlock, reserves), _out, out_env, overridden = _rewritten_state([], env)
+
+    assert "LLAMA_ARG_NO_MMAP" not in out_env
+    assert "LLAMA_ARG_MLOCK" not in out_env, out_env
+    assert "LLAMA_ARG_MLOCK" in overridden, overridden
+    assert (mlock, reserves) == (False, False)
+
+
+def test_the_env_mapped_lock_mode_shadowed_by_an_argv_selector_goes_too():
+    """The env half of the mapped spelling. llama.cpp reads LLAMA_ARG_* before argv,
+    so an inherited LLAMA_ARG_LOAD_MODE=mmap+mlock followed by --no-mmap on the command
+    line is shadowed exactly as the all-argv pair is, and leaving the var behind locks
+    the restored mapping through the environment with nothing in the argv to show it."""
+    env = {"LLAMA_ARG_LOAD_MODE": "mmap+mlock"}
+    assert _lsa.resolve_effective_memory_state(["--no-mmap"], env) == (False, True)
+
+    (mlock, reserves), _out, out_env, overridden = _rewritten_state(["--no-mmap"], env)
+
+    assert "LLAMA_ARG_LOAD_MODE" not in out_env, out_env
+    assert overridden, "the unmapped launch was not rewritten at all"
+    assert (mlock, reserves) == (
+        False,
+        False,
+    ), f"the rewrite page-locked the oversized mapping: {out_env}"
+
+
+def test_an_unshadowed_mapped_lock_is_left_entirely_alone():
+    """The control that keeps the strip above scoped. ``mmap+mlock`` on its own already
+    maps, so it holds no full unmapped copy and is not this override's business: it must
+    come back untouched and, with nothing rewritten, report no override at all. Without
+    that, a launch that was always pageable would be reported as having been remapped."""
+    argv = ["--load-mode", "mmap+mlock"]
+    assert _lsa.resolve_effective_memory_state(argv) == (True, False)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert out == argv, out
+    assert not overridden, f"an already-mapped launch was reported as overridden: {overridden}"
+    assert (mlock, reserves) == (True, False)
+
+
+def test_the_env_mlock_mode_that_is_not_shadowed_keeps_its_lock():
+    """The control for the env half: LLAMA_ARG_LOAD_MODE=mlock with nothing after it
+    really is locked, so it becomes the mapped twin instead of being dropped."""
+    env = {"LLAMA_ARG_LOAD_MODE": "mlock"}
+    assert _lsa.resolve_effective_memory_state([], env) == (True, True)
+
+    (mlock, reserves), _out, out_env, _overridden = _rewritten_state([], env)
+
+    assert out_env["LLAMA_ARG_LOAD_MODE"] == "mmap+mlock"
+    assert (mlock, reserves) == (True, False)
+
+
+def test_an_argv_lock_that_overrides_an_inherited_selector_survives():
+    """The cross case, and the reason the rewrite cannot read either side alone: argv
+    is resolved after the environment, so --mlock beats an inherited LLAMA_ARG_NO_MMAP
+    and the lock is the user's live request."""
+    env = {"LLAMA_ARG_NO_MMAP": "1"}
+    argv = ["--mlock"]
+    assert _lsa.resolve_effective_memory_state(argv, env) == (True, True)
+
+    (mlock, reserves), out, out_env, _overridden = _rewritten_state(argv, env)
+
+    assert "LLAMA_ARG_NO_MMAP" not in out_env
+    assert out == ["--mlock"], out
+    assert (mlock, reserves) == (True, False)
+
+
+def test_a_pageable_launch_keeps_every_token_including_its_lock():
+    """Nothing here reserves RAM, so the override does not apply and the launch comes
+    back byte for byte -- the mlock strip is scoped to a rewrite, not to any --mlock."""
+    argv = ["--mlock", "--load-mode", "dio"]
+    assert _lsa.resolve_effective_memory_state(argv) == (False, False)
+
+    out, overridden = _lsa.force_pageable_load(list(argv), {})
+
+    assert out == argv and overridden == []

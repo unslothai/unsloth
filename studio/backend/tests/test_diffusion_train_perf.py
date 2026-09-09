@@ -175,7 +175,7 @@ def test_config_validates_new_fields():
     # compile_transformer is case/space-insensitive and stored lowered.
     assert _cfg(compile_transformer = " ON ").normalized().compile_transformer == "on"
 
-    # The generic Studio dict path preserves the flags without inventing defaults.
+    # The generic Unsloth dict path preserves the flags without inventing defaults.
     cfg = _config_from_dict(
         {
             "base_model": _SDXL,
@@ -188,7 +188,7 @@ def test_config_validates_new_fields():
     assert cfg.enable_tf32 is False
     assert cfg.cache_latents is False
 
-    # String flags from the generic Studio dict path are coerced: "false" is a truthy string, so an opt-out would silently no-op.
+    # String flags from the generic Unsloth dict path are coerced: "false" is a truthy string, so an opt-out would silently no-op.
     cfg = _config_from_dict(
         {
             "base_model": _SDXL,
@@ -707,7 +707,7 @@ def test_a_child_that_cleaned_up_is_not_cleaned_up_again(tmp_path, monkeypatch):
 
 def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeypatch):
     """Previous runs is built from the run JSONs and nothing else, and only a terminal event
-    wrote one. Studio being killed after a periodic save therefore left a resumable bundle on
+    wrote one. Unsloth being killed after a periodic save therefore left a resumable bundle on
     disk with no entry and no Resume action for it."""
     import inspect
     import json as _json
@@ -749,7 +749,7 @@ def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeyp
 
 
 def test_a_failed_checkpoint_write_is_recorded_too(tmp_path, monkeypatch):
-    """The failure is sticky in memory, but only a successful write asked for a record. Studio
+    """The failure is sticky in memory, but only a successful write asked for a record. Unsloth
     exiting after one left the last persisted record advertising the OLDER checkpoint as
     resumable -- the one the service has just decided is stale -- and resuming it rolls the run
     back past everything after it."""

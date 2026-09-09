@@ -7,6 +7,8 @@ import test from "node:test";
 
 import { defaultsFor } from "../src/features/images/image-generation-defaults.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
   for (const size of ["4B", "9B"]) {
     assert.deepEqual(defaultsFor(`unsloth/FLUX.2-klein-base-${size}`), {
@@ -36,10 +38,7 @@ test("keeps the existing family defaults and fallback", () => {
 });
 
 test("routed image picks apply and transactionally roll back model defaults", () => {
-  const source = readFileSync(
-    new URL("../src/features/images/images-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/images/images-page.tsx");
   const routeStart = source.indexOf(
     "const pick = diffusionRoutePick(",
     source.indexOf("const handledRouteModel"),
@@ -57,10 +56,7 @@ test("routed image picks apply and transactionally roll back model defaults", ()
 });
 
 test("routed video picks apply and transactionally roll back model defaults", () => {
-  const source = readFileSync(
-    new URL("../src/features/video/video-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/video/video-page.tsx");
   const routeStart = source.indexOf(
     "const pick = diffusionRoutePick(",
     source.indexOf("const handledRouteModel"),
@@ -90,12 +86,8 @@ test("failed image and video picks release their recipe hydration claims", () =>
     assert.match(source, /revertPick[\s\S]*r\.releaseRecipeClaim\?\.\(\)/);
   }
 
-  const hook = readFileSync(
-    new URL(
-      "../src/features/generation-presets/use-media-generation-presets.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  const hook = readSrc(
+    "features/generation-presets/use-media-generation-presets.ts",
   );
   assert.match(
     hook,

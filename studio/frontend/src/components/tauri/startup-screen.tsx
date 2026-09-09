@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
+import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
   startupWaitingMessage,
   STATUS_MESSAGE_ROTATION_MS,
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
-import { ChevronDown as ChevronDownIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useEffect, useState } from "react";
 
@@ -31,67 +32,6 @@ interface StartupScreenProps {
   onStartServer: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }
-
-function DiagnosticsCopyActions({
-  onCopyDiagnostics,
-  children,
-}: {
-  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
-  children: React.ReactNode;
-}) {
-  const [copying, setCopying] = useState(false);
-  const [manualReport, setManualReport] = useState<string | null>(null);
-  const [manualMessage, setManualMessage] = useState<string | null>(null);
-
-  async function handleCopyDiagnostics() {
-    setCopying(true);
-    try {
-      const result = await onCopyDiagnostics();
-      if (result.ok) {
-        setManualReport(null);
-        setManualMessage(null);
-      } else {
-        setManualReport(result.report);
-        setManualMessage(result.error ?? "Clipboard copy failed. Select and copy the diagnostics below.");
-      }
-    } catch (error) {
-      setManualReport(null);
-      setManualMessage(`Diagnostics copy failed: ${String(error)}`);
-    } finally {
-      setCopying(false);
-    }
-  }
-
-  return (
-    <div className="mt-4 flex w-full flex-col items-center gap-3">
-      <div className="flex gap-3">
-        <ActionButton
-          variant="secondary"
-          onClick={() => void handleCopyDiagnostics()}
-        >
-          {copying ? "Copying..." : "Copy Diagnostics"}
-        </ActionButton>
-        {children}
-      </div>
-      {manualMessage && (
-        <p className="max-w-md text-center text-xs text-destructive">{manualMessage}</p>
-      )}
-      {manualReport && (
-        <textarea
-          readOnly
-          value={manualReport}
-          onFocus={(event) => event.currentTarget.select()}
-          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
-        />
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -115,27 +55,6 @@ function Logo() {
         unsloth
       </span>
     </div>
-  );
-}
-
-function ActionButton({
-  onClick,
-  variant = "primary",
-  children,
-}: {
-  onClick: () => void;
-  variant?: "primary" | "secondary";
-  children: React.ReactNode;
-}) {
-  const base = "rounded-lg px-5 py-2.5 text-sm font-medium cursor-pointer transition-colors";
-  const styles =
-    variant === "primary"
-      ? `${base} bg-primary text-primary-foreground hover:bg-primary/80`
-      : `${base} bg-muted text-foreground hover:bg-muted/80`;
-  return (
-    <button type="button" className={styles} onClick={onClick}>
-      {children}
-    </button>
   );
 }
 
@@ -170,9 +89,9 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           To install Unsloth, click Get Started.
         </p>
-        <ActionButton onClick={onInstall}>
+        <Button size="hero" onClick={onInstall}>
           Get Started
-        </ActionButton>
+        </Button>
       </div>
     </div>
   );
@@ -218,23 +137,7 @@ function InstallingContent({
           {message.title}
         </p>
         <p className="text-sm text-muted-foreground">{message.subtitle}</p>
-        {detailLines.length > 0 && (
-          <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-              <span className="group-open:hidden">Show installation details</span>
-              <span className="hidden group-open:inline">Hide installation details</span>
-              <HugeiconsIcon
-                icon={ChevronDownIcon}
-                aria-hidden="true"
-                strokeWidth={1.5}
-                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
-              />
-            </summary>
-            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
-              {detailLines.join("\n")}
-            </pre>
-          </details>
-        )}
+        <LogDetails label="installation details" lines={detailLines} />
       </div>
     </div>
   );
@@ -260,23 +163,7 @@ function RepairingContent({
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground">Getting things ready...</p>
         <p className="text-sm text-muted-foreground">This won’t take long.</p>
-        {detailLines.length > 0 && (
-          <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-              <span className="group-open:hidden">Show setup details</span>
-              <span className="hidden group-open:inline">Hide setup details</span>
-              <HugeiconsIcon
-                icon={ChevronDownIcon}
-                aria-hidden="true"
-                strokeWidth={1.5}
-                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
-              />
-            </summary>
-            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
-              {detailLines.join("\n")}
-            </pre>
-          </details>
-        )}
+        <LogDetails label="setup details" lines={detailLines} />
       </div>
     </div>
   );
@@ -317,7 +204,7 @@ function InstallErrorContent({
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <ActionButton onClick={onRetryInstall}>Try Again</ActionButton>
+          <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -342,7 +229,7 @@ function RepairErrorContent({
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <ActionButton onClick={onRetry}>Retry</ActionButton>
+          <Button size="hero" onClick={onRetry}>Retry</Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -372,8 +259,8 @@ function NeedsElevationContent({
           ))}
         </div>
         <div className="mt-4 flex gap-3">
-          <ActionButton variant="secondary" onClick={onRetryInstall}>Cancel</ActionButton>
-          <ActionButton onClick={onApproveElevation}>Allow</ActionButton>
+          <Button variant="muted" size="hero" onClick={onRetryInstall}>Cancel</Button>
+          <Button size="hero" onClick={onApproveElevation}>Allow</Button>
         </div>
       </div>
     </>
@@ -404,7 +291,7 @@ function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
       <div className="mt-8 flex flex-col items-center gap-2">
         <p className="text-sm font-medium text-foreground">Server stopped</p>
         <div className="mt-4">
-          <ActionButton onClick={onStartServer}>Start Server</ActionButton>
+          <Button size="hero" onClick={onStartServer}>Start Server</Button>
         </div>
       </div>
     </>
@@ -429,7 +316,7 @@ function ErrorContent({
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <ActionButton onClick={onRetry}>Retry</ActionButton>
+          <Button size="hero" onClick={onRetry}>Retry</Button>
         </DiagnosticsCopyActions>
       </div>
     </>

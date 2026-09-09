@@ -8,9 +8,9 @@ import {
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
-// Pre-select gate for the RAG toggle, mirroring Web search/Code/MCP: armable
-// with no model; disabled only when a loaded model can't run
-// search_knowledge_base. The send path checks supportsTools independently.
+// Pre-select gate for the RAG toggle, mirroring Web search / Code / MCP: armable with no model,
+// disabled only when a loaded model cannot run search_knowledge_base. The send path checks
+// supportsTools independently.
 export function useRagToolDisabled(): boolean {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,

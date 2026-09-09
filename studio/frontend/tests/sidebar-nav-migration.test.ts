@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   DEFAULT_CUSTOMIZATION,
@@ -10,6 +9,8 @@ import {
   migrateShippedSidebarNavDefault,
   sanitizeCustomization,
 } from "../src/features/settings/stores/appearance-custom-store.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const shippedLayouts: SidebarNavItemPref[][] = [
   [
@@ -140,13 +141,7 @@ test("a shipped-looking layout chosen after migration is preserved", () => {
 
 /** The sync module uses path aliases, so read its constant rather than import it. */
 async function personalizationVersion(): Promise<number> {
-  const source = await readFile(
-    new URL(
-      "../src/features/profile/hooks/use-personalization-sync.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/profile/hooks/use-personalization-sync.ts");
   const match = /PERSONALIZATION_VERSION = (\d+)/.exec(source);
   assert.ok(match, "no PERSONALIZATION_VERSION in the sync module");
   return Number(match[1]);

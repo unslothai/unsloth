@@ -6,9 +6,13 @@ import test from "node:test";
 
 import {
   adoptedTransports,
+  mismatchStartAction,
   probeDescribesCurrentRun,
+  TRANSPORT,
   transportAfterStart,
 } from "../src/features/hub/download-manager/constants.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 test("a start of its own keeps the transport it resolved", () => {
   assert.equal(transportAfterStart("http", null), "http");
@@ -101,5 +105,93 @@ test("a reported null with nothing stored still holds no marker", () => {
   assert.deepEqual(
     adoptedTransports({ transport: "http", cancelTransport: null }, undefined),
     { transport: "http", cancelTransport: undefined },
+  );
+});
+
+test("auto continues over HTTP after a Xet stall leftover", () => {
+  // Health demotes Auto to HTTP while the .transport marker is still xet.
+  assert.equal(
+    mismatchStartAction(TRANSPORT.AUTO, TRANSPORT.HTTP, TRANSPORT.XET),
+    TRANSPORT.HTTP,
+  );
+});
+
+test("auto resumes an HTTP partial instead of restarting on Xet", () => {
+  // HTTP fallback already wrote the marker; Auto still resolving to Xet must
+  // not send the user to the Hub conflict banner.
+  assert.equal(
+    mismatchStartAction(TRANSPORT.AUTO, TRANSPORT.XET, TRANSPORT.HTTP),
+    TRANSPORT.HTTP,
+  );
+});
+
+test("an explicit HTTP preference discards a Xet partial without a dialog", () => {
+  assert.equal(
+    mismatchStartAction(TRANSPORT.HTTP, TRANSPORT.HTTP, TRANSPORT.XET),
+    TRANSPORT.HTTP,
+  );
+});
+
+test("an explicit Xet preference still asks before throwing away HTTP bytes", () => {
+  assert.equal(
+    mismatchStartAction(TRANSPORT.XET, TRANSPORT.XET, TRANSPORT.HTTP),
+    "conflict",
+  );
+});
+
+test("an explicit Xet preference restarts an unresumable HTTP partial", () => {
+  assert.equal(
+    mismatchStartAction(TRANSPORT.XET, TRANSPORT.XET, TRANSPORT.HTTP, false),
+    TRANSPORT.XET,
+  );
+});
+
+test("unavailable Xet with an HTTP partial continues over HTTP", () => {
+  // Preference is Xet, but the machine already demoted the resolved transport.
+  assert.equal(
+    mismatchStartAction(TRANSPORT.XET, TRANSPORT.HTTP, TRANSPORT.HTTP),
+    TRANSPORT.HTTP,
+  );
+});
+
+test("a matching pair is left alone", () => {
+  assert.equal(
+    mismatchStartAction(TRANSPORT.AUTO, TRANSPORT.XET, TRANSPORT.XET),
+    TRANSPORT.XET,
+  );
+});
+
+test("a transport mismatch start uses the mismatch helper", () => {
+  const source = readSrc("features/hub/download-manager/transport-conflict.ts");
+  assert.match(
+    source,
+    /mismatchStartAction\(\s*preferred,\s*resolved,\s*last,\s*status\.resumable,\s*\)/,
+  );
+  assert.match(
+    source,
+    /siblingTransport !== mode &&\s*preferred !== TRANSPORT\.AUTO/,
+  );
+  assert.match(source, /mode = action;[\s\S]*?siblingTransport !== mode/);
+});
+
+test("staging owns cleanup while Hub resolves exact or scoped conflicts", () => {
+  const source = readSrc("features/hub/download-manager/use-repo-download.ts");
+  const exactIndex = source.indexOf(
+    "const exact = state.conflicts[conflictKey]",
+  );
+  const scopedIndex = source.indexOf(
+    "const scoped = Object.entries(state.conflicts)",
+  );
+  assert.ok(exactIndex >= 0 && scopedIndex > exactIndex);
+  assert.match(source, /__staged_download_idle__/);
+  assert.match(source, /__hub_autoload_idle__/);
+  assert.match(source, /preservedConflictKeyRef\.current = conflictKey/);
+  assert.match(source, /cancelConflict\(preservedConflictKeyRef\.current\)/);
+  assert.match(source, /resumeConflict\(visibleConflictKey\)/);
+  assert.match(source, /restartConflict\(visibleConflictKey\)/);
+  assert.match(source, /cancelConflict\(visibleConflictKey\)/);
+  assert.match(
+    source,
+    /downloadManager\.cancelConflict\(conflictKey\);\s*\},\s*\[conflictKey\]/,
   );
 });

@@ -3,7 +3,11 @@
 
 "use client";
 
-import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
+import {
+  ArtifactCard,
+  useChatProjectScope,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import {
   getCodeFence,
   isFullHtmlDocument,
@@ -11,14 +15,33 @@ import {
   isRenderableRenderHtmlToolPart,
   isSvgFence,
 } from "@/features/chat/artifacts/html-fences";
+// Leaf module, not the feature barrel: SEARCH_IMAGE_TAG is read at module scope
+// below, and the barrel sits in an import cycle with this file (TDZ at load).
+// eslint-disable-next-line no-restricted-imports
+import {
+  holdBackPartialSearchImageToken,
+  parseSearchImagesSignature,
+  placeSubjectImages,
+  precedingTextForMessagePart,
+  rewriteSearchImageTokens,
+  SEARCH_IMAGE_TAG,
+  searchImagesSignature,
+} from "@/features/chat/search-images/search-images";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
+import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
-import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
+import {
+  INTERNAL,
+  useAui,
+  useAuiState,
+  useMessagePartText,
+} from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
@@ -40,17 +63,46 @@ import {
   Streamdown,
   type StreamdownProps,
 } from "streamdown";
+import {
+  DeferredFenceShell,
+  fenceMode,
+  trimmedLength,
+  trimTrailingNewlines,
+  useFenceReached,
+} from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
+import { withMathBlockMarker } from "./math-block-marker";
+import {
+  MarkdownBlockBoundary,
+  MarkdownBlockFallbackView,
+  MarkdownRendererBoundary,
+} from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import {
+  decodeSegment,
+  markdownSandboxImageSrc,
+} from "./sandbox-files";
+import { SearchImageElement, SearchImagesContext } from "./search-image";
+import { useSandboxImage } from "./use-sandbox-image";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  markdownRenderKey,
+  parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
 
-const math = createMathPlugin({ singleDollarTextMath: true });
+const baseMath = createMathPlugin({ singleDollarTextMath: true });
+// Mark the block that holds each inline maths root, on the way past, so `index.css` has something
+// that can take containment. Composed onto the maths plugin's own rehype pass because that is the
+// only hook here that runs after Streamdown's sanitizer, which strips class names it does not
+// recognise. See `math-block-marker.ts` for why neither plugin prop works.
+const math = {
+  ...baseMath,
+  rehypePlugin: withMathBlockMarker(baseMath.rehypePlugin),
+} satisfies typeof baseMath;
 const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
@@ -81,6 +133,133 @@ const STREAMDOWN_IMMEDIATE_UPDATES = {
   stagger: 0,
 } satisfies NonNullable<StreamdownProps["animated"]>;
 
+/*
+ * Registering `img` replaces Streamdown's own renderer WHOLESALE (its `Components` map is keyed by
+ * tag, so the default `img` is only a default), so everything that renderer did for a `data:` image
+ * is restated here: wrapper, hidden-when-failed, fallback text, hover download. What it could not do
+ * is the reason this exists -- an on-disk answer image arrives as
+ * `![plot](/api/inference/sandbox/<sid>/plot.png)`, survives sanitize() because it carries no scheme,
+ * and then reaches the DOM as a plain same-origin <img src>, with no Authorization header, 401s, and
+ * renders as "Image not available". That case is rewritten into an authed fetch -> object URL first
+ * (see `use-sandbox-image`); a `data:` URI keeps going straight through, untouched.
+ */
+const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) {
+  // `node` is Streamdown's ExtraProps; it must not reach the DOM.
+  const {
+    src,
+    alt = "",
+    className,
+    onLoad,
+    onError,
+    node: _node,
+    ...dom
+  } = props as ComponentProps<"img"> & { node?: unknown };
+  // The fallback scope, for a src that records no session of its own (a bare `plot.png`): the same
+  // pair the adapter resolves a run's session from (`unstable_threadId ?? activeThreadId`). A src
+  // that DOES record one keeps it -- the folder its files were written to is where they still are.
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  const file = src
+    ? markdownSandboxImageSrc(src, {
+        threadId: remoteId ?? activeThreadId ?? undefined,
+        projectId,
+      })
+    : null;
+  const sandbox = useSandboxImage(file);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  // A sandbox src is renderable only once the authed fetch has produced a blob: until then it is
+  // absent, never raw. `data:`/`blob:` keep going through exactly as they were.
+  const resolved =
+    file === null
+      ? src
+      : sandbox.state.status === "loaded"
+        ? sandbox.state.url
+        : undefined;
+  const failedNow =
+    (resolved != null && failedSrc === resolved) ||
+    (file !== null && sandbox.state.status === "failed");
+  // Hidden when it failed and has no intrinsic size to fall back on, as Streamdown's own renderer does.
+  const sized = dom.width != null || dom.height != null;
+  // Download naming follows the replaced renderer: a real extension on the path wins whole (alt must
+  // never override a real filename); otherwise any extension in alt is STRIPPED and one inferred from the
+  // blob's type is appended -- so alt="plot" downloads "plot.png", not "plot". Split before DECODING,
+  // so a raw `#`/`?` keeps its delimiter meaning, then decode: `loss curve #1.png` must save under its
+  // real name, not as `loss%20curve%20%231.png`.
+  const downloadName = (blobType: string): string => {
+    const tail =
+      decodeSegment((file ?? src ?? "").split(/[?#]/)[0].split("/").pop() ?? "") || "";
+    const dot = tail.lastIndexOf(".");
+    if (dot > -1 && tail.length - dot - 1 <= 4) return tail;
+    const ext = /jpe?g/.test(blobType)
+      ? "jpg"
+      : blobType.includes("svg")
+        ? "svg"
+        : blobType.includes("gif")
+          ? "gif"
+          : blobType.includes("webp")
+            ? "webp"
+            : "png";
+    return `${(alt || tail || "image").replace(/\.[^/.]+$/, "")}.${ext}`;
+  };
+  return (
+    <span
+      data-streamdown="image-wrapper"
+      className="group relative my-4 inline-block"
+    >
+      <img
+        ref={file === null ? undefined : sandbox.ref}
+        data-streamdown="image"
+        src={resolved}
+        alt={alt}
+        decoding="async"
+        onLoad={(event) => {
+          setFailedSrc(null);
+          onLoad?.(event);
+        }}
+        onError={(event) => {
+          setFailedSrc(resolved ?? null);
+          onError?.(event);
+        }}
+        className={`max-w-full rounded-lg ${failedNow && !sized ? "hidden" : ""} ${className ?? ""}`}
+        {...dom}
+      />
+      {failedNow && (
+        <span
+          data-streamdown="image-fallback"
+          className="text-muted-foreground text-xs italic"
+        >
+          Image not available
+        </span>
+      )}
+      {/* Kept from the replaced renderer: the hover tint over the image. */}
+      <div className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
+      {!failedNow && resolved ? (
+        <button
+          type="button"
+          title="Download image"
+          className="absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
+          onClick={async () => {
+            // By now the src is always blob:/data:, so a plain fetch carries it.
+            try {
+              const blob = await (await fetch(resolved)).blob();
+              await downloadFile(blob, downloadName(blob.type), blob.type);
+            } catch (error) {
+              if (!isDownloadCancelled(error)) toast.error("Could not save file.");
+            }
+          }}
+        >
+          <HugeiconsIcon
+            icon={Download01Icon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+        </button>
+      ) : null}
+    </span>
+  );
+});
+
 const STREAMDOWN_COMPONENTS = {
   a: ({ href, children, ...props }: ComponentProps<"a">) => (
     <a
@@ -97,7 +276,18 @@ const STREAMDOWN_COMPONENTS = {
       {children}
     </a>
   ),
+  // Module-scoped: Streamdown's memo comparator ignores `components`.
+  [SEARCH_IMAGE_TAG]: SearchImageElement,
+  img: MarkdownImage,
 };
+// Through the sanitizer; the component drops tokens it cannot resolve.
+const STREAMDOWN_ALLOWED_TAGS = {
+  [SEARCH_IMAGE_TAG]: ["token"],
+} satisfies NonNullable<StreamdownProps["allowedTags"]>;
+
+// Module-scoped: Streamdown extends its sanitize schema only for its default pipeline, so the
+// allowed-tag merge and the data-image protocol ride on a pipeline we pass ourselves (see lib).
+const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport(STREAMDOWN_ALLOWED_TAGS);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -367,7 +557,18 @@ function StreamdownBlockContent(props: BlockProps) {
   if (mermaidSource) {
     return (
       <div className="relative isolate">
-        <Block {...blockProps} />
+        {/*
+         * The Mermaid renderer is the app's other lazy chunk, so the diagram is
+         * the second thing that can fail at render time. Degraded, it is its own
+         * source as readable code, and the copy button beside it still works.
+         */}
+        <MarkdownRendererBoundary
+          fallback={
+            <DeferredFenceShell language="mermaid" source={mermaidSource} />
+          }
+        >
+          <Block {...blockProps} />
+        </MarkdownRendererBoundary>
         <MermaidCopyButton source={mermaidSource} />
       </div>
     );
@@ -394,22 +595,184 @@ function StreamdownBlockContent(props: BlockProps) {
 
     return (
       <>
-        <div className="relative isolate">
-          <Block {...blockProps} />
-          <CodeBlockActions
-            disabled={props.isIncomplete}
-            language={codeFence.language}
-            source={codeFence.source}
-          />
-        </div>
+        <FenceBlock
+          blockProps={blockProps}
+          isIncomplete={props.isIncomplete}
+          language={codeFence.language}
+          source={codeFence.source}
+        />
         {svgSource && <SvgPreview source={svgSource} />}
       </>
     );
   }
 
-  return <Block {...blockProps} />;
+  /*
+   * THE STREAMING ROUTE, and the one that actually fires.
+   *
+   * `getCodeFence` needs the CLOSING fence, so a fence that is still arriving
+   * has no `codeFence` and falls all the way through to here rather than to
+   * `FenceBlock`. This bare `Block` is therefore what first asks for the
+   * highlighter chunk on a streamed reply, which is exactly when it fails.
+   *
+   * Left unguarded, the whole-block boundary catches that and latches with no
+   * reset, so the block never re-enters `FenceBlock` when its closing fence
+   * finally lands and the copy and download bar never mounts at all. Measured:
+   * with this unguarded, a streamed abort produced an identical document to the
+   * commit before the inner boundary existed, 0 copy and 0 download buttons on
+   * both. Guarding it keeps the failure inside the renderer boundary, so the
+   * completed block mounts `FenceBlock` normally and keeps its controls.
+   */
+  return (
+    <MarkdownRendererBoundary
+      fallback={<MarkdownBlockFallbackView content={props.content} />}
+    >
+      <Block {...blockProps} />
+    </MarkdownRendererBoundary>
+  );
 }
-const StreamdownBlock = memo(StreamdownBlockContent);
+
+/*
+ * The fence branch, extracted so the reach latch can be a hook.
+ *
+ * With the flag off this renders exactly what the branch rendered before: the
+ * same `relative isolate` wrapper, the same `<Block>`, the same action bar. The
+ * wrapper is reused as the intersection target rather than a new one being
+ * introduced, so the DOM the off arm produces is byte-for-byte what main
+ * produces and the on arm differs only in what is INSIDE the wrapper.
+ */
+function FenceBlock({
+  blockProps,
+  isIncomplete,
+  language,
+  source,
+}: {
+  blockProps: BlockProps;
+  isIncomplete: boolean | undefined;
+  language: string | null;
+  source: string;
+}) {
+  const host = useRef<HTMLDivElement | null>(null);
+  const mode = fenceMode();
+
+  /*
+   * WHICH FENCES THIS COVERS, and which it does not.
+   *
+   * `CODE_FENCE_RE` accepts exactly three backticks, unindented. CommonMark also allows tildes,
+   * four or more backticks (which is how a model writes a fence whose body contains one), and up
+   * to three spaces of indent. Those forms never reach here, so they render exactly as they do
+   * today and get no deferral: unrealised benefit, not a wrong result.
+   *
+   * Left alone deliberately rather than overlooked. `getCodeFence` is also what decides whether a
+   * block is an SVG or a full HTML document to be shown as an artifact, and a fence that does not
+   * match it renders a bare `<Block>` with no `relative isolate` wrapper and no copy button.
+   * Widening the regex would therefore add an artifact path and a copy overlay to blocks that do
+   * not have them today, which is a rendering change, and a performance PR is the wrong place to
+   * smuggle one in.
+   *
+   * It also does not move any number here: over the frozen corpus, 2,467,069 characters, all
+   * 1,456 fence delimiters are unindented triple backticks. Not one tilde, not one four-backtick
+   * fence, not one indented one.
+   */
+  // `getCodeFence` hands back the WHOLE info string, so a fence opened with metadata such as
+  // ```python startLine=10 arrives here as "python startLine=10". Markdown treats everything
+  // after the first word as metadata and Streamdown highlights it as `python`, so passing the
+  // raw string on would label the shell with the metadata attached and, in the measurement arm,
+  // tokenize an unknown language as plain text -- which is exactly the grammar work the arm
+  // exists to put back.
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
+
+  /*
+   * DRIVE THE HIGHLIGHTER OVER THIS FENCE ON DEMAND. The latch owns WHEN; this owns WHAT, because
+   * the plugin instance lives here with the component that renders the block.
+   *
+   * `tokens: true`: `code.highlight` returns synchronously once the grammar is loaded and caches
+   * on the source string, so this is the same object the block's own render is about to ask for,
+   * which is what lets a jump or a print swap straight to a COLOURED block rather than to
+   * streamdown's plain fallback. `tokens: false` highlights "", loading the grammar only.
+   */
+  const warm = useCallback(
+    (tokens: boolean) => {
+      code.highlight({
+        code: tokens ? trimTrailingNewlines(source) : "",
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      }, () => {});
+    },
+    [source, languageToken],
+  );
+
+  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
+  // it so that finishing the stream cannot hand it back the plain shell.
+  const reached = useFenceReached(
+    host,
+    mode !== "off",
+    Boolean(isIncomplete),
+    languageToken,
+    trimmedLength(source),
+    warm,
+  );
+
+  // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
+  // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
+  // on the source string, so the work happens exactly once and the discarded result is the same
+  // object the real path would have used.
+  const pretokenize = mode === "tokenize" && !reached;
+  useEffect(() => {
+    if (!pretokenize) return;
+    code.highlight(
+      {
+        code: trimTrailingNewlines(source),
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      () => {},
+    );
+  }, [pretokenize, source, languageToken]);
+
+  return (
+    <div className="relative isolate" ref={host}>
+      {/*
+       * Only `Block` can fail here, because only `Block` loads the highlighter
+       * at render time. Boundary it on its own so that a fence whose chunk will
+       * not load keeps the copy and download bar below, which is the control a
+       * reader reaches for precisely when a block did not render. The degraded
+       * form is the SAME plain shell an unreached fence already shows, so the
+       * failure looks like a fence that has not been highlighted rather than
+       * like a broken block.
+       */}
+      <MarkdownRendererBoundary
+        fallback={
+          <DeferredFenceShell language={languageToken} source={source} />
+        }
+      >
+        {reached ? (
+          <Block {...blockProps} />
+        ) : (
+          <DeferredFenceShell language={languageToken} source={source} />
+        )}
+      </MarkdownRendererBoundary>
+      <CodeBlockActions
+        disabled={Boolean(isIncomplete)}
+        language={language}
+        source={source}
+      />
+    </div>
+  );
+}
+/**
+ * Every block is rendered inside a boundary. Streamdown fetches the code
+ * highlighter and the Mermaid renderer with `React.lazy` the first time a reply
+ * needs them, and a rejected import rethrows during render; without this the
+ * nearest catcher is the ROUTER's, which replaces all of Unsloth and takes the
+ * reply and its runtime with it. Per block, so one fence losing its colours
+ * costs only that fence.
+ */
+const StreamdownBlock = memo((props: BlockProps) => (
+  <MarkdownBlockBoundary content={props.content}>
+    <StreamdownBlockContent {...props} />
+  </MarkdownBlockBoundary>
+));
+StreamdownBlock.displayName = "StreamdownBlock";
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
@@ -475,8 +838,17 @@ function useCoalescedStreamingText(
   return text;
 }
 
+/** False inside the reasoning block, which renders through this same component. */
+export const SearchImagesEnabledContext = createContext(true);
+
 const MarkdownTextImpl = () => {
+  const allowSearchImages = useContext(SearchImagesEnabledContext);
+  const aui = useAui();
   const { text, status } = useMessagePartText();
+  const partIndex =
+    aui.part.source === "message" && aui.part.query.type === "index"
+      ? aui.part.query.index
+      : 0;
   // Parts are keyed by index, so switching conversations hands this instance a
   // different message, and Streamdown only extends its parsed blocks: key it per
   // message. The cache generation joins the key for the case the Markdown string
@@ -486,11 +858,59 @@ const MarkdownTextImpl = () => {
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
   );
+  // A string, not the Map: selector results are compared by identity.
+  const searchImagesKey = useAuiState(({ message }) =>
+    allowSearchImages ? searchImagesSignature(message.parts) : "",
+  );
+  const searchImages = useMemo(
+    () => parseSearchImagesSignature(searchImagesKey),
+    [searchImagesKey],
+  );
+  // What earlier text parts said, so a subject named in two of them gets one card.
+  const precedingText = useAuiState(({ message }) =>
+    allowSearchImages
+      ? precedingTextForMessagePart(message.parts, partIndex)
+      : "",
+  );
+  const messageTextKey = useAuiState(({ message }) =>
+    allowSearchImages
+      ? JSON.stringify(
+          message.parts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text),
+        )
+      : "[]",
+  );
+  const messageTexts = useMemo(
+    () => JSON.parse(messageTextKey) as string[],
+    [messageTextKey],
+  );
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
-    () => stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
-    [displayText, isStreaming],
+    () =>
+      stabilizeStreamingMarkdown(
+        preprocessLaTeX(
+          normalizeEscapedInlineMath(
+            rewriteSearchImageTokens(
+              placeSubjectImages(
+                // no images means nothing to hold back, including a trailing bracket.
+                holdBackPartialSearchImageToken(
+                  displayText,
+                  isStreaming && searchImages.size > 0,
+                ),
+                searchImages,
+                isStreaming,
+                precedingText,
+                messageTexts,
+              ),
+              searchImages,
+            ),
+          ),
+        ),
+        isStreaming,
+      ),
+    [displayText, isStreaming, messageTexts, precedingText, searchImages],
   );
   const incrementalCacheRef = useRef({
     messageId,
@@ -506,6 +926,7 @@ const MarkdownTextImpl = () => {
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -516,24 +937,31 @@ const MarkdownTextImpl = () => {
     <RenderHtmlToolPresenceContext.Provider
       value={messageHasRenderableRenderHtmlTool}
     >
-      <div data-status={status.type} className="min-w-0 max-w-full">
-        <Streamdown
-          key={`${messageId}:${incrementalCache.renderGeneration}`}
-          mode="streaming"
-          parseIncompleteMarkdown={!incrementalRender}
-          parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
-          isAnimating={isStreaming}
-          animated={STREAMDOWN_IMMEDIATE_UPDATES}
-          plugins={STREAMDOWN_PLUGINS}
-          components={STREAMDOWN_COMPONENTS}
-          urlTransform={safeMarkdownUrl}
-          controls={STREAMDOWN_CONTROLS}
-          shikiTheme={STREAMDOWN_SHIKI_THEME}
-          BlockComponent={StreamdownBlock}
-        >
-          {incrementalRender?.markdown ?? processedText}
-        </Streamdown>
-      </div>
+      <SearchImagesContext.Provider value={searchImages}>
+        <div data-status={status.type} className="min-w-0 max-w-full">
+          <Streamdown
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
+            mode="streaming"
+            parseIncompleteMarkdown={!incrementalRender}
+            parseMarkdownIntoBlocksFn={
+              incrementalRender?.parseMarkdownIntoBlocks ??
+              parseMarkdownIntoRenderableBlocks
+            }
+            isAnimating={isStreaming}
+            animated={STREAMDOWN_IMMEDIATE_UPDATES}
+            plugins={STREAMDOWN_PLUGINS}
+            components={STREAMDOWN_COMPONENTS}
+            allowedTags={STREAMDOWN_ALLOWED_TAGS}
+            rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}
+            urlTransform={safeMarkdownUrl}
+            controls={STREAMDOWN_CONTROLS}
+            shikiTheme={STREAMDOWN_SHIKI_THEME}
+            BlockComponent={StreamdownBlock}
+          >
+            {incrementalRender?.markdown ?? processedText}
+          </Streamdown>
+        </div>
+      </SearchImagesContext.Provider>
     </RenderHtmlToolPresenceContext.Provider>
   );
 };

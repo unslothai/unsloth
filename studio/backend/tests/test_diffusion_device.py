@@ -153,7 +153,7 @@ def _install(
     monkeypatch.setitem(sys.modules, "utils.hardware", fake_uh)
 
 
-# ── Studio-layer path ─────────────────────────────────────────────────
+# ── Unsloth-layer path ─────────────────────────────────────────────────
 
 
 def test_cuda_ampere_bf16(monkeypatch):
@@ -249,7 +249,7 @@ def test_mps_probe_nonfinite_uses_fp32(monkeypatch):
 
 def test_studio_cpu_on_apple_prefers_mps(monkeypatch):
     torch = _make_torch(mps_available = True, mps_probe = "pass")
-    _install(monkeypatch, torch, studio_device = "cpu")  # Studio reports CPU (no mlx pkg)
+    _install(monkeypatch, torch, studio_device = "cpu")  # Unsloth reports CPU (no mlx pkg)
     t = dd.resolve_diffusion_device_target()
     assert t.device == "mps" and t.dtype == BF16
 

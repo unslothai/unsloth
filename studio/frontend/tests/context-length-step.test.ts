@@ -40,3 +40,19 @@ test("fixed adjustment keeps the highest representable value below a non-aligned
   });
   assert.equal(snapContextLengthToStep(32761, 128, 32761, 4096), 28672);
 });
+
+test("a step larger than the available context never exceeds the model limit", () => {
+  assert.deepEqual(getContextLengthSliderBounds(128, 4096, 8192), {
+    min: 128,
+    max: 4096,
+  });
+  assert.equal(snapContextLengthToStep(3000, 128, 4096, 8192), 3000);
+  assert.equal(snapContextLengthToStep(10000, 128, 4096, 8192), 4096);
+  assert.equal(snapContextLengthToStep(128, 128, 128, 8192), 128);
+});
+
+test("fractional and invalid steps fall back to a finite token value", () => {
+  for (const step of [0.5, 0, -1, NaN, Infinity]) {
+    assert.equal(snapContextLengthToStep(3000, 128, 4096, step), 3000);
+  }
+});

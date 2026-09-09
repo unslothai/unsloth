@@ -226,3 +226,56 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match = "cancelled"):
         bridge.run_local_agent("wait", cancel_event)
     assert stopped == [process]
+
+
+def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path):
+    # Pins the wiring: a Windows .cmd must reach the npm parser, not Popen (#9167).
+    # The parser behaviour itself is covered in test_start.py.
+    config = _write_config(tmp_path)
+    monkeypatch.setenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, str(config))
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: r"C:\\nodejs\\codex.cmd")
+    captured = {}
+
+    def resolver(
+        executable,
+        arguments,
+        environment = None,
+    ):
+        captured["resolver"] = (executable, arguments, environment)
+        return ["C:\\nodejs\\node.exe", "index.js", *arguments]
+
+    class Process:
+        pid = 1234
+        returncode = 0
+
+        def communicate(self, timeout):
+            return (
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "LOCAL_OK"},
+                    }
+                ),
+                "",
+            )
+
+        def poll(self):
+            return self.returncode
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        return Process()
+
+    monkeypatch.setattr(bridge, "_resolved_launch_command", resolver)
+    monkeypatch.setattr(bridge.subprocess, "Popen", popen)
+    assert bridge.run_local_agent("multi\nline\ntask") == "LOCAL_OK"
+
+    executable, arguments, environment = captured["resolver"]
+    assert executable == r"C:\\nodejs\\codex.cmd"
+    # The resolver sees the real argv and the child env, as _launch passes them.
+    assert arguments[0] == "--oss"
+    assert any("multi\nline\ntask" in argument for argument in arguments)
+    assert environment is not None and bridge._CODEX_ENV_KEY in environment
+    # Popen spawns the resolver's argv, not the .cmd.
+    assert captured["command"][0] == "C:\\nodejs\\node.exe"
+    assert any("multi\nline\ntask" in part for part in captured["command"])

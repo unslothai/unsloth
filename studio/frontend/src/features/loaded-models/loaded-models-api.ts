@@ -110,7 +110,7 @@ async function bounded<T>(
  * `previous` is what the card is showing. A read that failed or timed out comes
  * back as null, which is not evidence the runtime is empty: dropping its rows
  * would take the model off the card, and with all four failing on one blip of a
- * remote Studio the whole card would vanish while everything stayed loaded. So
+ * remote Unsloth the whole card would vanish while everything stayed loaded. So
  * an unreadable source keeps what it last showed and a readable one is always
  * replaced, including by an empty answer, which is how an unload still clears.
  */

@@ -671,6 +671,7 @@ def test_dac_weights_use_immutable_revision_and_active_cache(monkeypatch, tmp_pa
             "repo_id": source._DAC_REPOSITORY,
             "filename": source._DAC_FILENAME,
             "revision": source._DAC_REVISION,
+            "token": None,
             "cache_dir": str(hub_cache),
             "local_files_only": False,
         }

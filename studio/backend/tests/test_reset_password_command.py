@@ -3,7 +3,7 @@
 
 """The command a locked-out user is told to run has to run.
 
-It is printed exactly when someone cannot get into Studio, so every way of
+It is printed exactly when someone cannot get into Unsloth, so every way of
 being wrong here is a way of stranding them: naming the executable a policy
 denies (issue #8490), or naming an isolated module route that cannot see the
 site its own package lives in.

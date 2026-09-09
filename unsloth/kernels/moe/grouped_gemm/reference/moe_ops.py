@@ -20,7 +20,7 @@ def permute(X: torch.Tensor, gather_indices: torch.Tensor, topk: int):
     """
     assert gather_indices.ndim == 1
     X = X.view(-1, X.shape[-1])
-    # Shortcut for topk == 1
+    # Shortcut for topk == 1.
     if topk == 1:
         return X[gather_indices]
 
@@ -94,7 +94,7 @@ def get_routing_indices(
         min = 0,
         max = num_experts,
     )
-    # token_indices_experts_sorted shape (bs*slen*top_k,)
+    # token_indices_experts_sorted has shape (bs * slen * top_k,).
     gather_indices = torch.argsort(selected_experts.view(-1), stable = True)
     if return_scatter_indices:
         scatter_indices = gather_indices.argsort()
@@ -136,13 +136,11 @@ def torch_grouped_gemm(
         if m_size > 0:
             m_end = m_start + m_size
 
-            # Extract group input
-            # m_size x K
+            # Extract group input m_size x K
             X_g = X[m_start:m_end]
-            # N x K
             W_g = W[g]
 
-            # Y_g = X_g @ W_g.T -> [m_size, N]
+            # Y_g = X_g @ W_g.T -> [m_size, N].
             W_g = W_g.T if transpose else W_g
             Y_g = X_g @ W_g
 

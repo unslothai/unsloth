@@ -36,13 +36,11 @@ import torch
 from transformers.utils.import_utils import is_torchdynamo_compiling
 
 try:
-    # `is_tracing` exists only from Transformers 5.0.0, so the fallback below is
-    # the live path for all of 4.x, not just the 4.51.3 floor. The fallback
-    # mirrors what 4.x `modeling_attn_mask_utils` computes inline
-    # (`torch.jit.is_tracing() or isinstance(x, torch.fx.Proxy) or
-    # is_torchdynamo_compiling()`), so the data-dependent `torch.all(...)`
-    # branches stay skipped under JIT / FX / Dynamo and SDPA path selection is
-    # unchanged.
+    # `is_tracing` exists only from Transformers 5.0.0, so the fallback below is the live path for all
+    # of 4.x, not just the 4.51.3 floor. It mirrors what 4.x modeling_attn_mask_utils computes inline
+    # (torch.jit.is_tracing() or isinstance(x, torch.fx.Proxy) or is_torchdynamo_compiling()), so the
+    # data-dependent torch.all(...) branches stay skipped under JIT / FX / Dynamo and SDPA path
+    # selection is unchanged.
     from transformers.utils.import_utils import is_tracing  # type: ignore[attr-defined]
 except ImportError:
 
@@ -188,9 +186,9 @@ class AttentionMaskConverter:
 
         expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
 
-        # 0-dim tensor, not a Python float: a float literal lowers to an fp32
-        # scalar and breaks ExecuTorch edge-dialect export on fp16/bf16 masks.
-        # Matches upstream from 4.53.0 (huggingface/transformers#38637).
+        # 0-dim tensor, not a Python float: a float literal lowers to an fp32 scalar and breaks ExecuTorch
+        # edge-dialect export on fp16/bf16 masks. Matches upstream from 4.53.0
+        # (huggingface/transformers#38637).
         inverted_mask = torch.tensor(1.0, dtype = dtype) - expanded_mask
 
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
@@ -277,13 +275,10 @@ def _prepare_4d_causal_attention_mask_for_sdpa(
                 key_value_length = key_value_length,
             )
 
-        # Attend to all tokens in masked rows, e.g. the first rows under left
-        # padding. Required by F.scaled_dot_product_attention's memory-efficient
-        # path: https://github.com/pytorch/pytorch/issues/110213
-        # Scoped to this branch to match upstream. At function scope it also runs
-        # on the `attention_mask is None` path, where it is a no-op numerically
-        # but materialises `to_causal_4d`'s stride-0 view into a dense
-        # [bsz, 1, q, kv] tensor.
+        # Attend to all tokens in masked rows (the first rows under left padding), required by
+        # F.scaled_dot_product_attention's memory-efficient path (pytorch/pytorch#110213). Scoped to this
+        # branch to match upstream: at function scope it also runs on the attention_mask is None path,
+        # where it materialises to_causal_4d's stride-0 view into a dense [bsz, 1, q, kv] tensor.
         if not is_tracing_ and expanded_4d_mask.device.type in ["cuda", "xpu"]:
             expanded_4d_mask = AttentionMaskConverter._unmask_unattended(
                 expanded_4d_mask, min_dtype = torch.finfo(inputs_embeds.dtype).min

@@ -12,15 +12,29 @@ export const CONTEXT_LENGTH_SLIDER_STEPS = [
 export type ContextLengthSliderStep =
   (typeof CONTEXT_LENGTH_SLIDER_STEPS)[number]["value"];
 
+export function getContextLengthSliderStep(
+  min: number,
+  max: number,
+  step: number,
+): number {
+  const normalized = Number.isFinite(step) ? Math.max(1, Math.floor(step)) : 1;
+  return Math.ceil(min / normalized) <= Math.floor(max / normalized)
+    ? normalized
+    : CONTEXT_LENGTH_FINE_STEP;
+}
+
 export function getContextLengthSliderBounds(
   min: number,
   max: number,
   step: number,
 ): { min: number; max: number } {
-  const normalizedStep =
-    Number.isFinite(step) && step > 0 ? Math.floor(step) : 1;
   const normalizedMin = Math.ceil(Math.min(min, max));
   const normalizedMax = Math.floor(Math.max(min, max));
+  const normalizedStep = getContextLengthSliderStep(
+    normalizedMin,
+    normalizedMax,
+    step,
+  );
 
   if (normalizedStep === 1) {
     return { min: normalizedMin, max: normalizedMax };
@@ -41,8 +55,11 @@ export function snapContextLengthToStep(
   max: number,
   step: number,
 ): number {
-  const normalizedStep =
-    Number.isFinite(step) && step > 0 ? Math.floor(step) : 1;
+  const normalizedStep = getContextLengthSliderStep(
+    Math.min(min, max),
+    Math.max(min, max),
+    step,
+  );
   const bounds = getContextLengthSliderBounds(min, max, normalizedStep);
   const candidate = Number.isFinite(value) ? value : bounds.min;
   const snapped = Math.round(candidate / normalizedStep) * normalizedStep;

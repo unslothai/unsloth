@@ -41,9 +41,9 @@ export function hashArtifactCode(code: string): string {
   return (hash >>> 0).toString(36);
 }
 
-// The canvas source view keys its Streamdown on this. Streamdown memoizes a code
-// fence on its node's line/column span, ignoring the text, so equal-line-count
-// canvases keep the old source. Tool artifact IDs omit the code, so hash it in.
+// The canvas source view keys its Streamdown on this. Streamdown memoizes a code fence on its
+// node's line/column span, ignoring the text, so equal-line-count canvases keep the old source.
+// Tool artifact IDs omit the code, so hash it in.
 export function buildArtifactSourceKey(
   artifact: Pick<ChatArtifact, "id" | "code">,
 ): string {
@@ -53,8 +53,8 @@ export function buildArtifactSourceKey(
 export function createArtifactId(input: ChatArtifactInput): string {
   const threadSegment = input.threadId || "no-thread";
   const messageSegment = input.sourceMessageId || "transient";
-  // Backend tool call IDs (call_0, call_1, …) reset per request, so the
-  // message ID is needed to scope them to a specific turn.
+  // Backend tool call IDs (call_0, call_1, ...) reset per request, so the message ID is needed to
+  // scope them to a specific turn.
   const parts = [input.source, threadSegment, messageSegment];
 
   if (input.source === "tool" && input.sourceToolCallId) {

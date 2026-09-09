@@ -64,6 +64,18 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == [vulkan_device]
 
+    fresh_device = {**vulkan_device, "vram_free_gb": 3.0}
+    monkeypatch.setattr(
+        hardware,
+        "get_vulkan_inference_gpu_info",
+        lambda: {**inference_gpu, "devices": [fresh_device]},
+    )
+    logger = SimpleNamespace(debug = lambda *args: None)
+    assert main._get_cached_system_gpu_info(logger)[1]["devices"] == [vulkan_device]
+    refreshed = main._get_cached_system_gpu_info(logger, refresh_memory = True)
+    assert refreshed[1]["devices"] == [fresh_device]
+    assert main._get_cached_system_gpu_info(logger) is refreshed
+
 
 def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing(monkeypatch):
     """A Vulkan build whose probe returns no ordinals has nothing valid to pin,
@@ -287,3 +299,105 @@ def test_vulkan_inference_gpu_uses_inventory_fallback_names(monkeypatch):
     info = get_vulkan_inference_gpu_info()
     assert info["devices"][0]["name"] == "Vulkan0"
     assert info["devices"][0]["memory_total_gb"] == 16.0
+
+
+def test_system_gpu_info_keeps_a_reported_free_over_total_minus_used(monkeypatch):
+    """Apple unified memory reports free directly because it is not total - used.
+    Recomputing it here put the overstated figure back on the Resources tab while
+    /api/system/hardware served the honest one."""
+    import utils.hardware as hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "get_backend_visible_gpu_info",
+        lambda: {
+            "available": True,
+            "backend": "mlx",
+            "index_kind": "relative",
+            "devices": [
+                {
+                    "index": 0,
+                    "index_kind": "relative",
+                    "visible_ordinal": 0,
+                    "name": "Apple Silicon (Apple M2)",
+                    "memory_total_gb": 16.0,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda: {
+            "available": True,
+            "backend": "mlx",
+            "index_kind": "relative",
+            "parent_visible_gpu_ids": [0],
+            "devices": [
+                {
+                    "index": 0,
+                    "vram_total_gb": 16.0,
+                    "vram_used_gb": 1.2,
+                    "vram_free_gb": 6.0,
+                    "vram_utilization_pct": 7.5,
+                }
+            ],
+        },
+    )
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+    gpu, _inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
+
+    assert gpu["devices"][0]["vram_free_gb"] == 6.0
+
+
+def test_system_gpu_info_still_derives_free_when_the_probe_reports_none(monkeypatch):
+    """CUDA's utilization probe reports no free, so the subtraction has to stay."""
+    import utils.hardware as hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "get_backend_visible_gpu_info",
+        lambda: {
+            "available": True,
+            "backend": "cuda",
+            "index_kind": "relative",
+            "devices": [
+                {
+                    "index": 0,
+                    "index_kind": "relative",
+                    "visible_ordinal": 0,
+                    "name": "NVIDIA GeForce RTX 4090",
+                    "memory_total_gb": 24.0,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda: {
+            "available": True,
+            "backend": "cuda",
+            "index_kind": "relative",
+            "parent_visible_gpu_ids": [0],
+            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 6.0}],
+        },
+    )
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+    gpu, _inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
+
+    assert gpu["devices"][0]["vram_free_gb"] == 18.0
