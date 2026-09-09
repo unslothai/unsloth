@@ -3616,7 +3616,9 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
             keys = [_gguf_variant_key(f) for f in main_files]
             resolved = resolve_variant_alias(keys, variant_key)
             if resolved is not None:
-                return sorted(f for f in main_files if _gguf_variant_key(f).lower() == resolved.lower())
+                return sorted(
+                    f for f in main_files if _gguf_variant_key(f).lower() == resolved.lower()
+                )
             # Nothing owns it and no alias resolves it. Refuse ONLY a bare quant that names two
             # builds; every other spelling (a shard suffix, a label the key does not carry) still
             # reaches the label and boundary tiers below, as it always did.

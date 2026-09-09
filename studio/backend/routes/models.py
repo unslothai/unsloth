@@ -3811,7 +3811,8 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
             if selected is not None:
                 for _root, ranked in per_root:
                     ranked[1] = [
-                        entry for entry in ranked[1]
+                        entry
+                        for entry in ranked[1]
                         if _gguf_variant_key(entry[0]).lower() == selected.lower()
                     ]
         for root, ranked in per_root:
@@ -5518,12 +5519,16 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
             from hub.utils.gguf import resolve_variant_alias
             from utils.models.model_config import _gguf_variant_key
 
-            label_keys = {_gguf_variant_key(rel).lower() for ranked in per_rev for rel, _p in ranked[1]}
+            label_keys = {
+                _gguf_variant_key(rel).lower() for ranked in per_rev for rel, _p in ranked[1]
+            }
             selected = resolve_variant_alias(sorted(label_keys), want) if label_keys else None
             for ranked in per_rev:
                 ranked[1] = [
-                    entry for entry in ranked[1]
-                    if selected is not None and _gguf_variant_key(entry[0]).lower() == selected.lower()
+                    entry
+                    for entry in ranked[1]
+                    if selected is not None
+                    and _gguf_variant_key(entry[0]).lower() == selected.lower()
                 ]
         for ranked in per_rev:
             matches = ranked[0] or ranked[1]

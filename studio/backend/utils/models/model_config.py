@@ -3265,9 +3265,7 @@ def _default_root_gguf_filename(variants) -> Optional[str]:
     """
     from hub.utils.gguf import _keys_at_repo_root, collapse_same_quant_root_builds
 
-    advertised = {
-        v.filename: _qualified_variant_name(v.filename, v.quant) for v in variants
-    }
+    advertised = {v.filename: _qualified_variant_name(v.filename, v.quant) for v in variants}
     root_rows = [f for f, key in advertised.items() if _keys_at_repo_root(key)]
     pool = root_rows or list(advertised)
     keep = set(collapse_same_quant_root_builds([advertised[f] for f in pool]))

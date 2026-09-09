@@ -197,7 +197,9 @@ def _ensure_selected_local_model_loaded(
     # would run the recipe against the wrong weights.
     variant_matches = (
         not gguf_variant
-        or (_resolved_local_variant(target, active_variant or "") or active_variant or "").strip().lower()
+        or (_resolved_local_variant(target, active_variant or "") or active_variant or "")
+        .strip()
+        .lower()
         == (_resolved_local_variant(target, gguf_variant) or gguf_variant).strip().lower()
     )
     if active_model.lower() != target.lower() or not variant_matches:

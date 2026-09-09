@@ -1203,7 +1203,11 @@ def test_every_default_prefilter_keeps_quant_directory_builds_in_the_root_set():
     # The prefilter earns its keep only beside a REAL subordinate checkpoint: with the slash test
     # the quant-directory build fell out of the root set, the set came up empty, and the fallback
     # admitted ``distilled/`` to a contest the docstring says it must never enter.
-    with_subordinate = rows + [types.SimpleNamespace(quant = "distilled/model-Q4_K_M", filename = "distilled/model-Q4_K_M.gguf")]
+    with_subordinate = rows + [
+        types.SimpleNamespace(
+            quant = "distilled/model-Q4_K_M", filename = "distilled/model-Q4_K_M.gguf"
+        )
+    ]
     candidates = _default_variant_candidates(with_subordinate)
     assert len(candidates) == 1 and candidates[0].startswith("Q4_K_M/")
 
@@ -1214,11 +1218,17 @@ def test_both_loaders_give_the_bare_spelling_to_the_root_build(tmp_path):
     variant is absent. Two root builds still refuse."""
     root_beside_subordinate = ["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"]
     assert _gguf_files_for_variant(root_beside_subordinate, "q4_k_m") == ["model-Q4_K_M-mtp.gguf"]
-    assert _gguf_files_for_variant(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"], "q4_k_m") == []
+    assert (
+        _gguf_files_for_variant(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"], "q4_k_m") == []
+    )
 
     snapshot = _materialize(tmp_path / "snap", [(p, 1) for p in root_beside_subordinate])
-    assert _find_local_gguf_by_variant(str(snapshot), "Q4_K_M") == str(snapshot / "model-Q4_K_M-mtp.gguf")
-    two_roots = _materialize(tmp_path / "two", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)])
+    assert _find_local_gguf_by_variant(str(snapshot), "Q4_K_M") == str(
+        snapshot / "model-Q4_K_M-mtp.gguf"
+    )
+    two_roots = _materialize(
+        tmp_path / "two", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)]
+    )
     assert _find_local_gguf_by_variant(str(two_roots), "Q4_K_M") is None
 
 
@@ -1231,18 +1241,26 @@ def test_the_resident_check_canonicalises_both_spellings(monkeypatch):
 
     inventory = {"q4_0": "gemma-4-31B_q4_0-it", "gemma-4-31b_q4_0-it": "gemma-4-31B_q4_0-it"}
     monkeypatch.setattr(
-        local_model_resolver, "resolve_local_gguf",
-        lambda requested, **kw: (("/p", inventory.get(requested.split(":", 1)[1].lower()), "id")
-                                 if inventory.get(requested.split(":", 1)[1].lower()) else None),
+        local_model_resolver,
+        "resolve_local_gguf",
+        lambda requested, **kw: (
+            ("/p", inventory.get(requested.split(":", 1)[1].lower()), "id")
+            if inventory.get(requested.split(":", 1)[1].lower())
+            else None
+        ),
     )
     assert _resident_variant_matches("repo", "gemma-4-31B_q4_0-it", "q4_0") is True
     assert _resident_variant_matches("repo", "q4_0", "gemma-4-31B_q4_0-it") is True
     # A plain sibling owning the bare key keeps the two apart.
     split = {"q4_k_m": "Q4_K_M", "model-q4_k_m-mtp": "model-Q4_K_M-mtp"}
     monkeypatch.setattr(
-        local_model_resolver, "resolve_local_gguf",
-        lambda requested, **kw: (("/p", split.get(requested.split(":", 1)[1].lower()), "id")
-                                 if split.get(requested.split(":", 1)[1].lower()) else None),
+        local_model_resolver,
+        "resolve_local_gguf",
+        lambda requested, **kw: (
+            ("/p", split.get(requested.split(":", 1)[1].lower()), "id")
+            if split.get(requested.split(":", 1)[1].lower())
+            else None
+        ),
     )
     assert _resident_variant_matches("repo", "Q4_K_M", "model-Q4_K_M-mtp") is False
 
@@ -1262,8 +1280,13 @@ def test_the_estimate_resolves_the_bare_spelling_across_every_revision(tmp_path)
     import routes.models as models_module
 
     entries = [snaps.parent]
-    orig = models_module.iter_repo_cache_dirs if hasattr(models_module, "iter_repo_cache_dirs") else None
+    orig = (
+        models_module.iter_repo_cache_dirs
+        if hasattr(models_module, "iter_repo_cache_dirs")
+        else None
+    )
     import unittest.mock as mock
+
     with mock.patch.object(cache_state, "iter_repo_cache_dirs", lambda repo_type, repo_id: entries):
         assert _resolve_quant_gguf("org/repo", "Q4_K_M", False) == (None, 0)
         # One build across revisions still resolves, under its legacy spelling.
@@ -1278,7 +1301,9 @@ def test_the_estimate_resolves_the_bare_spelling_across_every_revision(tmp_path)
         assert path == str(snaps / "rev1" / "model-Q4_K_M-mtp.gguf") and total == 10
 
 
-def test_the_media_default_keeps_a_quant_directory_build_ahead_of_a_subordinate(tmp_path, monkeypatch):
+def test_the_media_default_keeps_a_quant_directory_build_ahead_of_a_subordinate(
+    tmp_path, monkeypatch
+):
     """Same prefilter, same failure: the media index dropped every slashed key before ranking
     its bare default, so beside ``distilled/`` the root set was empty and the fallback ranked the
     subordinate checkpoint for a bare repo id."""
@@ -1291,10 +1316,18 @@ def test_the_media_default_keeps_a_quant_directory_build_ahead_of_a_subordinate(
     monkeypatch.setattr(mmi, "_loader_can_open", lambda load_path, filename: True)
     # The subordinate is listed FIRST: the two keys tie on the quant text, so a fallback that
     # ranked the whole set would hand the bare id to whichever came first -- the wrong one here.
-    for files in (["distilled/model-Q4_K_M.gguf", "Q4_K_M/model-Q4_K_M-mtp.gguf"],
-                  ["Q4_K_M/model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"]):
-        monkeypatch.setattr(model_config, "list_local_gguf_variants",
-                            lambda p, files = files: ([types.SimpleNamespace(quant = gguf_variant_key(f), filename = f) for f in files], False))
+    for files in (
+        ["distilled/model-Q4_K_M.gguf", "Q4_K_M/model-Q4_K_M-mtp.gguf"],
+        ["Q4_K_M/model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"],
+    ):
+        monkeypatch.setattr(
+            model_config,
+            "list_local_gguf_variants",
+            lambda p, files = files: (
+                [types.SimpleNamespace(quant = gguf_variant_key(f), filename = f) for f in files],
+                False,
+            ),
+        )
         index = {}
         assert mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path) is True
         assert index["repo"].gguf_filename == "Q4_K_M/model-Q4_K_M-mtp.gguf", files
@@ -1316,7 +1349,9 @@ def test_the_load_path_default_agrees_with_every_other_resolver():
     assert _default_root_gguf_filename(rows(pair[::-1])) == "Hy3-Q4_K_M.gguf"
     # Two builds under a quant-only directory are root-level and collapse deterministically.
     quant_dir = ["Q4_K_M/model-Q4_K_M-mtp.gguf", "Q4_K_M/model-Q4_K_M-fp16.gguf"]
-    assert _default_root_gguf_filename(rows(quant_dir)) == _default_root_gguf_filename(rows(quant_dir[::-1]))
+    assert _default_root_gguf_filename(rows(quant_dir)) == _default_root_gguf_filename(
+        rows(quant_dir[::-1])
+    )
     # And a real subordinate checkpoint still never enters the contest when a root row exists.
     with_sub = ["distilled/model-Q4_K_M.gguf", "Q4_K_M/model-Q4_K_M-mtp.gguf"]
     assert _default_root_gguf_filename(rows(with_sub)) == "Q4_K_M/model-Q4_K_M-mtp.gguf"
@@ -1333,11 +1368,14 @@ def test_deleting_a_tagged_root_beside_a_subordinate_still_purges_the_bare_state
             self._names = names
 
     monkeypatch.setattr(
-        deletion, "_repo_file_matches",
+        deletion,
+        "_repo_file_matches",
         lambda repo, pred: [(None, None, n) for n in repo._names if pred(n)],
     )
     root_beside_subordinate = _Repo(["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"])
-    assert "q4_k_m" in deletion._state_spellings_for_delete(root_beside_subordinate, "model-q4_k_m-mtp")
+    assert "q4_k_m" in deletion._state_spellings_for_delete(
+        root_beside_subordinate, "model-q4_k_m-mtp"
+    )
     two_roots = _Repo(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"])
     assert "q4_k_m" not in deletion._state_spellings_for_delete(two_roots, "model-q4_k_m-mtp")
 
@@ -1355,7 +1393,9 @@ def test_the_estimate_uses_an_exact_key_alone_across_every_revision(tmp_path):
     (snaps / "rev2").mkdir(parents = True)
     (snaps / "rev1" / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
     (snaps / "rev2" / "model-Q4_K_M-mtp.gguf").write_bytes(b"x" * 40)
-    with mock.patch.object(cache_state, "iter_repo_cache_dirs", lambda repo_type, repo_id: [snaps.parent]):
+    with mock.patch.object(
+        cache_state, "iter_repo_cache_dirs", lambda repo_type, repo_id: [snaps.parent]
+    ):
         path, total = _resolve_quant_gguf("org/repo", "Q4_K_M", False)
     assert path == str(snaps / "rev1" / "model-Q4_K_M.gguf") and total == 10
 
@@ -1378,15 +1418,19 @@ def test_the_reveal_resolves_the_bare_spelling_across_every_revision(tmp_path, m
 
     def rev(snapshot, path, modified):
         return types.SimpleNamespace(
-            snapshot_path = str(snapshot), last_modified = modified,
+            snapshot_path = str(snapshot),
+            last_modified = modified,
             files = [types.SimpleNamespace(file_path = str(path), file_name = path.name)],
         )
 
     repo = types.SimpleNamespace(
-        repo_type = "model", repo_id = "org/repo",
+        repo_type = "model",
+        repo_id = "org/repo",
         revisions = [rev(old, plain, 1), rev(new, tagged, 2)],
     )
-    monkeypatch.setattr(models_module, "_all_hf_cache_scans", lambda: [types.SimpleNamespace(repos = [repo])])
+    monkeypatch.setattr(
+        models_module, "_all_hf_cache_scans", lambda: [types.SimpleNamespace(repos = [repo])]
+    )
     assert models_module._resolve_cached_model_path("org/repo", "Q4_K_M") == plain
     # With the plain build gone the tagged one is the lone owner and still answers.
     plain.unlink()
