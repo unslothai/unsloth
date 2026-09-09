@@ -69,12 +69,12 @@ def _published_template(name):
     return (Path(__file__).parent / "data" / "chat_templates" / f"{name}.jinja").read_text()
 
 
-@pytest.mark.parametrize("name", ["granite-3.3", "phi-4-mini"])
-def test_detection_does_not_bypass_the_safetensors_parser_gate(name):
+@pytest.mark.parametrize("name, detected", [("granite-3.3", True), ("phi-4-mini", False)])
+def test_detection_does_not_bypass_the_safetensors_parser_gate(name, detected):
     from routes.inference import _detect_safetensors_features
 
     template = _published_template(name)
-    assert template_supports_tools(template) is True
+    assert template_supports_tools(template) is detected
     flags = _detect_safetensors_features(SimpleNamespace(active_model_name = name), template)
     assert flags["supports_tools"] is False
 
@@ -103,3 +103,106 @@ def test_published_templates_render_studios_tool_argument(name, emits_schema):
     without_tools = apply_chat_template_for_generation(tokenizer, messages)
     assert ("get_weather" in with_tools) is emits_schema
     assert (with_tools != without_tools) is emits_schema
+
+
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        (
+            "{% set ns = namespace(available_tools=[]) %}"
+            "{% if tools %}{% set ns = namespace(available_tools=tools) %}{% endif %}"
+            "{{ ns.available_tools | tojson }}",
+            True,
+        ),
+        (
+            "{% set ns = namespace(available_tools=[]) %}"
+            "{% if tools %}{% set ns.available_tools = tools %}{% endif %}"
+            "{{ ns.available_tools | tojson }}",
+            True,
+        ),
+        (
+            "{% set ns = namespace(available_tools=[]) %}"
+            "{% set ns.available_tools = tools %}"
+            "{% set catalog = ns['available_tools'] %}{{ catalog | tojson }}",
+            True,
+        ),
+        (
+            "{% set ns = namespace(available_tools=[]) %}"
+            "{% set other = namespace(available_tools=[]) %}"
+            "{% set ns.available_tools = tools %}{{ other.available_tools | tojson }}",
+            False,
+        ),
+        (
+            "{% macro format_metadata(tools) %}{{ tools | tojson }}{% endmacro %}"
+            "{{ message.content }}",
+            False,
+        ),
+        (
+            "{% macro format_metadata(tools) %}{{ tools | tojson }}{% endmacro %}"
+            "{{ format_metadata([]) }}",
+            False,
+        ),
+        (
+            "{% macro format_metadata(tools) %}{{ tools | tojson }}{% endmacro %}"
+            "{{ format_metadata(tools) }}",
+            True,
+        ),
+        (
+            "{% macro format_metadata(catalog) %}{{ catalog | tojson }}{% endmacro %}"
+            "{{ format_metadata(catalog=tools) }}",
+            True,
+        ),
+        (
+            "{% macro format_metadata(tools=[]) %}{{ tools | tojson }}{% endmacro %}"
+            "{{ format_metadata() }}",
+            False,
+        ),
+        (
+            "{% macro format_metadata(catalog=tools) %}{{ catalog | tojson }}{% endmacro %}"
+            "{{ format_metadata() }}",
+            True,
+        ),
+        (
+            "{% macro format_metadata(catalog, selected=catalog) %}"
+            "{{ selected | tojson }}{% endmacro %}{{ format_metadata(tools) }}",
+            True,
+        ),
+        (
+            "{% set ns = namespace(available_tools=tools) %}"
+            "{% macro format_metadata(data) %}{{ data.available_tools | tojson }}{% endmacro %}"
+            "{{ format_metadata(ns) }}",
+            True,
+        ),
+        (
+            "{% macro format_metadata() %}{{ tools | tojson }}{% endmacro %}"
+            "{{ format_metadata() }}",
+            True,
+        ),
+        (
+            "{% macro format_metadata(tools) %}plain{% endmacro %}{{ format_metadata(tools) }}",
+            False,
+        ),
+        (
+            "{% if tools %}{% macro unused(tools) %}{{ tools | tojson }}"
+            "{% endmacro %}{% endif %}{{ message.content }}",
+            False,
+        ),
+        (
+            "{% macro unused() %}{% set catalog = tools %}{% endmacro %}"
+            "{{ catalog | default('plain') }}",
+            False,
+        ),
+    ],
+)
+def test_alias_and_macro_detection_matches_rendered_catalog(template, expected):
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    render = Environment().from_string(template)
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+    common = {"message": {"role": "user", "content": "Hi"}}
+    with_tools = render.render(tools = tools, **common)
+    without_tools = render.render(tools = [], **common)
+    assert ("get_weather" in with_tools) is expected
+    assert (with_tools != without_tools) is expected
+    assert template_supports_tools(template) is expected
+    assert detect_reasoning_flags(template)["supports_tools"] is expected

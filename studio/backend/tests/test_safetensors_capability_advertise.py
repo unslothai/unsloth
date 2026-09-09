@@ -173,12 +173,6 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
             "granite_alias",
             "{%- if tools and not available_tools -%}{{- tools | tojson }}{%- endif -%}",
         ),
-        # Phi-4-mini carries the list on the system message, not as a kwarg.
-        (
-            "phi4_message_scoped",
-            "{% if message['role'] == 'system' and 'tools' in message"
-            " and message['tools'] is not none %}{{ message['tools'] }}{% endif %}",
-        ),
         # No spaces inside the tag.
         ("tight_whitespace", "{%-if tools%}{{- tools | tojson }}{%- endif -%}"),
         # `is not none` rather than a truth test.
@@ -203,6 +197,12 @@ def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label
     [
         # Prose, not a tool block.
         ("prose_only", "{{- 'You are a helpful assistant with access to tools.' }}"),
+        # Studio passes tools as a kwarg, not a message field.
+        (
+            "phi4_message_scoped",
+            "{% if message['role'] == 'system' and 'tools' in message"
+            " and message['tools'] is not none %}{{ message['tools'] }}{% endif %}",
+        ),
         # Excluding tool turns is not handling them.
         (
             "negated_role_check",
