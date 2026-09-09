@@ -1928,7 +1928,11 @@ def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int
     weights = [max(0, v) for v in split_weights]
     total = sum(weights)
     if total <= 0:
-        return [list(range(n_slots))] + [[] for _ in weights[1:]]
+        # llama.cpp prefix-sums the split and divides by the total, so an all-zero
+        # one is not a placement it produces: it errors. Answering "device 0 takes
+        # every row" put the per-device check on a split that will never exist,
+        # and a -ts truncated to its active prefix reaches this with all zeros.
+        raise ValueError("split weights are all zero for the selected devices")
     cumulative: list[float] = []
     running = f32(0.0)
     for w in weights:
@@ -2046,7 +2050,11 @@ def _per_device_usage(
             return max(0, spilled.get(block.index, 0))
         return block.spillable_bytes if block.index in spilled else 0
 
-    slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
+    try:
+        slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
+    except ValueError as exc:
+        # A split the planner cannot model is an abstain, not a guess.
+        return str(exc), [], []
     usage: list[int] = []
     for device, rows in enumerate(slots):
         used = 0

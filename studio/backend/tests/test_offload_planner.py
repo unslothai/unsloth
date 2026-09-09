@@ -629,9 +629,13 @@ def test_the_row_split_matches_llama_cpp():
     # Contiguous, in device order, covering every row exactly once.
     rows = _device_slots(65, [24 * GIB, 8 * GIB])
     assert rows[0] == list(range(0, 49)) and rows[1] == list(range(49, 65))
-    # One device takes everything, and a zero-sized pool does not divide by zero.
+    # One device takes everything.
     assert _device_slots(65, [8 * GIB]) == [list(range(65))]
-    assert _device_slots(4, [0, 0]) == [[0, 1, 2, 3], []]
+    # An all-zero split is not a placement llama.cpp produces -- it prefix-sums
+    # the shares and divides by the total -- so it is refused rather than
+    # modelled as "device 0 takes every row", which is what it used to answer.
+    with pytest.raises(ValueError):
+        _device_slots(4, [0, 0])
 
 
 def test_the_row_split_uses_llama_cpp_float32_boundaries():
@@ -3102,3 +3106,24 @@ def test_a_pooled_fit_with_a_card_no_rung_can_reach_still_abstains():
     plan = _plan_lopsided(min_parallel = 4, extra_resident_bytes = 3 * GIB)
     assert not plan.changed and not plan.spills_anything, plan.reason
     assert "fitter" in plan.reason
+
+
+def test_an_all_zero_tensor_split_abstains_instead_of_being_modelled():
+    """A -ts whose active prefix truncates to zeros reaches the planner as an
+    all-zero split. Placing every row on device 0 reasoned about a launch
+    llama.cpp errors on; the plan has to be an abstain."""
+    args = _lopsided_pair_args()
+    layout = args["layout"]
+    plan = plan_placement(
+        layout,
+        args["vram_bytes_per_device"],
+        args["host_ram_bytes"],
+        args["requested_ctx"],
+        opts = args["opts"],
+        kv_bytes_floor = args["kv_bytes_floor"],
+        split_weights_per_device = [0, 0],
+        kv_layer_weights = args["kv_layer_weights"],
+    )
+    assert not plan.changed and not plan.priced and not plan.spills_anything, plan.reason
+    assert "all zero" in plan.reason, plan.reason
+    assert plan_to_args(plan) == []
