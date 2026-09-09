@@ -2312,3 +2312,51 @@ def test_a_load_that_bypassed_the_planner_stops_using_the_peer(cluster):
     run(ss.reconcile_internal_load())
     assert stopped == []
     assert st.topology == "single"
+
+
+def _snapshot(root, repo, digest, files, mtime):
+    snap = root / ("models--" + repo.replace("/", "--")) / "snapshots" / digest
+    snap.mkdir(parents = True)
+    for name, size in files.items():
+        target = snap / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"x" * size)
+    os.utime(snap, (mtime, mtime))
+    return snap
+
+
+def test_the_sized_gguf_is_the_newest_snapshot_not_the_first_hash(monkeypatch, tmp_path):
+    # The loader takes snapshots newest first. Lexicographic order is the hash, which says
+    # nothing about age, so a stale copy could be sized and planned against while a different
+    # one loaded: a smaller stale copy plans single and then the real load does not fit.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    repo = "unsloth/Big-GGUF"
+    _snapshot(tmp_path, repo, "aaa0", {"big-Q4_K_M.gguf": 4096}, mtime = 1_000)
+    _snapshot(tmp_path, repo, "zzz9", {"big-Q4_K_M.gguf": 16384}, mtime = 2_000)
+
+    chosen = ss.cached_repo_file(repo, None)
+    assert chosen is not None and "zzz9" in chosen
+    assert ss.gguf_size_bytes(chosen) == 16384
+
+
+def test_a_companion_gguf_is_never_sized_in_place_of_the_weights(monkeypatch, tmp_path):
+    # An MTP or draft companion beside the weights is a few hundred megabytes. Sizing it
+    # plans single for a model that needs both Sparks.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    repo = "unsloth/With-Companions"
+    _snapshot(
+        tmp_path,
+        repo,
+        "abc1",
+        {
+            "MTP/model-Q4_K_M.gguf": 512,
+            "model-Q4_K_M.gguf": 32768,
+            "mmproj-model-f16.gguf": 256,
+        },
+        mtime = 1_000,
+    )
+
+    chosen = ss.cached_repo_file(repo, None)
+    assert chosen is not None, "the weights are cached"
+    assert "MTP" not in chosen and "mmproj" not in os.path.basename(chosen)
+    assert ss.gguf_size_bytes(chosen) == 32768

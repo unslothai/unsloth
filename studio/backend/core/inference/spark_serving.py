@@ -317,13 +317,89 @@ def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
     cache = os.environ.get("HF_HUB_CACHE") or osp.join(
         os.environ.get("HF_HOME") or osp.expanduser("~/.cache/huggingface"), "hub"
     )
+    resolved = _cached_repo_file_via_loader(model_path, variant)
+    if resolved is not None:
+        return resolved
     root = osp.join(cache, "models--" + model_path.replace("/", "--"), "snapshots")
     if not osp.isdir(root):
         return None
     pattern = f"*{variant}*.gguf" if variant else "*.gguf"
-    candidates = sorted(glob.glob(osp.join(root, "*", "**", pattern), recursive = True))
-    candidates = [c for c in candidates if "mmproj" not in osp.basename(c).lower()]
-    return candidates[0] if candidates else None
+    # Newest snapshot first, like the loader. Lexicographic order is the hash, which says
+    # nothing about age, so a stale copy could be sized instead of the one that will load.
+    snapshots = sorted(
+        (d for d in glob.glob(osp.join(root, "*")) if osp.isdir(d)),
+        key = lambda d: _snapshot_mtime(d),
+        reverse = True,
+    )
+    for snapshot in snapshots:
+        candidates = sorted(glob.glob(osp.join(snapshot, "**", pattern), recursive = True))
+        candidates = [c for c in candidates if not _is_companion_gguf(c)]
+        if candidates:
+            return candidates[0]
+    return None
+
+
+def _snapshot_mtime(directory: str) -> float:
+    try:
+        return osp.getmtime(directory)
+    except OSError:
+        return 0.0
+
+
+# Names of files that live beside the weights and are not the weights: the vision projector,
+# the importance matrix, and the MTP/draft companions a repo ships for speculative decoding.
+# Sizing one of these plans against a few hundred megabytes instead of the model.
+_COMPANION_GGUF_MARKERS = ("mmproj", "imatrix")
+_COMPANION_GGUF_PARTS = ("mtp", "dspark", "draft")
+
+
+def _is_companion_gguf(path: str) -> bool:
+    name = osp.basename(path).lower()
+    if any(marker in name for marker in _COMPANION_GGUF_MARKERS):
+        return True
+    # A companion often lives in its own directory rather than carrying the word in the file
+    # name, so the path components count too.
+    parts = [part.lower() for part in Path(path).parts[:-1]]
+    return any(part in _COMPANION_GGUF_PARTS for part in parts)
+
+
+def _cached_repo_file_via_loader(model_path: str, variant: Optional[str]) -> Optional[str]:
+    """The GGUF the backend's own resolver would pick, or None when it cannot be asked.
+
+    Guessing separately from the loader is what goes wrong here: a different snapshot, or a
+    companion instead of the weights, is sized and planned against, and then a different file
+    is loaded. This asks the resolver that the load itself uses. Imported lazily and inside a
+    try, so this module stays importable without the backend, which its tests rely on."""
+    try:
+        from utils.models.model_config import (
+            _iter_hf_cache_snapshots,
+            list_local_gguf_variants,
+        )
+    except Exception:
+        return None
+    try:
+        wanted = str(variant).strip().casefold() if variant else ""
+        for snapshot in _iter_hf_cache_snapshots(model_path):
+            variants, _has_vision = list_local_gguf_variants(str(snapshot))
+            if not variants:
+                continue
+            chosen = None
+            if wanted:
+                for info in variants:
+                    if wanted in (str(info.quant).casefold(), str(info.filename).casefold()):
+                        chosen = info
+                        break
+                if chosen is None:
+                    continue
+            else:
+                # Sorted largest first by list_local_gguf_variants, which is the main weight.
+                chosen = variants[0]
+            path = osp.join(str(snapshot), chosen.filename)
+            if osp.isfile(path):
+                return path
+    except Exception:
+        return None
+    return None
 
 
 # f16 when unknown. Kept local so this module stays importable without the backend.
