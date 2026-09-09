@@ -7454,7 +7454,11 @@ def _memoized_api_newest_release_tag(repo: str) -> "str | None":
 
 
 def _expected_release_tag_without_plan(
-    marker: "dict[str, Any]", llama_tag: str, published_repo: str, published_release_tag: str
+    marker: "dict[str, Any]",
+    llama_tag: str,
+    published_repo: str,
+    published_release_tag: str,
+    host: "HostInfo | None" = None,
 ) -> "str | None":
     """The release this run would install, worked out without listing anything.
 
@@ -7501,6 +7505,13 @@ def _expected_release_tag_without_plan(
         recorded_release = marker.get("release_tag")
         return recorded_release if isinstance(recorded_release, str) else None
     repo = published_repo or DEFAULT_PUBLISHED_REPO
+    # On a Mac below the floor the selector answers "latest" for the upstream repo with
+    # the pinned fallback release (resolve_simple_install_release_plans), never with the
+    # newest published one; the marker of a current install names that pin.
+    if host is not None:
+        pinned_macos = pinned_macos_release_tag(host, repo)
+        if pinned_macos is not None:
+            return pinned_macos
     if not _download_host_resolve_enabled() or repo != DEFAULT_PUBLISHED_REPO:
         # The caller asked for the API path, or named a repo the selector never resolves
         # through the download host (iter_resolved_published_releases takes its fast
@@ -7687,7 +7698,7 @@ def existing_install_current_without_plan(
         return False
     # (3) the release this run would ask for is the release that is installed.
     expected_release = _expected_release_tag_without_plan(
-        marker, llama_tag, route.published_repo, route.published_release_tag
+        marker, llama_tag, route.published_repo, route.published_release_tag, host = host
     )
     if not expected_release or expected_release != marker.get("release_tag"):
         return False

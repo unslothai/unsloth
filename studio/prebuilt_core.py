@@ -2372,8 +2372,11 @@ def install_selected_prebuilt(
     """
 
     if not force and ops.existing_install_matches(install_dir, host, selection):
-        _settle_kept_install(ops, install_dir, host, selection, locked = False)
-        return 0
+        if _settle_kept_install(ops, install_dir, host, selection, locked = False):
+            return 0
+        # The install changed under the lock while the keep was being settled; the
+        # locked path below re-checks and installs rather than reporting the release
+        # this run just saw replaced.
 
     with ops.install_lock(ops.install_lock_path(install_dir)):
         # Re-check under the lock: a concurrent run may have just finished.
@@ -2393,8 +2396,11 @@ def install_selected_prebuilt(
 
 def _settle_kept_install(
     ops: ModuleOps, install_dir: Path, host: Any, selection: InstallSelection, *, locked: bool
-) -> None:
+) -> bool:
     """Let a component catch up the marker of an install it is keeping, under the lock.
+
+    Returns False only when the pre-lock keep's re-check under the lock found another
+    install on disk; everything else, a settle that fails included, keeps the install.
 
     Optional: a component that has nothing to write defines neither hook. One that
     does (whisper's slim pairing backfill) rewrites the marker, and a rewrite outside
@@ -2409,18 +2415,22 @@ def _settle_kept_install(
         settle = getattr(ops, "settle_kept_install")
         needs_settling = getattr(ops, "kept_install_needs_settling")
     except AttributeError:
-        return
+        return True
     try:
         if locked:
             settle(install_dir)
-            return
+            return True
         if not needs_settling(install_dir):
-            return
+            return True
         with ops.install_lock(ops.install_lock_path(install_dir)):
             if ops.existing_install_matches(install_dir, host, selection):
                 settle(install_dir)
+                return True
     except Exception as exc:  # noqa: BLE001 - a metadata catch-up must never fail a kept install
         ops.log(f"kept {ops.COMPONENT} install not settled: {exc}")
+        return True
+    ops.log(f"kept {ops.COMPONENT} install changed under the lock; re-validating")
+    return False
 
 
 def resolve_prebuilt(

@@ -6599,3 +6599,27 @@ def test_the_api_latest_lookup_scans_the_pages_the_selector_scans(monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_releases", fake_releases)
     assert INSTALL_LLAMA_PREBUILT._api_newest_release_tag("someone/else") == "release-2"
     assert seen["max_pages"] == INSTALL_LLAMA_PREBUILT.DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+
+
+def test_latest_on_an_older_mac_expects_the_pinned_upstream_fallback(monkeypatch):
+    """The selector rewrites "latest" for the upstream repo on a Mac below the floor to
+    the pinned fallback release; the marker check expects that release too, so a current
+    pinned install takes the fast path instead of repeating the release work on every
+    update."""
+    host = macos_host(macos_version = (15, 5))
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_api_newest_release_tag", lambda repo: pytest.fail("listed releases"))
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda repo: pytest.fail("resolved latest")
+    )
+    marker = {"release_tag": INSTALL_LLAMA_PREBUILT._PINNED_MACOS_FALLBACK_TAG}
+    assert (
+        INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = host)
+        == INSTALL_LLAMA_PREBUILT._PINNED_MACOS_FALLBACK_TAG
+    )
+    # At or above the floor the pin does not apply and the repository's newest release is the answer.
+    newer = macos_host(macos_version = (26, 0))
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_api_newest_release_tag", lambda repo: "b9999")
+    assert (
+        INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = newer)
+        == "b9999"
+    )

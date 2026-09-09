@@ -2839,7 +2839,9 @@ def test_whisper_a_bundle_needing_a_newer_macos_is_not_intact(tmp_path, monkeypa
     install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
     marker_path = install_dir / M.METADATA_FILENAME
     marker = json.loads(marker_path.read_text(encoding = "utf-8"))
-    marker["coverage"] = {"min_os": "15.0"}
+    # Where write_prebuilt_metadata puts it: the marker's top level, not under coverage.
+    marker.pop("coverage", None)
+    marker["min_os"] = "15.0"
     marker_path.write_text(json.dumps(marker), encoding = "utf-8")
     calls = []
 

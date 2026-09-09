@@ -1531,12 +1531,16 @@ def _existing_install_is_intact(
     recorded_asset = marker.get("asset")
     if not isinstance(recorded_asset, str) or f"-{os_token}-{arch_token}-" not in recorded_asset:
         return None
-    # The bundle's macOS floor, which the selector applies (_macos_min_os_ok) and the
-    # marker records under coverage: an install restored onto an older same-architecture
-    # Mac has the right tokens and the execute bit, and fails at load time.
+    # The bundle's macOS floor, which the selector applies (_macos_min_os_ok) and
+    # write_prebuilt_metadata records at the marker's top level as min_os: an install
+    # restored onto an older same-architecture Mac has the right tokens and the execute
+    # bit, and fails at load time. A floor nested under coverage is read the same way.
+    min_os = marker.get("min_os")
     coverage = marker.get("coverage")
-    if host.is_macos and isinstance(coverage, dict) and coverage.get("min_os") is not None:
-        if not _macos_min_os_ok(host, coverage.get("min_os")):
+    if min_os is None and isinstance(coverage, dict):
+        min_os = coverage.get("min_os")
+    if host.is_macos and min_os is not None:
+        if not _macos_min_os_ok(host, min_os):
             return None
     recorded_release = marker.get("release_tag")
     if not isinstance(recorded_release, str) or not recorded_release:

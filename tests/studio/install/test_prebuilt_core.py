@@ -16,6 +16,7 @@ llama descriptor here exercises the canonical dialect a future migration
 would use, including the "no fallback backend -> report no prebuilt" policy.
 """
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -964,3 +965,36 @@ def test_github_api_403_without_a_reachable_reset_makes_one_request():
         )
 
     assert len(requests) == 1
+
+
+def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
+    """The pre-lock keep re-checks the install under the lock before settling its marker.
+    A concurrent installer that swapped the tree in between makes that re-check fail, and
+    the keep then falls through to the locked path instead of reporting the release it
+    just saw replaced as installed."""
+    install_dir = tmp_path / "component"
+    install_dir.mkdir()
+    server = install_dir / "server"
+    server.write_text("", encoding = "utf-8")
+    # pre-lock keep, the settle's re-check, the locked path's re-check
+    answers = iter([True, False, False])
+    events = []
+    ops = SimpleNamespace(
+        COMPONENT = "test",
+        existing_install_matches = lambda d, h, s: next(answers),
+        install_lock = lambda path: contextlib.nullcontext(),
+        install_lock_path = lambda d: d / "lock",
+        kept_install_needs_settling = lambda d: True,
+        settle_kept_install = lambda d: events.append("settled"),
+        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
+        installed_server_path = lambda d, h: server,
+        log = lambda message: events.append(message),
+    )
+    bundle = SimpleNamespace(release_tag = "b1")
+    selection = SimpleNamespace(backend = "cpu")
+    rc = core.install_selected_prebuilt(
+        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+    )
+    assert rc == 0
+    assert "settled" not in events
+    assert "installed" in events
