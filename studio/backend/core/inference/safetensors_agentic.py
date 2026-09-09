@@ -1312,7 +1312,16 @@ def run_safetensors_tool_loop(
                     if decision_slot is not None
                     else None
                 )
-                if _decision is not None and _decision != "deny":
+                if _decision == "allow":
+                    from core.inference.ssh_policy import collect_ssh_hosts_for_approval
+                    from state.ssh_approvals import approve_hosts
+
+                    approve_hosts(
+                        session_id,
+                        collect_ssh_hosts_for_approval(decision.tool_name, decision.arguments),
+                    )
+                    yield {"type": "status", "text": decision.status_text}
+                elif _decision is not None and _decision != "deny":
                     # Approved: now it really is running.
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":

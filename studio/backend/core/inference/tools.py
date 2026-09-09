@@ -63,6 +63,11 @@ import time
 import urllib.parse
 import urllib.request
 
+from core.inference.ssh_policy import (
+    check_ssh_command_access,
+    check_ssh_python_access,
+    filter_ssh_approved_network_blocks,
+)
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
     TOOL_CACHE_INVALIDATING_FIELDS,
@@ -170,10 +175,8 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "ncat",
         "netcat",
         "socat",
-        "ssh",
-        "slogin",
-        "scp",
-        "sftp",
+        # ssh/slogin/scp/sftp are gated by ssh_policy (approved-server allowlist)
+        # instead of this unconditional blocklist so users can deploy after approval.
         "rsync",
         "eval",
         "source",
@@ -14424,12 +14427,27 @@ def _check_signal_escape_patterns(code: str):
     }
 
 
-def _check_code_safety(code: str) -> str | None:
+def _check_code_safety(code: str, session_id: str | None = None) -> str | None:
     """Validate code safety via static analysis.
 
     Returns an error message string if the code is unsafe, or None if OK.
     """
+    ssh_error = check_ssh_python_access(code, session_id)
+    if ssh_error:
+        return (
+            f"Error: unsafe code detected ({ssh_error}). "
+            "Please remove unsafe patterns from your code."
+        )
+
     safe, info = _check_signal_escape_patterns(code)
+    info = filter_ssh_approved_network_blocks(code, session_id, info)
+    safe = (
+        len(info.get("signal_tampering", [])) == 0
+        and len(info.get("exception_catching", [])) == 0
+        and len(info.get("shell_escapes", [])) == 0
+        and len(info.get("network_calls", [])) == 0
+        and len(info.get("sensitive_file_reads", [])) == 0
+    )
     if not safe:
         # Let SyntaxError from ast.parse through so the subprocess produces a
         # normal Python traceback instead of a misleading "unsafe code" message.
@@ -16156,7 +16174,7 @@ def _python_exec(
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        error = _check_code_safety(code)
+        error = _check_code_safety(code, session_id = session_id)
         if error:
             # Capped like any other result: the analyzer names every occurrence it
             # found, so code that repeats a forbidden construct enough times reports
@@ -16335,6 +16353,9 @@ def _bash_exec(
             # Capped for the same reason the Python analyzer's error is: it lists what
             # it found in the command it was handed.
             return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
+        ssh_error = check_ssh_command_access(command, session_id)
+        if ssh_error:
+            return _truncate(ssh_error)
         # Stripping the child env is not enough: a same-UID child can read
         # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
         # that read here too, not only in bypass mode. Best-effort: the child env
