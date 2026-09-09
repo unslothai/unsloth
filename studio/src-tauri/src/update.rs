@@ -47,24 +47,24 @@ impl UpdateKind {
 fn build_update_command(bin: &std::path::Path, args: &[&str]) -> Result<Command, String> {
     // Only the Windows arm below mutates it.
     #[cfg_attr(not(windows), allow(unused_mut))]
-        // Isolated, as this call site shipped: it is the one managed invocation nobody types by
-        // hand and the one that decides which install gets rewritten, so a user-site unsloth_cli
-        // must not answer `from unsloth_cli import app` here.
+    // Isolated, as this call site shipped: it is the one managed invocation nobody types by
+    // hand and the one that decides which install gets rewritten, so a user-site unsloth_cli
+    // must not answer `from unsloth_cli import app` here.
     let mut cmd = crate::process::build_managed_cli_command_with(
         bin,
         args,
         crate::process::Isolation::Isolated,
     )?;
-        // The only managed invocation that scrubs: a foreign PYTHONHOME stops the managed
-        // interpreter finding its own site-packages, and a PYTHONPATH pointing at another checkout
-        // updates the wrong install.
+    // The only managed invocation that scrubs: a foreign PYTHONHOME stops the managed
+    // interpreter finding its own site-packages, and a PYTHONPATH pointing at another checkout
+    // updates the wrong install.
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
     Ok(cmd)
 }
 
 fn configure_tauri_update_environment(cmd: &mut Command) {
-        // The desktop owns its shortcuts and frontend bundle; this update needs only backend deps.
+    // The desktop owns its shortcuts and frontend bundle; this update needs only backend deps.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
@@ -75,8 +75,8 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     );
 }
 
-    // The shell holds the retained POSIX flock around the whole update child, so the CLI must
-    // inherit the gate rather than take it again. Set everywhere, as Windows always did.
+// The shell holds the retained POSIX flock around the whole update child, so the CLI must
+// inherit the gate rather than take it again. Set everywhere, as Windows always did.
 fn configure_runtime_gate_environment(cmd: &mut Command) {
     cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 }
@@ -100,7 +100,7 @@ fn spawn_update(
     let mut cmd = build_update_command(bin, UPDATE_ARGS)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        // A login-started desktop inherits C:\Windows\system32, which the CLI refuses to run from.
+    // A login-started desktop inherits C:\Windows\system32, which the CLI refuses to run from.
     crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
         format!(
             "Failed to pick a working directory for the update: {}",
@@ -108,17 +108,17 @@ fn spawn_update(
         )
     })?;
 
-        // PYTHONPATH is dropped by the context itself on Windows, where -I covers only the first
-        // interpreter and the update starts more.
+    // PYTHONPATH is dropped by the context itself on Windows, where -I covers only the first
+    // interpreter and the update starts more.
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-        // Keep the update on the desktop-managed install and skip assets already in the bundle.
+    // Keep the update on the desktop-managed install and skip assets already in the bundle.
     configure_tauri_update_environment(&mut cmd);
     configure_runtime_gate_environment(&mut cmd);
 
-        // read_lossy_lines decodes as UTF-8; the child is Python, which otherwise uses the locale page.
+    // read_lossy_lines decodes as UTF-8; the child is Python, which otherwise uses the locale page.
     #[cfg(windows)]
     {
         cmd.env("PYTHONUTF8", "1");
@@ -313,13 +313,13 @@ fn run_update(
     let _ = app.emit(progress_event, "Starting backend update...");
 
     let explicit_error = Arc::new(Mutex::new(None));
-        // Update mutates the managed environment for its whole lifetime. Synchronous, so the
-        // thread-owned Win32 mutex never crosses an await.
+    // Update mutates the managed environment for its whole lifetime. Synchronous, so the
+    // thread-owned Win32 mutex never crosses an await.
     let result = crate::process::with_studio_runtime_launch_guard(|| {
         crate::process::ensure_managed_environment_is_idle(&bin)?;
-                // Under the gate and after the idle scan. A 805-807 rollback the last launch deferred
-                // still names the live runtime as something to undo, and updating on top of that journal
-                // has the next idle launch restoring the pre-update trees over everything installed here.
+        // Under the gate and after the idle scan. A 805-807 rollback the last launch deferred
+        // still names the live runtime as something to undo, and updating on top of that journal
+        // has the next idle launch restoring the pre-update trees over everything installed here.
         crate::staged_update::reconcile_before_update(&crate::diagnostics::studio_dir())?;
         let (stdout, stderr) =
             spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
@@ -339,7 +339,7 @@ fn run_update(
         }
         result
     });
-        // Read only after the guard returned, so both reader threads are joined.
+    // Read only after the guard returned, so both reader threads are joined.
     let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
     match result {
@@ -591,8 +591,8 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
-                                // -I here and nowhere else: this invocation decides which install gets
-                                // rewritten, and a user-site unsloth_cli would update the wrong one.
+                // -I here and nowhere else: this invocation decides which install gets
+                // rewritten, and a user-site unsloth_cli would update the wrong one.
                 OsString::from("-X"),
                 OsString::from("utf8"),
                 OsString::from("-I"),
@@ -602,8 +602,8 @@ mod tests {
                 OsString::from("update")
             ]
         );
-                // PYTHONHOME / PYTHONPATH handling is asserted in
-                // windows_update_command_still_scrubs_the_python_search_path below.
+        // PYTHONHOME / PYTHONPATH handling is asserted in
+        // windows_update_command_still_scrubs_the_python_search_path below.
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -618,7 +618,7 @@ mod tests {
             .contains("python.exe"));
     }
 
-        // Without -E the child reads PYTHONHOME and PYTHONPATH; see build_update_command.
+    // Without -E the child reads PYTHONHOME and PYTHONPATH; see build_update_command.
     #[test]
     fn update_command_scrubs_the_python_search_path() {
         let dir = std::env::temp_dir().join(format!(
@@ -646,7 +646,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-        // macOS and Linux still exec the console script.
+    // macOS and Linux still exec the console script.
     #[cfg(not(windows))]
     #[test]
     fn posix_update_command_still_execs_the_console_script() {
@@ -667,8 +667,8 @@ mod tests {
         }
     }
 
-        // POSIX updates fail "busy" against the shell's own retained flock unless the child
-        // inherits it, so the handoff is set on every platform.
+    // POSIX updates fail "busy" against the shell's own retained flock unless the child
+    // inherits it, so the handoff is set on every platform.
     #[test]
     fn update_child_uses_the_parent_runtime_gate_on_every_platform() {
         use std::ffi::OsStr;
