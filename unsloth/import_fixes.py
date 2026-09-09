@@ -6054,3 +6054,70 @@ def fix_dill_module_by_value_pickling():
             "site-packages tree."
         )
     return True
+
+
+# Windows refuses sentencepiece's compiled extension on some machines. Smart App Control and
+# App Control for Business judge by reputation, one file at a time, so a freshly published
+# unsigned .pyd can be refused on a machine where everything else loads. The user sees a Bad
+# Image dialog naming the file, and transformers keeps saying the package is available,
+# because it decides that from find_spec and installed metadata and loads nothing.
+#
+# There is no way to ask whether this machine will refuse the file that does not involve
+# handing the file to the loader, which is the thing being avoided: a probe IS the dialog. So
+# on Windows the extension is simply never imported.
+DISABLE_SENTENCEPIECE_VARIABLE = "UNSLOTH_DISABLE_SENTENCEPIECE"
+_SENTENCEPIECE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_SENTENCEPIECE_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def sentencepiece_should_be_disabled():
+    """Whether to make sentencepiece absent in this process.
+
+    Windows by default; every other platform only when asked. WSL reports ``linux`` and is
+    treated as the Linux box it is, since App Control does not enforce over ELF binaries in
+    the guest.
+
+    An unrecognised value falls back to the platform default rather than raising. This runs at
+    the very top of the process, where a typo in an environment variable must not be fatal.
+    """
+    value = (os.environ.get(DISABLE_SENTENCEPIECE_VARIABLE) or "").strip().lower()
+    if value in _SENTENCEPIECE_TRUTHY:
+        return True
+    if value in _SENTENCEPIECE_FALSY:
+        return False
+    return sys.platform == "win32"
+
+
+def disable_sentencepiece_on_windows():
+    """Make ``import sentencepiece`` fail the way an uninstalled package does.
+
+    A ``None`` entry in ``sys.modules`` is CPython's documented sentinel for this: the import
+    raises ``ModuleNotFoundError`` (an ``ImportError``, so every ``try/except ImportError`` in
+    transformers already handles it) and nothing on disk is opened, so the compiled extension
+    is never handed to the Windows loader and there is no dialog to see.
+
+    Deliberately NOT a monkey patch of ``is_sentencepiece_available``. transformers derives
+    that from ``find_spec``, which now finds the sentinel and answers False on its own, so the
+    process is in the ordinary "sentencepiece was never installed" configuration rather than a
+    state where the flag and the package disagree. That distinction is load bearing: on
+    transformers 4.52 through 4.57 a flag that lies sends ``tokenizer_class_from_name`` into a
+    fallback that imports the slow tokenizer module and reaches its unguarded
+    ``import sentencepiece as spm``, which is the loader error this is meant to prevent.
+
+    Must run before transformers is imported, since transformers reads availability during its
+    own import. Returns True only when this call is what made it absent.
+    """
+    if not sentencepiece_should_be_disabled():
+        return False
+    if "sentencepiece" in sys.modules:
+        # Already imported by something earlier, or already disabled by an earlier call.
+        # Replacing a live module here would break whoever is holding it.
+        return sys.modules["sentencepiece"] is None
+    sys.modules["sentencepiece"] = None
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: sentencepiece is not imported on Windows, so a code integrity policy "
+            "cannot refuse its extension. Models needing it will say so. Set "
+            f"{DISABLE_SENTENCEPIECE_VARIABLE}=0 to import it again."
+        )
+    return True

@@ -235,6 +235,22 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
+# Same rule as unsloth/__init__.py, inline because this parent must not import unsloth: that
+# runs unsloth/__init__.py, whose GPU branch pulls torch, Triton, transformers and the model
+# stack into a long-lived process that exists to stay light, and can open a competing GPU
+# context. On Windows sentencepiece is never imported, so a code integrity policy has no
+# extension to refuse and the user gets no Bad Image dialog; a probe to find out whether this
+# machine would refuse it is itself that dialog. A None entry is CPython's documented sentinel
+# and makes the import raise ImportError, which is the ordinary "not installed" state.
+# UNSLOTH_DISABLE_SENTENCEPIECE=0 opts out; tests/test_windows_no_sentencepiece.py holds this
+# and import_fixes.disable_sentencepiece_on_windows to the same rule.
+_DISABLE_SENTENCEPIECE = (os.environ.get("UNSLOTH_DISABLE_SENTENCEPIECE") or "").strip().lower()
+if (
+    _DISABLE_SENTENCEPIECE in ("1", "true", "yes", "on")
+    or (_DISABLE_SENTENCEPIECE not in ("0", "false", "no", "off") and sys.platform == "win32")
+) and "sentencepiece" not in sys.modules:
+    sys.modules["sentencepiece"] = None
+
 import hashlib
 import ipaddress
 import mimetypes
