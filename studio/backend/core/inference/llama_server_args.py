@@ -1251,7 +1251,12 @@ def apply_model_memory_policy(
         tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
-    if no_ram_reserve and sys.platform == "win32" and not weights_in_host_memory and supports_load_mode:
+    if (
+        no_ram_reserve
+        and sys.platform == "win32"
+        and not weights_in_host_memory
+        and supports_load_mode
+    ):
         # Windows cannot partially unmap the GGUF after offload: unmap_fragment
         # is a no-op in llama.cpp. Prefer streaming for this confirmed placement.
         # Explicit per-model mmap/dio and surviving extras still resolve afterward.
