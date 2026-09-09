@@ -337,10 +337,24 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
     assert 'eval "_NEED_T5_$1=false"' in sh[guard_sh : guard_sh + 900]
     keep_ps1 = ps1.index("keeping the verified install")
     assert "$script:OfflineFastPath = $true" in ps1[keep_ps1 : keep_ps1 + 400]
-    guard_ps1 = ps1.index("if ($script:OfflineFastPath) {")
+    guard_ps1 = ps1.index("if ($script:OfflineFastPath) {\n    foreach ($tier in")
     assert (
         ps1.index("Test-SidecarCurrent -TargetDir $VenvT5_510Dir")
         < guard_ps1
         < ps1.index("if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {")
     )
     assert "Set-Variable -Name $flag -Value $false" in ps1[guard_ps1 : guard_ps1 + 900]
+    # The legacy migration is itself a wipe, and it sits above the guard; under the
+    # offline keep it has to be skipped, not merely followed by cleared flags.
+    assert sh.index(
+        '[ "${_OFFLINE_FAST_PATH:-false}" = true ]; then\n    # The migration'
+    ) < sh.index('rm -rf "$STUDIO_HOME/.venv_t5"')
+    assert ps1.index(
+        "(Test-Path -LiteralPath $VenvT5Legacy) -and $script:OfflineFastPath"
+    ) < ps1.index("Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force")
+    # ...and the tiktoken top-up a current tier gets must not run either: its pip
+    # fallback reaches the network, and a deferred tier would gain a tiktoken-only dir.
+    top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
+    assert '[ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0' in top_up[:600]
+    repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
+    assert "if ($script:OfflineFastPath) { return }" in repair[:600]

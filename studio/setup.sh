@@ -2220,6 +2220,10 @@ _sidecar_top_up_tiktoken() {
     # and the package without the native extension and RECORD; the sidecar predicate
     # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
     # check would skip this top-up forever while Qwen tokenizers fail.
+    # Under the offline keep this would reach for the network through fast_install's pip
+    # fallback, and for a tier whose rebuild was deferred it would create a directory
+    # holding tiktoken alone.
+    [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
     # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
     # the new version beside it, and importlib.metadata may keep answering the stale
     # one. It goes before the package is declared present, so a complete install that
@@ -2355,7 +2359,12 @@ _install_sidecar() {
 _NEED_T5_530=false
 _NEED_T5_550=false
 _NEED_T5_510=false
-if [ -d "$STUDIO_HOME/.venv_t5" ]; then
+if [ -d "$STUDIO_HOME/.venv_t5" ] && [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
+    # The migration below is a wipe followed by three rebuilds, and under the offline
+    # keep nothing can be fetched: the legacy sidecar is the only one this install has,
+    # so it stays, untouched, for the next online update to migrate.
+    substep "legacy transformers sidecar left in place -- UV_OFFLINE is set, migration waits for the next online update"
+elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate. The tiered venvs a staged run builds land under the
     # stage root and may never be activated, so removing the live legacy one here
     # would strip the running install of its only sidecar. The live update does it.
