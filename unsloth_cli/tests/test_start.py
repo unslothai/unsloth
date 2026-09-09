@@ -4239,7 +4239,14 @@ def test_model_download_progress_keeps_polling_a_repo_the_list_dropped(monkeypat
     listings = iter([_load_listing("owner/base"), {"downloads": []}])
     base_bytes = iter([1024**3, 2 * 1024**3])
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             return next(listings)
         if url.endswith("repo_id=owner%2Fbase"):
