@@ -30,7 +30,12 @@ from typing import Iterator, Optional
 from loggers import get_logger
 
 from hub.utils.hf_tokens import normalize_token
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
@@ -184,8 +189,18 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         logger.warning("Could not reap llama-server (pid %s): %s", process.pid, exc)
     finally:
-        # the PID is dead, so drop it before it can be reused by something else that terminate_all would then signal
-        forget_pid(process.pid)
+        # Drop the pid once it is dead, before it can be reused by something else that
+        # terminate_all would then signal. Only once it is dead: if the terminate, the
+        # kill or either wait raised, the child is still alive, and after the shutdown
+        # sweep has passed this record is the last thing that could reap it.
+        if process.poll() is not None:
+            forget_pid(process.pid)
+        else:
+            logger.warning(
+                "llama-server (pid %s) survived the reap; leaving it adopted so a later "
+                "sweep can still find it",
+                process.pid,
+            )
 
 
 def _cached_file(
@@ -920,6 +935,13 @@ class MtmdSttSidecar:
                 # chat backend's _cmd_has_gpu_companion() treats as a GPU companion whatever --gpu-layers says.
                 cmd.append("--no-mmproj-offload")
             sock.close()
+            # One flag at every spawn, as above: nothing in _graceful_shutdown stops
+            # this sidecar, so without it a quit during a load starts a server the
+            # step-7 sweep has already passed by.
+            if is_process_shutting_down():
+                raise SttLoadCancelledError(
+                    "Studio is shutting down; not starting the MTMD server."
+                )
             process = subprocess.Popen(
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
@@ -938,6 +960,13 @@ class MtmdSttSidecar:
             with self._lock:
                 self._starting_process = process
             adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+            # Recheck once the pid is recorded, for the window between the gate and the
+            # record. _reap kills and forgets, so nothing is left half-tracked.
+            if is_process_shutting_down():
+                _reap(process)
+                raise SttLoadCancelledError(
+                    "Studio is shutting down; not starting the MTMD server."
+                )
             if not self._wait_for_server(process, port, cancel_event):
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
                 # keeps port and VRAM.

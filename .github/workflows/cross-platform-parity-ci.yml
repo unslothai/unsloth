@@ -75,6 +75,7 @@ on:
       - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_windows_installer_native_type_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
@@ -150,6 +151,7 @@ on:
       - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_windows_installer_native_type_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
@@ -244,6 +246,7 @@ jobs:
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
           tests/python/test_windows_setup_output_encoding.py
+          tests/python/test_windows_installer_native_type_fallback.py
           tests/python/test_pwsh_runner_encoding.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
