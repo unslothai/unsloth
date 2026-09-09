@@ -3885,7 +3885,7 @@ def plan_training(
             schedule = None,
             speedup = 1.0 if fits else None,
             measured = fits,
-            commands = [f"unsloth train --model {model}"] if fits else [],
+            commands = [f"unsloth train --model {_q(model)}"] if fits else [],
             recommendation = (
                 f"{size_gib:.1f} GiB fits on this Spark ({budget:.0f} GiB budget); train "
                 f"as usual. Pair a second Spark for {TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x to "
@@ -3906,7 +3906,7 @@ def plan_training(
             speedup = lo,
             speedup_over_pipeline = over_pp,
             measured = True,
-            commands = [env, f"unsloth spark train --data-parallel {model} --run"],
+            commands = [env, f"unsloth spark train --data-parallel {_q(model)} --run"],
             recommendation = (
                 f"{size_gib:.1f} GiB fits on one Spark ({budget:.0f} GiB budget): train it "
                 f"DATA PARALLEL, one whole model per Spark. Measured {lo:.2f}x to {hi:.2f}x "
@@ -3929,7 +3929,7 @@ def plan_training(
         commands = [
             env,
             # NOT optional: the trainer default of 4 is the worst point on the M curve.
-            f"unsloth spark train --layer-split {model} --shard-load --grad-checkpoint "
+            f"unsloth spark train --layer-split {_q(model)} --shard-load --grad-checkpoint "
             f"--schedule {TRAIN_PP_SCHEDULE} --batch {TRAIN_PP_70B['1f1b_microbatches']} "
             f"--microbatches {TRAIN_PP_70B['1f1b_microbatches']} --run",
         ],
@@ -4099,6 +4099,17 @@ def _nodes_needed(size_gib: float, budget: float) -> int:
     if count * budget < size_gib - 1e-9:
         count += 1
     return max(1, count)
+
+
+def _q(model: str) -> str:
+    """A model path as one shell word, for a command line a human is meant to paste.
+
+    These strings are copied into a terminal, so a checkpoint path with a space in it was
+    splitting into two arguments and a path with a glob character was expanding against the
+    current directory. Display strings elsewhere in this module are deliberately left bare;
+    only the things that are meant to be RUN are quoted.
+    """
+    return shlex.quote(str(model))
 
 
 def _serve_commands(

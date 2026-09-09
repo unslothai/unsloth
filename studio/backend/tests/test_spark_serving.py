@@ -3319,3 +3319,42 @@ def test_a_peer_holding_a_different_file_at_the_same_path_does_not_become_a_repl
     assert str(model) in ss.state().reason, "the reason has to name the file that disagrees"
     # the probe really did ask for identity, not just presence
     assert any(c.startswith("stat -c") for c in _calls)
+
+
+def test_an_unknown_mtp_verdict_is_still_turned_off_on_a_wide_split():
+    """On the FIRST load of an uncached MTP-capable GGUF the header is not on disk, so mtp_plan
+    says `unknown`. Leaving that undecided let the backend switch its own MTP on after the
+    download, at a width where the measured rule says every split is faster with no drafter."""
+    for verdict in ("enabled", "unknown"):
+        mtp = {"mtp": verdict, "reason": "before", "request": {"spec_draft_n_max": 3}}
+        groups = {"pipeline_groups": 0, "requested_slots": ss.SPLIT_MTP_OFF_ROWS}
+        ss.reconcile_split_speculation(groups, mtp)
+        assert mtp["mtp"] == ss.MTP_OFF_FOR_SPLIT_ROWS, verdict
+        assert mtp["request"]["speculative_type"] == "off", verdict
+        assert "spec_draft_n_max" not in mtp["request"], verdict
+
+    # a drafter the CALLER asked for is never taken away
+    mtp = {"mtp": "user override", "reason": "caller", "request": {}}
+    groups = {"pipeline_groups": 0, "requested_slots": ss.SPLIT_MTP_OFF_ROWS}
+    ss.reconcile_split_speculation(groups, mtp)
+    assert mtp["mtp"] == "user override"
+
+    # and below the threshold the unknown case is left alone to be decided on the real header
+    mtp = {"mtp": "unknown", "reason": "before", "request": {}}
+    groups = {"pipeline_groups": 0, "requested_slots": 1}
+    ss.reconcile_split_speculation(groups, mtp)
+    assert mtp["mtp"] == "unknown"
+
+
+def test_a_replica_is_given_a_model_load_deadline_not_the_rpc_servers():
+    """A replica is a llama-server: it reads the whole model before it binds. Reusing the
+    rpc-server's 20 s -- the case that constant's own comment excludes -- killed a peer that was
+    loading a near-node-capacity GGUF and fell back to one node while it was perfectly healthy."""
+    assert ss.PEER_REPLICA_START_TIMEOUT_S > ss.PEER_START_TIMEOUT_S
+    # matched to the primary's own readiness budget, so both ends get the same time
+    assert ss.PEER_REPLICA_START_TIMEOUT_S == 600.0
+    import inspect
+
+    src = inspect.getsource(ss.SparkServing._start_replicas)
+    assert "PEER_REPLICA_START_TIMEOUT_S" in src
+    assert "PEER_START_TIMEOUT_S)" not in src, "the replica must not use the rpc-server deadline"

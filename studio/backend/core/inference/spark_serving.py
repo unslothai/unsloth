@@ -141,6 +141,13 @@ _GROUPS_REFUSAL_TEXT = "is not supported together with"
 _PROBE_MODEL_NAME = "unsloth-spark-pipeline-groups-probe.gguf"
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
+# A replica is a llama-server, not an rpc-server: it reads the whole model before it binds.
+# PEER_START_TIMEOUT_S was being used for it too, which is the case its own comment above
+# excludes -- a near-node-capacity GGUF exceeds 20 s from local storage, so the peer was
+# killed mid-load and the deployment fell back to one node while the peer was perfectly
+# healthy. Matched to the primary's own readiness budget (_wait_for_health, 600 s) so the two
+# ends of a replica pair are given the same time to do the same work.
+PEER_REPLICA_START_TIMEOUT_S = 600.0
 PEER_REUSE_TIMEOUT_S = 3.0
 SUPERVISOR_INTERVAL_S = 1.0
 _LOG_TAIL = 60
@@ -1545,7 +1552,13 @@ def reconcile_split_speculation(
         callers and not caller_speculation_off(speculative_type, extra_args)
     )
     rows = int(groups.get("requested_slots") or groups.get("slots") or 1)
-    if verdict == "enabled" and not split_mtp_wins(rows):
+    # "unknown" counts here as well as "enabled". On the FIRST load of an uncached MTP-capable
+    # GGUF the header is not on disk yet, so mtp_plan cannot say, and leaving the decision open
+    # let the backend switch its own MTP on after the download -- at a width where this module's
+    # measured rule says every split is faster with no drafter at all. Turning it off is safe in
+    # both directions: on a model with no head it is a no-op, and on one with a head it is what
+    # the measurement asks for. A drafter the CALLER asked for is "user override" and untouched.
+    if verdict in ("enabled", "unknown") and not split_mtp_wins(rows):
         # The depth field goes with it, so no draft flag of any kind is emitted.
         mtp["mtp"] = MTP_OFF_FOR_SPLIT_ROWS
         mtp["reason"] = (
@@ -1553,7 +1566,12 @@ def reconcile_split_speculation(
             f"with NO drafter at every depth swept (best depth 171.7 against 186.3 tok/s at "
             f"64 rows, -7.9 percent, and 164.1 against 212.7 at 128, -22.9 percent); below "
             f"{SPLIT_MTP_OFF_ROWS} it speculates at the measured depth, worth +11.0 percent "
-            f"at 32 rows. Previously: {mtp.get('reason')}"
+            f"at 32 rows"
+            + (
+                " (the header was not readable yet, so this is applied without waiting for the "
+                "download to say whether there is a head)" if verdict == "unknown" else ""
+            )
+            + f". Previously: {mtp.get('reason')}"
         )
         request = mtp.setdefault("request", {})
         request.pop("spec_draft_n_max", None)
@@ -2781,7 +2799,7 @@ class SparkServing:
             # listening there is admitted as a healthy backend otherwise, and generation
             # traffic goes to whatever model it is holding.
             if not await wait_for_own_port(
-                self.peer_process, peer, peer_port, PEER_START_TIMEOUT_S
+                self.peer_process, peer, peer_port, PEER_REPLICA_START_TIMEOUT_S
             ):
                 tail = list(self.peer_process.tail)[-3:]
                 await self.peer_process.stop()
