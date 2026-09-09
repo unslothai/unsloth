@@ -2162,7 +2162,12 @@ def _forced_rocm_route_is_viable() -> bool:
     # have no kernels for -- leaving neither AMD nor NVIDIA usable. _runtime_gfx_target
     # composes both mask layers and returns the whole machine beside the target, which is
     # the shape _gfx_route_on_host needs for the gfx906 mixed-host rule.
-    _inferred = _infer_linux_amd_gfx_arch()
+    # Normalized here and not only inside _runtime_gfx_target: rocminfo prints gcnArchName
+    # with its feature suffix (gfx1100:sramecc-:xnack-) and that is what users copy into
+    # UNSLOTH_ROCM_GFX_ARCH, but _amd_arch_index_url keys on the bare arch and answers None
+    # for the suffixed spelling. The per-arch arm below then refused a route that the plain
+    # gfx1100 declaration gets. _physical_amd_gfx_archs splits the same way.
+    _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0] or None
     _target, _, _, _host_codes = _runtime_gfx_target(_inferred)
     # A mask HIP cannot resolve exposes no device to it, so there is nothing to swap to --
     # and the target above is the first card only because _pick_visible_index guesses one.

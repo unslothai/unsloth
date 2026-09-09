@@ -5120,13 +5120,36 @@ case "$TORCH_INDEX_URL" in
             # the source not at each consumer: gfx1033 shares gfx103X-all with gfx1030-gfx1036,
             # so the shared-family arm below would otherwise rewrite the cpu index the gate
             # just chose back to ROCm wheels.
+            #
+            # PRESENCE is the rule only while the selected card is unknown, exactly as in the
+            # miscomputing-arch gate inside get_torch_index_url. An honoured request has
+            # already resolved the one card this run hands torch, so disqualifying the family
+            # for a sibling the mask hid takes the cpu index for a routable gfx1030 and the
+            # CUDA fallback then undoes the request entirely: the same failure that gate was
+            # changed to avoid, one layer later.
+            #
+            # Re-derived rather than read: _AMD_REQUEST_TARGET_GFX is assigned inside
+            # get_torch_index_url, which runs in a command substitution, so the assignment
+            # never reaches this shell. The predicate is idempotent and its probes are
+            # memoised, and it is asked only on a run that set the request.
+            _amd_reroute_target=""
+            if _rocm_torch_explicitly_requested && _amd_request_has_a_wheel_route; then
+                _amd_reroute_target="${_AMD_REQUEST_TARGET_GFX:-}"
+            fi
+            _amd_reroute_bad_arch=false
             case " $(printf '%s\n' "$_amd_probe_out" | sed 's/:.*$//' \
                      | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
-                *" gfx1033 "*)
-                    echo "[WARN] AMD gfx1033 (Van Gogh) is in the probed inventory -- not routing torch to the shared $_amd_probed_family index (studio/ROCM_RDNA2_APU.md)." >&2
-                    _amd_probed_family=""
-                    _amd_probed_gfx_first="" ;;
+                *" gfx1033 "*) _amd_reroute_bad_arch=true ;;
             esac
+            case "$_amd_reroute_target" in
+                ""|gfx1033) : ;;
+                *) _amd_reroute_bad_arch=false ;;
+            esac
+            if [ "$_amd_reroute_bad_arch" = true ]; then
+                echo "[WARN] AMD gfx1033 (Van Gogh) is in the probed inventory -- not routing torch to the shared $_amd_probed_family index (studio/ROCM_RDNA2_APU.md)." >&2
+                _amd_probed_family=""
+                _amd_probed_gfx_first=""
+            fi
             if [ -n "${_amd_probed_family:-}" ] && \
                [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
                 _amd_no_rocm_version_reroute=true

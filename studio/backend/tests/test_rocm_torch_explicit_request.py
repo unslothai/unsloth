@@ -2323,3 +2323,136 @@ def test_a_pinned_host_keeps_the_device_the_user_named():
     preference must not quietly install for the other card."""
     assert _route_target_masked(["gfx90c", "gfx1200"], HIP_VISIBLE_DEVICES = "0") == ""
     assert _route_shell_masked(["gfx90c", "gfx1200"], HIP_VISIBLE_DEVICES = "0") is False
+
+
+def _versionless_reroute_block() -> str:
+    """install.sh's versionless per-arch reroute, lifted by text.
+
+    A top-level block rather than a function, so it is taken by its own two anchors: the
+    flag it initialises, and the first unindented esac below that. Restated here it would
+    agree with itself.
+    """
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    start = lines.index("_amd_no_rocm_version_reroute=false")
+    end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
+    return "\n".join(lines[start : end + 1])
+
+
+def _reroute_family(physical: "list[str]", **mask: str) -> str:
+    """The wheel family the versionless reroute leaves standing, or "" when it clears it.
+
+    The whole point of the block is which index a host with no readable ROCm version takes,
+    so _detect_rocm_version_tag answers empty and TORCH_INDEX_URL arrives as cpu -- the two
+    conditions that put a run inside this arm at all.
+    """
+    emit = 'printf "%s\\n" ' + " ".join(repr(a) for a in physical)
+    script = "\n".join(
+        [
+            "_torch_index_pinned=false",
+            "SKIP_TORCH=false",
+            'TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"',
+            f"_probe_amd_gfx_arch() {{ {emit}; }}",
+            f"_kfd_gfx_targets() {{ {emit}; }}",
+            "_infer_linux_amd_gfx_arch() { :; }",
+            "_amd_gpu_present_via_pci() { return 0; }",
+            "_has_amd_rocm_gpu() { return 0; }",
+            # No NVIDIA card, so _nvidia_gpu_wins_over_amd answers no whatever the request
+            # did and the arms below differ only in the request and the mask.
+            "_has_usable_nvidia_gpu() { return 1; }",
+            _shell_function("_rocm_torch_explicitly_requested"),
+            *_wheel_route_defs(rocminfo = _fake_rocminfo(physical)),
+            _shell_function("_nvidia_gpu_wins_over_amd"),
+            _shell_function("_amd_probe_arches"),
+            _shell_function("_amd_agreed_index_family"),
+            _shell_function("_amd_sole_index_arch"),
+            _shell_function("_hsa_spoofed_physical_gfx"),
+            "_detect_rocm_version_tag() { :; }",
+            _versionless_reroute_block(),
+            'printf "%s" "${_amd_probed_family:-}"',
+        ]
+    )
+    return _bash(script, env = _route_env(mask))
+
+
+# gfx1033 shares gfx103X-all with the card beside it, which is what makes the family
+# disqualification reach a routable sibling in the first place.
+_DECK_PLUS_RDNA2 = ["gfx1033", "gfx1030"]
+
+
+def test_the_versionless_reroute_keeps_the_family_the_request_selected():
+    """The reroute clears the family on PRESENCE of gfx1033, which is right only while the
+    card that will run is unknown. An honoured request has already resolved it, so on this
+    host the mask picks the routable gfx1030 and the block still took the cpu index for it --
+    and the CUDA restore then undid the request, exactly the failure the same gate inside
+    get_torch_index_url was changed to avoid."""
+    assert _reroute_family(
+        _DECK_PLUS_RDNA2, UNSLOTH_FORCE_ROCM_TORCH = "1", HIP_VISIBLE_DEVICES = "1"
+    ) == "gfx103X-all"
+
+
+def test_the_same_request_selecting_the_deck_still_loses_the_family():
+    """The control that keeps the narrowing honest: the request cannot buy ROCm wheels for
+    the arch measured to compute wrong answers (studio/ROCM_RDNA2_APU.md). Same host, mask
+    on the gfx1033."""
+    assert _reroute_family(
+        _DECK_PLUS_RDNA2, UNSLOTH_FORCE_ROCM_TORCH = "1", HIP_VISIBLE_DEVICES = "0"
+    ) == ""
+
+
+def test_the_presence_rule_still_holds_for_a_host_that_did_not_ask():
+    """And the control for every other host: with no request nothing resolved a target, so
+    presence disqualifies the shared family as before (#7776). Without it the fix could be
+    "never disqualify", which puts gfx103X-all wheels on a Steam Deck."""
+    assert _reroute_family(_DECK_PLUS_RDNA2, HIP_VISIBLE_DEVICES = "1") == ""
+
+
+def test_a_declared_arch_with_its_feature_suffix_still_routes(stack, monkeypatch):
+    """rocminfo prints gcnArchName with its feature flags -- gfx1100:sramecc-:xnack- -- and
+    that is the spelling users copy into UNSLOTH_ROCM_GFX_ARCH. _amd_arch_index_url keys on
+    the bare arch and answers None for the suffixed one, so the per-arch arm below declined
+    a route the plain gfx1100 declaration gets, on the same silicon."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100"],
+            inferred = "gfx1100:sramecc-:xnack-",
+            rocm = (0, 0),
+            UNSLOTH_ROCM_GFX_ARCH = "gfx1100:sramecc-:xnack-",
+        )
+        is True
+    )
+
+
+def test_the_bare_spelling_of_the_same_declaration_is_unchanged(stack, monkeypatch):
+    """The control: the spelling that already worked must keep working, so the fix cannot
+    be read as "the per-arch arm always approves"."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100"],
+            inferred = "gfx1100",
+            rocm = (0, 0),
+            UNSLOTH_ROCM_GFX_ARCH = "gfx1100",
+        )
+        is True
+    )
+
+
+def test_a_suffixed_declaration_naming_an_unroutable_arch_is_still_declined(stack, monkeypatch):
+    """The other control: normalising the spelling must not normalise the ANSWER. gfx1010
+    has no index at all, and a suffixed gfx1010 must not start deposing a working CUDA
+    stack for wheels carrying no kernels for it."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1010"],
+            inferred = "gfx1010:xnack-",
+            rocm = (0, 0),
+            UNSLOTH_ROCM_GFX_ARCH = "gfx1010:xnack-",
+        )
+        is False
+    )
