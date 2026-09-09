@@ -321,11 +321,14 @@ def ensure_dir(path: Path) -> Path:
 
 def ensure_account_dir(path: Path) -> Path:
     """``ensure_dir`` inside the acting account's workspace. A finalizer outliving deletion
-    would recreate the renamed-aside roots; refuse once the tombstone is set and they are gone.
+    would recreate the renamed-aside roots; refuse once the tombstone is set.
     Check and creation share ``root_retirement_lock`` with the rename."""
     with root_retirement_lock:
-        if not is_owner_context() and not workspace_root().exists():
+        if not is_owner_context():
             from core.training.account_jobs import account_is_retired
+
+            # Existence is not proof of life: a request that outlived the delete can mkdir the
+            # workspace back. The tombstone says the account is gone.
             if account_is_retired():
                 raise RetiredAccountError(
                     f"account has been deleted; refusing to recreate {path!s}"

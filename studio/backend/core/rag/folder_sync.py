@@ -41,6 +41,8 @@ _thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
 _worker_lock = threading.Lock()
 _worker_state = threading.local()
+# Scheduling cursor of the single linked-folder worker; see _next_account_job.
+_last_job_account: str | None = None
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _named_locks_lock = threading.Lock()
@@ -1940,7 +1942,17 @@ def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
 
 
 def _next_account_job():
-    for account in job_accounts():
+    # Round robin from the account after the last claim: folders are reconciled one at a
+    # time, so restarting at the first account starves everyone behind a backlog.
+    global _last_job_account
+    accounts = job_accounts()
+    start = 0
+    for index, account in enumerate(accounts):
+        if account.account_id == _last_job_account:
+            start = index + 1
+            break
+    for offset in range(len(accounts)):
+        account = accounts[(start + offset) % len(accounts)]
         try:
             job = run_as(account, _next_job)
         except Exception:
@@ -1948,6 +1960,7 @@ def _next_account_job():
             logger.warning("linked-folder queue selection failed for one account", exc_info = True)
             continue
         if job:
+            _last_job_account = account.account_id
             return (account, *job)
     return None
 

@@ -6,11 +6,13 @@ import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
 export const OWNER_BROWSER_ACCOUNT = "unsloth";
 
+export const APPEARANCE_KEY = "unsloth_appearance_customization";
+
 /** Browser chrome only. Never add credentials, content, model choices or profile data. */
 export const ACCOUNT_CHROME_KEYS = new Set([
   "theme",
   "palette",
-  "unsloth_appearance_customization",
+  APPEARANCE_KEY,
   "unsloth_locale",
   "sidebar_pinned",
   "sidebar_width",
@@ -110,6 +112,45 @@ export function resetFullAccessForMultiUser(storage: Storage): void {
   }
 }
 
+const IMPORTED_FONT_SELECTIONS = [
+  "uiFont",
+  "headingFont",
+  "chatFont",
+  "codeFont",
+] as const;
+
+/**
+ * Appearance chrome carries over, but an imported font is the uploaded file's
+ * bytes, not chrome: strip the fonts and any selection naming one, and leave
+ * the rest of the value untouched.
+ */
+function purgeImportedFonts(storage: Storage): void {
+  const raw = storage.getItem(APPEARANCE_KEY);
+  if (!raw?.includes("importedFonts")) return;
+  let parsed: {
+    state?: { customization?: Record<string, unknown> };
+    customization?: Record<string, unknown>;
+  };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Unreadable, so worthless to the store, and it still holds font bytes.
+    storage.removeItem(APPEARANCE_KEY);
+    return;
+  }
+  const customization = parsed?.state?.customization ?? parsed?.customization;
+  const fonts = customization?.importedFonts;
+  if (!customization || !Array.isArray(fonts) || fonts.length === 0) return;
+  const names = new Set(
+    fonts.map((font) => (font as { name?: unknown } | null)?.name),
+  );
+  customization.importedFonts = [];
+  for (const field of IMPORTED_FONT_SELECTIONS) {
+    if (names.has(customization[field])) customization[field] = null;
+  }
+  storage.setItem(APPEARANCE_KEY, JSON.stringify(parsed));
+}
+
 function clearAccountSessionStorage(browser: AccountTransitionBrowser): void {
   try {
     const storage = browser.sessionStorage;
@@ -177,6 +218,7 @@ export async function transitionBrowserAccount(
       if (key.startsWith("unsloth") || key.startsWith("chat-draft"))
         storage.removeItem(key);
     }
+    purgeImportedFonts(storage);
     clearAccountSessionStorage(browser);
     await Promise.all(
       ACCOUNT_DATABASES.map((name) =>
