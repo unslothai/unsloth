@@ -852,3 +852,29 @@ def test_an_unbounded_prompt_cache_declines_a_weight_spill():
     assert plan_placement(
         layout, [budget], 94 * GIB, 32768, opts = PlanOptions(prompt_cache_unbounded = True)
     ).spilled_blocks
+
+
+def test_the_fallbacks_live_cache_is_capped_at_the_slot_window():
+    """A request lives in one slot's window. The fitter's moved-cache term was
+    capped at the whole context, so once the prompt filled its slot the generated
+    tokens priced live cache the slot cannot hold, on the fitter's arm alone."""
+    import dataclasses
+
+    layout = dense_layout()
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    shape = dict(workload_prompt_tokens = 32768, workload_generated_tokens = 256)
+
+    def live_per_moved_layer(placement):
+        layers = next(g for g in placement.host_groups if g.name == "layers").bytes_total
+        return placement.kv_host_bytes / (layers / layout.blocks[0].resident_bytes)
+
+    one = _fit_fallback_placement(layout, gated(**shape), 12 * GIB, 32768, n_seq = 1, **args)
+    four = _fit_fallback_placement(
+        layout, gated(**shape, n_parallel = 4), 12 * GIB, 32768, n_seq = 4, **args
+    )
+    unified = _fit_fallback_placement(
+        layout, gated(**shape, n_parallel = 4, kv_unified = True), 12 * GIB, 32768, n_seq = 4, **args
+    )
+    assert one is not None and four is not None and unified is not None
+    assert abs(live_per_moved_layer(one) / live_per_moved_layer(four) - 4) < 0.05
+    assert abs(live_per_moved_layer(unified) / live_per_moved_layer(one) - 1) < 0.05

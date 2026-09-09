@@ -28197,6 +28197,14 @@ class LlamaCppBackend:
                 priced_parallel,
             )
             return None
+        # A pass-through EQUAL to the priced count is not an override, but it is
+        # still appended after the --parallel a plan rewrites, and last-wins puts
+        # the original count back in the child. Rung 1 would then reserve for the
+        # reduced count and launch --fit off at the full one, recreating the very
+        # deficit it closed. The snapshot pins min_parallel for this; pin it here
+        # too so a caller that built its inputs without the snapshot cannot re-open
+        # the rung.
+        min_parallel_floor = priced_parallel if override_parallel is not None else 1
 
         model_size = int(inputs.get("model_size") or 0)
         kv_cache_bytes = int(inputs.get("kv_cache_bytes") or 0)
@@ -28508,7 +28516,10 @@ class LlamaCppBackend:
                 mmproj_movable = mmproj_movable,
                 n_parallel = priced_parallel,
                 kv_unified = bool(inputs.get("kv_unified")),
-                min_parallel = max(1, min(priced_parallel, int(inputs.get("min_parallel") or 1))),
+                min_parallel = max(
+                    min_parallel_floor,
+                    min(priced_parallel, int(inputs.get("min_parallel") or 1)),
+                ),
                 kv_bytes_floor_by_parallel = {
                     int(_p): _attention_floor(_v, int(_p))
                     for _p, _v in (inputs.get("kv_bytes_floor_by_parallel") or {}).items()

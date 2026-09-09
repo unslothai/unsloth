@@ -1049,7 +1049,15 @@ def _fit_fallback_placement(
     # #9861 flagged the same gap from the measurement side -- 32768 allocated,
     # about 2.2K ever live. Feasibility above still uses the full reservation,
     # because llama.cpp really does allocate it.
-    live_tokens = min(n_ctx, max(1, opts.workload_prompt_tokens + opts.workload_generated_tokens))
+    # A request lives in ONE slot's window: the whole context under a unified
+    # cache, n_ctx / slots without one (the same bound the cost gate puts on the
+    # prompt). Capping at the total context priced live cache a slot cannot hold
+    # once the prompt already filled its window, and only the fitter's moved-cache
+    # arm carries that term, so the over-charge bought spills the fitter beats.
+    slot_window = n_ctx if opts.kv_unified else n_ctx // max(1, n_seq)
+    live_tokens = min(
+        max(1, slot_window), max(1, opts.workload_prompt_tokens + opts.workload_generated_tokens)
+    )
     # Scaled by whatever correction ``kv_bytes_floor`` applied to the RESERVED
     # size, so both sides of this function describe one cache. The floor is the
     # caller's byte-accurate measurement at the requested context, and where it

@@ -2951,3 +2951,14 @@ def test_a_model_memory_toggle_stands_the_planner_down(monkeypatch, keep_residen
     monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
     assert LlamaCppBackend._planner_may_run(None, env) is True
+
+
+def test_a_pass_through_parallel_equal_to_the_priced_count_pins_rung_1(monkeypatch):
+    """Equal is not an override, but the extras are appended after the --parallel a
+    plan rewrites and llama.cpp is last-wins, so a plan that lowered the slots
+    would launch --fit off at the count it reserved against. The method pins the
+    floor itself, whatever the snapshot said."""
+    opts, _ = _captured_opts(monkeypatch, _Stub(), n_parallel = 4, extra_args = ["--parallel", "4"])
+    assert opts.n_parallel == 4 and opts.min_parallel == 4
+    opts, _ = _captured_opts(monkeypatch, _Stub(), n_parallel = 4)
+    assert opts.min_parallel == 1
