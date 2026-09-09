@@ -1595,7 +1595,13 @@ class SparkServing:
                 peer = peer_address()
                 if peer:
                     out = await self._start_layer_split(
-                        request, peer, plan, local_file, users, mtp = mtp
+                        request,
+                        peer,
+                        plan,
+                        local_file,
+                        users,
+                        mtp = mtp,
+                        inherited_extra_args = inherited_extra_args,
                     )
                 else:
                     out = request
@@ -1619,13 +1625,25 @@ class SparkServing:
         local_file: Optional[str],
         slots: int = 1,
         mtp: Optional[Dict[str, Any]] = None,
+        inherited_extra_args: Optional[List[str]] = None,
     ) -> Any:
         sc = _cluster()
         port = int(getattr(sc, "RPC_DEFAULT_PORT", RPC_PORT_DEFAULT))
+
+        def _effective(req: Any) -> List[str]:
+            """What llama-server will actually be launched with, which on a settings-Apply
+            reload is not the request field. That path does not round-trip the extras, so the
+            field is None and ``_resolve_inherited_extra_args`` puts the previous same-model
+            load's extras back afterwards. Reading the bare field here would plan against an
+            empty pass-through and, worse, writing a non-None list back would make that
+            resolver skip inheritance and drop them for real."""
+            extra = getattr(req, "llama_extra_args", None)
+            return list(extra if extra is not None else (inherited_extra_args or []))
+
         groups = await asyncio.to_thread(
             pipeline_groups_plan,
             slots,
-            list(getattr(request, "llama_extra_args", None) or []),
+            _effective(request),
             projector = projector_blocks_pipeline_groups(
                 local_file,
                 disable_vision = bool(getattr(request, "disable_vision", False)),
@@ -1636,11 +1654,11 @@ class SparkServing:
                 groups,
                 mtp,
                 speculative_type = getattr(request, "speculative_type", None),
-                extra_args = list(getattr(request, "llama_extra_args", None) or []),
+                extra_args = _effective(request),
             )
 
         def _with_rpc_args(req: Any) -> Any:
-            extra = list(getattr(req, "llama_extra_args", None) or [])
+            extra = _effective(req)
             extra += layer_split_extra_args(
                 peer, port, pipeline_groups = int(groups["pipeline_groups"])
             )

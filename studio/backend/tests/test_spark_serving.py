@@ -2184,3 +2184,45 @@ def test_underscore_spellings_are_read_the_way_llama_server_reads_them():
     # Shorts keep their exact spelling, as they do in arg.cpp: the fold is guarded on "--".
     assert ss.extra_args_own_speculation(["-md", "/d.gguf"]) == "-md"
     assert ss.extra_args_refuse_pipeline_groups(["-mm", "/p.gguf"]) == "-mm"
+
+
+def test_split_reload_keeps_the_extras_the_apply_path_does_not_round_trip(
+    cluster, monkeypatch, tmp_path
+):
+    # A settings Apply reload omits llama_extra_args, and _resolve_inherited_extra_args puts
+    # the previous same-model load's extras back afterwards, but only while the field is still
+    # None. Writing the split flags into a bare list used to drop them for real.
+    cluster.topology = "layer_split"
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
+
+    request = _FakeRequest(str(model))
+    assert getattr(request, "llama_extra_args", None) is None
+    out = run(ss.before_load(request, 3, inherited_extra_args = ["--seed", "1"]))
+    assert out.llama_extra_args[:2] == ["--seed", "1"]
+    assert "--rpc" in out.llama_extra_args
+
+
+def test_split_reload_reads_an_inherited_flag_the_groups_are_refused_with(
+    cluster, monkeypatch, tmp_path
+):
+    # Same reload, but the inherited extras carry a flag llama-server refuses together with
+    # --pipeline-groups. Planning against the bare field appended the groups anyway and the
+    # server then failed the whole load.
+    cluster.topology = "layer_split"
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
+
+    out = run(
+        ss.before_load(
+            _FakeRequest(str(model)), 3, inherited_extra_args = ["--control-vector", "/v.gguf"]
+        )
+    )
+    assert ss.PIPELINE_GROUPS_FLAG not in out.llama_extra_args
+    assert ss.state().pipeline_groups in (0, 1)
