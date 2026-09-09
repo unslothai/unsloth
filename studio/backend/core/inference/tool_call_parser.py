@@ -351,8 +351,7 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
 def admission_room_refused_message() -> str:
     """Shown when the KV ledger refused the room the turn's next request needs.
 
-    The only wall the user cannot widen from this chat: the shared cache is held by
-    other chats, so the request is not sent and the partial stays with Continue.
+    The only wall the user cannot widen from this chat: other chats hold the shared cache.
     """
     return (
         "There was no room left in the shared model cache for the next step of this "

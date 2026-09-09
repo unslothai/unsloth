@@ -210,8 +210,8 @@ class LlamaAdmissionCancelled(LlamaAdmissionError):
 class LlamaAdmissionRecostRefused(LlamaAdmissionError):
     """A started run asked to grow past its lease and was refused.
 
-    The lease still holds the figure it came in with, so the larger prompt is not
-    covered: the caller must end the turn with what it has rather than send.
+    The lease still holds the figure it came in with, so the larger prompt is not covered
+    and the caller must end the turn rather than send.
     """
 
 
