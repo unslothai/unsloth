@@ -207,7 +207,15 @@ def global_scale(t: Any):
 def _quantize_impl(x: Any, global_sf: Any):
     """2D bf16 in, ``(packed e2m1x2, swizzled block scales)`` out."""
     import flashinfer
+
+    from . import diffusion_nvfp4_dispatch as dispatch
+
     with _device_guard(x):
+        # Both branches inside the SAME guard: the fast one is the same pybind entry point the
+        # public one reaches, so it needs the guard for the same reason.
+        xq, sf = dispatch._fast_quantize(x, global_sf)
+        if xq is not None:
+            return xq, sf
         return flashinfer.nvfp4_quantize(x, global_sf, do_shuffle = False)
 
 
@@ -252,6 +260,8 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
     import flashinfer
     import torch
 
+    from . import diffusion_nvfp4_dispatch as dispatch
+
     with _device_guard(xq):
         m = xq.shape[0]
         if _zero_buffer_enabled():
@@ -259,6 +269,31 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             _fire_barrier(xq.device)
+        # The cached dispatch, when this flashinfer's private layout is the verified one. Same
+        # guard, same barrier, same tactic flashinfer's own AutoTuner would have chosen; what it
+        # skips is rebuilding the runner and re-hashing the shapes on every call. A cold key under
+        # capture, or anything unverified, returns None and the public entry point runs.
+        if dispatch.enabled(xq.device):
+            wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
+            plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)
+            if plan is not None:
+                runner, tactic, workspace = plan
+                runner(
+                    inputs = [
+                        xq,
+                        wq_t,
+                        x_sf,
+                        w_sf_t,
+                        alpha,
+                        torch.bfloat16,
+                        out,
+                        16,
+                        True,
+                        workspace,
+                    ],
+                    tactic = tactic,
+                )
+                return out
         return flashinfer.mm_fp4(
             xq, wq.T, x_sf, w_sf.T, alpha, torch.bfloat16, out = out, backend = backend
         )
@@ -432,6 +467,16 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
             finite = bool(torch.isfinite(y).all().item())
         rec["ok"] = finite
         rec["reason"] = "ok" if finite else "mm_fp4 produced a non-finite result"
+        if finite:
+            # The one-shot bit-identity check that unlocks the cached dispatch on this device.
+            # Here rather than on the request path because it quantises and GEMMs twice, and here
+            # rather than nowhere because a private symbol that still exists but means something
+            # else is invisible to a version allowlist.
+            from . import diffusion_nvfp4_dispatch as dispatch
+
+            fast_ok, fast_reason = dispatch.verify(dev)
+            rec["fast_dispatch"] = fast_ok
+            rec["fast_dispatch_reason"] = fast_reason
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
 

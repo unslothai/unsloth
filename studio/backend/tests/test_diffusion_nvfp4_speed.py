@@ -25,6 +25,7 @@ import types
 
 import pytest
 
+from core.inference import diffusion_nvfp4_dispatch as dispatch
 from core.inference import diffusion_nvfp4_linear as nl
 from core.inference import diffusion_nvfp4_ops as ops
 
@@ -98,6 +99,9 @@ class _FakeTensor:
 
     def contiguous(self):
         return self
+
+    def is_contiguous(self):
+        return True
 
     def to(
         self,
@@ -232,6 +236,9 @@ def _fake_flashinfer():
 def stub_kernels(monkeypatch):
     """Install the stubbed torch and flashinfer for the duration of one test."""
     _RECORDER.reset()
+    # The cached dispatch is off under the stub (nothing verified this fake device), but a verdict
+    # left behind by another file would send these calls down a path the stub does not model.
+    dispatch.reset()
     monkeypatch.setitem(sys.modules, "torch", _fake_torch())
     monkeypatch.setitem(sys.modules, "flashinfer", _fake_flashinfer())
     monkeypatch.setattr(ops, "register_ops", lambda: None)
@@ -240,6 +247,7 @@ def stub_kernels(monkeypatch):
     yield _RECORDER
     _RECORDER.reset()
     ops.reset_preflight_cache()
+    dispatch.reset()
 
 
 def _launch_devices(recorder, *names) -> list[int]:

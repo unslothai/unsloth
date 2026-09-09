@@ -1,0 +1,345 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for the cached FlashInfer dispatch (``diffusion_nvfp4_dispatch.py``).
+
+This module reaches into FlashInfer's private internals, so the tests are mostly about the three
+fences rather than about the speed: an exact version allowlist, one try around every private import,
+and a runtime bit-identity check per device. The hermetic half installs a fake ``flashinfer``
+package tree and takes symbols away one at a time; the CUDA-gated half runs the cached path against
+the public one at the four host-cost shapes plus a Wan 2.2 TI2V-5B feed-forward shape and requires
+``torch.equal``.
+"""
+
+from __future__ import annotations
+
+import sys
+import types
+
+import pytest
+
+from core.inference import diffusion_nvfp4_dispatch as dispatch
+from core.inference import diffusion_nvfp4_ops as ops
+
+_PRIVATE = {
+    "flashinfer.autotuner": ("AutoTuner",),
+    "flashinfer.fp4_quantization": ("get_fp4_quantization_module",),
+    "flashinfer.gemm.gemm_base": (
+        "DEFAULT_WORKSPACE_SIZE",
+        "_MM_FP4_TUNING_CONFIG_128x4",
+        "_get_cache_buf",
+        "get_cutlass_fp4_gemm_module",
+    ),
+    "flashinfer.utils": ("device_support_pdl", "get_compute_capability"),
+}
+
+
+@pytest.fixture(autouse = True)
+def _clean_dispatch():
+    dispatch.reset()
+    yield
+    dispatch.reset()
+
+
+def _fake_flashinfer(
+    monkeypatch,
+    *,
+    version = "0.6.6",
+    drop = (),
+):
+    """A ``flashinfer`` package tree with exactly the private symbols the module imports."""
+    root = types.ModuleType("flashinfer")
+    root.__version__ = version
+    root.__path__ = []
+    monkeypatch.setitem(sys.modules, "flashinfer", root)
+    gemm = types.ModuleType("flashinfer.gemm")
+    gemm.__path__ = []
+    monkeypatch.setitem(sys.modules, "flashinfer.gemm", gemm)
+    for name, symbols in _PRIVATE.items():
+        module = types.ModuleType(name)
+        for symbol in symbols:
+            if symbol not in drop:
+                setattr(module, symbol, object())
+        monkeypatch.setitem(sys.modules, name, module)
+    return root
+
+
+# ── the version fence ─────────────────────────────────────────────────────────────────────────
+
+
+def test_the_allowlisted_version_with_every_symbol_is_available(monkeypatch):
+    _fake_flashinfer(monkeypatch)
+    ok, reason = dispatch.available()
+    assert ok is True, reason
+    assert "0.6.6" in reason
+
+
+@pytest.mark.parametrize("version", ["0.6.5", "0.6.7", "0.7.0", "unknown"])
+def test_an_unlisted_version_refuses_even_when_every_symbol_is_there(monkeypatch, version):
+    """Exact, not a minimum: a private symbol that moves in 0.6.7 is not a bug in 0.6.7."""
+    _fake_flashinfer(monkeypatch, version = version)
+    ok, reason = dispatch.available()
+    assert ok is False
+    assert version in reason and "public API" in reason
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["AutoTuner", "_get_cache_buf", "_MM_FP4_TUNING_CONFIG_128x4", "get_cutlass_fp4_gemm_module"],
+)
+def test_one_missing_private_symbol_takes_the_whole_fast_path_down(monkeypatch, missing):
+    _fake_flashinfer(monkeypatch, drop = (missing,))
+    ok, reason = dispatch.available()
+    assert ok is False
+    assert "ImportError" in reason and missing in reason
+
+
+def test_the_env_switch_refuses_before_it_imports_anything(monkeypatch):
+    def _boom(*_a, **_kw):  # pragma: no cover - reached only on a regression
+        raise AssertionError("the probe imported flashinfer under FAST_DISPATCH=0")
+
+    monkeypatch.setitem(sys.modules, "flashinfer", property(_boom))
+    monkeypatch.setenv(dispatch.NVFP4_FAST_DISPATCH_ENV, "0")
+    ok, reason = dispatch.available()
+    assert ok is False and reason.endswith("=0")
+
+
+def test_env_one_skips_the_version_check_and_nothing_else(monkeypatch):
+    monkeypatch.setenv(dispatch.NVFP4_FAST_DISPATCH_ENV, "1")
+    _fake_flashinfer(monkeypatch, version = "0.7.0")
+    assert dispatch.available()[0] is True
+
+    dispatch.reset()
+    _fake_flashinfer(monkeypatch, version = "0.7.0", drop = ("AutoTuner",))
+    ok, reason = dispatch.available()
+    assert ok is False and "AutoTuner" in reason
+
+
+@pytest.mark.parametrize("value", ["", "auto", "AUTO", "yes", "2"])
+def test_an_unrecognised_env_value_reads_as_auto(monkeypatch, value):
+    monkeypatch.setenv(dispatch.NVFP4_FAST_DISPATCH_ENV, value)
+    assert dispatch.fast_dispatch_env() == "auto"
+
+
+# ── the per-device fence ──────────────────────────────────────────────────────────────────────
+
+
+def test_nothing_is_enabled_until_verify_has_passed_on_that_device(monkeypatch):
+    _fake_flashinfer(monkeypatch)
+    monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
+    assert dispatch.available()[0] is True
+    # available() is a statement about the LIBRARY; enabled() is a statement about the DEVICE.
+    assert dispatch.enabled(0) is False
+    assert dispatch.quant_fn(0) is None
+
+
+def test_a_failed_verify_is_remembered_and_never_retried(monkeypatch):
+    _fake_flashinfer(monkeypatch)
+    monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
+    calls = []
+
+    def _fail(device):
+        calls.append(device)
+        return False, "stub failure"
+
+    monkeypatch.setattr(dispatch, "_run_verify", _fail)
+    assert dispatch.verify(0) == (False, "stub failure")
+    assert dispatch.verify(0) == (False, "stub failure")
+    assert len(calls) == 1
+    assert dispatch.enabled(0) is False
+
+
+def test_verify_does_not_run_the_gemm_when_the_library_is_wrong(monkeypatch):
+    _fake_flashinfer(monkeypatch, version = "0.7.0")
+    monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
+
+    def _boom(_device):  # pragma: no cover - reached only on a regression
+        raise AssertionError("verify ran the GEMM on an unlisted version")
+
+    monkeypatch.setattr(dispatch, "_run_verify", _boom)
+    ok, reason = dispatch.verify(0)
+    assert ok is False and "0.7.0" in reason
+
+
+# ── capture safety and the caches ─────────────────────────────────────────────────────────────
+
+
+class _Ptr:
+    """A stand-in for a weight buffer: a data_ptr, a shape and a ``.T``."""
+
+    def __init__(
+        self,
+        pointer,
+        shape = (8, 4),
+    ):
+        self._pointer = pointer
+        self.shape = shape
+
+    def data_ptr(self):
+        return self._pointer
+
+    @property
+    def T(self):
+        return ("view", self._pointer)
+
+
+def test_a_cold_plan_is_never_built_during_a_capture(monkeypatch):
+    """``choose_one`` may PROFILE, and a profiling launch inside a capture is in the graph forever."""
+    _fake_flashinfer(monkeypatch)
+    monkeypatch.setattr(ops, "_device_index", lambda device: 0)
+    monkeypatch.setattr(dispatch, "enabled", lambda device: True)
+    monkeypatch.setattr(ops, "_is_capturing", lambda: True)
+
+    def _boom(*_a, **_kw):  # pragma: no cover - reached only on a regression
+        raise AssertionError("a plan was built inside a capture")
+
+    monkeypatch.setattr(dispatch, "_build_plan", _boom)
+    xq = types.SimpleNamespace(device = 0, shape = (512, 1536))
+    assert dispatch.gemm_plan(xq, None, None, None, None, None, 3072, "cutlass") is None
+
+    # A WARM key is fine under capture: the plan is already built, nothing is profiled, and the
+    # prewarm is what makes every key warm before a capture is ever attempted.
+    dispatch._GEMM_PLAN[(512, 1536, 3072, "cutlass", 0)] = ("runner", 7, "ws")
+    assert dispatch.gemm_plan(xq, None, None, None, None, None, 3072, "cutlass") == (
+        "runner",
+        7,
+        "ws",
+    )
+
+
+def test_a_backend_other_than_cutlass_has_no_cached_plan(monkeypatch):
+    monkeypatch.setattr(ops, "_device_index", lambda device: 0)
+    monkeypatch.setattr(dispatch, "enabled", lambda device: True)
+    monkeypatch.setattr(ops, "_is_capturing", lambda: False)
+    xq = types.SimpleNamespace(device = 0, shape = (512, 1536))
+    assert dispatch.gemm_plan(xq, None, None, None, None, None, 3072, "trtllm") is None
+
+
+def test_the_transpose_cache_holds_the_view_and_is_keyed_on_pointer_and_shape():
+    weight = _Ptr(1024)
+    view = dispatch.transposed(weight)
+    assert dispatch.transposed(weight) is view
+    # A reallocated buffer at the same address with a different shape must not get the old view.
+    assert dispatch.transposed(_Ptr(1024, shape = (4, 8))) is not view
+
+
+def test_the_transpose_cache_is_bounded():
+    for pointer in range(dispatch._TRANSPOSE_CACHE_MAX):
+        dispatch.transposed(_Ptr(pointer))
+    assert len(dispatch._TRANSPOSED) == dispatch._TRANSPOSE_CACHE_MAX
+    # Cleared wholesale rather than evicted one at a time: the population is a model's weight
+    # buffers, so a clear is a warm-up and not a stall.
+    dispatch.transposed(_Ptr(10**9))
+    assert len(dispatch._TRANSPOSED) == 1
+
+
+def test_reset_clears_every_cache(monkeypatch):
+    _fake_flashinfer(monkeypatch)
+    monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
+    dispatch.available()
+    dispatch.transposed(_Ptr(7))
+    dispatch._GEMM_PLAN[("k",)] = ("runner", 0, "ws")
+    dispatch._QUANT_FN[0] = ("fn", True)
+    dispatch._VERIFIED[0] = (True, "ok")
+    assert dispatch.enabled(0) is True
+
+    dispatch.reset()
+    assert dispatch._AVAILABLE is None
+    assert not dispatch._GEMM_PLAN and not dispatch._QUANT_FN
+    assert not dispatch._TRANSPOSED and not dispatch._VERIFIED
+    assert dispatch.enabled(0) is False
+
+
+def test_describe_reports_what_is_cached(monkeypatch):
+    _fake_flashinfer(monkeypatch)
+    monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
+    dispatch._VERIFIED[1] = (True, "ok")
+    dispatch._VERIFIED[2] = (False, "nope")
+    dispatch.transposed(_Ptr(3))
+    record = dispatch.describe()
+    assert record["available"] is True
+    assert record["verified_devices"] == [1]
+    assert record["transposed"] == 1
+
+
+# ── T-CUDA-10: the cached path against the public one ─────────────────────────────────────────
+
+# The four shapes host cost was measured at, plus a Wan 2.2 TI2V-5B feed-forward: inner dim
+# 24 x 128 = 3072, ffn_dim 14336, and 27280 tokens for a 121-frame 704x1280 latent.
+CUDA_SHAPES = (
+    (32, 2560, 3840),
+    (1056, 3840, 3840),
+    (1056, 3840, 10240),
+    (4128, 3840, 10240),
+    (27280, 3072, 14336),
+)
+
+
+def _cuda_or_skip():
+    torch = pytest.importorskip("torch")
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    if tuple(torch.cuda.get_device_capability(0)) not in ops.NVFP4_FLASHINFER_CAPS:
+        pytest.skip("this device has no flashinfer NVFP4 kernels")
+    pytest.importorskip("flashinfer")
+    return torch
+
+
+def test_the_real_flashinfer_verifies_bit_identical():
+    torch = _cuda_or_skip()
+    import flashinfer
+
+    if flashinfer.__version__ not in dispatch._SUPPORTED:
+        pytest.skip(f"flashinfer {flashinfer.__version__} is outside the allowlist by design")
+    ok, reason = dispatch.verify(torch.device("cuda", 0))
+    assert ok is True, reason
+    assert dispatch.enabled(torch.device("cuda", 0)) is True
+
+
+@pytest.mark.parametrize("m,k,n", CUDA_SHAPES)
+def test_the_cached_dispatch_matches_the_public_api_exactly(m, k, n):
+    torch = _cuda_or_skip()
+    import flashinfer
+
+    if flashinfer.__version__ not in dispatch._SUPPORTED:
+        pytest.skip(f"flashinfer {flashinfer.__version__} is outside the allowlist by design")
+
+    device = torch.device("cuda", 0)
+    torch.manual_seed(m + k + n)
+    with torch.cuda.device(device), torch.inference_mode():
+        x = torch.randn(m, k, device = device, dtype = torch.bfloat16) * 0.05
+        w = torch.randn(n, k, device = device, dtype = torch.bfloat16) * 0.02
+        a_gsf, w_gsf = ops.global_scale(x), ops.global_scale(w)
+        wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
+        alpha = (1.0 / (a_gsf * w_gsf)).float()
+
+        dispatch.reset()
+        assert dispatch.enabled(device) is False
+        want_q, want_sf = ops._quantize_impl(x, a_gsf)
+        want = ops._mm_impl(want_q, wq, want_sf, w_sf, alpha, n, ops.DEFAULT_MM_BACKEND)
+
+        assert dispatch.verify(device)[0] is True
+        got_q, got_sf = ops._quantize_impl(x, a_gsf)
+        got = ops._mm_impl(got_q, wq, got_sf, w_sf, alpha, n, ops.DEFAULT_MM_BACKEND)
+        torch.cuda.synchronize(device)
+
+    assert torch.equal(want_q, got_q) and torch.equal(want_sf, got_sf)
+    assert torch.equal(want, got), float((want.float() - got.float()).abs().max())
+    # It actually took the fast path: a plan for this exact key is now cached.
+    assert (m, k // 2, n, ops.DEFAULT_MM_BACKEND, 0) in dispatch._GEMM_PLAN
+
+
+def test_the_preflight_unlocks_the_fast_dispatch_and_says_so():
+    torch = _cuda_or_skip()
+    import flashinfer
+
+    if flashinfer.__version__ not in dispatch._SUPPORTED:
+        pytest.skip(f"flashinfer {flashinfer.__version__} is outside the allowlist by design")
+
+    ops.reset_preflight_cache()
+    dispatch.reset()
+    record = ops.nvfp4_preflight(0, refresh = True)
+    assert record["ok"] is True, record["reason"]
+    assert record["fast_dispatch"] is True, record["fast_dispatch_reason"]
+    assert dispatch.enabled(torch.device("cuda", 0)) is True
+    ops.reset_preflight_cache()

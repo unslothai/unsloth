@@ -32,6 +32,12 @@ here because this is where an operator looks for a speed knob. All are safe to l
   ``UNSLOTH_NVFP4_FAST_BIAS=auto|0|1``  the Triton bias pass over the FP4 GEMM's output, eager path
                                         only, bit-identical to ``add_`` and 1.6x to 3.7x faster
                                         (``diffusion_nvfp4_bias.py``). ``0`` restores ``add_``.
+  ``UNSLOTH_NVFP4_FAST_DISPATCH=auto|0|1``  cache FlashInfer's per-call dispatch state instead of
+                                        rebuilding it every GEMM: 61.8 -> 18.1 us of host time per
+                                        call, bit-identical (``diffusion_nvfp4_dispatch.py``). Off
+                                        unless the installed flashinfer is on the exact allowlist
+                                        AND a runtime bit-identity check passes on the device; ``1``
+                                        skips the version check only, never the check.
   ``UNSLOTH_NVFP4_ZERO_BUFFER=1``       restores the full M x N memset in place of the 1-element PDL
                                         ordering barrier. Strictly slower, +3.9 to +97 us per GEMM
                                         (``diffusion_nvfp4_ops.py``).

@@ -71,10 +71,13 @@ def reset_nvfp4_state() -> None:
     the next model's graph pool. Everything reset here is cheap to rebuild, so a spurious reset
     costs a warm-up and a missed one costs a pointer into a freed pool.
     """
+    from . import diffusion_nvfp4_dispatch as _dispatch
     from . import diffusion_nvfp4_ops as _ops
 
     reset_tuned_shapes()
     _ops.reset_barriers()
+    # Also holds transposed VIEWS of the weight buffers, so keeping it would pin a freed model.
+    _dispatch.reset()
 
 
 @lru_cache(maxsize = 1)

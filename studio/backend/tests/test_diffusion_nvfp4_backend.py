@@ -165,6 +165,22 @@ def _is_guard(node: ast.AST) -> bool:
     return name.endswith("torch.cuda.device") or name.endswith("_device_guard")
 
 
+# FlashInfer's PRIVATE dispatch entry points, imported by name in diffusion_nvfp4_dispatch.py and
+# therefore invisible to a "flashinfer." prefix check. Each one either launches or allocates on the
+# current device: choose_one profiles every candidate tactic, _get_cache_buf allocates the
+# workspace, and fp4_quantize_sm100 is the quantiser itself.
+_PRIVATE_LAUNCHES = frozenset(
+    {
+        "choose_one",
+        "cutlass_fp4_gemm_runner",
+        "get_cutlass_fp4_gemm_module",
+        "_get_cache_buf",
+        "fp4_quantize_sm100",
+        "get_fp4_quantization_module",
+    }
+)
+
+
 def _is_launch(node: ast.Call) -> str:
     # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``) rather than on a name, and
     # it needs the guard just as much: Triton takes its device and stream from the CURRENT context,
@@ -176,6 +192,8 @@ def _is_launch(node: ast.Call) -> str:
     if name.startswith("flashinfer.") or name.startswith("_fi."):
         return name
     if "torch.ops.unsloth_nvfp4" in name:
+        return name
+    if name.rsplit(".", 1)[-1] in _PRIVATE_LAUNCHES:
         return name
     return ""
 
@@ -223,6 +241,7 @@ def test_the_guard_visitor_catches_an_unguarded_launch():
         "    _bias_add_kernel[grid](x)\n"
         "    with torch.cuda.device(x.device):\n"
         "        _bias_add_kernel[grid](x)\n"
+        "    _get_cache_buf('ws', 1, x.device)\n"
     )
     visitor = _LaunchVisitor()
     visitor.visit(tree)
@@ -230,6 +249,7 @@ def test_the_guard_visitor_catches_an_unguarded_launch():
         "flashinfer.nvfp4_quantize",
         "torch.ops.unsloth_nvfp4.mm",
         "_bias_add_kernel",
+        "_get_cache_buf",
     ]
 
 
