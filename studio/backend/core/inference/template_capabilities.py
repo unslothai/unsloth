@@ -340,15 +340,27 @@ def _bind(
     _bind_paths(target, _value_aliases(value, source, active), state)
     key = _reference_key(target)
     if key is not None:
-        source_key = _reference_key(value) if isinstance(value, nodes.Name) else None
+        source_key = (
+            _reference_key(value)
+            if isinstance(value, (nodes.Name, nodes.Getattr, nodes.Getitem))
+            else None
+        )
+        # Rebinding a name detaches it from whatever it shared, in BOTH directions: an
+        # alias made earlier still refers to the old container, not to this one.
         state.same.pop(key, None)
+        for name in [n for n, other in state.same.items() if other == key]:
+            state.same.pop(name, None)
         if _constructs_object(value):
             state.constructed.add(key)
-        elif source_key is not None and source_key in state.constructed:
-            # Binding one name to another does not copy the container, so both names
-            # now denote the same object.
-            state.constructed.add(key)
+        elif source_key is not None:
+            # Binding one reference to another does not copy the container, so both
+            # now denote the same object. This holds for a member as much as a name:
+            # `{% set alias = ns.catalog %}` shares the list, not a copy of it.
             state.same[key] = state.same.get(source_key, source_key)
+            if source_key in state.constructed:
+                state.constructed.add(key)
+            else:
+                state.constructed.discard(key)
         else:
             state.constructed.discard(key)
     if isinstance(target, nodes.Name):
@@ -403,26 +415,73 @@ def _mutate(call, state, active):
     if key is None:
         return
     method = call.node.attr
-    paths = set().union(*(_value_aliases(arg, state, active) for arg in call.args))
-    if method == "clear":
-        paths = set()
-    elif not paths:
+    positional = {suffix for arg in call.args for suffix in _value_aliases(arg, state, active)}
+    if method != "extend":
+        # append, insert, add, setdefault: the argument lands somewhere under the
+        # receiver rather than being spliced into it. Any unrecognised method handed
+        # tool data is treated the same way rather than ignored.
+        positional = {(_UNKNOWN, *suffix) for suffix in positional}
+    # A keyword names the field its value lands under: d.update(catalog=tools) puts
+    # the catalog at d.catalog.
+    paths = positional | {
+        (keyword.key, *suffix)
+        for keyword in call.kwargs
+        for suffix in _value_aliases(keyword.value, state, active)
+    }
+    removed = _removed_key(method, call)
+    if method != "clear" and removed is None and not paths:
         return
-    elif method != "extend":
-        # append, insert, add, update, setdefault: the argument lands somewhere under
-        # the receiver rather than being spliced into it. Any unrecognised method that
-        # is handed tool data is treated the same way rather than ignored.
-        paths = {(_UNKNOWN, *suffix) for suffix in paths}
     # Mutation goes through the object, not the name, so every name currently bound
     # to this container sees it.
     for target in _same_object(key, state):
-        if method == "clear":
+        if method == "clear" or removed is _UNKNOWN:
             _replace(state.aliases, target, set())
+        elif removed is not None:
+            # pop/remove/discard take the value back out, so its provenance goes too.
+            _replace(state.aliases, (*target, removed), set())
         else:
             state.aliases.update((*target, *suffix) for suffix in paths)
         if target[0] not in state.assigned:
             state.mutated.add(target)
         _forget(target, state)
+
+
+# Filters that reduce their input to a measurement or a single element, so whatever
+# went in is no longer readable on the other side.
+_REDUCING = frozenset(
+    {"length", "count", "first", "last", "min", "max", "sum", "random", "wordcount"}
+)
+
+
+def _keeps_content(node):
+    while isinstance(node, nodes.Filter):
+        if node.name in _REDUCING:
+            return False
+        node = node.node
+    return True
+
+
+def _invokes_caller(call, state):
+    """Whether the macro a `{% call %}` targets actually runs its caller block."""
+    macro = state.macros.get(call.node.name) if isinstance(call.node, nodes.Name) else None
+    if macro is None:
+        # An unknown callee could invoke it, so assume the block runs.
+        return True
+    return any(
+        isinstance(found.node, nodes.Name) and found.node.name == "caller"
+        for statement in macro.body
+        for found in statement.find_all(nodes.Call)
+    )
+
+
+def _removed_key(method, call):
+    """The field a destructive call takes back out, or None. `_UNKNOWN` when the call
+    removes something we cannot name, which drops the whole receiver's provenance."""
+    if method not in ("pop", "remove", "discard", "popitem"):
+        return None
+    if not call.args:
+        return _UNKNOWN
+    return call.args[0].value if isinstance(call.args[0], nodes.Const) else _UNKNOWN
 
 
 def _export_scope(parent, child):
@@ -519,6 +578,7 @@ def _scan(
     guarded = False,
 ):
     states = [state]
+    stopped = []
     for node in body:
         results = []
         for current in states:
@@ -540,6 +600,9 @@ def _scan(
                 _mutate(node.node, current, active)
             elif isinstance(node, nodes.Macro):
                 current.macros[node.name] = node
+                # The declaration binds the name, so `{% macro tools() %}` shadows the
+                # catalog and `{{ tools }}` renders the macro object instead.
+                _replace(current.aliases, (node.name,), set())
             elif isinstance(node, nodes.If):
                 emits, children = _scan_if(node, current, active, guarded)
                 if emits:
@@ -553,8 +616,9 @@ def _scan(
                 results.extend(children)
                 continue
             elif isinstance(node, (nodes.Break, nodes.Continue)):
-                # Everything after this in the body is unreachable, so the path stops
-                # here instead of carrying on into the next statement.
+                # Nothing after this in the body runs, so the path stops being scanned.
+                # It still carries whatever it already mutated, which outlives the loop.
+                stopped.append(current)
                 continue
             elif isinstance(node, nodes.CallBlock):
                 # {% call macro(...) %}: the body is the caller block, so the generic
@@ -562,9 +626,18 @@ def _scan(
                 # where the catalog actually reaches the output.
                 if _value_aliases(node.call, current, active):
                     return True, []
-                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
-                if emits:
-                    return True, []
+                # The caller block runs only if the macro invokes caller().
+                if _invokes_caller(node.call, current):
+                    emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                    if emits:
+                        return True, []
+            elif isinstance(node, nodes.FilterBlock):
+                # The block's own filter decides what survives: `{% filter first %}`
+                # emits one character of the catalog, which is no schema at all.
+                if _keeps_content(node.filter):
+                    emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                    if emits:
+                        return True, []
             elif isinstance(node, nodes.AssignBlock):
                 emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
                 _bind_paths(node.target, {()} if emits else set(), current)
@@ -583,7 +656,7 @@ def _scan(
                     return True, []
             results.append(current)
         states = results
-    return False, states
+    return False, states + stopped
 
 
 def template_supports_tools(template) -> bool:

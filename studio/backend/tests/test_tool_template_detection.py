@@ -647,6 +647,75 @@ def test_loop_facts_and_mutation_shapes_match_rendered_catalog(template, expecte
     assert template_supports_tools(template) is expected
 
 
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        # Aliasing a member shares the container, not a copy of it.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% set alias=ns.catalog %}"
+            "{% do alias.extend(tools) %}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        # Rebinding the root detaches it in both directions: the earlier alias still
+        # refers to the old container, so the new one stays empty.
+        ("{% set a=[] %}{% set b=a %}{% set a=[] %}{% do b.extend(tools) %}{{ a|tojson }}", False),
+        ("{% set a=[] %}{% set b=a %}{% do b.extend(tools) %}{{ a|tojson }}", True),
+        # A caller block runs only if the macro invokes caller().
+        (
+            "{% macro render(caller=None) %}plain{% endmacro %}"
+            "{% call render() %}{{ tools|tojson }}{% endcall %}",
+            False,
+        ),
+        (
+            "{% macro render(caller=None) %}{{ caller() }}{% endmacro %}"
+            "{% call render() %}{{ tools|tojson }}{% endcall %}",
+            True,
+        ),
+        # A keyword argument names the field its value lands under.
+        (
+            "{% set d={} %}{% if tools %}{% do d.update(catalog=tools) %}{% endif %}"
+            "{{ d.catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set d={} %}{% do d.update(catalog=tools) %}{{ d.label|default('x') }}",
+            False,
+        ),
+        # A destructive call takes the provenance back out with the value.
+        (
+            "{% set catalog={'schema':tools,'label':'plain'} %}{% do catalog.pop('schema') %}"
+            "{{ catalog|tojson }}",
+            False,
+        ),
+        (
+            "{% set catalog={'schema':tools,'label':'plain'} %}{% do catalog.pop('label') %}"
+            "{{ catalog|tojson }}",
+            True,
+        ),
+        # break and continue stop the scan but keep what the path already mutated.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% for x in [1] %}{% if tools %}"
+            "{% set ns.catalog=tools %}{% endif %}{% continue %}{% endfor %}"
+            "{{ ns.catalog|tojson }}",
+            True,
+        ),
+        # A filter block that reduces its input leaves no schema behind.
+        ("{% filter first %}{{ tools|tojson }}{% endfilter %}", False),
+        ("{% filter upper %}{{ tools|tojson }}{% endfilter %}", True),
+        # A macro declaration binds its name, shadowing the catalog.
+        ("{% macro tools() %}plain{% endmacro %}{{ tools }}", False),
+    ],
+)
+def test_round_nine_paths_match_rendered_catalog(template, expected):
+    render = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"]).from_string(
+        template
+    )
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+    output = render.render(tools = tools, messages = [{"role": "user", "content": "hi"}])
+    assert ("get_weather" in output.lower() or "GET_WEATHER" in output) is expected
+    assert template_supports_tools(template) is expected
+
+
 def test_an_unresolved_subscript_key_still_selects_every_field():
     """The constant-key resolution narrows a subscript only when the key is known.
     An unknown key has to keep selecting every field, or a catalog reached through a
