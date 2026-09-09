@@ -20,9 +20,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ADAPTER_BIN = "adapter_model.safetensors"
 ADAPTER_CFG = "adapter_config.json"
+# Written by each rank at save time: how many stages there were meant to be, and how deep the
+# model is. Without it the only completeness check available is that the directories present
+# are contiguous from 0, which [stage0, stage1] satisfies for a three-rank run.
+STAGE_META = "unsloth_stage.json"
 # Written per stage and expected to differ: the merged adapter is the union of the stages,
 # so a per-stage module list says nothing about a config mismatch.
-_CFG_IGNORED = frozenset()
+# `base_model_name_or_path` is where the stage was LOADED from, not what it was trained on.
+# `stage_run_inputs` stages the checkpoint onto the peer, so rank 1 records the staged path
+# and rank 0 the original: a location-only difference that would otherwise refuse every
+# adapter pair produced by `--run --save` with a local checkpoint.
+_CFG_IGNORED = frozenset({"base_model_name_or_path"})
 _LAYER_RE = re.compile(r"\.layers\.(\d+)\.")
 
 
@@ -67,7 +75,21 @@ def inspect_stage(path: str) -> Dict[str, Any]:
             n = layer_of(k)
             if n is not None:
                 layers.add(n)
-    return {"path": path, "keys": keys, "layers": sorted(layers), "n_keys": len(keys)}
+    meta = {}
+    try:
+        with open(osp.join(path, STAGE_META), encoding = "utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            meta = loaded
+    except (OSError, ValueError):
+        meta = {}
+    return {
+        "path": path,
+        "keys": keys,
+        "layers": sorted(layers),
+        "n_keys": len(keys),
+        "meta": meta,
+    }
 
 
 def plan_merge(root: str) -> Dict[str, Any]:
@@ -107,6 +129,31 @@ def plan_merge(root: str) -> Dict[str, Any]:
         )
     if covered and covered[0] != 0:
         problems.append(f"layers 0..{covered[0]-1} are in no stage")
+
+    # The recorded world size, which is the only thing that can see a MISSING LAST stage:
+    # losing the highest-numbered one leaves the remaining directories contiguous from 0 and
+    # their layers contiguous from 0 too, so every check above passes on half a model.
+    worlds = {int(st["meta"]["world"]) for st in stages if isinstance(st["meta"].get("world"), int)}
+    if not worlds:
+        problems.append(
+            f"no {STAGE_META} in these stage directories, so the number of stages this run was "
+            f"meant to have is unknown. A run that lost its last rank looks exactly like a "
+            f"complete shorter one from here. Re-run the training, or pass force=True"
+        )
+    elif len(worlds) > 1:
+        problems.append(f"the stages disagree on how many there were: {sorted(worlds)}")
+    elif len(stages) != next(iter(worlds)):
+        problems.append(
+            f"{len(stages)} stage directories, but the run recorded {next(iter(worlds))}. "
+            f"Copy the missing stage from the peer before merging"
+        )
+    depths = {
+        int(st["meta"]["n_layers"]) for st in stages if isinstance(st["meta"].get("n_layers"), int)
+    }
+    if len(depths) == 1 and covered and len(covered) != next(iter(depths)):
+        problems.append(
+            f"the stages cover {len(covered)} layers and the model has {next(iter(depths))}"
+        )
 
     # Every stage holds the non-layer modules, so a trained copy is indistinguishable from an
     # untouched one: a genuine ambiguity, not a tie to break.
@@ -148,26 +195,10 @@ def merge(
             "produces a worse model. Pass force=True only if you understand the consequence."
         )
 
-    tensors: Dict[str, Any] = {}
-    provenance: Dict[str, str] = {}
-    for st in plan["stages"]:
-        with safe_open(osp.join(st["path"], ADAPTER_BIN), framework = "pt") as f:
-            for k in f.keys():
-                n = layer_of(k)
-                # Keep the FIRST copy and record it, not letting the last writer win invisibly.
-                if k in tensors and n is None:
-                    continue
-                if k in tensors and n is not None and not force:
-                    raise RuntimeError(f"duplicate layer tensor {k} -- stages overlap")
-                tensors[k] = f.get_tensor(k)
-                provenance[k] = osp.basename(st["path"])
-
-    os.makedirs(out, exist_ok = True)
-    save_file(tensors, osp.join(out, ADAPTER_BIN))
-
-    # Identical across stages within one run, but a stale stage left over from an earlier run
-    # passes the layer-coverage check and would then be read through stage 0's rank, alpha and
-    # target modules. Compare them all and refuse rather than write a config nobody trained with.
+    # BEFORE anything is written. The configs used to be read after `save_file`, so a stage
+    # with a missing or divergent adapter_config.json left `out` holding the new tensors
+    # beside the old config: the command reported that it had refused the merge, and the
+    # previously usable output was already corrupt.
     cfgs = []
     for st in plan["stages"]:
         path = osp.join(st["path"], ADAPTER_CFG)
@@ -189,6 +220,25 @@ def merge(
                 f"{path} disagrees with {cfgs[0][0]} on {differing}. These stages are not from "
                 f"one run; merging them would read later stages through the wrong config."
             )
+
+    tensors: Dict[str, Any] = {}
+    provenance: Dict[str, str] = {}
+    for st in plan["stages"]:
+        with safe_open(osp.join(st["path"], ADAPTER_BIN), framework = "pt") as f:
+            for k in f.keys():
+                n = layer_of(k)
+                # Keep the FIRST copy and record it, not letting the last writer win invisibly.
+                if k in tensors and n is None:
+                    continue
+                if k in tensors and n is not None and not force:
+                    raise RuntimeError(f"duplicate layer tensor {k} -- stages overlap")
+                tensors[k] = f.get_tensor(k)
+                provenance[k] = osp.basename(st["path"])
+
+    # Both files together, tensors first and the config immediately after, so `out` never
+    # holds one run's weights beside another's config.
+    os.makedirs(out, exist_ok = True)
+    save_file(tensors, osp.join(out, ADAPTER_BIN))
     with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
         json.dump(cfgs[0][1], f, indent = 2)
 
@@ -206,6 +256,7 @@ def _cmd_merge(
     root: str,
     out: Optional[str] = None,
     dry_run: bool = False,
+    force: bool = False,
 ) -> int:
     plan = plan_merge(root)
     print(f"  stages   {plan['n_stages']}")
@@ -225,13 +276,18 @@ def _cmd_merge(
         )
     for p in plan["problems"]:
         print(f"  PROBLEM  {p}")
-    if not plan["ok"]:
+    if not plan["ok"] and not force:
         print("  refusing to merge -- a partly-populated adapter loads fine and trains worse")
+        print("  (--force merges anyway, for a deliberate one-rank run or a partial recovery)")
         return 1
+    if not plan["ok"]:
+        # `merge()` has always taken this; nothing reached it, so the escape hatch the
+        # refusal points at could not be used from the command users are told to run.
+        print("  --force: merging despite the problems above")
     if dry_run or not out:
         print(f"  would write {out or '<--out DIR>'}")
         return 0
-    res = merge(root, out)
+    res = merge(root, out, force = force)
     print(f"  merged   {res['n_tensors']} tensors -> {res['out']}")
     return 0
 
@@ -243,9 +299,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("root", help = "the --save directory containing stage0/, stage1/, ...")
     ap.add_argument("--out", default = None, help = "where to write the merged adapter")
     ap.add_argument("--dry-run", action = "store_true", help = "inspect and report, write nothing")
+    ap.add_argument(
+        "--force",
+        action = "store_true",
+        help = "merge despite refusals: a deliberate one-rank run, or a partial recovery",
+    )
     a = ap.parse_args(argv)
     try:
-        return _cmd_merge(a.root, a.out, a.dry_run)
+        return _cmd_merge(a.root, a.out, a.dry_run, force = a.force)
     except RuntimeError as e:
         print(f"  {e}")
         return 1

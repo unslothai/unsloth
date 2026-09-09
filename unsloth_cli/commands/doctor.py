@@ -32,6 +32,7 @@ doctor_app = typer.Typer(
 # Environment that is SUPPOSED to differ between the hosts; comparing it would be noise.
 PARITY_SKIP = (
     "host",
+    "home",
     "hostname_resolves_to",
     "VLLM_HOST_IP",
     "MASTER_ADDR",
@@ -56,6 +57,9 @@ def parity_probe_source(deep: bool = False) -> str:
         "    os.path.join(sysconfig.get_paths()['include'], 'Python.h'))",
         "r['python_version'] = '.'.join(map(str, __import__('sys').version_info[:3]))",
         "r['executable'] = __import__('sys').executable",
+        # Reported so path-valued probes can be compared relative to each node's own home,
+        # which provisioning already allows to differ. Skipped in the comparison itself.
+        "r['home'] = os.path.expanduser('~')",
         "r['PATH'] = os.environ.get('PATH', '')",
         "for k in ('LD_LIBRARY_PATH', 'CUDA_HOME', 'CUDA_VISIBLE_DEVICES',",
         "          'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME', 'NCCL_IB_HCA',",
@@ -130,15 +134,20 @@ def parity_probe_source(deep: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _activate() -> str:
-    """Where the peer's venv activate lives, resolved rather than assumed: UNSLOTH_STUDIO_HOME
-    moves it, and a hardcoded path sources nothing, so the probe runs without the venv and
-    doctor reports "could not measure NCCL bandwidth" on a perfectly healthy pair."""
+def _activate_sh() -> str:
+    """Where the peer's venv activate lives, as ONE shell word.
+
+    Resolved rather than assumed, because UNSLOTH_STUDIO_HOME moves it and a hardcoded path
+    sources nothing, which reads as "could not measure NCCL bandwidth" on a healthy pair. And
+    quoted, because a custom home with a space produced
+    `[ -f /path with space/bin/activate ]`, a five-argument test: activation was skipped
+    without a word of complaint and the probe ran under whichever python3 was on PATH, so a
+    supported custom location reported false package and parity results."""
     try:
-        from studio.spark_cluster import venv_activate
-        return venv_activate()
+        from studio.spark_cluster import venv_activate_sh
+        return venv_activate_sh()
     except Exception:
-        return "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+        return '"$HOME/.unsloth/studio/unsloth_studio/bin/activate"'
 
 
 def _probe_wrapper(source: str) -> str:
@@ -147,7 +156,7 @@ def _probe_wrapper(source: str) -> str:
     import base64
 
     blob = base64.b64encode(source.encode()).decode()
-    act = _activate()
+    act = _activate_sh()
     return f"[ -f {act} ] && . {act}; " f"echo {blob} | base64 -d | python3 -"
 
 
@@ -205,13 +214,15 @@ def _run_probe_peer(
     """Run the probe on the peer over NON-INTERACTIVE ssh, as a launch would. Not `ssh -t`,
     not `bash -lc`: a login shell reads /etc/profile.d, which is exactly where the CUDA PATH
     entry the real run never sees comes from, so it would report parity on a doomed pair."""
-    import os
     import shutil
     import subprocess
 
     if not shutil.which("ssh"):
         return None, "no ssh on this machine"
-    user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
+    # The same resolution every other SSH here uses. Reading only USER/USERNAME meant that
+    # from a service, a cron job or a container -- where neither is set -- the probes went to
+    # the literal account `nvidia` and reported UNKNOWN on a pair whose other SSH works.
+    user = _ssh_login()
     remote = _probe_wrapper(source)
     try:
         proc = subprocess.run(
@@ -236,7 +247,29 @@ def _run_probe_peer(
     return _extract(proc.stdout, proc.stderr, marker)
 
 
+def _relative_to_home(probe: dict) -> dict:
+    """Path-valued probes rewritten against that node's OWN home.
+
+    A supported pair may use different usernames, and provisioning explicitly allows it, so
+    `/home/alice/.unsloth/.../torchrun` and `/home/bob/.unsloth/.../torchrun` are the same
+    capability. Compared raw they read as a divergence, doctor returns failure, and it warns of
+    a deadlock while both tools are present and equivalent. Only the home prefix is folded: a
+    tool at `/usr/bin` on one node and under the managed environment on the other still differs,
+    because that one is real."""
+    home = (probe.get("home") or "").rstrip("/")
+    if not home:
+        return probe
+    out = dict(probe)
+    for key, value in probe.items():
+        if not (key.startswith("which_") or key == "executable"):
+            continue
+        if isinstance(value, str) and value.startswith(home + "/"):
+            out[key] = "~" + value[len(home) :]
+    return out
+
+
 def compare_parity(local: dict, peer: dict) -> list:
+    local, peer = _relative_to_home(local), _relative_to_home(peer)
     keys = sorted(set(local) | set(peer))
     return [
         (k, local.get(k), peer.get(k))
@@ -402,8 +435,22 @@ def gate(name, code):
         g["gate_" + name] = "no (" + type(exc).__name__ + ")"
 
 
-gate("causal_conv1d_fn", "from causal_conv1d import causal_conv1d_fn")
-gate("fla_chunk_gated_delta_rule", "from fla.ops import chunk_gated_delta_rule")
+# The SAME import statements transformers uses, from the same module paths and in the same
+# groupings. Sampling one symbol out of a group reported a matching gate on a node where the
+# real import fails: modeling_qwen3_next.py takes `causal_conv1d_fn` and `causal_conv1d_update`
+# in one try, so a missing `_update` leaves BOTH None and the block falls back, and it reaches
+# the delta rule through `fla.ops.gated_delta_rule` rather than `fla.ops`, which is a different
+# module and can exist when the other does not.
+gate(
+    "causal_conv1d_fn",
+    "from causal_conv1d import causal_conv1d_fn, causal_conv1d_update",
+)
+gate(
+    "fla_chunk_gated_delta_rule",
+    "from fla.ops.gated_delta_rule import chunk_gated_delta_rule, "
+    "fused_recurrent_gated_delta_rule",
+)
+gate("fla_fused_rms_norm_gated", "from fla.modules import FusedRMSNormGated")
 gate("flash_attn_func", "from flash_attn import flash_attn_func")
 gate("triton", "import triton")
 gate("xformers_memory_efficient_attention", "from xformers.ops import memory_efficient_attention")
@@ -549,10 +596,12 @@ def _ssh_login() -> str:
 
 
 def _install_lines(node: str, peer_ip: str, spec: str) -> list:
-    act = _activate()
+    act = _activate_sh()
     if node == "local":
         return [f". {act}", f'python3 -m pip install "{spec}"']
-    inner = f'. {act}; python3 -m pip install \\"{spec}\\"'
+    # These are pasted by a user. `act` is already one double-quoted word, and it is going
+    # inside another double-quoted string, so its quotes are escaped like the spec's.
+    inner = f'. {act.replace(chr(34), chr(92) + chr(34))}; python3 -m pip install \\"{spec}\\"'
     return [f'ssh {_ssh_login()}@{peer_ip} "{inner}"']
 
 
@@ -744,7 +793,11 @@ def doctor(
     # Inert without a peer: this check has nothing to say about one machine's package list.
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        fastpath_rc = check_fastpath(peer_ip)
+        # `--parity-only` promises no GPU work, and the runtime half of this probe imports
+        # torch and the native kernel packages on both nodes, which is minutes and a CUDA
+        # context. The package comparison still runs -- that IS a capability gate -- and
+        # `--deep` is the flag that asks for the imports.
+        fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
 
     if parity_only:
         _workload_guidance()

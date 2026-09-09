@@ -132,6 +132,7 @@ def _plan_deployment(
     model: str = "<model>",
     prompt_tokens: int = 512,
     prefill_heavy: bool = False,
+    kv_gib_per_user: float = 0.0,
 ):
     """Call plan_deployment against whichever signature the module currently has. A CLI that
     raises TypeError after an upgrade is worse than one giving a plainer answer."""
@@ -156,6 +157,8 @@ def _plan_deployment(
                 kwargs["prompt_tokens"] = prompt_tokens
             if "prefill_heavy" in params:
                 kwargs["prefill_heavy"] = prefill_heavy
+            if "kv_gib_per_user" in params:
+                kwargs["kv_gib_per_user"] = kv_gib_per_user
             return fn(size_gib, **kwargs)
         if "nodes" in params:
             return fn(size_gib, nodes = nodes)
@@ -519,10 +522,20 @@ def up(
         _say("  that is running someone else's job, that is destructive. Make sure the")
         _say("  peer is idle, or run the pieces yourself.")
         if sit["seen"] > 2:
+            nodes = min(sit["seen"], sit["max_nodes"])
             _say("")
             _say(f"  You have {sit['seen']} Sparks visible. Three or more cannot be cabled")
             _say("  point-to-point, so pairing them needs a switched RoCE fabric and an")
-            _say(f"  explicit `--nodes {min(sit['seen'], sit['max_nodes'])} --switched`.")
+            _say(f"  explicit `--nodes {nodes} --switched`.")
+            _say("")
+            # And then STOP. Falling through to `setup --yes` built and saved the default
+            # two-node plan, silently leaving out the machines this paragraph just said
+            # needed a switched-fabric plan. Whether they share such a fabric is not
+            # something this can see, and rail_plan_report refuses to guess it either.
+            _say(f"NEXT: unsloth spark setup --nodes {nodes} --switched")
+            _say("  (run it yourself: whether those Sparks share a switched RoCE fabric is")
+            _say("   not visible from here, and a flat plan that assumes one black-holes.)")
+            raise typer.Exit(1)
         _say("")
         _say("NEXT: unsloth spark setup")
         if check:
@@ -862,13 +875,6 @@ def train(
         "beyond gains almost nothing. A data-parallel replica has no pipeline to fill, "
         "and --batch must divide by this, so 32 there would only reject the default batch.",
     ),
-    grad_checkpoint: bool = typer.Option(
-        False,
-        "--grad-checkpoint",
-        help = "Recompute activations in the backward pass. Slower per step, and required "
-        "to fit a model larger than one Spark; `unsloth spark plan` recommends it with "
-        "--shard-load for exactly that case.",
-    ),
     pp_backend: str = typer.Option(
         "torch",
         "--pp-backend",
@@ -903,6 +909,13 @@ def train(
         "", "--save", help = "Directory for this stage's weights. Without it they are discarded."
     ),
     full_finetune: bool = typer.Option(False, "--full-finetune"),
+    grad_checkpoint: bool = typer.Option(
+        False,
+        "--grad-checkpoint",
+        help = "Recompute activations in the backward pass. `spark estimate` recommends this "
+        "for runs that otherwise exceed memory, and the pipeline has always supported it; "
+        "this is the option that reaches it.",
+    ),
     master_port: int = typer.Option(29500, "--master-port"),
     run: bool = typer.Option(
         False, "--run", help = "Launch it on both Sparks instead of printing commands."
@@ -959,6 +972,11 @@ def train(
     if data_parallel:
         layer_split = data_parallel
     if layer_split:
+        # Before the modulo: `--microbatches 0` raised ZeroDivisionError out of this line, so
+        # the user saw a traceback instead of the pipeline's own "must be >= 1".
+        if microbatches < 1:
+            typer.echo(f"--microbatches ({microbatches}) must be at least 1.")
+            raise typer.Exit(2)
         if batch % microbatches:
             typer.echo(
                 f"--batch ({batch}) must be a multiple of --microbatches ({microbatches}); "
@@ -1061,7 +1079,9 @@ def doctor(
         parity_rc = check_parity(peer_ip, deep = deep)
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        fastpath_rc = check_fastpath(peer_ip)
+        # Same ordering as `unsloth doctor`: --parity-only says no GPU work, so the runtime
+        # imports wait for --deep while the package comparison still runs.
+        fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
     if parity_only:
         _workload_guidance()
         _kernel_banner()
@@ -1085,6 +1105,13 @@ def provision(
         "link with no other host), locked to this node's rail address and a one-shot "
         "secret, and stopped when the command ends. Same as UNSLOTH_SPARK_PROVISION_FAST=0.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help = "Provision even when the peer GPU probe is unavailable or unreadable. Only "
+        "when you are certain the peer is idle: provisioning over a running job can "
+        "swap the environment underneath it.",
+    ),
 ) -> None:
     """Copy this Spark's environment and warm caches to the peer over the fast link.
 
@@ -1106,6 +1133,8 @@ def provision(
         argv.append("--dry-run")
     if no_fast:
         argv.append("--no-fast")
+    if force:
+        argv.append("--force")
     raise typer.Exit(_cluster().main(argv))
 
 
@@ -1169,6 +1198,12 @@ def plan(
     prompt_tokens: int = typer.Option(
         512, "--prompt-tokens", help = "Typical prompt length, for the llama.cpp layout."
     ),
+    ctx: int = typer.Option(
+        8192,
+        "--ctx",
+        help = "Context length per user, which is what the KV is priced at. Same default "
+        "as `spark serve`; the context is never divided between users.",
+    ),
     prefill_heavy: bool = typer.Option(
         False,
         "--prefill-heavy",
@@ -1222,6 +1257,15 @@ def plan(
     if resolved == "auto":
         resolved = "latency" if (size is not None and size <= budget) else "capacity"
 
+    # The planner grew a KV input and this path was still handing it zero, so `plan`
+    # recommended replicas for a model whose weights fit and whose KV for the requested
+    # concurrency does not -- exactly the case the KV term exists to catch. `serve` computed
+    # it and `plan` did not, and they are supposed to give the same answer.
+    kv = {"gib": None, "why": "not computed"}
+    try:
+        kv = sc.serving_kv_gib_per_user(model, ctx)
+    except Exception:
+        pass
     result = _plan_deployment(
         sc,
         size,
@@ -1231,6 +1275,7 @@ def plan(
         model = model,
         prompt_tokens = prompt_tokens,
         prefill_heavy = prefill_heavy,
+        kv_gib_per_user = kv.get("gib") or 0.0,
     )
     if result is None:
         _say("Could not produce a plan (the planner is unavailable in this build).")
@@ -1239,6 +1284,13 @@ def plan(
     _heading("Deployment plan")
     _field("model", model)
     _field("size", f"{size:.1f} GiB" if size else "unknown (not cached locally)")
+    _field(
+        "kv",
+        f"{kv['gib']:.2f} GiB per user at {ctx} tokens, "
+        f"{kv['gib'] * max(1, concurrency):.2f} GiB for {concurrency}"
+        if kv.get("gib")
+        else f"not counted -- {kv.get('why', 'unknown')}",
+    )
     _field(
         "per-Spark",
         f"{budget:.0f} GiB usable for a served model "
@@ -1376,6 +1428,12 @@ def merge(
     save_dir: str = typer.Argument(..., help = "The --save directory holding stage0/, stage1/, ..."),
     out: str = typer.Option(None, "--out", "-o", help = "Where to write the merged adapter."),
     dry_run: bool = typer.Option(False, "--dry-run", help = "Inspect and report; write nothing."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help = "Merge anyway when the stage set is incomplete: a deliberate one-rank run, "
+        "or a partial recovery. The result is a partly-populated adapter.",
+    ),
 ) -> None:
     """Merge the per-stage adapters from a layer-split run into one loadable checkpoint.
 
@@ -1402,7 +1460,7 @@ def merge(
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     try:
-        rc = mod._cmd_merge(save_dir, out, dry_run)
+        rc = mod._cmd_merge(save_dir, out, dry_run, force = force)
     except RuntimeError as e:
         _say(f"  {e}")
         raise typer.Exit(1)

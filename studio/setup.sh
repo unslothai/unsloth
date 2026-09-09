@@ -618,7 +618,7 @@ _has_local_rpc_server() {
 # other target is touched. Best-effort throughout: a tree with no RPC target, or a
 # link that fails, leaves the reused build exactly as it was.
 _backfill_local_rpc_server() {
-    local _dir=$1 _target
+    local _dir=$1 _target _jobs
     if _has_local_rpc_server "$_dir"; then
         return 0
     fi
@@ -632,7 +632,11 @@ _backfill_local_rpc_server() {
         return 0
     fi
     substep "the reused build has no $_target; building it in place..."
-    if run_quiet_no_exit "build $_target (existing install)" cmake --build "$_dir/build" --config Release --target "$_target" -j"$NCPU"; then
+    # NCPU is assigned in the source-build section, which the reuse path never enters.
+    # Under `set -u` expanding it here aborted the whole Studio update instead of doing
+    # the best-effort backfill, so the job count is computed locally.
+    _jobs="$(_llama_build_jobs)"
+    if run_quiet_no_exit "build $_target (existing install)" cmake --build "$_dir/build" --config Release --target "$_target" -j"$_jobs"; then
         if _has_local_rpc_server "$_dir"; then
             step "rpc-server" "built ($_target)"
             return 0

@@ -39,6 +39,8 @@ _LAYER_PATHS = (
 # find_layers accepts OPT, GPT-2 and GPT-NeoX, so the stage wrapper must not assume Llama's
 # names. Getting this wrong is not always loud: OPT keeps its final normalisation in
 # `final_layer_norm`, so looking only for `norm` dropped it from the last stage silently.
+# One seed for the whole run, set before the model is built so it covers the parameters too.
+TRAIN_SEED = 3407
 _EMBED_NAMES = ("embed_tokens", "wte", "embed_in")
 _FINAL_NORM_NAMES = ("norm", "ln_f", "final_layer_norm")
 _LAYER_CONTAINER_NAMES = ("layers", "h")
@@ -89,6 +91,23 @@ def _resolve(root, path: Sequence[str]):
     return node
 
 
+def dataset_problem(path: str) -> Optional[str]:
+    """Why `--data path` cannot be trained on, or None.
+
+    Checked next to the other refusals rather than where the rows are used: the repetition
+    count divides by the row count, so an empty file raised ZeroDivisionError, and only after
+    both ranks had loaded and materialised the model. That is the most expensive part of the
+    run, spent to reach an input error."""
+    try:
+        with open(path, encoding = "utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    return None
+    except OSError as exc:
+        return f"--data {path} could not be read: {exc}"
+    return f"--data {path} has no rows; nothing to train on"
+
+
 def find_layers(model):
     for path in _LAYER_PATHS:
         layers = _resolve(model, path)
@@ -98,6 +117,47 @@ def find_layers(model):
     raise RuntimeError(
         "could not locate the decoder layer list on this architecture; "
         f"tried {_LAYER_PATHS}. Layer splitting needs an explicit layer container."
+    )
+
+
+LORA_TARGETS_LLAMA = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+
+
+def lora_target_modules(model) -> List[str]:
+    """The projection names to attach LoRA to, read off THIS model's decoder layers.
+
+    The list was hard-coded to the Llama names, but `find_layers()` and the stage wrapper
+    accept any architecture with a decoder layer list. A GPT-NeoX block names its linears
+    `query_key_value`, `dense`, `dense_h_to_4h`, `dense_4h_to_h`, so none of the Llama names
+    exists and PEFT aborts with "Target modules ... not found" after the model is already
+    allocated on both ranks. The Llama set is still returned verbatim when it matches, so
+    nothing changes for the architectures that worked before.
+    """
+    import torch.nn as nn
+
+    _, layers = find_layers(model)
+    names = set()
+    for layer in layers:
+        for name, mod in layer.named_modules():
+            if isinstance(mod, nn.Linear):
+                names.add(name.rsplit(".", 1)[-1])
+    keep = [n for n in LORA_TARGETS_LLAMA if n in names]
+    if keep:
+        return keep
+    if names:
+        return sorted(names)
+    raise RuntimeError(
+        "no nn.Linear modules were found inside this model's decoder layers, so there is "
+        "nothing for LoRA to attach to. Train with --full-finetune, or use a model whose "
+        "layers hold ordinary linear projections."
     )
 
 
@@ -304,8 +364,13 @@ def build_stage_model(
         for i in range(n):
             if i not in keep:
                 layers[i] = torch.nn.Identity()
-    if not keep_all_layers and not want_embed and hasattr(owner, "embed_tokens"):
-        owner.embed_tokens = torch.nn.Identity()
+    if not keep_all_layers and not want_embed:
+        # By the architecture's own name, not `embed_tokens`: `find_layers` accepts GPT-NeoX,
+        # whose table is `embed_in`, so every rank kept and materialised the whole embedding
+        # while believing it had dropped it. `_PPStageModule` already resolves it this way.
+        embed_name, _ = _first_named(owner, _EMBED_NAMES)
+        if embed_name:
+            setattr(owner, embed_name, torch.nn.Identity())
     if not keep_all_layers and not want_head:
         if hasattr(owner, "norm"):
             owner.norm = torch.nn.Identity()
@@ -369,6 +434,56 @@ def tied_split_problem(
     )
 
 
+def full_finetune_save_problem(full_finetune: bool, save: str, world: int) -> Optional[str]:
+    """Why `--full-finetune --save` cannot produce a usable model across ranks, or None.
+
+    Each rank saves a Transformers checkpoint of its OWN stage: the other layers were replaced
+    with `Identity`, so `model.safetensors` there is a base model missing half its decoder.
+    Loading one initialises the missing layers afresh and discards the other rank's training,
+    and `spark merge` cannot join them -- it reads `adapter_model.safetensors`, and a
+    full-weight union needs sharded output and an index this does not write. Refused before
+    the run rather than after it, because the run is the expensive part."""
+    if not full_finetune or not save or world < 2:
+        return None
+    return (
+        "--full-finetune with --save has no way to produce a loadable model across "
+        f"{world} ranks: each stage saves only the layers it owns, and `unsloth spark merge` "
+        "joins LoRA adapters, not base weights. Train with LoRA and merge the adapters, or "
+        "run --full-finetune on a single node where the checkpoint is complete."
+    )
+
+
+def legacy_attention_problem(cfg, seq: int) -> Optional[str]:
+    """Why the legacy backend cannot reproduce this model's attention, or None.
+
+    Its forwards call decoder blocks with no `attention_mask`. That is correct for sdpa and
+    flash, which derive causality from `is_causal` when the mask is None, and for a sliding
+    window at or below its size, where every query already reaches every earlier token so the
+    two masks are the same matrix. It is wrong for eager, whose `eager_attention_forward` adds
+    a mask only `if attention_mask is not None`, so the run trains BIDIRECTIONALLY at a
+    flattering loss and saves something that is not a causal LM. And it is wrong above a
+    sliding window, where full causal is a different graph. The torch backend builds both
+    masks; this one is kept unchanged as a control arm, so it refuses what it cannot reproduce
+    rather than quietly training a different model."""
+    impl = getattr(cfg, "_attn_implementation", "sdpa")
+    if impl not in ("sdpa", "flash_attention_2", "flash_attention_3"):
+        return (
+            f"--pp-backend legacy calls decoder blocks without an attention mask, which is "
+            f"causal only under sdpa or flash. This model is loaded with {impl!r}, where "
+            f"attention with no mask is bidirectional: the run would train on future tokens "
+            f"at a flattering loss. Use --pp-backend torch, which builds the mask."
+        )
+    window = getattr(cfg, "sliding_window", None)
+    if isinstance(window, int) and window > 0 and seq > window:
+        return (
+            f"--pp-backend legacy does not reproduce sliding-window attention, and --seq "
+            f"{seq} is past this model's {window}-token window, so the run would train under "
+            f"full causal attention instead. Use --pp-backend torch, or --seq {window} or "
+            f"fewer."
+        )
+    return None
+
+
 def _tied_aliases(model) -> dict:
     """`{parameter name saved under another name: the name it is saved under}`.
 
@@ -419,8 +534,24 @@ def _materialise(model, model_name, cfg, device, dtype, log):
         else snapshot_download(model_name, allow_patterns = ["*.safetensors", "*.json"])
     )
 
+    shards = sorted(glob.glob(osp.join(snap, "*.safetensors")))
+    if not shards:
+        # Said plainly, and before the tensors are read. A .bin checkpoint left every
+        # parameter on meta and surfaced as `unmaterialised tensors remain`, which names the
+        # symptom and not the cause, after the model had already been allocated.
+        legacy = glob.glob(osp.join(snap, "*.bin"))
+        raise RuntimeError(
+            f"--shard-load reads safetensors, and {snap} has none"
+            + (
+                f" ({len(legacy)} .bin shard(s) instead). Convert the checkpoint to "
+                f"safetensors, or load it without --shard-load."
+                if legacy
+                else "."
+            )
+        )
+
     loaded, seen = {}, 0
-    for f in sorted(glob.glob(osp.join(snap, "*.safetensors"))):
+    for f in shards:
         with safe_open(f, framework = "pt", device = "cpu") as sf:
             for k in sf.keys():
                 if k in wanted:
@@ -1207,8 +1338,11 @@ def stage_module_cls():
                 # train something that is not the checkpoint.
                 raise RuntimeError(
                     f"{type(owner).__name__} carries {sorted(skipped)}, which the pipeline stage "
-                    f"does not run, so a split would train a different model than the checkpoint; "
-                    f"use --pp-backend legacy or a single node for this architecture"
+                    f"does not run, so a split would train a different model than the "
+                    f"checkpoint. Train this architecture on a single node. NOT "
+                    f"`--pp-backend legacy`: that stage hard-codes `embed_tokens`, "
+                    f"`rotary_emb`, `layers` and `norm`, so it raises AttributeError here "
+                    f"rather than supporting these models."
                 )
             self.embed_tokens = embed if is_first else None
             self.norm = norm if is_last else None
@@ -1428,9 +1562,15 @@ def build_torch_schedule(
         zeroes gradients each step, so nothing earlier is divided twice."""
         if upstream_scales_grads or not PP_SCALE_GRADS or microbatches == 1:
             return
+        # By identity, not per module. A V layout puts the first and last stage on ONE rank,
+        # and a tied embedding is then the same Parameter object in both stage modules: it was
+        # divided twice, giving that tensor 1/M**2 while every other parameter got 1/M, so the
+        # tied weights trained at a different effective learning rate and nothing said so.
+        seen = set()
         for mod in mods:
             for p in mod.parameters():
-                if p.grad is not None:
+                if p.grad is not None and id(p) not in seen:
+                    seen.add(id(p))
                     p.grad.div_(microbatches)
 
     where = "upstream" if upstream_scales_grads else "here (this torch has no scale_grads)"
@@ -1842,6 +1982,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # The legacy stages take the loss from their own input ids, so there is nowhere to
         # put -100 for the padding and a short example would train on pad targets.
         raise SystemExit("--data needs --pp-backend torch; legacy cannot mask padded labels")
+    if args.data:
+        problem = dataset_problem(args.data)
+        if problem:
+            raise SystemExit(problem)
     # Fail before the tokenizer and model load, so the reason appears in a second instead of
     # a silent process. The refusals apply to the LEGACY backend only: the same schedule
     # names work under the torch backend, so refusing them outright would refuse a working
@@ -1901,13 +2045,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # needs no padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
 
+    # One read, used by the layout, the tied check and the stage metadata below.
+    from transformers import AutoConfig
+
+    base_config = AutoConfig.from_pretrained(args.model)
+    n_layers_total = config_num_layers(base_config)
+
     plan = my_plan = None
     if use_torch_pp:
         # Every rank runs the same pure function on the same arguments, so the layout agrees
         # across the cluster without a collective and nothing is negotiated on the wire.
-        from transformers import AutoConfig
-
-        n_layers = config_num_layers(AutoConfig.from_pretrained(args.model))
+        n_layers = n_layers_total
         try:
             plan = torch_pp_plan(
                 args.schedule, world, args.microbatches, args.virtual_stages, n_layers
@@ -1918,20 +2066,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # Checked before the model is built, so a run that cannot be correct stops in seconds
     # rather than after a 70B load.
-    from transformers import AutoConfig as _AutoConfig
-
     tied_problem = tied_split_problem(
-        bool(getattr(_AutoConfig.from_pretrained(args.model), "tie_word_embeddings", False)),
+        bool(getattr(base_config, "tie_word_embeddings", False)),
         bool(args.full_finetune),
         world,
         plan["stage_to_rank"] if plan else None,
     )
     if tied_problem:
         raise SystemExit(tied_problem)
+    if not use_torch_pp:
+        legacy_problem = legacy_attention_problem(base_config, int(args.seq))
+        if legacy_problem:
+            raise SystemExit(legacy_problem)
+    if args.data and getattr(tok, "chat_template", None) is None:
+        # `apply_chat_template` raises on a base tokenizer, and it did so only after both ranks
+        # had loaded and materialised the model. Nothing documents an instruction-tuned
+        # requirement -- the CLI says `{q, a}` JSONL -- so the check belongs here.
+        raise SystemExit(
+            f"--data formats each row with the tokenizer's chat template, and {args.model} "
+            f"has none (it is a base checkpoint). Point --model at an instruction-tuned "
+            f"checkpoint, or drop --data to train on synthetic ids."
+        )
+    save_problem = full_finetune_save_problem(bool(args.full_finetune), args.save or "", world)
+    if save_problem:
+        raise SystemExit(save_problem)
 
     # Multi-stage layouts own non-contiguous chunks, so the contiguous drop-to-Identity would
     # remove layers this rank needs; the legacy interleaved path has no such set and keeps
     # the whole stack instead.
+    #
+    # Seeded HERE, before anything is constructed. `get_peft_model` initialises the LoRA A
+    # matrices the moment it is called, so a seed set after it made the run reproducible in
+    # its synthetic token ids and its dropout but not in the parameters actually being
+    # optimised: two torchrun processes, and two runs of the same command, started from
+    # different adapter weights while the code hard-codes a seed.
+    torch.manual_seed(TRAIN_SEED)
     model, cfg, _ = build_stage_model(
         args.model,
         rank,
@@ -1957,15 +2126,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 lora_dropout = 0.0,
                 bias = "none",
                 task_type = "CAUSAL_LM",
-                target_modules = [
-                    "q_proj",
-                    "k_proj",
-                    "v_proj",
-                    "o_proj",
-                    "gate_proj",
-                    "up_proj",
-                    "down_proj",
-                ],
+                target_modules = lora_target_modules(model),
             ),
         )
     # from_pretrained hands back an eval-mode model while the shard-load path builds one in
@@ -2090,10 +2251,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_loss_rank = stage.is_last
     opt = torch.optim.AdamW(trainable, lr = args.lr)
 
-    torch.manual_seed(3407)
+    # Again, so the synthetic data does not depend on how many draws the model construction
+    # above happened to take.
+    torch.manual_seed(TRAIN_SEED)
     need = args.batch * args.steps
     if args.data:
-        rows = [json.loads(l) for l in open(args.data, encoding = "utf-8")]
+        # `dataset_problem()` accepts a file with a trailing blank line, since it only needs
+        # one nonblank row; this used to hand every raw line to `json.loads`, so the
+        # JSONDecodeError arrived after both ranks had materialised the model.
+        rows = [json.loads(line) for line in open(args.data, encoding = "utf-8") if line.strip()]
         texts = [
             tok.apply_chat_template(
                 [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],
@@ -2102,7 +2268,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for r in rows
         ]
         enc = tok(
-            texts, return_tensors = "pt", padding = "max_length", truncation = True, max_length = args.seq
+            texts,
+            return_tensors = "pt",
+            padding = "max_length",
+            truncation = True,
+            max_length = args.seq,
+            # The template already rendered BOS/EOS into the text. Tokenizing with the default
+            # `add_special_tokens=True` added a second set -- a duplicated BOS on Llama-style
+            # templates -- so every supervised example was a sequence the model never sees at
+            # inference.
+            add_special_tokens = False,
         )
         ids = enc.input_ids
         # Padded positions are not text. Without this the target is the padded input, so a short
@@ -2176,6 +2351,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         out = osp.join(args.save, f"stage{rank}")
         os.makedirs(out, exist_ok = True)
         model.save_pretrained(out)
+        # How many stages there were meant to be. Without it the merge could only check that
+        # the directories it found were contiguous from 0, which [stage0, stage1] satisfies
+        # for a three-rank run: the last rank's layers were simply absent and the merged
+        # adapter was untrained there, with nothing raised.
+        with open(osp.join(out, "unsloth_stage.json"), "w", encoding = "utf-8") as handle:
+            json.dump({"rank": rank, "world": world, "n_layers": n_layers_total}, handle)
         log(f"saved stage {rank} to {out}")
 
     dist.destroy_process_group()
