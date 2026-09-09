@@ -36,6 +36,26 @@ import { gpuMemoryTotalsGb, sharesHostMemory } from "../../../hooks/gpu-vram.ts"
  *  every figure was a gibibyte labelled as a gigabyte, overstating each by 7.4% (#9570). */
 export const formatMemoryGb = formatBytesGiB;
 
+/** Progressively shorter labels; compact lower bounds round down. */
+export function memoryFigureCandidates(
+  bytes: number,
+  bounded: boolean,
+): string[] {
+  const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  const prefix = bounded ? "≥ " : "";
+  const candidates: string[] = bounded ? [] : [formatMemoryGb(safe)];
+  for (const [index, unit] of ["GiB", "TiB", "PiB", "EiB"].entries()) {
+    const amount = safe / 1024 ** (index + 3);
+    if (index > 0 && amount < 1) break;
+    for (const decimals of [2, 1, 0]) {
+      const factor = 10 ** decimals;
+      const rounded = bounded ? Math.floor(amount * factor) / factor : amount;
+      candidates.push(`${prefix}${rounded.toFixed(decimals)} ${unit}`);
+    }
+  }
+  return [...new Set(candidates)];
+}
+
 /** At most one note under the figures, most actionable first. */
 export interface MemoryAdvisory {
   /** `warn` is amber; `muted` is body text. */
@@ -182,11 +202,13 @@ export function resolveReclaimableMemoryCredit(
 }
 
 export interface MemoryFitResult {
+  /** The estimate places the entire load in separate system RAM. */
+  cpuOnly: boolean;
   /** The GPU verdict before the free-memory warning is folded in. */
   rawGpuFit: MemoryFitVerdict;
   /** What the GPU figure is coloured with: rawGpuFit, nudged to tight under pressure. */
   gpuFit: MemoryFitVerdict;
-  /** The pool against what is free right now, capped at a warning by its caller. */
+  /** The footprint against post-unload availability, capped at a warning by its caller. */
   freeGpuFit: MemoryFitVerdict;
   gpuPressured: boolean;
   /** Bytes this placement pins outside the GPU. */
@@ -214,10 +236,21 @@ export function resolveMemoryFit(
   capacity: MemoryFitCapacity,
 ): MemoryFitResult {
   const { singleMemoryPool } = capacity;
-  const rawGpuFit = classifyMemoryFit(estimate.gpuBytes, capacity.gpuCapacityGb);
+  const cpuOnly =
+    !singleMemoryPool && estimate.gpuBytes === 0 && estimate.totalBytes > 0;
+  const rawGpuFit = classifyMemoryFit(
+    estimate.gpuBytes,
+    capacity.gpuCapacityGb,
+  );
+  // Studio unloads the resident model BEFORE the replacement allocates, so its bytes are about to
+  // be free rather than competing. Charging them counted a model against ITSELF: reloading an
+  // unchanged config warned it would not fit the memory its own resident copy held. Free-memory
+  // questions only -- unloading frees memory, it does not add any, so capacity is untouched.
   const reclaimableTotal = reclaimableBytes(capacity.reclaimableTotalBytes);
+  // Clamped: a GPU share above its own total would credit the host share a negative amount.
   const reclaimableGpu = Math.min(
-    reclaimableBytes(capacity.reclaimableGpuBytes), reclaimableTotal,
+    reclaimableBytes(capacity.reclaimableGpuBytes),
+    reclaimableTotal,
   );
   // One pool means the WHOLE load draws on that memory, so the pressure question goes to the
   // total rather than a GPU share that is not a separate reservation. Asking it of gpuBytes
@@ -236,7 +269,7 @@ export function resolveMemoryFit(
     Number.isFinite(estimate.totalBytes) && Number.isFinite(estimate.gpuBytes)
       ? Math.max(0, estimate.totalBytes - estimate.gpuBytes)
       : 0;
-  // Same question for the other pool. See the note above on why this warns.
+  // Same question for the other pool, with the same credit. See the two notes above.
   const usableHostFit = classifyAvailableMemory(
     singleMemoryPool ? estimate.totalBytes : hostShareBytes,
     capacity.usableSystemRamGb,
@@ -244,7 +277,8 @@ export function resolveMemoryFit(
     singleMemoryPool ? reclaimableTotal : reclaimableTotal - reclaimableGpu,
     capacity.systemRamReserveDeficitGb,
   );
-  const hostPressured = usableHostFit === "exceeds" || usableHostFit === "tight";
+  const hostPressured =
+    usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
   // The host share must fit host RAM on its own: unused VRAM cannot hold bytes pinned outside
   // the GPU, so the combined ceiling alone called a 70 GB CPU placement a fit on a 24 GB card
@@ -252,16 +286,20 @@ export function resolveMemoryFit(
   const hostShareFit: MemoryFitVerdict = singleMemoryPool
     ? "unknown"
     : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
-  const totalFit = worseMemoryFit(
-    classifyMemoryFit(estimate.totalBytes, capacity.totalCapacityGb),
-    hostShareFit,
+  const combinedFit = classifyMemoryFit(
+    estimate.totalBytes,
+    capacity.totalCapacityGb,
   );
+  const totalFit = worseMemoryFit(combinedFit, hostShareFit);
   // Lower bound, not an estimate. Both routes here UNDER-count by a term that grows with
   // context: no attention dims, so the target cache is missing, or a drafter that is a
   // repository rather than a file, so its cache is missing while its weights are counted.
   const bounded =
-    !estimate.kvEstimable || estimate.drafterKvUnsized || estimate.adaptersUnsized;
+    !estimate.kvEstimable ||
+    estimate.drafterKvUnsized ||
+    estimate.adaptersUnsized;
   return {
+    cpuOnly,
     rawGpuFit,
     gpuFit,
     freeGpuFit,
@@ -274,8 +312,10 @@ export function resolveMemoryFit(
     bounded,
     prefix: bounded ? "≥ " : "",
     advisory: resolveMemoryAdvisory(estimate, {
+      cpuOnly,
       singleMemoryPool,
       totalFit,
+      combinedFit,
       hostShareFit,
       gpuFit,
       rawGpuFit,
@@ -286,8 +326,10 @@ export function resolveMemoryFit(
 }
 
 interface AdvisoryVerdicts {
+  cpuOnly?: boolean;
   singleMemoryPool: boolean;
   totalFit: MemoryFitVerdict;
+  combinedFit: MemoryFitVerdict;
   hostShareFit: MemoryFitVerdict;
   gpuFit: MemoryFitVerdict;
   rawGpuFit: MemoryFitVerdict;
@@ -331,26 +373,47 @@ export function resolveMemoryAdvisory(
   if (!estimate.kvEstimable) {
     return {
       tone: "warn",
-      text: "This GGUF's header doesn't carry the attention dimensions, so the KV cache can't be sized. The figures above are a floor, and the cache is usually the term that grows fastest with context.",
+      text: "KV cache size is unknown: missing attention dimensions. Actual usage will be higher.",
     };
   }
   if (estimate.drafterKvUnsized) {
     return {
       tone: "warn",
-      text: "Part of this load is a file the server will fetch rather than one on this disk, so it can't be sized from here. The figures above are a floor.",
+      text: "A remote draft model or vision component is partly unmeasured. Actual usage will be higher.",
     };
   }
-  if (estimate.moeOffloadUnmodelled) {
+  if (estimate.adaptersUnsized) {
+    return {
+      tone: "warn",
+      text: "An adapter or control vector is unmeasured. Actual usage will be higher.",
+    };
+  }
+  if (estimate.moeOffloadUnmodelled && !verdicts.cpuOnly) {
     return {
       tone: "muted",
-      text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
+      text: "Expert layers on the CPU are not reflected here. GPU usage may be lower.",
     };
+  }
+  if (verdicts.cpuOnly) {
+    if (verdicts.totalFit === "exceeds") {
+      return {
+        tone: "warn",
+        text: "Exceeds system RAM. Try a shorter context or smaller model.",
+      };
+    }
+    if (verdicts.hostPressured) {
+      return {
+        tone: "muted",
+        text: "Fits system RAM, but little is free right now. Free memory, or try a shorter context or smaller model.",
+      };
+    }
+    return null;
   }
   if (verdicts.singleMemoryPool) {
     if (verdicts.totalFit === "exceeds") {
       return {
         tone: "warn",
-        text: "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to.",
+        text: "Exceeds shared memory. Try a shorter context or smaller model; CPU offloading adds no memory.",
       };
     }
     // One pool, so one pressure question however it was measured: the GPU's free reading and the
@@ -358,42 +421,52 @@ export function resolveMemoryAdvisory(
     if (verdicts.hostPressured || verdicts.gpuPressured) {
       return {
         tone: "muted",
-        text: "This fits the machine, but not what is free right now. If that memory is not the model being replaced, the context will be fitted down or the load refused.",
+        text: "Fits this machine, but little memory is free right now. Free memory or try Auto context.",
       };
     }
     return null;
   }
-  // Discrete memory, so the two verdicts are separate questions and the aggregate one is asked
-  // FIRST. Reading gpuFit alone offered spilling to system RAM as the remedy for a load that
-  // does not fit in GPU and RAM combined.
+  // Moving layers cannot fix a combined capacity shortfall.
+  if (
+    verdicts.combinedFit === "exceeds" ||
+    (verdicts.hostShareFit === "exceeds" && verdicts.rawGpuFit === "exceeds")
+  ) {
+    return {
+      tone: "warn",
+      text: "Exceeds combined GPU and system memory. Try a shorter context or smaller model.",
+    };
+  }
+  if (
+    (verdicts.gpuFit === "exceeds" && verdicts.hostPressured) ||
+    (verdicts.hostShareFit === "exceeds" && verdicts.gpuPressured)
+  ) {
+    return {
+      tone: "warn",
+      text: "GPU and system memory are both under pressure. Try a shorter context or smaller model.",
+    };
+  }
   if (verdicts.hostShareFit === "exceeds") {
     return {
       tone: "warn",
-      text: "More than system RAM holds. This placement keeps most of the load outside the GPU, and spare VRAM cannot take those bytes.",
-    };
-  }
-  if (verdicts.totalFit === "exceeds") {
-    return {
-      tone: "warn",
-      text: "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
+      text: "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model.",
     };
   }
   if (verdicts.gpuFit === "exceeds") {
     return {
       tone: "warn",
-      text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+      text: "Exceeds GPU memory. Try Auto context or fewer GPU layers; loading may still fail.",
     };
   }
   if (verdicts.hostPressured) {
     return {
       tone: "muted",
-      text: "The part of this load that runs from system RAM fits the machine, but not what is free right now. If that memory is not the model being replaced, the load will be refused.",
+      text: "Fits system RAM, but little is free right now. Free memory, or try a shorter context or smaller model.",
     };
   }
   if (verdicts.rawGpuFit === "fits" && verdicts.gpuPressured) {
     return {
       tone: "muted",
-      text: "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
+      text: "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
     };
   }
   return null;
