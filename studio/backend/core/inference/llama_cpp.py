@@ -2537,11 +2537,16 @@ _TOOL_TEMPLATE_PATTERNS = (
     re.compile(r"\{%[-+]?\s*(?:el)?if\b[^%]*\btools\b"),
     # No guard at all, straight into the loop.
     re.compile(r"\{%[-+]?\s*for\b[^%]*\bin\s+tools\b"),
-    # message.role == "tool" / message['role'] == 'tool', either quoting, == or !=.
-    re.compile(r"""(?:\.role|\[\s*['"]role['"]\s*\])\s*[!=]=\s*['"]tool['"]"""),
-    re.compile(r"""['"]role['"]\s*[!=]=\s*['"]tool['"]"""),
-    # DeepSeek gates on tool_calls rather than on `tools`.
-    re.compile(r"\btool_calls\b"),
+    # message.role == "tool" / message['role'] == 'tool', either quoting. Equality only:
+    # `role != "tool"` excludes tool turns, which is not evidence of handling them.
+    re.compile(r"""(?:\.role|\[\s*['"]role['"]\s*\])\s*==\s*['"]tool['"]"""),
+    re.compile(r"""['"]role['"]\s*==\s*['"]tool['"]"""),
+    # DeepSeek gates on tool_calls rather than on `tools`. Access or test only, so the bare
+    # word in a Jinja comment is not a capability.
+    re.compile(
+        r"""(?:\.tool_calls\b|\[\s*['"]tool_calls['"]\s*\]"""
+        r"""|\btool_calls\s+is\s+(?:defined|not\s+none))"""
+    ),
 )
 
 

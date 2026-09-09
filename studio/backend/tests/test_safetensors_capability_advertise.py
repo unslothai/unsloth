@@ -203,6 +203,18 @@ def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label
     [
         # Prose, not a tool block.
         ("prose_only", "{{- 'You are a helpful assistant with access to tools.' }}"),
+        # Excluding tool turns is not handling them.
+        (
+            "negated_role_check",
+            "{% for m in messages %}{% if m.role != 'tool' %}{{ m.content }}"
+            "{% endif %}{% endfor %}",
+        ),
+        # The word in a Jinja comment is not a capability.
+        (
+            "tool_calls_in_comment",
+            "{# tool_calls are deliberately unsupported #}"
+            "{% for m in messages %}{{ m.content }}{% endfor %}",
+        ),
         # Llama 3.1's other switches: neither renders a schema.
         (
             "adjacent_switch_names",
