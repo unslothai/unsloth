@@ -1818,6 +1818,7 @@ export const zhCN = {
       sourceHfCache: "HF 缓存",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "自定义文件夹",
       sourceLocalModel: "本地模型",
       scanningLocal: "正在扫描本地模型…",

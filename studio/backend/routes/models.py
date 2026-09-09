@@ -955,16 +955,33 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     return found
 
 
+def _scan_hermes_dir(hermes_dir: Path) -> List[LocalModelInfo]:
+    """Hermes rows in this module's row schema; the scanner builds the Hub inventory's."""
+    from hub.services.models.hermes import scan_hermes_dir
+
+    fields = LocalModelInfo.model_fields
+    return [
+        LocalModelInfo.model_validate({k: v for k, v in row.model_dump().items() if k in fields})
+        for row in scan_hermes_dir(hermes_dir)
+    ]
+
+
 class _CompatLocalInventorySources(NamedTuple):
     hf_cache_dir: Path
     legacy_hf: Path
     hf_default: Path
     lm_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
+    hermes_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
-    from utils.paths import hf_default_cache_dir, legacy_hf_cache_dir, lmstudio_model_dirs
+    from utils.paths import (
+        hermes_model_dirs,
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        lmstudio_model_dirs,
+    )
     from utils.hf_cache_settings import known_hf_hub_caches
     return _CompatLocalInventorySources(
         _resolve_hf_cache_dir(),
@@ -972,6 +989,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         hf_default_cache_dir(),
         tuple(lmstudio_model_dirs()),
         tuple(known_hf_hub_caches()),
+        tuple(hermes_model_dirs()),
     )
 
 
@@ -981,9 +999,13 @@ def collect_local_models(
     custom_folders: Optional[list[dict]] = None,
     sources: Optional[_CompatLocalInventorySources] = None,
 ) -> List[LocalModelInfo]:
-    """Scan ``models_root``, the HF caches, LM Studio dirs, and user scan folders, returning a deduplicated,
-    hidden-filtered list. Shared by ``GET /models/local`` and the OpenAI-compatible catalog so the UI and
-    the API never drift. ``models_root`` must already be validated by the caller."""
+    """Scan ``models_root``, the HF caches, LM Studio and Hermes dirs, and user scan
+    folders, returning a deduplicated, hidden-filtered list of discovered local models.
+
+    Shared by ``GET /models/local`` (the model picker) and the OpenAI-compatible
+    catalog (``GET /v1/models``) so the UI and the API never drift. ``models_root``
+    must already be validated/trusted by the caller.
+    """
     from storage.studio_db import list_scan_folders
     from hub.utils import gguf as gguf_utils
     from utils.models.model_config import detect_gguf_model
@@ -1051,7 +1073,15 @@ def collect_local_models(
     for lm_dir in lm_dirs:
         local_models += _scan_lmstudio_dir(lm_dir)
 
+    for hermes_dir in sources.hermes_dirs:
+        try:
+            local_models += _scan_hermes_dir(hermes_dir)
+        except Exception as e:
+            logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, e)
+
+    # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
+    hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -1094,6 +1124,18 @@ def collect_local_models(
                 ):
                     custom_models.append(model)
             custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
+            if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
+                # Registering ~/.hermes/models was how Hermes downloads were listed before this
+                # scan; the walk lists every download a second time under the same id. Anything
+                # else kept in that folder is still the user's custom row.
+                staged = {
+                    _compat_inventory_path_identity(m.path) for m in _scan_hermes_dir(folder_path)
+                }
+                custom_models = [
+                    m
+                    for m in custom_models
+                    if _compat_inventory_path_identity(m.path) not in staged
+                ]
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -1108,7 +1150,9 @@ def collect_local_models(
         # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
         # cache) must not re-stamp its rows as generic custom entries.
         local_models += [
-            m if m.source in ("hf_cache", "ollama") else m.model_copy(update = {"source": "custom"})
+            m
+            if m.source in ("hf_cache", "ollama", "hermes")
+            else m.model_copy(update = {"source": "custom"})
             for m in custom_models
         ]
 
@@ -1279,7 +1323,8 @@ async def list_local_models(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List local model candidates from the models dir, HF caches, and LM Studio dirs."""
+    """List local model candidates from the models dir, HF caches, LM Studio and Hermes dirs."""
+    # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir
     legacy_hf = sources.legacy_hf
@@ -1318,6 +1363,7 @@ async def list_local_models(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
             lmstudio_dirs = [str(d) for d in lm_dirs],
+            hermes_dirs = [str(d) for d in sources.hermes_dirs],
             models = models,
         )
     except Exception as e:

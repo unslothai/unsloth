@@ -65,8 +65,9 @@ studio = [
     "frontend/*.yaml",
     "frontend/.git*",
     "backend/requirements/**/*",
-    # Vendored truststore: not a package (no __init__.py), so it ships as data.
+    # Vendored truststore files.
     "backend/vendor/**/*",
+    "backend/integrations/blender/*.py",
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
