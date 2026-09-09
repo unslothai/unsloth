@@ -4829,7 +4829,10 @@ function Find-InstalledUv {
         if (-not $dir) { continue }
         $exe = Join-Path $dir "uv.exe"
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
-        if ((Get-SetupUvExecutableVerdict -Path $exe) -eq "failed") { continue }
+        # "ok" only. The pinned installer accepts "unknown" because a digest already
+        # proved its bytes; an existing candidate has no such proof, and a launch that
+        # threw or timed out would go on to an unbounded uv pip invocation.
+        if ((Get-SetupUvExecutableVerdict -Path $exe) -ne "ok") { continue }
         return $dir
     }
     return $null

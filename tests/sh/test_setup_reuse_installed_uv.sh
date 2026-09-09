@@ -19,10 +19,13 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 HELPER=$(awk '
+    /^_setup_uv_probe_exec\(\) \{/ { grab = 1 }
     /^_setup_find_installed_uv\(\) \{/ { grab = 1 }
     grab { print }
-    grab && /^}/ { grab = 0; exit }
+    grab && /^}/ { grab = 0 }
 ' "$SETUP_SH")
+printf '%s\n' "$HELPER" | grep -q '^_setup_uv_probe_exec() {' || {
+    echo "FATAL: could not extract _setup_uv_probe_exec from setup.sh" >&2; exit 1; }
 printf '%s\n' "$HELPER" | grep -q '^_setup_find_installed_uv() {' || {
     echo "FATAL: could not extract _setup_find_installed_uv from setup.sh" >&2; exit 1; }
 
@@ -75,6 +78,27 @@ for shell in sh bash; do
     rm -f "$HOME_DIR/.local/bin/uv"
     assert_eq "$shell: ...and with nothing else installed that is a miss" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$BROKEN" "$shell" "$PROBE")"
+
+    # A uv that starts and never answers: the probe is bounded, so the miss is reported
+    # rather than setup hanging before its download or pip fallback.
+    if command -v timeout >/dev/null 2>&1; then
+        HANG="$CASE/hangs"
+        mkdir -p "$HANG"
+        printf '#!/bin/sh\nsleep 60\n' > "$HANG/uv"
+        chmod +x "$HANG/uv"
+        HANG_PROBE="$WORK/$shell hang probe.sh"
+        # The 20 s ceiling is the helper's; the test only needs it to be finite, so the
+        # wall clock is bounded below what an unbounded probe would take.
+        sed 's/timeout 20 /timeout 2 /' "$PROBE" > "$HANG_PROBE"
+        _hang_started=$(date +%s)
+        assert_eq "$shell: a uv that never answers is not reused" \
+            "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$HANG" "$shell" "$HANG_PROBE")"
+        if [ $(( $(date +%s) - _hang_started )) -lt 30 ]; then
+            ok "$shell: ...and the probe returned within its bound"
+        else
+            bad "$shell: ...and the probe returned within its bound"
+        fi
+    fi
 done
 
 # ── source contract: the reuse sits between the PATH probe and the download, in both shells ──
@@ -104,6 +128,19 @@ for _name in UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME; do
         bad "both shells consult $_name"
     fi
 done
+
+# Only a uv that answered counts, on both sides: the bounded probe here, and an "ok"
+# verdict (not merely "not failed") in setup.ps1.
+if printf '%s\n' "$HELPER" | grep -q '_setup_uv_probe_exec "\$_sfu_dir/uv"'; then
+    ok "setup.sh probes the candidate through the bounded helper"
+else
+    bad "setup.sh probes the candidate through the bounded helper"
+fi
+if grep -A30 '^function Find-InstalledUv {' "$SETUP_PS1" | grep -q -- '-ne "ok") { continue }'; then
+    ok "setup.ps1 reuses only a uv with an ok verdict"
+else
+    bad "setup.ps1 reuses only a uv with an ok verdict"
+fi
 
 echo ""
 echo "  PASS: $PASS"

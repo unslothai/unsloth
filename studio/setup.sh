@@ -1802,7 +1802,9 @@ _setup_find_installed_uv() {
     for _sfu_dir in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}" \
         "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
         [ -n "$_sfu_dir" ] || continue
-        if [ -x "$_sfu_dir/uv" ] && "$_sfu_dir/uv" --version >/dev/null 2>&1; then
+        # Bounded, as the pinned installer's own probe is: a binary that starts and never
+        # answers must not hold setup up before the download or pip fallback.
+        if [ -x "$_sfu_dir/uv" ] && _setup_uv_probe_exec "$_sfu_dir/uv"; then
             printf '%s' "$_sfu_dir"
             unset _sfu_dir
             return 0
