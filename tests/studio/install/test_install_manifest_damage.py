@@ -657,8 +657,10 @@ def _installer_helper_probe() -> str:
 
     repo = Path(__file__).resolve().parents[3]
     setup = (repo / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    # Anchored on the probe itself, not on the `if !` that used to precede it: the same
+    # probe now lives in _setup_install_is_verified, which two callers share.
     match = re.search(
-        r'if ! "\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
+        r'"\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
     )
     assert match, "the manifest-helper probe moved; this test is reading the wrong block"
     return match.group(1)

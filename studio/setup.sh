@@ -1839,6 +1839,45 @@ fi
 # Skip all Python dependency work if versions match (fast update path).
 # On Colab (no venv), skip this version check (it needs $VENV_DIR/bin/python)
 # but still run install_python_stack below (it uses sys.executable).
+_setup_install_is_verified() {
+    # Does the venv on disk claim, and prove, a finished install? Exit 0 yes, 1 no.
+    #
+    # Two callers ask for opposite reasons: the incomplete-install guard forces the
+    # dependency pass when this says no, and the offline rule below keeps the fast path
+    # when it says yes. One implementation, so those two can never disagree about what
+    # "complete" means.
+    "$VENV_DIR/bin/python" -c "
+import os, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    # Present but unimportable is damage, not an old release, and this is the
+    # one file whose damage silences every check below. Absent keeps the old
+    # escape: separating it from an old tree needs a RECORD walk here, and the
+    # CLI already reports studio_install_manifest_missing.
+    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
+try:
+    ok = install_manifest.verify_install(deep = True)['ok']
+except TypeError:
+    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
+sys.exit(0 if ok else 1)
+" "$SCRIPT_DIR" 2>/dev/null
+}
+
+_uv_offline_requested() {
+    # UV_OFFLINE is uv's own "there is no network" switch, and every install command this
+    # script runs goes through uv. Same boolish spelling as _uv_no_cache_requested.
+    _uvo=${UV_OFFLINE:-}
+    _uvo=${_uvo#"${_uvo%%[![:space:]]*}"}
+    _uvo=${_uvo%"${_uvo##*[![:space:]]}"}
+    case "$_uvo" in
+        1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) unset _uvo; return 0 ;;
+    esac
+    unset _uvo
+    return 1
+}
+
 _SKIP_PYTHON_DEPS=false
 _SKIP_VERSION_CHECK=false
 if [ "$_COLAB_NO_VENV" = true ]; then
@@ -1915,23 +1954,7 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         # An interrupted install leaves $_PKG_NAME current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
-        if ! "$VENV_DIR/bin/python" -c "
-import os, sys
-sys.path.insert(0, sys.argv[1])
-try:
-    import install_manifest
-except Exception:
-    # Present but unimportable is damage, not an old release, and this is the
-    # one file whose damage silences every check below. Absent keeps the old
-    # escape: separating it from an old tree needs a RECORD walk here, and the
-    # CLI already reports studio_install_manifest_missing.
-    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
-try:
-    ok = install_manifest.verify_install(deep = True)['ok']
-except TypeError:
-    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
-sys.exit(0 if ok else 1)
-" "$SCRIPT_DIR" 2>/dev/null; then
+        if ! _setup_install_is_verified; then
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
@@ -2044,7 +2067,20 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
-        substep "could not reach PyPI, updating to be safe..."
+        # PyPI unreachable. Updating to be safe stays the default -- an unreachable PyPI is
+        # usually a blip, and a pass over a warm cache is cheap.
+        #
+        # UV_OFFLINE is the exception, because it is not a blip: the caller has declared
+        # there is no network, uv refuses to reach one, and so every install command that
+        # pass would run can only fail. The choice is between a pass that cannot work and
+        # keeping what is on disk, and keeping it is only defensible on the same evidence
+        # the incomplete-install guard demands -- so ask the same question.
+        if [ -n "$INSTALLED_VER" ] && _uv_offline_requested && _setup_install_is_verified; then
+            substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
+            _SKIP_PYTHON_DEPS=true
+        else
+            substep "could not reach PyPI, updating to be safe..."
+        fi
     fi
 fi
 

@@ -4927,6 +4927,41 @@ function Fast-Download {
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
+# Does the venv on disk claim, and prove, a finished install?
+#
+# Two callers ask for opposite reasons: the incomplete-install guard forces the dependency
+# pass when this says no, and the offline rule below keeps the fast path when it says yes.
+# One implementation, so those two can never disagree about what "complete" means.
+function Test-StudioInstallVerified {
+    try {
+        & python -c "
+import os, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    # Present but unimportable is damage, not an old release, and this is the
+    # one file whose damage silences every check below. Absent keeps the old
+    # escape: separating it from an old tree needs a RECORD walk here, and the
+    # CLI already reports studio_install_manifest_missing.
+    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
+try:
+    ok = install_manifest.verify_install(deep = True)['ok']
+except TypeError:
+    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
+sys.exit(0 if ok else 1)
+" "$PSScriptRoot" 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
+# UV_OFFLINE is uv's own "there is no network" switch, and every install command this script
+# runs goes through uv. Same boolish spelling the POSIX side accepts.
+function Test-UvOfflineRequested {
+    $value = "$($env:UV_OFFLINE)".Trim()
+    return @('1', 'true', 'yes', 'on') -contains $value.ToLowerInvariant()
+}
+
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
 
@@ -5009,27 +5044,7 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         # An interrupted install leaves $_PkgName current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
-        $_studioInstallIncomplete = $false
-        try {
-            & python -c "
-import os, sys
-sys.path.insert(0, sys.argv[1])
-try:
-    import install_manifest
-except Exception:
-    # Present but unimportable is damage, not an old release, and this is the
-    # one file whose damage silences every check below. Absent keeps the old
-    # escape: separating it from an old tree needs a RECORD walk here, and the
-    # CLI already reports studio_install_manifest_missing.
-    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
-try:
-    ok = install_manifest.verify_install(deep = True)['ok']
-except TypeError:
-    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
-sys.exit(0 if ok else 1)
-" "$PSScriptRoot" 2>$null
-            if ($LASTEXITCODE -ne 0) { $_studioInstallIncomplete = $true }
-        } catch {}
+        $_studioInstallIncomplete = -not (Test-StudioInstallVerified)
         if ($_studioInstallIncomplete) {
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
@@ -5131,7 +5146,20 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     } elseif ($InstalledVer -and $LatestVer) {
         substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
     } elseif (-not $LatestVer) {
-        substep "could not reach PyPI, updating to be safe..."
+        # PyPI unreachable. Updating to be safe stays the default -- an unreachable PyPI is
+        # usually a blip, and a pass over a warm cache is cheap.
+        #
+        # UV_OFFLINE is the exception, because it is not a blip: the caller has declared there
+        # is no network, uv refuses to reach one, and so every install command that pass would
+        # run can only fail. The choice is between a pass that cannot work and keeping what is
+        # on disk, and keeping it is only defensible on the same evidence the incomplete-install
+        # guard demands -- so ask the same question.
+        if ($InstalledVer -and (Test-UvOfflineRequested) -and (Test-StudioInstallVerified)) {
+            substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
+            $SkipPythonDeps = $true
+        } else {
+            substep "could not reach PyPI, updating to be safe..."
+        }
     }
 }
 

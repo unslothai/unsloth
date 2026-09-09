@@ -220,3 +220,94 @@ def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert "$PSNativeCommandUseErrorActionPreference =" not in body
     assert "PSVersion.Major -ge 7" not in body
+
+
+# ── the offline rule ──
+#
+# "could not reach PyPI, updating to be safe" is the right default: an unreachable PyPI
+# is usually a blip, and a pass over a warm cache is cheap. It is the wrong answer when
+# the caller has SET UV_OFFLINE, because then every install command in that pass can only
+# fail -- the update does the slow half of its work and exits non-zero on a venv that was
+# already complete. The rule keeps such an install, and only on the evidence the
+# incomplete-install guard already demands.
+
+
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+def test_an_unreachable_pypi_still_updates_by_default(script: pathlib.Path):
+    """Nothing above changes for a plain offline blip."""
+    text = script.read_text(encoding = "utf-8")
+    assert text.count('substep "could not reach PyPI, updating to be safe..."') == 1
+
+
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+def test_the_offline_rule_needs_all_three_conditions(script: pathlib.Path):
+    """An installed version, a declared offline mode, and a verified tree. Any two of
+    them is a skip that ships a half-built venv or a venv that was never built."""
+    text = script.read_text(encoding = "utf-8")
+    if script.name.endswith(".ps1"):
+        condition = (
+            "if ($InstalledVer -and (Test-UvOfflineRequested) -and "
+            "(Test-StudioInstallVerified)) {"
+        )
+        taken = "$SkipPythonDeps = $true"
+    else:
+        condition = (
+            'if [ -n "$INSTALLED_VER" ] && _uv_offline_requested '
+            "&& _setup_install_is_verified; then"
+        )
+        taken = "_SKIP_PYTHON_DEPS=true"
+    assert condition in text, f"{script.name} no longer gates the offline skip on all three"
+    start = text.index(condition)
+    body = text[start : start + 400]
+    assert taken in body
+    assert "could not reach PyPI" in body, (
+        f"{script.name} lost the else branch, so a host that fails any one of the three "
+        "conditions now skips silently instead of updating to be safe"
+    )
+
+
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+def test_the_two_callers_share_one_definition_of_complete(script: pathlib.Path):
+    """The guard forces the pass when the tree is not verified and the offline rule keeps
+    it when it is. Two copies of that check is how they come to disagree."""
+    text = script.read_text(encoding = "utf-8")
+    helper = (
+        "function Test-StudioInstallVerified"
+        if script.name.endswith(".ps1")
+        else "_setup_install_is_verified() {"
+    )
+    assert helper in text
+    assert text.count("install_manifest.verify_install(deep = True)") == 1, (
+        f"{script.name} has more than one deep verify; the offline rule and the "
+        "incomplete-install guard must ask the same question"
+    )
+
+
+def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
+    """Same spelling UV_NO_CACHE accepts, because a user who set one expects the other
+    to be read the same way."""
+    import subprocess
+
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    start = text.index("_uv_offline_requested() {")
+    body = text[start : text.index("\n}\n", start) + 3]
+    probe = tmp_path / "probe.sh"
+    probe.write_text(body + "\nif _uv_offline_requested; then echo yes; else echo no; fi\n")
+    for value, expected in (
+        ("1", "yes"),
+        ("true", "yes"),
+        ("TRUE", "yes"),
+        ("  yes  ", "yes"),
+        ("on", "yes"),
+        ("0", "no"),
+        ("false", "no"),
+        ("", "no"),
+        ("maybe", "no"),
+    ):
+        result = subprocess.run(
+            ["sh", str(probe)],
+            capture_output = True,
+            text = True,
+            env = {"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
+        )
+        assert result.stdout.strip() == expected, (value, result.stdout)
