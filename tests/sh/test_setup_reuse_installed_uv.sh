@@ -159,6 +159,16 @@ else
     bad "setup.ps1 uv verdict accepts a printed version"
 fi
 
+# Candidates are built with .NET's Combine: Join-Path is a terminating error for a path on
+# a missing drive under the script's ErrorActionPreference Stop, and Find-InstalledUv runs
+# before the installation branch's try, so one bad XDG_DATA_HOME ended setup.
+_finder=$(awk '/^function Find-InstalledUv \{/ { grab = 1 } grab { print } grab && /^\}/ { exit }' "$SETUP_PS1")
+if [ -n "$_finder" ] && ! printf '%s\n' "$_finder" | grep -q 'Join-Path' && printf '%s\n' "$_finder" | grep -q 'System.IO.Path\]::Combine'; then
+    ok "setup.ps1 builds uv candidates without Join-Path"
+else
+    bad "setup.ps1 builds uv candidates without Join-Path"
+fi
+
 echo ""
 echo "  PASS: $PASS"
 echo "  FAIL: $FAIL"

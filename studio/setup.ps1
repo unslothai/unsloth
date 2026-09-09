@@ -4830,14 +4830,18 @@ function Find-InstalledUv {
     # 19 MB and 42 of the 53 seconds a Windows no-op update took, measured on the staging
     # matrix. The same priority list Install-UvFromPinnedRelease writes to, so what is found
     # is what was installed, and it has to run, not merely exist.
+    # Paths are built with .NET's Combine, not the PowerShell path cmdlet: this runs under
+    # the script's ErrorActionPreference Stop, before the installation branch's try, and
+    # the cmdlet is a terminating error for a candidate on a missing or disconnected drive
+    # (XDG_DATA_HOME set to Z:\xdg). Such a candidate is skipped by the Test-Path below.
     $candidates = @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)
-    if ($env:XDG_DATA_HOME) { $candidates += (Join-Path $env:XDG_DATA_HOME "../bin") }
+    if ($env:XDG_DATA_HOME) { $candidates += [System.IO.Path]::Combine($env:XDG_DATA_HOME, "..", "bin") }
     $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
-    if ($userHome) { $candidates += (Join-Path $userHome ".local\bin") }
+    if ($userHome) { $candidates += [System.IO.Path]::Combine($userHome, ".local", "bin") }
     foreach ($dir in $candidates) {
         if (-not $dir) { continue }
-        $exe = Join-Path $dir "uv.exe"
-        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+        $exe = [System.IO.Path]::Combine($dir, "uv.exe")
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
         # "ok" only. The pinned installer accepts "unknown" because a digest already
         # proved its bytes; an existing candidate has no such proof, and a launch that
         # threw or timed out would go on to an unbounded uv pip invocation.
