@@ -277,3 +277,87 @@ class TestAGiveUpStillReportsWhatItDecoded:
             "four deltas were streamed and shown; reporting zero completion tokens for "
             "them corrupts every usage-based client and monitor"
         )
+
+
+def _opener() -> str:
+    """llama-server's first frame: the role, no content."""
+    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"role": "assistant"}}]}) + "\n"
+
+
+class TestOnlyOutputCountsTowardsTheSweep:
+    """The role opener and the finish frame add no cell; counting them let a sweep fire on
+    the finish frame and pick the request that had just finished as its victim."""
+
+    def _run(self, backend, *, signal, policy, on_tokens, **kwargs):
+        return list(
+            backend.generate_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                cancel_event = threading.Event(),
+                preempt_event = signal,
+                preempt_policy = policy,
+                on_tokens = on_tokens,
+                **kwargs,
+            )
+        )
+
+    def test_the_opener_and_the_finish_frame_do_not_count(self, monkeypatch):
+        from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
+
+        signal = preemption.PreemptSignal()
+        reports: list[int] = []
+        # Opener + (every - 1) content deltas + finish: every frames, every - 1 tokens.
+        stream = [_opener()] + [_delta("x")] * (_TOKEN_REPORT_EVERY - 1) + [_finish(), _done()]
+        recorder = _Recorder(monkeypatch, [stream], signal = signal, pause_after = 10**6)
+        self._run(
+            recorder.backend, signal = signal, policy = _RecordingPolicy(), on_tokens = reports.append
+        )
+        assert reports == [], f"a frame with no output counted: {reports}"
+
+    def test_a_full_batch_of_output_still_reports(self, monkeypatch):
+        from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
+
+        signal = preemption.PreemptSignal()
+        reports: list[int] = []
+        stream = [_opener()] + [_delta("x")] * _TOKEN_REPORT_EVERY + [_finish(), _done()]
+        recorder = _Recorder(monkeypatch, [stream], signal = signal, pause_after = 10**6)
+        self._run(
+            recorder.backend, signal = signal, policy = _RecordingPolicy(), on_tokens = reports.append
+        )
+        assert reports == [_TOKEN_REPORT_EVERY]
+
+
+class TestASpentCapIsNotReopened:
+    """A pause landing after the caller's cap was spent used to reopen upstream for the
+    one-token floor, once per pause; the partial is the answer."""
+
+    def _run(self, backend, *, signal, policy, **kwargs):
+        return list(
+            backend.generate_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                cancel_event = threading.Event(),
+                preempt_event = signal,
+                preempt_policy = policy,
+                **kwargs,
+            )
+        )
+
+    def test_the_partial_ends_the_turn_with_length(self, monkeypatch):
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        # Eight single-token deltas, paused after the eighth, against a cap of eight.
+        recorder = _Recorder(
+            monkeypatch,
+            [[_delta("x")] * 8 + [_finish(), _done()], [_delta(" more"), _finish(), _done()]],
+            signal = signal,
+            pause_after = 8,
+        )
+        events = self._run(recorder.backend, signal = signal, policy = policy, max_tokens = 8)
+
+        assert len(recorder.payloads) == 1, "the spent cap was reopened upstream"
+        assert "awaited" not in policy.events, "a spent cap queued for room it cannot use"
+        dicts = [e for e in events if isinstance(e, dict)]
+        finishes = [e["finish_reason"] for e in dicts if e.get("type") == "metadata"]
+        assert finishes[-1] == "length"
+        assert any(
+            e.get("type") == "context_truncated" for e in dicts
+        ), "the turn stopped in silence"

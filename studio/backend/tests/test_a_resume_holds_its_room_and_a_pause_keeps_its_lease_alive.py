@@ -228,6 +228,31 @@ class TestResumeTicketsKeepTheirOrderForRoomToo:
         queue.release(got_first, 70)
 
     @pytest.mark.asyncio
+    async def test_an_empty_cache_still_leaves_the_room_a_ticket_is_owed(self):
+        """The last holder leaving empties the ledger, and an empty ledger admits any size
+        on its own; that escape must not spend the room a ticket ahead is coming back for:
+        holder 50, ticket 80, arrival 80, budget 100."""
+        queue = LlamaAdmissionQueue("k")
+        holder = await _lease(queue, tokens = 50)
+        waiting = asyncio.ensure_future(
+            queue.acquire_parked_slot(tokens = 80, poll_s = 0.01, deadline = time.monotonic() + 2.0)
+        )
+        await asyncio.sleep(0.05)
+        reservation = queue.reserve(
+            capacity = 2, config = LlamaAdmissionConfig(), tokens = 80, budget = 100
+        )
+        assert reservation.lease_nowait() is None
+        holder.release()
+        slot = await waiting
+        assert slot is not None, "the arrival took the room the ticket was owed"
+        assert reservation.lease_nowait() is None, "80 beside the resumed 80 is over the budget"
+        queue.release(slot, 80)
+        try:
+            reservation.cancel()
+        except Exception:
+            pass
+
+    @pytest.mark.asyncio
     async def test_a_fresh_arrival_leaves_the_room_a_ticket_is_owed(self):
         queue = LlamaAdmissionQueue("k")
         holder = await _lease(queue, tokens = 60)

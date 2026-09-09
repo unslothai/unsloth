@@ -2421,9 +2421,18 @@ def _openai_llama_effective_batch_tokens(llama_backend) -> int:
     shrinking-batch retry upstream #24840 throws on. Falls back to llama.cpp's own default,
     since the unstated case is the common one and zero reserves nothing at all.
 
-    `requested_n_batch` FIRST: it is the only name the backend answers to, and the four
-    spellings this used to try all missed.
+    The extras FIRST: they are appended after the launcher's own flag and win the child's
+    last-wins parse, so a pass-through ``--batch-size 8192`` beside a typed 512 runs at
+    8192. Then `requested_n_batch`, the only name the backend answers to.
     """
+    from core.inference.llama_server_args import parse_batch_override
+
+    try:
+        passed = parse_batch_override(getattr(llama_backend, "extra_args", None))
+    except Exception:
+        passed = None
+    if passed:
+        return passed
     for attr in (
         "requested_n_batch",
         "_requested_n_batch",

@@ -375,6 +375,26 @@ class TestTheRouteReadsTheLaunchesBatchSize:
 
         assert inference._openai_llama_effective_batch_tokens(_Backend()) == 512
 
+    def test_a_pass_through_batch_size_is_the_batch_the_child_runs(self):
+        import routes.inference as inference
+
+        class _Backend:
+            requested_n_batch = 512
+            extra_args = ["--batch-size", "8192"]
+
+        class _Equals:
+            requested_n_batch = None
+            extra_args = ["-b", "1024", "--batch-size=4096"]
+
+        class _Empty:
+            requested_n_batch = 512
+            extra_args = []
+
+        # The launcher's own flag comes before the extras, so the extras win at launch.
+        assert inference._openai_llama_effective_batch_tokens(_Backend()) == 8192
+        assert inference._openai_llama_effective_batch_tokens(_Equals()) == 4096
+        assert inference._openai_llama_effective_batch_tokens(_Empty()) == 512
+
     def test_an_unstated_batch_still_falls_back_to_the_llama_cpp_default(self):
         import routes.inference as inference
         class _Backend:
