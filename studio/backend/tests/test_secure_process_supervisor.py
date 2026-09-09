@@ -387,6 +387,31 @@ def test_review_preflight_rechecks_before_releasing_native_user_code(tmp_path, m
     mutation.release_workspace_mutation_slot(identity)
 
 
+def test_live_utf8_truncation_cannot_skip_a_codepoint_then_resume(monkeypatch):
+    chunks = [
+        bytes.fromhex(value)
+        for value in (
+            "91",
+            "547819d54e94",
+            "289fdc18d883d5da",
+            "ae",
+            "d6b1f818",
+            "2da6dc810cf9",
+            "",
+        )
+    ]
+    pending = iter(chunks)
+    streamed = []
+    monkeypatch.setattr(supervisor.os, "read", lambda *_args: next(pending))
+    output = supervisor._OutputBuffer(12, streamed.append)
+    assert output.read_available(123, max_chunks = 64)
+    terminal, _total, truncated, notice = output.result()
+    assert truncated
+    assert "".join(streamed) == terminal
+    assert streamed[-1] == notice
+    assert terminal.startswith("\ufffdTx\x19\ufffdN\n")
+
+
 def test_supervisor_bounds_rendered_invalid_utf8(local_supervisor):
     workspace, _lease_active, _boundaries = local_supervisor
     streamed = []

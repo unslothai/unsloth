@@ -271,6 +271,7 @@ class _OutputBuffer:
         )
         self._stream_finished = False
         self._stream_rendered_bytes = 0
+        self._stream_prefix_saturated = False
         self._truncation_notified = False
         self._truncation_notice = (
             f"\n[Process output was truncated. The capture limit was {limit} bytes.]\n"
@@ -284,6 +285,10 @@ class _OutputBuffer:
     ) -> None:
         if self._stream_decoder is None or self._stream_finished:
             return
+        if self._stream_prefix_saturated:
+            if final:
+                self._stream_finished = True
+            return
         rendered = self._stream_decoder.decode(chunk, final = final)
         if final:
             self._stream_finished = True
@@ -292,6 +297,10 @@ class _OutputBuffer:
         if len(encoded) > remaining:
             rendered = encoded[: max(0, remaining)].decode("utf-8", errors = "ignore")
             encoded = rendered.encode("utf-8")
+            # Once a decoded code point does not fit, the terminal renderer
+            # stops at that exact byte prefix. Streaming later ASCII would skip
+            # the omitted code point and cease to be a prefix of final output.
+            self._stream_prefix_saturated = True
         self._stream_rendered_bytes += len(encoded)
         if not rendered:
             return
