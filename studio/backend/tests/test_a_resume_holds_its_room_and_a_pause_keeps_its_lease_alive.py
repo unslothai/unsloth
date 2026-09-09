@@ -296,7 +296,9 @@ class TestARawHolderIsMeasuredOnceItProduces:
         # No data line to mark them at, so the charge sat on top of the residency
         # `/slots` reported for the whole answer.
         source = inspect.getsource(inference)
-        assert source.count("measured = True,  # non-streaming") == 2
+        assert source.count("measured = True,  # non-streaming") == 1  # the OpenAI passthrough
+        # The Anthropic passthrough serves both: measured only for the non-streaming call.
+        assert source.count("_arm_anthropic(reservation, raw = raw, measured = raw)") == 1
         helper = inspect.getsource(inference._openai_llama_count_raw_holder)
         assert "controller.note_measured(gen_id)" in helper
 

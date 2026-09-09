@@ -32271,9 +32271,15 @@ async def anthropic_messages(
         )
     )
 
-    def _arm_anthropic(reservation, *, raw: bool = False) -> None:
+    def _arm_anthropic(
+        reservation,
+        *,
+        raw: bool = False,
+        measured: bool = False,
+    ) -> None:
         """Probe first, then arm, both no-ops when preemption cannot apply. ``raw`` is the client-tool
-        passthrough: with no generator it never polls the signal, so it must not become a victim."""
+        passthrough: with no generator it never polls the signal, so it must not become a victim.
+        ``measured`` only for its non-streaming call, which has no data line to mark itself at."""
         try:
             get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                 lambda: _anthropic_refresh_residency(
@@ -32288,7 +32294,7 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 lease = reservation.lease_nowait(),
                 gen_id = message_id,
-                measured = True,  # non-streaming: no data line to mark it at
+                measured = measured,
             )
             return
         _anthropic_preempt_policy.bind(
@@ -32519,7 +32525,7 @@ async def anthropic_messages(
             )
             # With the lease in hand, exactly as the streaming wrapper does. Only that wrapper
             # called this, so a non-streaming /v1/messages request ran with no participant.
-            _arm_anthropic(reservation, raw = raw)
+            _arm_anthropic(reservation, raw = raw, measured = raw)
             # Registered only once admitted: a queued request is not holding
             # llama-server, so it has no business blocking a swap.
             monitored = await _tracked_anthropic_non_streaming(coro)
