@@ -2222,6 +2222,108 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
     assert "AAAHEAD" in sources[0]["text"], sources[0]["text"]
 
 
+def test_the_sql_candidate_order_agrees_with_the_python_recall_order(conn):
+    """The two orderings are written twice, in two languages, so pin them to each other.
+
+    `store.search_lexical`'s ordered clauses and `_conversation_order` have to sort the same
+    rows the same way. They cannot share an implementation across the SQL boundary, so
+    nothing but this test stops one from being extended and the other left behind, and the
+    consequence of drift is not cosmetic: the SQL runs under a LIMIT and CHOOSES the
+    candidates, the Python only arranges the survivors, so a disagreement silently deletes
+    whichever turns the two ends disagree about.
+
+    Agreement is asserted WITHIN each BM25 score, which is the whole of what is being
+    claimed and all that can be. The SQL sorts by relevance first and the recall key has no
+    relevance component at all, by design: relevance decides which turns are eligible and
+    the archive decides the order among them. A tied run is also the only place the question
+    arises, since it is exactly where the score stops separating rows and the conversation
+    order becomes the cut.
+
+    The document ids are assigned here rather than left to `uuid4`, and assigned so that
+    sorting by them REVERSES conversation order. Left random the test would pass or fail on
+    the draw, which for a guard against silent drift is no better than not having one. The
+    archive is mixed on purpose too, numbered turns and legacy NULL ones, a shared timestamp
+    and a distinct one, single-chunk and multi-chunk documents, so every component of the key
+    is exercised and not only the one the current bug lives in.
+    """
+    import types
+
+    scope = store.conversation_archive_scope(THREAD)
+    plan = [
+        # (ordinal, created_at, chunk count). Two legacy rows tied on one clock tick, then
+        # a legacy row the clock could separate, then two numbered rows tied to each other.
+        (None, "2026-01-01T00:00:00+00:00", 3),
+        (None, "2026-01-01T00:00:00+00:00", 2),
+        (None, "2026-01-02T00:00:00+00:00", 1),
+        (7, "2026-01-03T00:00:00+00:00", 2),
+        (8, "2026-01-03T00:00:00+00:00", 2),
+    ]
+    for position, (ordinal, created, count) in enumerate(plan):
+        # Descending ids against ascending conversation order: id order is exactly wrong.
+        document_id = f"{len(plan) - position:04d}-turn"
+        store.create_document(
+            conn,
+            scope = scope,
+            thread_id = THREAD,
+            filename = "earlier turn",
+            sha256 = f"h{position}",
+            status = "completed",
+            embedding_model = "m",
+            archive_messages = 2,
+            archive_ordinal = ordinal,
+            document_id = document_id,
+            created_at = created,
+            commit = False,
+        )
+        store.add_chunks(
+            conn,
+            scope,
+            document_id,
+            [
+                types.SimpleNamespace(
+                    chunk_index = index,
+                    text = "ZQXAGREE statement " + "word " * (index + position),
+                    page_number = None,
+                    source_page_index = None,
+                    token_count = 5,
+                    char_count = 20,
+                )
+                for index in range(count)
+            ],
+            [[0.0] * 4] * count,
+        )
+    conn.commit()
+
+    def _tiers(**direction):
+        hits = store.search_lexical(conn, scope, "ZQXAGREE", 500, **direction)
+        grouped: list = []
+        for chunk_id, score in hits:
+            if grouped and grouped[-1][0] == score:
+                grouped[-1][1].append(chunk_id)
+            else:
+                grouped.append((score, [chunk_id]))
+        return grouped
+
+    oldest = _tiers(oldest_first = True)
+    newest = _tiers(newest_first = True)
+    every_id = [chunk_id for _score, tier in oldest for chunk_id in tier]
+    assert len(every_id) == sum(count for _o, _c, count in plan)
+    rows = store.chunks_by_id(conn, every_id)
+    # Non-vacuous: some score really is shared, or none of the above is being tested.
+    assert max(len(tier) for _score, tier in oldest) > 1, oldest
+
+    for score, tier in oldest:
+        expected = sorted(
+            tier, key = lambda chunk_id: conversation_archive._conversation_order(rows[chunk_id])
+        )
+        assert tier == expected, (score, tier, expected)
+    # And the other end is the exact mirror within each tier, or the two windows would not
+    # be cutting one run from its two ends.
+    assert [score for score, _ in newest] == [score for score, _ in oldest]
+    for (_score, forward), (_same, backward) in zip(oldest, newest):
+        assert backward == list(reversed(forward)), (forward, backward)
+
+
 def test_a_rewritten_turn_keeps_the_insertion_order_it_was_archived_in(conn, monkeypatch):
     """A re-embed replaces a row, and the replacement has to sit where the original sat.
 
@@ -2347,7 +2449,6 @@ def test_both_recall_paths_order_by_the_same_key():
     unmerged one on exactly the archives this ordering exists for.
     """
     from core.rag import conversation_archive
-
     for ordinal in (None, 0, 4):
         for created in ("", "2026-01-01T00:00:00Z"):
             for rowid in (None, 0, 12):

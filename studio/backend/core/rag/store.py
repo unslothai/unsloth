@@ -568,9 +568,16 @@ def search_lexical(
     `newest_first` breaks TIES the other way round. FTS5 floors the IDF of a term the
     whole index shares, so every hit on a per-thread archive's own subject scores the
     same, and `ORDER BY s LIMIT k` then returns the k OLDEST rows: past k chunks on that
-    subject the newest assignment is unreachable at any k. Ordering is by rowid, which is
-    insertion order rather than exact conversation order, so this widens the candidate
-    set and does not decide anything; the caller still orders what it gets.
+    subject the newest assignment is unreachable at any k.
+
+    Both ordered forms SELECT rather than arrange: under the `LIMIT` they decide which rows
+    the caller is offered at all, and the caller cannot recover a row the query never
+    returned. So the tiebreak has to be `conversation_archive._conversation_order` component
+    for component -- ordinal, `created_at`, document rowid, chunk index -- and ending it on
+    a chunk id ends it on a uuid4. On a legacy archive, where every ordinal is NULL and one
+    clock tick stamped every row, that uuid IS the whole cut, so both halves come back with
+    the ends of the id space rather than the ends of the conversation.
+    `test_the_candidate_window_is_cut_in_conversation_order` pins the two orders together.
     """
     mq = match_query if match_query is not None else _match_query(query)
     if not mq:
@@ -589,25 +596,29 @@ def search_lexical(
         # The filtered form runs both subqueries for every matched row BEFORE the LIMIT, and with nothing
         # linked that work is provably wasted (linked_folder_rows_exist).
         if oldest_first:
-            # Order by archive ordinal, not rowid, which a re-embed scrambles; NULLs first as oldest, then
-            # created_at and chunk id, else on a legacy archive both halves return the same subset.
+            # Ordinal (NULLs first, as oldest), created_at, DOCUMENT rowid, chunk index:
+            # `_conversation_order` component for component, because this clause chooses the
+            # window rather than arranging it. The document rowid, not the chunk one, since
+            # a re-embed rewrites a document's chunk rows and only the document's own rowid
+            # survives that rewrite (`create_document`'s `rowid`).
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
                 f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
                 f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC, "
-                f"d.created_at ASC, chunks_fts.chunk_id ASC LIMIT ?"
+                f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
         elif newest_first:
-            # rowid is insertion order and a re-embed reinserts a chunk, so a rowid DESC window missed the newest turn.
+            # The mirror of the clause above, every component reversed, so the two halves cut
+            # the same run at opposite ends.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
                 f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
                 f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC, "
-                f"d.created_at DESC, chunks_fts.chunk_id DESC LIMIT ?"
+                f"d.created_at DESC, d.rowid DESC, c.chunk_index DESC LIMIT ?"
             )
         elif linked_folder_rows_exist(conn):
             sql = (

@@ -412,6 +412,204 @@ def test_a_quoted_function_word_survives_the_stopword_filter():
     assert len(quoted) == 1
 
 
+def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
+    """Ordering the candidates cannot rescue a candidate the SELECT never returned.
+
+    Past `_BRANCH_FILTER_MAX_CANDIDATES` the archive stops taking every match and takes two
+    windows instead, one from each end of the tied run, and the LIMIT that cuts them runs
+    in SQL. So this ORDER BY is not an arrangement of a full set, it is the choice of which
+    rows exist as far as the rest of recall is concerned.
+
+    On a legacy archive the run is one flat tie: FTS5 floors the IDF of the term the whole
+    scope shares, so every score is equal, every `archive_ordinal` is NULL and one clock
+    tick stamped every `created_at`. Cut at the chunk id, as it was, the two windows are
+    the ends of the UUID space, and the ids are assigned by `uuid4`, so which turns survive
+    is unrelated to the conversation. The oldest and the newest statement can BOTH be gone
+    before any comparator runs.
+
+    The ids here are rotated exactly half a turn against conversation order, so that the
+    lexicographic ends of the id space are the conversation's middle and the conversation's
+    two ends sit dead centre in it. That makes the right answer and the wrong one
+    distinguishable: a window cut by id cannot contain either true end, and one cut in
+    conversation order must contain both. Cut by id the windows come back holding
+    conversation positions 50 to 92 and 7 to 49.
+    """
+    import types
+
+    from core.rag import store
+
+    conn = rag_conn
+    scope = "convarchive_legacy"
+    documents, per_document = 100, 3
+    position_of = {}
+    for position in range(documents):
+        document_id = f"{(position + documents // 2) % documents:04d}-turn"
+        position_of[document_id] = position
+        store.create_document(
+            conn,
+            scope = scope,
+            thread_id = "t",
+            filename = "earlier turn",
+            sha256 = f"h{position}",
+            status = "completed",
+            embedding_model = "m",
+            archive_messages = 2,
+            archive_ordinal = None,
+            document_id = document_id,
+            # One tick for the whole archive, the way a Windows host stamps a compaction.
+            created_at = "2026-01-01T00:00:00+00:00",
+            commit = False,
+        )
+        chunks = [
+            types.SimpleNamespace(
+                chunk_index = index,
+                text = "ZQXTIEBREAK legacy turn statement",
+                page_number = None,
+                source_page_index = None,
+                token_count = 5,
+                char_count = 20,
+            )
+            for index in range(per_document)
+        ]
+        store.add_chunks(conn, scope, document_id, chunks, [[0.0] * 4] * per_document)
+    conn.commit()
+
+    # The premise: one score across the whole run, and more of it than the cap allows.
+    everything = store.search_lexical(conn, scope, "ZQXTIEBREAK", documents * per_document + 10)
+    assert len(everything) == documents * per_document
+    assert len({score for _, score in everything}) == 1
+
+    half = 128
+    oldest = [
+        c for c, _ in store.search_lexical(conn, scope, "ZQXTIEBREAK", half, oldest_first = True)
+    ]
+    newest = [
+        c for c, _ in store.search_lexical(conn, scope, "ZQXTIEBREAK", half, newest_first = True)
+    ]
+    in_oldest = sorted({position_of[chunk.rsplit(":", 1)[0]] for chunk in oldest})
+    in_newest = sorted({position_of[chunk.rsplit(":", 1)[0]] for chunk in newest})
+
+    # Both true ends survive the cut, which is the whole point of taking two windows.
+    assert 0 in in_oldest, in_oldest
+    assert documents - 1 in in_newest, in_newest
+    # And each window really is an END of the conversation, not a slice out of its middle.
+    assert in_oldest[0] == 0 and in_oldest == list(range(len(in_oldest))), in_oldest
+    assert in_newest[-1] == documents - 1, in_newest
+    assert in_newest == list(range(documents - len(in_newest), documents)), in_newest
+    # The two windows are disjoint, so the pair spans strictly more than either alone.
+    assert not set(in_oldest) & set(in_newest)
+
+
+def test_the_candidate_order_survives_a_re_embed(rag_home, rag_conn):
+    """The rowid this ORDER BY sorts on has to outlive a re-embed, so hold one and check.
+
+    A re-embed is a delete followed by an insert, which is exactly the operation that
+    scrambles insertion order, and the SQL above leans on that order whenever ordinal and
+    `created_at` have both run out. It survives only because `create_document` takes a
+    `rowid` and the archive hands it back the one it just deleted. That is a property of
+    another module, asserted here because this query is what breaks if it stops holding.
+
+    Rewritten in reverse, positions 4 then 3 then 2, so a fresh rowid would not merely be
+    different but wrongly ORDERED: the rewritten turns would come back 5, 4, 3 behind the
+    two the pass never touched. Rewriting them in conversation order would renumber them
+    ascending and pass on a tree where the carry had been deleted.
+
+    Document ids descend as the conversation advances, so an answer taken from the id
+    space is the exact reverse of the right one and the two cannot be confused.
+    """
+    import types
+
+    from core.rag import store
+
+    conn = rag_conn
+    scope = "convarchive_reembed"
+    turns = 5
+
+    def _document_id(position):
+        return f"{turns - position:04d}-turn"
+
+    def _write(
+        position,
+        model,
+        *,
+        rowid = None,
+        created = None,
+        ordinal = None,
+    ):
+        store.create_document(
+            conn,
+            scope = scope,
+            thread_id = "t",
+            filename = "earlier turn",
+            sha256 = f"h{position}",
+            status = "completed",
+            embedding_model = model,
+            archive_messages = 2,
+            archive_ordinal = ordinal,
+            document_id = _document_id(position),
+            # One tick for every turn, so `created_at` cannot separate them and the rowid
+            # is the only record left of which was said first.
+            created_at = created or "2026-01-01T00:00:00+00:00",
+            rowid = rowid,
+            commit = False,
+        )
+        store.add_chunks(
+            conn,
+            scope,
+            _document_id(position),
+            [
+                types.SimpleNamespace(
+                    chunk_index = 0,
+                    text = "ZQXREEMBED legacy turn statement",
+                    page_number = None,
+                    source_page_index = None,
+                    token_count = 5,
+                    char_count = 20,
+                )
+            ],
+            [[0.0] * 4],
+        )
+
+    for position in range(turns):
+        _write(position, "old-model")
+    conn.commit()
+
+    def _positions(**direction):
+        hits = store.search_lexical(conn, scope, "ZQXREEMBED", turns + 10, **direction)
+        return [turns - int(chunk.rsplit(":", 1)[0].split("-")[0]) for chunk, _s in hits]
+
+    assert _positions(oldest_first = True) == list(range(turns))
+    rowids_before = dict(
+        conn.execute("SELECT id, rowid FROM documents WHERE scope=?", (scope,)).fetchall()
+    )
+
+    for position in [4, 3, 2]:
+        identity = store.document_rewrite_identity(conn, _document_id(position)) or {}
+        store.delete_document(conn, _document_id(position), commit = False)
+        _write(
+            position,
+            "new-model",
+            rowid = identity.get("rowid"),
+            created = identity.get("created_at"),
+            ordinal = identity.get("archive_ordinal"),
+        )
+    conn.commit()
+
+    # The premise, and the test is vacuous without it: the rows really were replaced.
+    assert {
+        row[0]
+        for row in conn.execute("SELECT embedding_model FROM documents WHERE scope=?", (scope,))
+    } == {"old-model", "new-model"}
+    # The rowid the ORDER BY sorts on came across the rewrite unchanged.
+    assert (
+        dict(conn.execute("SELECT id, rowid FROM documents WHERE scope=?", (scope,)).fetchall())
+        == rowids_before
+    )
+    # And so the window is still cut in conversation order, from either end.
+    assert _positions(oldest_first = True) == list(range(turns))
+    assert _positions(newest_first = True) == list(reversed(range(turns)))
+
+
 def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
     """Every ordinal NULL made both halves of the two-ended fetch the same query.
 
