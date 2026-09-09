@@ -249,17 +249,20 @@ def _npm_configured_dir() -> Optional[Path]:
     return None if npm is None else _probe_tool_cache_dir("npm", [npm, "config", "get", "cache"])
 
 
+# npm's own two: the package cache and the one npx installs executables into,
+# which Studio fills every time it launches an MCP server through npx. Not the
+# rest of ~/.npm, which holds the logs npm writes about failures: those are the
+# user's diagnostics rather than ours to drop.
+_NPM_CACHE_CHILDREN = ("_cacache", "_npx")
+
+
 def _npm_dirs() -> list[Path]:
-    # Only _cacache is the cache: ~/.npm also holds logs npm writes about
-    # failures, which are the user's diagnostics rather than ours to drop.
     configured = _env_dir("npm_config_cache") or _env_dir("NPM_CONFIG_CACHE")
     if configured is None:
         configured = _npm_configured_dir()
-    if configured is not None:
-        return [configured / "_cacache"]
-    if _is_windows():
-        return [_local_app_data() / "npm-cache" / "_cacache"]
-    return [_home() / ".npm" / "_cacache"]
+    if configured is None:
+        configured = _local_app_data() / "npm-cache" if _is_windows() else _home() / ".npm"
+    return [configured / child for child in _NPM_CACHE_CHILDREN]
 
 
 def _bun_dirs() -> list[Path]:
@@ -1174,62 +1177,87 @@ def empty_cache_root(
     return outcome
 
 
-# The registry each of these caches is written into by a download in flight.
-_DOWNLOAD_REGISTRIES = {"hf_hub": "models", "hf_datasets": "datasets"}
+# The download registries that write into each cache. The hub root holds
+# datasets-- entries as well as models--: a dataset download snapshot_downloads
+# into the same tree, so a job in either registry is writing there.
+_DOWNLOAD_REGISTRIES = {"hf_hub": ("models", "datasets"), "hf_datasets": ("datasets",)}
+
+_PURGE_BUSY = "Cancel the active downloads before clearing this cache."
 
 
-def _active_download_refusal(key: str) -> Optional[str]:
-    """Why this cache cannot be emptied right now, or None.
+def _reserve_downloads(key: str) -> tuple[list, Optional[str]]:
+    """Hold every download registry that writes into this cache, or say why not.
 
-    A download writes blobs, locks and partials straight into the hub cache, and
-    the per-repository deletes already refuse with "Cancel the active download"
-    for exactly that reason (hub/services/models/deletion.py,
-    hub/services/datasets/cache_inventory.py). Emptying the whole cache under one
-    would leave it half written.
+    A reservation rather than a look: the per-repository deletes call
+    begin_delete for exactly this reason, since a worker can claim between a
+    point-in-time check and the rmtree and then write into a tree that is
+    already going. A registry this cannot reach does not block the purge, or a
+    broken import would make the button dead.
     """
-    kind = _DOWNLOAD_REGISTRIES.get(key)
-    if kind is None:
-        return None
+    kinds = _DOWNLOAD_REGISTRIES.get(key)
+    if not kinds:
+        return [], None
     try:
         from hub.utils.download_registry import get_datasets_registry, get_models_registry
-        registry = get_models_registry() if kind == "models" else get_datasets_registry()
-        active = registry.active_job_refs()
+        registries = [
+            get_models_registry() if kind == "models" else get_datasets_registry() for kind in kinds
+        ]
     except Exception as exc:  # noqa: BLE001 - a broken registry must not block a purge
-        logger.debug(f"Could not read the {kind} download registry: {exc}")
-        return None
-    if not active:
-        return None
-    return "Cancel the active downloads before clearing this cache."
+        logger.debug(f"Could not reach the download registries for {key}: {exc}")
+        return [], None
+    reserved: list = []
+    for registry in registries:
+        try:
+            granted = registry.begin_cache_purge()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Could not reserve a download registry for {key}: {exc}")
+            continue
+        if not granted:
+            _release_downloads(reserved)
+            return [], _PURGE_BUSY
+        reserved.append(registry)
+    return reserved, None
+
+
+def _release_downloads(reserved: Iterable) -> None:
+    for registry in reserved:
+        try:
+            registry.end_cache_purge()
+        except Exception as exc:  # noqa: BLE001 - never leave a purge holding one
+            logger.warning(f"Could not release a download registry: {exc}")
 
 
 def purge_cache(key: str) -> dict:
     """Empty one cache by key. Never raises for a refusal; it reports it."""
     definition = definition_for(key)
-    busy = _active_download_refusal(key)
+    reserved, busy = _reserve_downloads(key)
     if busy is not None:
         logger.warning(f"Refusing to purge the {key} cache: {busy}")
         return _purge_result(definition, PurgeOutcome(errors = [busy]))
-    if definition.custom_purge is not None:
-        outcome = definition.custom_purge()
+    try:
+        if definition.custom_purge is not None:
+            outcome = definition.custom_purge()
+            return _purge_result(definition, outcome)
+        outcome = PurgeOutcome()
+        patterns = _patterns_for(definition)
+        protected = protected_paths()
+        trees = protected_trees()
+        keep = sheltered_roots(definition.key)
+        for root in _resolve_roots(definition):
+            try:
+                root_outcome = empty_cache_root(
+                    root, patterns = patterns, protected = protected, trees = trees, keep = keep
+                )
+            except CachePurgeRefused as exc:
+                logger.warning(f"Refusing to purge the {key} cache at {root}: {exc}")
+                outcome.errors.append(str(exc))
+                continue
+            outcome.freed_bytes += root_outcome.freed_bytes
+            outcome.removed_entries += root_outcome.removed_entries
+            outcome.errors.extend(root_outcome.errors)
         return _purge_result(definition, outcome)
-    outcome = PurgeOutcome()
-    patterns = _patterns_for(definition)
-    protected = protected_paths()
-    trees = protected_trees()
-    keep = sheltered_roots(definition.key)
-    for root in _resolve_roots(definition):
-        try:
-            root_outcome = empty_cache_root(
-                root, patterns = patterns, protected = protected, trees = trees, keep = keep
-            )
-        except CachePurgeRefused as exc:
-            logger.warning(f"Refusing to purge the {key} cache at {root}: {exc}")
-            outcome.errors.append(str(exc))
-            continue
-        outcome.freed_bytes += root_outcome.freed_bytes
-        outcome.removed_entries += root_outcome.removed_entries
-        outcome.errors.extend(root_outcome.errors)
-    return _purge_result(definition, outcome)
+    finally:
+        _release_downloads(reserved)
 
 
 def _purge_result(definition: CacheDefinition, outcome: PurgeOutcome) -> dict:

@@ -716,6 +716,8 @@ def test_a_cache_home_left_behind_is_protected_but_never_purged(
         lambda: [isolated_caches / "hub", previous / "hub"],
     )
     monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
+    # What initialize_hf_cache_environment leaves behind at startup.
+    monkeypatch.setenv("HF_HOME", str(isolated_caches))
 
     assets = describe_cache(definition_for("hf_assets"))
     assert assets["paths"] == [str(isolated_caches / "assets")]
@@ -800,6 +802,7 @@ def test_the_child_caches_follow_the_real_home_not_the_displayed_one(
     monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {"HF_HUB_CACHE": str(hub)})
     monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
+    monkeypatch.setenv("HF_HOME", str(real_home))
 
     entry = describe_cache(definition_for("hf_assets"))
     assert entry["paths"] == [str(real_home / "assets")]
@@ -880,6 +883,7 @@ def test_a_scoped_dataset_fallback_override_is_not_a_purge_root(
     in_flight = _write(fallback / "squad" / "data.arrow", "d" * 10)
     stable = _write(isolated_caches / "datasets" / "cached.arrow", "s" * 10)
     monkeypatch.setattr(storage_roots, "cache_root", lambda: studio_cache)
+    monkeypatch.setenv("HF_HOME", str(isolated_caches))
     # The override is live, exactly as it is while the fallback load runs.
     monkeypatch.setenv("HF_DATASETS_CACHE", str(fallback))
 
@@ -1182,7 +1186,9 @@ def test_a_purge_waits_for_the_downloads_writing_into_the_cache(
 
     blob = _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
     monkeypatch.setattr(
-        module, "_active_download_refusal", lambda key: "Cancel it." if key == "hf_hub" else None
+        module,
+        "_reserve_downloads",
+        lambda key: ([], "Cancel it.") if key == "hf_hub" else ([], None),
     )
     result = purge_caches(["hf_hub"])["results"][0]
     assert blob.exists()
@@ -1190,24 +1196,48 @@ def test_a_purge_waits_for_the_downloads_writing_into_the_cache(
     assert result["errors"] == ["Cancel it."]
 
 
-def test_the_download_check_reads_the_registry_for_that_cache(monkeypatch):
-    from utils import cache_inventory as module
+def test_the_hub_cache_is_reserved_in_both_registries(monkeypatch):
+    """A dataset download snapshot_downloads into the same hub root.
+
+    Its datasets-- entries sit beside the models-- ones, so a job in either
+    registry is writing there and either has to hold the purge off.
+    """
     from hub.utils import download_registry
+    from utils import cache_inventory as module
 
-    class _Busy:
-        def active_job_refs(self):
-            return ["a job"]
+    class _Registry:
+        def __init__(self, free = True):
+            self.free = free
+            self.held = 0
 
-    class _Idle:
-        def active_job_refs(self):
-            return []
+        def begin_cache_purge(self):
+            if not self.free:
+                return False
+            self.held += 1
+            return True
 
-    monkeypatch.setattr(download_registry, "get_models_registry", lambda: _Busy())
-    monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: _Idle())
-    assert module._active_download_refusal("hf_hub") is not None
-    assert module._active_download_refusal("hf_datasets") is None
+        def end_cache_purge(self):
+            self.held -= 1
+
+    models, datasets = _Registry(), _Registry()
+    monkeypatch.setattr(download_registry, "get_models_registry", lambda: models)
+    monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: datasets)
+
+    reserved, busy = module._reserve_downloads("hf_hub")
+    assert busy is None
+    assert (models.held, datasets.held) == (1, 1)
+    module._release_downloads(reserved)
+    assert (models.held, datasets.held) == (0, 0)
+
+    # A dataset job alone still holds off the hub clear...
+    datasets.free = False
+    reserved, busy = module._reserve_downloads("hf_hub")
+    assert busy is not None
+    # ...and the models reservation it had already taken is handed back.
+    assert (models.held, datasets.held) == (0, 0)
+
     # A cache no download writes into is not gated on one.
-    assert module._active_download_refusal("uv") is None
+    assert module._reserve_downloads("uv") == ([], None)
 
 
 def test_one_blocked_root_does_not_put_the_others_out_of_reach(
@@ -1276,3 +1306,81 @@ def test_two_cold_reads_of_one_cache_walk_it_once(tmp_path, monkeypatch, isolate
 
     assert walks == ["uv"]
     assert [answer["size_bytes"] for answer in answers] == [10, 10]
+
+
+def test_the_child_caches_ignore_a_studio_selected_models_folder(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """A selected Models Folder moves the hub and xet caches, not HF_HOME.
+
+    initialize_hf_cache_environment says so in as many words, so the token,
+    assets and datasets stay at the platform default while cache_home is the
+    folder Settings displays.
+    """
+    from utils import hf_cache_settings
+
+    chosen = tmp_path / "MyModels"
+    (chosen / "hub").mkdir(parents = True)
+    theirs = _write(chosen / "assets" / "not-a-cache.bin", "d" * 10)
+    real_home = tmp_path / "default-hf"
+    mine = _write(real_home / "assets" / "asset.bin", "a" * 10)
+
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        chosen, chosen / "hub", real_home / "xet", "studio"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
+    monkeypatch.setenv("HF_HOME", str(real_home))
+
+    entry = describe_cache(definition_for("hf_assets"))
+    assert entry["paths"] == [str(real_home / "assets")]
+    purge_caches(["hf_assets"])
+    assert theirs.exists()
+    assert not mine.exists()
+
+
+def test_the_npx_cache_is_cleared_with_the_package_cache(tmp_path, monkeypatch, isolated_caches):
+    """npx installs MCP server executables under <cache>/_npx.
+
+    Studio launches them that way, so those trees are npm's cache as much as
+    _cacache is, and the logs beside them are still nobody's to drop.
+    """
+    npm = tmp_path / "npm"
+    package = _write(npm / "_cacache" / "index-v5" / "entry", "c" * 20)
+    executable = _write(npm / "_npx" / "abc123" / "node_modules" / "server.js", "x" * 30)
+    logs = _write(npm / "_logs" / "debug.log", "l" * 5)
+    monkeypatch.setenv("npm_config_cache", str(npm))
+
+    entry = describe_cache(definition_for("npm"))
+    assert entry["paths"] == [str(npm / "_cacache"), str(npm / "_npx")]
+    assert entry["size_bytes"] == 50
+    purge_caches(["npm"])
+    assert not package.exists()
+    assert not executable.exists()
+    assert logs.exists()
+
+
+def test_a_purge_holds_the_registry_against_a_download_claimed_after_the_check(tmp_path):
+    """The reservation is what closes the check-then-delete race.
+
+    A worker claiming between a point-in-time look and the rmtree would write
+    into a tree that is already going, which is why begin_delete exists for the
+    per-repository path.
+    """
+    from hub.utils.download_registry import DownloadRegistry
+
+    registry = DownloadRegistry()
+    assert registry.begin_cache_purge() is True
+    claimed, state = registry.claim_repository_owner("org/model", object())
+    assert claimed is False
+    assert state == "deleting"
+
+    # Counted, so two caches sharing this registry nest rather than releasing early.
+    assert registry.begin_cache_purge() is True
+    registry.end_cache_purge()
+    assert registry.claim_repository_owner("org/model", object())[0] is False
+    registry.end_cache_purge()
+    assert registry.claim_repository_owner("org/model", object())[0] is True
+
+    # ...and a purge is refused while that owner holds the repository.
+    assert registry.begin_cache_purge() is False
