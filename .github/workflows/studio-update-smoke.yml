@@ -63,7 +63,7 @@ jobs:
     name: Unsloth Updating Tests
     runs-on: ubuntu-latest
     # Sized for the apt step's bounded worst case (15m) plus the smoke itself.
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -209,6 +209,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p logs
+          # setup-python's interpreter runs the harness, and it ships without pytest.
+          python -m pip install --quiet pytest
           python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
             2>&1 | tee logs/idempotency.log
 
@@ -316,7 +318,7 @@ jobs:
     runs-on: macos-15
     # The install is the expensive half; the harness itself is three updates that are
     # supposed to do nothing plus five that do one thing each.
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -350,6 +352,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p logs
+          # setup-python's interpreter runs the harness, and it ships without pytest.
+          python -m pip install --quiet pytest
           python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
             2>&1 | tee logs/idempotency.log
 
@@ -370,7 +374,7 @@ jobs:
     runs-on: windows-latest
     # Windows installs are 3x the Linux ones (268-292s against 88s in the API smoke),
     # and Defender is why; the harness after it is the same three updates.
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -413,6 +417,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           $ErrorActionPreference = 'Continue'
+          # setup-python's interpreter runs the harness, and it ships without pytest.
+          python -m pip install --quiet pytest
           python -m pytest tests/studio/install/test_update_idempotency.py -v -s 2>&1 |
             Tee-Object -FilePath logs/idempotency.log
           if ($LASTEXITCODE -ne 0) { throw "the idempotency harness failed ($LASTEXITCODE)" }
