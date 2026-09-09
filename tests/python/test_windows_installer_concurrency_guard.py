@@ -1054,9 +1054,16 @@ def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
     entry = staged_source.index("pub(crate) fn reconcile_legacy_at_launch(")
     trash = staged_source.index("remove_stale_trash(home);", entry)
     failed = staged_source.index("fs::remove_file(home.join(FAILED_MARKER));", trash)
-    stage = staged_source.index("fs::remove_dir_all(home.join(STAGE_DIR));", failed)
+    stage = staged_source.index("discard_stage(home);", failed)
     rollback = staged_source.index("roll_back_unconfirmed(home)", stage)
     assert entry < trash < failed < stage < rollback
+
+    # The stage is a clone of the managed venv, so the launch renames it and
+    # unlinks it elsewhere rather than blocking the setup hook on the delete.
+    discard = staged_source.index("fn discard_stage(")
+    rename = staged_source.index("fs::rename(&stage, &trash)", discard)
+    spawn = staged_source.index("std::thread::spawn", rename)
+    assert discard < rename < spawn
 
 
 def test_tauri_start_install_rejects_backend_conflicts_before_spawn():

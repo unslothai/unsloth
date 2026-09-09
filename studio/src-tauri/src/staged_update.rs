@@ -64,10 +64,42 @@ pub(crate) fn reconcile_legacy_at_launch(home: &Path) {
     // Before the rollback, not after: a READY stage must never be activated, and
     // a rollback that still saw one would leave the entries it did not restore
     // live beside the restored runtime.
-    let _ = fs::remove_dir_all(home.join(STAGE_DIR));
+    discard_stage(home);
     if let Err(error) = roll_back_unconfirmed(home) {
         warn!("[staged-update] could not restore the previous runtime: {error}");
     }
+}
+
+/// A rename, not a delete: `.update-stage` holds a clone of the managed venv and
+/// of every native helper, and unlinking a torch tree here would hold the runtime
+/// gate through the whole of setup, before the window exists. Move it into the
+/// trash namespace a later launch sweeps anyway, and unlink it off that path.
+fn discard_stage(home: &Path) {
+    let stage = home.join(STAGE_DIR);
+    if !stage.exists() {
+        return;
+    }
+    let trash = trash_path(home, "stage");
+    if fs::rename(&stage, &trash).is_ok() {
+        std::thread::spawn(move || {
+            let _ = fs::remove_dir_all(trash);
+        });
+        return;
+    }
+    // The rename only fails for something the delete would hit too, and leaving a
+    // stage behind is the one outcome this function exists to prevent.
+    let _ = fs::remove_dir_all(&stage);
+}
+
+fn trash_path(home: &Path, label: &str) -> PathBuf {
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    home.join(format!(
+        "{ROLLBACK_TRASH_PREFIX}{label}-{}-{suffix}",
+        std::process::id()
+    ))
 }
 
 fn remove_stale_trash(home: &Path) {
@@ -118,8 +150,10 @@ fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
 fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     let prev = home.join(PREV_DIR);
     if prev.join(CONFIRMED_MARKER).is_file() {
-        // 807 vouched for the runtime that is live now. Keep it and drop the copy.
-        remove_confirmed_previous(&prev);
+        // 807 vouched for the runtime that is live now. Keep it and drop the copy,
+        // off the launch path: that copy is a whole superseded runtime. The marker
+        // goes last, so a launch that dies mid-delete simply repeats this one.
+        std::thread::spawn(move || remove_confirmed_previous(&prev));
         return Ok(());
     }
     if prev.join(ROLLED_BACK_MARKER).is_file() {
@@ -170,14 +204,7 @@ fn restore_previous_runtime(
     previous: &Path,
     previous_entries: &[String],
 ) -> Result<PathBuf, String> {
-    let suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let trash = home.join(format!(
-        "{ROLLBACK_TRASH_PREFIX}{}-{suffix}",
-        std::process::id()
-    ));
+    let trash = trash_path(home, "rollback");
     fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = (|| {
@@ -332,6 +359,15 @@ mod tests {
         fs::remove_dir_all(&home).unwrap();
     }
 
+    fn wait_gone(path: &Path) {
+        for _ in 0..250 {
+            if !path.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     fn make_runtime(root: &Path, tag: &str) {
         for name in RUNTIME_ENTRIES {
             fs::create_dir_all(root.join(name)).unwrap();
@@ -394,8 +430,10 @@ mod tests {
 
         reconcile_legacy_at_launch(&home);
 
-        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        // Renamed out of the way rather than unlinked in the setup hook, so the
+        // stage is unreachable the moment the call returns.
         assert!(!home.join(STAGE_DIR).exists());
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert!(!home.join(PREV_DIR).exists());
 
         // Safe to repeat: nothing left to do and nothing undone.
@@ -578,6 +616,9 @@ mod tests {
 
         reconcile_legacy_at_launch(&home);
 
+        // The superseded runtime is dropped on a background thread, so the launch
+        // itself never waits on it.
+        wait_gone(&prev);
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert!(!prev.exists());
         cleanup(home);
