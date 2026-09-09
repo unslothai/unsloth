@@ -16737,7 +16737,6 @@ async def list_ssh_approved_hosts(
     session_id: str | None = None, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.ssh_policy import list_approved_ssh_hosts
-
     return SshApprovedHostsResponse(hosts = list_approved_ssh_hosts(session_id))
 
 

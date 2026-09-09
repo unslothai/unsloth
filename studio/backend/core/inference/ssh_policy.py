@@ -100,7 +100,9 @@ def _hosts_from_ssh_segment(name: str, rest: str) -> tuple[set[str], bool]:
             candidates = [host_tokens[0]]
     else:
         # scp/sftp: remote target is usually the last user@host[:path] token
-        candidates = [t for t in host_tokens if "@" in t or (":" in t and "@" in t.split(":", 1)[0])]
+        candidates = [
+            t for t in host_tokens if "@" in t or (":" in t and "@" in t.split(":", 1)[0])
+        ]
         if not candidates and host_tokens:
             candidates = [host_tokens[-1]]
     if not candidates:
