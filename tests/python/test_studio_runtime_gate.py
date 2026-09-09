@@ -90,6 +90,35 @@ def test_terminal_update_holds_the_gate_through_environment_mutation():
     assert consume < guard < idle_scan < launcher < setup < verify
 
 
+def test_the_background_prefetch_takes_none_of_the_environment_wrappers():
+    """The negative case for the gate: a prefetch downloads, it does not mutate.
+
+    Everything the update wraps itself in -- the launch guard, the idle scan, the
+    Windows launcher transaction -- exists because that command rewrites the live
+    venv. Taking any of them here would block a real update behind a background
+    download, or make one wait for the other, for no gain: nothing under
+    `prefetch-update` writes to the environment it is preparing for.
+    """
+    source = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    start = source.index("def prefetch_update(")
+    ends = [
+        end
+        for end in (source.find("\ndef ", start + 1), source.find("\nclass ", start + 1))
+        if end != -1
+    ]
+    body = source[start : min(ends)]
+
+    assert "_studio_prefetch.prefetch_lock(STUDIO_HOME)" in body
+    for wrapper in (
+        "_studio_runtime_launch_guard",
+        "consume_runtime_gate_handoff",
+        "consume_runtime_gate_acquire",
+        "ensure_managed_environment_is_idle",
+        "_WindowsLauncherUpdateTransaction",
+    ):
+        assert wrapper not in body, f"{wrapper} must not wrap the background prefetch"
+
+
 def test_terminal_setup_holds_the_gate_through_environment_mutation():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
     body = source[source.index("def setup(") : source.index("def _fail_if_install_damaged")]

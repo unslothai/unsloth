@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
-from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
+from unsloth_cli import _studio_deps, _studio_prefetch, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -3725,6 +3725,12 @@ def update(
             launcher_update.validate_launcher()
             if verify:
                 _fail_if_install_damaged(package)
+    # Only here, and only on success: the wheels this prepared are in the uv cache
+    # now, so the copy under .update-prefetch/ is spent. A failed update keeps it,
+    # because the retry is the run that consumes it. _backfill_uv_cache_marker has
+    # already run inside _run_setup_script, so the cache the prefetch warmed is the
+    # one recorded before this deletes the record of having warmed it.
+    _studio_prefetch.discard_after_update(STUDIO_HOME)
     # Tauri desktop owns its own bundle entries; refreshing here would duplicate shortcuts.
     if staging or os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
         if verbose:
@@ -3781,6 +3787,55 @@ def _refuse_staged_update() -> None:
     # stdout, not stderr: update.rs promotes a [TAURI:ERROR] line off the child's stdout.
     typer.echo("[TAURI:ERROR] background staging is no longer supported; run the standard update")
     raise typer.Exit(1)
+
+
+@studio_app.command("prefetch-update", hidden = True)
+def prefetch_update() -> None:
+    """Warm the uv cache for the next update. Does not touch the environment.
+
+    Deliberately a separate command rather than a flag on `update`: every wrapper
+    around an update -- the runtime gate, the idle scan, the Windows launcher
+    transaction -- exists because that command rewrites the live venv. This one
+    only downloads, so none of them apply and none of them need a bypass.
+    `tests/python/test_studio_runtime_gate.py` pins that.
+    """
+    _ensure_studio_env_exported()
+    floor = (os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION") or "").strip()
+    shell_version = (os.environ.get(_studio_stage.SHELL_VERSION_ENV) or "").strip() or None
+    # The same cache the swap will read, chosen the same way and from the same
+    # working directory as _run_setup_script picks it, or the prefetch would warm
+    # a cache the update never looks in.
+    script = _find_setup_script(None)
+    setup_cwd = None if (platform.system() == "Windows" or script is None) else script.parent
+    env = _with_studio_uv_cache(None, cwd = setup_cwd)
+    try:
+        with _studio_prefetch.prefetch_lock(STUDIO_HOME):
+            payload = _studio_prefetch.run(
+                studio_home = STUDIO_HOME,
+                floor = floor,
+                shell_version = shell_version,
+                env = env,
+                echo = typer.echo,
+            )
+    except _studio_prefetch.PrefetchBusy:
+        # Its own exit code: "already running" is not a failure the desktop should
+        # show, and a plain 1 is indistinguishable from one that is.
+        typer.echo("[TAURI:STEP] prefetch already running")
+        raise typer.Exit(_studio_prefetch.EXIT_BUSY)
+    except _studio_prefetch.PrefetchSkipped as reason:
+        # Exit 0 and no marker: there is nothing to prepare on this install, and
+        # the classic update remains exactly as good as it was.
+        typer.echo(f"[TAURI:STEP] prefetch skipped: {reason}")
+        return
+    except _studio_prefetch.PrefetchError as failure:
+        # stdout, like _refuse_staged_update: update.rs promotes a [TAURI:ERROR]
+        # line off the child's stdout into the message the desktop shows.
+        typer.echo(f"[TAURI:ERROR] {failure}")
+        raise typer.Exit(1)
+    except Exception as unexpected:
+        typer.echo(f"[TAURI:ERROR] could not prepare the update: {unexpected}")
+        raise typer.Exit(1)
+    typer.echo(f"[TAURI:DIAG] prefetch state={payload.get('state')}")
 
 
 class _WindowsLauncherUpdateTransaction:
