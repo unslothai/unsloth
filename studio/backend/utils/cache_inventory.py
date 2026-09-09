@@ -147,32 +147,28 @@ def _uv_dirs() -> list[Path]:
     return _first(_env_dir("UV_CACHE_DIR"), _platform_cache_dir("uv"))
 
 
-_UNPROBED = object()
-_pip_configured: object = _UNPROBED
+# One answer per tool per process: a config file does not change under a running
+# backend, and this sits on a read the Resources tab makes.
+_probed_cache_dirs: dict[str, Optional[Path]] = {}
 
 
-def _pip_configured_dir() -> Optional[Path]:
-    """pip's effective cache directory, asked of pip itself.
+def _probe_tool_cache_dir(name: str, command: list[str]) -> Optional[Path]:
+    """Ask a package manager where its own cache is.
 
-    ``cache-dir`` in pip.conf moves the cache, and the fallback pip commands in
-    core/training/worker.py and utils/wheel_utils.py do not pass --isolated, so
-    they honour it. Reimplementing pip's five config kinds, their per-platform
-    and legacy locations, and the way PIP_CONFIG_FILE suppresses the user file
-    would give this install a second, weaker answer; ``pip cache dir`` is the
-    first-hand one.
-
-    Probed once per process. A config file does not change under a running
-    backend, and this sits on a read the Resources tab makes.
+    pip and npm both take the location from a config file (``cache-dir`` in
+    pip.conf, ``cache`` in .npmrc) that the environment variables above do not
+    carry, and Studio's own invocations of both honour it. Reimplementing pip's
+    five config kinds or npm's config chain here would give this install a
+    second, weaker answer that drifts; the tool is the first-hand one.
     """
     from utils.child_stdio import utf8_child_env
 
-    global _pip_configured
-    if _pip_configured is not _UNPROBED:
-        return _pip_configured  # type: ignore[return-value]
-    _pip_configured = None
+    if name in _probed_cache_dirs:
+        return _probed_cache_dirs[name]
+    _probed_cache_dirs[name] = None
     try:
         done = subprocess.run(
-            [sys.executable, "-m", "pip", "cache", "dir"],
+            command,
             capture_output = True,
             text = True,
             # The child picks its stdout encoding from the locale, which is the
@@ -185,22 +181,38 @@ def _pip_configured_dir() -> Optional[Path]:
             timeout = 20,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        logger.debug(f"Could not ask pip for its cache directory: {exc}")
+        logger.debug(f"Could not ask {name} for its cache directory: {exc}")
         return None
     reported = done.stdout.strip() if done.returncode == 0 else ""
     if reported:
-        _pip_configured = Path(reported).expanduser()
-    return _pip_configured  # type: ignore[return-value]
+        candidate = Path(reported).expanduser()
+        # npm prints "undefined" rather than failing when it has no answer.
+        if candidate.is_absolute():
+            _probed_cache_dirs[name] = candidate
+    return _probed_cache_dirs[name]
 
 
 def _pip_dirs() -> list[Path]:
-    return _first(_env_dir("PIP_CACHE_DIR"), _pip_configured_dir(), _platform_cache_dir("pip"))
+    return _first(
+        _env_dir("PIP_CACHE_DIR"),
+        _probe_tool_cache_dir("pip", [sys.executable, "-m", "pip", "cache", "dir"]),
+        _platform_cache_dir("pip"),
+    )
+
+
+def _npm_configured_dir() -> Optional[Path]:
+    # Whichever npm is on PATH: .npmrc is per user, so any copy of npm reports
+    # the same cache for this account.
+    npm = shutil.which("npm")
+    return None if npm is None else _probe_tool_cache_dir("npm", [npm, "config", "get", "cache"])
 
 
 def _npm_dirs() -> list[Path]:
     # Only _cacache is the cache: ~/.npm also holds logs npm writes about
     # failures, which are the user's diagnostics rather than ours to drop.
     configured = _env_dir("npm_config_cache") or _env_dir("NPM_CONFIG_CACHE")
+    if configured is None:
+        configured = _npm_configured_dir()
     if configured is not None:
         return [configured / "_cacache"]
     if _is_windows():
@@ -562,6 +574,7 @@ def protected_paths() -> set[Path]:
         outputs_root,
         project_workspaces_root,
         rag_root,
+        studio_bin_root,
         studio_db_path,
         studio_root,
         tensorboard_root,
@@ -571,6 +584,9 @@ def protected_paths() -> set[Path]:
         Path.home(),
         studio_root(),
         studio_db_path(),
+        # The unsloth shim and the managed executables. Emptying it breaks the
+        # install, and no cache belongs there.
+        studio_bin_root(),
         auth_root(),
         auth_db_path(),
         assets_root(),
@@ -630,6 +646,7 @@ def protected_trees() -> set[Path]:
         outputs_root,
         project_workspaces_root,
         rag_root,
+        studio_bin_root,
         tensorboard_root,
     )
 
@@ -645,6 +662,9 @@ def protected_trees() -> set[Path]:
         # The real Documents folder. No tool keeps a cache under it, and a
         # variable pointed at ~/Documents/anything would otherwise empty it.
         documents_root(),
+        # Descendants of the studio home are deliberately allowed, because the
+        # caches live there, so the executables need naming on their own.
+        studio_bin_root(),
     ]
     configured = _env_dir("DATA_DESIGNER_HOME")
     if configured is not None:

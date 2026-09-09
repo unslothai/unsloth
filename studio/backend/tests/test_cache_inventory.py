@@ -744,7 +744,7 @@ def test_the_pip_cache_is_the_one_pip_reports(tmp_path, monkeypatch, isolated_ca
     configured = tmp_path / "corp-pip-cache"
     _write(configured / "wheels" / "cached.whl", "p" * 40)
     monkeypatch.delenv("PIP_CACHE_DIR", raising = False)
-    monkeypatch.setattr(module, "_pip_configured", module._UNPROBED)
+    monkeypatch.setattr(module, "_probed_cache_dirs", {})
     monkeypatch.setattr(
         module.subprocess,
         "run",
@@ -761,15 +761,16 @@ def test_the_pip_probe_runs_once_and_survives_a_failure(tmp_path, monkeypatch, i
 
     calls = []
     monkeypatch.delenv("PIP_CACHE_DIR", raising = False)
-    monkeypatch.setattr(module, "_pip_configured", module._UNPROBED)
+    monkeypatch.setattr(module, "_probed_cache_dirs", {})
 
     def explode(*args, **kwargs):
         calls.append(args)
         raise OSError("no pip here")
 
     monkeypatch.setattr(module.subprocess, "run", explode)
-    assert module._pip_configured_dir() is None
-    assert module._pip_configured_dir() is None
+    probe = ["python", "-m", "pip", "cache", "dir"]
+    assert module._probe_tool_cache_dir("pip", probe) is None
+    assert module._probe_tool_cache_dir("pip", probe) is None
     assert len(calls) == 1
     # ...and the platform default still answers, so the row does not vanish.
     assert module._pip_dirs() == [tmp_path / "xdg" / "pip"]
@@ -849,7 +850,7 @@ def test_the_pip_probe_asks_the_child_for_utf8(tmp_path, monkeypatch, isolated_c
     configured = tmp_path / "caché-pip"
     _write(configured / "wheels" / "cached.whl", "p" * 40)
     monkeypatch.delenv("PIP_CACHE_DIR", raising = False)
-    monkeypatch.setattr(module, "_pip_configured", module._UNPROBED)
+    monkeypatch.setattr(module, "_probed_cache_dirs", {})
 
     def record(*args, **kwargs):
         seen.update(kwargs)
@@ -952,3 +953,73 @@ def test_numbas_user_wide_fallback_cache_is_reported(tmp_path, monkeypatch, isol
     entry = describe_cache(definition_for("numba"))
     assert entry["paths"] == [str(root)]
     assert entry["size_bytes"] == 30
+
+
+def test_the_studio_executables_directory_is_refused(tmp_path, monkeypatch, isolated_caches):
+    """<studio>/bin holds the shim and the managed executables.
+
+    Descendants of the studio home are deliberately allowed, because the caches
+    live there, so this one needs naming on its own or a variable pointed at it
+    empties the install.
+    """
+    from utils.paths import storage_roots
+
+    studio = tmp_path / "studio"
+    binaries = studio / "bin"
+    shim = _write(binaries / "unsloth", "#!/bin/sh")
+    monkeypatch.setattr(storage_roots, "studio_bin_root", lambda: binaries)
+    monkeypatch.setenv("UV_CACHE_DIR", str(binaries))
+
+    entry = describe_cache(definition_for("uv"))
+    assert entry["purgeable"] is False
+    purge_caches(["uv"])
+    assert shim.exists()
+
+    # ...and nothing below it either.
+    monkeypatch.setenv("UV_CACHE_DIR", str(binaries / "vendor"))
+    (binaries / "vendor").mkdir()
+    with pytest.raises(CachePurgeRefused):
+        assert_purgeable_root(binaries / "vendor")
+
+
+def test_the_npm_cache_follows_npmrc(tmp_path, monkeypatch, isolated_caches):
+    """npm's cache moves through .npmrc, which no environment variable carries.
+
+    Studio launches stdio MCP servers with npm, so it writes wherever the user's
+    config says.
+    """
+    import shutil as real_shutil
+    import subprocess as real_subprocess
+
+    from utils import cache_inventory as module
+
+    configured = tmp_path / "corp-npm"
+    _write(configured / "_cacache" / "index-v5" / "entry", "n" * 25)
+    for key in ("npm_config_cache", "NPM_CONFIG_CACHE"):
+        monkeypatch.delenv(key, raising = False)
+    monkeypatch.setattr(module, "_probed_cache_dirs", {})
+    monkeypatch.setattr(real_shutil, "which", lambda name, **kw: "/usr/bin/npm")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *a, **k: real_subprocess.CompletedProcess(a[0], 0, f"{configured}\n", ""),
+    )
+
+    entry = describe_cache(definition_for("npm"))
+    assert entry["paths"] == [str(configured / "_cacache")]
+    assert entry["size_bytes"] == 25
+
+
+def test_a_probe_that_answers_with_a_relative_path_is_ignored(monkeypatch, isolated_caches):
+    """npm prints "undefined" rather than failing when it has no answer."""
+    import subprocess as real_subprocess
+
+    from utils import cache_inventory as module
+
+    monkeypatch.setattr(module, "_probed_cache_dirs", {})
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *a, **k: real_subprocess.CompletedProcess(a[0], 0, "undefined\n", ""),
+    )
+    assert module._probe_tool_cache_dir("npm", ["npm", "config", "get", "cache"]) is None

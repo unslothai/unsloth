@@ -258,7 +258,9 @@ export function CacheStorageRows() {
             variant="outline"
             size="sm"
             className="h-8"
-            disabled={loading || clearing || bulkKeys.length === 0}
+            disabled={
+              loading || clearing || loadError !== null || bulkKeys.length === 0
+            }
             onClick={() => setTarget({ kind: "bulk" })}
           >
             {t("settings.resources.storage.caches.clearAction")}
@@ -308,14 +310,16 @@ export function CacheStorageRows() {
                   <Button
                     variant="ghost"
                     size="xs"
-                    // loading, like the buttons above: while a measurement is in
-                    // flight these rows still show the previous inventory, and a
-                    // clear resolves its key against the current one.
+                    // loading and loadError, like the buttons above: these rows
+                    // show the last inventory that arrived, and a clear resolves
+                    // its key against the current one, so a measurement in
+                    // flight or a failed one means the two can disagree.
                     disabled={
                       loading ||
                       clearing ||
+                      loadError !== null ||
                       !entry.purgeable ||
-                      entry.sizeBytes === 0
+                      entry.entryCount === 0
                     }
                     onClick={() =>
                       entry.optIn
@@ -348,7 +352,9 @@ export function CacheStorageRows() {
               {t("common.cancel")}
             </Button>
             <Button
-              disabled={loading || clearing}
+              // A failed measurement is the same hazard as one still running:
+              // the rows are the old folder's and the purge resolves the new.
+              disabled={loading || clearing || loadError !== null}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
               onClick={() =>
                 void runPurge(

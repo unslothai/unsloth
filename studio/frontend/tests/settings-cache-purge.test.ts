@@ -167,10 +167,23 @@ test("a bulk clear leaves out the model cache, the blocked and the empty", () =>
         blocked_reason: "sits inside the protected folder /outputs",
       }),
       // biome-ignore lint/style/useNamingConvention: API schema
-      apiEntry("numba", { present: false, size_bytes: 0 }),
+      apiEntry("numba", { present: false, size_bytes: 0, entry_count: 0 }),
+      // Nothing in it, so there is nothing for a clear to do.
       // biome-ignore lint/style/useNamingConvention: API schema
-      apiEntry("vllm", { size_bytes: 0 }),
+      apiEntry("vllm", { size_bytes: 0, entry_count: 0 }),
     ]),
   );
   assert.deepEqual(api.bulkPurgeKeys(inventory), ["uv"]);
+});
+
+test("a cache that measures zero bytes but holds entries is still cleared", () => {
+  // A tree of empty directories or dangling symlinks costs inodes and directory
+  // blocks and the backend can empty it, so a size test would hide the one
+  // cache a user cannot easily clear by hand.
+  const { api } = loadApi(() => json({}));
+  const inventory = api.inventoryFromApi(
+    // biome-ignore lint/style/useNamingConvention: API schema
+    apiInventory([apiEntry("triton", { size_bytes: 0, entry_count: 40000 })]),
+  );
+  assert.deepEqual(api.bulkPurgeKeys(inventory), ["triton"]);
 });

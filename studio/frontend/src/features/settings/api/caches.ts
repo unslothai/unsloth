@@ -182,12 +182,21 @@ export async function purgeCaches(
   return purgeOutcomeFromApi(await response.json());
 }
 
-/** The caches a bulk clear covers: present, allowed, and free to rebuild. */
+/** The caches a bulk clear covers: present, allowed, and free to rebuild.
+ *
+ * Entries rather than bytes. A tree of empty directories or dangling symlinks
+ * measures zero and still costs inodes, and the backend can empty it, so a size
+ * test would leave the one cache nobody can clear by hand as the one the UI
+ * refuses to.
+ */
 export function bulkPurgeKeys(inventory: CacheInventory): CacheKey[] {
   return inventory.caches
     .filter(
       (entry) =>
-        entry.present && entry.purgeable && !entry.optIn && entry.sizeBytes > 0,
+        entry.present &&
+        entry.purgeable &&
+        !entry.optIn &&
+        entry.entryCount > 0,
     )
     .map((entry) => entry.key);
 }

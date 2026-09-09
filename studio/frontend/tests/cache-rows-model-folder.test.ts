@@ -221,8 +221,10 @@ const inventory = (path: string) => ({
       group: "models",
       optIn: true,
       paths: [path],
-      sizeBytes: 1000,
-      entryCount: 1,
+      // Zero bytes with entries in it: a clear is offered on what is there to
+      // remove, not on what it will free.
+      sizeBytes: 0,
+      entryCount: 3,
       present: true,
       purgeable: true,
       blockedReason: null,
@@ -303,4 +305,42 @@ test("a clear waits for the measurement that is replacing the rows", async () =>
   );
   assert.equal(confirm.length, 1);
   assert.equal(confirm[0].props?.disabled, true);
+});
+
+test("a measurement that failed leaves the clears disabled", async () => {
+  // The rows keep the last inventory that arrived, which is the folder the user
+  // moved off, while purgeCaches resolves each key against the new one. A
+  // failure is the same hazard as a walk still running, so it holds the same
+  // controls.
+  const pending: {
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
+  }[] = [];
+  let version = 0;
+  const render = driveRows({
+    load: () =>
+      new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    version: () => version,
+  });
+
+  render();
+  pending[0].resolve(inventory("/old/hub"));
+  await settle();
+  click(buttons(render(), DETAILS)[0]);
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+
+  version = 1;
+  render();
+  pending[1].reject(new Error("measure failed"));
+  await settle();
+
+  const failed = render();
+  assert.equal(buttons(failed, CLEAR_ONE)[0].props?.disabled, true);
+  const destructive = [...walk(failed)].filter(
+    (element) =>
+      element.type === "Button" &&
+      typeof element.props?.className === "string" &&
+      element.props.className.includes("bg-destructive"),
+  );
+  assert.equal(destructive[0].props?.disabled, true);
 });
