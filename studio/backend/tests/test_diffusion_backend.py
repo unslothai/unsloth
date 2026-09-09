@@ -4552,6 +4552,60 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
         backend._apply_loras(_quant_lora_state(pipe), [("other", 1.0)], ev)
 
 
+class _GraphHandle:
+    def __init__(self):
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
+        return self
+
+
+def test_a_failed_lora_switch_drops_the_captured_graphs(monkeypatch):
+    """A failed switch has already unloaded the adapters the graphs were captured with and records an
+    empty applied set, so the later "current and none requested" reset never fires."""
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
+        ),
+    )
+
+    class _FailingPipe(_BakePipe):
+        def load_lora_weights(
+            self,
+            path,
+            adapter_name = None,
+        ):
+            raise RuntimeError("size mismatch for the adapter")
+
+        def unload_lora_weights(self):
+            self.calls.append(("unload",))
+
+    pipe = _FailingPipe()
+    pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 1.0),)
+    handle = _GraphHandle()
+    state = types.SimpleNamespace(
+        pipe = pipe,
+        transformer_quant = None,
+        kind = "dense",
+        family = types.SimpleNamespace(name = "z-image"),
+        hf_token = None,
+        speed_optims = ("cuda_graph",),
+        cuda_graphs = (handle,),
+    )
+
+    with pytest.raises(ValueError, match = "Failed to apply LoRA"):
+        backend._apply_loras(state, [("other", 1.0)], threading.Event())
+
+    assert pipe._unsloth_loras == ()
+    assert handle.resets == 1
+    backend._apply_loras(state, [], threading.Event())
+    assert handle.resets == 1
+
+
 def test_baked_lora_names_survive_being_disabled_at_generate_time(monkeypatch):
     # A generate with no `loras` zeroes every baked adapter and _active_lora_pairs drops zero-weight entries, so a baked
     # load's APPLIED set is always empty. Baked-and-disabled is not never-baked, so record it separately.

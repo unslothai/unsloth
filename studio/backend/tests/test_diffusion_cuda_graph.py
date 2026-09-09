@@ -15,6 +15,7 @@ import inspect
 import json
 import sys
 import types
+import weakref
 
 import pytest
 
@@ -372,6 +373,51 @@ def test_capture_exception_poisons_and_returns_the_eager_result(stub_torch):
     assert "%s" in logged[0][0] and "capture failed" in logged[0][0]
     # Type and message only in the log line; the traceback stays on capture_error.
     assert all("Traceback" not in str(part) for part in logged[0][1:])
+
+
+def test_a_failed_capture_is_released_before_the_eager_fallback(stub_torch):
+    """The handled exception owns _capture's frame and so its statics; the eager fallback must run
+    after they are dropped, or an OOM capture turns into an OOM render."""
+    statics: list = []
+    plain_empty_like = stub_torch.empty_like
+
+    def _recording_empty_like(tensor):
+        out = plain_empty_like(tensor)
+        statics.append(weakref.ref(out))
+        return out
+
+    stub_torch.empty_like = _recording_empty_like
+    stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory during capture")
+
+    seen: list = []
+
+    class _Probe(_FakeDiT):
+        def forward(
+            self,
+            hidden_states,
+            timestep = None,
+            return_dict = True,
+        ):
+            self.calls += 1
+            seen.append(
+                {
+                    "live_statics": sum(1 for ref in statics if ref() is not None),
+                    "empty_cache": stub_torch._records["empty_cache"],
+                }
+            )
+            return (_FakeTensor((1, 4), value = ("out", self.calls), tag = "out"),)
+
+    handle = _armed(_Probe())
+    out = handle(_t(), timestep = _t((1,)), return_dict = False)
+
+    assert handle.poisoned is True
+    assert out[0].value == ("out", cg.WARMUP_ITERS + 1)
+    assert statics
+    assert seen[0]["live_statics"] == len(statics)
+    assert seen[-1]["live_statics"] == 0
+    assert seen[-1]["empty_cache"] == 1
+    assert handle.capture_error["traceback"]
+    assert handle.capture_error["type"] == "RuntimeError"
 
 
 def test_graph_cap_degrades_to_eager_without_poisoning(stub_torch):

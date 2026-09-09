@@ -5593,6 +5593,9 @@ class DiffusionBackend:
             except Exception:  # noqa: BLE001
                 pass
             pipe._unsloth_loras = ()
+            # The adapters the graphs were captured with are gone and the marker says none are applied,
+            # so no later call reaches the resets above; without this a base-model render replays them.
+            cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.

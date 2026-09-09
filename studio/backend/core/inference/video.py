@@ -4781,6 +4781,8 @@ class VideoBackend:
                 types.SimpleNamespace(
                     device = device,
                     dtype = dtype,
+                    # ROCm reports device "cuda"; the graph arm refuses it by backend, so keep the field.
+                    backend = getattr(umem_target, "backend", "cuda"),
                     supports_default_torch_compile = getattr(
                         umem_target, "supports_default_torch_compile", False
                     ),

@@ -214,16 +214,20 @@ class GraphedForward:
         self.bypassed = bool(on)
         return self
 
-    def reset(self) -> "GraphedForward":
-        """Drop every captured graph: after a LoRA swap a replay serves the old weights."""
-        self.cache.clear()
+    def _release(self) -> None:
+        """Return the dropped graphs' pool segments to the device; ``gc.collect`` alone leaves them in the private pool."""
         try:
             gc.collect()
             cuda = getattr(_torch(), "cuda", None)
             if cuda is not None and hasattr(cuda, "empty_cache"):
                 cuda.empty_cache()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - best effort
             pass
+
+    def reset(self) -> "GraphedForward":
+        """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
+        self.cache.clear()
+        self._release()
         return self
 
     def poison(self, exc: BaseException) -> "GraphedForward":
@@ -310,8 +314,9 @@ class GraphedForward:
                             type(self.module).__name__,
                         )
                 return self._eager(args, kwargs)
+            captured = None
             try:
-                entry = self._capture(args, kwargs)
+                captured = self._capture(args, kwargs)
             except Exception as exc:  # noqa: BLE001 - a failed capture must never fail the render
                 self.poison(exc)
                 self.stats["fallbacks"] += 1
@@ -322,7 +327,14 @@ class GraphedForward:
                         type(exc).__name__,
                         exc,
                     )
+                # The handled exception keeps _capture's frame, and with it the statics and the pool
+                # slice, alive through the eager retry: on a tight card that retry OOMs (measured 2.68 of
+                # 3.3 GB still held here). The formatted traceback is already on capture_error.
+                exc.__traceback__ = None
+            if captured is None:
+                self._release()
                 return self._eager(args, kwargs)
+            entry = captured
             self.cache[key] = entry
             if self.logger is not None:
                 self.logger.debug(

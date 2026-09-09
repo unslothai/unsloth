@@ -9066,3 +9066,24 @@ def test_cuda_graph_is_a_per_family_opt_in():
     wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert wan is not None and wan.name == "wan2.2-ti2v-5b"
     assert wan.supports_cuda_graph is False
+
+
+def test_every_rebuilt_speed_target_carries_the_backend():
+    """The CUDA-graph arm refuses ROCm by target.backend (ROCm reports device "cuda"), so a target
+    video.py builds itself must carry the field."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    rebuilt = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "apply_speed_optims":
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Call) and getattr(arg.func, "attr", None) == "SimpleNamespace":
+                rebuilt.append(arg)
+    assert rebuilt
+    for call in rebuilt:
+        fields = {kw.arg for kw in call.keywords}
+        assert "backend" in fields, f"video.py:{call.lineno} target lacks backend: {sorted(fields)}"
