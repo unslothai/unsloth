@@ -1835,17 +1835,24 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
             ("--requirement=sub/n.txt", "--requirement=", "sub/n.txt", "long form"),
             ("-c cons.txt", "-c ", "cons.txt", "a constraint file"),
             ("-f wheels", "-f ", "wheels", "a find-links directory"),
-            (
-                "foo @ file:dist/a.whl",
-                "foo @ file://",
-                "dist/a.whl",
-                "a relative file: URL, as a URI",
-            ),
             ("dist/a.whl", "", "dist/a.whl", "a bare relative wheel path"),
         ],
     )
     def test_a_relative_reference_is_rebased(self, line, prefix, rebased, why):
         assert self._run(line) == prefix + self._rebased(rebased), why
+
+    @requires_pwsh
+    def test_a_relative_file_url_is_rebased_as_a_uri(self):
+        """The file: rows cannot be checked by pasting a path after "file://".
+
+        A rebased Windows path is C:\\opt\\corp\\ov\\dist\\a.whl, and "file://" + that is not
+        a file URL at all: the authority would be C: and the separators are wrong. The URL
+        for it is file:///C:/opt/corp/ov/dist/a.whl, which is what pathlib's as_uri builds
+        and what the rewriter emits. Concatenating only happened to match on a host whose
+        separator is already "/".
+        """
+        expected = pathlib.Path(self._rebased("dist/a.whl")).as_uri()
+        assert self._run("foo @ file:dist/a.whl") == f"foo @ {expected}"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -4542,11 +4549,31 @@ class TestTheEarlyNvidiaProbesAreBounded:
             "function Test-WoaNvidiaPresent"
         )
 
+    @staticmethod
+    def _fake_nvidia_smi(directory, sh_body: str, cmd_body: str) -> None:
+        """A fake nvidia-smi the host will actually execute.
+
+        Windows has no shebang handling and PATHEXT covers no extensionless name, so a
+        /bin/sh script here is not an executable at all: the probe finds nothing, and a test
+        that expected it to run passes or fails for a reason that has nothing to do with the
+        code. .cmd is what PATHEXT does cover, and it is the idiom the rest of this suite
+        already uses.
+        """
+        if os.name == "nt":
+            path = directory / "nvidia-smi.cmd"
+            path.write_text("@echo off\n" + cmd_body, encoding = "utf-8")
+            return
+        path = directory / "nvidia-smi"
+        path.write_text("#!/bin/sh\n" + sh_body, encoding = "utf-8")
+        path.chmod(0o755)
+
     @requires_pwsh
     def test_a_listing_with_a_gpu_row_is_present(self, tmp_path):
-        fake = tmp_path / "nvidia-smi"
-        fake.write_text("#!/bin/sh\necho 'GPU 0: NVIDIA RTX (UUID: GPU-1)'\n", encoding = "utf-8")
-        fake.chmod(0o755)
+        self._fake_nvidia_smi(
+            tmp_path,
+            "echo 'GPU 0: NVIDIA RTX (UUID: GPU-1)'\n",
+            "echo GPU 0: NVIDIA RTX (UUID: GPU-1)\n",
+        )
         script = _script(
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded"),
             _function_source(INSTALL_SRC, "Test-WoaNvidiaPresent"),
@@ -4557,9 +4584,8 @@ class TestTheEarlyNvidiaProbesAreBounded:
 
     @requires_pwsh
     def test_a_hung_nvidia_smi_returns_within_the_bound(self, tmp_path):
-        fake = tmp_path / "nvidia-smi"
-        fake.write_text("#!/bin/sh\nsleep 30\n", encoding = "utf-8")
-        fake.chmod(0o755)
+        # ping, not timeout: timeout /t needs a console and fails when stdin is redirected.
+        self._fake_nvidia_smi(tmp_path, "sleep 30\n", "ping -n 31 127.0.0.1 > nul\n")
         # The bound is the helper's default; the assertion is that the call comes back at all.
         script = _script(
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded").replace(
@@ -5159,20 +5185,42 @@ class TestAnUpdateKeepsTheInstalledPairWhenTheIndexLags:
         end = SETUP_SRC.index("# <3.7 everywhere except Windows on ARM", start)
         return SETUP_SRC[start:end]
 
-    def _run(self, tmp_path, installed_line):
+    @staticmethod
+    def _venv_with(tmp_path, installed):
+        """A REAL venv, with real .dist-info for whatever `installed` names.
+
+        The block runs `<VenvDir>/Scripts/python.exe -c ...` by that exact name. A /bin/sh
+        script called python.exe is not an executable on Windows, so the probe came back
+        empty there and all three cases asserted the floor rather than the branch they were
+        written for. A real interpreter answers the tag query itself and answers the version
+        query out of metadata that looks the way a real install's does.
+
+        On POSIX the interpreter lands in bin/, so Scripts/python.exe is linked to it: that
+        is the path the block builds, and it is what the previous fake put there too.
+        """
         venv = tmp_path / "venv"
-        venv.mkdir()
-        # Join-Path turns the "Scripts\python.exe" leaf into a nested path on this host.
-        (venv / "Scripts").mkdir()
-        shim = venv / "Scripts" / "python.exe"
-        shim.write_text(
-            "#!/bin/sh\n"
-            'case "$*" in *importlib.metadata*) '
-            + installed_line
-            + " ;; *) echo 'cp313|cp313' ;; esac\n",
-            encoding = "utf-8",
+        subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+            check = True,
+            capture_output = True,
+            timeout = 300,
         )
-        shim.chmod(0o755)
+        sites = list(venv.glob("Lib/site-packages")) + list(venv.glob("lib/*/site-packages"))
+        assert sites, f"no site-packages under {venv}"
+        for name, version in installed.items():
+            info = sites[0] / f"{name}-{version}.dist-info"
+            info.mkdir(parents = True)
+            (info / "METADATA").write_text(
+                f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8"
+            )
+        if os.name != "nt":
+            scripts = venv / "Scripts"
+            scripts.mkdir(exist_ok = True)
+            (scripts / "python.exe").symlink_to(venv / "bin" / "python")
+        return venv
+
+    def _run(self, tmp_path, installed):
+        venv = self._venv_with(tmp_path, installed)
         script = _script(
             "$script:Messages = @()",
             "function substep { param($m, $c) $script:Messages += $m }",
@@ -5195,21 +5243,21 @@ class TestAnUpdateKeepsTheInstalledPairWhenTheIndexLags:
 
     @requires_pwsh
     def test_the_installed_pair_is_kept(self, tmp_path):
-        out = self._run(tmp_path, "echo '2.14.0+cu134|0.29.0+cu134'")
+        out = self._run(tmp_path, {"torch": "2.14.0+cu134", "torchvision": "0.29.0+cu134"})
         assert out["TORCH"] == "torch==2.14.0+cu134", out["MSG"]
         assert out["VISION"] == "torchvision==0.29.0+cu134"
         assert "keeping the installed torch 2.14.0+cu134 and torchvision 0.29.0+cu134" in out["MSG"]
 
     @requires_pwsh
     def test_an_installed_pair_that_does_not_pair_is_not_kept(self, tmp_path):
-        out = self._run(tmp_path, "echo '2.14.0+cu134|0.28.0+cu134'")
+        out = self._run(tmp_path, {"torch": "2.14.0+cu134", "torchvision": "0.28.0+cu134"})
         assert out["TORCH"] == "torch==2.15.0.dev20260905+cu134"
         assert out["VISION"] == "torchvision>=0.19"
         assert "no installed pair can be kept" in out["MSG"]
 
     @requires_pwsh
     def test_nothing_installed_leaves_the_floor_and_says_so(self, tmp_path):
-        out = self._run(tmp_path, "exit 1")
+        out = self._run(tmp_path, {})
         assert out["VISION"] == "torchvision>=0.19"
         assert "no installed pair can be kept" in out["MSG"]
 
