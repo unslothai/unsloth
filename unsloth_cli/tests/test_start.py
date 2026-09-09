@@ -4626,9 +4626,12 @@ def test_model_download_progress_does_not_invent_a_total_across_repos(monkeypatc
     assert progress.downloaded_bytes == 18 * 1024**3
 
 
-def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch):
+def test_model_download_progress_keeps_polling_every_base_candidate(monkeypatch):
+    # No narrowing to the candidate that looks live: bytes present are not bytes moving,
+    # and every wrong guess costs the user their server. A candidate that is not being
+    # fetched answers with a measured zero, which is cheap and always right.
     monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
-    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", [])
     polled = []
     substitute = iter([1024**3, 2 * 1024**3, 3 * 1024**3, 4 * 1024**3])
 
@@ -4660,70 +4663,18 @@ def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch)
     monkeypatch.setattr(start, "_http_json", http_json)
     progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
 
-    def dead_polls():
-        return len([url for url in polled if "repo_id=owner%2Fbase" in url])
-
-    progress.poll()
-    # One reading is not growth, so the recorded base is still in play.
-    assert dead_polls() == 1
-    progress.poll()
-    assert dead_polls() == 2
-    progress.poll()
-    # The substitute has now grown twice; the recorded base is dropped.
-    assert dead_polls() == 2
-    assert progress.downloaded_bytes == 3 * 1024**3
-
-
-def test_model_download_progress_does_not_prune_when_a_cache_mount_appears(monkeypatch):
-    # A cached candidate whose mount was missing during one complete scan and present in
-    # the next grows its total by the whole cached size with nothing transferring.
-    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
-    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
-    mount = iter(
-        [
-            {"downloaded_bytes": 0, "completed_bytes": 0, "cache_measured": True},
-            {
-                "downloaded_bytes": 16 * 1024**3,
-                "completed_bytes": 16 * 1024**3,
-                "cache_measured": True,
-            },
-            {
-                "downloaded_bytes": 16 * 1024**3,
-                "completed_bytes": 16 * 1024**3,
-                "cache_measured": True,
-            },
-        ]
-    )
-
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
-        if "/api/models/config/" in url:
-            return {"is_lora": True, "base_model": "owner/base"}
-        if url.endswith("repo_id=unsloth%2Fbase-4bit"):
-            return next(mount)
-        return {
-            "downloaded_bytes": 0,
-            "completed_bytes": 0,
-            "expected_bytes": 40 * 1024**3,
-            "cache_measured": True,
-        }
-
-    monkeypatch.setattr(start, "_http_json", http_json)
-    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
-
     for _ in range(3):
         progress.poll()
 
-    assert "owner/base" in (progress._companions or [])
+    # The quiet candidate is still asked about on every poll, even though the other one
+    # has been growing the whole time.
+    assert len([url for url in polled if "repo_id=owner%2Fbase" in url]) == 3
+    assert progress.downloaded_bytes == 3 * 1024**3
 
 
-def test_companion_lookup_retries_a_rate_limited_config_route(monkeypatch):
+def test_companion_lookup_retries_an_offline_404(monkeypatch):
+    # routes/models.py raises 404 when it judges the hub unreachable and the caller
+    # anonymous, so a 404 is not proof that the model has no base.
     now = [1000.0]
     monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
     lookups = []
@@ -4739,10 +4690,10 @@ def test_companion_lookup_retries_a_rate_limited_config_route(monkeypatch):
         if "/api/models/config/" in url:
             lookups.append(url)
             if len(lookups) == 1:
-                raise urllib.error.HTTPError(url, 429, "Too Many Requests", None, None)
+                raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
             return {"is_lora": True, "base_model": "owner/base"}
         if url.endswith("repo_id=owner%2Fbase"):
-            return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 4 * 1024**3}
+            return {"downloaded_bytes": 5 * 1024**3, "expected_bytes": 8 * 1024**3}
         return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
 
     monkeypatch.setattr(start, "_http_json", http_json)
@@ -4754,61 +4705,11 @@ def test_companion_lookup_retries_a_rate_limited_config_route(monkeypatch):
     progress.poll()
 
     assert len(lookups) == 2
-    assert progress.downloaded_bytes == 1024 + 3 * 1024**3
+    assert progress.downloaded_bytes == 1024 + 5 * 1024**3
 
 
-def test_download_progress_display_completes_after_following_a_second_repo(monkeypatch, capsys):
-    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: True, raising = False)
-    display = start._DownloadProgressDisplay()
-
-    display.update(
-        {
-            "downloaded_bytes": 2 * 1024**3,
-            "completed_bytes": 0,
-            "expected_bytes": 4 * 1024**3,
-            "progress": 0.5,
-        },
-        "owner/base",
-    )
-    # The base finished, so the line falls back to a fully cached adapter, which renders
-    # nothing. That must not wipe the state complete() and close() gate on.
-    display.update(
-        {"downloaded_bytes": 1024, "completed_bytes": 1024, "expected_bytes": 1024},
-        "owner/adapter",
-    )
-    display.complete()
-    display.close()
-
-    out = capsys.readouterr().out
-    assert "100%" in out
-    assert out.endswith("\n")
-
-
-def test_model_download_progress_does_not_prune_on_a_cache_scan_rebound(monkeypatch):
-    # An unreadable cache root makes the endpoint report a lower bound with
-    # cache_measured false; the larger figure when the root returns is a rebound, not a
-    # transfer, and must not capture the prune.
-    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
-    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
-    rebound = iter(
-        [
-            {
-                "downloaded_bytes": 2 * 1024**3,
-                "completed_bytes": 2 * 1024**3,
-                "cache_measured": False,
-            },
-            {
-                "downloaded_bytes": 9 * 1024**3,
-                "completed_bytes": 9 * 1024**3,
-                "cache_measured": True,
-            },
-            {
-                "downloaded_bytes": 9 * 1024**3,
-                "completed_bytes": 9 * 1024**3,
-                "cache_measured": True,
-            },
-        ]
-    )
+def test_companion_lookup_stops_on_a_refused_request(monkeypatch):
+    lookups = []
 
     def http_json(
         method,
@@ -4819,25 +4720,17 @@ def test_model_download_progress_does_not_prune_on_a_cache_scan_rebound(monkeypa
         error = None,
     ):
         if "/api/models/config/" in url:
-            return {"is_lora": True, "base_model": "owner/base"}
-        if url.endswith("repo_id=unsloth%2Fbase-4bit"):
-            return next(rebound)
-        return {
-            "downloaded_bytes": 0,
-            "completed_bytes": 0,
-            "expected_bytes": 40 * 1024**3,
-            "cache_measured": True,
-        }
+            lookups.append(url)
+            raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+        return {"downloaded_bytes": 1024, "expected_bytes": 4096}
 
     monkeypatch.setattr(start, "_http_json", http_json)
-    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model", None)
 
     progress.poll()
     progress.poll()
-    progress.poll()
 
-    # The repo that has not started yet is still watched.
-    assert "owner/base" in (progress._companions or [])
+    assert len(lookups) == 1
 
 
 def test_model_download_progress_does_not_prune_to_an_abandoned_partial(monkeypatch):

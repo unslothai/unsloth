@@ -886,8 +886,9 @@ _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
 # of stopping: giving up for good would leave a server that recovers later untracked.
 _COMPANION_LOOKUP_RETRY_S = 60.0
 _COMPANION_LOOKUP_MAX_RETRY_S = 300.0
-# Client statuses that mean "later", not "no".
-_TRANSIENT_HTTP_STATUS = frozenset((408, 425, 429))
+# The only answers that settle the question: the request itself was refused. Everything
+# else, 404 included, can be a server that is briefly offline, busy or too old.
+_DEFINITIVE_HTTP_STATUS = frozenset((400, 401, 403, 405, 410, 422))
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -1279,8 +1280,6 @@ class _ModelDownloadProgress:
         self._progress_prefix = "/api/hub"
         self._companions: Optional[list[str]] = None
         self._repo_bytes: dict[str, int] = {}
-        self._repo_in_flight: dict[str, int] = {}
-        self._repo_measured: dict[str, bool] = {}
         self._companion_lookups = 0
         self._companion_retry_at = 0.0
         self._companion_retry_s = _COMPANION_LOOKUP_RETRY_S
@@ -1342,10 +1341,11 @@ class _ModelDownloadProgress:
                 timeout = 10,
             )
         except urllib.error.HTTPError as exc:
-            # A timeout or a rate limit says try later, not "this is not an adapter".
-            if exc.code >= 500 or exc.code in _TRANSIENT_HTTP_STATUS:
-                return None
-            return []
+            # Only a status about the request itself is final. This route answers 404 when
+            # it judges the hub unreachable and the caller anonymous (routes/models.py:2417),
+            # and an older server without the route answers 404 too, so 404 has to stay
+            # retryable; the backoff keeps that cheap.
+            return [] if exc.code in _DEFINITIVE_HTTP_STATUS else None
         except Exception:
             return None
         if not info.get("is_lora"):
@@ -1422,22 +1422,14 @@ class _ModelDownloadProgress:
             # a reading already taken, never bytes merely being present: an abandoned
             # transfer leaves `.incomplete` blobs behind, and pruning to a corpse would
             # discard the repo the worker is about to fetch.
-            # Bytes in flight, not bytes on disk, and only between two complete scans.
-            # A cache mount that was absent and then appears grows the total by its whole
-            # cached size without anything transferring, and `cache_measured` false is an
-            # explicit lower bound from a root that could not be read; either read as
-            # growth would prune away the repo the worker really fetches. A server too old
-            # to send the flag never prunes, which only costs a request per poll.
-            grew = [
-                repo
-                for repo, item in companions
-                if item is not None
-                and self._repo_measured.get(repo)
-                and item.get("cache_measured") is True
-                and _in_flight_bytes(item) > self._repo_in_flight.get(repo, 0)
-            ]
-            if len(grew) == 1:
-                self._companions = grew
+            # Every candidate is polled for the whole load, deliberately. Narrowing to the
+            # one that looks live saves a few requests a second against a server on the
+            # same machine, and costs the user their server whenever the guess is wrong:
+            # bytes present are not bytes moving, a cache root appearing is not a transfer,
+            # an abandoned `.incomplete` blob looks exactly like a live one, and an
+            # unreadable root reports a lower bound that rebounds later. A candidate that
+            # is not being fetched answers with a measured zero, which is cheap and always
+            # right, so the extra requests buy correctness that no predicate here can.
             # The liveness baseline only ever rises. A reading falls for reasons that are
             # not "bytes left the disk": an incomplete scan reporting a lower bound, a
             # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
@@ -1451,8 +1443,6 @@ class _ModelDownloadProgress:
                 self._repo_bytes[repo] = max(
                     self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
                 )
-                self._repo_in_flight[repo] = _in_flight_bytes(item)
-                self._repo_measured[repo] = item.get("cache_measured") is True
             # Per repo, and kept after a candidate is dropped: an alternative base already
             # complete in the cache contributes its bytes to the first total, so forgetting
             # it would drop the sum below a high mark the live download may never reach on
