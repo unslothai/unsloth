@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -172,9 +173,44 @@ def _shell_function(name: str) -> str:
     raise AssertionError(f"unterminated function {name}")
 
 
+def _bash(script: str, *, env: "dict | None" = None) -> str:
+    """Run a lifted script under bash and return its stdout, failing with its own stderr."""
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
 # `command -v rocminfo` must not reach a real one on a ROCm build host, or these answers
 # would depend on the machine running the suite. Each harness names its own inventory.
 _rocminfo_stub = "rocminfo() { return 1; }"
+
+
+def _wheel_route_defs(*, arch_family: bool = True, rocminfo: str = _rocminfo_stub) -> "list[str]":
+    """Everything _amd_request_has_a_wheel_route consults, lifted from install.sh.
+
+    The selector asks whether the request has a wheel route, not whether a card is
+    present, so its helpers are lifted rather than stubbed: stubbing the ANSWER would
+    make the arch cases assert about the stub instead of about the rule.
+
+    arch_family is False for the one caller that supplies its own
+    _amd_arch_index_family_for_gfx among the stubs it passes in, since these definitions
+    are emitted after those stubs and a lift would silently replace it. rocminfo is the
+    seam for a harness that names an inventory instead of refusing the lookup.
+    """
+    return [
+        _shell_function("_amd_hardware_corroborated"),
+        *([_shell_function("_amd_arch_index_family_for_gfx")] if arch_family else []),
+        _shell_function("_amd_gfx_has_wheel_route"),
+        _shell_function("_amd_visible_masks_select_no_gpu"),
+        _shell_function("_amd_generic_tag_carries_gfx"),
+        _shell_function("_amd_mask_survivors"),
+        _shell_function("_amd_runtime_gfx_target"),
+        _shell_function("_rocminfo_gpu_records"),
+        _shell_function("_amd_ordered_gfx_devices"),
+        "_ensure_rocm_probe_env() { :; }",
+        rocminfo,
+        _shell_function("_amd_request_has_a_wheel_route"),
+    ]
 
 
 def _fake_rocminfo(devices: "list[str]") -> str:
@@ -216,26 +252,12 @@ def _index_url(env: str, stubs: str) -> str:
     for a "cuda" backend. Run through bash rather than reimplemented, since a Python
     copy of the shell logic would agree with itself and prove nothing.
     """
-    import subprocess
-
     script = "\n".join(
         [
             _shell_function("_rocm_torch_explicitly_requested"),
             stubs,
-            # The selector asks whether the request has a wheel route, not whether a card
-            # is present, so its helpers are lifted too. Stubbing the ANSWER here would
-            # make the arch cases below assert about the stub.
-            _shell_function("_amd_hardware_corroborated"),
-            _shell_function("_amd_gfx_has_wheel_route"),
-            _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_generic_tag_carries_gfx"),
-            _shell_function("_amd_mask_survivors"),
-            _shell_function("_amd_runtime_gfx_target"),
-            _shell_function("_rocminfo_gpu_records"),
-            _shell_function("_amd_ordered_gfx_devices"),
-            "_ensure_rocm_probe_env() { :; }",
-            _rocminfo_stub,
-            _shell_function("_amd_request_has_a_wheel_route"),
+            # The stubs above name this host's arch family, so it is not lifted here.
+            *_wheel_route_defs(arch_family = False),
             _shell_function("get_torch_index_url"),
             f"{env} get_torch_index_url",
         ]
@@ -392,24 +414,11 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
     never reaches them; the request has to be asked here as well or a mixed host takes
     the cpu index the reroute exists to rewrite.
     """
-    import subprocess
-
     script = "\n".join(
         [
             _shell_function("_rocm_torch_explicitly_requested"),
             stubs,
-            _shell_function("_amd_hardware_corroborated"),
-            _shell_function("_amd_arch_index_family_for_gfx"),
-            _shell_function("_amd_gfx_has_wheel_route"),
-            _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_generic_tag_carries_gfx"),
-            _shell_function("_amd_mask_survivors"),
-            _shell_function("_amd_runtime_gfx_target"),
-            _shell_function("_rocminfo_gpu_records"),
-            _shell_function("_amd_ordered_gfx_devices"),
-            "_ensure_rocm_probe_env() { :; }",
-            _rocminfo_stub,
-            _shell_function("_amd_request_has_a_wheel_route"),
+            *_wheel_route_defs(),
             _shell_function("_nvidia_gpu_wins_over_amd"),
             f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
         ]
@@ -558,8 +567,6 @@ def _index_after_the_guard(env: str, resolved: str, cuda_answer: str) -> str:
     which the guard obtains by calling get_torch_index_url again; it is stubbed so the
     test states the two inputs rather than re-deriving one of them.
     """
-    import subprocess
-
     script = "\n".join(
         [
             _shell_function("_rocm_torch_explicitly_requested"),
@@ -578,14 +585,7 @@ def _index_after_the_guard(env: str, resolved: str, cuda_answer: str) -> str:
             'printf "%s\\n" "$TORCH_INDEX_URL"',
         ]
     )
-    out = subprocess.run(
-        ["bash", "-c", script],
-        capture_output = True,
-        text = True,
-        env = {**os.environ, **dict([env.split("=", 1)] if "=" in env else [])},
-    )
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
+    return _bash(script, env = {**os.environ, **dict([env.split("=", 1)] if "=" in env else [])})
 
 
 _CUDA = "https://download.pytorch.org/whl/cu130"
@@ -737,8 +737,6 @@ def _gpu_summary_branch(resolved: str, request: str) -> str:
     pair rather than raising, so removing the fix describes the old behaviour instead
     of breaking the extraction.
     """
-    import subprocess
-
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
     head = next(
@@ -775,9 +773,7 @@ def _gpu_summary_branch(resolved: str, request: str) -> str:
             "fi",
         ]
     )
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
+    return _bash(script)
 
 
 def test_the_summary_reports_cuda_after_the_cuda_restore():
@@ -814,40 +810,21 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
     The three probes are stubbed and everything else is lifted from install.sh, so the
     answer depends only on the arch reasoning under test.
     """
-    import subprocess
-
     script = "\n".join(
         [
             f'_probe_amd_gfx_arch() {{ printf "%s\\n" {probe!r}; }}',
             "_kfd_gfx_targets() { :; }",
             f'_infer_linux_amd_gfx_arch() {{ [ -n {inferred!r} ] && printf "%s\\n" {inferred!r}; }}',
             f"_amd_gpu_present_via_pci() {{ return {0 if pci_ok else 1}; }}",
-            _shell_function("_amd_hardware_corroborated"),
-            _shell_function("_amd_arch_index_family_for_gfx"),
-            _shell_function("_amd_gfx_has_wheel_route"),
-            _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_generic_tag_carries_gfx"),
-            _shell_function("_amd_mask_survivors"),
-            _shell_function("_amd_runtime_gfx_target"),
-            _shell_function("_rocminfo_gpu_records"),
-            _shell_function("_amd_ordered_gfx_devices"),
-            "_ensure_rocm_probe_env() { :; }",
-            _rocminfo_stub,
-            _shell_function("_amd_request_has_a_wheel_route"),
+            *_wheel_route_defs(),
             "_detect_rocm_version_tag() { printf '%s\\n' rocm7.2; }",
             "_amd_request_has_a_wheel_route && echo yes || echo no",
         ]
     )
-    out = subprocess.run(
-        ["bash", "-c", script],
-        capture_output = True,
-        text = True,
-        # A declared arch decides before the inventory, so one inherited from the runner's
-        # environment would answer every case here instead of the probe under test.
-        env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_ROCM_GFX_ARCH"},
-    )
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip() == "yes"
+    # A declared arch decides before the inventory, so one inherited from the runner's
+    # environment would answer every case here instead of the probe under test.
+    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_ROCM_GFX_ARCH"}
+    return _bash(script, env = env) == "yes"
 
 
 def test_an_arch_no_index_can_serve_does_not_depose_the_nvidia_card():
@@ -1104,8 +1081,6 @@ def test_the_reroute_predicate_still_yields_for_a_routable_one():
 
 def _shell_request_flag(value: "str | None") -> bool:
     """install.sh's own request test, run verbatim, for one value of the variable."""
-    import subprocess
-
     # Through the environment rather than the script text: a tab quoted into a bash
     # single-quoted string arrives as a literal backslash-t, so a harness that inlined the
     # value would test a different string than the one named.
@@ -1119,9 +1094,7 @@ def _shell_request_flag(value: "str | None") -> bool:
             "_rocm_torch_explicitly_requested && echo yes || echo no",
         ]
     )
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip() == "yes"
+    return _bash(script, env = env) == "yes"
 
 
 @pytest.mark.parametrize("value", [" true ", "\ttrue", "1 ", " ON"])
@@ -1165,8 +1138,6 @@ def _route_shell_masked(
     a bash single-quoted string is a literal backslash-n, so a harness that joined them would
     hand the route test one unroutable token and answer no whatever the code does.
     """
-    import subprocess
-
     emit = 'printf "%s\\n" ' + " ".join(repr(a) for a in physical) if physical else ":"
     # KFD node order is what the mask ordinals index, and once rocminfo says nothing it is
     # the only ordered source left, so a test about ordering cannot leave it stubbed empty.
@@ -1177,18 +1148,9 @@ def _route_shell_masked(
             f"_kfd_gfx_targets() {{ {kfd_emit}; }}",
             "_infer_linux_amd_gfx_arch() { :; }",
             "_amd_gpu_present_via_pci() { return 0; }",
-            _shell_function("_amd_hardware_corroborated"),
-            _shell_function("_amd_arch_index_family_for_gfx"),
-            _shell_function("_amd_gfx_has_wheel_route"),
-            _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_generic_tag_carries_gfx"),
-            _shell_function("_amd_mask_survivors"),
-            _shell_function("_amd_runtime_gfx_target"),
-            _shell_function("_rocminfo_gpu_records"),
-            _shell_function("_amd_ordered_gfx_devices"),
-            "_ensure_rocm_probe_env() { :; }",
-            _fake_rocminfo(physical if devices is None else devices),
-            _shell_function("_amd_request_has_a_wheel_route"),
+            *_wheel_route_defs(
+                rocminfo = _fake_rocminfo(physical if devices is None else devices)
+            ),
             f"_detect_rocm_version_tag() {{ printf '%s\\n' {rocm_tag!r}; }}",
             "_amd_request_has_a_wheel_route && echo yes || echo no",
         ]
@@ -1199,9 +1161,7 @@ def _route_shell_masked(
         if not k.endswith("VISIBLE_DEVICES") and k != "UNSLOTH_ROCM_GFX_ARCH"
     }
     env.update(mask)
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip() == "yes"
+    return _bash(script, env = env) == "yes"
 
 
 def test_a_mask_that_selects_only_an_unroutable_card_keeps_cuda():
