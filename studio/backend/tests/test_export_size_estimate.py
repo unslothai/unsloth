@@ -479,8 +479,7 @@ def test_a_projector_beside_indexed_weights_is_counted(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1300
 
 
-def test_an_index_naming_a_subfolder_overcounts_rather_than_guesses(tmp_path):
-    # transformers never writes a subfolder path in a map, so both are read as components.
+def test_two_indexes_naming_subfolders_are_still_one_copy_of_the_weights(tmp_path):
     _write(tmp_path / "sf" / "model-00001-of-00001.safetensors", 1000)
     _write(tmp_path / "pk" / "pytorch_model-00001-of-00001.bin", 1500)
     (tmp_path / "model.safetensors.index.json").write_text(
@@ -489,7 +488,7 @@ def test_an_index_naming_a_subfolder_overcounts_rather_than_guesses(tmp_path):
     (tmp_path / "pytorch_model.bin.index.json").write_text(
         '{"weight_map": {"a": "pk/pytorch_model-00001-of-00001.bin"}}'
     )
-    assert _get_local_weight_size_bytes(str(tmp_path)) == 2500
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
 
 
 def test_an_index_names_a_shard_that_carries_no_weight_extension(tmp_path):
@@ -636,8 +635,7 @@ def test_the_directory_a_weight_index_sits_in_is_tried_before_the_vendor_copy(tm
 
 
 def test_a_weight_index_names_its_shards_in_utf8(tmp_path):
-    # Decoded under the operator's locale, the name stops matching the file, and the stale
-    # shard beside it is charged instead. U+00DF has no decomposed form to normalise away.
+    # Under the operator's locale the name stops matching; U+00DF cannot normalise away.
     _write(tmp_path / "model\u00df.safetensors", 1000)
     _write(tmp_path / "model-00001-of-00001.safetensors", 7777)
     (tmp_path / "model.safetensors.index.json").write_bytes(
@@ -646,13 +644,30 @@ def test_a_weight_index_names_its_shards_in_utf8(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
 
 
-def test_a_subfolder_shard_with_no_weight_suffix_is_not_found(tmp_path):
-    # An index is read only against the files beside it; nothing else marks this as weights.
+def test_a_subfolder_shard_with_no_weight_suffix_is_still_found(tmp_path):
     _write(tmp_path / "shards" / "payload", 28702)
     (tmp_path / "pytorch_model.bin.index.json").write_text(
         '{"weight_map": {"w": "shards/payload"}}'
     )
-    assert _get_local_weight_size_bytes(str(tmp_path)) is None
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 28702
+
+
+def test_a_shard_named_into_a_subfolder_outranks_its_twin_there(tmp_path):
+    _write(tmp_path / "weights" / "shard.bin", 1500)
+    _write(tmp_path / "weights" / "shard.safetensors", 1000)
+    (tmp_path / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "weights/shard.bin"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1500
+
+
+def test_a_subfolder_component_the_index_ignores_is_still_counted(tmp_path):
+    _write(tmp_path / "weights" / "shard.bin", 1500)
+    _write(tmp_path / "vision_tower" / "model.safetensors", 700)
+    (tmp_path / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "weights/shard.bin"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 2200
 
 
 if __name__ == "__main__":

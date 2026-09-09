@@ -5707,7 +5707,7 @@ _WEIGHT_ARCHIVES = (
 )
 
 
-def _indexed_archive(directories: list, base: str, ext: str, siblings: dict) -> tuple:
+def _indexed_archive(directories: list, base: str, ext: str, files: dict) -> tuple:
     """The shards from_pretrained opens here, and every shard any of these indexes names."""
     chosen: dict = {}
     every: dict = {}
@@ -5720,20 +5720,20 @@ def _indexed_archive(directories: list, base: str, ext: str, siblings: dict) -> 
             named = {directory / name for name in weight_map.values()}
         except (OSError, ValueError, AttributeError, TypeError):
             continue
-        # Index targets need not carry a weight extension, so match every file beside it.
-        shards = {path: size for path, size in siblings.items() if path in named}
+        # from_pretrained joins the raw value onto the folder: any name, any subdirectory.
+        shards = {path: size for path, size in files.items() if path in named}
         every.update(shards)
         if shards and not chosen:
             chosen = shards
     return chosen, every
 
 
-def _archive_candidates(directories: list, pool: dict, siblings: dict) -> list:
+def _archive_candidates(directories: list, pool: dict, files: dict) -> list:
     """Every spelling of the weights present here, in the order from_pretrained tries them."""
     candidates = []
     for base, ext in _WEIGHT_ARCHIVES:
         direct = {path: size for path, size in pool.items() if path.name == f"{base}{ext}"}
-        indexed, all_indexed = _indexed_archive(directories, base, ext, siblings)
+        indexed, all_indexed = _indexed_archive(directories, base, ext, files)
         # No index names these, but a pruned or unwritten index is still that model.
         counted = {
             path: size
@@ -5747,17 +5747,18 @@ def _archive_candidates(directories: list, pool: dict, siblings: dict) -> list:
     return candidates
 
 
-def _directory_weight_bytes(directories: list, sizes: dict, siblings: dict, vendor: set) -> int:
-    """One directory's weight cost: the archive it opens, plus the components beside it.
+def _directory_weight_bytes(directories: list, sizes: dict, files: dict, vendor: set) -> tuple:
+    """What one directory costs, and every file its spellings account for.
 
-    ``directories`` are the folders answering to it, the vendor's copy last; one decision
-    covers them all, because splitting it lets a single archive lose in halves.
+    ``directories`` are the folders answering to it, the vendor's copy last, decided together
+    because splitting them lets a single archive lose in halves. ``files`` is the whole tree,
+    since an index may name a shard below itself; the second return is what it accounted for.
     """
-    candidates = _archive_candidates(directories, sizes, siblings)
+    candidates = _archive_candidates(directories, sizes, files)
     # A vendor copy stands in only where the directory has none of its own, never outranking.
     native_pool = {path: size for path, size in sizes.items() if path not in vendor}
-    native_siblings = {path: size for path, size in siblings.items() if path not in vendor}
-    native = _archive_candidates(directories, native_pool, native_siblings)
+    native_files = {path: size for path, size in files.items() if path not in vendor}
+    native = _archive_candidates(directories, native_pool, native_files)
 
     archive: dict = {}
     for choices in (native, candidates):
@@ -5771,12 +5772,11 @@ def _directory_weight_bytes(directories: list, sizes: dict, siblings: dict, vend
     if archive:
         # Trainer state is bookkeeping only beside an archive; alone it is the weights.
         rest = {p: s for p, s in rest.items() if not _TRAINER_BOOKKEEPING.match(p.stem)}
-    # One stem under two extensions is one component saved twice; the loader reads safetensors.
     components: dict = {}
     ordered = sorted(rest.items(), key = lambda i: (i[0].suffix != ".safetensors", i[0].name))
     for path, size in ordered:
         components.setdefault(path.stem, size)
-    return sum(archive.values()) + sum(components.values())
+    return sum(archive.values()) + sum(components.values()), alternatives | set(archive)
 
 
 def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
@@ -5825,8 +5825,18 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     for directory in indexed_dirs:
         sizes_by_directory.setdefault(directory, {})
 
-    total = sum(
-        _directory_weight_bytes(
+    # A shallower index can name a shard inside a deeper folder, so it decides first, and by
+    # stem: the twin of a claimed shard is that weight saved twice, not a second component.
+    files = {path: size for sizes in siblings_by_directory.values() for path, size in sizes.items()}
+    settled: set = set()
+    total = 0
+    for directory in sorted(sizes_by_directory, key = lambda d: (len(d.parts), d.as_posix())):
+        unclaimed = {
+            path: size
+            for path, size in sizes_by_directory[directory].items()
+            if (path.parent, path.stem) not in settled
+        }
+        charged, accounted = _directory_weight_bytes(
             [
                 folder
                 for folder, is_vendor in sorted(
@@ -5834,12 +5844,12 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
                     key = lambda item: item[1],
                 )
             ],
-            sizes,
-            siblings_by_directory.get(directory, {}),
+            unclaimed,
+            files,
             vendor,
         )
-        for directory, sizes in sizes_by_directory.items()
-    )
+        settled |= {(path.parent, path.stem) for path in accounted}
+        total += charged
     return total if total > 0 else None
 
 
