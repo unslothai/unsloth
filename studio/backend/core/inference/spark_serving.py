@@ -2120,6 +2120,7 @@ class SparkServing:
         self.relaunch_gave_up: bool = False
         self.relaunch_log: List[Dict[str, Any]] = []
         self.peer_model_present: Optional[bool] = None
+        self._pre_load_state: Optional[tuple] = None
         self.pipeline_groups: int = 0
         self.pipeline_groups_reason: Optional[str] = None
         self.split_config: Optional[str] = None
@@ -2188,6 +2189,21 @@ class SparkServing:
         ``inherited_extra_args`` counts as the caller's, not as room for this module."""
         if not enabled():
             return request
+        # What the status surface says right now, kept so a REJECTED replacement can put it
+        # back. The route validates after this runs and can raise 400/409 without unloading, so
+        # a fall-back here would otherwise overwrite the live split's topology and group
+        # metadata for a request that never replaced it: status then reports `single` while the
+        # resident llama-server is still driving the peer, and the next load treats a perfectly
+        # reusable rpc-server as dead. `load_failed` restores it on exactly that path.
+        self._pre_load_state = (
+            self.topology,
+            self.reason,
+            dict(self.plan) if isinstance(self.plan, dict) else self.plan,
+            self.pipeline_groups,
+            self.pipeline_groups_reason,
+            self.split_config,
+            self.split_config_reason,
+        )
         self.load_in_progress = True
         try:
             # Nothing is torn down here: the load may be a no-op whose llama-server still
@@ -2513,6 +2529,20 @@ class SparkServing:
         # a request that never touched it.
         backend = self.attached_backend
         if backend is not None and getattr(backend, "is_loaded", False):
+            # The previous model is still resident and still being served, so the topology that
+            # describes it must be the topology reported. before_load snapshots it precisely
+            # because a rejected replacement can fall back and overwrite it without ever
+            # replacing anything.
+            if self._pre_load_state is not None:
+                (
+                    self.topology,
+                    self.reason,
+                    self.plan,
+                    self.pipeline_groups,
+                    self.pipeline_groups_reason,
+                    self.split_config,
+                    self.split_config_reason,
+                ) = self._pre_load_state
             return
         self.mtp, self.mtp_reason = "unknown", "the load failed; nothing is running"
         if self.peer_process is not None or self.router is not None:
@@ -2686,16 +2716,43 @@ class SparkServing:
                 "spark serving: copied %d generated launch file(s) to %s", len(generated), peer
             )
         needed = [p for p in needed if p not in set(generated)]
-        checks = " && ".join(f"test -f {shlex.quote(p)}" for p in needed) or "true"
-        rc, out, _ = await ssh_run(peer, f"{checks} && echo YES || echo NO", timeout = 25.0)
-        self.peer_model_present = rc == 0 and out.strip().endswith("YES")
+        # Size and mtime, not just existence. A replica is only interchangeable with the primary
+        # if it is serving the SAME weights, and a peer holding a stale file at the same path --
+        # an older quant of the same repo, a sidecar replaced locally but not there -- passes an
+        # existence test and then answers from different weights. The router alternates between
+        # them, so the same conversation gets model-dependent answers while every other parity
+        # check (binary identity, argv, env) still reports a matched pair. Hashing 16 GiB over
+        # ssh is not worth it; size plus mtime catches a replaced file, which is the case that
+        # actually occurs, and disagreeing is treated exactly like the file being absent.
+        mismatch: List[str] = []
+        if needed:
+            fmt = "; ".join(
+                f"stat -c '%s %Y' {shlex.quote(p)} 2>/dev/null || echo NOSTAT" for p in needed
+            )
+            rc, out, _ = await ssh_run(peer, fmt, timeout = 25.0)
+            remote = (out or "").strip().splitlines()
+            self.peer_model_present = rc == 0 and len(remote) == len(needed)
+            if self.peer_model_present:
+                for path, line in zip(needed, remote):
+                    try:
+                        st = os.stat(path)
+                        local_sig = f"{st.st_size} {int(st.st_mtime)}"
+                    except OSError:
+                        continue  # not ours to judge; the launch will report it
+                    if line.strip() != local_sig:
+                        mismatch.append(f"{path} (peer {line.strip()}, here {local_sig})")
+                if mismatch:
+                    self.peer_model_present = False
+        else:
+            self.peer_model_present = True
         if not self.peer_model_present:
             self.topology, self.reason = (
                 "single",
                 (
-                    f"peer {peer} does not have {gguf_path} (or a sidecar the launch names); "
-                    f"copy it over the cluster link (rsync -a <file> {peer}:<same path>) to "
-                    f"enable replicas"
+                    f"peer {peer} does not have the same {gguf_path} (or a sidecar the launch "
+                    f"names): {'; '.join(mismatch) if mismatch else 'file missing'}. Copy it "
+                    f"over the cluster link (rsync -a <file> {peer}:<same path>) to enable "
+                    f"replicas"
                 ),
             )
             logger.warning("spark serving: %s", self.reason)

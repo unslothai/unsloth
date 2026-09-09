@@ -517,6 +517,7 @@ def _patch_remote(
     *,
     binary = "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server",
     model_present = True,
+    model_stale = False,
     port_opens = True,
 ):
     calls: List[str] = []
@@ -530,6 +531,31 @@ def _patch_remote(
         calls.append(remote)
         if remote.startswith("test -f"):
             return 0, "YES\n" if model_present else "NO\n", ""
+        if remote.startswith("stat -c"):
+            # The peer answers with the SAME size and mtime as the local file, which is what a
+            # correctly replicated node looks like. `model_present = False` makes it answer
+            # NOSTAT for every path, i.e. the file is not there at all.
+            import re as _re
+
+            paths = _re.findall(r"stat -c '%s %Y' (\S+)", remote)
+            lines = []
+            for raw in paths:
+                path = raw.strip("'\"")
+                if not model_present:
+                    lines.append("NOSTAT")
+                    continue
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    lines.append("NOSTAT")
+                    continue
+                if model_stale:
+                    # present at the same path, and a different file: the case an existence
+                    # test cannot tell from a correctly replicated node.
+                    lines.append(f"{st.st_size + 1} {int(st.st_mtime) + 60}")
+                else:
+                    lines.append(f"{st.st_size} {int(st.st_mtime)}")
+            return 0, "\n".join(lines) + "\n", ""
         if "echo MISSING" in remote:
             if binary == "MISSING":
                 return 1, "MISSING\n", ""
@@ -3035,7 +3061,7 @@ def test_a_generated_chat_template_is_copied_rather_than_demanded(cluster, monke
         copied = [c for c in _calls if "base64 -d" in c]
         assert len(copied) == 1 and str(template) in copied[0]
         # And it is NOT in the file-presence check, which it could never satisfy.
-        checks = [c for c in _calls if c.startswith("test -f")]
+        checks = [c for c in _calls if c.startswith("stat -c")]
         assert checks and str(template) not in checks[0]
     finally:
         template.unlink(missing_ok = True)
@@ -3263,3 +3289,33 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
     # an explicit field always wins; inheritance is only for a request that omits it
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Backend(["--lora", "a"], "org/m", None))
     assert ri._spark_inherited_extra_args(_Req("org/m", None, lea = [])) is None
+
+
+
+def test_a_peer_holding_a_different_file_at_the_same_path_does_not_become_a_replica(
+    cluster, monkeypatch, tmp_path
+):
+    """Existence is not identity. A replica is interchangeable with the primary only if it is
+    serving the SAME weights. A peer with a stale quant at the same path passes `test -f`, and
+    the router then alternates requests between two different models while the binary, argv and
+    environment parity checks all report a matched pair -- so one conversation gets
+    model-dependent answers with nothing anywhere reporting a problem."""
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 4096)
+
+    _calls, started = _patch_remote(
+        monkeypatch,
+        binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server",
+        model_present = True,
+        model_stale = True,
+    )
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+
+    assert ss.state().topology == "single", "a mismatched peer must not be put in rotation"
+    assert not started, "and no replica should have been launched"
+    assert "does not have the same" in ss.state().reason
+    assert str(model) in ss.state().reason, "the reason has to name the file that disagrees"
+    # the probe really did ask for identity, not just presence
+    assert any(c.startswith("stat -c") for c in _calls)
