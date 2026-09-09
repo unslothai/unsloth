@@ -63,7 +63,8 @@ const REASONING_EFFORT_SCALE = [
  *
  *  "none" is the off switch, not a rung, so it is skipped unless it is what was asked for:
  *  otherwise a thinking request clamps onto thinking disabled (Mistral's none | high turned a
- *  stored Medium into none). llama_cpp.py strips "none" from local ladders for the same reason. */
+ *  stored Medium into none). llama_cpp.py strips "none" from an enable_thinking_effort ladder
+ *  for the same reason; a reasoning_effort ladder keeps it, and an explicit ask still gets it. */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
