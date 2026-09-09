@@ -150,7 +150,23 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
     scans = cache_inventory.all_hf_cache_scans()
     by_id = _repos_by_id(scans)
     key = repo_id.strip().lower()
-    repos = by_id.get(key, [])
+    all_copies = by_id.get(key, [])
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    cache_path = cached_gguf_action_path(repo_id, variant)
+    repos = all_copies
+    surviving = []
+    if cache_path:
+        from hub.utils.hf_cache_state import resolve_delete_target_root
+
+        root = resolve_delete_target_root(
+            "model",
+            repo_id,
+            cache_path,
+            {Path(repo.repo_path).parent.resolve() for repo in all_copies},
+        )
+        repos = [repo for repo in all_copies if Path(repo.repo_path).parent.resolve() == root]
+        surviving = [repo for repo in all_copies if repo not in repos]
 
     reclaimed = 0
     for repo_info in repos:
@@ -158,7 +174,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
 
     # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
     # while a sibling quant survives they stay in use.
-    removes_last_checkpoint = True
+    removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
     if variant:
         for repo_info in repos:
             if _remaining_main_gguf_variants(repo_info, excluding = variant):
@@ -197,6 +213,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         "repo_id": repo_id,
         "variant": variant,
         "reclaimed_bytes": reclaimed,
+        "cache_path": cache_path,
         "retained_companions": retained,
         "freeable_companions": freeable,
         # Same predicate the destructive path uses: the native Qwen-Image encoder is a named quant inside

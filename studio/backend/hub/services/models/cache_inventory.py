@@ -686,7 +686,12 @@ def _scan_cached_gguf(
                         tts_only = row_task == "text-to-speech",
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
+                # GGUF rows represent a repository; the requested quant resolves its own cache source.
+                from hub.utils.gguf_sources import CHAT_GGUF_TASKS
+
+                if not row["partial"] and row_task in CHAT_GGUF_TASKS:
+                    row["load_id"] = repo_id
+                # The row's classification still comes from its preferred complete copy.
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):

@@ -93,6 +93,7 @@ async def get_gguf_variants(
     prefer_local_cache: bool = Query(False),
     offline: bool = Query(False),
     local_path: Optional[str] = Query(None),
+    include_cache_locations: bool = False,
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -101,6 +102,7 @@ async def get_gguf_variants(
         prefer_local_cache = prefer_local_cache,
         offline = offline,
         local_path = local_path,
+        include_cache_locations = include_cache_locations,
         hf_token = hf_token,
     )
 

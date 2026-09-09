@@ -153,6 +153,8 @@ export interface ValidateModelResponse {
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
   filename: string;
   /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;

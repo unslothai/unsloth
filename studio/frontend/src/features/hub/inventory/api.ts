@@ -176,6 +176,8 @@ export interface ScanFolderInfo {
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
   filename: string;
   quant: string;
   display_label?: string | null;
@@ -322,6 +324,7 @@ export interface CompanionAssetInfo {
 }
 
 export interface DeleteImpact {
+  cache_path?: string | null;
   repo_id: string;
   variant?: string | null;
   reclaimed_bytes: number;
@@ -472,6 +475,7 @@ export async function listGgufVariants(
   hfToken?: string,
   options?: {
     preferLocalCache?: boolean;
+    includeCacheLocations?: boolean;
     localPath?: string | null;
     signal?: AbortSignal;
   },
@@ -482,7 +486,7 @@ export async function listGgufVariants(
   const signal = options?.signal;
   const key = `${repoId}::${fingerprintToken(hfToken)}::${
     preferLocalCache ? "local" : "remote"
-  }::${localPathCacheKey(localPath)}`;
+  }::${localPathCacheKey(localPath)}::${!!options?.includeCacheLocations}`;
   const now = Date.now();
   const hit = ggufVariantsCache.get(key);
   if (hit && now < hit.expiresAt) {
@@ -494,6 +498,9 @@ export async function listGgufVariants(
     ggufVariantsCache.delete(key);
   }
   const params = new URLSearchParams({ repo_id: repoId });
+  if (options?.includeCacheLocations) {
+    params.set("include_cache_locations", "true");
+  }
   if (preferLocalCache) {
     params.set("prefer_local_cache", "true");
   }

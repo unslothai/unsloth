@@ -1004,6 +1004,7 @@ class VariantsAnswer(NamedTuple):
 
     response: GgufVariantsResponse
     context_source: Optional[str]
+    variant_context_sources: Optional[dict[str, str]] = None
 
 
 def _default_variant_candidates(variants) -> list[str]:
@@ -1026,6 +1027,7 @@ async def get_gguf_variants_answer(
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = None,
+    include_cache_locations: bool = False,
 ) -> VariantsAnswer:
     """
     List available GGUF quantization variants for a HuggingFace repo
@@ -1041,8 +1043,11 @@ async def get_gguf_variants_answer(
     # A repo-shaped id resolving to a directory is answered by that directory alone, not the HF cache
     # of the same-named repo, else a GGUF-less directory could evict the resident model.
     answered_locally = [False]
+    variant_context_sources: dict[str, str] = {}
+    hub_listing = None
 
-    def _compute() -> GgufVariantsResponse:
+    def _compute(local_path: Optional[str] = local_path) -> GgufVariantsResponse:
+        nonlocal hub_listing
         repo_cache_dir = (
             None if is_local_path(repo_id) else _repo_cache_dir_for_request(repo_id, local_path)
         )
@@ -1367,7 +1372,9 @@ async def get_gguf_variants_answer(
             return None
 
         try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
+            if hub_listing is None:
+                hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+            variants, has_vision, siblings = hub_listing
         except Exception:
             # Ungated: _cache_fallback_response already refuses an unauthorized caller.
             fallback = _cache_fallback_response()
@@ -1654,30 +1661,94 @@ async def get_gguf_variants_answer(
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer, not read from the closure afterwards: coalesced callers share one
         # computation and must all see the copy it answered from.
-        return VariantsAnswer(_compute_response(), answered_from[0])
+        response = _compute_response()
+        return VariantsAnswer(response, answered_from[0], variant_context_sources)
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        # Explicit filesystem requests keep their original scope. Logical repository requests
+        # include complete quantizations from remembered locations without adding inventory rows.
+        sources = {}
+        if (
+            include_cache_locations
+            and not skip
+            and not is_anonymous(hf_token)
+            and (not local_path or local_path == repo_id)
+        ):
+            from hub.utils.gguf_sources import cached_gguf_sources
+            sources = cached_gguf_sources(repo_id)
         try:
             response = _compute()
-        except Exception:
-            # Surface an empty leftover <quant>/ folder so the UI can delete it; otherwise re-raise the original error.
-            if skip:
+        except Exception as exc:
+            if sources and (prefer_local_cache or offline or hf_error_status(exc) is None):
+                response = GgufVariantsResponse(repo_id = repo_id, variants = [])
+            else:
+                if skip:
+                    raise
+                enriched = _mark_empty_dir_cleanables(
+                    repo_id,
+                    GgufVariantsResponse(repo_id = repo_id, variants = []),
+                    _repo_cache_dir_for_request(repo_id, local_path),
+                )
+                if enriched.variants:
+                    return enriched
                 raise
-            enriched = _mark_empty_dir_cleanables(
-                repo_id,
-                GgufVariantsResponse(repo_id = repo_id, variants = []),
-                _repo_cache_dir_for_request(repo_id, local_path),
-            )
-            if enriched.variants:
-                return enriched
-            raise
+        if sources and not answered_locally[0]:
+            variants = {v.quant.lower(): v for v in response.variants}
+            online_answer = not (prefer_local_cache or offline or answered_from[0])
+            scoped_responses = {}
+            for key, source in sources.items():
+                v = source.variant
+                previous = variants.get(key)
+                if previous is not None and source.cache_path == str(
+                    _repo_cache_dir_for_request(repo_id, None)
+                ):
+                    if previous.downloaded:
+                        previous.cache_path = source.cache_path
+                        variant_context_sources[key] = str(source.snapshot / v.filename)
+                    continue
+                variant_context_sources[key] = str(source.snapshot / v.filename)
+                detail = GgufVariantDetail(
+                    filename = v.filename,
+                    quant = v.quant,
+                    display_label = v.display_label,
+                    size_bytes = v.size_bytes,
+                    shard_count = int(getattr(v, "shard_count", 0) or 0),
+                    download_size_bytes = v.size_bytes,
+                    downloaded = True,
+                    cache_path = source.cache_path,
+                    dependency_key = _variant_dependency_key(repo_id, v.filename),
+                )
+                if online_answer:
+                    # Apply the same readiness and update checks as a request for this snapshot.
+                    if source.snapshot not in scoped_responses:
+                        original_source = answered_from[0]
+                        try:
+                            scoped = _compute(str(source.snapshot))
+                        finally:
+                            answered_from[0] = original_source
+                        scoped_responses[source.snapshot] = {
+                            item.quant.lower(): item for item in scoped.variants
+                        }
+                    checked = scoped_responses[source.snapshot].get(key)
+                    if checked is not None:
+                        detail = checked.model_copy(update = {"cache_path": source.cache_path})
+                        if detail.downloaded:
+                            detail.filename = v.filename
+                            detail.size_bytes = v.size_bytes
+                            detail.shard_count = int(getattr(v, "shard_count", 0) or 0)
+                        else:
+                            variant_context_sources.pop(key, None)
+                variants[key] = detail
+            response.variants = list(variants.values())
+            response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())
+            if not response.default_variant:
+                best = pick_best_gguf(_default_variant_candidates(response.variants))
+                response.default_variant = gguf_variant_key(best) if best else None
         if skip or answered_locally[0]:
             return response
         return _mark_empty_dir_cleanables(
-            repo_id,
-            response,
-            _repo_cache_dir_for_request(repo_id, local_path),
+            repo_id, response, _repo_cache_dir_for_request(repo_id, local_path)
         )
 
     from utils.hf_cache_settings import configured_cache_key
@@ -1686,6 +1757,7 @@ async def get_gguf_variants_answer(
         repo_id,
         bool(prefer_local_cache),
         bool(offline),
+        bool(include_cache_locations),
         local_path or "",
         hf_cache_scan.token_fingerprint(hf_token),
         # Switching cache storage must start a fresh scan rather than join one that is stuck on the old volume.
@@ -1714,6 +1786,7 @@ async def get_gguf_variants_response(
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = None,
+    include_cache_locations: bool = False,
 ) -> GgufVariantsResponse:
     """The listing alone, for callers that do not read metadata off the same copy."""
     answer = await get_gguf_variants_answer(
@@ -1722,5 +1795,6 @@ async def get_gguf_variants_response(
         offline = offline,
         local_path = local_path,
         hf_token = hf_token,
+        include_cache_locations = include_cache_locations,
     )
     return answer.response

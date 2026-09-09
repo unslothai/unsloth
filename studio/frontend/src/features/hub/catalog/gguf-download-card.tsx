@@ -594,13 +594,14 @@ export function GgufDownloadCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
-  const localVariantPath = cachePath?.trim() || null;
+  const localVariantPath = showMemoryBar ? null : cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
       preferLocalCache,
       localPath: localVariantPath,
+      includeCacheLocations: showMemoryBar,
     });
   const [selectedQuantState, setSelectedQuantState] = useState<{
     repoId: string;
@@ -831,7 +832,7 @@ export function GgufDownloadCard({
         repoId,
         deleteTarget,
         hfToken || undefined,
-        cachePath ?? undefined,
+        deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
       );
     },
     successMessage: () =>

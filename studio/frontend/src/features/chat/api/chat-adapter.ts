@@ -2492,7 +2492,7 @@ function buildAutoLoadSources(
       listVariants: () =>
         listGgufVariants(repo.repo_id, undefined, {
           preferLocalCache: true,
-          localPath: repo.cache_path,
+          localPath: repo.load_id || repo.cache_path,
           signal,
         }).then((response) => response.variants),
     });

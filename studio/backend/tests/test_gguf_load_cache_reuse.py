@@ -112,6 +112,7 @@ def _build_cache(
 
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [tmp_path])
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",

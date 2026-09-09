@@ -60,6 +60,11 @@ export function DeleteImpactSummary({ impact }: { impact: DeleteImpact | null })
   const freeable = impact.freeable_companions.reduce((sum, c) => sum + c.size_bytes, 0);
   return (
     <span className="mt-2 block space-y-1 text-ui-12p5">
+      {impact.cache_path && (
+        <span className="block break-all text-muted-foreground" data-testid="delete-impact-folder">
+          Folder: {impact.cache_path}
+        </span>
+      )}
       <span className="block text-foreground" data-testid="delete-impact-reclaimed">
         Frees {formatBytes(impact.reclaimed_bytes)} of disk space.
       </span>

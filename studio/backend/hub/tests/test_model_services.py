@@ -5691,6 +5691,7 @@ def _patch_variant_delete_side_effects(monkeypatch, hub_cache = None):
     # The repo under test lives in this cache; make it the active one so the delete scopes to it (default target
     # root is the active hub cache).
     if hub_cache is not None:
+        monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [hub_cache])
         monkeypatch.setattr(
             "utils.hf_cache_settings.get_hf_cache_paths",
             lambda: SimpleNamespace(hub_cache = hub_cache),

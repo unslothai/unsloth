@@ -872,6 +872,9 @@ def _delete_cached_model_blocking(
     *,
     only_if_orphan: bool = False,
 ) -> dict:
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
     # Free up space's list can be minutes old, and a background download finishing turns that orphan
     # into an installed checkpoint neither guard below catches.
     if only_if_orphan:

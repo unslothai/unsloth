@@ -549,7 +549,7 @@ test("unpinning a repo that was never pinned writes nothing", () => {
   assert.equal(storedPinned(), null, "no write, so the record is untouched");
 });
 
-test("both repo-level deletes clear pins through that one action", async () => {
+test("chat GGUF deletes reconcile surviving copies while other model deletes clear pins", async () => {
   // The picker's partial repo row and the Hub's cache row do the same delete, so they must not
   // drift into two answers about what a pin outlives.
   const pickers = await readFile(
@@ -562,8 +562,9 @@ test("both repo-level deletes clear pins through that one action", async () => {
   assert.equal(
     pickers.split("unpinRepo(c.repo_id);").length - 1,
     2,
-    "the partial GGUF repo row and the cached model row alike",
+    "non-GGUF and media cached model rows clear repository pins",
   );
+  assert.ok(pickers.includes("reconcileGgufPinsAfterDelete(c.repo_id"));
   assert.ok(
     !pickers.includes("if (pinnedSet.has(pinKey(c.repo_id))) {"),
     "and neither clears by toggling the bare repo key",
@@ -575,6 +576,7 @@ test("both repo-level deletes clear pins through that one action", async () => {
     ),
     "utf8",
   );
+  assert.match(rows, /reconcileGgufPinsAfterDelete\(\s*deletableRepoId/);
   assert.ok(
     rows.includes(
       "usePinnedModelsStore.getState().unpinRepo(deletableRepoId);",
