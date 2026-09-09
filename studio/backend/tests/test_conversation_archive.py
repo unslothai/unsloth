@@ -2160,6 +2160,65 @@ def test_a_legacy_archive_written_in_one_clock_tick_is_still_ordered(conn, monke
     assert quoted == ["1", "2", "3", "4", "5"], quoted
 
 
+def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monkeypatch):
+    """Tied documents must GROUP, because `chunk_index` is a position inside one of them.
+
+    The tie is the same one the test above forces, a clock too coarse to separate two
+    writes, but the turns here are long enough to be stored as several chunks each. Ranked
+    above the document, `chunk_index` stops being the thing that keeps a long message
+    contiguous and becomes the thing that shreds it: every document's chunk 0 sorts before
+    any document's chunk 1, so two three-chunk turns come back A0, B0, A1, B1, A2, B2 and
+    each turn is quoted through the middle of the other. Ranked below it, the same
+    component does the job it was added for.
+    """
+    monkeypatch.setattr(config, "CHUNK_TOKENS", 30)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    monkeypatch.setattr(store, "_now", lambda: "2026-01-01T00:00:00+00:00")
+
+    def _long_turn(tag):
+        return _turn(
+            f"turn {tag} about pelicans",
+            f"{tag}HEAD pelicans at the opening "
+            + " ".join(f"w{index}" for index in range(25))
+            + f" {tag}TAIL pelicans at the closing "
+            + " ".join(f"z{index}" for index in range(25)),
+        )
+
+    history = [dict(message) for tag in ("AAA", "BBB") for message in _long_turn(tag)]
+    _save_thread(THREAD, history, append = True)
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 2
+    scope = store.conversation_archive_scope(THREAD)
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+    # The premise, and it takes both halves: one timestamp for both documents, and more
+    # than one chunk each, or the interleave has nothing to interleave.
+    assert {row["created_at"] for row in
+            conn.execute("SELECT created_at FROM documents WHERE scope=?", (scope,))} == {
+        "2026-01-01T00:00:00+00:00"
+    }
+    per_document = [
+        row["n"]
+        for row in conn.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE scope=? GROUP BY document_id", (scope,)
+        )
+    ]
+    assert min(per_document) > 1, per_document
+
+    _text, sources = conversation_archive.recall(THREAD, "pelicans", top_k = 8)
+
+    # Each turn is quoted in one unbroken run, and the run that was archived first leads.
+    documents = [source["documentId"] for source in sources]
+    runs = [document for index, document in enumerate(documents)
+            if index == 0 or documents[index - 1] != document]
+    assert len(runs) == len(set(documents)) == 2, documents
+    # And inside a run the pieces are still in writing order, which is what `chunk_index`
+    # is for once it is asked the question it can answer.
+    for document in runs:
+        indexes = [s["chunkIndex"] for s in sources if s["documentId"] == document]
+        assert indexes == sorted(indexes), (document, indexes)
+    assert "AAAHEAD" in sources[0]["text"], sources[0]["text"]
+
+
 def test_a_rewritten_turn_keeps_the_insertion_order_it_was_archived_in(conn, monkeypatch):
     """A re-embed replaces a row, and the replacement has to sit where the original sat.
 

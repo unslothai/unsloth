@@ -2124,13 +2124,11 @@ def _conversation_order(row) -> tuple:
 
     NULL ordinals sort FIRST, and that is not a fallback so much as a fact: they were
     written by a build that had no such column, so they genuinely predate every numbered
-    turn in the same scope. Within a turn, `chunk_index` keeps a long message's pieces
-    contiguous and in order, which relevance ordering gets wrong today. `created_at`
-    breaks ties, because the ordinal is deliberately not UNIQUE: the write lock is
-    best-effort, so two concurrent archive passes can compute the same MAX + 1 and must
-    tie-break rather than raise.
+    turn in the same scope. `created_at` breaks ties below that, because the ordinal is
+    deliberately not UNIQUE: the write lock is best-effort, so two concurrent archive
+    passes can compute the same MAX + 1 and must tie-break rather than raise.
 
-    The document's rowid ends the key, and it has to, because everything above it can tie:
+    Then the document's rowid, and it is needed because everything above it can tie:
     `created_at` is a wall-clock reading, and a clock whose granularity is coarser than a
     write is a clock that stamps several rows identically. Windows advances the system
     clock about every 15.6 ms, so a compaction writing a whole conversation at once
@@ -2139,8 +2137,15 @@ def _conversation_order(row) -> tuple:
     the turns are quoted scrambled under a header saying they are oldest first and that
     each supersedes the one before. Insertion order is the tiebreak because it is what the
     archive actually recorded, and the rewrite path preserves it (`create_document`'s
-    `rowid`) so a re-embed cannot move a turn. Last in the key, so it decides nothing that
-    an ordinal or a timestamp already decided.
+    `rowid`) so a re-embed cannot move a turn.
+
+    `chunk_index` comes LAST, under the rowid rather than over it, because it is a position
+    WITHIN a document and means nothing between two of them. Ranked above document
+    identity it does not order the turns, it interleaves them: two tied documents of three
+    chunks each sort A0, B0, A1, B1, A2, B2, and the long message whose pieces this
+    component exists to keep contiguous is shredded through its neighbour. That is the same
+    defect as the tie it sits beneath, one level down, and it only appears once two
+    DOCUMENTS tie, which is exactly the case the rowid was added for.
     """
     if row is None:
         return (2, 0, "", 0, 0)
@@ -2149,8 +2154,8 @@ def _conversation_order(row) -> tuple:
     index = tool._row_value(row, "chunk_index") or 0
     rowid = tool._row_value(row, "document_rowid") or 0
     if ordinal is None:
-        return (0, 0, created, index, rowid)
-    return (1, int(ordinal), created, index, rowid)
+        return (0, 0, created, rowid, index)
+    return (1, int(ordinal), created, rowid, index)
 
 
 def _above_floor(hits: list, min_dense_score: float) -> list:
@@ -2484,17 +2489,20 @@ def recall(
         if not merged:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            # The same key `_conversation_order` uses on the single-query path: a turn with
-            # no ordinal predates every numbered one, and `chunkIndex` keeps a long turn's
-            # pieces in writing order rather than in the order the two queries returned
-            # them, which a stable sort would otherwise preserve.
+            # The same key `_conversation_order` uses on the single-query path, component
+            # for component: a turn with no ordinal predates every numbered one, and
+            # `chunkIndex` keeps a long turn's pieces in writing order rather than in the
+            # order the two queries returned them, which a stable sort would otherwise
+            # preserve. It has to stay in that order too, `documentRowid` above
+            # `chunkIndex`, or two tied documents interleave here while the single-query
+            # path groups them and the merged block disagrees with the unmerged one.
             merged.sort(
                 key = lambda source: (
                     source.get("turn") is not None,
                     source.get("turn") or 0,
                     source.get("createdAt") or "",
-                    source.get("chunkIndex") or 0,
                     source.get("documentRowid") or 0,
+                    source.get("chunkIndex") or 0,
                 )
             )
             kept = merged[:limit]
