@@ -3329,25 +3329,51 @@ def _serve_commands(
             f"vllm serve {model} --tensor-parallel-size {n_nodes} "
             f"--distributed-executor-backend ray",
         ]
+    # llama.cpp opens a GGUF FILE. A cached repo id or a safetensors directory is accepted by
+    # `spark plan --model`, and emitting a llama.cpp command for one produced a plan whose
+    # last step asks llama-server to open a directory as a GGUF. Those go to vLLM instead.
+    gguf = model.endswith(".gguf") or model == "<model>"
+    server = llama_server_binary() or "llama-server"
     if axis == "replicas":
         # spark_lb takes backends as positional, space-separated tokens.
         backends = " ".join(
             f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8080" for i in range(n_nodes)
         )
+        if not gguf:
+            return [
+                env,
+                f"vllm serve {model} --host 0.0.0.0 --port 8080     # run on EACH Spark",
+                f"python -m studio.spark_lb {backends}     # one front door",
+            ]
+        # The real server, on the port the load balancer is told about. This used to say
+        # `unsloth spark serve`, which prints a recipe rather than launching anything, and
+        # the recipe it prints uses 8081/8082 -- so every backend the line below advertises
+        # was closed.
         return [
             env,
-            f"unsloth spark serve --model {model} --engines 1     # run on EACH Spark",
+            f"{server} -m {model} -ngl 999 --host 0.0.0.0 --port 8080     # run on EACH Spark",
             f"python -m studio.spark_lb {backends}     # one front door",
         ]
     if axis in ("pipeline-parallel", "layer-split"):
+        if not gguf:
+            return [
+                env,
+                f"vllm serve {model} --pipeline-parallel-size {n_nodes} "
+                f"--distributed-executor-backend ray",
+            ]
         return [
             env,
-            f"unsloth spark serve --model {model} --engines 1   # llama.cpp RPC layer split",
+            # This one stays a `spark serve`: the RPC split needs the peer's bundle probed and
+            # the protocol checked before a launch is worth printing, which is what that
+            # command does. It PRINTS those commands; it does not start them.
+            f"unsloth spark serve --model {model} --engines 1   # prints the RPC split launch",
             f"# or, with vLLM:  vllm serve {model} --pipeline-parallel-size {n_nodes} "
             f"--distributed-executor-backend ray",
         ]
     if axis == "single":
-        return [f"unsloth spark serve --model {model} --engines 1"]
+        if not gguf:
+            return [f"vllm serve {model} --host 0.0.0.0 --port 8080"]
+        return [f"{server} -m {model} -ngl 999 --host 0.0.0.0 --port 8080"]
     return []
 
 
@@ -4317,6 +4343,125 @@ def _local_launch(command: str) -> str:
 
 
 _PEER_STAGE_PID = "/tmp/unsloth_pp_stage1.pid"
+_SSH_OPTS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no")
+
+
+def peer_home(peer_ip: str, user: str) -> Optional[str]:
+    """The peer's home directory, absolute. Asked once and reused: the peer's account need
+    not be ours, so nothing here may assume the two homes have the same path."""
+    try:
+        out = subprocess.run(
+            ["ssh", "-n", *_SSH_OPTS, f"{user}@{peer_ip}", "printf %s \"$HOME\""],
+            capture_output = True,
+            text = True,
+            timeout = 30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    home = (out.stdout or "").strip()
+    return home if out.returncode == 0 and home.startswith("/") else None
+
+
+def _rsync_to_peer(local: str, remote: str, peer_ip: str, user: str) -> Optional[str]:
+    """Copy `local` (file or directory) to the absolute `remote` on the peer. Returns an
+    error string, or None on success."""
+    parent = osp.dirname(remote.rstrip("/")) or "/"
+    source = local.rstrip("/") + "/" if osp.isdir(local) else local
+    destination = remote.rstrip("/") + "/" if osp.isdir(local) else remote
+    cmd = [
+        "rsync",
+        "-a",
+        "--rsync-path",
+        f"mkdir -p {shlex.quote(parent)} && rsync",
+        "-e",
+        "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
+        source,
+        f"{user}@{peer_ip}:{destination}",
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output = True, text = True, timeout = 7200)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)[:200]
+    return None if res.returncode == 0 else (res.stderr or "").strip()[:200]
+
+
+def stage_run_inputs(
+    command: str, peer_ip: str, user: str, home: str
+) -> Tuple[str, List[str], List[str]]:
+    """Put rank 1's inputs on the peer and point its command at them.
+
+    Rank 1 runs over SSH from its own `$HOME`, and provisioning copies the venv, the
+    llama.cpp bundle and the kernel caches -- not the dataset and not the checkpoint. The
+    same `--data` and `--model` values were handed to both ranks, so unless the user had
+    independently created them at the identical peer path rank 1 died in `open(args.data)`
+    or in the tokenizer load while rank 0 sat in the rendezvous. Returns the rewritten
+    command, what was staged, and what failed."""
+    staged: List[str] = []
+    failed: List[str] = []
+    root = f"{home.rstrip('/')}/.unsloth/spark_inputs"
+    tokens = shlex.split(command)
+    for i, token in enumerate(tokens[:-1]):
+        if token not in ("--data", "--model"):
+            continue
+        value = tokens[i + 1]
+        local = osp.expanduser(value)
+        if osp.exists(local):
+            remote = f"{root}/{osp.basename(local.rstrip('/'))}"
+            error = _rsync_to_peer(local, remote, peer_ip, user)
+            if error:
+                failed.append(f"{token} {value}: {error}")
+            else:
+                tokens[i + 1] = remote
+                staged.append(f"{token} -> {remote}")
+            continue
+        if token != "--model":
+            continue
+        # A repo id: copy the cache entry rather than making the peer download it again at
+        # internet speed over a link that moves 444 MB/s.
+        cached = osp.expanduser(
+            osp.join("~/.cache/huggingface/hub", "models--" + value.replace("/", "--"))
+        )
+        if not osp.isdir(cached):
+            continue
+        remote = f"{home.rstrip('/')}/.cache/huggingface/hub/{osp.basename(cached)}"
+        error = _rsync_to_peer(cached, remote, peer_ip, user)
+        if error:
+            failed.append(f"{value} (HF cache): {error}")
+        else:
+            staged.append(f"{value} -> {remote}")
+    return shlex.join(tokens), staged, failed
+
+
+def collect_stage_outputs(save_dir: str, peer_ip: str, user: str, home: str) -> Optional[str]:
+    """Bring the peer's `stageN/` directories back into the local save directory.
+
+    `spark merge` reads every stage from ONE local directory and says it needs no second
+    Spark, while rank 1 wrote its stage on the peer and nothing fetched it. A successful run
+    therefore left no mergeable checkpoint on either machine."""
+    local = osp.expanduser(save_dir)
+    remote = save_dir if osp.isabs(save_dir) else f"{home.rstrip('/')}/{save_dir}"
+    os.makedirs(local, exist_ok = True)
+    cmd = [
+        "rsync",
+        "-a",
+        "-e",
+        "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
+        f"{user}@{peer_ip}:{remote.rstrip('/')}/",
+        local.rstrip("/") + "/",
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output = True, text = True, timeout = 7200)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)[:200]
+    return None if res.returncode == 0 else (res.stderr or "").strip()[:200]
+
+
+def _save_dir_of(command: str) -> str:
+    tokens = shlex.split(command)
+    for i, token in enumerate(tokens[:-1]):
+        if token == "--save":
+            return tokens[i + 1]
+    return ""
 
 
 def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.log") -> int:
@@ -4324,9 +4469,27 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     held open and the head rank never starts; without the peer log its errors are lost, since
     the head only ever reports `DistStoreError: 1/2 clients joined`."""
     user = _ssh_user()
-    ssh_opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
+    ssh_opts = list(_SSH_OPTS)
     activate = venv_activate_sh()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
+
+    # Rank 1's inputs, before it is started. It runs from its own $HOME and provisioning
+    # copies the venv, the bundle and the kernel caches, so the dataset and the checkpoint
+    # are not there under any name unless they are put there.
+    node1 = plan["node1"]
+    home = peer_home(plan["peer_ip"], user)
+    if home is None:
+        print("  could not read the peer's home directory over ssh; not launching")
+        return 1
+    node1, staged, failed = stage_run_inputs(node1, plan["peer_ip"], user, home)
+    for note in staged:
+        print(f"  staged  {note}")
+    if failed:
+        for note in failed:
+            print(f"  FAILED to stage {note}")
+        print("  Not launching: rank 1 would fail on a missing input while rank 0 waits out")
+        print("  the rendezvous timeout, which reports only 'DistStoreError: 1/2 clients'.")
+        return 1
     # `cd $HOME`, not the local cwd: provisioning copies the venv and the caches, never the
     # project directory, so the same absolute path need not exist on the peer.
     #
@@ -4338,7 +4501,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # so the negative kill takes torchrun's children with it.
     remote = (
         f"cd \"$HOME\" && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
-        f"{env}; exec {plan['node1']}' > {log_peer} 2>&1 < /dev/null & "
+        f"{env}; exec {node1}' > {log_peer} 2>&1 < /dev/null & "
         f"echo $! > {_PEER_STAGE_PID}"
     )
     try:
@@ -4380,6 +4543,20 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         # and killing it there would truncate the half of the checkpoint it owns.
         print(f"  local stage exited {rc}; stopping the peer stage")
         stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, _PEER_STAGE_PID)
+        return rc
+
+    # Rank 1 wrote `DIR/stage1` on the PEER. `spark merge` reads every stage from one local
+    # directory and says it needs no second Spark, so without this a run that trained
+    # correctly still left no mergeable checkpoint on either machine.
+    save_dir = _save_dir_of(plan["node0"])
+    if save_dir:
+        print(f"  collecting the peer's stages into {save_dir} ...")
+        error = collect_stage_outputs(save_dir, plan["peer_ip"], user, home)
+        if error:
+            print(f"  FAILED to collect the peer's stages: {error}")
+            print(f"  They are under {save_dir} on {plan['peer_ip']}; copy them before merging.")
+            return 1
+        print(f"  all stages are now in {save_dir}; merge with `unsloth spark merge`")
     return rc
 
 

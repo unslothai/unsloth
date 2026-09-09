@@ -211,6 +211,10 @@ def test_the_peer_stage_is_stopped_when_the_local_one_fails(cluster, monkeypatch
     monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
     monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
     monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cluster, "peer_home", lambda ip, user: "/home/peer")
+    monkeypatch.setattr(
+        cluster, "stage_run_inputs", lambda command, ip, user, home: (command, [], [])
+    )
     stopped = []
     monkeypatch.setattr(
         cluster,
@@ -234,6 +238,10 @@ def test_a_successful_run_leaves_the_peer_to_finish(cluster, monkeypatch) -> Non
     monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
     monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
     monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cluster, "peer_home", lambda ip, user: "/home/peer")
+    monkeypatch.setattr(
+        cluster, "stage_run_inputs", lambda command, ip, user, home: (command, [], [])
+    )
     stopped = []
     monkeypatch.setattr(
         cluster,
@@ -248,6 +256,124 @@ def test_a_successful_run_leaves_the_peer_to_finish(cluster, monkeypatch) -> Non
     plan = {"env": {}, "node0": "true", "node1": "true", "peer_ip": "192.0.2.7"}
     assert cluster.run_pipeline(plan) == 0
     assert stopped == []
+
+
+def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, tmp_path) -> None:
+    """Both ranks got the same --data and --model, and rank 1 runs from its own $HOME with
+    only the venv, the bundle and the kernel caches copied to it."""
+    data = tmp_path / "rows.jsonl"
+    data.write_text('{"q": "a", "a": "b"}\n', encoding = "utf-8")
+    checkpoint = tmp_path / "ckpt"
+    checkpoint.mkdir()
+    copied = []
+    monkeypatch.setattr(
+        cluster,
+        "_rsync_to_peer",
+        lambda local, remote, ip, user: copied.append((local, remote)) and None or None,
+    )
+    command = f"torchrun x --model {checkpoint} --data {data} --steps 4"
+    rewritten, staged, failed = cluster.stage_run_inputs(command, "192.0.2.7", "u", "/home/bob")
+    assert failed == []
+    assert "/home/bob/.unsloth/spark_inputs/ckpt" in rewritten
+    assert "/home/bob/.unsloth/spark_inputs/rows.jsonl" in rewritten
+    assert str(tmp_path) not in rewritten
+    assert [remote for _, remote in copied] == [
+        "/home/bob/.unsloth/spark_inputs/ckpt",
+        "/home/bob/.unsloth/spark_inputs/rows.jsonl",
+    ]
+
+
+def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_path) -> None:
+    """Cached only on the initiating Spark, the peer would refetch it at internet speed over
+    a link that moves 444 MB/s, or fail."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cached = tmp_path / ".cache" / "huggingface" / "hub" / "models--org--m"
+    cached.mkdir(parents = True)
+    copied = []
+    monkeypatch.setattr(
+        cluster, "_rsync_to_peer", lambda local, remote, ip, user: copied.append(remote) and None
+    )
+    rewritten, staged, failed = cluster.stage_run_inputs(
+        "torchrun x --model org/m", "192.0.2.7", "u", "/home/bob"
+    )
+    assert failed == []
+    # The repo id is still the repo id; only the cache moved.
+    assert "--model org/m" in rewritten
+    assert copied == ["/home/bob/.cache/huggingface/hub/models--org--m"]
+
+
+def test_a_model_that_is_neither_a_path_nor_cached_is_left_alone(cluster, monkeypatch, tmp_path) -> None:
+    """No regression: a repo id the peer can fetch for itself needs nothing staged."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        cluster, "_rsync_to_peer", lambda *a: pytest.fail("nothing should have been copied")
+    )
+    rewritten, staged, failed = cluster.stage_run_inputs(
+        "torchrun x --model org/m", "192.0.2.7", "u", "/home/bob"
+    )
+    assert (staged, failed) == ([], [])
+    assert "--model org/m" in rewritten
+
+
+def test_a_failed_stage_is_reported_and_not_silently_skipped(cluster, monkeypatch, tmp_path) -> None:
+    data = tmp_path / "rows.jsonl"
+    data.write_text("{}\n", encoding = "utf-8")
+    monkeypatch.setattr(cluster, "_rsync_to_peer", lambda *a: "permission denied")
+    _, staged, failed = cluster.stage_run_inputs(
+        f"torchrun x --data {data}", "192.0.2.7", "u", "/home/bob"
+    )
+    assert staged == [] and failed and "permission denied" in failed[0]
+
+
+def test_the_peer_stages_are_collected_after_a_successful_run(cluster, monkeypatch, tmp_path) -> None:
+    """`spark merge` reads every stage from ONE local directory and says it needs no second
+    Spark, while rank 1 wrote its stage on the peer."""
+    monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
+    monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
+    monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cluster, "peer_home", lambda ip, user: "/home/peer")
+    monkeypatch.setattr(
+        cluster, "stage_run_inputs", lambda command, ip, user, home: (command, [], [])
+    )
+    collected = []
+    monkeypatch.setattr(
+        cluster,
+        "collect_stage_outputs",
+        lambda save, ip, user, home: collected.append((save, home)) and None,
+    )
+
+    class _Done:
+        returncode = 0
+
+    monkeypatch.setattr(cluster.subprocess, "run", lambda *a, **k: _Done())
+    plan = {
+        "env": {},
+        "node0": f"torchrun x --save {tmp_path / 'out'}",
+        "node1": "torchrun x",
+        "peer_ip": "192.0.2.7",
+    }
+    assert cluster.run_pipeline(plan) == 0
+    assert collected == [(str(tmp_path / "out"), "/home/peer")]
+
+
+def test_a_run_without_save_collects_nothing(cluster, monkeypatch) -> None:
+    monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
+    monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
+    monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cluster, "peer_home", lambda ip, user: "/home/peer")
+    monkeypatch.setattr(
+        cluster, "stage_run_inputs", lambda command, ip, user, home: (command, [], [])
+    )
+    monkeypatch.setattr(
+        cluster, "collect_stage_outputs", lambda *a: pytest.fail("nothing to collect")
+    )
+
+    class _Done:
+        returncode = 0
+
+    monkeypatch.setattr(cluster.subprocess, "run", lambda *a, **k: _Done())
+    plan = {"env": {}, "node0": "torchrun x", "node1": "torchrun x", "peer_ip": "192.0.2.7"}
+    assert cluster.run_pipeline(plan) == 0
 
 
 def test_the_launch_records_the_pid_it_would_stop() -> None:

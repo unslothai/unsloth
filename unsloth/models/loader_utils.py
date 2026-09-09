@@ -293,8 +293,13 @@ def _notify_device_map_cannot_span_sparks(device_map):
         'Unsloth: `device_map="%s"` cannot span two DGX Sparks. They are separate hosts\n'
         "         with one GB10 each, so this process sees 1 GPU and the whole model stays\n"
         "         on cuda:0. To use both Sparks:\n"
-        "           training  : torchrun --nnodes=2 --nproc_per_node=1 ... (DDP, or FSDP to\n"
-        "                       shard parameters across the pair) -- see `unsloth spark train`\n"
+        # NOT FSDP. spark_cluster says in as many words that Unsloth does not support it
+        # (#4858), and this notice is read by someone whose model did not fit, so pointing
+        # them at a sharding mode that does not exist sends them into a DDP launch that
+        # replicates the whole model and OOMs again. --layer-split is the mode that shards.
+        "           training  : `unsloth spark train --layer-split <model>` shards the\n"
+        "                       decoder across both; plain DDP replicates it and still\n"
+        "                       needs the whole model to fit one Spark\n"
         "           inference : `unsloth spark serve --model <gguf>` (llama.cpp RPC splits\n"
         "                       a model too large for one Spark across both)" % device_map
     )

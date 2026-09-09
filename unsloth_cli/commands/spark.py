@@ -519,10 +519,20 @@ def up(
         _say("  that is running someone else's job, that is destructive. Make sure the")
         _say("  peer is idle, or run the pieces yourself.")
         if sit["seen"] > 2:
+            nodes = min(sit["seen"], sit["max_nodes"])
             _say("")
             _say(f"  You have {sit['seen']} Sparks visible. Three or more cannot be cabled")
             _say("  point-to-point, so pairing them needs a switched RoCE fabric and an")
-            _say(f"  explicit `--nodes {min(sit['seen'], sit['max_nodes'])} --switched`.")
+            _say(f"  explicit `--nodes {nodes} --switched`.")
+            _say("")
+            # And then STOP. Falling through to `setup --yes` built and saved the default
+            # two-node plan, silently leaving out the machines this paragraph just said
+            # needed a switched-fabric plan. Whether they share such a fabric is not
+            # something this can see, and rail_plan_report refuses to guess it either.
+            _say(f"NEXT: unsloth spark setup --nodes {nodes} --switched")
+            _say("  (run it yourself: whether those Sparks share a switched RoCE fabric is")
+            _say("   not visible from here, and a flat plan that assumes one black-holes.)")
+            raise typer.Exit(1)
         _say("")
         _say("NEXT: unsloth spark setup")
         if check:
