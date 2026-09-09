@@ -46,15 +46,14 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
 # A compiler that always fails. install.ps1 no longer calls Add-Type at all, so this
-# now proves the absence rather than exercising a fallback: every test that installs
-# it must behave exactly as it does without it.
+# proves the absence: every test that installs it must behave as it does without it.
 SABOTAGE = (
     """function Add-Type { throw "(0) : error CS2001: Source file 'a.0.cs' could not be found" }"""
 )
 
-# What a host that cannot emit looks like. Constrained Language Mode and App
-# Control's Dynamic Code Security both land here, and Test-StudioCanDefineNativeTypes
-# is the gate they come through, so overriding it is the whole of "no native side".
+# What a host that cannot emit looks like. Constrained Language Mode and App Control's
+# Dynamic Code Security both come through Test-StudioCanDefineNativeTypes, so overriding
+# that gate is the whole of "no native side".
 NO_NATIVE = """function Test-StudioCanDefineNativeTypes { return $false }"""
 
 
@@ -306,8 +305,8 @@ Write-Output "TEMP:$env:TEMP"
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
-    # The imports target kernel32, so off Windows the type builds and the CALL fails; it
-    # has to degrade to a usable answer rather than throw.
+    # The imports target kernel32, so off Windows the type builds and the CALL fails:
+    # it must degrade to a usable answer rather than throw.
     assert _lines(result, "PATH:")[0].startswith("PATH:")
     assert _lines(result, "PATH:") != ["PATH:"]
 
@@ -1162,7 +1161,7 @@ Write-Output "CALLS:$([UnslothStudioFinalPathV3]::Calls)"
     assert _lines(result, "PATH:")[0].endswith("studio")
     warnings = [line for line in result.stdout.splitlines() if "native helper; continuing" in line]
     assert len(warnings) == 1, warnings
-    # The throwing resolver was really reached, four times, rather than the whole thing
+    # The throwing resolver was really reached, four times, rather than everything
     # falling back because the type was absent.
     assert _lines(result, "CALLS:") == ["CALLS:4"]
 
@@ -1728,12 +1727,11 @@ def _gate(source: str) -> str:
     )
 
 
-# Status 0 is "no policy", and it answers without spawning anything. Anything else is a
-# policy whose OPTIONS decide the answer, and Win32_DeviceGuard does not report them:
-# option 19 Dynamic Code Security always blocks unsigned System.Reflection.Emit assemblies
-# and is enforced even in an audit policy before Windows 11 24H2, while an audit policy
-# without it emits perfectly well. So the gate asks a child process rather than guessing,
-# and what these assert is that it delegates rather than deciding.
+# Status 0 is "no policy" and answers without spawning anything. Anything else is a policy
+# whose OPTIONS decide the answer, and Win32_DeviceGuard does not report them: option 19
+# Dynamic Code Security always blocks unsigned System.Reflection.Emit assemblies and is
+# enforced even in an audit policy before Windows 11 24H2, while an audit policy without it
+# emits fine. So the gate asks a child process, and these assert that it delegates.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 @pytest.mark.parametrize("status", ["1", "2"])
@@ -1792,10 +1790,9 @@ def test_no_policy_answers_without_spawning_a_probe(script: str):
     assert _lines(result, "CALLS:") == ["CALLS:0"]
 
 
-# The runtime test below catches this by executing it, but only on a host where emit
-# succeeds. This one is the invariant itself, and it is the one a future edit trips: adding
-# a single double quote to the probe body is enough, and nothing about the resulting failure
-# points back at the quote.
+# The runtime test below catches this by executing it, but only where emit succeeds. This
+# one is the invariant itself, and the one a future edit trips: one double quote added to
+# the probe body is enough, and the resulting failure points nowhere near the quote.
 @pytest.mark.parametrize("script", ["install", "setup"])
 def test_the_probe_body_carries_no_double_quote(script: str):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
@@ -1809,10 +1806,9 @@ def test_the_probe_body_carries_no_double_quote(script: str):
 
 
 # The acceptance rules, one child at a time. $PSHOME is an ordinary variable, so a fake host
-# under a temporary one lets each rule be exercised without a policy, a Windows box or luck.
-# Every case here is a way a real child can answer badly: it printed the marker and then died,
-# it ran in a language mode its parent did not, it printed something that merely CONTAINS the
-# marker, or it never returned at all.
+# under a temporary one exercises each rule without a policy, a Windows box or luck. Each case
+# is a way a real child answers badly: printed the marker then died, ran in a language mode
+# its parent did not, printed something that merely CONTAINS the marker, or never returned.
 # A #!/bin/sh host, so POSIX only: Windows CreateProcess rejects a file with no
 # executable format, every case would come back false through the catch, and the
 # accept case would fail while the deadline case passed without waiting.
@@ -1866,18 +1862,17 @@ def test_the_probe_only_accepts_a_clean_exact_answer(
     )
     assert result.returncode == 0, f"{label}: {result.stderr}"
     assert _lines(result, "ANSWER:") == [f"ANSWER:{expected}"], label
-    # And WHY, which is not the same fact as the boolean. A child that ran and refused is a
-    # machine that cannot emit; a child that never answered is a process that failed, and
-    # the gate retries only the second one and reports a different reason for it.
+    # And WHY, which is not the same fact as the boolean: a child that ran and refused is a
+    # machine that cannot emit, a child that never answered is a failed process. The gate
+    # retries only the second and reports a different reason for it.
     assert _lines(result, "OUTCOME:") == [f"OUTCOME:{outcome}"], label
 
 
 # One transient process failure used to be indistinguishable from a policy: cached for the
 # whole run, it sends the installer down the lexical path, where two unequal roots compare as
-# unknown and a second runtime lock is taken, which is how an unrelated install elsewhere on
-# the machine turns into "the managed Unsloth environment is busy". The compiled version this
-# replaces tried twice before caching a negative. A machine that really is blocked still pays
-# for exactly one probe, so the retry costs nothing where the answer was already real.
+# unknown and a second runtime lock is taken, turning an unrelated install elsewhere into
+# "the managed Unsloth environment is busy". The compiled version tried twice before caching
+# a negative. A genuinely blocked machine still pays for exactly one probe.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 @pytest.mark.parametrize(
@@ -1922,8 +1917,7 @@ def test_only_a_probe_that_never_answered_is_retried(script: str, outcome: str, 
 
 
 # The reason printed alongside the degradation. Naming a machine setting for what was really
-# a process that could not be spawned sends whoever reads the log looking for a policy that
-# is not there.
+# an unspawnable process sends whoever reads the log looking for a policy that is not there.
 @requires_pwsh
 @pytest.mark.parametrize(
     "outcome,expected",
@@ -1961,9 +1955,9 @@ def test_the_degradation_reason_says_what_was_actually_established(outcome: str,
 
 # The compiled version carried the path helper and the process-image helper on ONE type, so
 # they could not disagree about whether this session can emit. Two types can: a session that
-# emitted the path type, was interrupted, and came back to a probe that now fails would keep
-# native path resolution and silently lose native process inspection, which is how a running
-# Studio stops being seen. A type already published here is stronger evidence than any child.
+# emitted the path type and came back to a probe that now fails would keep native path
+# resolution and silently lose native process inspection, which is how a running Studio stops
+# being seen. A type already published here outweighs any child.
 @requires_pwsh
 def test_an_already_emitted_type_settles_it_without_asking_a_child():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -2006,8 +2000,8 @@ def test_an_already_emitted_type_settles_it_without_asking_a_child():
 
 
 # Same rule for the cosmetic helpers. The console one asked the gate before looking for its
-# type, so one failed probe threw away a console helper already loaded and working in this
-# very process. The compiled version checked the type first.
+# type, so one failed probe threw away a helper already loaded and working in this process.
+# The compiled version checked the type first.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 def test_the_console_helper_keeps_a_type_it_already_has(script: str):
@@ -2077,13 +2071,13 @@ def test_a_child_that_never_returns_does_not_hang_the_installer(tmp_path: Path):
     assert elapsed < 60, f"the probe took {elapsed:.0f}s, so the deadline is not bounding it"
 
 
-# Legacy is not a curiosity: it is how Windows PowerShell 5.1 ALWAYS binds a native
-# command's arguments, and 5.1 is the interpreter studio/src-tauri/src/install.rs spawns.
-# It wraps the value in quotes and appends the body verbatim without escaping the quotes
-# inside it, so a probe passed with -Command arrives as
-# `if (UnslothStudioEmitProbe -as [type])`, a command lookup that throws into the probe's
-# own catch and answers "no emit here" on every 5.1 host. pwsh can be put into that exact
-# binder with $PSNativeCommandArgumentPassing, so the case is reachable from Linux.
+# Legacy is how Windows PowerShell 5.1 ALWAYS binds a native command's arguments, and 5.1
+# is the interpreter studio/src-tauri/src/install.rs spawns. It wraps the value in quotes
+# and appends the body verbatim without escaping the quotes inside it, so a probe passed
+# with -Command arrives as `if (UnslothStudioEmitProbe -as [type])`, a command lookup that
+# throws into the probe's own catch and answers "no emit here" on every 5.1 host. pwsh can
+# be put into that binder with $PSNativeCommandArgumentPassing, so this is reachable from
+# Linux.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 @pytest.mark.parametrize("binding", ["Legacy", "Standard"])
@@ -2104,8 +2098,8 @@ def test_the_child_probe_survives_the_5_1_argument_binder(script: str, binding: 
     assert result.returncode == 0, result.stderr
     # Boolean either way, since the gate calls this under ErrorActionPreference Stop.
     assert _lines(result, "TYPE:") == ["TYPE:Boolean"]
-    # And True either way: emit works on this host, and the binder must not be able to
-    # turn a working host into a refusal.
+    # And True either way: emit works on this host, and the binder must not turn a
+    # working host into a refusal.
     assert _lines(result, "ANSWER:") == ["ANSWER:True"]
 
 
@@ -2152,8 +2146,8 @@ def test_an_unreadable_policy_asks_the_probe_rather_than_assuming(
 
 # CharSet is not decoration on an emitted import: it picks the export the runtime looks for
 # first. Unicode asks for <Name>W, Ansi asks for <Name>. Every one of these names an export
-# that exists exactly as written, so the wrong charset still resolves, on the second probe;
-# what it stops being is an accurate description of the C# it replaced.
+# that exists exactly as written, so a wrong charset still resolves on the second probe; it
+# just stops describing the C# it replaced.
 @requires_pwsh
 @pytest.mark.parametrize(
     "method,charset",
@@ -2196,11 +2190,10 @@ def test_each_import_carries_the_charset_its_declaration_had(method: str, charse
     assert _lines(result, "LIB:") == ["LIB:kernel32.dll"]
 
 
-# `out uint` in the C# this replaces. A by-ref type alone emits `ref`, which leaves both
-# In and Out unset, and DefinePInvokeMethod has no argument for it, so the emitter calls
-# DefineParameter. The value is blittable and the callers initialise it first, so writeback
-# works either way; what this pins is that the metadata says what the declaration said, and
-# that the Out key is wired through the emitter at all.
+# `out uint` in the C# this replaces. A by-ref type alone emits `ref`, leaving In and Out
+# unset, and DefinePInvokeMethod has no argument for it, so the emitter calls DefineParameter.
+# The value is blittable and callers initialise it first, so writeback works either way; this
+# pins that the metadata says what the declaration said and that the Out key is wired through.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 def test_the_console_mode_parameter_is_still_declared_out(script: str):
@@ -2227,20 +2220,20 @@ def test_the_console_mode_parameter_is_still_declared_out(script: str):
     assert result.returncode == 0, result.stderr
     assert _lines(result, "OUT:") == ["OUT:True"]
     assert _lines(result, "BYREF:") == ["BYREF:True"]
-    # And the real declaration in the script carries the key, not just the emitter's ability
-    # to honour it.
+    # And the real declaration in the script carries the key, not just the emitter's
+    # ability to honour it.
     block = re.search(r'Name = "GetConsoleMode".*?\}', source, flags = re.DOTALL)
     assert block is not None and "Out = @(2)" in block.group(
         0
     ), "GetConsoleMode lost its Out position"
 
 
-# Almost every import declares no Out position, and reading a hashtable key that is not
-# there is fatal under Set-StrictMode -Version Latest, which raises PropertyNotFound rather
-# than returning $null. install.ps1 sets strict mode Off for itself, but setup.ps1 sets none
-# at all, so whatever the caller has is what runs, and a profile with strict mode on would
-# have taken out every emitted type. The emitter asks ContainsKey first, the way it already
-# does for the CharSet key, and this runs the whole emitter under the strictest setting.
+# Almost every import declares no Out position, and reading an absent hashtable key is fatal
+# under Set-StrictMode -Version Latest, which raises PropertyNotFound rather than returning
+# $null. install.ps1 sets strict mode Off for itself but setup.ps1 sets none, so the caller's
+# setting runs and a profile with strict mode on would have taken out every emitted type. The
+# emitter asks ContainsKey first, as it does for CharSet; this runs it under the strictest
+# setting.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 def test_an_import_without_an_out_position_survives_strict_mode(script: str):

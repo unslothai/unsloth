@@ -425,34 +425,44 @@ export function applyActiveModelStatusToStore(
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
-    // The spec / KV seeds share the GPU-fields reseed below: a non-GGUF status leaves their
-    // baselines null so the "unseeded" guard re-fires every refresh -- hold them too while a
-    // staged pick is being edited. hydratingExistingModel reopens every seed, since after an
-    // auto-switch the old model's baselines are stale.
+    // Controls follow the server while clean; loaded baselines always describe
+    // the settled resident, including same-model reloads from another client.
     ...(seedLoadParams &&
-      (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
-        speculativeType: currentSpecType,
+      (status.speculative_type !== undefined ||
+        prevState.loadedSpeculativeType === null ||
+        hydratingExistingModel) && {
         loadedSpeculativeType: currentSpecType,
+        ...((prevState.loadedSpeculativeType === null ||
+          hydratingExistingModel ||
+          prevState.speculativeType === prevState.loadedSpeculativeType) && {
+          speculativeType: currentSpecType,
+        }),
       }),
     ...(seedLoadParams &&
-      status.spec_draft_n_max !== undefined &&
-      (hydratingExistingModel ||
-        (prevState.loadedSpecDraftNMax === null &&
-          prevState.specDraftNMax === null)) && {
-        specDraftNMax: status.spec_draft_n_max ?? null,
+      status.spec_draft_n_max !== undefined && {
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
+        ...((hydratingExistingModel ||
+          prevState.specDraftNMax === prevState.loadedSpecDraftNMax) && {
+          specDraftNMax: status.spec_draft_n_max ?? null,
+        }),
       }),
     ...(seedLoadParams &&
-      status.cache_type_kv !== undefined &&
-      (prevState.loadedKvCacheDtype === null || hydratingExistingModel) && {
-        kvCacheDtype: status.cache_type_kv,
+      status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
+        ...((prevState.loadedKvCacheDtype === null ||
+          hydratingExistingModel ||
+          prevState.kvCacheDtype === prevState.loadedKvCacheDtype) && {
+          kvCacheDtype: status.cache_type_kv,
+        }),
       }),
     ...(seedLoadParams &&
-      status.tensor_parallel !== undefined &&
-      (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
-        tensorParallel: status.tensor_parallel,
+      status.tensor_parallel !== undefined && {
         loadedTensorParallel: status.tensor_parallel,
+        ...((prevState.loadedTensorParallel === null ||
+          hydratingExistingModel ||
+          prevState.tensorParallel === prevState.loadedTensorParallel) && {
+          tensorParallel: status.tensor_parallel,
+        }),
       }),
     // A load knob like tensorParallel above. Without a reseed a tab that never performed the
     // load shows Vision ON over a projector-off server and the next Reload puts it back.
@@ -518,10 +528,10 @@ export function applyActiveModelStatusToStore(
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     // "server default" control. The rollback re-sends the baseline, so without this a rollback
-    // after a tab reload loses the override.
+    // after a tab reload loses the override. Refresh on every echo: another client
+    // can reload the same model with a different count.
     ...(seedLoadParams &&
-      status.requested_parallel_slots != null &&
-      (prevState.loadedNParallel === null || hydratingExistingModel) && {
+      status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,
       }),
     // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends

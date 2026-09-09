@@ -27,7 +27,12 @@ import time
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from core.inference.sd_cpp_args import (
@@ -843,6 +848,11 @@ class SdCppEngine:
             logger.info("sd-cli run started: %s", summary)
 
         t0 = time.time()
+        # A generation admitted before the quit can still reach this Popen after the
+        # shutdown sweep has taken its snapshot, and sd-cli would then keep running with
+        # nothing left to reap it, holding VRAM past the app.
+        if is_process_shutting_down():
+            raise SdCppCancelled("Studio is shutting down; not starting sd-cli.")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -860,6 +870,13 @@ class SdCppEngine:
         # the kwargs above are empty on macOS, so record it too, else a crash mid-generation leaves sd-cli holding VRAM
         # with nothing able to find it
         adopt_pid(proc.pid)
+        # Recheck once the pid is recorded, for the window between the gate above and this
+        # record. Adoption ran first, so the child killed here was in the sweep record for
+        # as long as it existed.
+        if is_process_shutting_down():
+            logger.info("shutdown began during the spawn; killing the new sd-cli")
+            _terminate(proc)
+            raise SdCppCancelled("Studio is shutting down; not starting sd-cli.")
         # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for
         # line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against
         # a wall-clock deadline. iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no
