@@ -247,6 +247,12 @@ import {
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
 
+const ProjectGuidancePanel = lazy(() =>
+  import("./components/project-guidance-panel").then((module) => ({
+    default: module.ProjectGuidancePanel,
+  })),
+);
+
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
     default: module.ProjectSourcesPanel,
@@ -1343,7 +1349,7 @@ function ProjectLanding({
     () => useChatRuntimeStore.getState().activeThreadId,
   );
   // Land on Sources when the project was just created with dropped files.
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+  const [projectTab, setProjectTab] = useState<"chats" | "sources" | "guidance">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
   );
   // Drop the marker once committed: React may replay the initializer above.
@@ -1784,7 +1790,7 @@ function ProjectLanding({
               placeholder={`New chat in ${projectName}`}
             />
 
-            <div className="mt-9 flex items-center gap-2">
+            <div className="mt-9 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setProjectTab("chats")}
@@ -1801,9 +1807,21 @@ function ProjectLanding({
               >
                 Sources
               </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("guidance")}
+                data-active={projectTab === "guidance"}
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Instructions & skills
+              </button>
             </div>
 
-            {projectTab === "sources" ? (
+            {projectTab === "guidance" ? (
+              <Suspense fallback={<p className="mt-8 text-sm text-muted-foreground">Loading project guidance…</p>}>
+                <ProjectGuidancePanel key={projectId} projectId={projectId} />
+              </Suspense>
+            ) : projectTab === "sources" ? (
               <Suspense
                 fallback={
                   <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">

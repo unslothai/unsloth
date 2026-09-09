@@ -7391,6 +7391,13 @@ def _session_in_flight(session_id: "str | None"):
                     _sessions_free.notify_all()
 
 
+@contextlib.contextmanager
+def project_workspace_in_flight(project_id: str):
+    """Keep guidance reads and requests visible to project deletion cleanup."""
+    with _session_in_flight(project_session_id(project_id)):
+        yield
+
+
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
 # Reserved on Windows even as a directory name, and an API caller picks this id.

@@ -65,6 +65,11 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import {
+  parseProjectSlashCommand,
+  projectInitCommandResponse,
+  type ProjectSlashCommand,
+} from "../utils/slash-commands";
 import { ggufCompactionRequestFields } from "../utils/auto-compaction";
 import {
   studioToolHistoryRequestFields,
@@ -290,6 +295,7 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import { initializeProjectAgents } from "./project-guidance-api";
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
@@ -1721,11 +1727,13 @@ export const CANVAS_FALLBACK_INSTRUCTION =
  *  since --enable-tools can inject schemas the client cannot see. */
 export async function buildLocalTokenCountHistory(
   messages: RunMessages,
-  threadId: string | undefined,
+  _threadId: string | undefined,
 ): Promise<{
   messages: OpenAIChatMessage[];
   studio_tool_history?: true;
 }> {
+  // Project guidance is resolved by the backend from count extras.session_id.
+  void _threadId;
   const survivingMessages = pruneOutboundHistory(messages, true);
   const outboundMessages = survivingMessages
     .flatMap((message) => toOpenAIMessages(message, true))
@@ -1735,28 +1743,14 @@ export async function buildLocalTokenCountHistory(
 
   const { params, artifactsEnabled, supportsTools } =
     useChatRuntimeStore.getState();
-  const safeSystemPrompt =
-    typeof params.systemPrompt === "string"
-      ? resolveSystemPromptVariables(
-          params.systemPrompt,
-          typeof params.systemVariables === "string"
-            ? params.systemVariables
-            : "",
-        )
-      : "";
-  const projectInstructions = await resolveProjectInstructions(threadId);
-  const combinedSystemPrompt = [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  if (combinedSystemPrompt) {
+  const userSystemPrompt = resolveUserSystemPrompt(
+    params.systemPrompt,
+    params.systemVariables,
+  );
+  if (userSystemPrompt) {
     outboundMessages.unshift({
       role: "system",
-      content: combinedSystemPrompt,
+      content: userSystemPrompt,
     });
   }
 
@@ -1844,15 +1838,14 @@ export async function buildLocalTokenCountExtras(
     ragAutoInjectMinScore,
     residentCheckpoint,
   } = useChatRuntimeStore.getState();
-  // Explicit false, as the completion sends: an omitted field lets the launcher's
-  // tools-on default answer and the server renders a catalog the completion does not.
-  // No budget, because the completion sends none either, so a policy that injects tools
-  // past this false gets the server default on both sides.
+  const ragProjectId = await resolveProjectId(threadId);
+  const sessionId = sandboxSessionIdFor(threadId, ragProjectId);
+  const session = sessionId ? { session_id: sessionId } : {};
+  // Even text-only models need the same project guidance in counts and completions.
   if (!supportsTools) {
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return { ...session, enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
-  const ragProjectId = await resolveProjectId(threadId);
   const projectRagEnabled = ragProjectId
     ? await projectHasSources(ragProjectId)
     : false;
@@ -1865,12 +1858,22 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled
   ) {
-    // Explicit false, not omission: the server defaults tools on. The permission level rides
-    // along because `--enable-tools` still outranks that false in _effective_enable_tools.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    // Explicit false, not an omitted field: the server defaults tools on for a
+    // request that never mentions them, so every pill being off has to say so.
+    // The permission level rides along because `--enable-tools` still outranks
+    // that false in _effective_enable_tools, so a CLI policy can inject
+    // python/terminal into a pill-less request and the count would otherwise
+    // price sandboxed schemas against an unsandboxed completion. Inert whenever
+    // the false stands and no tool list is built.
+    return {
+      ...session,
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+    };
   }
 
   return {
+    ...session,
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
@@ -1971,19 +1974,30 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+function resolveUserSystemPrompt(
+  systemPrompt: unknown,
+  systemVariables: unknown,
+): string {
+  return (
+    typeof systemPrompt === "string"
+      ? resolveSystemPromptVariables(
+          systemPrompt,
+          typeof systemVariables === "string" ? systemVariables : "",
+        )
+      : ""
+  ).trim();
+}
+
 async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string> {
-  const safeSystemPrompt =
-    typeof systemPrompt === "string"
-      ? resolveSystemPromptVariables(
-          systemPrompt,
-          typeof systemVariables === "string" ? systemVariables : "",
-        )
-      : "";
+  const safeSystemPrompt = resolveUserSystemPrompt(
+    systemPrompt,
+    systemVariables,
+  );
   const projectInstructions = await resolveProjectInstructions(
     threadId,
     readThreadRecord,
@@ -1992,7 +2006,7 @@ async function resolveChatInstructions(
     projectInstructions
       ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
       : "",
-    safeSystemPrompt.trim(),
+    safeSystemPrompt,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -2051,6 +2065,51 @@ export async function resolveProjectId(
     // The send records it, not this: a poll landing mid-navigation would pin the run to whichever project is on screen.
   }
   return composerProjectId ?? null;
+}
+
+function latestSlashCommandText(messages: RunMessages): string {
+  const message = [...messages]
+    .reverse()
+    .find((candidate) => candidate.role === "user");
+  if (!message || !Array.isArray(message.content)) return "";
+  return message.content
+    .filter(
+      (
+        part,
+      ): part is Extract<(typeof message.content)[number], { type: "text" }> =>
+        part.type === "text" && typeof part.text === "string",
+    )
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
+export async function executeLocalProjectSlashCommand(
+  command: ProjectSlashCommand,
+  options: {
+    threadId?: string;
+    composerProjectId?: string | null;
+  } = {},
+): Promise<string> {
+  if (command.action === "help") return projectInitCommandResponse(command);
+
+  const projectId = await resolveProjectId(
+    options.threadId,
+    undefined,
+    options.composerProjectId !== undefined
+      ? { composerProjectId: options.composerProjectId }
+      : undefined,
+  );
+  if (!projectId) return projectInitCommandResponse(command);
+
+  try {
+    const result = await initializeProjectAgents(projectId);
+    return projectInitCommandResponse(command, result);
+  } catch (error) {
+    return `Could not create \`AGENTS.md\`: ${
+      error instanceof Error ? error.message : "Unknown error"
+    }`;
+  }
 }
 
 async function resolveSandboxSessionId(
@@ -4751,11 +4810,9 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = await resolveChatInstructions(
-        resolvedThreadId,
+      const combinedSystemPrompt = resolveUserSystemPrompt(
         params.systemPrompt,
         params.systemVariables,
-        readThreadRecord,
       );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
@@ -7966,6 +8023,25 @@ export function createOpenAIStreamAdapter(
         adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
       }
       try {
+        const slashCommand = parseProjectSlashCommand(
+          latestSlashCommandText(args.messages),
+        );
+        if (slashCommand) {
+          const creationClaim = args.unstable_threadId
+            ? readThreadCreationClaim(args.unstable_threadId)
+            : undefined;
+          const composerProjectIdAtSend = creationClaim
+            ? creationClaim.projectId
+            : (useChatRuntimeStore.getState().activeProjectId ?? null);
+          const response = await executeLocalProjectSlashCommand(slashCommand, {
+            threadId: args.unstable_threadId,
+            composerProjectId: composerProjectIdAtSend,
+          });
+          yield {
+            content: [{ type: "text" as const, text: response }],
+          };
+          return;
+        }
         yield* adapter.run(args);
       } catch (error) {
         if (!args.abortSignal.aborted) {

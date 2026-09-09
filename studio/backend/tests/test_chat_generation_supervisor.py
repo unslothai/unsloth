@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.inference import llama_keepwarm
+from core.inference import llama_keepwarm, tools
 from core.inference.chat_generation_runs import (
     _EVENT_BATCH_SECONDS,
     _EVENT_SINGLE_FLUSH_SECONDS,
@@ -25,11 +25,30 @@ from storage import studio_db
 
 
 @pytest.fixture
-def durable_run(request):
-    engine = getattr(request, "param", "gguf")
+def durable_run(request, tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    parameter = getattr(request, "param", "gguf")
+    project_id = "durable-project" if parameter == "project" else None
+    engine = "gguf" if project_id is not None else parameter
     model = "local.gguf" if engine == "gguf" else "local.safetensors"
+    if project_id is not None:
+        studio_db.upsert_chat_project(
+            {
+                "id": project_id,
+                "name": "Durable project",
+                "createdAt": 1,
+                "updatedAt": 1,
+            }
+        )
     studio_db.upsert_chat_thread(
-        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": model, "createdAt": 1}
+        {
+            "id": "thread-1",
+            "title": "Chat",
+            "modelType": "base",
+            "modelId": model,
+            "projectId": project_id,
+            "createdAt": 1,
+        }
     )
     studio_db.upsert_chat_message(
         {
@@ -40,20 +59,23 @@ def durable_run(request):
             "createdAt": 2,
         }
     )
+    request_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": True,
+        "cancel_id": "run-1",
+        "thread_id": "thread-1",
+        "generation_run_id": "run-1",
+    }
+    if project_id is not None:
+        request_payload["session_id"] = f"project-{project_id}"
     run, _created = runs_db.create_run(
         run_id = "run-1",
         owner_subject = "alice",
         thread_id = "thread-1",
         user_message_id = "user-1",
         assistant_message_id = "assistant-1",
-        request_payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": "Hello"}],
-            "stream": True,
-            "cancel_id": "run-1",
-            "thread_id": "thread-1",
-            "generation_run_id": "run-1",
-        },
+        request_payload = request_payload,
     )
     active_generations.reset_for_tests()
     yield run
@@ -247,6 +269,40 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     # The lease counts writes, so it renewed three times before the first token.
     assert sampled["progress"][1] == 3, sampled["progress"]
     assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("durable_run", ["project"], indirect = True)
+async def test_project_durable_generation_holds_workspace_fence_through_stream(
+    durable_run, monkeypatch
+):
+    project_id = "durable-project"
+    phases = []
+
+    def assert_workspace_busy(phase):
+        assert not tools.wait_for_sessions_idle([tools.project_session_id(project_id)], timeout = 0)
+        phases.append(phase)
+
+    async def body():
+        assert_workspace_busy("stream start")
+        yield 'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n'
+        assert_workspace_busy("stream continuation")
+        yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake(payload, _request, _subject, *, cancel_on_disconnect):
+        assert payload.session_id == f"project-{project_id}"
+        assert cancel_on_disconnect is False
+        assert_workspace_busy("producer")
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    await ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))._produce("run-1")
+
+    assert tools.wait_for_sessions_idle([tools.project_session_id(project_id)], timeout = 0)
+    run = runs_db.get_run("run-1", "alice")
+    assert phases == ["producer", "stream start", "stream continuation"]
+    assert (run["status"], run["finishReason"]) == ("completed", "stop")
 
 
 async def _subscriber_sequences(after = 0):

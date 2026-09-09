@@ -16,6 +16,7 @@ from typing import Any, AsyncIterator
 
 from starlette.requests import Request
 
+from core.agent_workspace.lease import ProjectWorkspaceRequestLease
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
@@ -634,6 +635,7 @@ class ChatGenerationSupervisor:
         saw_done = False
         worker_token: str | None = None
         next_raw_task: asyncio.Task | None = None
+        workspace_lease: ProjectWorkspaceRequestLease | None = None
         try:
             worker_run = await asyncio.to_thread(db.get_worker_run, run_id)
             if worker_run is None:
@@ -684,6 +686,7 @@ class ChatGenerationSupervisor:
                 from routes.inference import produce_openai_chat_completions
 
                 payload = ChatCompletionRequest.model_validate(run["requestPayload"])
+                workspace_lease = await ProjectWorkspaceRequestLease.acquire(payload.session_id)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.
@@ -849,5 +852,11 @@ class ChatGenerationSupervisor:
                 if not next_raw_task.done():
                     next_raw_task.cancel()
                 await asyncio.gather(next_raw_task, return_exceptions = True)
-            await _close_iterator(iterator)
-            activity.finish()
+            try:
+                await _close_iterator(iterator)
+            finally:
+                try:
+                    if workspace_lease is not None:
+                        await workspace_lease.release()
+                finally:
+                    activity.finish()

@@ -306,6 +306,7 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
+    project_guidance_router,
     openai_codex_auth_router,
     rag_router,
     research_runs_router,
@@ -1490,6 +1491,7 @@ app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(llama_compat_router, tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(project_guidance_router, prefix = "/api/agent", tags = ["agent"])
 
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 

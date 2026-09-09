@@ -2638,6 +2638,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Persisted project/session ID used to resolve project guidance.",
+    )
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
@@ -3143,6 +3147,19 @@ class ResponsesRequest(BaseModel):
     user: Optional[str] = None
     text: Optional[Any] = None
     reasoning: Optional[Any] = None
+
+    session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Persisted project/session ID for guidance and tools.",
+    )
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for stateful tool sessions.",
+    )
+    cancel_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request cancellation token.",
+    )
 
     model_config = {"extra": "allow"}
 
