@@ -888,8 +888,15 @@ function Install-UnslothStudio {
         $known = $false
         $active = $false
         try {
+            # Bounded, with what that bound actually covers stated rather than implied:
+            # -OperationTimeoutSec limits the CIM operation on a responsive target. It does
+            # not interrupt DCOM connection setup and it does not override a provider that
+            # has wedged, where the server's own timeout wins. It is worth having for the
+            # slow case and it is not a hang guard. The installer already depends on CIM
+            # for adapter and process queries, so this query does not introduce that
+            # exposure; the child probe below is the part that carries a real deadline.
             $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
-                -ClassName "Win32_DeviceGuard" -ErrorAction Stop
+                -ClassName "Win32_DeviceGuard" -OperationTimeoutSec 10 -ErrorAction Stop
             # 0 off, 1 audit, 2 enforced. A null property is not a zero.
             if ($guard -and $null -ne $guard.UsermodeCodeIntegrityPolicyEnforcementStatus) {
                 $known = $true
