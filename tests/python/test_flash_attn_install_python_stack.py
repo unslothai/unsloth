@@ -524,6 +524,41 @@ class TestEnsureFlashAttn:
         mock_install_wheel.assert_not_called()
         assert ("warning", "No published flash-attn prebuilt wheel found") in step_messages
 
+    def test_an_unchecked_wheel_is_not_reported_as_unpublished(self):
+        # url_exists returns None when the release host refused the probe (403/429/5xx),
+        # which is not the same answer as a 404. Saying "no published wheel" there sends
+        # the user looking for a wheel that exists, and hides a spent GitHub quota.
+        step_messages = []
+
+        def fake_step(kind, message, *args, **kwargs):
+            step_messages.append((kind, message))
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = None),
+            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
+            mock.patch.object(ips, "_step", side_effect = fake_step),
+            mock.patch("subprocess.run", return_value = self._import_check()),
+        ):
+            ips._ensure_flash_attn()
+
+        mock_install_wheel.assert_not_called()
+        assert ("warning", "No published flash-attn prebuilt wheel found") not in step_messages
+        assert any("could not" in message.lower() for _kind, message in step_messages)
+
     def test_skip_env_disables_setup_install(self):
         with (
             mock.patch.object(ips, "NO_TORCH", False),

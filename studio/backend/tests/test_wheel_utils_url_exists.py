@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """url_exists must tell a missing wheel (404) from GitHub refusing us (403/429/5xx, dropped
 connection): the second is retried and reported, or the caller starts a many-minute source
 build for a wheel that exists."""
@@ -82,7 +85,10 @@ def test_a_timeout_is_not_retried(monkeypatch):
 
 @pytest.mark.parametrize("installer", ["training", "inference"])
 @pytest.mark.parametrize("status", [403, 429, 503, 404])
-def test_only_a_missing_wheel_starts_a_source_build(monkeypatch, installer, status):
+def test_a_refused_probe_still_reaches_the_source_build(monkeypatch, installer, status):
+    """Whatever the probe answered, the slow path still runs. A refusal skips only the
+    prebuilt fast path: PyPI and the source build need no GitHub, and returning early
+    would make a throttled release host cost the package -- for mamba-ssm, the model."""
     from core.training import worker
     from utils import ssm_runtime
 
@@ -121,6 +127,48 @@ def test_only_a_missing_wheel_starts_a_source_build(monkeypatch, installer, stat
         )
     assert installed is False
     wheel_install.assert_not_called()
-    assert source_build.call_count == (1 if status == 404 else 0)
+    assert source_build.call_count == 1
     if status != 404:
-        assert any("Retry when the download host is available" in message for message in statuses)
+        assert any("Could not check" in message for message in statuses)
+
+
+def test_a_refused_probe_does_not_fail_a_mamba_model(monkeypatch):
+    """ensure_ssm_runtime raises when mamba-ssm does not install, so a refused probe
+    that returned early turned a throttled GitHub into an unloadable model."""
+    from utils import ssm_runtime
+
+    url = "https://github.com/x/releases/download/v1/w.whl"
+
+    def refused(_n):
+        raise urllib.error.HTTPError(url, 503, "refused", None, None)
+
+    _patch(monkeypatch, refused)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda **kw: {})
+    monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **kw: url)
+    # Absent before the build, present after it.
+    built = []
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: bool(built))
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        ssm_runtime, "install_wheel", Mock(side_effect = AssertionError("refused wheel"))
+    )
+
+    def build(*args, **kwargs):
+        built.append(True)
+        return SimpleNamespace(returncode = 0, stdout = "")
+
+    source_build = Mock(side_effect = build)
+    installed = ssm_runtime._install_kernel(
+        import_name = "mamba_ssm",
+        display_name = "mamba-ssm",
+        pypi_name = "mamba-ssm",
+        package_version = "2.3.1",
+        release_tag = "v2.3.1",
+        release_base_url = "https://github.com/x/releases/download",
+        status_cb = lambda message: None,
+        run = source_build,
+    )
+    assert installed is True
+    assert source_build.call_count == 1
