@@ -37,10 +37,20 @@ EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 _MCP_TOOL_PREFIX = "mcp__"
 
 
+def _normalized_tool_name(name) -> str:
+    """``name`` as ``ToolLoopController.prepare_call`` will resolve it.
+
+    The controller executes ``str(...).strip()``, so comparing the RAW name let
+    ``{"name":" terminal "}`` pass the guard as an unknown tool and then run as the real
+    one. The guard has to read the name the executor will."""
+    return str(name).strip() if isinstance(name, str) else ""
+
+
 def _markerless_promotable(name, enabled_tool_names) -> bool:
     """True when a bare call named ``name`` may be promoted. ``None`` is name-agnostic;
     execution-class and MCP names are refused under either gate."""
-    if not isinstance(name, str) or not name:
+    name = _normalized_tool_name(name)
+    if not name:
         return False
     if name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX):
         return False
@@ -54,9 +64,8 @@ def _markerless_execution_class(name) -> bool:
     with only ``python`` enabled, ``terminal[ARGS]{"c": "<function=python>...</function>"}``
     had its span skipped as "not blocked", and both parsers then read the quoted wrapper as
     a real python call. Enabledness governs promotion and chain handling, not opacity."""
-    return isinstance(name, str) and (
-        name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX)
-    )
+    name = _normalized_tool_name(name)
+    return bool(name) and (name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX))
 
 
 def _markerless_blocked_execution(name, enabled_tool_names) -> bool:

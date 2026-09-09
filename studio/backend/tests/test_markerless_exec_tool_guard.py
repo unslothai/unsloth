@@ -2132,3 +2132,46 @@ def test_a_fenced_deepseek_call_keeps_its_arguments_unmasked():
     arguments = calls[0]["function"]["arguments"]
     assert _BLOCKED_BODY_MASK not in arguments, f"the mask corrupted real arguments: {arguments!r}"
     assert json.loads(arguments) == {"query": "call:terminal{command:id}"}
+
+
+@pytest.mark.parametrize("padded", [" terminal ", "\tpython\n", " mcp__filesystem__write_file "])
+def test_a_padded_execution_name_cannot_slip_past_the_guard(padded):
+    """``ToolLoopController.prepare_call`` executes ``str(name).strip()``, so a padded name
+    passed the guard as an unknown tool and then ran as the real one. The guard has to read
+    the name the executor will resolve."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    text = json.dumps({"name": padded, "parameters": {"command": "id"}})
+    assert parse_tool_calls_from_text(text, enabled_tool_names = None) == []
+    assert light(text, enabled_tool_names = None) == []
+
+
+def test_a_malformed_field_before_the_name_does_not_abandon_classification():
+    """Malformed top-level data ahead of the classification key reported no name at all, so
+    the object was never seen as blocked and its quoted wrapper was promoted."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+    from core.inference.tool_call_parser import _top_level_bare_json_name
+
+    wrapper = "<function=python><parameter=code>print(1)</parameter></function>"
+    text = '{"junk":oops,"name":"terminal","arguments":{"note":"%s"}}' % wrapper
+    gate = {"terminal", "python"}
+    assert _top_level_bare_json_name(text) == "terminal"
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    assert light(text, enabled_tool_names = gate) == []
+    # A comma inside a string must not resync the scan early.
+    assert _top_level_bare_json_name('{"junk":oops,"a":"x,y","name":"terminal"}') == "terminal"
+
+
+def test_an_attribute_form_call_keeps_its_parameter_text_unmasked():
+    """MiniCPM/MiniMax spell the call as attributes rather than a JSON body, so no enumerated
+    opener matched and execution-shaped text inside a ``<parameter>`` was read as an
+    independent blocked call, rewriting a GENUINE call's arguments."""
+    text = (
+        '<function name="web_search"><parameter name="query">'
+        "call:terminal{command:id}</parameter></function>"
+    )
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "terminal"})
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    arguments = calls[0]["function"]["arguments"]
+    # Serialized JSON escapes the mask, so check the decoded value.
+    assert json.loads(arguments) == {"query": "call:terminal{command:id}"}

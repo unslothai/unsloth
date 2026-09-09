@@ -984,6 +984,13 @@ def _inference_wrapper_spans(text: str) -> list:
     for m in _LLAMA3_PY_CALL_RE.finditer(text):
         end = _balanced_paren_end(text, m.end() - 1)
         spans.append((m.end(), len(text) if end is None else end))
+    # MiniCPM/MiniMax spell the call as attributes rather than a JSON body, so no opener above
+    # matched it and execution-shaped text inside a ``<parameter>`` read as an independent
+    # blocked call: the mask then rewrote a GENUINE call's arguments. The element INTERIOR
+    # only, for the adjacency reason above.
+    for m in _ATTR_FUNC_OPEN_RE.finditer(text):
+        close = text.find("</function>", m.end())
+        spans.append((m.end(), len(text) if close < 0 else close))
     return spans
 
 
@@ -3303,9 +3310,41 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
             try:
                 _value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
-                return name_value or function_value
+                # Resync instead of giving up: malformed data BEFORE the classification key
+                # (``{"junk":oops,"name":"terminal",...}``) reported no name at all, so the
+                # object was never recognised as blocked and its quoted wrapper was promoted.
+                nxt = _next_top_level_comma(probe, i, n)
+                if nxt is None:
+                    return name_value or function_value
+                i = nxt + 1
+                continue
             i += consumed
     return name_value or function_value
+
+
+def _next_top_level_comma(text: str, start: int, end: int) -> "int | None":
+    """Index of the next ``,`` at the object's own depth, or None.
+
+    Lets the name scan step over one malformed field rather than abandoning the object;
+    strings and nested containers are skipped so a comma inside them cannot resync early."""
+    depth = 0
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < end and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            if depth == 0:
+                return None
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return i
+        i += 1
+    return None
 
 
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:

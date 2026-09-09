@@ -2829,6 +2829,9 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
         _adapter_state = None,
+        # Unrestricted mode runs the tool protocol with an EMPTY tools list, so bool(tools)
+        # cannot tell that the wrappers below still have to survive decoding.
+        tool_protocol_active = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -2876,6 +2879,7 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                tool_protocol_active = tool_protocol_active,
             )
         else:
             stream = self._generate_text(
@@ -2898,6 +2902,7 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                tool_protocol_active = tool_protocol_active,
             )
         yield from stream
 
@@ -2927,6 +2932,7 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         _adapter_state = None,
+        tool_protocol_active = None,
         stop = None,
     ):
         from mlx_lm import stream_generate
@@ -2989,7 +2995,7 @@ class MLXInferenceBackend:
                 self._tokenizer,
                 preserved_tokens = reasoning_control_tokens(reasoning_channel_markers),
             )
-            if tools or preserve_native_channels
+            if tools or preserve_native_channels or tool_protocol_active
             else None
         )
         # Consulted per token on the reasoning path below, so resolved once here.
@@ -3312,6 +3318,7 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         _adapter_state = None,
+        tool_protocol_active = None,
         stop = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
@@ -3395,7 +3402,7 @@ class MLXInferenceBackend:
                 self._tokenizer,
                 preserved_tokens = reasoning_control_tokens(vlm_reasoning_markers),
             )
-            if tools and self._tokenizer
+            if (tools or tool_protocol_active) and self._tokenizer
             else None
         )
         # The runtime EOS can itself be an allowlisted control, and this path appends every

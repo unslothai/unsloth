@@ -292,3 +292,22 @@ def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
     src = inspect.getsource(worker._handle_generate)
     gated = src[src.index("for gated in (") : src.index("for gated in (") + 200]
     assert '"tool_protocol_active"' in gated, "the flag must be gated on _backend_declares"
+
+
+def test_the_mlx_backend_declares_the_tool_protocol_flag():
+    """The worker forwards this flag only to backends that declare it, so MLX not declaring
+    it meant the flag was silently dropped and the native token decoder stayed off in
+    unrestricted mode, stripping the wrappers the guard then rejected as prose."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    for method in ("generate_chat_response", "_generate_text", "_generate_vlm"):
+        params = inspect.signature(getattr(MLXInferenceBackend, method)).parameters
+        assert "tool_protocol_active" in params, f"{method} drops the protocol flag"
+
+    # Both decoder gates must consult it, not bool(tools) alone.
+    for method in ("_generate_text", "_generate_vlm"):
+        src = inspect.getsource(getattr(MLXInferenceBackend, method))
+        gate = src[src.index("NativeToolTokenDecoder(") :][:400]
+        assert "tool_protocol_active" in gate, f"{method}'s decoder gate ignores the flag"

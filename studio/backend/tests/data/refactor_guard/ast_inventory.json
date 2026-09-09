@@ -1719,6 +1719,11 @@
         "kind": "def",
         "signature": "text: str, idx: int"
       },
+      "_next_top_level_comma": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
+      },
       "_normalize_for_repeat": {
         "decorators": [],
         "kind": "def",
@@ -2286,6 +2291,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "src: str"
+      },
+      "_normalized_tool_name": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name"
       },
       "_quote_gemma_array_elements": {
         "decorators": [],
