@@ -805,17 +805,25 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
                 break
             spans.append((body_start, end))
             covered = end
-    lead = _leading_json_value_end(text)
+    # The parser accepts Llama sentinels ahead of the object, so anchoring the mask on a
+    # leading ``{`` found none and the quoted payload behind ``<|eot_id|>`` was promoted.
+    # Offsets stay in the caller's coordinates via ``shift``.
+    probe = strip_llama3_leading_sentinels(text.lstrip())
+    shift = len(text) - len(probe)
+    lead = _leading_json_value_end(probe)
     if lead and _markerless_blocked_execution(
-        _top_level_bare_json_name(text[:lead]), enabled_tool_names
+        _top_level_bare_json_name(probe[:lead]), enabled_tool_names
     ):
         # Only the arguments object: the NAME lives in this body too, and the scans that
         # decide the call is blocked (and anchor the peer behind it) read it from there.
-        brace = _top_level_args_brace(text, text.index("{"), lead)
+        brace = _top_level_args_brace(probe, probe.index("{"), lead)
         if brace is not None:
-            end = _balanced_brace_end(text, brace)
+            end = _balanced_brace_end(probe, brace)
             if end is not None:
-                spans.extend(_string_content_spans(text, brace + 1, end))
+                spans.extend(
+                    (begin + shift, stop + shift)
+                    for begin, stop in _string_content_spans(probe, brace + 1, end)
+                )
     spans = [(start, end) for start, end in spans if end > start]
     spans.sort()
     # Nested blocked calls are already covered by the outer body; keep spans disjoint so the
@@ -1497,7 +1505,16 @@ class StreamingMarkupStripper:
                 enabled_tool_names = self._enabled_tool_names,
             )
 
-        return _tool_healing.strip_outside_think(text, _seg)
+        # Same masking ``strip_tool_markup`` applies: a blocked call's body is quoted prose.
+        # Without it the incremental path edited that body while the final strip preserved it,
+        # and since consumers get cumulative append-only snapshots, the corrupted one it had
+        # already emitted could never be repaired.
+        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names)
+        result = _tool_healing.strip_outside_think(masked, _seg)
+        if not bodies:
+            return result
+        restored = _unmask_blocked_bodies(result, bodies)
+        return restored if restored is not None else _tool_healing.strip_outside_think(text, _seg)
 
     def reset(self):
         """Drop every cached prefix, for a caller starting a new buffer.

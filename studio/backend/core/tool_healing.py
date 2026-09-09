@@ -885,7 +885,25 @@ def parse_tool_calls_from_text(
     call_spans: list[tuple] = []
     # A marker inside another call's coverage, even one that failed to parse, is data and is not executed.
     parsed_items = []
-    markers = [mk for mk in _build_markers(content) if not _in_think(mk[0])]
+    # A marker inside a blocked markerless call's body is that call's quoted ARGUMENT text.
+    # The inference parser masks those bodies before every pass; this lighter parser is
+    # reached directly from passthrough healing, where the same quoted payload still
+    # promoted. Imported late: tool_call_parser imports this module, and the spans are
+    # defined there because the Gemma and bare-JSON scanners live there.
+    try:
+        from core.inference.tool_call_parser import _blocked_markerless_body_spans
+
+        _blocked_spans = _blocked_markerless_body_spans(content, enabled_tool_names)
+    except Exception:  # noqa: BLE001 -- no spans just means the old, unmasked behaviour
+        _blocked_spans = []
+
+    def _in_blocked(pos: int) -> bool:
+        return any(begin <= pos < stop for begin, stop in _blocked_spans)
+
+    markers = [
+        mk for mk in _build_markers(content)
+        if not _in_think(mk[0]) and not _in_blocked(mk[0])
+    ]
     coverage = _marker_coverage(content, markers)
     covered_until = -1
     for idx, (start, brace_end, kind, m) in enumerate(markers):
@@ -940,6 +958,7 @@ def parse_tool_calls_from_text(
         for fm in _TC_FUNC_START_RE.finditer(content)
         if not _inside_open_parameter(content, fm.start())
         and not _in_think(fm.start())
+        and not _in_blocked(fm.start())
         and not any(s <= fm.start() < e for s, e in coverage)
     ]
     for idx, fm in enumerate(func_starts):
@@ -1025,7 +1044,7 @@ def parse_tool_calls_from_text(
         for start, end, kind, m in _iter_bracket_spans(
             content, enabled_tool_names = enabled_tool_names
         ):
-            if _in_think(start):
+            if _in_think(start) or _in_blocked(start):
                 continue
             # Extend the region over an immediately-following v11 closer so with_spans consumers strip it too.
             closer = re.match(r"\s*\[/TOOL_CALLS\]", content[end:])

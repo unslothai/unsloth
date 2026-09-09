@@ -29368,7 +29368,7 @@ class LlamaCppBackend:
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display, in_thinking, _prov_entry
+            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display
             if in_thinking:
                 cumulative_display += "</think>"
                 in_thinking = False
@@ -29385,6 +29385,10 @@ class LlamaCppBackend:
                     )
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
+            # Not cleared here: the callers measure len(content_buffer) right after to place
+            # the live-args window. Recorded instead, so the cancellation flush below does not
+            # add the same prefix a second time.
+            _buffer_in_display = True
 
         def _cancelled_hold_text() -> str:
             """Display text the guards are still holding, which a cancel would drop.
@@ -29396,7 +29400,7 @@ class LlamaCppBackend:
             genuinely promotable markup, so an aborted real call contributes only prose."""
             if _suppress_visible_output:
                 return ""
-            held = cumulative_display + content_buffer
+            held = cumulative_display + ("" if _buffer_in_display else content_buffer)
             if not held:
                 return ""
             cleaned = _strip_tool_markup(held, final = True, force = True)
@@ -29987,6 +29991,8 @@ class LlamaCppBackend:
 
                 detect_state = _S_BUFFERING
                 content_buffer = ""  # Raw content held during BUFFERING
+                # Whether content_buffer has already been added to cumulative_display.
+                _buffer_in_display = False
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
                 _prov_entry = None

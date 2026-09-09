@@ -759,13 +759,11 @@ def run_safetensors_tool_loop(
             next snapshot settles them, and a cancel arriving first lost them too. The strip
             is the final one, which removes promotable markup, so an aborted real call
             contributes only its surrounding prose."""
-            # Only BUFFERING still holds its text separately; the transition to STREAMING
-            # folds the buffer in without clearing it, so adding both there doubles the reply.
-            held = (
-                cumulative_display + content_buffer
-                if detect_state == _state_buffering
-                else cumulative_display
-            )
+            # The buffer is folded into the display without being cleared, so add it only
+            # while that has not happened. Keying on BUFFERING instead missed the bare-JSON
+            # and bare-Gemma branches, which enter DRAINING without folding: the blocked
+            # prefix they hold is visible prose, and a cancel dropped it.
+            held = cumulative_display + ("" if buffer_in_display else content_buffer)
             if not held:
                 return ""
             cleaned = strip_tool_markup(held, final = True, enabled_tool_names = _enabled_tool_names)
@@ -773,6 +771,8 @@ def run_safetensors_tool_loop(
 
         detect_state = _state_buffering
         content_buffer = ""
+        # Whether content_buffer has already been added to cumulative_display.
+        buffer_in_display = False
         content_accum = ""
         cumulative_display = ""
         last_emitted = ""
@@ -1089,6 +1089,7 @@ def run_safetensors_tool_loop(
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
                 cumulative_display += content_buffer
+                buffer_in_display = True
                 cleaned = _strip_streaming_display(cumulative_display)
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -1116,6 +1117,7 @@ def run_safetensors_tool_loop(
             else:
                 detect_state = _state_streaming
                 cumulative_display += content_buffer
+                buffer_in_display = True
                 cleaned = _strip_streaming_display(cumulative_display)
                 # Same trailing-name hold as STREAMING for this first flush out of BUFFERING.
                 if tool_protocol_active:
@@ -1163,6 +1165,7 @@ def run_safetensors_tool_loop(
                 # still fire on short emissions like "Let me search." that never exit BUFFERING.
                 if content_buffer:
                     cumulative_display += content_buffer
+                    buffer_in_display = True
                     cleaned = strip_tool_markup(
                         cumulative_display, final = True, enabled_tool_names = _enabled_tool_names
                     )
