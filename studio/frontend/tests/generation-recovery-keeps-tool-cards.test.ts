@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A recovery rebuilds the reply from the raw text a run's chunk events carried, and the
-// projection it rebuilds through only understands text and reasoning. Every other part was
-// dropped on the way in, so the rebuilt body lost the turn's tool calls and the follower then
-// wrote that body to storage, making the loss permanent.
-//
-// On screen: the thinking blocks and the prose survive, because both round-trip through
-// <think> tags, and the "Used tool: edit_file" cards between them are gone, leaving the
-// model's colon preamble introducing nothing. A recovery is armed by `online`, `pageshow`,
-// `visibilitychange` and history load, so a long local run that the reader tabs away from
-// hits it.
+// Recovery must preserve tool cards in storage and the live view.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -133,4 +124,66 @@ test("a publish carrying new text still wins", () => {
   const view: Part[] = [{ type: "text", text: "That patch" }];
   const ahead: Part[] = [{ type: "text", text: "That patch mangled the line" }];
   assert.deepEqual(recoveredContentToImport(view, ahead), ahead);
+});
+
+test("calls split reasoning into the original groups", () => {
+  const body: Part[] = [
+    { type: "reasoning", text: "before" },
+    { type: "tool-call", toolCallId: "one", toolName: "edit_file" },
+    { type: "reasoning", text: "between" },
+    { type: "tool-call", toolCallId: "two", toolName: "web_search" },
+    { type: "reasoning", text: "after" },
+    { type: "text", text: "done" },
+  ];
+  assert.deepEqual(recoverBody(body), body);
+  assert.deepEqual(recoverBody(recoverBody(body)), body);
+});
+
+test("cards at shared offsets retain their order", () => {
+  const body: Part[] = [
+    { type: "text", text: "A\u{1D11E}" },
+    { type: "tool-call", toolCallId: "one" },
+    { type: "tool-call", toolCallId: "two" },
+    { type: "text", text: "B" },
+  ];
+  assert.deepEqual(recoverBody(body), body);
+  assert.deepEqual(
+    recoveredContentToImport(
+      body,
+      body.filter((p) => p.toolCallId !== "one"),
+    ),
+    body,
+  );
+});
+
+test("a divergent recovered reply does not inherit old cards or attachments", () => {
+  for (const type of ["tool-call", "source", "file", "image"]) {
+    const view: Part[] = [{ type: "text", text: "old response" }, { type }];
+    const recovered: Part[] = [
+      { type: "text", text: "server repaired response" },
+    ];
+    assert.equal(recoveredContentToImport(view, recovered), recovered);
+  }
+});
+
+test("compatible replies retain recovered cards and their authoritative results", () => {
+  const old = { type: "tool-call", toolCallId: "shared", result: "old" };
+  const current = { ...old, result: "new" };
+  const missing = { type: "tool-call", toolCallId: "missing" };
+  const added = { type: "tool-call", toolCallId: "added" };
+  const view = [{ type: "text", text: "A" }, old, missing];
+  const recovered = [
+    { type: "text", text: "A" },
+    current,
+    added,
+    { type: "text", text: "B" },
+  ];
+  const merged = recoveredContentToImport(view, recovered);
+  assert.deepEqual(merged, [
+    { type: "text", text: "A" },
+    current,
+    missing,
+    added,
+    { type: "text", text: "B" },
+  ]);
 });

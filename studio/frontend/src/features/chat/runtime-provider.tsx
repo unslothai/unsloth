@@ -112,7 +112,7 @@ import {
   generationIsCorroboratedLive,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
-  restoreCarriedParts,
+  restoreCarriedPartsFromRaw,
   isLiveGenerationRun,
   generationRawContent,
   loadGenerationOverlaySnapshot,
@@ -126,6 +126,7 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import {
   extractDeltaText,
@@ -866,10 +867,9 @@ function scheduleGenerationRecovery(
   const recovery = (async () => {
     let cursor = Number(metadata.generationSeq ?? 0);
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
-    // `carried` is taken once, here: the follow only ever appends to `raw`, so the offsets
-    // these parts were stored at stay valid for the rest of the run.
     const stored = generationRawContent(storedMessage.content);
     const carried = stored.carried;
+    const recoverToolEvent = createGenerationToolRecovery(carried, runId);
     let { raw, reasoningOpen } = stored;
     let completionTokens: number | undefined;
     let recoveryUsage:
@@ -910,10 +910,9 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      // The rebuild knows only text and reasoning, so the tool calls go back on before this
-      // is written: the write is authoritative and would otherwise persist their loss.
-      const content = restoreCarriedParts(
-        parseAssistantContent(reasoningOpen ? `${raw}</think>` : raw),
+      // Restore cards before persisting the rebuilt reply.
+      const content = restoreCarriedPartsFromRaw(
+        reasoningOpen ? `${raw}</think>` : raw,
         carried,
       ) as MessageRecord["content"];
       await saveStoredChatMessage({
@@ -1037,6 +1036,12 @@ function scheduleGenerationRecovery(
           if (update.event && update.event.seq > cursor) {
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
+              recoverToolEvent(
+                update.event.payload,
+                raw.length,
+                update.event.seq,
+                update.run.requestPayload.session_id,
+              );
               const chunk = update.event.payload as {
                 _reasoningDurationMs?: unknown;
                 usage?: {
