@@ -8,9 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from auth import policy
+from auth import policy, storage
 from core.inference import tool_confinement, tools
 from utils.account_context import OWNER, AccountContext, run_as
+from utils.paths import storage_roots
+
+from .test_account_lifecycle import auth_env, matrix  # noqa: F401
 
 ALICE = AccountContext("alice-id", "alice")
 BOB = AccountContext("bob-id", "bob")
@@ -663,3 +666,48 @@ def test_another_accounts_command_text_is_not_on_the_process_list(tmp_path):
     assert "HITS 0" in out, out
     assert marker in alice["out"]
     assert not list(Path(run_as(ALICE, tools._get_workdir, "chat")).glob(".studio_cmd_*"))
+
+
+def _make_private_roots(account):
+    for root in (
+        storage_roots.workspace_root,
+        storage_roots.project_workspaces_root,
+        storage_roots.tmp_root,
+    ):
+        run_as(account, root).mkdir(parents = True, exist_ok = True)
+
+
+def test_a_tool_launch_after_deletion_refuses_instead_of_recreating_the_roots(matrix):  # noqa: F811
+    """A chat authenticated before the delete must not rematerialize the private roots.
+
+    ``_ensure_dirs`` used to create the workspace, sandbox, temporary and project roots
+    with a raw ``Path.mkdir``, so a tool process launched after ``delete_account`` returned
+    rebuilt an orphaned account tree and ran in it.
+    """
+    _, _, accounts = matrix
+    alice = storage.get_account("alice")
+    _make_private_roots(alice)
+    Path(run_as(alice, tools.sandbox_root)).mkdir(parents = True, exist_ok = True)
+
+    storage.delete_account(alice.account_id, accounts.retire_account_roots)
+
+    workspace = run_as(alice, storage_roots.workspace_root)
+    tmp = run_as(alice, storage_roots.tmp_root)
+    projects = run_as(alice, storage_roots.project_workspaces_root)
+    sandbox = Path(run_as(alice, tools.sandbox_root))
+    assert not any(root.exists() for root in (workspace, tmp, projects, sandbox))
+
+    for helper in (
+        tool_confinement._readable_account_roots,
+        tool_confinement._writable_roots,
+    ):
+        with pytest.raises(storage_roots.RetiredAccountError):
+            run_as(alice, helper)
+
+    # The public entry a tool call uses refuses too, as a returned error rather than a raise.
+    with pytest.raises(storage_roots.RetiredAccountError):
+        run_as(alice, tools._get_workdir, "chat")
+    result = run_as(alice, tools._bash_exec, "echo hi", "chat")
+    assert "account has been deleted" in result
+
+    assert not any(root.exists() for root in (workspace, tmp, projects, sandbox))

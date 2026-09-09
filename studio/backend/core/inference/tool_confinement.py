@@ -113,11 +113,14 @@ def _interpreter_roots() -> list[str]:
 
 
 def _ensure_dirs(paths) -> list[str]:
-    """A Landlock rule can only name a path that already exists."""
+    """A Landlock rule can only name a path that already exists. ``ensure_dir`` refuses a
+    launch that races the account's deletion instead of rematerializing the roots."""
+    from utils.paths.storage_roots import ensure_dir
+
     roots = []
     for root in paths:
         try:
-            Path(root).mkdir(parents = True, exist_ok = True)
+            ensure_dir(Path(root))
         except OSError:
             continue
         roots.append(str(root))

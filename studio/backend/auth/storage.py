@@ -690,7 +690,7 @@ def issue_account_setup_code(
     *, username: Optional[str] = None, account_id: Optional[str] = None
 ) -> dict:
     from auth.hashing import hash_password
-    from auth.policy import invalidate_account_cache
+    from auth.policy import account_mutation
 
     if (username is None) == (account_id is None):
         raise ValueError("Specify either a username or an account id")
@@ -700,46 +700,46 @@ def issue_account_setup_code(
     salt, pwd_hash = hash_password(code)
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(minutes = 60)).isoformat()
-    conn = get_connection()
-    try:
-        with conn:
-            conn.execute("BEGIN IMMEDIATE")
-            if username is not None:
-                account_id = uuid.uuid4().hex
-                legacy_salt, legacy_hash, legacy_secret = _legacy_dummies()
-                conn.execute(
-                    """INSERT INTO auth_user
-                    (username, account_id, role, is_active, created_at, password_salt,
-                     password_hash, jwt_secret, account_password_salt, account_password_hash,
-                     account_jwt_secret, must_change_password, setup_code_hash, setup_code_expires_at)
-                    VALUES (?, ?, 'user', 1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
-                    (
-                        username,
-                        account_id,
-                        now.isoformat(),
-                        legacy_salt,
-                        legacy_hash,
-                        legacy_secret,
-                        salt,
-                        pwd_hash,
-                        secrets.token_urlsafe(64),
-                        _hash_token(code),
-                        expires_at,
-                    ),
-                )
-            else:
-                row = _managed_account(conn, account_id)
-                _revoke_account_credentials(conn, row)
-                conn.execute(
-                    """UPDATE auth_user SET account_password_salt = ?, account_password_hash = ?,
-                       must_change_password = 1, setup_code_hash = ?, setup_code_expires_at = ?
-                       WHERE account_id = ?""",
-                    (salt, pwd_hash, _hash_token(code), expires_at, account_id),
-                )
-            account = _public_account(_managed_account(conn, account_id))
-    finally:
-        conn.close()
-    invalidate_account_cache()
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if username is not None:
+                    account_id = uuid.uuid4().hex
+                    legacy_salt, legacy_hash, legacy_secret = _legacy_dummies()
+                    conn.execute(
+                        """INSERT INTO auth_user
+                        (username, account_id, role, is_active, created_at, password_salt,
+                         password_hash, jwt_secret, account_password_salt, account_password_hash,
+                         account_jwt_secret, must_change_password, setup_code_hash, setup_code_expires_at)
+                        VALUES (?, ?, 'user', 1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                        (
+                            username,
+                            account_id,
+                            now.isoformat(),
+                            legacy_salt,
+                            legacy_hash,
+                            legacy_secret,
+                            salt,
+                            pwd_hash,
+                            secrets.token_urlsafe(64),
+                            _hash_token(code),
+                            expires_at,
+                        ),
+                    )
+                else:
+                    row = _managed_account(conn, account_id)
+                    _revoke_account_credentials(conn, row)
+                    conn.execute(
+                        """UPDATE auth_user SET account_password_salt = ?, account_password_hash = ?,
+                           must_change_password = 1, setup_code_hash = ?, setup_code_expires_at = ?
+                           WHERE account_id = ?""",
+                        (salt, pwd_hash, _hash_token(code), expires_at, account_id),
+                    )
+                account = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
     return {"account": account, "setup_code": code, "setup_code_expires_at": expires_at}
 
 
@@ -821,54 +821,55 @@ def update_account_password(
 
 
 def set_account_active(account_id: str, is_active: bool) -> dict:
-    from auth.policy import invalidate_account_cache
-
-    conn = get_connection()
-    try:
-        with conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = _managed_account(conn, account_id)
-            if not is_active:
-                _revoke_account_credentials(conn, row)
-            conn.execute(
-                "UPDATE auth_user SET is_active = ? WHERE account_id = ?",
-                (int(is_active), account_id),
-            )
-            result = _public_account(_managed_account(conn, account_id))
-    finally:
-        conn.close()
-    invalidate_account_cache()
+    from auth.policy import account_mutation
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = _managed_account(conn, account_id)
+                if not is_active:
+                    _revoke_account_credentials(conn, row)
+                conn.execute(
+                    "UPDATE auth_user SET is_active = ? WHERE account_id = ?",
+                    (int(is_active), account_id),
+                )
+                result = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
     return result
 
 
 def delete_account(account_id: str, retire) -> None:
     """Revoke, retire files, then remove the identity under a write lock. ``retire()`` must not
     write auth.db under that lock; a failed retire leaves the account disabled for a retry."""
-    from auth.policy import invalidate_account_cache
+    from auth.policy import account_mutation
     from utils.account_context import AccountContext
 
     set_account_active(account_id, False)
-    conn = get_connection()
-    restore_roots = None
-    try:
-        with conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = _managed_account(conn, account_id)
-            _revoke_account_credentials(conn, row)
-            restore_roots = retire(AccountContext(row["account_id"], row["username"], row["role"]))
-            conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
-    except Exception:
-        # The identity survives the rollback, so the roots must come back with it.
-        if restore_roots is not None:
-            restore_roots()
-        # An owner request can reactivate between the revocation and this write lock; login must
-        # stay disabled anyway.
-        with contextlib.suppress(sqlite3.Error):
-            set_account_active(account_id, False)
-        raise
-    finally:
-        conn.close()
-        invalidate_account_cache()
+    with account_mutation():
+        conn = get_connection()
+        restore_roots = None
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = _managed_account(conn, account_id)
+                _revoke_account_credentials(conn, row)
+                restore_roots = retire(
+                    AccountContext(row["account_id"], row["username"], row["role"])
+                )
+                conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
+        except Exception:
+            # The identity survives the rollback, so the roots must come back with it.
+            if restore_roots is not None:
+                restore_roots()
+            # An owner request can reactivate between the revocation and this write lock; login must
+            # stay disabled anyway.
+            with contextlib.suppress(sqlite3.Error):
+                set_account_active(account_id, False)
+            raise
+        finally:
+            conn.close()
 
 
 def _get_or_create_api_key_pbkdf2_salt() -> bytes:

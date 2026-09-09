@@ -81,6 +81,8 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
+from pathlib import Path
+from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
 from loggers import get_logger
 
@@ -8592,6 +8594,8 @@ def _get_workdir(session_id: str | None = None) -> str:
         _workdirs.pop(key, None)
         sandbox_root_path = sandbox_root()
         root_existed = os.path.isdir(sandbox_root_path)
+        # Before anything below creates a directory: a call after deletion must refuse.
+        ensure_dir(Path(sandbox_root_path))
         # The folder may still be at the legacy root right after an upgrade.
         # Only this chat's, so a first tool call never waits on the whole tree:
         # across filesystems that is a copy of every session.
@@ -16255,10 +16259,10 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
-    workdir = _get_workdir(session_id)
     try:
+        workdir = _get_workdir(session_id)
         confinement = _account_confinement()
-    except ToolConfinementUnavailable as exc:
+    except (ToolConfinementUnavailable, RetiredAccountError) as exc:
         return _truncate(f"Execution error: {exc}")
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
     # one session by design. Retaining a result in either, under a path the next chat can
@@ -16436,10 +16440,10 @@ def _bash_exec(
     call_token = None
     _scratch_name = None
     try:
-        workdir = _get_workdir(session_id)
         try:
+            workdir = _get_workdir(session_id)
             confinement = _account_confinement()
-        except ToolConfinementUnavailable as exc:
+        except (ToolConfinementUnavailable, RetiredAccountError) as exc:
             return _truncate(f"Execution error: {exc}")
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)

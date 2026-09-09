@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from typing import Optional
 
@@ -16,6 +17,8 @@ LOGIN_MODE_MULTI = "multi"
 _lock = threading.Lock()
 _generation = 0
 _cached: Optional[tuple[int, int, int]] = None
+# Depth of in-flight account mutations; the cache is bypassed entirely while any is open.
+_mutating = 0
 
 
 def invalidate_account_cache() -> None:
@@ -26,6 +29,25 @@ def invalidate_account_cache() -> None:
         _cached = None
 
 
+@contextlib.contextmanager
+def account_mutation():
+    """Wrap an account write, invalidation included. Invalidating only after the commit leaves a
+    window where the row is durable but the cache still answers the pre-write verdict; bypassing
+    the cache for the whole write makes every reader recompute. Counted, so nested mutations work
+    and a slow write never blocks a policy read."""
+    global _mutating, _generation, _cached
+    with _lock:
+        _mutating += 1
+    try:
+        yield
+    finally:
+        # One critical section: dropping the suppression before invalidating would reopen the window.
+        with _lock:
+            _mutating -= 1
+            _generation += 1
+            _cached = None
+
+
 def account_generation() -> int:
     return _generation
 
@@ -33,7 +55,7 @@ def account_generation() -> int:
 def _account_counts() -> tuple[int, int]:
     global _cached
     with _lock:
-        if _cached is not None and _cached[0] == _generation:
+        if not _mutating and _cached is not None and _cached[0] == _generation:
             return _cached[1], _cached[2]
         generation = _generation
     from auth import storage
@@ -47,7 +69,7 @@ def _account_counts() -> tuple[int, int]:
         # A bound managed account proves a multi-user install, so isolation stays on.
         return (1 if is_owner_context() else 2), 1
     with _lock:
-        if generation == _generation:
+        if not _mutating and generation == _generation:
             _cached = (generation, active, managed)
     return active, managed
 
