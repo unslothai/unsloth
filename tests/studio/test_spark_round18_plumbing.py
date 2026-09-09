@@ -73,7 +73,7 @@ def test_the_peer_launch_survives_a_staged_path_with_a_space(cluster, monkeypatc
         ["torchrun", "--node_rank=1", "-m", "studio.spark_pipeline", "--model", "/m/large model"]
     )
     monkeypatch.setattr(cluster, "stage_run_inputs", lambda c, ip, u, h: (node1, [], []))
-    monkeypatch.setattr(cluster, "wait_for_peer_stage", lambda *a, **k: True)
+    monkeypatch.setattr(cluster, "wait_for_peer_stage", lambda *a, **k: {"ok": True, "why": ""})
     monkeypatch.setattr(cluster, "collect_stage_outputs", lambda *a, **k: None)
     monkeypatch.setattr(cluster.time, "sleep", lambda *a: None)
     cluster.run_pipeline(

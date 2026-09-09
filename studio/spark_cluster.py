@@ -4723,6 +4723,14 @@ def wait_for_peer_stage(
         f'if [ -n "$p" ]; then for i in $(seq 1 {max(1, timeout)}); do '
         f'kill -0 "$p" 2>/dev/null || break; sleep 1; done; '
         f'kill -0 "$p" 2>/dev/null && exit 1; fi; '
+        # A short grace period for the status file rather than reading it once. The recorded
+        # pid IS the shell that writes it -- `setsid` execs rather than forks from a
+        # non-interactive ssh shell, which was checked on this pair (`ps` shows the recorded
+        # pid running the inner `bash -c`) -- but on a host where it did fork, reading once
+        # would call every successful run a failure. Waiting a few seconds cannot turn a real
+        # failure into a pass, since the file is only written with the true status.
+        f"for i in $(seq 1 30); do "
+        f"[ -f {rc_file} ] && break; sleep 1; done; "
         f"rc=$(cat {rc_file} 2>/dev/null); "
         f'if [ -z "$rc" ]; then exit 3; fi; '
         f'[ "$rc" = "0" ] || exit 2; exit 0'
