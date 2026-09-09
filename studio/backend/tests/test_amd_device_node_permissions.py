@@ -2382,17 +2382,13 @@ def _install_sh_missing_kfd(
             # EMPTY and the arms below read as commands that name nobody.
             _shell_fn(lines, "_shell_quote"),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
-            # Two ways to answer the ROCm probe. Stubbed, when the arm is about something
-            # else and only needs a verdict; run for real over stubbed command lookups when
-            # the arm IS about which probe the branch consults, since a stub of the probe
-            # under test would answer for it.
+            # Stubbed when the arm is about something else and only needs a verdict; run
+            # for real over stubbed command lookups when the arm IS about which probe the
+            # branch consults, since a stub of the probe under test would answer for it.
+            # Running it for real also exercises the "ignore-nvidia" argument the branch
+            # passes, which is what keeps the diagnosis off the NVIDIA short-circuit.
             *(
-                [
-                    # Both names, since the stub mode's claim is "the ROCm probe answers
-                    # this", not "the branch calls that spelling of it".
-                    f"_amd_rocm_gpu_visible() {{ return {0 if amd_smi_sees_it else 1}; }}",
-                    f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}",
-                ]
+                [f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}"]
                 if rocm_visible is None
                 else [
                     "_ensure_rocm_probe_env() { :; }",
@@ -2400,7 +2396,6 @@ def _install_sh_missing_kfd(
                     "rocminfo() { echo '  Name: gfx1151'; }"
                     if rocm_visible
                     else "rocminfo() { return 1; }",
-                    _shell_fn(lines, "_amd_rocm_gpu_visible"),
                     _shell_fn(lines, "_has_amd_rocm_gpu"),
                 ]
             ),
@@ -5180,3 +5175,58 @@ def test_the_two_quoting_rules_are_the_same_rule(tmp_path):
         # both are correct, so that case is carried by the round trip above alone.
         if "'" not in value:
             assert out.stdout == shlex.quote(value), (value, out.stdout)
+
+
+# The two helpers every tests/sh ROCm harness lifts alongside _has_amd_rocm_gpu.
+_ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT = frozenset(
+    {"_ensure_rocm_probe_env", "_has_usable_nvidia_gpu"}
+)
+
+
+def test_the_rocm_probe_calls_nothing_the_shell_harnesses_do_not_lift():
+    """tests/sh lifts probes out of install.sh one function at a time, by name, with
+    `sed -n '/^_name()/,/^}/p'`. So _has_amd_rocm_gpu may only call helpers those
+    harnesses already lift: a call to anything else is an undefined function there, the
+    ROCm branch falls through to the CPU wheel index, and four harnesses fail on a
+    torch-index assertion that has nothing to do with what changed.
+
+    That is not hypothetical. Splitting the probe into a wrapper over a private
+    _amd_rocm_gpu_visible did exactly this, and the NVIDIA veto now lives inside the
+    function so there is nothing to forget. Fails if the split comes back."""
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    defined = {line.split("(")[0] for line in lines if re.match(r"^_?[A-Za-z0-9_]+\(\) \{", line)}
+    body = _shell_fn(lines, "_has_amd_rocm_gpu").splitlines()[1:]
+    called = {
+        name
+        for name in defined
+        if name != "_has_amd_rocm_gpu"
+        and any(re.search(rf"(^|[\s;&|(]){re.escape(name)}($|[\s;&|)])", l) for l in body)
+    }
+    assert called <= _ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT, called
+
+
+def test_that_check_sees_a_helper_the_harnesses_would_not_have():
+    """The control. Without it the test above could be passing because the scan matches
+    nothing at all, which is what a name-based scan usually does when it is wrong."""
+    lines = [
+        "_ensure_rocm_probe_env() {",
+        "    :",
+        "}",
+        "_amd_rocm_gpu_visible() {",
+        "    return 1",
+        "}",
+        "_has_amd_rocm_gpu() {",
+        "    _ensure_rocm_probe_env",
+        "    _amd_rocm_gpu_visible",
+        "}",
+    ]
+    defined = {line.split("(")[0] for line in lines if re.match(r"^_?[A-Za-z0-9_]+\(\) \{", line)}
+    body = _shell_fn(lines, "_has_amd_rocm_gpu").splitlines()[1:]
+    called = {
+        name
+        for name in defined
+        if name != "_has_amd_rocm_gpu"
+        and any(re.search(rf"(^|[\s;&|(]){re.escape(name)}($|[\s;&|)])", l) for l in body)
+    }
+    assert called == {"_ensure_rocm_probe_env", "_amd_rocm_gpu_visible"}

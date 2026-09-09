@@ -3328,12 +3328,18 @@ _ensure_rocm_probe_env() {
     fi
 }
 
-# Whether ROCm can SEE an AMD GPU, with no opinion about whether this install will use
-# it. _has_amd_rocm_gpu wraps this in an NVIDIA short-circuit because its callers are
-# choosing a torch index, where a usable NVIDIA card wins; a diagnosis that has already
-# established the run opens AMD nodes needs the probe without that veto.
-_amd_rocm_gpu_visible() {
+# Whether ROCm can see an AMD GPU. Most callers are choosing a torch index, where a
+# usable NVIDIA card wins, so the NVIDIA short-circuit is the default; a diagnosis that
+# has already established the run opens AMD nodes passes "ignore-nvidia" to skip it.
+# The veto lives INSIDE this function rather than in a wrapper around a private helper:
+# every tests/sh harness lifts probes out of this file one function at a time by name
+# (sed -n '/^_name()/,/^}/p'), so a wrapper whose helper is not also lifted calls an
+# undefined function, and the ROCm branch falls silently through to the CPU wheel index.
+_has_amd_rocm_gpu() {
     _ensure_rocm_probe_env
+    if [ "${1:-}" != "ignore-nvidia" ] && _has_usable_nvidia_gpu; then
+        return 1
+    fi
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
@@ -3354,14 +3360,6 @@ _amd_rocm_gpu_visible() {
         return 0
     fi
     return 1
-}
-
-_has_amd_rocm_gpu() {
-    _ensure_rocm_probe_env
-    if _has_usable_nvidia_gpu; then
-        return 1
-    fi
-    _amd_rocm_gpu_visible
 }
 
 # Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
@@ -5794,7 +5792,7 @@ if [ "$_amd_node_diag_route" = true ] && \
 elif [ "$_amd_node_diag_route" = true ] && \
    _run_may_open_kfd && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
-   ! _amd_rocm_gpu_visible && _amd_gpu_present_via_pci; then
+   ! _has_amd_rocm_gpu ignore-nvidia && _amd_gpu_present_via_pci; then
         substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
         substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
         substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
