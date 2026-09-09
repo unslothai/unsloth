@@ -28,6 +28,7 @@ import os as _os
 import re as _re
 import sys as _sys
 import threading as _threading
+from dataclasses import dataclass
 from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
@@ -211,6 +212,18 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
+# GEMM tiling floors per scheme, as the number every quantized Linear's in/out features must divide by. scaled_mm
+# needs 16-aligned dims and MX block scaling 32; int8's ``_int_mm`` has no such floor and keeps the historical filter
+# (0 = no constraint). Public because the runtime filter, the offline builder and the checkpoint validator all have to
+# read the same number: a checkpoint built at a different floor holds a different set of quantized Linears.
+_SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
+
+
+def divisible_for_scheme(scheme: str) -> int:
+    """The in/out feature alignment ``scheme``'s GEMM requires, 0 when it has none."""
+    return _SCHEME_DIVISIBLE.get(scheme, 0)
+
+
 # Per-arch preference for ``auto``, best first. On Blackwell fp8 leads: on B200 plain fp8 dynamic is faster AND more
 # accurate at DiT shapes, while mxfp8 block scaling only adds overhead. nvfp4's FP4 GEMM is real with torch>=2.11 but
 # wins only on very large GEMMs (0.81x on Z-Image 1024px, LPIPS 0.166 vs fp8 0.044), so it is kept OUT of the ladder
@@ -240,6 +253,28 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
 }
+
+
+@dataclass(frozen = True)
+class _AutoPrefer:
+    """A family's own head of the ``auto`` order, tried AHEAD of the global ``_AUTO_LADDER`` tier.
+
+    ``_AUTO_LADDER`` is per-arch and family-blind, so it can only carry the choice that is right
+    for the average DiT. A family whose shapes have actually been measured gets its own head here
+    instead of bending the shared ladder. The head is dropped when the GPU's capability is below
+    ``floor``, and (unless ``consumer_ok``) when the GPU is consumer-class: the measurements behind
+    a row were taken on datacenter Blackwell, and a consumer part's arithmetic rates are different
+    enough that the ordering does not carry over untested."""
+
+    floor: tuple[int, int]
+    schemes: tuple[str, ...]
+    consumer_ok: bool = False
+
+
+# Keys are lowercased family names, so the 480p and 720p HunyuanVideo-1.5 tiers are separate rows (separate base repos,
+# separate measurements, separate checkpoints). A row is added for a family only once the promotion gates in this PR
+# pass for it; an empty table is the pre-measurement state and leaves the ladder exactly as it was.
+_FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {}
 
 
 # Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because the evidence above is
@@ -502,14 +537,11 @@ def select_transformer_quant_scheme(
     cap = _capability()
     if cap is None:
         return None
-    for floor, schemes in _AUTO_LADDER:
-        if cap >= floor:
-            for scheme in _prefer_consumer_scheme(schemes, device):
-                if _family_denied(family, scheme):
-                    continue
-                if _scheme_supported(scheme, device):
-                    return scheme
-            return None
+    for scheme in _auto_scheme_order(family, device, cap):
+        if _family_denied(family, scheme):
+            continue
+        if _scheme_supported(scheme, device):
+            return scheme
     return None
 
 
@@ -527,14 +559,39 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
     cap = _capability()
     if cap is None:
         return ()
+    return tuple(
+        scheme
+        for scheme in _auto_scheme_order(family, device, cap)
+        if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
+    )
+
+
+def _auto_scheme_order(family: Optional[str], device: Any, cap: tuple[int, int]) -> tuple[str, ...]:
+    """The schemes ``auto`` would try on this GPU for this family, best first, before the deny
+    list and the smoke probe have their say.
+
+    The family's ``_FAMILY_AUTO_PREFER`` head (when it applies here) followed by the matching
+    ``_AUTO_LADDER`` tier reordered for the GPU class, deduplicated. Empty when no tier matches,
+    head or not: a capability below every tier has no dense quant path at all. Shared by
+    ``select_transformer_quant_scheme`` and ``auto_scheme_candidates`` so the winner they each
+    compute comes from one walk and the two can never disagree."""
+    tier: tuple[str, ...] = ()
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            return tuple(
-                scheme
-                for scheme in _prefer_consumer_scheme(schemes, device)
-                if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
-            )
-    return ()
+            tier = _prefer_consumer_scheme(schemes, device)
+            break
+    if not tier:
+        return ()
+    prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
+    head: tuple[str, ...] = ()
+    if prefer is not None and cap >= prefer.floor:
+        if prefer.consumer_ok or not _is_consumer_gpu(device):
+            head = prefer.schemes
+    order: list[str] = []
+    for scheme in head + tier:
+        if scheme not in order:
+            order.append(scheme)
+    return tuple(order)
 
 
 def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
@@ -1152,9 +1209,7 @@ def quantize_transformer(
         # non-bf16 ones. "lora_" keeps a baked adapter's side path high precision. Runtime only: NOT part of
         # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
-        # GEMM tiling floors per scheme: scaled_mm needs 16-aligned dims, MX block scaling 32. int8's _int_mm has no
-        # such floor and keeps the historical filter.
-        divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
+        divisible = divisible_for_scheme(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),

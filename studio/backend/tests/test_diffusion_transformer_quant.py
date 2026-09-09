@@ -1442,6 +1442,192 @@ def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
         assert (candidates[0] if candidates else None) == chosen, (cc, family)
 
 
+# ── the per-family auto preference head ───────────────────────────────────────
+
+
+def _prefer(
+    monkeypatch,
+    row,
+    family = "fake-video",
+):
+    """Install one ``_FAMILY_AUTO_PREFER`` row. The shipped table is empty, so every property
+    below is proved on a synthetic family rather than on whichever row happens to ship."""
+    monkeypatch.setattr(tq, "_FAMILY_AUTO_PREFER", {family: row})
+
+
+def _nvfp4_head(**kw):
+    return tq._AutoPrefer(floor = (10, 0), schemes = (TQ_NVFP4,), **kw)
+
+
+def test_a_prefer_row_leads_the_tier_on_datacenter_blackwell(monkeypatch):
+    # The head is tried BEFORE the global tier, and the tier still follows it in order, so a family
+    # whose measurements put nvfp4 first does not lose the fallbacks the ladder gives everyone else.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_NVFP4
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (
+        TQ_NVFP4,
+        TQ_FP8,
+        TQ_MXFP8,
+        TQ_INT8,
+    )
+    # An unlisted family keeps the plain ladder, head or no head.
+    assert select_transformer_quant_scheme(_target(), "auto", family = "z-image") == TQ_FP8
+    assert tq.auto_scheme_candidates(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+
+
+def test_a_prefer_row_is_dropped_below_its_capability_floor(monkeypatch):
+    # The head names a scheme measured on Blackwell; an Ada card cannot run it, so the row must not
+    # be able to put it in front of a tier that never contained it.
+    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA L40S")
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_FP8
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (TQ_FP8, TQ_INT8)
+
+
+def test_a_head_the_probe_rejects_falls_through_to_the_tier(monkeypatch):
+    # The head is a preference, not an override: it goes through the same smoke probe as the tier,
+    # so a GPU whose fp4 kernels are missing still lands on fp8 rather than on nothing.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_FP8
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+
+
+def test_the_deny_list_outranks_a_prefer_row(monkeypatch):
+    # Two tables can disagree, and the deny list has to win: it records a scheme that damages the
+    # model, which no ordering preference can make safe.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head(), family = "qwen-image")
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_FP8
+    assert TQ_NVFP4 not in tq.auto_scheme_candidates(_target(), "qwen-image")
+
+
+def test_a_prefer_row_needs_consumer_ok_to_apply_to_a_consumer_gpu(monkeypatch):
+    # The row's numbers were taken on datacenter Blackwell. Consumer Blackwell has different
+    # arithmetic rates (and its own int8-first reorder), so the head stays off until a row says the
+    # measurement carries over.
+    _stub_torch(monkeypatch, cc = (12, 0), device_name = "NVIDIA GeForce RTX 5090")
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_INT8
+    _prefer(monkeypatch, _nvfp4_head(consumer_ok = True))
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_NVFP4
+    # The consumer reorder still applies to the tier behind the head.
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (
+        TQ_NVFP4,
+        TQ_INT8,
+        TQ_FP8,
+        TQ_MXFP8,
+    )
+
+
+def test_a_head_already_in_the_tier_is_not_listed_twice(monkeypatch):
+    # A row that only promotes a scheme the tier already carries must reorder it, not duplicate it:
+    # the candidate list is walked in order by the prequant retry path.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, tq._AutoPrefer(floor = (10, 0), schemes = (TQ_INT8,)))
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (TQ_INT8, TQ_FP8, TQ_MXFP8)
+
+
+def test_a_capability_below_every_tier_has_no_order_even_with_a_head(monkeypatch):
+    # Below the ladder there is no dense quant path at all, so a family head cannot conjure one.
+    _stub_torch(monkeypatch, cc = (7, 5))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_INT8})
+    _prefer(monkeypatch, tq._AutoPrefer(floor = (7, 0), schemes = (TQ_NVFP4,)))
+    assert tq._auto_scheme_order("fake-video", "cuda", (7, 5)) == ()
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") is None
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == ()
+
+
+@pytest.mark.parametrize("family", [None, "fake-video", "z-image", "qwen-image"])
+@pytest.mark.parametrize(
+    "allowed",
+    [
+        {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8},
+        {TQ_FP8, TQ_MXFP8, TQ_INT8},
+        {TQ_NVFP4, TQ_INT8},
+        {TQ_INT8},
+        set(),
+    ],
+)
+def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
+    monkeypatch, family, allowed
+):
+    # The anti-drift invariant, now across the preference table too: whatever the head does to the
+    # order, both entry points must still walk the same one, or the retry path could propose a
+    # scheme auto itself would refuse.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, allowed)
+    _prefer(monkeypatch, _nvfp4_head())
+    candidates = tq.auto_scheme_candidates(_target(), family)
+    chosen = select_transformer_quant_scheme(_target(), "auto", family = family)
+    assert (candidates[0] if candidates else None) == chosen, (family, allowed)
+
+
+def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
+    # The table ships empty until a family's promotion gates pass, so auto must behave exactly as
+    # the ladder alone says. This is the test that fails first when a row is added without its
+    # own coverage.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    assert tq._FAMILY_AUTO_PREFER == {}
+    for family in (None, "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-ti2v-5b"):
+        assert select_transformer_quant_scheme(_target(), "auto", family = family) == TQ_FP8
+
+
+# ── GEMM alignment floors ─────────────────────────────────────────────────────
+
+
+def test_divisible_for_scheme_matches_each_gemm():
+    """scaled_mm (fp8, and torchao's nvfp4 path) needs 16-aligned dims and MX block scaling 32.
+    ``_int_mm`` has no alignment floor, and neither has an unknown scheme, so both answer 0."""
+    from core.inference.diffusion_transformer_quant import divisible_for_scheme
+
+    assert divisible_for_scheme(TQ_FP8) == 16
+    assert divisible_for_scheme(TQ_NVFP4) == 16
+    assert divisible_for_scheme(TQ_MXFP8) == 32
+    assert divisible_for_scheme(TQ_INT8) == 0
+    assert divisible_for_scheme("auto") == 0
+
+
+def test_quantize_transformer_filters_on_the_scheme_alignment(monkeypatch):
+    """The number the filter is built with is the one ``divisible_for_scheme`` publishes, so a
+    Linear that is 16-aligned but not 32-aligned is quantized under nvfp4 and skipped under mxfp8.
+    The offline builder reads the same function: a checkpoint built at a different floor holds a
+    different set of quantized Linears."""
+    torch_stub = _stub_torch(monkeypatch, cc = (10, 0))
+
+    class _Linear:
+        def __init__(self, in_features, out_features):
+            self.in_features, self.out_features = in_features, out_features
+            self.weight = types.SimpleNamespace(dtype = torch_stub.bfloat16)
+
+    torch_stub.nn = types.SimpleNamespace(Linear = _Linear)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    tqz = types.ModuleType("torchao.quantization")
+    seen: list = []
+    tqz.quantize_ = lambda module, config, filter_fn = None: seen.append(filter_fn)
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    filters = {}
+    for scheme in (TQ_NVFP4, TQ_MXFP8):
+        _allow(monkeypatch, {scheme})
+        pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+        assert quantize_transformer(pipe, _target(), mode = scheme) == scheme
+        filters[scheme] = seen[-1]
+
+    aligned_16 = _Linear(528, 2048)  # 528 % 16 == 0, 528 % 32 == 16
+    assert filters[TQ_NVFP4](aligned_16, "image_embedder.linear_2") is True
+    assert filters[TQ_MXFP8](aligned_16, "image_embedder.linear_2") is False
+    assert filters[TQ_NVFP4](_Linear(520, 2048), "blocks.0.ff.net.0") is False
+
+
 def test_the_pre_eviction_gate_does_not_refuse_on_an_indeterminate_probe(monkeypatch):
     # The route-level precision gate asks the selector, not the probe, so unproven_ok has to reach
     # through select_transformer_quant_scheme for the leniency to exist where it matters.
