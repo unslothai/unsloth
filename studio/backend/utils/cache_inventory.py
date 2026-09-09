@@ -329,8 +329,28 @@ def _hf_xet_dirs() -> list[Path]:
     return [_hf_paths().xet_cache]
 
 
+def _diffusion_compile_root() -> Optional[Path]:
+    """Where the diffusion Mega-cache keeps its per-model directories."""
+    try:
+        from core.inference.diffusion_compile_cache import cache_root
+        return _safe_resolve(cache_root())
+    except Exception as exc:  # noqa: BLE001 - a broken import must not widen the list
+        logger.debug(f"Could not resolve the diffusion compile cache: {exc}")
+        return None
+
+
 def _torch_inductor_dirs() -> list[Path]:
     configured = _env_dir("TORCHINDUCTOR_CACHE_DIR")
+    diffusion = _diffusion_compile_root()
+    resolved = None if configured is None else _safe_resolve(configured)
+    if configured is not None and diffusion is not None and resolved is not None:
+        if _is_within(resolved, diffusion):
+            # diffusion_compile_cache.begin() repoints this at <key>/inductor for
+            # as long as an image or video model is resident and restores it on
+            # unload, so the row would name a directory that stops existing under
+            # it and a clear afterwards would take the default one instead, which
+            # nobody was shown. The stable answer is the one below.
+            configured = None
     if configured is not None:
         return [configured]
     import getpass
@@ -671,6 +691,11 @@ def protected_paths() -> set[Path]:
     if hf_home is not None:
         candidates.append(hf_home)
         candidates.append(hf_home / "token")
+    # HF reads the credential from here INSTEAD of <home>/token when it is set,
+    # and it can name a file inside a cache that is otherwise clearable.
+    token_path = _env_dir("HF_TOKEN_PATH")
+    if token_path is not None:
+        candidates.append(token_path)
 
     return _resolved_set(candidates)
 
@@ -963,11 +988,14 @@ def describe_cache(definition: CacheDefinition) -> dict:
             try:
                 assert_purgeable_root(root, protected = protected, trees = trees, keep = keep)
             except CachePurgeRefused as exc:
-                if purgeable:
-                    purgeable = False
+                if blocked_reason is None:
                     blocked_reason = str(exc)
                 continue
             measurable.append(root)
+        # What a clear will actually do: purge_cache skips a refused root and
+        # carries on with the rest, so one bad root does not put the others out
+        # of reach. The reason stays on the row either way.
+        purgeable = bool(measurable)
     if definition.custom_measure is not None:
         total, entries = definition.custom_measure()
     else:
@@ -1018,18 +1046,37 @@ def invalidate_cache_size(key: str) -> None:
         _size_epochs[key] = _size_epochs.get(key, 0) + 1
 
 
+_size_flights: dict[str, threading.Lock] = {}
+_size_flights_lock = threading.Lock()
+
+
+def _flight_for(key: str) -> threading.Lock:
+    with _size_flights_lock:
+        return _size_flights.setdefault(key, threading.Lock())
+
+
 def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
-    now = time.monotonic()
+    started = time.monotonic()
     with _size_cache_lock:
-        began_at = _size_epochs.get(definition.key, 0)
         remembered = None if refresh else _size_cache.get(definition.key)
-    if remembered is not None and now - remembered[0] < _INVENTORY_TTL_SECONDS:
+    if remembered is not None and started - remembered[0] < _INVENTORY_TTL_SECONDS:
         return remembered[1]
-    entry = describe_cache(definition)
-    with _size_cache_lock:
-        if _size_epochs.get(definition.key, 0) == began_at:
-            _size_cache[definition.key] = (time.monotonic(), entry)
-    return entry
+    # One walk per cache at a time. Simultaneous misses would each pay the
+    # seconds a cold hub or triton cache costs, in the shared executor, for the
+    # same answer: opening Settings in two tabs is enough to do it.
+    with _flight_for(definition.key):
+        with _size_cache_lock:
+            began_at = _size_epochs.get(definition.key, 0)
+            remembered = _size_cache.get(definition.key)
+        # A measurement that finished while this call waited began after the
+        # call did, so it is fresh enough for it whether or not it asked to force.
+        if remembered is not None and remembered[0] >= started:
+            return remembered[1]
+        entry = describe_cache(definition)
+        with _size_cache_lock:
+            if _size_epochs.get(definition.key, 0) == began_at:
+                _size_cache[definition.key] = (time.monotonic(), entry)
+        return entry
 
 
 def cache_inventory(*, refresh: bool = False) -> dict:
@@ -1127,9 +1174,41 @@ def empty_cache_root(
     return outcome
 
 
+# The registry each of these caches is written into by a download in flight.
+_DOWNLOAD_REGISTRIES = {"hf_hub": "models", "hf_datasets": "datasets"}
+
+
+def _active_download_refusal(key: str) -> Optional[str]:
+    """Why this cache cannot be emptied right now, or None.
+
+    A download writes blobs, locks and partials straight into the hub cache, and
+    the per-repository deletes already refuse with "Cancel the active download"
+    for exactly that reason (hub/services/models/deletion.py,
+    hub/services/datasets/cache_inventory.py). Emptying the whole cache under one
+    would leave it half written.
+    """
+    kind = _DOWNLOAD_REGISTRIES.get(key)
+    if kind is None:
+        return None
+    try:
+        from hub.utils.download_registry import get_datasets_registry, get_models_registry
+        registry = get_models_registry() if kind == "models" else get_datasets_registry()
+        active = registry.active_job_refs()
+    except Exception as exc:  # noqa: BLE001 - a broken registry must not block a purge
+        logger.debug(f"Could not read the {kind} download registry: {exc}")
+        return None
+    if not active:
+        return None
+    return "Cancel the active downloads before clearing this cache."
+
+
 def purge_cache(key: str) -> dict:
     """Empty one cache by key. Never raises for a refusal; it reports it."""
     definition = definition_for(key)
+    busy = _active_download_refusal(key)
+    if busy is not None:
+        logger.warning(f"Refusing to purge the {key} cache: {busy}")
+        return _purge_result(definition, PurgeOutcome(errors = [busy]))
     if definition.custom_purge is not None:
         outcome = definition.custom_purge()
         return _purge_result(definition, outcome)

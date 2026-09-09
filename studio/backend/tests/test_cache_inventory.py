@@ -1116,3 +1116,163 @@ def test_two_cold_probes_do_not_race_into_the_fallback(tmp_path, monkeypatch, is
     second.join(10)
 
     assert answers == [[configured], [configured]]
+
+
+def test_the_inductor_row_ignores_the_diffusion_override(tmp_path, monkeypatch, isolated_caches):
+    """begin() repoints TORCHINDUCTOR_CACHE_DIR while an image model is resident.
+
+    restore() puts it back on unload, so a row that followed it would name a
+    directory that stops existing under the user, and the Clear afterwards would
+    take the default cache nobody was shown.
+    """
+    import getpass
+    import tempfile
+
+    from utils import cache_inventory as module
+
+    diffusion = tmp_path / "diffusion_compile_cache"
+    per_model = diffusion / "abc123" / "inductor"
+    transient = _write(per_model / "graph.bin", "d" * 50)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    stable = tmp_path / f"torchinductor_{getpass.getuser()}"
+    _write(stable / "fx.bin", "s" * 10)
+    monkeypatch.setattr(
+        module, "_diffusion_compile_root", lambda: Path(os.path.realpath(diffusion))
+    )
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(per_model))
+
+    entry = describe_cache(definition_for("torch_inductor"))
+    assert entry["paths"] == [str(stable)]
+    purge_caches(["torch_inductor"])
+    assert transient.exists()
+
+    # ...and an ordinary override is still followed.
+    elsewhere = tmp_path / "my-inductor"
+    _write(elsewhere / "fx.bin", "e" * 10)
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(elsewhere))
+    assert describe_cache(definition_for("torch_inductor"))["paths"] == [str(elsewhere)]
+
+
+def test_a_configured_token_path_is_protected(tmp_path, monkeypatch, isolated_caches):
+    """HF reads the credential from HF_TOKEN_PATH instead of <home>/token.
+
+    Nothing stops that file from sitting inside a cache the row calls clearable.
+    """
+    assets = tmp_path / "mnt-hf"
+    token = _write(assets / "token", "hf_secret")
+    _write(assets / "blob", "a" * 10)
+    monkeypatch.setenv("HF_ASSETS_CACHE", str(assets))
+    monkeypatch.setenv("HF_TOKEN_PATH", str(token))
+
+    entry = describe_cache(definition_for("hf_assets"))
+    assert entry["purgeable"] is False
+    purge_caches(["hf_assets"])
+    assert token.read_text(encoding = "utf-8") == "hf_secret"
+
+
+def test_a_purge_waits_for_the_downloads_writing_into_the_cache(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """The per-repository deletes already refuse for this reason.
+
+    A download writes blobs, locks and partials straight into the hub cache, so
+    emptying the whole of it under one leaves it half written.
+    """
+    from utils import cache_inventory as module
+
+    blob = _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
+    monkeypatch.setattr(
+        module, "_active_download_refusal", lambda key: "Cancel it." if key == "hf_hub" else None
+    )
+    result = purge_caches(["hf_hub"])["results"][0]
+    assert blob.exists()
+    assert result["freed_bytes"] == 0
+    assert result["errors"] == ["Cancel it."]
+
+
+def test_the_download_check_reads_the_registry_for_that_cache(monkeypatch):
+    from utils import cache_inventory as module
+    from hub.utils import download_registry
+
+    class _Busy:
+        def active_job_refs(self):
+            return ["a job"]
+
+    class _Idle:
+        def active_job_refs(self):
+            return []
+
+    monkeypatch.setattr(download_registry, "get_models_registry", lambda: _Busy())
+    monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: _Idle())
+    assert module._active_download_refusal("hf_hub") is not None
+    assert module._active_download_refusal("hf_datasets") is None
+    # A cache no download writes into is not gated on one.
+    assert module._active_download_refusal("uv") is None
+
+
+def test_one_blocked_root_does_not_put_the_others_out_of_reach(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """purge_cache skips a refused root and carries on with the rest.
+
+    The row has to say what the clear will do, or a recorded install cache under
+    a protected folder disables clearing a large valid one beside it.
+    """
+    from utils.paths import storage_roots
+
+    studio_cache = tmp_path / "studio-cache"
+    good = studio_cache / "uv"
+    documents = tmp_path / "Documents"
+    blocked = documents / "uv-cache"
+    wheel = _write(good / "wheel.whl", "w" * 40)
+    theirs = _write(blocked / "taxes.pdf", "mine")
+    monkeypatch.setattr(storage_roots, "cache_root", lambda: studio_cache)
+    monkeypatch.setattr(storage_roots, "documents_root", lambda: documents)
+    (studio_cache / "uv-cache-dir").write_text(f"{blocked}\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_CACHE_DIR", str(good))
+
+    entry = describe_cache(definition_for("uv"))
+    assert entry["purgeable"] is True
+    assert "protected folder" in (entry["blocked_reason"] or "")
+    assert entry["size_bytes"] == 40
+    purge_caches(["uv"])
+    assert not wheel.exists()
+    assert theirs.exists()
+
+
+def test_two_cold_reads_of_one_cache_walk_it_once(tmp_path, monkeypatch, isolated_caches):
+    """Simultaneous misses would each pay a cold walk for the same answer."""
+    import threading
+
+    from utils import cache_inventory as module
+
+    _write(tmp_path / "uv" / "wheel.whl", "w" * 10)
+    definition = definition_for("uv")
+    walks: list = []
+    started = threading.Event()
+    release = threading.Event()
+    real_describe = cache_inventory.describe_cache
+
+    def slow(target):
+        walks.append(target.key)
+        started.set()
+        release.wait(5)
+        return real_describe(target)
+
+    monkeypatch.setattr(cache_inventory, "describe_cache", slow)
+    answers: list = []
+    first = threading.Thread(
+        target = lambda: answers.append(module._described(definition, refresh = True))
+    )
+    first.start()
+    assert started.wait(5)
+    second = threading.Thread(
+        target = lambda: answers.append(module._described(definition, refresh = True))
+    )
+    second.start()
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert walks == ["uv"]
+    assert [answer["size_bytes"] for answer in answers] == [10, 10]
