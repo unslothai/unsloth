@@ -49,7 +49,11 @@ _SECRET_KEYS = (
     # prefix of its own for a shape rule to catch.
     "secret[-_]?access[-_]?key|shared[-_]?access[-_]?key|access[-_]?key|"
     "account[-_]?key|private[-_]?key(?:[-_]?data)?|pwd|"
-    "password|passwd|passphrase|secret"
+    "password|passwd|passphrase|secret|"
+    # Provider prefixes may run into a camelCase credential suffix.
+    r"[a-z][a-z0-9]*(?:api[-_]?key|access[-_]?key|access[-_]?token|auth[-_]?token|"
+    r"bearer[-_]?token|client[-_]?secret|private[-_]?key(?:[-_]?data)?|"
+    r"refresh[-_]?token|session[-_]?token)"
 )
 # "credentials" groups a mapping as often as it holds a secret, so only a scalar value is masked and a mapping keeps
 # its field names for the keys above to handle one by one
@@ -122,7 +126,7 @@ _PYTHON_BYTES_PREFIX = r"(?:[bB][rR]?|[rR][bB]?|[uU])"
 _SHELL_WORD_SUFFIX = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|\\[^\r\n]|[^\s\\'\";&|<>()])*"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?P<sep>=)(?:(?P<value_bytes>"
+    r"(?P<sep>[ \t]*=[ \t]*)(?:(?P<value_bytes>"
     + _PYTHON_BYTES_PREFIX
     + r")?(?P<quote>[\"'])(?P<quoted>"
     + _QUOTED_VALUE
@@ -259,7 +263,9 @@ _OMITTED_CONTEXT_RE = re.compile(
     + _SECRET_KEYS
     + r")|(?:set-)?cookie)\b[\"']?\s*[:=]|[?&](?:"
     + _QUERY_SECRET_KEYS
-    + r")=)"
+    + r")=|(?P<flag>--(?:"
+    + _FLAG_SECRET_KEYS
+    + r"))(?:\s+|=))"
 )
 _OMITTED_QUOTED_START_RE = re.compile(
     r"(?i)(?:"
@@ -323,6 +329,10 @@ _PRIVATE_KEY_END_RE = re.compile(
 )
 
 
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text) if _ANSI_INTRODUCER_RE.search(text) else text
+
+
 def _looks_like_credential(value: str) -> bool:
     """Token-shaped rather than an English word.
 
@@ -371,6 +381,9 @@ def _redact_env_assignment(match: re.Match[str]) -> str:
     """Mask Studio-recognized secret env vars without consuming a command."""
     key = match.group("key")
     if not _is_shell_secret_env_name(key):
+        return match.group(0)
+    value = match.group("val")
+    if value is not None and value.lower() in _NON_SECRET_SENTINELS:
         return match.group(0)
     quote = match.group("quote") or ""
     value_bytes = match.group("value_bytes") or ""
@@ -443,11 +456,25 @@ def _redact_container_values(text: str) -> str:
     return "".join(chunks)
 
 
+_LOG_NON_SECRET_ENV_NAMES = frozenset(
+    {
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "GOOGLE_CLOUD_PROJECT",
+        "DYLD_PRINT_LIBRARIES",
+    }
+)
+
+
 def _is_shell_secret_env_name(name: str) -> bool:
     """Apply the env classifier without treating model token metadata as env."""
     if not is_secret_env_name(name):
         return False
     upper = name.upper()
+    if upper in _LOG_NON_SECRET_ENV_NAMES:
+        return False
     # a location variable such as private_key_path or hf_token_path names a file, not the secret in it
     if upper.endswith(("_PATH", "_FILE", "_DIR", "_HOME", "_ROOT")):
         return False
@@ -610,11 +637,8 @@ def _mask_native_paths(text: str) -> str:
 
 
 def _redact_credentials(text: str) -> str:
+    text = _strip_ansi(text)
     text = _PRIVATE_KEY_BLOCK_RE.sub(REDACTED, text)
-    # Nothing anchored below survives an escape between a key and its value, so
-    # strip first, guarded by one introducer scan: ordinary content is untouched.
-    if _ANSI_INTRODUCER_RE.search(text):
-        text = _ANSI_RE.sub("", text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
     text = _redact_container_values(text)
@@ -687,6 +711,7 @@ class StreamingLogRedactor:
 
     @staticmethod
     def omitted_record_chunk_has_sensitive_context(text: str) -> bool:
+        text = _strip_ansi(text)
         if _OMITTED_CONTEXT_RE.search(text) is not None:
             return True
         return any(
@@ -700,6 +725,7 @@ class StreamingLogRedactor:
     @staticmethod
     def omitted_record_private_key_state(text: str, active: bool = False) -> bool:
         """Track private-key armor while an oversized record is discarded."""
+        text = _strip_ansi(text)
         events = [(match.start(), True) for match in _PRIVATE_KEY_BEGIN_RE.finditer(text)] + [
             (match.start(), False) for match in _PRIVATE_KEY_END_RE.finditer(text)
         ]
@@ -715,12 +741,20 @@ class StreamingLogRedactor:
         sensitive_context: bool = False,
     ) -> str | None:
         """Track whether an omitted physical record opens a later value."""
+        text = _strip_ansi(text)
         matches = list(_OMITTED_CONTEXT_RE.finditer(text))
         if matches:
             suffix = text[matches[-1].end() :].rstrip("\r\n")
             stripped = suffix.strip()
             if not stripped:
                 return "plain"
+            if matches[-1].group("flag"):
+                value = re.match(r"[^\s\"']+", stripped)
+                return (
+                    "plain"
+                    if value and cls._ends_with_unescaped_backslash(value.group(0))
+                    else None
+                )
             before_comment = stripped.split("#", 1)[0].rstrip()
             if _YAML_BLOCK_MARKER_RE.fullmatch(before_comment):
                 return "block"
@@ -764,6 +798,7 @@ class StreamingLogRedactor:
         escaped: bool = False,
     ) -> tuple[str | None, bool]:
         """Track only quote structure while an oversized record is discarded."""
+        text = _strip_ansi(text)
         index = 0
         while index < len(text):
             if quote is None:
@@ -827,6 +862,7 @@ class StreamingLogRedactor:
     def redact_record(self, text: str) -> str:
         if not self._tracking and not _TRIGGER_RE.search(text):
             return _mask_native_paths(text)
+        text = _strip_ansi(text)
         physical = text.rstrip("\r\n")
         physical_context = self._context_view(physical)
         if self._private_key_block:
@@ -859,18 +895,18 @@ class StreamingLogRedactor:
         if self._plain_key_indent is not None:
             if not redacted.strip():
                 return redacted
+            if self._plain_explicit_continuation:
+                self._plain_explicit_continuation = self._ends_with_unescaped_backslash(physical)
+                if not self._plain_explicit_continuation:
+                    self._plain_key_indent = None
+                    self._plain_has_value = False
+                return self._masked_record(redacted)
             indent = len(re.match(r"[ \t]*", redacted).group(0))
             if indent > self._plain_key_indent:
                 self._plain_has_value = True
                 return self._masked_record(redacted)
             if indent == self._plain_key_indent and re.match(r"-\s", physical.lstrip()):
                 self._plain_has_value = True
-                return self._masked_record(redacted)
-            if self._plain_explicit_continuation:
-                self._plain_explicit_continuation = self._ends_with_unescaped_backslash(physical)
-                if not self._plain_explicit_continuation:
-                    self._plain_key_indent = None
-                    self._plain_has_value = False
                 return self._masked_record(redacted)
             if not self._plain_has_value:
                 self._plain_explicit_continuation = self._ends_with_unescaped_backslash(physical)

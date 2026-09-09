@@ -21,6 +21,100 @@ from utils.secret_env import SECRET_ENV_NAMES
 
 _SLACK_SHAPED = "xox" + "b-" + "1234567890" + "-ABCDEFGHIJKLMNOP"
 
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "openaiApiKey",
+        "azureClientSecret",
+        "awsSecretAccessKey",
+        "providerAccessToken",
+        "providerPrivateKey",
+    ],
+)
+@pytest.mark.parametrize(
+    "template",
+    ['{{"{name}": "{value}", "status": 401}}', "{name} = '{value}'", "('{name}', '{value}')"],
+)
+def test_provider_prefixed_secret_keys_are_masked(name, template):
+    line = template.format(name = name, value = "opaqueCredential123456")
+    expected = template.format(name = name, value = REDACTED)
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize("name", ["NPM_CONFIG__AUTH", "REDISCLI_AUTH"])
+@pytest.mark.parametrize("separator", [" = ", "\t=\t", "= ", " ="])
+@pytest.mark.parametrize(
+    "value,masked", [("opaqueCredential123456", REDACTED), ('"opaque credential"', f'"{REDACTED}"')]
+)
+def test_spaced_environment_assignments_are_masked(name, separator, value, masked):
+    line = f"{name}{separator}{value} python server.py"
+    expected = f"{name}{separator}{masked} python server.py"
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("AWS_REGION", "us-east-1"),
+        ("AWS_DEFAULT_REGION", "us-west-2"),
+        ("AWS_PROFILE", "production"),
+        ("AWS_DEFAULT_PROFILE", "staging"),
+        ("GOOGLE_CLOUD_PROJECT", "my-project"),
+        ("DYLD_PRINT_LIBRARIES", "1"),
+    ],
+)
+@pytest.mark.parametrize(
+    "template", ["{name}={value}", '{{"{name}": "{value}"}}', "('{name}', '{value}')"]
+)
+def test_non_secret_cloud_settings_remain_visible(name, value, template):
+    from utils.secret_env import is_secret_env_name
+
+    line = template.format(name = name, value = value)
+    assert redact_log_text(line) == line
+    assert StreamingLogRedactor().redact_record(line) == line
+    assert is_secret_env_name(name)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"openaiApiKeyPath": "/tmp/key"}',
+        '{"azureClientSecretName": "reference"}',
+        '{"providerPrivateKeyFile": "/tmp/key"}',
+        '{"providerAccessTokenCount": 10}',
+    ],
+)
+def test_provider_credential_metadata_remains_visible(line):
+    assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize(
+    "opener,closer",
+    [
+        ('password\x1b[31m=\x1b[0m"first-secret\n', 'last-secret"\x1b[0m\n'),
+        ("-----BE\x1b[31mGIN PRIVATE KEY-----\n", "-----EN\x1b[0mD PRIVATE KEY-----\n"),
+        ("PASSWORD\x1b[31m:\x1b[0m |\n", ""),
+        ("tool --api-key\x1b[31m \x1b[0mfirst-secret-\\\n", ""),
+        ('azureClientSecret: "first-secret\n', 'last-secret"\n'),
+    ],
+)
+def test_multiline_state_uses_normalized_openers(opener, closer):
+    redactor = StreamingLogRedactor()
+    records = [opener, "  opaque-body\n", closer, "ordinary: kept\n"]
+    result = "".join(redactor.redact_record(record) for record in records if record)
+    for secret in ("first-secret", "opaque-body", "last-secret"):
+        assert secret not in result
+    assert result.endswith("ordinary: kept\n")
+
+
+def test_ansi_private_key_block_is_masked_as_a_whole():
+    text = "-----BE\x1b[31mGIN PRIVATE KEY-----\nopaque-body\n-----END PRIVATE KEY-----\nordinary: kept\n"
+    assert redact_log_text(text) == REDACTED + "\nordinary: kept\n"
+
+
 # (line, the substring that must be gone)
 SECRETS = [
     (

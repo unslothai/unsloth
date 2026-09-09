@@ -146,6 +146,84 @@ def test_viewer_masks_a_private_key_across_requests(client):
     assert response.json()["lines"][-1] == "ordinary: kept"
 
 
+@pytest.mark.parametrize(
+    "body,secret",
+    [
+        ('password\x1b[31m=\x1b[0m"first\nopaque-quoted-body"\n', "opaque-quoted-body"),
+        (
+            "-----BE\x1b[31mGIN PRIVATE KEY-----\nopaque-key-body\n-----END PRIVATE KEY-----\n",
+            "opaque-key-body",
+        ),
+        ('{"openaiApiKey": "opaque-provider-key", "status": 401}\n', "opaque-provider-key"),
+        ('NPM_CONFIG__AUTH = "opaque-env-key"\n', "opaque-env-key"),
+    ],
+)
+def test_viewer_and_export_mask_credential_variants(client, body, secret):
+    visible = "AWS_REGION=us-east-1\nordinary: kept\n"
+    path = _seed_server_log(body + visible)
+    viewer = client.get("/api/settings/debug/logs")
+    assert viewer.status_code == 200
+    response = client.get("/api/settings/debug/logs/export")
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    for result in ("\n".join(viewer.json()["lines"]), exported):
+        assert secret not in result
+        assert visible.rstrip() in result
+
+
+@pytest.mark.parametrize(
+    "flag", ["--api-key ", "--token=", "--client-secret\t", "--api-key\x1b[31m \x1b[0m"]
+)
+@pytest.mark.parametrize("prefix", ["padding", "long-value"])
+def test_oversized_unquoted_flags_keep_continuation_state(monkeypatch, flag, prefix):
+    from utils import debug_log_export
+
+    monkeypatch.setattr(debug_log_export, "EXPORT_READ_BYTES", 128)
+    monkeypatch.setattr(debug_log_export, "EXPORT_CHUNK_BYTES", 64)
+    first = ("x" * 256 + " " + flag) if prefix == "padding" else (flag + "x" * 256)
+    raw = (first + "first-secret-\\\nsecond-secret-\\\nthird-secret\nordinary: kept\n").encode()
+    destination = io.BytesIO()
+    debug_log_export._copy_redacted(io.BytesIO(raw), destination, len(raw))
+    exported = destination.getvalue().decode()
+    assert "oversized log record omitted" in exported
+    assert "second-secret" not in exported
+    assert "third-secret" not in exported
+    assert exported.endswith("ordinary: kept\n")
+
+
+def test_oversized_closed_flag_does_not_mask_later_argument(monkeypatch):
+    from utils import debug_log_export
+
+    monkeypatch.setattr(debug_log_export, "EXPORT_READ_BYTES", 128)
+    raw = ("x" * 256 + " --api-key done --output path-\\\nordinary: kept\n").encode()
+    destination = io.BytesIO()
+    debug_log_export._copy_redacted(io.BytesIO(raw), destination, len(raw))
+    assert destination.getvalue().decode().endswith("ordinary: kept\n")
+
+
+@pytest.mark.parametrize(
+    "opener,closer",
+    [
+        ('password\x1b[31m=\x1b[0m"first\n', 'last"\n'),
+        ("-----BE\x1b[31mGIN PRIVATE KEY-----\n", "-----END PRIVATE KEY-----\n"),
+        ("PASSWORD\x1b[31m:\x1b[0m |\n", ""),
+    ],
+)
+def test_oversized_ansi_openers_keep_multiline_state(monkeypatch, opener, closer):
+    from utils import debug_log_export
+
+    monkeypatch.setattr(debug_log_export, "EXPORT_READ_BYTES", 128)
+    monkeypatch.setattr(debug_log_export, "EXPORT_CHUNK_BYTES", 64)
+    raw = ("x" * 256 + " " + opener + "  opaque-body\n" + closer + "ordinary: kept\n").encode()
+    destination = io.BytesIO()
+    debug_log_export._copy_redacted(io.BytesIO(raw), destination, len(raw))
+    exported = destination.getvalue().decode()
+    assert "oversized log record omitted" in exported
+    assert "opaque-body" not in exported
+    assert exported.endswith("ordinary: kept\n")
+
+
 def test_an_api_key_session_cannot_read_the_logs():
     """Log lines and a local realpath are UI-operator material, not something a
     remote API key should be able to pull."""
