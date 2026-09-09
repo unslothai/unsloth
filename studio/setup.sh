@@ -1029,7 +1029,10 @@ _uv_cache_warm() {
         _uvw_hit=$(find -L "$_uvw_bucket" -type f \
             ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
             ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-            -print -quit 2>/dev/null) || _uvw_hit=""
+            -print -quit 2>/dev/null) || true
+        # `|| true`, not `|| _uvw_hit=""`: find exits nonzero when any part of the walk
+        # was unreadable, even after it printed a hit and quit; the hit is already in
+        # the variable, and install.sh keeps it the same way.
         if [ -n "$_uvw_hit" ]; then
             unset _uvw_bucket _uvw_hit
             return 0

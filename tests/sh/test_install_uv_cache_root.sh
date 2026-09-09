@@ -271,17 +271,35 @@ for shell in sh bash; do
         chmod 755 "$DENIED_CACHE/archive-v0" 2>/dev/null || true
     fi
 
+    # The denied leaf has to be walked BEFORE the hit for this to test anything: find
+    # exits nonzero once any part of the walk was unreadable, even after it printed the
+    # hit and quit, and the scanner used to discard the hit on that status. find walks
+    # in readdir order: creation order in a small ext4 directory, name order on APFS,
+    # hash order elsewhere. The denied leaf is created first and named to sort first,
+    # and more are added until `ls -f` (readdir order) shows one ahead of the hit.
     DEEP_CACHE="$CASE/denied leaf/uv"
-    mkdir -p "$DEEP_CACHE/archive-v0/visible" "$DEEP_CACHE/archive-v0/aaa hidden"
+    mkdir -p "$DEEP_CACHE/archive-v0/hidden 1"
+    : > "$DEEP_CACHE/archive-v0/hidden 1/other.so"
+    chmod 000 "$DEEP_CACHE/archive-v0/hidden 1" 2>/dev/null || true
+    mkdir -p "$DEEP_CACHE/archive-v0/visible"
     : > "$DEEP_CACHE/archive-v0/visible/payload.so"
-    : > "$DEEP_CACHE/archive-v0/aaa hidden/other.so"
-    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 000 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null; then
+    _leaf=1
+    while [ "$_leaf" -lt 40 ] && \
+        [ "$(ls -f "$DEEP_CACHE/archive-v0" | grep -v '^\.\.*$' | head -n 1)" = visible ]; do
+        _leaf=$((_leaf + 1))
+        mkdir -p "$DEEP_CACHE/archive-v0/hidden $_leaf"
+        : > "$DEEP_CACHE/archive-v0/hidden $_leaf/other.so"
+        chmod 000 "$DEEP_CACHE/archive-v0/hidden $_leaf" 2>/dev/null || true
+    done
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && [ ! -r "$DEEP_CACHE/archive-v0/hidden 1" ]; then
         run_case "$shell" "unreadable leaf keeps a warm cache warm" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$DEEP_CACHE" "$DEEP_CACHE" shared \
             "reusing existing shared cache ($DEEP_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
             "$STUDIO_CACHE"
-        chmod 755 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null || true
     fi
+    for _leaf in "$DEEP_CACHE/archive-v0"/hidden*; do
+        chmod 755 "$_leaf" 2>/dev/null || true
+    done
 
     # The marker `unsloth studio update` reads: content cannot tell a Studio cache the
     # installer filled from one a runtime install dropped a single wheel into.

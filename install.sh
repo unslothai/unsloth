@@ -740,8 +740,11 @@ _configure_uv_cache() {
     # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank
     # inherited value cannot override them; last line so a notice ahead of the path
     # does not become the path.
+    # Only the line ending is stripped: a pathname ending in a space is a pathname
+    # uv preserves, and trimming it here would scan a directory that does not exist,
+    # read a warm cache as cold and duplicate it.
     _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
-        | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1) || _uv_default_cache=""
+        | tr -d '\r' | sed -e '/^[[:space:]]*$/d' | tail -n 1) || _uv_default_cache=""
     if [ -z "$_uv_default_cache" ]; then
         if [ -n "${XDG_CACHE_HOME:-}" ]; then
             _uv_default_cache="${XDG_CACHE_HOME}/uv"
@@ -791,7 +794,11 @@ _configure_uv_cache() {
             _uv_artifact=$(find -L "$_uv_bucket" -type f \
                 ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
                 ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-                -print -quit 2>/dev/null) || _uv_artifact=""
+                -print -quit 2>/dev/null) || true
+            # `|| true`, not `|| _uv_artifact=""`: find reports a nonzero status when any
+            # part of the walk was unreadable, even after it printed a hit and quit, and
+            # discarding the hit on that status read a warm cache with one denied leaf
+            # as cold. The assignment already holds whatever find printed.
             if [ -n "$_uv_artifact" ]; then
                 _uv_default_populated=true
                 break

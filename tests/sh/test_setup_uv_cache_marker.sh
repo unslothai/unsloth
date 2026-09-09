@@ -181,6 +181,37 @@ for shell in sh bash; do
             "$BIG" "$(run_strict unset "" unset "" "$HOME_DIR")"
     fi
 
+    # ...and one with a leaf this user cannot read, walked before the hit. find exits
+    # nonzero once any part of the walk was unreadable, even after it printed the hit
+    # and quit, and `|| _uvw_hit=""` on that status threw the hit away. Denied leaves
+    # are created first (creation order in a small ext4 directory, name order on APFS)
+    # and added until `ls -f`, which lists in readdir order, shows one ahead of the hit.
+    DENIED="$CASE/denied leaf/uv"
+    mkdir -p "$DENIED/archive-v0/hidden 1"
+    : > "$DENIED/archive-v0/hidden 1/other.whl"
+    chmod 000 "$DENIED/archive-v0/hidden 1" 2>/dev/null || true
+    warm "$DENIED" archive-v0 visible.whl
+    _leaf=1
+    while [ "$_leaf" -lt 40 ] && \
+        [ "$(ls -f "$DENIED/archive-v0" | grep -v '^\.\.*$' | head -n 1)" = pkg ]; do
+        _leaf=$((_leaf + 1))
+        mkdir -p "$DENIED/archive-v0/hidden $_leaf"
+        : > "$DENIED/archive-v0/hidden $_leaf/other.whl"
+        chmod 000 "$DENIED/archive-v0/hidden $_leaf" 2>/dev/null || true
+    done
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && [ ! -r "$DENIED/archive-v0/hidden 1" ]; then
+        record "$HOME_DIR" "$DENIED\\n"
+        assert_eq "$shell: a warm cache with an unreadable leaf is still warm" \
+            "$DENIED" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        if [ "$shell" = bash ]; then
+            assert_eq "$shell: ...under setup.sh's own set -euo pipefail too" \
+                "$DENIED" "$(run_strict unset "" unset "" "$HOME_DIR")"
+        fi
+    fi
+    for _leaf in "$DENIED/archive-v0"/hidden*; do
+        chmod 755 "$_leaf" 2>/dev/null || true
+    done
+
     # A relative record names a different directory in each phase and there is nothing
     # here to resolve it against, so it is declined rather than guessed at.
     record "$HOME_DIR" "relative/cache\\n"
