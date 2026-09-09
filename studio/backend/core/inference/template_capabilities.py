@@ -99,7 +99,7 @@ def _reading_call(node):
         isinstance(node, nodes.Call)
         and isinstance(node.node, nodes.Getattr)
         and node.node.attr == "get"
-        and len(node.args) == 1
+        and len(node.args) in (1, 2)
         and not node.kwargs
     )
 
@@ -114,11 +114,34 @@ def _origin_field(node, state):
     return _UNKNOWN
 
 
+def _literal_length(node):
+    """How many items a literal sequence has, or None when that is not known here."""
+    if isinstance(node, (nodes.List, nodes.Tuple)):
+        return len(node.items)
+    return None
+
+
+def _index_value(node):
+    """A subscript written as a literal, including the negated form `[-1]`."""
+    if isinstance(node, nodes.Const):
+        return node.value
+    if isinstance(node, nodes.Neg) and isinstance(node.node, nodes.Const):
+        value = node.node.value
+        return -value if isinstance(value, int) and not isinstance(value, bool) else None
+    return None
+
+
 def _field(node):
     if isinstance(node, nodes.Getattr):
         return node.attr
-    if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
-        return node.arg.value
+    if isinstance(node, nodes.Getitem):
+        index = _index_value(node.arg)
+        if index is not None:
+            if isinstance(index, int) and index < 0:
+                # Counts from the end, so it needs the length to become a position.
+                length = _literal_length(node.node)
+                return _UNKNOWN if length is None or -index > length else length + index
+            return index
     if _reading_call(node):
         return node.args[0].value if isinstance(node.args[0], nodes.Const) else _UNKNOWN
     return _UNKNOWN
@@ -628,6 +651,9 @@ def _value_aliases(value, state, active):
             paths = _value_aliases(value.node.node, state, active)
             tail = (1,) if value.node.attr == "items" else ()
             return {(_UNKNOWN, *tail, *suffix[1:]) for suffix in paths if suffix}
+        if _reading_call(value):
+            if _field(value) == "tool_calls" and not _template_built(value, state):
+                return {()}
         if value.node.attr == "get" and value.args:
             member = value.args[0].value if isinstance(value.args[0], nodes.Const) else _UNKNOWN
             result = _select(_value_aliases(value.node.node, state, active), member)
@@ -1176,9 +1202,11 @@ def _scan_if(node, state, active, guarded, tail):
             next_remaining.extend(_assume(branch.test, False, current))
         remaining = next_remaining
     for current in remaining:
-        # With an elif in the chain the else arm is reached for more than one
-        # reason, so only a plain if/else carries the negated guard across.
-        else_guarded = guarded or (not node.elif_ and _negated_guard(node.test, current))
+        # The else arm runs only when EVERY test was false, so if the negation of any
+        # of them means the catalog is present, the arm is guarded by it.
+        else_guarded = guarded or any(
+            _negated_guard(branch.test, current) for branch in [node, *node.elif_]
+        )
         emits, states = _scan(node.else_, current, active, else_guarded, tail)
         if emits:
             return True, []
@@ -1287,7 +1315,10 @@ def _scan_loop(node, state, active, guarded, tail):
         if emits:
             return True, []
         states.extend(_export_scope(entry, child) for child in children)
-    return False, states + finished
+    # `finished` is not added back: each parked path is already represented by what
+    # came out of the else arm it went on to run. Keeping both leaves the pre-else
+    # state alive alongside the state that arm produced.
+    return False, states
 
 
 def _scan(
@@ -1342,6 +1373,9 @@ def _scan(
                 # macro, so it is evaluated for the state it leaves behind.
                 _value_aliases(node.node, current, active)
                 _mutate(node.node, current, active)
+                if _raises(node.node, current):
+                    # Same as the output form: nothing after this runs on this path.
+                    continue
             elif isinstance(node, nodes.Macro):
                 current.macros[node.name] = node
                 # The declaration binds the name, so `{% macro tools() %}` shadows the

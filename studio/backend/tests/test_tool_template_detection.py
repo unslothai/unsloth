@@ -745,9 +745,10 @@ def test_mutation_through_an_alias_is_a_known_under_approximation(template):
         ("{% if not tools %}plain{% else %}You may call tools.{% endif %}", True),
         ("{% if tools is not defined %}plain{% else %}You may call tools.{% endif %}", True),
         ("{% if tools is none %}plain{% else %}You may call tools.{% endif %}", True),
-        # An elif makes the else reachable for more than one reason, so the guard
-        # does not carry across it.
-        ("{% if not tools %}plain{% elif other %}x{% else %}You may call tools.{% endif %}", False),
+        # The else arm runs only when every test was false, so `not tools` being false
+        # means the catalog IS present there and the arm is guarded by it. Rendering
+        # confirms it: this template emits the prose only when tools are supplied.
+        ("{% if not tools %}plain{% elif other %}x{% else %}You may call tools.{% endif %}", True),
         # A negated guard on something else is not a tool guard.
         ("{% if not messages %}plain{% else %}nothing here{% endif %}", False),
     ],
@@ -1374,3 +1375,52 @@ def test_a_macro_branching_internally_over_approximates_for_its_caller():
 )
 def test_round_eighteen_paths(template, expected):
     assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3972689845: the two-argument get() reads the same field.
+        ("{{ message.get('tool_calls', [])|tojson }}", True),
+        ("{{ message.get('tool_calls')|tojson }}", True),
+        ("{{ message.get('content', '') }}", False),
+        ("{% set w={'tool_calls':'plain'} %}{{ w.get('tool_calls') }}", False),
+        # 3972689853: a parked path is represented by what its else arm produced.
+        (
+            "{% set ns=namespace(c=tools) %}{% for x in [1] %}{% break %}{% else %}"
+            "{% set ns.c=[] %}{% endfor %}{{ ns.c|tojson }}",
+            False,
+        ),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% for x in [1] %}{% set ns.catalog=tools %}"
+            "{% break %}{% else %}{{ ns.catalog|tojson }}{% endfor %}",
+            True,
+        ),
+        # 3972689903: a raise in {% do %} aborts as the output form does.
+        ("{% do raise_exception('unsupported') %}{{ tools|tojson }}", False),
+        ("{% do noop('x') %}{{ tools|tojson }}", True),
+        # 3972689914: a negative index counts from the end of a literal.
+        ("{{ [tools, []][-1]|tojson }}", False),
+        ("{{ [tools, []][-2]|tojson }}", True),
+        ("{{ [tools, []][0]|tojson }}", True),
+        # 3972689921: the else arm runs only when every test was false.
+        ("{% if flag %}plain{% elif not tools %}plain{% else %}Use tools{% endif %}", True),
+        ("{% if flag %}plain{% elif not messages %}plain{% else %}nothing{% endif %}", False),
+    ],
+)
+def test_round_nineteen_paths(template, expected):
+    assert template_supports_tools(template) is expected
+
+
+def test_the_else_arm_of_a_negated_guard_is_guarded_even_behind_an_elif():
+    """Rendered rather than asserted from the analyser, because the round-11 version of
+    this test asserted the opposite and was wrong: the else arm of
+    `{% if not tools %}...{% elif other %}...{% else %}` is reached only when the
+    catalog IS present, so the prose in it advertises tools."""
+    template = "{% if not tools %}plain{% elif other %}x{% else %}You may call tools.{% endif %}"
+    render = Environment().from_string(template)
+    tools = [{"type": "function", "function": {"name": "get_weather"}}]
+    assert render.render(tools = [], other = False) == "plain"
+    assert render.render(tools = tools, other = True) == "x"
+    assert render.render(tools = tools, other = False) == "You may call tools."
+    assert template_supports_tools(template) is True
