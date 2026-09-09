@@ -166,14 +166,22 @@ function blocksOf(markdown: string): readonly string[] {
 // `document` when blocks would have done only costs that reply its per-code-block Copy and
 // Download controls -- which is what this path did for EVERY reply containing a `]:` substring
 // before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+// Normalised only where a line ending can change an answer: `\r` counts against
+// `{1,999}` where the `\n` it replaces does not, so a 999-character label reads
+// as 1000 raw and the scope would follow the reply's line ending. `blocksOf`
+// keeps the caller's own string -- it is one slot shared with
+// `parseMarkdownIntoRenderableBlocks`, and splitting a normalised copy here
+// misses that slot, which costs a CRLF reply two whole splits on every render.
 function documentProse(markdown: string): string | null {
-  markdown = normalizeLineEndings(markdown);
-  if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
+  const normalized = normalizeLineEndings(markdown);
+  if (!LINK_REFERENCE_RE.test(normalized) || !LINK_DEFINITION_RE.test(normalized)) {
     return null;
   }
-  const prose = blocksOf(markdown)
-    .filter((block) => !isCodeBlock(block))
-    .join("\n");
+  const prose = normalizeLineEndings(
+    blocksOf(markdown)
+      .filter((block) => !isCodeBlock(block))
+      .join("\n"),
+  );
   return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
     ? prose
     : null;
