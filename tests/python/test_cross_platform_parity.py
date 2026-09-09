@@ -1268,7 +1268,10 @@ class TestInstallUvCacheRootParity:
         # with the ANSI code page and restored mojibake. Asserted on source, since pwsh 7
         # passes either way.
         assert "[System.IO.File]::ReadAllBytes($markerFile)" in ps1_marker
-        assert "[System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)" in ps1_marker
+        assert (
+            "[System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)"
+            in ps1_marker
+        )
         assert "Get-Content -LiteralPath $markerFile" not in ps1_marker
 
         # One flag decides both rollbacks. Clearing them separately leaves a window either

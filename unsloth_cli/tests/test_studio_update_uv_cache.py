@@ -887,7 +887,9 @@ def test_files_outside_a_bucket_are_not_warm(tmp_path):
     assert studio._uv_cache_has_packages(cache) is False
 
 
-@pytest.mark.skipif(os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows")
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
 def test_a_recorded_cache_that_is_no_longer_writable_loses_to_the_studio_cache(
     monkeypatch, tmp_path, caches
 ):
