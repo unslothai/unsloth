@@ -1687,6 +1687,83 @@ SCHEDULES = {
 SCHEDULE_CHOICES = sorted(set(SCHEDULES) | set(TORCH_PP_SCHEDULES))
 PP_BACKENDS = ("torch", "legacy")
 
+# Per-backend default for --schedule. gpipe is the arm to avoid on this hardware: it holds
+# every microbatch's activations at once and peaked at 99.92 GiB against a 121.69 GiB node,
+# where 1f1b peaked at 7.34 GiB for identical work. legacy keeps gpipe because its
+# hand-written 1f1b deadlocks and is refused, so 1f1b there would be an error, not a default.
+DEFAULT_SCHEDULE = {"torch": "1f1b", "legacy": "gpipe"}
+
+
+def default_schedule(pp_backend: str) -> str:
+    return DEFAULT_SCHEDULE.get(pp_backend, "1f1b")
+
+
+# Hybrid-attention models (Qwen3.5 and friends) run fused linear-attention kernels when
+# flash-linear-attention and causal-conv1d are importable and a slow torch fallback when they
+# are not. Measured cost of the fallback on two DGX Sparks, Qwen3.5-9B, 1f1b, M=4, batch 64,
+# seq 512, gradient checkpointing, both nodes pinned at 300,1690: 877 tok/s with the fast
+# path against 418 without, and peak memory 14.02 GiB against 17.08. transformers says so
+# once, at warning level, in the middle of the weight-loading output, where it is lost.
+FAST_PATH_PENALTY = "2.1x slower (877 -> 418 tok/s measured on Qwen3.5-9B, two Sparks)"
+FAST_PATH_INSTALL = "pip install flash-linear-attention causal-conv1d"
+
+
+def fast_path_warning(
+    model_type: Optional[str], fast_path_available: Optional[bool], missing: Sequence[str]
+) -> Optional[str]:
+    """The line to print when a model that HAS a fused attention fast path is about to run
+    without it. Pure. ``fast_path_available`` is None for every architecture that has no such
+    path, and those must never be nagged about a package that would do nothing for them, so
+    only an explicit False produces a warning."""
+    if fast_path_available is not False:
+        return None
+    named = ", ".join(missing) if missing else "its fused kernels"
+    return (
+        f"WARNING: {model_type or 'this model'} has a fused attention fast path and it is "
+        f"NOT available here (missing: {named}). This run will be about {FAST_PATH_PENALTY}, "
+        f"and the only other sign is one line from transformers during the weight load. "
+        f"Install it on BOTH nodes, or the two ranks will not even be slow in the same way: "
+        f"{FAST_PATH_INSTALL}"
+    )
+
+
+def check_fast_path(model_name: str, log = print, use_cpu: bool = False) -> Optional[str]:
+    """Advisory only: warn when this interpreter will take the slow attention path. Wrapped so
+    that no failure here can stop a training run, and asks transformers the same question
+    transformers asks itself, so it cannot fire on a model with no fast path to lose."""
+    if use_cpu:
+        return None  # the fused kernels are CUDA-only; the gloo path has nothing to lose
+    try:
+        import importlib
+
+        from transformers import AutoConfig
+
+        model_type = getattr(AutoConfig.from_pretrained(model_name), "model_type", None)
+        if not model_type:
+            return None
+        module = importlib.import_module(
+            f"transformers.models.{model_type}.modeling_{model_type}"
+        )
+        available = getattr(module, "is_fast_path_available", None)
+        if available is not None:
+            available = bool(available)
+        from transformers.utils import import_utils
+
+        missing = [
+            name
+            for name, probe in (
+                ("flash-linear-attention", "is_flash_linear_attention_available"),
+                ("causal-conv1d", "is_causal_conv1d_available"),
+            )
+            if not getattr(import_utils, probe, lambda: True)()
+        ]
+        message = fast_path_warning(model_type, available, missing)
+    except Exception:
+        return None
+    if message:
+        log(message)
+    return message
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -1698,7 +1775,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--microbatches", type = int, default = 4)
     p.add_argument("--seq", type = int, default = 512)
     p.add_argument("--lr", type = float, default = 1e-4)
-    p.add_argument("--schedule", choices = SCHEDULE_CHOICES, default = "gpipe")
+    # Deliberately None, resolved by `default_schedule()` once --pp-backend is known: the
+    # right default differs per backend and argparse cannot express that.
+    p.add_argument(
+        "--schedule",
+        choices = SCHEDULE_CHOICES,
+        default = None,
+        help = "default 1f1b on --pp-backend torch. Measured on two Sparks vs one: 1f1b "
+        "1.94x, dualpipev 1.96x, zbv 1.94x, interleaved 1.93x, gpipe 1.86x, zerobubble "
+        "1.72x. 1f1b wins over dualpipev because the 0.7%% gap is within noise while its "
+        "peak memory is lower (7.34 vs 9.58 GiB). Avoid gpipe: it holds every "
+        "microbatch's activations at once and peaked at 99.92 GiB for the same work, "
+        "against a 121.69 GiB node. On --pp-backend legacy the default stays gpipe, "
+        "because the hand-written 1f1b deadlocks and is refused.",
+    )
     p.add_argument(
         "--pp-backend",
         choices = PP_BACKENDS,
@@ -2070,8 +2160,13 @@ def _main_data_parallel(args) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    # Both sides of the merge, in this order on purpose: the data-parallel arm returns before
+    # anything below it, and `schedule` is a pipeline-parallel setting that arm never reads, so
+    # defaulting it first would be work done for a path that does not use it.
     if args.data_parallel:
         return _main_data_parallel(args)
+    if args.schedule is None:
+        args.schedule = default_schedule(args.pp_backend)
 
     import torch
     import torch.distributed as dist
@@ -2156,6 +2251,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Right padding keeps every real token preceded only by real tokens, so a causal model
     # needs no padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
+
+    # Before the weights load, so the sentence is not buried in the loading output.
+    check_fast_path(args.model, log = log, use_cpu = use_cpu)
 
     # One read, used by the layout, the tied check and the stage metadata below.
     from transformers import AutoConfig

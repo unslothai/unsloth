@@ -2291,3 +2291,123 @@ def test_an_oversized_data_parallel_run_is_refused_rather_than_noted():
     # note rather than becoming an error.
     between = body[note:launch]
     assert "if run:" in between, "the refusal must not fire when nothing is being launched"
+
+
+# The launch commands the planner prints are what a user pastes, so every flag that changes
+# the run has to survive into BOTH of them. --microbatches in particular: it was once omitted,
+# which cost about 20% at 70B and produced no error, only a slower run.
+
+
+def _fake_spark_cluster(seen: dict):
+    """A stand-in for studio/spark_cluster.py that records the argv the CLI hands it."""
+
+    class _SC:
+        @staticmethod
+        def is_dgx_spark() -> bool:
+            return True
+
+        @staticmethod
+        def main(argv):
+            seen["argv"] = list(argv)
+            return 0
+
+    return _SC
+
+
+def _run_spark_cli(monkeypatch, argv):
+    from typer.testing import CliRunner
+
+    from unsloth_cli.commands import spark as S
+
+    seen: dict = {}
+    monkeypatch.setattr(S, "_cluster", lambda: _fake_spark_cluster(seen))
+    result = CliRunner().invoke(S.spark_app, argv)
+    return seen, result
+
+
+def _emitted(seen: dict) -> str:
+    argv = seen["argv"]
+    assert argv[0] == "train" and "--pipeline-args" in argv
+    return argv[argv.index("--pipeline-args") + 1]
+
+
+def test_layer_split_launch_carries_every_flag_that_changes_the_run(monkeypatch) -> None:
+    seen, result = _run_spark_cli(
+        monkeypatch,
+        [
+            "train", "--layer-split", "some/model",
+            "--microbatches", "32", "--batch", "64", "--seq", "512",
+            "--schedule", "1f1b", "--steps", "10", "--grad-checkpoint", "--shard-load",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    emitted = _emitted(seen)
+    # Each of these silently changes throughput or memory if it goes missing.
+    for flag in (
+        "--microbatches 32",
+        "--schedule 1f1b",
+        "--batch 64",
+        "--seq 512",
+        "--steps 10",
+        "--grad-checkpoint",
+        "--shard-load",
+    ):
+        assert flag in emitted, f"{flag!r} missing from the emitted command: {emitted!r}"
+
+
+def test_layer_split_defaults_also_carry_the_microbatch_count(monkeypatch) -> None:
+    """Not just when the user names it: the CLI default is 32 and the pipeline's own default
+    is 4, so dropping the flag would quietly run a different, slower configuration."""
+    seen, result = _run_spark_cli(monkeypatch, ["train", "--layer-split", "some/model"])
+    assert result.exit_code == 0, result.output
+    assert "--microbatches 32" in _emitted(seen)
+
+
+def test_grad_checkpoint_is_off_unless_asked(monkeypatch) -> None:
+    seen, result = _run_spark_cli(monkeypatch, ["train", "--layer-split", "some/model"])
+    assert result.exit_code == 0, result.output
+    assert "--grad-checkpoint" not in _emitted(seen)
+
+
+def test_the_harness_default_schedule_is_not_the_one_the_docs_say_to_avoid() -> None:
+    """gpipe holds every microbatch's activations at once: 99.92 GiB against a 121.69 GiB
+    node, where 1f1b took 7.34 GiB for the same work. The CLI always passes --schedule, but
+    the commands it PRINTS are pasted and edited, so the harness default matters too."""
+    pp = _load("studio/spark_pipeline.py")
+    assert pp.default_schedule("torch") == "1f1b"
+    # legacy keeps gpipe: its hand-written 1f1b deadlocks and is refused outright, so 1f1b
+    # there would be an error rather than a default.
+    assert pp.default_schedule("legacy") == "gpipe"
+    args = pp.build_parser().parse_args(["--model", "m"])
+    assert args.schedule is None, "resolved per backend in main(), not by argparse"
+
+
+# A model whose fused attention kernels are missing runs about 2.1x slower with no error and
+# one easily-missed line from transformers. The warning must be loud, and must not fire on a
+# model that has no fast path to lose.
+
+
+def test_fast_path_warning_names_the_missing_packages_and_the_cost() -> None:
+    pp = _load("studio/spark_pipeline.py")
+    msg = pp.fast_path_warning("qwen3_5", False, ["flash-linear-attention", "causal-conv1d"])
+    assert msg is not None
+    assert "flash-linear-attention" in msg and "causal-conv1d" in msg
+    assert "qwen3_5" in msg and "BOTH nodes" in msg
+    assert pp.FAST_PATH_PENALTY in msg and pp.FAST_PATH_INSTALL in msg
+
+
+def test_fast_path_warning_is_silent_when_there_is_no_fast_path_to_lose() -> None:
+    """None means the architecture has no fused path at all. Warning there would tell every
+    llama user to install a package that would do nothing for them."""
+    pp = _load("studio/spark_pipeline.py")
+    assert pp.fast_path_warning("llama", None, []) is None
+    assert pp.fast_path_warning("llama", True, []) is None
+    assert pp.fast_path_warning(None, None, ["flash-linear-attention"]) is None
+
+
+def test_fast_path_check_is_advisory_and_never_raises() -> None:
+    """It runs on the training path, so a broken probe must cost a silent None, not the run."""
+    pp = _load("studio/spark_pipeline.py")
+    assert pp.check_fast_path("no/such/model/anywhere", log = lambda *_: None) is None
+    # The CPU path has nothing to lose, so it must not warn even with the packages absent.
+    assert pp.check_fast_path("no/such/model", log = lambda *_: None, use_cpu = True) is None
