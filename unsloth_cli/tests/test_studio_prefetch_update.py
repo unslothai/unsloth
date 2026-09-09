@@ -178,6 +178,10 @@ def test_a_requirement_file_is_filtered_the_way_the_installer_filters_it(tmp_pat
     )
 
     assert filtered != requirement
+    # Beside the source, as install_python_stack._filter_requirements does it, so the
+    # `-r base.txt` copied through still resolves.
+    assert filtered.parent == requirement.parent
+    assert not work.exists()
     assert filtered.read_text(encoding = "utf-8") == "# audio\n-r base.txt\nsoundfile\n"
     # openai_whisper and openai-whisper are the same distribution; timm carries a marker.
     assert "librosa" not in filtered.read_text(encoding = "utf-8")
@@ -232,6 +236,36 @@ def test_the_fetch_keeps_every_byte_out_of_the_venv(tmp_path):
     assert "unsloth==1.0" in command
     # No --system, no --break-system-packages, nothing that could write to a venv.
     assert "--system" not in command
+
+
+def test_a_wheel_less_requirement_is_left_to_swap_time_rather_than_losing_the_file():
+    """uv refuses the whole `--only-binary :all:` command over one such pin.
+
+    openai-whisper and friends have no wheel at any version, so leaving them in the
+    pin list loses every other package in the file, which is what the first end-to-end
+    run showed: `extras.txt` skipped with "no usable wheel" and nothing warmed.
+    """
+    planned = {"openai-whisper": "20250625", "soundfile": "0.13.1", "argbind": "0.3.9"}
+
+    assert _studio_prefetch.pins_from_plan(planned, only_binary = True) == ["soundfile==0.13.1"]
+    # The core fetch has no such flag and builds nothing, so it keeps every pin.
+    assert len(_studio_prefetch.pins_from_plan(planned)) == 3
+
+
+def test_a_plan_uv_announced_but_this_parser_could_not_read_is_not_an_empty_plan():
+    # The shape uv prints today.
+    assert _studio_prefetch.plan_is_readable(
+        "Would install 2 packages\n + a==1\n + b==2\n", {"a": "1", "b": "2"}
+    )
+    # Fewer pins than announced is fine: local tags are dropped on purpose.
+    assert _studio_prefetch.plan_is_readable(
+        "Would install 2 packages\n + a==1\n + torch==2.9.0+cu128\n", {"a": "1"}
+    )
+    assert _studio_prefetch.plan_is_readable("Resolved 4 packages in 8ms\n", {})
+    # Announced installs and nothing parsed: the format moved.
+    assert not _studio_prefetch.plan_is_readable("Would install 2 packages\n> a 1\n> b 2\n", {})
+    assert _studio_prefetch.planned_install_count("Would install 1 package\n") == 1
+    assert _studio_prefetch.planned_install_count("nothing to say") is None
 
 
 # ── Floors ──
@@ -386,8 +420,8 @@ def test_a_gguf_only_install_prepares_two_wheels_and_not_the_cuda_stack(managed,
     core = recorder.commands[0]
     assert "--no-deps" in core, core
     # base.txt is the torch file; a no-torch install never runs it.
-    assert not any(command[-1].endswith("base.txt") for command in recorder.commands)
-    extras = [c for c in recorder.commands if c[-1].endswith("extras.txt")]
+    assert not any(Path(c[-1]).name.startswith("base") for c in recorder.commands)
+    extras = [c for c in recorder.commands if Path(c[-1]).name.startswith((".extras", "extras"))]
     assert extras, recorder.commands
     filtered = Path(extras[0][-1]).read_text(encoding = "utf-8")
     assert "librosa" not in filtered and "openai_whisper" not in filtered
@@ -406,6 +440,79 @@ def test_a_plan_without_unsloth_records_noop_and_downloads_nothing(managed, monk
     assert payload["backend_version"] is None
     assert not any("--target" in command for command in recorder.commands)
     assert _studio_prefetch.marker_path(managed).is_file()
+
+
+def test_a_zoo_only_bump_is_prepared_rather_than_recorded_as_nothing_to_do(managed, monkeypatch):
+    """unsloth and unsloth-zoo release independently.
+
+    Keying "nothing to prepare" off unsloth alone made a zoo-only update report a
+    warm cache and then download unsloth-zoo at restart.
+    """
+    target = _studio_prefetch.site_dir(managed)
+
+    def respond(cmd, env):
+        cmd = list(cmd)
+        if "--dry-run" in cmd:
+            return _plan_response(" + unsloth-zoo==2026.9.5\n")
+        if "--target" in cmd:
+            _install_new_wheel_tree(target)
+            return _completed(0)
+        return _completed(0)
+
+    recorder = _Recorder([])
+    monkeypatch.setattr(
+        _studio_prefetch, "_run", lambda cmd, env: (recorder(cmd, env), respond(cmd, env))[1]
+    )
+
+    payload = _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+
+    assert payload["state"] in ("ready", "partial")
+    assert payload["backend_version"] is None
+    assert payload["zoo_version"] == "2026.9.5"
+    fetches = [c for c in recorder.commands if "--target" in c]
+    assert fetches, recorder.commands
+    assert "unsloth-zoo==2026.9.5" in fetches[0]
+
+
+def test_a_core_plan_this_parser_cannot_read_is_a_failure_not_a_noop(managed, monkeypatch):
+    monkeypatch.setattr(
+        _studio_prefetch,
+        "_run",
+        lambda cmd, env: _plan_response("Would install 2 packages\n> unsloth 2026.9.5\n"),
+    )
+
+    with pytest.raises(_studio_prefetch.PrefetchError) as failure:
+        _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+
+    assert "could not read the core plan" in str(failure.value)
+    assert not _studio_prefetch.marker_path(managed).is_file()
+
+
+def test_the_requirement_pass_stops_at_its_budget_instead_of_running_for_hours(
+    managed, monkeypatch
+):
+    target = _studio_prefetch.site_dir(managed)
+
+    def respond(cmd, env):
+        cmd = list(cmd)
+        if "--dry-run" in cmd:
+            return _plan_response(" + unsloth==2026.9.5\n")
+        if "--target" in cmd:
+            _install_new_wheel_tree(target)
+            return _completed(0)
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", respond)
+    monkeypatch.setattr(_studio_prefetch, "BUDGET_SECONDS", -1)
+
+    payload = _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+
+    # The core packages are cached; the rest is what the update downloads anyway.
+    assert payload["state"] == "partial"
+    assert payload["backend_version"] == "2026.9.5"
+    assert all(
+        record.get("skipped_reason") == "out of time" for record in payload["requirements"].values()
+    )
 
 
 def test_a_plan_below_the_floor_is_an_error_and_leaves_no_marker(managed, monkeypatch):

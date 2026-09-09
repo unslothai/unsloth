@@ -13,6 +13,8 @@ interface HarnessOptions {
   outcome?: PrefetchOutcome;
   /** The bundle is already on disk before anything is prepared. */
   bundleReady?: boolean;
+  /** Hold `start_backend_update` open until this resolves. */
+  holdUpdate?: () => Promise<void>;
 }
 
 interface Controller {
@@ -90,7 +92,10 @@ function createHookReact() {
  * The hook with a native side that answers rather than throws, so both presses
  * of the update button can be driven: the first prepares, the second restarts.
  */
-function harness(t: TestContext, { outcome = "ready", bundleReady = false }: HarnessOptions = {}) {
+function harness(
+  t: TestContext,
+  { outcome = "ready", bundleReady = false, holdUpdate }: HarnessOptions = {},
+) {
   const host = createHookReact();
   const calls: string[] = [];
   let downloaded = bundleReady;
@@ -175,6 +180,7 @@ function harness(t: TestContext, { outcome = "ready", bundleReady = false }: Har
             // calls this, and those registrations are promises, so answering
             // synchronously would emit into nothing and park the update forever.
             await settleUntil(() => listeners.has("update-complete"));
+            if (holdUpdate) await holdUpdate();
             listeners.get("update-complete")?.({ payload: undefined });
             return undefined;
           }
@@ -299,4 +305,39 @@ test("an offer whose bundle is already on disk prepares without downloading", as
 
   assert.equal(hook.statusUpdates.at(-1), "ready");
   assert.ok(!hook.calls.includes("download_desktop_update"));
+});
+
+test("a check already in flight cannot reopen the offer mid-install", async (t) => {
+  // Assigned inside the executor, which runs synchronously; the explicit type keeps
+  // TypeScript from narrowing the binding to `never` at the call below.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const hook = harness(t, { holdUpdate: () => held });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+
+  const restart = hook.controller.installUpdate();
+  await settleUntil(() => hook.calls.includes("start_backend_update"));
+  assert.equal(hook.statusUpdates.at(-1), "updating-backend");
+
+  // The hourly check fires while the update child is running. Before this was
+  // guarded it put the status back to "ready" and started a second download.
+  const downloads = hook.calls.filter((c) => c === "download_desktop_update").length;
+  await hook.controller.checkForUpdate();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "updating-backend");
+  assert.equal(
+    hook.calls.filter((c) => c === "download_desktop_update").length,
+    downloads,
+  );
+
+  release();
+  await restart;
 });

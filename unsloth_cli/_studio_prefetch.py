@@ -48,6 +48,13 @@ MIN_FREE_BYTES = 1024 * 1024 * 1024
 EXIT_BUSY = 3
 
 SUBPROCESS_TIMEOUT_SECONDS = 1800
+# Wall clock for the whole run, well under update.rs's two-hour cap on the child.
+# Without it, eighteen uv calls at the per-call timeout add up to nine hours, and the
+# desktop shows "Preparing update" with no button for every one of them: the pill only
+# offers Restart once it is ready, and the settings row is disabled while it prepares.
+# Reaching this is not a failure -- the core packages are already cached by then, and
+# whatever is left is what the update downloads, as it always did.
+BUDGET_SECONDS = 20 * 60
 
 # Mirror of studio/install_manifest.py:TRACKED_REQUIREMENT_FILES. Duplicated
 # rather than imported: install_manifest lives in the INSTALLED (old) tree and
@@ -96,6 +103,25 @@ NO_TORCH_SKIP_PACKAGES = frozenset(
     }
 )
 WINDOWS_SKIP_PACKAGES = frozenset({"triton_kernels"})
+
+# Mirror of install_python_stack.py:SDIST_ONLY_PACKAGES: requirements with no wheel
+# on PyPI at any version, which the installer builds from source
+# (`_sdist_only_build_args`). The prefetch fetches with `--only-binary :all:`, and uv
+# refuses the WHOLE command when one pin has no wheel, so leaving these in the pin
+# list loses the entire file rather than the one package. Building them here would be
+# a compiler run in the background for a wheel the update builds anyway, so they are
+# dropped and left to swap time.
+SDIST_ONLY_PACKAGES = frozenset(
+    {
+        "openai-whisper",
+        "argbind",
+        "randomname",
+        "antlr4-python3-runtime",
+        # _extras_sdist_only_packages adds this on macOS cp314+; naming it everywhere
+        # costs a pin the update would build in either case.
+        "mecab",
+    }
+)
 
 VENV_NAME = "unsloth_studio"
 
@@ -289,10 +315,23 @@ def effective_requirements(requirement: Path, skip: Iterable[str], work_dir: Pat
         kept.append(line)
     if not dropped:
         return requirement
+    # Beside the source, as _filter_requirements does and for the same reason: a
+    # relative `-r`/`-c` include is copied through and resolves against the file's own
+    # directory. `work_dir` is the fallback for a tree this process cannot write to.
+    filtered = requirement.with_name(f".{requirement.stem}-filtered.txt")
+    try:
+        filtered.write_text("".join(kept), encoding = "utf-8")
+        return filtered
+    except OSError:
+        pass
     work_dir.mkdir(parents = True, exist_ok = True)
-    # Named after the file it filters, flattened, so two directories cannot collide.
     filtered = work_dir / requirement.name
-    filtered.write_text("".join(kept), encoding = "utf-8")
+    try:
+        filtered.write_text("".join(kept), encoding = "utf-8")
+    except OSError:
+        # Resolving the unfiltered file is still better than not preparing at all;
+        # the pins it plans are recorded and whatever cannot be fetched is skipped.
+        return requirement
     return filtered
 
 
@@ -352,6 +391,26 @@ def fetch_command(
 # install and ` - name==version` for the removal it replaces. A direct URL adds a
 # trailing ` (from ...)`, so only the first token is the pin.
 _PLAN_LINE = re.compile(r"^\s*\+\s+(?P<pin>\S+)\s*(?:\(.*\))?\s*$")
+# uv prints this immediately above the plan. It is the only way to tell "nothing to
+# do" from "the plan came out in a shape this parser does not know": both leave the
+# dict empty, and one of them is a prefetch that reports a warm cache and warmed
+# nothing.
+_PLAN_COUNT = re.compile(r"^\s*Would install (?P<count>\d+) packages?\s*$", re.M)
+
+
+def planned_install_count(output: str) -> Optional[int]:
+    """How many installs uv said it would do, or None when it did not say."""
+    match = _PLAN_COUNT.search(output.replace("\r\n", "\n").replace("\r", "\n"))
+    return int(match.group("count")) if match else None
+
+
+def plan_is_readable(output: str, planned: Dict[str, str]) -> bool:
+    """False when uv announced installs and not one line parsed as a pin.
+
+    Fewer pins than uv counted is fine: local-tag versions are dropped on purpose.
+    Zero out of many is the parser having lost the format.
+    """
+    return not planned_install_count(output) or bool(planned)
 
 
 def parse_dry_run_plan(output: str) -> Dict[str, str]:
@@ -384,8 +443,13 @@ def canonical_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def pins_from_plan(planned: Dict[str, str]) -> List[str]:
-    return [f"{name}=={version}" for name, version in planned.items()]
+def pins_from_plan(planned: Dict[str, str], *, only_binary: bool = False) -> List[str]:
+    """The plan as `name==version` pins, minus what cannot be fetched as a wheel."""
+    return [
+        f"{name}=={version}"
+        for name, version in planned.items()
+        if not (only_binary and name in SDIST_ONLY_PACKAGES)
+    ]
 
 
 # ── Version comparison (PEP 440 release segment only) ──
@@ -813,6 +877,7 @@ def run(
 
     # 2. Resolve. The plan is what the update's core step would do, asked of the
     #    live venv so anything already satisfied is absent from it.
+    deadline = time.monotonic() + BUDGET_SECONDS
     # The installer's own branch, read from the venv the update will run against.
     no_torch = _no_torch(venv)
     step("prefetch resolving core packages")
@@ -832,7 +897,12 @@ def run(
             "could not resolve the core packages: "
             + (_combined(resolved).strip()[-800:] or f"uv exited {resolved.returncode}")
         )
-    planned = parse_dry_run_plan(_combined(resolved))
+    core_output = _combined(resolved)
+    planned = parse_dry_run_plan(core_output)
+    if not plan_is_readable(core_output, planned):
+        raise PrefetchError(
+            "could not read the core plan uv printed: " + core_output.strip()[-800:]
+        )
 
     installed_backend = _installed_version("unsloth")
     backend_version = planned.get("unsloth")
@@ -858,9 +928,13 @@ def run(
         "created_at": created_at,
     }
 
-    if backend_version is None:
+    if not planned:
         # Nothing to fetch. The desktop still shows "ready": the update it would
         # run has no downloads left to do.
+        #
+        # Keyed off the whole plan rather than off unsloth alone: the two
+        # distributions release independently, so a zoo-only bump is a real download
+        # that a "noop" marker would tell the desktop it had already prepared.
         if floor and installed_backend and not version_meets_floor(installed_backend, floor):
             raise PrefetchError(
                 f"the index offers no unsloth>={floor}; installed is {installed_backend}"
@@ -869,7 +943,7 @@ def run(
         write_marker(studio_home, payload)
         return payload
 
-    if floor and not version_meets_floor(backend_version, floor):
+    if floor and backend_version is not None and not version_meets_floor(backend_version, floor):
         raise PrefetchError(f"the resolved unsloth {backend_version} is below the required {floor}")
 
     # 3. Fetch the core plan. --target keeps every byte out of the venv; the
@@ -907,6 +981,12 @@ def run(
             skip |= set(WINDOWS_SKIP_PACKAGES)
         work_dir = prefetch_root(studio_home) / "req"
         for name, no_deps in REQUIREMENT_PASS:
+            if time.monotonic() >= deadline:
+                # Recorded, not raised: the core packages are cached, and the files
+                # left over are the ones the update would have downloaded anyway.
+                payload["requirements"][name] = {"skipped_reason": "out of time"}
+                state = "partial"
+                continue
             if no_torch and name == "base.txt":
                 continue
             if not no_torch and name == "no-torch-runtime.txt":
@@ -966,16 +1046,23 @@ def _prefetch_requirement_file(
             "skipped_reason": "resolve failed: "
             + (_combined(resolved).strip()[-400:] or f"uv exited {resolved.returncode}")
         }
-    planned = parse_dry_run_plan(_combined(resolved))
+    output = _combined(resolved)
+    planned = parse_dry_run_plan(output)
+    if not plan_is_readable(output, planned):
+        return {"skipped_reason": "could not read the plan uv printed"}
     if not planned:
         return {"pins": {}}
-    step(f"prefetch downloading {len(planned)} package(s) for {label}")
+    pins = pins_from_plan(planned, only_binary = True)
+    if not pins:
+        # Everything this file plans is built from source; there is no wheel to warm.
+        return {"pins": dict(planned)}
+    step(f"prefetch downloading {len(pins)} package(s) for {label}")
     try:
         # --only-binary: a source distribution would be BUILT here, against the
         # live interpreter, which is real work in the background for a wheel the
         # update can just as well build itself.
         fetched = _run(
-            fetch_command(interpreter, target, pins_from_plan(planned), only_binary = True, uv = uv),
+            fetch_command(interpreter, target, pins, only_binary = True, uv = uv),
             env,
         )
     except (OSError, subprocess.SubprocessError) as exc:

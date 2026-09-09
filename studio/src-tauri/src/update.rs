@@ -631,13 +631,22 @@ pub(crate) fn run_prefetch_update(
 
     info!("[prefetch] Preparing the next update via {:?}", bin);
     let outcome = Arc::new(Mutex::new(PrefetchOutcome::default()));
-    let (stdout, stderr) = spawn_prefetch(&bin, &state.process, &kind)
-        .map_err(|msg| format!("spawn_prefetch: {msg}"))?;
-    // Recorded only once the child exists, and cleared below however it ends, so
-    // it can never outlive the run it names.
+    // Recorded BEFORE the spawn, and cleared on every way out, so there is no window
+    // where the status says a prefetch is running and cannot say what for. A reader
+    // that saw that window would read the run it just started as one for an older
+    // offer, and cancel it.
     if let Ok(mut running) = state.running_version.lock() {
         *running = shell_version;
     }
+    let (stdout, stderr) = match spawn_prefetch(&bin, &state.process, &kind) {
+        Ok(streams) => streams,
+        Err(msg) => {
+            if let Ok(mut running) = state.running_version.lock() {
+                *running = None;
+            }
+            return Err(format!("spawn_prefetch: {msg}"));
+        }
+    };
     let threads = stream_prefetch_output(&app, outcome.clone(), stdout, stderr);
 
     let result = wait_for_exit(&state.process);

@@ -158,6 +158,10 @@ export function useTauriUpdate(isExternalServer = false) {
   const lastCheckAtRef = useRef<number | null>(null);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
+  // Set only once the classic path has committed, which is later than
+  // `updatingRef`: pressing "Update now" enters installUpdate to START the
+  // background preparation, and that must not read as an install in progress.
+  const installingRef = useRef(false);
   // Windows kill-on-close: false once a re-arm has failed, and every path that starts a backend must check it.
   // A webview reload resets this ref while the native job may still be disarmed, so the first gate asks natively.
   const cleanupRearmedRef = useRef(true);
@@ -192,6 +196,13 @@ export function useTauriUpdate(isExternalServer = false) {
       setLastFailure(null);
       setError(null);
       setDismissed(false);
+    }
+    if (installingRef.current) {
+      // A check that started before Restart was pressed lands here mid-install.
+      // Restoring the preparation status over "updating-backend" would put the
+      // Restart button back while the update is running, and a new offer would
+      // start a second background download beside it.
+      return;
     }
     if (preparingVersionRef.current === nextInfo.version) {
       // The hourly recheck re-offers the version already being prepared. Putting
@@ -234,6 +245,7 @@ export function useTauriUpdate(isExternalServer = false) {
 
   /** A newer offer arrived mid-preparation: drop the old work and start again. */
   async function restartPreparationFor(version: string) {
+    if (installingRef.current) return;
     preparingVersionRef.current = null;
     resetPreparation();
     updateStatus("available");
@@ -429,6 +441,7 @@ export function useTauriUpdate(isExternalServer = false) {
 
   /** No update is on offer any more, so the disk copy is holding space for nothing. */
   async function clearPreparedUpdate(): Promise<void> {
+    if (installingRef.current) return;
     preparingVersionRef.current = null;
     resetPreparation();
     if (!isTauri) return;
@@ -449,6 +462,8 @@ export function useTauriUpdate(isExternalServer = false) {
    */
   async function prepareUpdate(version: string): Promise<void> {
     if (!isTauri || isExternalServer) return;
+    // The install owns the environment and the bundle from the moment it starts.
+    if (installingRef.current) return;
     if (preparingVersionRef.current === version) {
       // Already preparing. A retry only makes sense for the half that failed.
       if (preparationRef.current.shell !== "failed") return;
@@ -556,7 +571,13 @@ export function useTauriUpdate(isExternalServer = false) {
         await cancelPrefetch().catch(() => {});
         if (preparingVersionRef.current !== version) return;
       }
-      const outcome = await startPrefetch(version, appendLog);
+      const outcome = await startPrefetch(version, (line) => {
+        // Every other write in this function is guarded the same way: the old
+        // child keeps printing until its invoke settles, and those lines would
+        // otherwise land in the log the install clears and diagnostics ship.
+        if (preparingVersionRef.current !== version) return;
+        appendLog(line);
+      });
       if (preparingVersionRef.current !== version) return;
       patchPreparation({
         backend:
@@ -648,6 +669,7 @@ export function useTauriUpdate(isExternalServer = false) {
       // From here on this IS the update, so nothing may be preparing beside it.
       // start_backend_update stops a running prefetch too; asking first keeps the
       // renderer's own record straight and makes the stop deterministic in tests.
+      installingRef.current = true;
       preparingVersionRef.current = null;
       await cancelPrefetch().catch(() => {});
       setUpdatePhase("backend");
@@ -751,6 +773,7 @@ export function useTauriUpdate(isExternalServer = false) {
       }
     } finally {
       updatingRef.current = false;
+      installingRef.current = false;
       cleanup(cleanups);
     }
   }
