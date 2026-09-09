@@ -777,3 +777,41 @@ test("citations retain safe URLs and distinct footnotes", async () => {
     ),
   );
 });
+
+test("calls a provider gave no id to open one card each", async () => {
+  const call = (name: string) => ({
+    type: "tool_start",
+    tool_call_id: "",
+    tool_name: name,
+    arguments: { path: `${name}.ts` },
+  });
+  const { content } = await recoverRun(
+    [],
+    [call("read_file"), call("edit_file")],
+  );
+  const cards = content.filter((part) => part.type === "tool-call");
+  assert.deepEqual(
+    cards.map((part) => part.toolName),
+    ["read_file", "edit_file"],
+  );
+  assert.equal(new Set(cards.map((part) => part.toolCallId)).size, 2);
+});
+
+test("an id-less completion closes the most recent open card", async () => {
+  const { content } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "", tool_name: "read_file" },
+      { type: "tool_start", tool_call_id: "", tool_name: "edit_file" },
+      { type: "tool_end", tool_call_id: "", result: "wrote it" },
+    ],
+  );
+  const cards = content.filter((part) => part.type === "tool-call");
+  assert.deepEqual(
+    cards.map((part) => [part.toolName, part.result]),
+    [
+      ["read_file", undefined],
+      ["edit_file", "wrote it"],
+    ],
+  );
+});

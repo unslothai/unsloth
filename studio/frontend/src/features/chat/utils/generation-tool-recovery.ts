@@ -205,13 +205,17 @@ export function createGenerationToolRecovery(
     }
     const toolName = typeof event.tool_name === "string" ? event.tool_name : "";
     let entry =
-      pending.get(backendId) ?? findSavedEntry(backendId, event.approval_id);
+      (backendId ? pending.get(backendId) : undefined) ??
+      findSavedEntry(backendId, event.approval_id);
+    // A provider that gave its calls no id leaves every start under the same key, so the second
+    // call would take the first one's card. The adapter opens a card per start and closes the
+    // most recent one; keyed replay does the same, else two calls recover as one.
     if (
       event.type === "tool_end" &&
       !(entry || backendId) &&
-      pending.size === 1
+      pending.size > 0
     ) {
-      entry = pending.values().next().value;
+      for (const active of pending.values()) entry = active;
     }
     // Gemini can emit a second completion carrying a generated image.
     if (
@@ -266,7 +270,7 @@ export function createGenerationToolRecovery(
         argsText: toolCallArgumentsText(event.arguments_text, args),
         ...(record(event.provenance) ? { provenance: event.provenance } : {}),
       };
-      pending.set(backendId, entry);
+      pending.set(backendId || ` idless:${runId}:${seq}`, entry);
       return;
     }
     if (!entry) {
