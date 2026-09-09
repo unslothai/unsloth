@@ -221,7 +221,8 @@ def _layer_static_ok(layer):
     if mlp is None or type(mlp).__name__ != "Qwen3_5MLP":
         return False
     act = getattr(mlp, "act_fn", None)
-    if act is not F.silu and type(act).__name__ != "SiLU" and getattr(act, "__name__", "") != "silu":
+    # nn.SiLU, transformers' SiLUActivation (forward = F.silu) or F.silu itself
+    if not (isinstance(act, nn.SiLU) or type(act).__name__ in ("SiLU", "SiLUActivation") or act is F.silu):
         return False
     if layer.layer_type == "linear_attention":
         gdn = getattr(layer, "linear_attn", None)
@@ -349,4 +350,7 @@ def patch_qwen3_5_decoder_layers(model):
         except Exception:
             module._unsloth_fused_ok = False
         n += int(module._unsloth_fused_ok)
+    layers = sum(1 for m in model.modules() if type(m).__name__ == "Qwen3_5DecoderLayer")
+    if layers:
+        print(f"Unsloth: Qwen3.5 fused two-region layer forward on {n}/{layers} decoder layers.")
     return n

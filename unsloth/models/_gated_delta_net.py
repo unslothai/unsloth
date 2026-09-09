@@ -166,4 +166,7 @@ def patch_gated_delta_net_fast_forward(model):
             cls.forward = _gated_delta_net_fast_forward
         module._unsloth_gdn_fast_ok = _fast_path_applicable(module)
         n += int(module._unsloth_gdn_fast_ok)
+    layers = sum(1 for m in model.modules() if type(m).__name__ in _PATCHED_CLASS_NAMES)
+    if layers:
+        print(f"Unsloth: Qwen3.5 GatedDeltaNet compiled input projection on {n}/{layers} layers.")
     return n
