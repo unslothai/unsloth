@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
 from core import research_runs
+from core.inference.api_monitor import ApiMonitor
+from models.inference import ChatCompletionRequest, ChatMessage
 from routes import inference as inference_route
 from state import tool_policy
 from utils.api_errors import install_api_error_handlers
@@ -359,6 +361,57 @@ def test_ordinary_audio_request_retains_audio_dispatch(monkeypatch):
     response = _call(_request(), monkeypatch, backend)
     assert response.status_code == 200
     assert audio_calls == [True]
+
+
+@pytest.mark.parametrize("gguf", [True, False], ids = ["gguf", "non-gguf"])
+def test_a_request_without_headers_still_reaches_audio(monkeypatch, gguf):
+    """Not every caller of this route carries headers: the durable-run producer builds its
+    own request, and the audio monitor cases stand one in without them. Reading the opt-out
+    unguarded turned an audio reply into an AttributeError for all of them, so it goes
+    through the same guarded reader the UI-events header uses."""
+    backend = _ScriptedBackend(_fixed("unused"))
+    backend.models["sf-model"].update(is_audio = True, audio_type = "tts")
+    audio_calls = []
+
+    async def audio(*args, **kwargs):
+        audio_calls.append(True)
+        return JSONResponse({"audio": "scripted"})
+
+    monkeypatch.setattr(inference_route, "generate_audio", audio)
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 4))
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = gguf,
+            _is_audio = gguf,
+            supports_tools = False,
+            is_vision = False,
+            model_identifier = "gguf-tts",
+            context_length = 2048,
+        ),
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference_route, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": False}
+    )
+    headerless = SimpleNamespace(
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+        method = "POST",
+    )
+    asyncio.run(
+        inference_route.openai_chat_completions(
+            ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "say hello")],
+            ),
+            request = headerless,
+            current_subject = "test",
+        )
+    )
+    assert audio_calls == [True]
+    assert inference_route._text_output_required(headerless) is False
 
 
 def test_format_fallback_is_attempted_only_once(research_call):

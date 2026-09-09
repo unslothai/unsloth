@@ -21321,6 +21321,26 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     return (value or "").strip() == "1"
 
 
+# Research asks for JSON it then parses, so a spoken reply is not a degraded answer, it is no
+# answer. The model that serves a request is whichever one is loaded when it arrives, so the
+# caller cannot rule speech out by naming a model: it says so per request instead.
+REQUIRE_TEXT_HEADER = "X-Unsloth-Require-Text"
+
+
+def _text_output_required(request: Optional[Request]) -> bool:
+    """Whether this request refuses a spoken reply, whatever model ends up serving it."""
+    if request is None:
+        return False
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return False
+    try:
+        value = headers.get(REQUIRE_TEXT_HEADER)
+    except Exception:
+        return False
+    return (value or "").strip() == "1"
+
+
 class _DroppedFrameKeepalive:
     """Paces an SSE keepalive comment in place of dropped UI control frames.
 
@@ -21701,7 +21721,7 @@ async def produce_openai_chat_completions(
     monitor_id = None
 
     async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
-        if request.headers.get("X-Unsloth-Require-Text") == "1":
+        if _text_output_required(request):
             raise HTTPException(
                 status_code = 400,
                 detail = "This request requires text output; select a text model.",
