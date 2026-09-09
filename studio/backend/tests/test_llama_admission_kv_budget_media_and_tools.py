@@ -22,6 +22,7 @@ from routes.inference import (
     _openai_llama_admission_messages_for_estimate,
     _openai_llama_admission_tokens,
 )
+from core.inference.anthropic_compat import anthropic_messages_to_openai
 from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 from routes.inference import _openai_llama_admission_budget
 import asyncio
@@ -425,6 +426,96 @@ class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
         )
         assert image_parts == 1, "the bounded per-image allowance is keyed on this count"
         assert data not in str(estimate_messages)
+
+
+class TestAToolResultScreenshotIsNotPricedByItsBase64:
+    """The shape an agent actually sends: the image arrives nested in a `tool_result`,
+    not as a top-level block. A 150 KiB screenshot returned by a tool was charged 51,433
+    tokens against a 32768-token cache -- the whole of it -- so the chat that took the
+    screenshot then ran alone.
+    """
+
+    def _request(self, data: str):
+        return AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": "take a screenshot"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_01", "name": "screenshot", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_01",
+                            "content": [
+                                {"type": "text", "text": "screenshot taken"},
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": data,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        )
+
+    def test_a_screenshot_a_tool_returned_does_not_reserve_the_whole_cache(self):
+        budget = 32768
+        cost = _openai_llama_admission_tokens(
+            self._request(_image_b64(150)), budget = budget, capacity = 4
+        )
+        assert cost < budget, (
+            f"a 150 KiB tool-result screenshot was charged {cost} against a {budget}-token "
+            "cache, so the agent that took it runs alone"
+        )
+
+    def test_a_big_tool_result_screenshot_costs_what_a_tiny_one_costs(self):
+        big = _openai_llama_admission_tokens(
+            self._request(_image_b64(1024)), budget = 1_000_000, capacity = 4
+        )
+        tiny = _openai_llama_admission_tokens(
+            self._request("AAAA"), budget = 1_000_000, capacity = 4
+        )
+        assert abs(big - tiny) <= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            f"a 1 MiB tool-result image was charged {big} against {tiny} for a 4-char one: "
+            "the base64 transport is being priced as prompt text"
+        )
+
+    def test_the_charge_matches_what_the_translation_actually_sends(self):
+        """The two halves have to agree, so this fails on whichever side moves first.
+
+        `anthropic_messages_to_openai` keeps only the text blocks of a list
+        `tool_result`, so the nested image never reaches llama-server and earns no mtmd
+        allowance. Start forwarding it and this fails, which is the reminder that
+        admission has to start charging for it.
+        """
+        data = _image_b64(64)
+        payload = self._request(data)
+
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+            payload.messages
+        )
+        assert data not in str(estimate_messages), "the base64 must not be priced as text"
+
+        sent = anthropic_messages_to_openai(
+            [message.model_dump() for message in payload.messages], None
+        )
+        forwarded = data in str(sent)
+        assert image_parts == (1 if forwarded else 0), (
+            "admission charges a bounded image allowance exactly when the translation "
+            f"sends the image (forwarded={forwarded}, image_parts={image_parts})"
+        )
 
 
 class TestTheToolLoopOpensAtAnEqualShare:
