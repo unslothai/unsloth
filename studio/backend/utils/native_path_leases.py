@@ -421,9 +421,9 @@ def plain_native_path(path: "Path | str") -> str:
     """
     text = str(path)
     if text.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + text[len("\\\\?\\UNC\\"):]
+        return "\\\\" + text[len("\\\\?\\UNC\\") :]
     if text.startswith("\\\\?\\"):
-        return text[len("\\\\?\\"):]
+        return text[len("\\\\?\\") :]
     return text
 
 
