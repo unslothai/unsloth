@@ -954,10 +954,14 @@ try {
     $method.SetImplementationFlags(
         $method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
     $null = $builder.CreateType()
-    if (-not ('UnslothStudioEmitProbe' -as [type])) { exit 1 }
-    Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode)
-    exit 0
 } catch {}
+# Outside the try, because CreateType can publish the type and then throw on the way
+# back, and a published type works. The parent recovers from exactly that; a check
+# inside the try answered no for a machine that had just succeeded.
+# One line, and no closing brace in column 0: this body sits inside a here-string that
+# starts at column 0 in both entrypoints, and the tests extract a function by finding the
+# first line that is exactly its closing brace. A block here ends the extraction early.
+if ('UnslothStudioEmitProbe' -as [type]) { Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode); exit 0 }
 exit 1
 '@
         # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other
@@ -1810,7 +1814,13 @@ exit 1
         # cosmetic, so failure is still just a plain banner.
         # The same gate the resolver uses: colour is not worth a risk that cannot be
         # caught, and a plain banner is the answer either way.
-        if (-not (Test-StudioCanDefineNativeTypes)) { return $false }
+        # The published type first, the gate only if there is nothing published. A type
+        # this session already emitted is proof that emit works here, and the compiled
+        # version checked for it in the same order; asking a child instead means one
+        # failed probe throws away a console helper that is already loaded and usable.
+        if (-not ("StudioVTNative" -as [type]) -and -not (Test-StudioCanDefineNativeTypes)) {
+            return $false
+        }
         try {
             if (-not ("StudioVTNative" -as [type])) {
                 $null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
@@ -3167,8 +3177,12 @@ exit 0
                         # ever on the console path, but that path deserves the same
                         # treatment. A failure here leaves stale icons, nothing more,
                         # and the enclosing catch already absorbed that.
-                        if (-not (Test-StudioCanDefineNativeTypes)) { throw "native types are unavailable on this host" }
+                        # Same order as everywhere else: a published type settles it, and
+                        # only an absent one asks the gate.
                         if (-not ("UnslothShellIconRefresh" -as [type])) {
+                            if (-not (Test-StudioCanDefineNativeTypes)) {
+                                throw "native types are unavailable on this host"
+                            }
                             $null = New-StudioEmittedNativeType -TypeName "UnslothShellIconRefresh" -Imports @(
                                 @{ Name = "SHChangeNotify"; Library = "shell32.dll"; Return = [System.Void]
                                    Args = @([int], [uint32], [string], [IntPtr]) }

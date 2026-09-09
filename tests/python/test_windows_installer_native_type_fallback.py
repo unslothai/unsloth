@@ -1982,6 +1982,46 @@ def test_an_already_emitted_type_settles_it_without_asking_a_child():
     )
 
 
+# Same rule for the cosmetic helpers. The console one asked the gate before looking for its
+# type, so one failed probe threw away a console helper already loaded and working in this
+# very process. The compiled version checked the type first.
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+def test_the_console_helper_keeps_a_type_it_already_has(script: str):
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "$env:NO_COLOR = $null",
+                "$script:StudioStdoutRedirected = $false",
+                "$script:GateCalls = 0",
+                "function Test-StudioCanDefineNativeTypes {",
+                "    $script:GateCalls = $script:GateCalls + 1",
+                "    return $false",
+                "}",
+                "function Get-StudioAnsi { param($Name) return '' }",
+                _one_function(source, "New-StudioDynamicAssembly"),
+                _one_function(source, "New-StudioEmittedNativeType"),
+                # Published exactly as a successful earlier call in the same session would
+                # have left it. The calls themselves fail off Windows and are caught; what
+                # is under test is whether the gate is consulted at all.
+                "$null = New-StudioEmittedNativeType -TypeName 'StudioVTNative' -Imports @(",
+                "    @{ Name = 'GetStdHandle'; Library = 'kernel32.dll'; Return = [IntPtr]",
+                "       Args = @([int]); Ansi = $true }",
+                ")",
+                _one_function(source, "Enable-StudioVirtualTerminal"),
+                "$null = Enable-StudioVirtualTerminal",
+                '[Console]::Out.WriteLine("GATE:$script:GateCalls")',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert _lines(result, "GATE:") == ["GATE:0"], (
+        "a published console type was discarded because a child probe said no"
+    )
+
+
 @requires_pwsh
 def test_a_child_that_never_returns_does_not_hang_the_installer(tmp_path: Path):
     """The deadline. A probe that exists to keep the installer alive must not be the thing
