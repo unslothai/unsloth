@@ -34944,7 +34944,9 @@ async def _anthropic_passthrough_non_streaming(
             )
             if _retry_bound == 0:
                 # The nudge's prompt has spent the lease's allowance: the first answer stands.
-                logger.info("tool-call nudge skipped: the retry prompt has spent the admission allowance")
+                logger.info(
+                    "tool-call nudge skipped: the retry prompt has spent the admission allowance"
+                )
                 retry_body = None
             elif _retry_bound is not None:
                 retry_body["max_tokens"] = _retry_bound
@@ -37054,7 +37056,9 @@ async def _openai_passthrough_non_streaming_upstream(
         )
         if _retry_bound == 0:
             # The nudge's prompt has spent the lease's allowance: the first answer stands.
-            logger.info("tool-call nudge skipped: the retry prompt has spent the admission allowance")
+            logger.info(
+                "tool-call nudge skipped: the retry prompt has spent the admission allowance"
+            )
             retry_body = None
         elif _retry_bound is not None:
             retry_body["max_tokens"] = _retry_bound

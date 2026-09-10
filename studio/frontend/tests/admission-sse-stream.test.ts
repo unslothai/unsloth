@@ -49,6 +49,10 @@ function harness(slices: string[]) {
       "../types": {},
       "../types/api": {},
       "../utils/admission-status": admissionStatus,
+      "../utils/continuation": {
+        isPreemptGaveUp: (truncation: { reason?: string } | null | undefined) =>
+          truncation?.reason === "preempt_gave_up",
+      },
       "../utils/chat-history-revision": {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
