@@ -156,10 +156,6 @@ function SidebarProvider({
   // or clear it.
   useShortcut("toggleSidebar", toggleSidebar)
 
-  // We add a state so that we can do data-state="expanded" or "collapsed".
-  // This makes it easier to style the sidebar with Tailwind classes.
-  const state = open ? "expanded" : "collapsed"
-
   const pinned = pinnedProp ?? false
   const setPinned = setPinnedProp ?? noop
   const togglePinned = togglePinnedProp ?? noop
@@ -181,6 +177,12 @@ function SidebarProvider({
   React.useEffect(() => {
     if (pinned || isMobile) setPeekingState(false)
   }, [pinned, isMobile])
+
+  // We add a state so that we can do data-state="expanded" or "collapsed".
+  // This makes it easier to style the sidebar with Tailwind classes. Held out
+  // counts as expanded: the panel is on screen, so the rows it renders are the
+  // ones its tooltips, disclosures and chat chords should see.
+  const state = open || peeking ? "expanded" : "collapsed"
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
@@ -451,7 +453,15 @@ function Sidebar({
         >
           {children}
         </div>
-        {(!collapseToZero || pinned) && <SidebarResizeHandle side={side} />}
+        {(!collapseToZero || pinned) && (
+          <SidebarResizeHandle
+            side={side}
+            // The shared handle hides itself below `sm`, a viewport rule that
+            // does not hold for a desktop window the user narrowed: there the
+            // sidebar is still the desktop one and still resizable.
+            className={collapseToZero ? "block" : undefined}
+          />
+        )}
       </div>
     </div>
   )
