@@ -573,6 +573,26 @@ def test_an_unreadable_sidecar_counts_as_content(tmp_path, monkeypatch):
     assert (root / "keep.txt").is_file()
 
 
+def test_a_sibling_that_vanishes_while_sorting_does_not_abort_the_repair(tmp_path, monkeypatch):
+    """Another worker removing an old staging tree between the listing and the mtime
+    read used to raise out of _ensure_venv_dir and abort the activation."""
+    root = tmp_path / ".venv_t5_550"
+    ghost = tmp_path / ".venv_t5_550.offline-old-1"
+    ghost.mkdir()
+    real_getmtime = tv.os.path.getmtime
+
+    def vanishing(path):
+        if str(path) == str(ghost):
+            import shutil as _shutil
+
+            _shutil.rmtree(ghost, ignore_errors = True)
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_getmtime(path)
+
+    monkeypatch.setattr(tv.os.path, "getmtime", vanishing)
+    assert tv._sidecar_siblings(str(root), tv._OFFLINE_RETIRED_SUFFIX) == [str(ghost)]
+
+
 def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, monkeypatch):
     """Killed between the swap's two renames, the live path is empty and the preserved
     tree sits under the retired name; the next call puts it back before it decides

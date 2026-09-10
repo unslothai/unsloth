@@ -2777,7 +2777,15 @@ def _sidecar_siblings(venv_dir: str, suffix: str) -> list[str]:
     except OSError:
         return []
     found = [os.path.join(parent, n) for n in names if n.startswith(stem + suffix)]
-    return sorted(found, key = lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
+
+    def modified(path: str) -> float:
+        # Another worker can remove a sibling between the listing and this read.
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0.0
+
+    return sorted(found, key = modified)
 
 
 def _recover_retired_sidecar(venv_dir: str) -> None:
