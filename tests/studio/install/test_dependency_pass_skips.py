@@ -732,6 +732,34 @@ def test_a_renamed_file_changes_the_plugin_digest(tmp_path) -> None:
     assert stack._local_plugin_digest(plugin) != before
 
 
+def test_what_a_build_writes_into_the_plugin_tree_does_not_move_its_digest(tmp_path) -> None:
+    """Installing the plugin from its directory leaves build/lib/... and
+    src/<name>.egg-info/ beside the sources (setuptools, observed with uv and pip). The
+    first pass after an install saw a tree the install had changed and rebuilt the
+    plugin; offline, that build asked the cache for setuptools and the pass exited 1
+    on a fresh install. Only the sources decide."""
+    plugin = tmp_path / "data-designer-unstructured-seed"
+    (plugin / "src" / "pkg").mkdir(parents = True)
+    (plugin / "pyproject.toml").write_text("name = 'x'\n", encoding = "utf-8")
+    (plugin / "src" / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    clean = stack._local_plugin_digest(plugin)
+
+    (plugin / "build" / "lib" / "pkg").mkdir(parents = True)
+    (plugin / "build" / "lib" / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    (plugin / "src" / "pkg.egg-info").mkdir()
+    (plugin / "src" / "pkg.egg-info" / "SOURCES.txt").write_text("pyproject.toml\n", encoding = "utf-8")
+    (plugin / "src" / "pkg.egg-info" / "PKG-INFO").write_text("Name: x\n", encoding = "utf-8")
+    (plugin / "src" / "pkg" / "__pycache__").mkdir()
+    (plugin / "src" / "pkg" / "__pycache__" / "__init__.cpython-313.pyc").write_bytes(b"\x00")
+    (plugin / "dist").mkdir()
+    (plugin / "dist" / "x-0.1-py3-none-any.whl").write_bytes(b"PK")
+    assert stack._local_plugin_digest(plugin) == clean
+
+    # The sources still count, wherever they sit.
+    (plugin / "src" / "pkg" / "__init__.py").write_text("VALUE = 2\n", encoding = "utf-8")
+    assert stack._local_plugin_digest(plugin) != clean
+
+
 def test_the_shipped_plugins_digest(tmp_path) -> None:
     for plugin in (stack.LOCAL_DD_UNSTRUCTURED_PLUGIN, stack.LOCAL_DD_GITHUB_PLUGIN):
         assert stack._local_plugin_digest(plugin)
