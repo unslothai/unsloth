@@ -76,19 +76,23 @@ jobs:
           'fastmcp>=3.0.2' pytest pytest-timeout
       - name: Verify the source split refuses unavailable prerequisites
         working-directory: studio/backend
-        run: python -m pytest tests/test_project_task_commands.py -q --tb=short --timeout=120
+        run: >-
+          python -m pytest
+          tests/test_project_task_commands.py::test_missing_prerequisite_is_reported_without_starting_a_runtime
+          -q --tb=short --timeout=120
       - name: Compose exact task, lifecycle, edit and Git prerequisites
         shell: bash
         env:
-          TASK_REVISION: 191ac8ba86943eb0bd54a9f1532c5d2ed384c6c5
-          LIFECYCLE_REVISION: 41e6153ddfce1ed41a6b4e32e9e1ded8c8042e2b
+          LIFECYCLE_REVISION: 10eec87e411ee03fed1999fd3df3971bf0c8d632
           EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
           GIT_REVISION: 016da23650c227ccfb99d8e3fca16473143f5bb9
-          INTEGRATION_REVISION: 696c253ff4bbb3b06602405bc280f3c06a0ab942
-          COMMAND_REVISION: 354135952c8f48dfd224b874916805ea3a4833c4
+          INTEGRATION_REVISION: 262876e93d6dd1f579018f2c0db5fdef8a03af58
+          COMMAND_REVISION: 61de31296e406f1e0dc5af4ac07c96fff1343cf5
         run: |
-          for revision in "$TASK_REVISION" "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION" "$INTEGRATION_REVISION" "$COMMAND_REVISION"; do
-            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$revision"
+          for revision in "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION" "$INTEGRATION_REVISION" "$COMMAND_REVISION"; do
+            if ! git cat-file -e "$revision^{commit}" 2>/dev/null; then
+              git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$revision"
+            fi
             git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$revision"
           done
       - name: Install and verify Linux command isolation
@@ -110,7 +114,8 @@ jobs:
           tests/test_project_task_integration.py tests/test_project_task_runtime.py
           tests/test_project_task_state.py tests/test_studio_tool_loop.py
           tests/test_tool_loop_controller.py
-          tests/test_project_retirement.py tests/test_agent_workspace_worktrees_focused.py
+          tests/test_project_retirement.py tests/test_chat_history_routes.py
+          tests/test_agent_workspace_worktrees_focused.py
           tests/test_secure_cross_platform_tools.py
           tests/test_secure_process_supervisor.py tests/test_project_command_boundaries.py
           -q --tb=short --timeout=120 --maxfail=5
@@ -130,15 +135,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         env:
-          TASK_REVISION: 191ac8ba86943eb0bd54a9f1532c5d2ed384c6c5
-          LIFECYCLE_REVISION: 41e6153ddfce1ed41a6b4e32e9e1ded8c8042e2b
+          LIFECYCLE_REVISION: 10eec87e411ee03fed1999fd3df3971bf0c8d632
           EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
           GIT_REVISION: 016da23650c227ccfb99d8e3fca16473143f5bb9
-          INTEGRATION_REVISION: 696c253ff4bbb3b06602405bc280f3c06a0ab942
-          COMMAND_REVISION: 354135952c8f48dfd224b874916805ea3a4833c4
+          INTEGRATION_REVISION: 262876e93d6dd1f579018f2c0db5fdef8a03af58
+          COMMAND_REVISION: 61de31296e406f1e0dc5af4ac07c96fff1343cf5
         run: |
-          for revision in "$TASK_REVISION" "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION" "$INTEGRATION_REVISION" "$COMMAND_REVISION"; do
-            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$revision"
+          for revision in "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION" "$INTEGRATION_REVISION" "$COMMAND_REVISION"; do
+            if ! git cat-file -e "$revision^{commit}" 2>/dev/null; then
+              git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$revision"
+            fi
             git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$revision"
           done
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0

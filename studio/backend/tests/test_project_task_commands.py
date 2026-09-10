@@ -540,3 +540,31 @@ def test_command_opt_in_is_captured_and_unavailable_opt_in_is_refused(
         "/api/agent/projects/commands/tasks", json = {**payload, "allowCommands": False}
     )
     assert response.status_code == 202 and response.json()["commandsEnabled"] is False
+
+
+def test_six_output_heavy_commands_return_previews_and_preserve_full_evidence(
+    project, modules, monkeypatch
+):
+    ctx = context(modules)
+    monkeypatch.setattr(commands, "require_support", lambda: None)
+    output = "x" * (64 * 1024)
+    monkeypatch.setattr(
+        modules.supervisor,
+        "_run_project_process",
+        lambda *_args, **_kwargs: modules.supervisor.ProjectProcessResult(
+            "passed", 0, output, len(output), False
+        ),
+    )
+    with modules.workspaces.task_workspace(ctx) as (workspace, _):
+        task_tools = modules.executor.TaskTools(ctx, workspace)
+        results = [
+            json.loads(task_tools("task_run_command", {"argv": ["pytest"], "timeout": 1}))
+            for _ in range(6)
+        ]
+    assert sum(len(result["output"]) for result in results) == 6 * 4096
+    for result in results:
+        assert result["status"] == "passed" and result["exitCode"] == 0
+        assert result["previewTruncated"] and not result["outputTruncated"]
+        assert result["outputBytes"] == len(output)
+        full = commands.get_command("commands", ctx.task["id"], result["id"])
+        assert full["output"] == output and not full["previewTruncated"]

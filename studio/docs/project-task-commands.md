@@ -1,8 +1,8 @@
 # Task test and build commands
 
 This independent source layer connects opt-in project tasks to the existing
-Linux command supervisor. It requires #10655 task ownership, #10633 lifecycle,
-#10577 secure edits, #10594 Git/worktrees, #10658 task execution/UI, and #10636
+Linux command supervisor. It requires #10658 task ownership and execution, #10633 lifecycle,
+#10577 secure edits, #10594 Git/worktrees, and #10636
 command supervision. The workflow composes exact prerequisite revisions before
 qualifying the implementation. The task and supervisor PRs contain small optional
 backend hooks; the existing task panel owns the capability checkbox and evidence
@@ -30,6 +30,8 @@ checkout, so enabling them grants that mutation capability to implementers.
 Expand **Test and build results** on an implementer task to see argv, exit status,
 time limit, observed output bytes and bounded output. The list returns 4,096-character
 previews; **Show captured output** retrieves that command's full bounded capture.
+The model tool result also receives only the 4,096-character preview, with the
+command ID and truncation flag; full output stays in the evidence endpoint.
 Pass, fail, timeout, cancellation, unavailable execution and unconfirmed cleanup
 are distinct outcomes. A completed task does not imply its checks passed, and a
 passing command covers only its invocation; files may change afterward.
@@ -74,13 +76,18 @@ frontend. Browser fixtures exercise rendering only and do not execute a model or
 native command.
 
 
+The initial CI gate selects only the missing-prerequisite test, even when this
+layer and its prerequisites have already landed. Native tests run after Linux
+isolation is installed. Composition reuses pinned commit objects already in the
+checkout and fetches only missing objects, avoiding a fork dependency on landed
+commits during main and merge-queue runs.
+
 Exact prerequisites used by this layer's CI:
 
 | Layer | Revision |
 | --- | --- |
-| #10655 task engine | `191ac8ba86943eb0bd54a9f1532c5d2ed384c6c5` |
-| #10633 lifecycle | `41e6153ddfce1ed41a6b4e32e9e1ded8c8042e2b` |
+| #10633 lifecycle | `10eec87e411ee03fed1999fd3df3971bf0c8d632` |
 | #10577 secure edits | `c6118ec5a653e94158bd637bc59bc18656ca6257` |
 | #10594 Git/worktrees | `016da23650c227ccfb99d8e3fca16473143f5bb9` |
-| #10658 task execution/UI | `696c253ff4bbb3b06602405bc280f3c06a0ab942` |
-| #10636 command supervisor | `354135952c8f48dfd224b874916805ea3a4833c4` |
+| #10658 task execution/UI | `262876e93d6dd1f579018f2c0db5fdef8a03af58` |
+| #10636 command supervisor | `61de31296e406f1e0dc5af4ac07c96fff1343cf5` |

@@ -132,6 +132,8 @@ def read(
     project_id,
     task_id,
     command_id = None,
+    *,
+    summary = False,
 ):
     task = state.get_task(project_id, task_id)
     with state._transaction() as (conn, _now):
@@ -143,6 +145,6 @@ def read(
     if command_id is not None:
         for row in rows:
             if row["id"] == command_id:
-                return _public(row, task, summary = False)
+                return _public(row, task, summary = summary)
         raise state.TaskStateError("Task command not found.")
     return [_public(row, task, summary = True) for row in rows]

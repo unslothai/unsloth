@@ -224,7 +224,7 @@ def execute_command(context, arguments):
     finally:
         stopped.set()
         watcher.join(timeout = 1)
-    return evidence.read(task["projectId"], task["id"], command_id)
+    return evidence.read(task["projectId"], task["id"], command_id, summary = True)
 
 
 def list_commands(project_id, task_id):
