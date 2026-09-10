@@ -440,13 +440,23 @@ def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int,
     else:
         credited = max(free_mib, min(int(available_mib), total_mib))
     capacity = total_mib
-    if cgroup_mib is not None and int(cgroup_mib) < credited:
-        # Bound by the container, so that IS the pool. Only when it actually binds:
-        # a remainder above the credited reading says nothing about capacity, and
-        # taking it anyway would shrink the total to a free reading on every host
-        # that merely has a readable limit.
+    if cgroup_mib is not None and int(cgroup_mib) <= credited:
+        # Bound by the container, so its LIMIT is the pool. `<=`, not `<`: the host
+        # reading is itself cgroup-capped, so `credited == cgroup_mib` is the ordinary
+        # result whenever MemAvailable exceeds the remainder and the driver's MemFree
+        # does not, and treating that as unbound left the reserve priced against the
+        # host total. Only when it binds, though: a remainder above the credited
+        # reading says nothing about capacity.
         credited = int(cgroup_mib)
-        capacity = min(total_mib, credited)
+        # The LIMIT, never the remainder. The remainder shrinks as the container fills,
+        # so reporting it as capacity would shrink the reserve, and the fits-at-all
+        # verdict with it, as memory is used, and would refuse a replacement model that
+        # only has to fit once the resident one is evicted.
+        limit_mib = _cgroup_memory_limit_mib()
+        capacity = min(total_mib, int(limit_mib)) if limit_mib is not None else total_mib
+        # A capacity below what is free right now cannot describe the pool that free
+        # reading came out of, and would take the budget below it negative.
+        capacity = max(capacity, credited)
     return credited, capacity
 
 
@@ -464,6 +474,15 @@ def _cgroup_available_memory_mib() -> Optional[int]:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._cgroup_available_memory_mib()
+    except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
+        return None
+
+
+def _cgroup_memory_limit_mib() -> Optional[int]:
+    """The capacity an enforcing cgroup allows, else None. Not the remainder above."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._cgroup_memory_limit_mib()
     except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
         return None
 

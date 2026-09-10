@@ -180,6 +180,7 @@ def test_a_bound_cgroup_prices_the_reserve_against_the_container(monkeypatch):
     """
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 32 * 1024)
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: 32 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: 32 * 1024)
 
     free_mib, total_mib = diffusion_memory._unified_reclaimable_memory_mib(102400, 124609)
 
@@ -205,8 +206,68 @@ def test_a_slack_cgroup_leaves_the_device_total_alone(monkeypatch):
     """
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 115 * 1024)
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: 200 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: 200 * 1024)
 
     assert diffusion_memory._unified_reclaimable_memory_mib(29509, 124609) == (
         115 * 1024,
         124609,
     )
+
+
+def test_capacity_is_the_cgroup_limit_not_what_is_left_of_it(monkeypatch):
+    """The remainder shrinks as the container fills; the capacity does not.
+
+    A 64 GiB container holding a 30 GiB model has about 34 GiB left, and reporting that
+    as total capacity prices the reserve against a pool that gets smaller the more of it
+    is in use, and refuses a 40 GiB replacement that only has to fit once the resident
+    model is evicted.
+    """
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 34 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: 34 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: 64 * 1024)
+
+    free_mib, total_mib = diffusion_memory._unified_reclaimable_memory_mib(102400, 124609)
+
+    assert (free_mib, total_mib) == (34 * 1024, 64 * 1024)
+
+
+def test_an_equal_remainder_still_binds(monkeypatch):
+    """``_available_system_memory_mib`` is itself cgroup-capped, so credited == remainder
+    is the ordinary result in a container, not a sign that the limit does not bind."""
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 32 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: 32 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: 32 * 1024)
+
+    assert diffusion_memory._unified_reclaimable_memory_mib(3 * 1024, 124609) == (
+        32 * 1024,
+        32 * 1024,
+    )
+
+
+def test_an_unreadable_limit_leaves_the_device_total(monkeypatch):
+    """A remainder without a readable limit is not evidence of a smaller pool."""
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 32 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: 32 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
+
+    assert diffusion_memory._unified_reclaimable_memory_mib(3 * 1024, 124609) == (
+        32 * 1024,
+        124609,
+    )
+
+
+def test_the_two_cgroup_readings_are_not_the_same_number(monkeypatch):
+    """The remainder and the limit come from the same walk but answer different
+    questions, so a container that is already holding something must report them
+    differently."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    # 64 GiB limit, 30 GiB of it in use.
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_cgroup_memory_budgets",
+        staticmethod(lambda: [(34 * 1024 * 1024 * 1024, 64 * 1024 * 1024 * 1024)]),
+    )
+
+    assert LlamaCppBackend._cgroup_available_memory_mib() == 34 * 1024
+    assert LlamaCppBackend._cgroup_memory_limit_mib() == 64 * 1024

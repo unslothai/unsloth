@@ -10676,7 +10676,7 @@ class LlamaCppBackend:
         return min(usable_mib, backed_mib)
 
     @staticmethod
-    def _cgroup_available_memory_mib() -> Optional[int]:
+    def _cgroup_memory_budgets() -> list[tuple[int, int]]:
         """Memory this process can still charge to an enforcing cgroup.
 
         ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
@@ -10742,7 +10742,7 @@ class LlamaCppBackend:
         except OSError:
             lines = []
 
-        remaining: list[int] = []
+        budgets: list[tuple[int, int]] = []
         v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
         for directory in _directories(_CGROUP_ROOT, v2_relative):
             limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
@@ -10756,7 +10756,7 @@ class LlamaCppBackend:
                 used = max(
                     0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
                 )
-            remaining.append(limit if used is None else limit - used)
+            budgets.append((limit if used is None else limit - used, limit))
 
         v1_root = os.path.join(_CGROUP_ROOT, "memory")
         v1_relative = None
@@ -10785,9 +10785,31 @@ class LlamaCppBackend:
                         "inactive_file",
                     ),
                 )
-            remaining.append(limit if used is None else limit - used)
+            budgets.append((limit if used is None else limit - used, limit))
 
-        return max(min(remaining), 0) // (1024 * 1024) if remaining else None
+        return budgets
+
+    @staticmethod
+    def _cgroup_available_memory_mib() -> Optional[int]:
+        """What this process can still charge, i.e. the tightest REMAINDER."""
+        budgets = LlamaCppBackend._cgroup_memory_budgets()
+        if not budgets:
+            return None
+        return max(min(remaining for remaining, _limit in budgets), 0) // (1024 * 1024)
+
+    @staticmethod
+    def _cgroup_memory_limit_mib() -> Optional[int]:
+        """The CAPACITY an enforcing cgroup allows, i.e. the tightest LIMIT.
+
+        Distinct from the remainder above and not interchangeable with it: the
+        remainder shrinks as the container fills, so reading it as capacity would
+        report a pool that gets smaller the more of it is in use, and would price a
+        reserve, or a replacement model that only has to fit once the current one is
+        evicted, against memory that is merely busy rather than absent."""
+        budgets = LlamaCppBackend._cgroup_memory_budgets()
+        if not budgets:
+            return None
+        return min(limit for _remaining, limit in budgets) // (1024 * 1024)
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
