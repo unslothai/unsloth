@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Compare fused and chunked softcapped CE with an unpadded PyTorch reference."""
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -106,7 +104,7 @@ def test_negative_logit_scaling_does_not_nan(vocab_size, softcap):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("vocab_size", [32000, 65537, 256000, 262208])
 def test_softcapped_probabilities_sum_to_one(vocab_size):
-    """Padded lanes are visible as missing probability mass, independent of loss tolerances."""
+    """Guards the denominator without leaning on a loss tolerance."""
     from unsloth.kernels.cross_entropy_loss import fast_cross_entropy_loss
 
     softcap = 30.0

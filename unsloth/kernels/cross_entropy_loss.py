@@ -84,8 +84,7 @@ def _cross_entropy_forward(
     if DO_SOFTCAPPING:
         logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
     if DO_LOGIT_SCALING or DO_SOFTCAPPING:
-        # Either transform turns the -inf padding finite: tanh maps it to -SOFTCAP, and a
-        # negative scale maps it to +inf. Restore the mask before the reduction.
+        # Either transform makes the -inf padding finite: -SOFTCAP via tanh, +inf via a negative scale.
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
@@ -173,8 +172,7 @@ def _chunked_cross_entropy_forward(
     if DO_SOFTCAPPING:
         logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
     if DO_LOGIT_SCALING or DO_SOFTCAPPING:
-        # Either transform turns the -inf padding finite: tanh maps it to -SOFTCAP, and a
-        # negative scale maps it to +inf. Restore the mask before the reduction.
+        # Either transform makes the -inf padding finite: -SOFTCAP via tanh, +inf via a negative scale.
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
