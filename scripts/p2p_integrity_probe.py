@@ -100,7 +100,12 @@ def main() -> int:
         print("torch is not installed; cannot probe peer copies.")
         return 2
 
-    if getattr(torch.version, "hip", None) is not None:
+    # AMD SDK wheels leave version.hip unset and only encode "rocm" in
+    # __version__, which is why the backend's _torch_is_rocm checks both.
+    if (
+        getattr(torch.version, "hip", None) is not None
+        or "rocm" in getattr(torch, "__version__", "").lower()
+    ):
         # ROCm reuses the torch.cuda namespace, so every test below would run and
         # PASS on AMD hardware, then recommend GGML_CUDA_P2P, which only the CUDA
         # backend reads. A pass that ends in a no-op instruction is worse than no

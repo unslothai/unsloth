@@ -946,8 +946,8 @@ def test_auto_fit_launch_does_not_rewrite_an_inherited_device_order(monkeypatch)
     assert "if _p2p_launch_order_pinned:" in branch[: branch.index(pin)]
     # And that guard must require an absent inherited mask, which is the point:
     # an inherited numeric mask is the thing that must not be re-read.
-    start = src.index("_p2p_launch_order_pinned = (")
-    guard = src[start : src.index("\n", src.index("bool(gpu_ids)", start))]
+    start = src.index("_p2p_launch_order_pinned = ")
+    guard = src[start : src.index("\n\n", start)]
     assert 'os.environ.get("CUDA_VISIBLE_DEVICES") is None' in guard, guard
 
 
@@ -1043,3 +1043,41 @@ def test_complete_matrix_is_still_accepted(monkeypatch):
     assert len(LlamaCppBackend._nvlink_topology()) == 4 * 3
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     assert len(LlamaCppBackend._nvlink_topology()) == 2 * 1
+
+
+def test_pin_requires_ids_to_be_pci_indices(monkeypatch):
+    """When the nvidia-smi memory query fails, _get_gpu_memory falls back to torch
+    and returns CUDA ordinals. Pinning PCI order would then re-emit those numbers
+    as a different set of cards, so Auto could run on GPUs other than the ones
+    whose free memory it measured."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    start = src.index("_p2p_launch_order_pinned = ")
+    guard = src[start : src.index("\n\n", start)]
+    assert "_GPU_IDS_ARE_PCI_INDICES is True" in guard, guard
+    assert 'os.environ.get("CUDA_VISIBLE_DEVICES") is None' in guard, guard
+
+
+def test_gpu_id_provenance_is_recorded(monkeypatch):
+    # The nvidia-smi branch yields PCI indices; the torch fallback yields ordinals.
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0, stdout = "0, 1000, 2000\n1, 1000, 2000\n", stderr = "",
+        ),
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "llama-server")
+    )
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = None
+    assert LlamaCppBackend._get_gpu_memory("llama-server")
+    assert LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
+
+    # nvidia-smi absent -> torch fallback -> ordinals.
+    monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = None
+    LlamaCppBackend._get_gpu_memory("llama-server")
+    assert LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True

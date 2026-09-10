@@ -9211,6 +9211,12 @@ class LlamaCppBackend:
     # identity / DMA / DMA-FQ.
     _IOMMU_GROUPS_ROOT = "/sys/kernel/iommu_groups"
 
+    # Whether the ids from _get_gpu_memory are nvidia-smi PCI indices (True) or
+    # torch CUDA ordinals (False, the fallback). None until a probe has run. The
+    # two are only interchangeable under PCI_BUS_ID, so a caller that pins the
+    # child's device order has to know which it is holding (#10613).
+    _GPU_IDS_ARE_PCI_INDICES = None
+
     # Boot-time property, so read once per process, not per model load: the #10613
     # reporter's host has 175 groups, i.e. 175 file opens per launch for one log
     # line. Only the default root is cached; an explicit root (tests) re-reads.
@@ -10460,6 +10466,7 @@ class LlamaCppBackend:
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
+                    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
                     return gpus
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
@@ -10479,6 +10486,8 @@ class LlamaCppBackend:
                 return []
             if not hasattr(torch.cuda, "mem_get_info"):
                 return []
+            # CUDA ordinals from here on, not nvidia-smi PCI indices.
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
             # torch.cuda enumerates GPUs RELATIVE to the visibility mask. We
             # feed these IDs back into the subprocess as CVD, so visible ordinals
             # must be translated to physical indices first; otherwise CVD=2,3
@@ -24185,8 +24194,16 @@ class LlamaCppBackend:
                 # explicit pick, and for an auto-fit selection when no mask was
                 # inherited (nothing to reinterpret). Anything else leaves CUDA on
                 # FASTEST_FIRST, where those ids may name other cards.
-                _p2p_launch_order_pinned = (
-                    bool(gpu_ids) or os.environ.get("CUDA_VISIBLE_DEVICES") is None
+                # The unmasked-auto-fit arm additionally requires the ids to BE
+                # PCI indices. When the nvidia-smi memory query fails,
+                # _get_gpu_memory falls back to torch and returns CUDA ordinals;
+                # pinning PCI order then re-emits those numbers as a different set
+                # of cards, so Auto could run on GPUs other than the ones whose
+                # free memory it measured. An explicit pick is unaffected: those
+                # ids come from the UI's own PCI-ordered picker.
+                _p2p_launch_order_pinned = bool(gpu_ids) or (
+                    os.environ.get("CUDA_VISIBLE_DEVICES") is None
+                    and LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
                 )
 
                 # Only when the fabric is NOT confirmed: on a verified NV# pair the
