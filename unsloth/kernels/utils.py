@@ -204,6 +204,8 @@ global XPU_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
+# These snapshots remain coupled to global-buffer initialization. Native BNB
+# execution paths obtain the live PyTorch stream with _get_tensor_stream instead.
 # DEVICE_COUNT == 0 means no visible accelerator (CPU-only CI runner).
 if DEVICE_TYPE == "xpu":
     if DEVICE_COUNT > 0:
@@ -461,10 +463,8 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        global XPU_STREAMS
         device = W.device
         device_index = device.index
-        XPU_STREAM = XPU_STREAMS[device_index]
 
         n_elements_absmax = absmax.numel()
         if use_global_buffer:
@@ -514,7 +514,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 ptr_out_absmax,
                 ctypes_c_int(blocksize2),
                 ctypes_c_int(n_elements_absmax),
-                XPU_STREAM,
+                _get_tensor_stream(W),
             )
             out_absmax += offset
 
@@ -530,7 +530,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 get_ptr(out),
                 ctypes_c_int(blocksize),
                 ctypes_c_int(out.numel()),
-                XPU_STREAM,
+                _get_tensor_stream(W),
             )
         # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
@@ -568,10 +568,8 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
-        global CUDA_STREAMS
         device = W.device
         device_index = device.index
-        CUDA_STREAM = CUDA_STREAMS[device_index]
 
         n_elements_absmax = absmax.numel()
 
@@ -622,7 +620,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 ptr_out_absmax,
                 ctypes_c_int(blocksize2),
                 ctypes_c_int(n_elements_absmax),
-                CUDA_STREAM,
+                _get_tensor_stream(W),
             )
             out_absmax += offset
 
@@ -638,7 +636,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 get_ptr(out),
                 ctypes_c_int(blocksize),
                 ctypes_c_int(out.numel()),
-                CUDA_STREAM,
+                _get_tensor_stream(W),
             )
         pass
         # Careful returning transposed data.
@@ -751,10 +749,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
-        global XPU_STREAMS
         device = W.device
-        device_index = device.index
-        XPU_STREAM = XPU_STREAMS[device_index]
 
         bout = shape[0]
 
@@ -795,7 +790,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 get_ptr(df),
                 ctypes_c_int(blocksize2),
                 ctypes_c_int(df.numel()),
-                XPU_STREAM,
+                _get_tensor_stream(W),
             )
             df += offset
             absmax = df
@@ -820,7 +815,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 ldb,
                 ldc,
                 blocksize,
-                XPU_STREAM,
+                _get_tensor_stream(W),
             )
 
         return out
@@ -854,10 +849,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
-        global CUDA_STREAMS
         device = W.device
-        device_index = device.index
-        CUDA_STREAM = CUDA_STREAMS[device_index]
 
         bout = shape[0]
 
@@ -894,7 +886,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 get_ptr(df),
                 ctypes_c_int(blocksize2),
                 ctypes_c_int(df.numel()),
-                CUDA_STREAM,
+                _get_tensor_stream(W),
             )
             df += offset
             absmax = df
@@ -919,7 +911,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 ldb,
                 ldc,
                 blocksize,
-                CUDA_STREAM,
+                _get_tensor_stream(W),
             )
         pass
 
