@@ -9059,6 +9059,32 @@ class LlamaCppBackend:
         except Exception:
             return False
 
+    @staticmethod
+    def _integrated_cuda_selection_is_all_shared(gpu_indices = None) -> bool:
+        """True when EVERY credited CUDA device is an integrated SoC.
+
+        Stricter than ``_integrated_cuda_unified_memory``, which answers for ANY, and
+        that difference matters here: this guard charges the WHOLE model against system
+        RAM, and layers placed on a discrete card in a mixed selection never touch the
+        shared pool. Answering for any would call an otherwise fitting load oversized,
+        warn about it, and override an explicitly unmapped load to use mmap.
+        """
+        try:
+            integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
+            if not integrated:
+                return False
+            if gpu_indices is not None:
+                return bool(gpu_indices) and all(_i in integrated for _i in gpu_indices)
+            # Nothing pinned, so the credited set is every visible device.
+            visible = LlamaCppBackend._resolve_visible_physical_ids()
+            if visible is None:
+                import torch
+
+                visible = list(range(torch.cuda.device_count()))
+            return bool(visible) and all(_i in integrated for _i in visible)
+        except Exception:
+            return False
+
     # "Off" spellings ggml itself ignores (it tests presence); we honour them.
     _UNIFIED_MEMORY_OFF = frozenset({"", "0", "false", "no", "off"})
 
@@ -10568,6 +10594,7 @@ class LlamaCppBackend:
                     continue
                 shared = idx in unified_ids
                 integrated = idx in integrated_ids
+                cgroup_bound = False
                 raw_mib = free_bytes // (1024 * 1024)
                 total_mib = total_bytes // (1024 * 1024)
                 if shared:
@@ -10592,8 +10619,17 @@ class LlamaCppBackend:
                     # larger, the normal case in a container. Allocations here are
                     # charged to the cgroup, so an oversized fit dies at memory.max.
                     cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
-                    if cgroup_mib is not None:
-                        raw_mib = min(raw_mib, cgroup_mib)
+                    if cgroup_mib is not None and cgroup_mib < raw_mib:
+                        raw_mib = cgroup_mib
+                        # ...and then the pool is the container's, not the device's.
+                        # _vram_usable_mib takes its occupancy reserve as
+                        # (1 - frac) * total, so a host-wide total against a container's
+                        # free reading reserves memory this process cannot reach: a
+                        # 16 GiB cgroup on a 121 GiB Spark loses most of its budget to
+                        # a card it does not have. Publishing no total is the same
+                        # answer the ROCm shared pool gives, and prices the fit off the
+                        # free reading, which IS the container's ceiling.
+                        cgroup_bound = True
                 free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared or integrated)
                 if free_mib < raw_mib:
                     logger.info(
@@ -10605,7 +10641,7 @@ class LlamaCppBackend:
                 # ROCm publishes 0 because that "total" is system RAM of unknown
                 # scope. An integrated part's total IS the pool, so it is a real
                 # ceiling; zeroing it would drop the fit to free*frac.
-                gpus.append((idx, free_mib, 0 if shared else total_mib))
+                gpus.append((idx, free_mib, 0 if shared or cgroup_bound else total_mib))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
@@ -22795,7 +22831,7 @@ class LlamaCppBackend:
                         self._amd_apu_wants_unified_memory(gpu_indices)
                         or (
                             self._integrated_cuda_probe_is_free()
-                            and self._integrated_cuda_unified_memory(gpu_indices)
+                            and self._integrated_cuda_selection_is_all_shared(gpu_indices)
                         )
                     )
                 ):

@@ -403,3 +403,63 @@ def test_a_settled_answer_is_never_probed_again(monkeypatch):
     assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
     assert LlamaCppBackend._integrated_cuda_unified_memory([0]) is True
     assert len(calls) == 1
+
+
+def test_a_cgroup_bound_row_publishes_no_total(monkeypatch):
+    """_vram_usable_mib reserves (1 - frac) * total, so a host-wide total against a
+    container's free reading reserves memory this process cannot reach: a 16 GiB cgroup
+    on a 121 GiB Spark loses most of its budget to a card it does not have. No total is
+    what the ROCm shared pool already publishes, and prices the fit off free alone."""
+    gpus = _spark_gpu_memory(
+        monkeypatch, driver_free_mib = 102400, available_mib = 16384, cgroup_mib = 16384
+    )
+
+    index, free_mib, total_mib = gpus[0]
+    assert (index, free_mib) == (0, 16384 - 1024)
+    assert total_mib == 0
+
+
+def test_an_unconstrained_row_keeps_its_total(monkeypatch):
+    """The pool is only the container's where a container is what bounds it."""
+    gpus = _spark_gpu_memory(monkeypatch, driver_free_mib = 29509, available_mib = 118451)
+
+    assert gpus[0][2] == 124609
+
+
+def test_the_preflight_needs_every_credited_device_to_share_the_pool(monkeypatch):
+    """The guard charges the WHOLE model against system RAM, and layers placed on a
+    discrete card never touch the shared pool. Answering for ANY integrated device in a
+    mixed selection calls an otherwise fitting load oversized."""
+    import sys as _sys
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    module = _spark_torch(29509, 124609)
+    module.cuda.device_count = lambda: 2
+    module.cuda.get_device_properties = (
+        lambda ordinal: _SparkProps() if ordinal == 0 else _DiscreteProps()
+    )
+    monkeypatch.setitem(_sys.modules, "torch", module)
+
+    # Any: true, which is right for the double-count question the tensor-spill guard asks.
+    assert LlamaCppBackend._integrated_cuda_unified_memory([0, 1]) is True
+    # Every: false, which is what this guard needs.
+    assert LlamaCppBackend._integrated_cuda_selection_is_all_shared([0, 1]) is False
+    assert LlamaCppBackend._integrated_cuda_selection_is_all_shared([0]) is True
+    # Nothing pinned means every visible device, and one of them is discrete.
+    assert LlamaCppBackend._integrated_cuda_selection_is_all_shared(None) is False
+
+
+def test_an_all_integrated_selection_still_reaches_the_preflight(monkeypatch):
+    import sys as _sys
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setitem(_sys.modules, "torch", _spark_torch(29509, 124609))
+
+    assert LlamaCppBackend._integrated_cuda_selection_is_all_shared(None) is True
+    assert LlamaCppBackend._integrated_cuda_selection_is_all_shared([0]) is True
