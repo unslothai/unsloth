@@ -5,8 +5,6 @@
 
 import inspect
 
-import pytest
-
 from studio.backend.core.inference.llama_cpp import (
     LlamaCppBackend,
     _batch_ubatch_for_mmproj,
@@ -97,29 +95,32 @@ class TestBatchUbatchForMmproj:
         assert n_batch is None
         assert n_ubatch is None
 
-    @pytest.mark.parametrize("flag", ["--no-mmproj", "--no-mmproj=true"])
-    def test_extra_arg_no_mmproj_is_unchanged(self, flag):
+    def test_unresolvable_projector_is_unchanged(self):
+        # _resolve_launch_mmproj_path answers None for a missing or family-mismatched
+        # file, and llama-server then launches text-only.
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-            "mmproj-F16.gguf",
             None,
             None,
-            [flag],
+            None,
+            None,
             is_vision = True,
         )
         assert n_batch is None
         assert n_ubatch is None
 
 
-def test_default_is_applied_after_the_companion_download():
-    """A Hub load carries no mmproj_path of its own.
+def test_default_is_decided_from_the_resolved_projector_before_the_fit():
+    """Order inside ``load_model``: download, resolve, decide, then price.
 
     ``_resolve_gguf_load_intent`` leaves ``intent.mmproj_path`` unset for a repo id and
     ``_download_mmproj`` is what assigns it, so deciding at the intent unpack reads None
-    on the ordinary loading path and never raises the sizes at all. The fit has to see
-    the decision too: it prices the compute buffer off the micro-batch that launches.
+    on the ordinary loading path and never raises the sizes at all. The decision needs
+    the resolved launch path rather than the requested one, and has to land before the
+    fit, which prices the compute buffer off the micro-batch that launches.
     """
     source = inspect.getsource(LlamaCppBackend.load_model)
     download = source.index("self._download_mmproj(")
+    resolve = source.index("self._resolve_launch_mmproj_path(")
     decide = source.index("_batch_ubatch_for_mmproj(")
     price = source.index("_ubatch_for_slots(n_parallel)")
-    assert download < decide < price
+    assert download < resolve < decide < price

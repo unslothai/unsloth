@@ -5797,7 +5797,7 @@ def _extra_args_n_ubatch(
 
 
 def _batch_ubatch_for_mmproj(
-    mmproj_path: Optional[str],
+    launch_mmproj_path: Optional[str],
     n_batch: Optional[int],
     n_ubatch: Optional[int],
     extra_args: Optional[Iterable[str]],
@@ -5807,15 +5807,15 @@ def _batch_ubatch_for_mmproj(
 ) -> tuple[Optional[int], Optional[int]]:
     """Raise the default batch/ubatch for a load that will launch a vision projector.
 
-    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the pair has to be equal. Only
-    when the caller named neither size and nothing else already sets one: an env
-    var or an extra_arg is the user sizing the child, and this must not undo it.
+    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the pair has to be equal. Takes the
+    RESOLVED launch path, not the requested one: a missing or family-mismatched file
+    launches a text-only server, which must not pay the bigger compute buffer. Only
+    when the caller named neither size and nothing else already sets one: an env var
+    or an extra_arg is the user sizing the child, and this must not undo it.
     """
-    if not mmproj_path or not is_vision or disable_vision:
+    if not launch_mmproj_path or not is_vision or disable_vision:
         return n_batch, n_ubatch
     if n_batch is not None or n_ubatch is not None:
-        return n_batch, n_ubatch
-    if extra_args_disable_mmproj(extra_args):
         return n_batch, n_ubatch
     if _extra_args_n_ubatch(extra_args) is not None:
         return n_batch, n_ubatch
@@ -19953,9 +19953,19 @@ class LlamaCppBackend:
 
             # Here, not at the intent unpack: a Hub load carries no mmproj_path of its
             # own, the companion download above is what assigns it, and the fit below
-            # must price the micro-batch the child will actually launch with.
+            # must price the micro-batch the child will actually launch with. Resolved
+            # exactly as the launch block resolves it, so a stale or family-mismatched
+            # file leaves the text-only server it produces at the llama.cpp defaults.
+            _fit_mmproj_path = (
+                None
+                if extra_args_disable_mmproj(extra_args)
+                else self._resolve_launch_mmproj_path(
+                    model_path = model_path,
+                    mmproj_path = mmproj_path,
+                )
+            )
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-                mmproj_path,
+                _fit_mmproj_path,
                 n_batch,
                 n_ubatch,
                 extra_args,
