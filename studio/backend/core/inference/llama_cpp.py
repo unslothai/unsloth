@@ -12750,7 +12750,37 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         flash_attn: bool = True,
     ) -> int:
-        """Estimate KV cache VRAM for a given context length.
+        """Estimate KV cache VRAM for a given context length. See _estimate_kv_cache_parts."""
+        return sum(
+            self._estimate_kv_cache_parts(
+                n_ctx,
+                cache_type_kv,
+                swa_full = swa_full,
+                n_parallel = n_parallel,
+                kv_unified = kv_unified,
+                n_ubatch = n_ubatch,
+                ctx_checkpoints = ctx_checkpoints,
+                flash_attn = flash_attn,
+            )
+        )
+
+    def _estimate_kv_cache_parts(
+        self,
+        n_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        *,
+        swa_full: bool = False,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        n_ubatch: Optional[int] = None,
+        ctx_checkpoints: int = 0,
+        flash_attn: bool = True,
+    ) -> tuple[int, int, int]:
+        """The three parts of the KV cache: full-context layers, window-bound layers, checkpoints.
+
+        Only path 3 splits; every other path is full-context, so it answers ``(total, 0, 0)``.
+        ``_estimate_kv_cache_bytes`` sums this, and a caller that has to charge the two halves
+        at different rates (the offload planner's live-prefix model) reads them apart.
 
         5-path architecture-aware estimation:
           1. MLA      -- compressed KV latent + RoPE, K-only (no separate V)
@@ -12767,10 +12797,10 @@ class LlamaCppBackend:
           ctx_checkpoints -- --ctx-checkpoints: N SWA snapshots per slot.
           flash_attn      -- False pads variable-width V tensors to the model max.
 
-        Returns 0 if metadata is insufficient.
+        Returns zeroes if metadata is insufficient.
         """
         if not self._can_estimate_kv() or n_ctx <= 0:
-            return 0
+            return 0, 0, 0
 
         # GGUF block_count includes embedded MTP blocks, and llama.cpp keeps
         # those out of the target context for SOME architectures only -- see
@@ -12821,9 +12851,12 @@ class LlamaCppBackend:
                     1 for i in range(n_layers_kv) if self._kv_heads_for_layer(i, n_kv_mla) > 0
                 )
                 n_mla_layers = max(1, attn)
-            return int(
-                n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k
-            ) + self._recurrent_state_bytes(n_parallel)
+            return (
+                int(n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k)
+                + self._recurrent_state_bytes(n_parallel),
+                0,
+                0,
+            )
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -12838,10 +12871,12 @@ class LlamaCppBackend:
                 v_width = n_kv * val_len if flash_attn else self._max_kv_value_width(val_len)
                 return (
                     int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
-                    + recurrent
+                    + recurrent,
+                    0,
+                    0,
                 )
             head_dim = self._legacy_head_dim()
-            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent
+            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent, 0, 0
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -12892,7 +12927,11 @@ class LlamaCppBackend:
                             checkpoint_extra_per_slot += ctx_checkpoints * swa * layer_kv_bytes
                     else:
                         global_bytes += total_cells * layer_kv_bytes
-                return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
+                return (
+                    int(global_bytes),
+                    int(swa_bytes),
+                    int(slots * checkpoint_extra_per_slot),
+                )
             n_global = max(1, n_layers_kv // 4)
             n_swa = n_layers_kv - n_global
             global_v_width = n_kv * val_len if padded_v_width is None else padded_v_width
@@ -12906,7 +12945,11 @@ class LlamaCppBackend:
                 if ctx_checkpoints > 0 and not swa_full
                 else 0.0
             )
-            return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
+            return (
+                int(global_bytes),
+                int(swa_bytes),
+                int(slots * checkpoint_extra_per_slot),
+            )
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
@@ -12916,11 +12959,11 @@ class LlamaCppBackend:
                 layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                 v_width = layer_n_kv * val_len if padded_v_width is None else padded_v_width
                 bytes_per_cell += layer_n_kv * key_len * bpe_k + v_width * bpe_v
-            return int(total_cells * bytes_per_cell)
+            return int(total_cells * bytes_per_cell), 0, 0
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
-        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k)
+        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k), 0, 0
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
@@ -22039,6 +22082,23 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                         )
 
+                    # The window-bound half of the same measurement kv_cache_bytes sums, which
+                    # the planner charges at a different rate and cannot decompose itself.
+                    _spill_kv_swa_bytes = (
+                        self._estimate_kv_cache_parts(
+                            _spill_ctx,
+                            cache_type_kv,
+                            n_parallel = n_parallel,
+                            swa_full = swa_full,
+                            kv_unified = planned_kv_unified,
+                            n_ubatch = _effective_ubatch,
+                            ctx_checkpoints = 0,
+                            flash_attn = planned_flash_attn,
+                        )[1]
+                        if _planner_owns_fit
+                        else 0
+                    )
+
                     # --cache-ram bounded to the host RAM the fallback leaves free, so the prompt cache is
                     # a term the load-mode rule can see rather than an uncounted 8 GiB.
                     _cache_ram_typed = _extra_args_cache_ram(extra_args, {})
@@ -22141,6 +22201,7 @@ class LlamaCppBackend:
                         "kv_unified": bool(planned_kv_unified),
                         "min_parallel": _spill_min_parallel,
                         "kv_bytes_floor_by_parallel": _spill_floor_by_parallel,
+                        "kv_swa_bytes": int(_spill_kv_swa_bytes),
                         # The floor map without its fixed context: the planner asks this rather than
                         # scaling a measurement it cannot decompose. A callable, never serialised.
                         "kv_bytes_at": _kv_bytes_at if _planner_owns_fit else None,
@@ -28321,6 +28382,9 @@ class LlamaCppBackend:
                     int(_p): _attention_floor(_v, int(_p))
                     for _p, _v in (inputs.get("kv_bytes_floor_by_parallel") or {}).items()
                 },
+                # No _attention_floor: the window-bound layers hold no recurrent state, so
+                # there is nothing in this half for that correction to take out.
+                kv_swa_bytes_floor = max(0, int(inputs.get("kv_swa_bytes") or 0)),
                 # The same measurement at any context, so the ladder re-prices the cache
                 # instead of scaling the floor. Absent leaves the planner's own rules in place.
                 kv_bytes_at = kv_bytes_at,

@@ -438,15 +438,21 @@ def graded_moe_layout(n_blocks: int = 8, ffn_gib: float = 3.0) -> ModelLayout:
 
 
 def test_a_unified_cache_gives_every_slot_the_whole_prompt_window():
-    """--kv-unified is one shared stream, so n_ctx / slots is not the window."""
+    """--kv-unified is one shared stream, so n_ctx / slots is not the window.
+
+    Re-anchored at ``min_penalty_reduction = 0``: now that the fitter grades its boundary
+    block the same way the planner does, the two arms place the same bytes on this layout
+    and the default margin declines the tie, which would hide the window this pins.
+    """
     layout = graded_moe_layout()
     host = HostProfile(threads = 12)
+    tie = dict(host = host, min_penalty_reduction = 0.0)
     divided = plan_placement(
         layout,
         [20 * GIB],
         200 * GIB,
         32768,
-        opts = gated(host = host, n_parallel = 4, min_parallel = 4),
+        opts = gated(n_parallel = 4, min_parallel = 4, **tie),
     )
     assert divided.spills_anything and "tokens per slot" not in divided.reason
 
@@ -455,12 +461,12 @@ def test_a_unified_cache_gives_every_slot_the_whole_prompt_window():
         [20 * GIB],
         200 * GIB,
         32768,
-        opts = gated(host = host, n_parallel = 4, min_parallel = 4, kv_unified = True),
+        opts = gated(n_parallel = 4, min_parallel = 4, kv_unified = True, **tie),
     )
     assert not unified.spills_anything and unified.declined_by_gate
     assert "32768 tokens per slot" in unified.reason, unified.reason
 
-    one_slot = plan_placement(layout, [20 * GIB], 200 * GIB, 32768, opts = gated(host = host))
+    one_slot = plan_placement(layout, [20 * GIB], 200 * GIB, 32768, opts = gated(**tie))
     assert "tokens per slot" in one_slot.reason, one_slot.reason
 
 
@@ -887,3 +893,141 @@ def test_a_slow_pcie_link_declines_the_spill_a_fast_one_takes():
     assert not slow.spilled_blocks
     assert slow.declined_by_gate and "not worth it" in slow.reason
     assert slow.predicted_request_ms > fast.predicted_request_ms
+
+
+def test_a_load_that_already_fits_gives_the_fitter_nothing_to_move():
+    """--fit on only moves what does not fit, so a load inside the budget is placed whole.
+    Modelling it as a spill invented a cost for the fitter and let the gate accept a spill
+    it should have ranked against a free launch."""
+    from core.inference.offload_planner import (
+        SpillClass,
+        SpillUnit,
+        _cost_gate,
+        _knob_only_gate,
+        _Knobs,
+    )
+
+    roomy = 200 * GIB
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    for layout in (dense_layout(), moe_layout()):
+        placement = _fit_fallback_placement(layout, gated(), roomy, 8192, **args)
+        assert placement is not None, "a load that fits is still a placement, not an unknown"
+        assert placement.host_groups == [], [g.name for g in placement.host_groups]
+        assert placement.kv_host_bytes == 0
+
+    layout = dense_layout()
+    units = [SpillUnit(b.index, SpillClass.FFN_DOWN, b.spillable_bytes) for b in layout.blocks[:4]]
+    declined, plan_ms, fit_ms = _cost_gate(
+        layout,
+        gated(),
+        8192,
+        units,
+        False,
+        roomy,
+        quantised = False,
+        kv_bytes_floor = 0,
+        host_ram_bytes = 512 * GIB,
+    )
+    assert fit_ms == 0.0, fit_ms
+    assert plan_ms > 0.0 and declined is not None and declined.declined_by_gate
+
+    knob_declined, knob_ms, knob_fit_ms = _knob_only_gate(
+        layout, gated(), 8192, roomy, quantised = False, kv_bytes_floor = 0, knobs = _Knobs(n_parallel = 1)
+    )
+    assert knob_fit_ms == 0.0 and knob_ms == 0.0
+    assert knob_declined is None, "a free plan against a free fit is a tie, not a decline"
+
+
+def per_matrix_moe_layout(n_blocks: int = 40) -> ModelLayout:
+    """An MoE with its expert matrices broken out, so the boundary block has rungs to give."""
+    d, u, g, a = int(0.20 * GIB), int(0.15 * GIB), int(0.12 * GIB), int(0.025 * GIB)
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = d + u + g,
+            resident_bytes = a,
+            ffn_down_bytes = d,
+            ffn_up_bytes = u,
+            ffn_gate_bytes = g,
+            attn_bytes = a,
+        )
+        for i in range(n_blocks)
+    )
+    return replace(moe_layout(n_blocks), blocks = blocks)
+
+
+def test_the_moe_fallback_grades_its_boundary_block_like_the_dense_arm():
+    """fit.cpp grades the first partial layer it reaches and moves LAYER_FRACTION_MOE of
+    every layer past it. Adding the boundary block's whole expert set over-moved by up to
+    one block, made the fitter look costlier than it is, and biased the gate toward
+    accepting the planner's spill."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = per_matrix_moe_layout()
+    down = layout.blocks[0].ffn_down_bytes
+    gate = layout.blocks[0].ffn_gate_bytes
+    whole = layout.blocks[0].spillable_bytes
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    resident = all_resident_bytes(
+        layout, 8192, kv_quantised = False, kv_bytes_floor = 0, kv_on_host = False, n_seq = 1
+    )
+
+    def moved(deficit_past_three: int) -> int:
+        budget = resident - 3 * whole - deficit_past_three
+        placement = _fit_fallback_placement(layout, gated(), budget, 8192, **args)
+        assert placement is not None
+        return sum(g.bytes_total for g in placement.host_groups)
+
+    assert moved(down // 2) == 3 * whole + down
+    assert moved(down + gate // 2) == 3 * whole + down + gate
+    assert moved(down + gate + 1) == 4 * whole
+
+
+def swa_split_layout() -> ModelLayout:
+    """A gemma-class model: some layers window-bound, the rest full-context."""
+    return replace(dense_layout(), arch = "gemma4", has_swa = True, n_ctx_train = 131072)
+
+
+def test_the_windowed_fallback_charges_only_the_live_prefix_of_the_global_layers():
+    """A windowed cache is two caches. Charging the whole reservation as decode traffic
+    priced the full-attention layers' entire n_ctx at Access.KV_CACHE's 20.1x although only
+    the live prefix is ever read, and that overcharge flipped the gate toward accepting a
+    losing spill."""
+    layout = swa_split_layout()
+    n_ctx, floor, windowed = 131072, 5 * GIB, 4 * GIB
+    shape = dict(workload_prompt_tokens = 2048, workload_generated_tokens = 0)
+    args = dict(quantised = False, kv_bytes_floor = floor, kv_on_host = False)
+    whole = _fit_fallback_placement(layout, gated(**shape), 8 * GIB, n_ctx, **args)
+    split = _fit_fallback_placement(
+        layout, gated(kv_swa_bytes_floor = windowed, **shape), 8 * GIB, n_ctx, **args
+    )
+    assert whole is not None and split is not None
+    assert whole.kv_host_bytes > 0
+    # Both arms move the same layers: only the RATE the moved cache is charged at changes.
+    live = (4 + 1 / 64) / 5
+    assert abs(split.kv_host_bytes / whole.kv_host_bytes - live) < 0.001
+
+
+def test_the_windowed_split_moves_the_gate_verdict():
+    """The honest direction: a cheaper fitter is harder to beat, so a spill that only won on
+    the overcharge is now declined."""
+    layout = swa_split_layout()
+    n_ctx, floor, windowed = 131072, 5 * GIB, 4 * GIB
+    # The margin brackets the two fit scores rather than the card size, which moves a whole
+    # block at a time and cannot resolve them.
+    shape = dict(host = HostProfile(threads = 6), min_penalty_reduction = 0.80)
+    card = [25 * GIB]
+    accepted = plan_placement(
+        layout, card, 200 * GIB, n_ctx, kv_bytes_floor = floor, opts = gated(**shape)
+    )
+    declined = plan_placement(
+        layout,
+        card,
+        200 * GIB,
+        n_ctx,
+        kv_bytes_floor = floor,
+        opts = gated(kv_swa_bytes_floor = windowed, **shape),
+    )
+    assert accepted.spills_anything, accepted.reason
+    assert not declined.spills_anything and declined.declined_by_gate, declined.reason
+    assert declined.predicted_fit_request_ms < accepted.predicted_fit_request_ms

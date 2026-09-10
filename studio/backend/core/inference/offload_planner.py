@@ -196,6 +196,9 @@ class PlanOptions:
     n_parallel: int = 1
     min_parallel: int = 1
     kv_bytes_floor_by_parallel: Mapping[int, int] = field(default_factory = dict)
+    # The window-bound part of ``kv_bytes_floor`` at the requested context and slot count.
+    # 0 means "unknown", which keeps the whole floor charged as live.
+    kv_swa_bytes_floor: int = 0
     kv_bytes_at: Optional[Callable[[int, int], int]] = None
     overhead_bytes_at: Optional[Callable[[int], int]] = None
     n_ubatch_by_parallel: Mapping[int, int] = field(default_factory = dict)
@@ -324,9 +327,13 @@ def _kv_floor_at(
 ) -> Optional[int]:
     """The caller's cache floor re-priced for ``(n_ctx, n_parallel)``; ``None`` when it cannot be."""
     at = max(1, opts.n_parallel)
-    # One unified cache serves every slot: only the recurrent state (charged per
-    # slot by the resident sizes) follows the count, the attention cache does not.
-    want = at if opts.kv_unified else max(1, n_parallel)
+    asked = max(1, n_parallel)
+    # A unified cache is not slot-flat: the estimator prices ``swa * slots + ubatch`` window
+    # cells per stream, so the windowed half DOES shrink with the count. Ask whatever priced
+    # this geometry; only the linear fallback below cannot tell the two halves apart, and it
+    # keeps the count the caller priced.
+    exact = opts.kv_bytes_at is not None or asked in opts.kv_bytes_floor_by_parallel
+    want = asked if (exact or not opts.kv_unified) else at
     if opts.kv_bytes_at is not None:
         return _measured_cache_at(layout, opts, n_ctx, want)
     base = max(0, kv_bytes_floor)
@@ -570,6 +577,10 @@ def _fit_boundary_overflow(block: BlockLayout, deficit: int) -> Optional[int]:
     """FFN bytes ``common/fit.cpp`` overflows off its boundary layer to cover ``deficit``, or None
     when even the whole FFN of it does not.
     """
+    if deficit <= 0:
+        # Nothing is short, so the fitter overflows nothing: a rung that "covers" a
+        # non-positive deficit would be a spill llama.cpp never makes.
+        return None
     down = block.class_bytes(SpillClass.FFN_DOWN)
     for nbytes in (down, down + block.class_bytes(SpillClass.FFN_GATE), block.spillable_bytes):
         if nbytes > 0 and nbytes >= deficit:
@@ -610,6 +621,10 @@ def _fit_fallback_placement(
         n_seq = max(1, n_seq),
         trust_floor = trust,
     )
+    if resident <= budget:
+        # --fit on keeps every layer on the device when the load already fits, so the
+        # fallback moves nothing and the gate must rank the spill against a free launch.
+        return Placement(host_groups = [])
     kv_total = (
         0
         if kv_on_host
@@ -651,9 +666,13 @@ def _fit_fallback_placement(
     floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
     if kv_on_host:
         kv_live_total = 0
+    elif layout.has_swa and kv_bytes_floor > 0 and opts.kv_swa_bytes_floor > 0:
+        # A saturated window is read in full, but the full-context layers are RESERVED at
+        # n_ctx and only their live prefix is ever read.
+        swa_part = min(max(0, opts.kv_swa_bytes_floor), kv_total)
+        kv_live_total = swa_part + int((kv_total - swa_part) * live_tokens / max(1, n_ctx))
     elif layout.has_swa and kv_bytes_floor > 0:
-        # The measured floor of a windowed cache is context-FLAT once the window is saturated,
-        # and the layout does not say how it splits between windowed and full-context layers.
+        # No split supplied, and the layout cannot say which half is which.
         kv_live_total = kv_total
     else:
         kv_live_total = int(cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale)
@@ -665,9 +684,13 @@ def _fit_fallback_placement(
         # resident and it moves close to the MINIMUM it needs, same as the planner.
         host_experts = 0
         for block in reversed(blocks):
+            # fit.cpp grades only the FIRST partial layer it reaches (``ngl_t.overflow_type``,
+            # common/fit.cpp:486-560) and moves LAYER_FRACTION_MOE of every layer past it, so
+            # the boundary block gives up a rung and not its whole expert set.
+            overflow = _fit_boundary_overflow(block, resident - host_experts - budget)
+            if overflow is not None:
+                return Placement(host_groups = [_ffn_group(layout, host_experts + overflow)])
             host_experts += block.spillable_bytes
-            if resident - host_experts <= budget:
-                return Placement(host_groups = [_ffn_group(layout, host_experts)])
         # Every expert on the host and still short. common/fit.cpp does not fail here: it
         # lowers n_gpu_layers and moves whole LEADING layers with their cache share.
         recurrent_per_layer = (

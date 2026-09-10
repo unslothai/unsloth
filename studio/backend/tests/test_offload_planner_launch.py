@@ -985,3 +985,27 @@ def test_an_unbounded_prompt_cache_abstains_from_the_fits_own_none_and_reaches_t
     cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, caps = caps, cache_ram = -1)
     assert "--load-mode" not in cmd, cmd
     assert seen["inputs"]["cache_ram_unbounded"] is True
+
+
+def test_the_snapshot_carries_the_windowed_half_of_the_cache(tmp_path, monkeypatch):
+    """The planner reads a saturated window in full but the full-context layers only over
+    their live prefix, so the snapshot has to price the two halves apart: summed, they cannot
+    be told back apart at any context."""
+    monkeypatch.setitem(DENSE, "_sliding_window", 1024)
+    monkeypatch.setitem(DENSE, "_sliding_window_pattern", tuple(i % 6 != 5 for i in range(64)))
+    _cmd, backend, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
+    inputs = seen["inputs"]
+    swa = inputs["kv_swa_bytes"]
+    assert 0 < swa < inputs["kv_cache_bytes"], (swa, inputs["kv_cache_bytes"])
+
+    parts = backend._estimate_kv_cache_parts(
+        inputs["n_ctx"],
+        inputs["cache_type_kv"],
+        n_parallel = inputs["n_parallel"],
+        kv_unified = inputs["kv_unified"],
+        n_ubatch = inputs["n_ubatch"],
+        ctx_checkpoints = 0,
+    )
+    # The sum pins the ARGUMENTS: a split priced at another geometry would not add back up.
+    assert sum(parts) == inputs["kv_cache_bytes"]
+    assert parts[1] == swa
