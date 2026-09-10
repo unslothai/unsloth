@@ -1032,6 +1032,20 @@ Environment:
             _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
             continue
         }
+        # The flat layout: UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory. The resolver
+        # accepts it, so the Studio root and the user-chosen master root are the same path, and
+        # _RemoveRootRecordingDb takes a Studio root WHOLE once it carries the ownership marker.
+        # Every other master-root child below is individually marker-gated so a user-chosen root
+        # is never removed wholesale; this was the one hole in that rule. Kept rather than pruned:
+        # data left behind is recoverable and printed, a deleted file is not. Mirrors uninstall.sh.
+        $flatMaster = _MasterRoot
+        if ($flatMaster -and ($r.TrimEnd('\', '/') -ieq $flatMaster.TrimEnd('\', '/'))) {
+            _Substep "keeping $r`: UNSLOTH_HOME and the Studio root name the same directory," "Yellow"
+            _Substep "so removing it would take whatever else you keep there. Delete it by hand" "Yellow"
+            _Substep "once you have checked what is in it." "Yellow"
+            $script:RemoveFailed = $true
+            continue
+        }
         _RemoveRootRecordingDb $r
         # Native diffusion now installs UNDER the custom root, so the removal above already took
         # it. Older builds put it BESIDE the root at <parent>\stable-diffusion.cpp, which removing

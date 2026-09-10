@@ -776,3 +776,48 @@ def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
     # is not the same thing as code naming it.
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
     assert "C:\\tc" not in code
+
+
+def test_the_windows_node_guard_treats_a_file_as_occupied():
+    """install_node_prebuilt's _swap_into_place renames whatever it finds out of the way.
+
+    Guarding on -PathType Container meant a regular file or a symlink named `node` under a
+    user-selected master root was invisible to the check and got displaced. Ownership evidence
+    lives inside a directory, so a non-directory can never carry it and is refused outright.
+    setup.sh's _assert_studio_owned_or_absent takes the same view of -d against -e and -L.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir",
+                   "install_node_prebuilt.py")
+    code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+    # The gate itself must not be container-only any more.
+    gate = code.splitlines()[0]
+    assert "-PathType Container" not in gate, gate
+    # And a non-directory must fail rather than fall through to the marker questions.
+    assert "$nodeIsDir" in code and "-not $nodeIsDir -or" in code
+
+
+def test_neither_uninstaller_takes_a_studio_root_that_is_also_the_master_root():
+    """The flat layout, UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory.
+
+    A Studio root is removed WHOLE once it carries the ownership marker, so in the flat case
+    anything else the user keeps in that directory goes with the install. Every other
+    master-root child is individually marker-gated precisely so a user-chosen root is never
+    removed wholesale; this was the one hole in that rule. Kept rather than pruned: data left
+    behind is recoverable and printed, a deleted file is not.
+    """
+    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+
+    sh_block = _slice(sh, "_crf_canon=", "_remove_root_recording_db \"$_custom_root\"")
+    sh_code = "\n".join(l for l in sh_block.splitlines() if not l.lstrip().startswith("#"))
+    assert "_master_root" in sh_code and "continue" in sh_code
+    # Canonicalised on both sides, or a symlinked path compares unequal to itself and the guard
+    # never fires on the very layout it is for.
+    assert "cd -P --" in sh_code
+
+    ps_block = _slice(ps, "$flatMaster = _MasterRoot", "_RemoveRootRecordingDb $r")
+    ps_code = "\n".join(l for l in ps_block.splitlines() if not l.lstrip().startswith("#"))
+    assert "_MasterRoot" in ps_code and "continue" in ps_code
+    # Case-insensitive: Windows paths differing only in case are the same directory.
+    assert "-ieq" in ps_code

@@ -683,6 +683,27 @@ _unsloth_uninstall_main() {
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
+        # The flat layout: UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory. The
+        # resolver accepts it, so the Studio root and the user-chosen master root are the same
+        # path, and _remove_root_recording_db takes a Studio root WHOLE once it carries the
+        # ownership marker. Every other master-root child below is individually marker-gated so
+        # that a user-chosen root is never removed wholesale; without this the flat case was the
+        # one hole in that rule, and anything else kept in that directory went with the install.
+        #
+        # Kept rather than pruned: data left behind is recoverable and printed, a deleted file is
+        # not. Canonicalised on both sides, or a symlinked path compares unequal to itself.
+        _crf_canon=$(CDPATH= cd -P -- "$_custom_root" 2>/dev/null && pwd -P) || _crf_canon=""
+        [ -n "$_crf_canon" ] || _crf_canon="$_custom_root"
+        _crf_master="$(_master_root)"
+        if [ -n "$_crf_master" ] && [ "$_crf_canon" = "$_crf_master" ]; then
+            echo "  keeping $_custom_root: UNSLOTH_HOME and the Studio root name the same" >&2
+            echo "  directory, so removing it would take whatever else you keep there." >&2
+            echo "  Delete it by hand once you have checked what is in it." >&2
+            _set_marker "$_REMOVE_FAILED_FLAG"
+            unset _crf_canon _crf_master
+            continue
+        fi
+        unset _crf_canon _crf_master
         _remove_root_recording_db "$_custom_root"
         # Native diffusion now installs UNDER the custom root, so the removal above already took
         # it. Older builds put it BESIDE the root at <parent>/stable-diffusion.cpp, which removing

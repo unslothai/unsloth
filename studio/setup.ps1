@@ -3828,11 +3828,22 @@ if ($NeedNodeForSetup) {
         # UNSLOTH_STUDIO_HOME requires. The master root is the user's directory too. setup.sh
         # passes _RUNTIME_ROOT_IS_CUSTOM here for the same reason. Or, not replacing: a custom
         # Studio home must keep the guard it already had.
-        if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+        #
+        # Anything at the path counts as occupied, not just a directory. install_node_prebuilt's
+        # _swap_into_place renames whatever it finds there out of the way, so a regular file or a
+        # symlink named `node` under a user-selected root was displaced by a guard that only asked
+        # about containers. Ownership evidence lives inside a directory, so a non-directory can
+        # never carry it and is refused outright. setup.sh's _assert_studio_owned_or_absent takes
+        # the same view of -d against -e and -L.
+        if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir)) {
             $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
             $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
-            if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
-                Write-StudioLine "[ERROR] $NodeDir already exists and is not an Unsloth-owned Node install." -ForegroundColor Red
+            $nodeIsDir = Test-Path -LiteralPath $NodeDir -PathType Container
+            if (-not $nodeIsDir -or (
+                    -not (Test-Path -LiteralPath $nodeOwnedMarker) -and
+                    -not (Test-Path -LiteralPath $nodeMeta))) {
+                $what = if ($nodeIsDir) { "an Unsloth-owned Node install" } else { "a directory" }
+                Write-StudioLine "[ERROR] $NodeDir already exists and is not $what." -ForegroundColor Red
                 Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
                 Exit-SetupFailure "$NodeDir is not an Unsloth-owned Node install"
             }

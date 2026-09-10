@@ -1103,3 +1103,51 @@ def test_an_empty_managed_dir_still_defers_to_a_user_matplotlibrc(tmp_path):
     sr._setup_cache_env()
 
     assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp_path):
+    """"blank counts as unset" has to hold for a root we refuse to pin, too.
+
+    Inductor distinguishes an absent TORCHINDUCTOR_CACHE_DIR from a present one, so a leftover
+    "   " becomes a relative compiler path and is then split by the very unquoted command
+    construction the whitespace refusal exists to avoid.
+    """
+    spaced = tmp_path / "My Studio"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(spaced))
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "   ")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+
+
+def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_path):
+    """torch treats the value as authoritative, so a path it cannot use fails every compile.
+
+    Unset, it would have used its own temporary cache instead. The placement error is swallowed
+    on purpose so startup survives, which is what let an unusable path stay published.
+    """
+    cache = tmp_path / "studio" / "cache"
+    cache.mkdir(parents = True)
+    # A regular file where the directory should go: mkdir raises FileExistsError, which the
+    # best-effort handler treats as "already there".
+    (cache / "torchinductor").write_text("not a directory", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+    # The other pins are unaffected: only the one that could not be made is withheld.
+    assert os.environ["CUDA_CACHE_PATH"] == str(cache / "cuda")
+
+
+def test_a_usable_managed_inductor_path_is_still_published(tmp_path):
+    """The rule above must not withhold the ordinary case."""
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(
+        tmp_path / "studio" / "cache" / "torchinductor"
+    )

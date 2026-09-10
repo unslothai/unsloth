@@ -774,6 +774,14 @@ _TOOLCHAIN_PATH_KEYS = frozenset(
 )
 
 
+def _usable_dir(value: str) -> bool:
+    """Whether a path we generated is actually a directory the toolchain can compile into."""
+    try:
+        return Path(value).is_dir()
+    except (OSError, ValueError):
+        return False
+
+
 def _toolchain_unsafe(key: str, value: str) -> bool:
     """Whether pinning *key* to *value* would hand a compiler a path it cannot parse."""
     return key in _TOOLCHAIN_PATH_KEYS and any(ch.isspace() for ch in value)
@@ -825,6 +833,12 @@ def _setup_cache_env() -> None:
                     key,
                     value,
                 )
+                # Blank is not the same as absent to the library that reads this. Inductor takes
+                # "   " as a relative path and hands it to the very unquoted command line being
+                # refused here, so the key goes rather than staying blank, and torch falls back to
+                # its own temporary cache. The comment above promises "blank counts as unset";
+                # this is what makes that true on a spaced root as well.
+                os.environ.pop(key, None)
                 continue
             os.environ[key] = value
             # Best-effort: a non-writable custom HF_HOME must not crash startup
@@ -842,6 +856,18 @@ def _setup_cache_env() -> None:
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):
                 pass
+            # A toolchain path we invented and could not make is worse than no path at all. torch
+            # treats the value as authoritative, so a regular file at <studio>/cache/torchinductor
+            # or a parent with a restrictive ACL fails every compile, where an unset variable
+            # would have used the library's own temporary cache. The placement error above is
+            # deliberately swallowed, which is exactly what left an unusable path published.
+            #
+            # Only these keys. UNSLOTH_COMPILE_LOCATION left unset falls back to a bare relative
+            # name resolving against the CWD, which is the bug that pin exists to fix, and the
+            # data roots are not caches with a library default to fall back to.
+            if key in _TOOLCHAIN_PATH_KEYS and not _usable_dir(value):
+                logger.debug("leaving %s unset: %s is not a usable directory", key, value)
+                os.environ.pop(key, None)
 
 
 def setup_cache_env() -> None:
