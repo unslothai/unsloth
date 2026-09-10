@@ -590,12 +590,15 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
     # Off the polled path on purpose: /api/system must not import torchao itself (see
-    # _dense_quant_supported), and the warm above has already paid for torch.
-    try:
-        _refresh_dense_quant_capability()
-    except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
-        import structlog as _structlog
-        _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
+    # _dense_quant_supported). Gated on torch being up rather than assuming the warm brought it:
+    # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 makes start_background_warm a no-op and the join above
+    # return at once, and that switch exists precisely to keep the ML stack cold.
+    if "torch" in sys.modules:
+        try:
+            _refresh_dense_quant_capability()
+        except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+            import structlog as _structlog
+            _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
 
     if _post_warm_retired(generation):
         return

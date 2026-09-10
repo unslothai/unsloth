@@ -158,3 +158,18 @@ def test_only_the_capability_bit_is_published():
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     for gone in ("dense_quant_schemes", "dense_quant_auto_schemes", "dense_quant_probed_schemes"):
         assert gone not in src, gone
+
+
+def test_the_warm_refresh_honours_the_torch_kill_switch():
+    """UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 must keep the stack cold.
+
+    `start_background_warm` is then a no-op and `join_background_warm` returns at once, so the
+    post-warm worker still reaches this point with torch unimported. Refreshing there would import
+    torch and torchao and defeat the switch, so it is gated on torch already being up.
+    """
+    body = _src("_post_warm_background_work")
+    refresh = body.index("_refresh_dense_quant_capability()")
+    guard = body.rindex('"torch" in sys.modules', 0, refresh)
+    assert guard != -1
+    # The guard must not swallow the rest of the worker.
+    assert "_start_linked_folder_auto_sync" in body[refresh:]
