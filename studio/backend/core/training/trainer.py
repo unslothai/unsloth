@@ -1262,7 +1262,6 @@ class UnslothTrainer:
 
             if not use_lora:
                 if use_gradient_checkpointing != self._use_gradient_checkpointing:
-                    # Nothing after loading reinstalls a full finetune's implementation.
                     logger.warning(
                         f"Gradient checkpointing {use_gradient_checkpointing} was requested after the "
                         f"model was loaded with {self._use_gradient_checkpointing}. A full finetune "

@@ -168,8 +168,7 @@ def test_audio_vlm_honours_none_as_well(run_sft_training, use_lora):
 
     assert seen["config_args"]["gradient_checkpointing"] is False
     assert "gradient_checkpointing_kwargs" not in seen["config_args"]
-    # A full finetune reaches this branch already flagged by load_model's for_training(),
-    # and SFTConfig never turns checkpointing off, so the flags must be reapplied here.
+    # SFTConfig never turns checkpointing off, so the flags load_model set must be reapplied.
     assert seen["for_training"] == [False], (
         "the audio VLM branch left the module gradient_checkpointing flags alone, "
         "so the run checkpoints despite the Memory tab saying None"
