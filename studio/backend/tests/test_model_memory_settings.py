@@ -3080,7 +3080,7 @@ class TestThePlacementWindowIsPublished:
         import inspect
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert flat.count("andnotself._cuda_runtime_missing_by_dir.get(") == 2
+        assert flat.count("andnotself._cuda_runtime_missing_for(binary,_mem_env)") == 2
 
 
 class TestTheBackendCheckReusesTheRepoRecognition:
@@ -3383,3 +3383,75 @@ class TestAReplacementLoadIsNotAnsweredByTheOldChild:
         src = inspect.getsource(rs._model_memory_reload_required)
         assert "if pending is not None:" in src
         assert "if state is None and pending is not None:" not in src
+
+
+class TestLoadabilityIsComputedNotAwaited:
+    """The DirectIO guard runs well before `_llama_server_env_for_binary`, so a
+    cache-only read answered "nothing missing" on every first load and a build that
+    cannot load its CUDA backend was confirmed as fully offloaded."""
+
+    def test_the_guard_computes_on_demand(self, monkeypatch, tmp_path):
+        import core.inference.llama_cpp as m
+
+        m.LlamaCppBackend._cuda_runtime_missing_by_dir.clear()
+        monkeypatch.setattr(m.sys, "platform", "win32")
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_build_windows_path_dirs",
+            staticmethod(lambda *a, **k: []),
+        )
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        # nothing populated the cache; the accessor must still answer correctly
+        assert m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {"PATH": ""})
+
+    def test_a_complete_runtime_clears_it(self, monkeypatch, tmp_path):
+        import core.inference.llama_cpp as m
+
+        m.LlamaCppBackend._cuda_runtime_missing_by_dir.clear()
+        libs = tmp_path / "libs"
+        libs.mkdir()
+        (libs / "cudart64_12.dll").write_text("")
+        (libs / "cublas64_12.dll").write_text("")
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        monkeypatch.setattr(m.sys, "platform", "win32")
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_build_windows_path_dirs",
+            staticmethod(lambda *a, **k: [str(libs)]),
+        )
+        assert not m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {"PATH": ""})
+
+    def test_it_is_a_noop_off_windows(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        monkeypatch.setattr(m.sys, "platform", "linux")
+        assert not m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {})
+
+
+class TestAnExternalVulkanPluginStillGetsProbed:
+    """`_is_vulkan_backend` scans only beside the executable, so a custom runtime
+    supplying ggml-vulkan through GGML_BACKEND_PATH read as non-Vulkan and the
+    discreteness probe was skipped, confirming an iGPU on shared system RAM."""
+
+    def test_the_plugin_is_found_in_the_external_root(self, monkeypatch, tmp_path):
+        import core.inference.llama_cpp as m
+
+        beside, external = tmp_path / "beside", tmp_path / "ext"
+        beside.mkdir(); external.mkdir()
+        (external / "ggml-vulkan.dll").write_text("")
+        monkeypatch.setattr(m.sys, "platform", "win32")
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: beside)
+        assert not m.LlamaCppBackend._vulkan_plugin_in_roots("llama-server", {})
+        assert m.LlamaCppBackend._vulkan_plugin_in_roots(
+            "llama-server", {"GGML_BACKEND_PATH": str(external)}
+        )
+
+    def test_both_guards_demand_the_probe_for_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # the probe is skipped only when NEITHER signal says Vulkan
+        assert flat.count(
+            "not(is_vulkan_backendorself._vulkan_plugin_in_roots(binary,_mem_env))"
+        ) == 2

@@ -8510,6 +8510,30 @@ class LlamaCppBackend:
         return stripped
 
     @staticmethod
+    def _vulkan_plugin_in_roots(
+        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    ) -> bool:
+        """Whether a Vulkan plugin is present anywhere this install loads from.
+
+        ``_is_vulkan_backend`` scans only beside the executable, so a custom runtime
+        supplying ``ggml-vulkan`` through ``GGML_BACKEND_PATH`` read as non-Vulkan and
+        the discreteness probe was skipped -- confirming an iGPU whose memory is
+        shared system RAM. Used to DEMAND the probe, never to skip it.
+        """
+        try:
+            roots = LlamaCppBackend._ggml_plugin_roots(str(_llama_lib_dir(binary)), env)
+        except Exception:
+            return False
+        stem = "ggml-vulkan" if sys.platform == "win32" else "libggml-vulkan"
+        for root in roots:
+            try:
+                if any(p.name.startswith(stem) for p in root.iterdir() if p.is_file()):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    @staticmethod
     def _vulkan_offload_is_discrete(binary: Optional[str], gpu_indices = None) -> bool:
         """True only when the probe ANSWERED and every device in play is discrete.
 
@@ -12673,6 +12697,41 @@ class LlamaCppBackend:
                 return True
         return False
 
+    @classmethod
+    def _cuda_runtime_missing_for(
+        cls, binary: Optional[str], env: Optional[Mapping[str, str]] = None
+    ) -> bool:
+        """Whether this install's CUDA plugin has no runtime to load.
+
+        Computes on demand rather than reading a value some later step fills in:
+        the DirectIO guard runs well before `_llama_server_env_for_binary`, so a
+        cache-only read answered "nothing missing" on every first load and a build
+        that cannot load its CUDA backend was confirmed as fully offloaded.
+        Memoised per binary dir, which is all the old dict was good for.
+        """
+        if sys.platform != "win32":
+            return False
+        try:
+            binary_dir = str(_llama_lib_dir(binary))
+        except Exception:
+            return False
+        cached = cls._cuda_runtime_missing_by_dir.get(binary_dir)
+        if cached is not None:
+            return cached
+        source = os.environ if env is None else env
+        try:
+            path_dirs = cls._build_windows_path_dirs(
+                binary_dir, sys.prefix, os.environ.get("CUDA_PATH", "")
+            )
+        except Exception:
+            path_dirs = []
+        # The FULL search path the child gets, inherited entries included: a
+        # hand-installed toolkit puts the runtime on PATH without the venv knowing.
+        path_dirs = path_dirs + [d for d in str(source.get("PATH", "")).split(";") if d]
+        answer = cls._windows_cuda_runtime_missing(binary_dir, path_dirs, env)
+        cls._cuda_runtime_missing_by_dir[binary_dir] = answer
+        return answer
+
     @staticmethod
     def _ggml_plugin_roots(binary_dir: str, env: Optional[Mapping[str, str]] = None):
         """Where this install's ggml plugins really live.
@@ -12814,8 +12873,8 @@ class LlamaCppBackend:
             LlamaCppBackend._warn_missing_windows_cuda_runtime(binary_dir, _full_search_path)
             # A placement fact, not just a diagnostic: without cudart the backend does
             # not load and the child runs on the CPU while host probes still see the
-            # card. Recorded against the search path the CHILD gets, which is the only
-            # place it is known.
+            # card. Recorded against the search path the CHILD gets, which is richer
+            # than what the on-demand accessor can rebuild, so this overwrites its memo.
             LlamaCppBackend._cuda_runtime_missing_by_dir[binary_dir] = (
                 LlamaCppBackend._windows_cuda_runtime_missing(binary_dir, _full_search_path, env)
             )
@@ -24138,15 +24197,18 @@ class LlamaCppBackend:
                 _mem_gpu_offload_confirmed = bool(
                     not _mem_host_resident
                     and self._build_offers_gpu_backend(binary, _mem_env)
-                    and not self._cuda_runtime_missing_by_dir.get(
-                        str(_llama_lib_dir(binary)), False
-                    )
+                    and not self._cuda_runtime_missing_for(binary, _mem_env)
                     and (_detected_gpus or gpu_indices)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
                     and self._offload_target_is_classifiable(binary, _mem_env)
+                    # `_is_vulkan_backend` misses an external GGML_BACKEND_PATH plugin,
+                    # so the probe is demanded whenever one could be the target.
                     and (
-                        not is_vulkan_backend
+                        not (
+                            is_vulkan_backend
+                            or self._vulkan_plugin_in_roots(binary, _mem_env)
+                        )
                         or self._vulkan_offload_is_discrete(binary, gpu_indices)
                     )
                 )
@@ -24277,15 +24339,16 @@ class LlamaCppBackend:
                         and self._build_offers_gpu_backend(binary, _mem_env)
                         # Present is not loadable: a CUDA build with no cudart on the
                         # child's search path reports no devices and runs on the CPU.
-                        and not self._cuda_runtime_missing_by_dir.get(
-                            str(_llama_lib_dir(binary)), False
-                        )
+                        and not self._cuda_runtime_missing_for(binary, _mem_env)
                         and (_detected_gpus or devices)
                         # No classifier, no confirmation: see
                         # _offload_target_is_classifiable.
                         and self._offload_target_is_classifiable(binary, _mem_env)
                         and (
-                            not is_vulkan_backend
+                            not (
+                                is_vulkan_backend
+                                or self._vulkan_plugin_in_roots(binary, _mem_env)
+                            )
                             or self._vulkan_offload_is_discrete(binary, devices)
                         )
                     )
