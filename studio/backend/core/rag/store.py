@@ -117,35 +117,24 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
 def conversation_match_queries(query: str) -> list[str]:
     """FTS5 expressions for searching a CONVERSATION ARCHIVE, most selective first.
 
-    Why the archive needs its own query shaping, when `_match_query` is fine everywhere
-    else: in a per-thread archive the SUBJECT of the conversation is by construction
-    present in many chunks, so BM25 gives it almost no weight, while an incidental word
-    from the question appears once and dominates. Measured on an archive of 17 chunks
-    about one variable: `zqxvara123` scored 0.16 and `value`, from "what is the current
-    value of X", scored 4.755. ORing them lets the filler decide the ranking, and a chunk
-    about "a good default value for a retry budget" outranks every chunk that names the
-    variable. The subject of a long conversation becomes the least discriminative term in
-    its own archive.
+    Why the archive needs its own query shaping when `_match_query` is fine everywhere else: in a
+    per-thread archive the SUBJECT of the conversation is by construction present in many chunks, so
+    BM25 gives it almost no weight, while an incidental word from the question appears once and
+    dominates. Measured on an archive of 17 chunks about one variable: `zqxvara123` scored 0.16 and
+    `value`, from "what is the current value of X", scored 4.755, so ORing them lets the filler
+    decide the ranking.
 
-    So: first REQUIRE the identifier-like tokens, which restricts the candidates to
-    chunks that are actually about the thing asked about; then fall back to an OR over
-    the content words. Two expressions rather than one, because a filter that matches
-    nothing must not mean "this archive has nothing to say".
+    So: first REQUIRE the identifier-like tokens, which restricts the candidates to chunks actually
+    about the thing asked about; then fall back to an OR over the content words. Two expressions
+    rather than one, because a filter that matches nothing must not mean "this archive has nothing
+    to say". A question made entirely of function words keeps all its tokens, since an empty
+    expression would make `search_lexical` return nothing at all.
 
-    A question made entirely of function words ("what about it?") keeps all its tokens:
-    an empty expression would make `search_lexical` return nothing at all, and a query
-    that retrieves the wrong turns is still better than a recall that silently vanishes
-    on exactly the turns that needed it.
-
-    SEVERAL identifiers are ORed, not ANDed. "What are the current values of A123 and
-    B456" is two questions in one envelope, and the turn answering either one names one
-    of them: requiring both keeps only the turns that DISCUSS the pair, which are exactly
-    the older comparisons, and drops both current assignments. Measured on an archive of
-    six comparison turns plus one latest assignment each: the conjunction returned the
-    four oldest comparisons and neither value, where the permissive pass returns both.
-    The filter's job is to keep every slot on something the question asked about, and one
-    identifier out of two is still that; the content-word pass still does the ranking,
-    and a chunk naming both still outranks a chunk naming one, because it matches more.
+    SEVERAL identifiers are ORed, not ANDed. "What are the current values of A123 and B456" is two
+    questions in one envelope, and the turn answering either one names one of them: requiring both
+    keeps only the turns that DISCUSS the pair and drops both current assignments (measured on six
+    comparison turns plus one latest assignment each). The filter's job is to keep every slot on
+    something the question asked about, and the content-word pass still does the ranking.
     """
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
@@ -555,12 +544,11 @@ def search_lexical(
     newest_first: bool = False,
     oldest_first: bool = False,
 ):
-    """BM25 lexical search over one scope or several. Returns
-    [(chunk_id, score)], higher = better.
+    """BM25 lexical search over one scope or several. Returns [(chunk_id, score)], higher = better.
 
-    `match_query` lets a caller supply the FTS5 expression itself; the conversation
-    archive shapes its own (see `conversation_match_queries`). Omitted, this is byte for
-    byte what every other caller has always got.
+    `match_query` lets a caller supply the FTS5 expression itself; the conversation archive shapes
+    its own (see `conversation_match_queries`). Omitted, this is byte for byte what every other
+    caller has always got.
 
     `newest_first` breaks TIES the other way round. FTS5 floors the IDF of a term the
     whole index shares, so every hit on a per-thread archive's own subject scores the

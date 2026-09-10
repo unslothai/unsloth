@@ -2,24 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Budget for the JavaScript Unsloth must download, parse and execute before the
- * first screen exists.
+ * Budget for the JavaScript Unsloth must download, parse and execute before the first screen exists.
  *
- * Two PRs (#8623, #8624) moved 1.5 MB of decoded resources off this path by hand,
- * each measuring it with a throwaway Chromium harness. Nothing then stopped the
- * next static import from putting it back, and nothing noticed when one did: a
- * single `import` of a dialog that is closed on load was carrying 2.4 MB.
+ * Two PRs (#8623, #8624) moved 1.5 MB of decoded resources off this path by hand, each measuring it with a
+ * throwaway Chromium harness. Nothing then stopped the next static import from putting it back, and nothing
+ * noticed when one did: a single `import` of a dialog that is closed on load was carrying 2.4 MB.
  *
- * The eager set is not inferred here. Vite already computes it and writes it into
- * index.html: the entry `<script type="module">` plus one `<link rel="modulepreload">`
- * per chunk in the entry's STATIC import closure. That is exactly what the browser
- * fetches before the app boots. Chunks reachable only through `import()` carry no
- * preload link and are correctly not counted. A parser-blocking classic
- * `<script src>` (public/theme-boot.js) is added to that: it is not Vite's, but it
- * runs before the module graph and so is part of the same wait.
+ * The eager set is not inferred here. Vite already computes it and writes it into index.html: the entry
+ * `<script type="module">` plus one `<link rel="modulepreload">` per chunk in the entry's STATIC import closure.
+ * That is exactly what the browser fetches before the app boots. Chunks reachable only through `import()` carry
+ * no preload link and are correctly not counted. A parser-blocking classic `<script src>`
+ * (public/theme-boot.js) is added to that: it is not Vite's, but it runs before the module graph and so is part
+ * of the same wait.
  *
- * Raising a budget is a normal thing to do. Doing it in the same diff as the import
- * that needed it is the point.
+ * Raising a budget is a normal thing to do. Doing it in the same diff as the import that needed it is the point.
  */
 
 import { readFileSync, realpathSync } from "node:fs";
@@ -31,36 +27,46 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = resolve(HERE, "..", "dist");
 
 /**
- * Measured on the build these were set from, plus a little headroom.
- *
- * Transfer is what crosses the wire. Raw is what the main thread has to parse and
- * execute, which is the part that shows up as a slow launch on a weak machine.
+ * Measured on the build these were set from, plus a little headroom. Transfer is what crosses the wire. Raw is
+ * what the main thread has to parse and execute, which is the part that shows up as a slow launch on a weak
+ * machine.
  */
 export const BUDGET = {
-  // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2.
-  // Raised for the audio placement control: same build both sides, merge base
-  // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
+  // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2. Raised for the audio placement control: same
+  // build both sides, merge base 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  transferBytes: 1_620_000,
+  //
+  // Raised again because main crossed 1,582.0 KB and stayed there. Four builds on
+  // one machine, same toolchain, transfer / raw / chunks:
+  //
+  //   3f2c89537  #10629's parent          1,574.7 / 5,260.1 / 91
+  //   e3e457a7d  #10629 eager Settings    1,579.9 / 5,288.8 / 82
+  //   19c86b3cc  last green Frontend CI   1,576.5 / 5,267.6 / 91
+  //   7436c103e  main                     1,585.6 / 5,306.4 / 82
+  //
+  // No single change is over the line. #10629 is the largest contributor at
+  // +5.2 KB -- it statically imports SettingsDialog and FloatingMonitor to make
+  // Settings eager again, which is the fix it shipped, and which is what folds
+  // nine chunks into the eager graph and takes settings-*.js from 158.0 KB raw to
+  // 208.2 KB. It left 2.1 KB of headroom; the ~40 commits after it spent that.
+  // So this is a deliberate raise, not a regression to lazy-load away.
+  //
+  // Raw is untouched: 5,306.4 KB still has 64.7 KB to spare under 5,500,000.
+  transferBytes: 1_645_000,
   rawBytes: 5_500_000,
 };
 
-// The chunk count is reported but not budgeted. Splitting a page out of the entry
-// raises it while lowering the bytes, which is the behaviour this is trying to
-// reward; capping it would penalise the fix.
+// The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
+// bytes, which is the behaviour this is trying to reward; capping it would penalise the fix.
 
-/**
- * A start tag: lowercased name, and its attributes by lowercased name. A valueless
- * attribute like `defer` is present with an empty-string value, as HTML defines it.
- */
+/** A start tag: lowercased name, and its attributes by lowercased name. A valueless attribute like `defer` is
+ * present with an empty-string value, as HTML defines it. */
 type StartTag = { name: string; attrs: Map<string, string> };
 
 /**
- * ASCII whitespace, which is what separates one attribute from the next.
- *
- * CR is in here for safety only: the parser's input preprocessor turns every CR
- * into an LF before the tokenizer sees it, so a CRLF file cannot behave
- * differently. https://html.spec.whatwg.org/multipage/parsing.html#preprocessing-the-input-stream
+ * ASCII whitespace, which is what separates one attribute from the next. CR is in here for safety only: the
+ * parser's input preprocessor turns every CR into an LF before the tokenizer sees it, so a CRLF file cannot
+ * behave differently. https://html.spec.whatwg.org/multipage/parsing.html#preprocessing-the-input-stream
  */
 const WHITESPACE = new Set(["\t", "\n", "\f", "\r", " "]);
 
@@ -104,27 +110,22 @@ function readValue(
 }
 
 /**
- * Reads the attributes of one start tag, beginning just past its name, and returns
- * where the tag ends.
+ * Reads the attributes of one start tag, beginning just past its name, and returns where the tag ends.
  *
- * This is the tokenizer's attribute states, narrowed to what a build artefact can
- * contain. The two rules that matter, and that no regex over the tag text can
- * express:
+ * This is the tokenizer's attribute states, narrowed to what a build artefact can contain. The two rules that
+ * matter, and that no regex over the tag text can express:
  *
- *   - `>` ends the tag only OUTSIDE a quoted value. Inside one it is ordinary text
- *     ("anything else: append the current input character to the current
- *     attribute's value"), so `data-note="a > b"` is one attribute and the tag does
- *     not end there.
+ *   - `>` ends the tag only OUTSIDE a quoted value. Inside one it is ordinary text ("anything else: append the
+ *     current input character to the current attribute's value"), so `data-note="a > b"` is one attribute and
+ *     the tag does not end there.
  *     https://html.spec.whatwg.org/multipage/parsing.html#attribute-value-(double-quoted)-state
- *   - An attribute begins only after whitespace, `/` or a previous value, so a NAME
- *     is the only place `async` or `type` can be read from. A value is arbitrary
- *     text: `data-mode="load async later"` contains no `async` attribute.
- *     https://html.spec.whatwg.org/multipage/parsing.html#before-attribute-name-state
+ *   - An attribute begins only after whitespace, `/` or a previous value, so a NAME is the only place `async`
+ *     or `type` can be read from. A value is arbitrary text: `data-mode="load async later"` contains no `async`
+ *     attribute. https://html.spec.whatwg.org/multipage/parsing.html#before-attribute-name-state
  *
- * Both were live bugs while this searched the tag text instead: the first dropped
- * the entry chunk, the second dropped the parser-blocking script, and in each case
- * enough of the build survived to satisfy the shape guard below, so the gate
- * reported a comfortable pass on a startup path it had not measured.
+ * Both were live bugs while this searched the tag text instead: the first dropped the entry chunk, the second
+ * dropped the parser-blocking script, and in each case enough of the build survived to satisfy the shape guard
+ * below, so the gate reported a comfortable pass on a startup path it had not measured.
  */
 function readAttributes(
   html: string,
@@ -160,11 +161,9 @@ function readAttributes(
 }
 
 /**
- * End of a comment, from just past its `<!--`.
- *
- * `<!-->` and `<!--->` close there rather than running on: the comment start and
- * comment start dash states both end the comment on `>`. Read as unterminated, the
- * rest of the file disappears along with the tags in it.
+ * End of a comment, from just past its `<!--`. `<!-->` and `<!--->` close there rather than running on: the
+ * comment start and comment start dash states both end the comment on `>`. Read as unterminated, the rest of the
+ * file disappears along with the tags in it.
  * https://html.spec.whatwg.org/multipage/parsing.html#comment-start-state
  */
 const COMMENT_END = /^-?>|--!?>/;
@@ -186,17 +185,15 @@ const TAG_NAME_START = /[a-z]/i;
 /**
  * Every start tag in the document, in order.
  *
- * Comments and script bodies are skipped rather than scanned, for the same reason
- * the attribute parser exists: a tag is only a tag where the browser sees one. A
- * `<script src>` commented out during debugging is not downloaded and must not be
- * charged, and a tag written inside a string in an inline script is text.
+ * Comments and script bodies are skipped rather than scanned, for the same reason the attribute parser exists: a
+ * tag is only a tag where the browser sees one. A `<script src>` commented out during debugging is not
+ * downloaded and must not be charged, and a tag written inside a string in an inline script is text.
  * https://html.spec.whatwg.org/multipage/parsing.html#script-data-state
  *
- * A script body ends at the first `</script`, which is the tokenizer's answer
- * unless the body itself contains `<!-- <script`: those escaped states let a
- * `</script>` be text. Erring there reads a bit of script body as markup, so the
- * mistake is to charge a chunk that is not there rather than to miss one. Checked
- * against parse5 over 40,000 generated documents, that is the only case left.
+ * A script body ends at the first `</script`, which is the tokenizer's answer unless the body itself contains
+ * `<!-- <script`: those escaped states let a `</script>` be text. Erring there reads a bit of script body as
+ * markup, so the mistake is to charge a chunk that is not there rather than to miss one. Checked against parse5
+ * over 40,000 generated documents, that is the only case left.
  */
 function* startTags(html: string): Generator<StartTag> {
   let i = 0;
@@ -241,23 +238,21 @@ function relTokens(tag: StartTag): string[] {
 }
 
 /**
- * True when the tag carries `blocking="render"`, which holds the FIRST RENDER back
- * until the resource has been fetched and evaluated.
+ * True when the tag carries `blocking="render"`, which holds the FIRST RENDER back until the resource has been
+ * fetched and evaluated.
  *
- * The spec's own reading: "Let value be the value of el's blocking attribute...
- * converted to ASCII lowercase... split on ASCII whitespace", then "An element is
- * potentially render-blocking if its blocking tokens set contains 'render'", and in
- * prepare the script element, "If el is potentially render-blocking, then block
- * rendering on el" -- which is reached for any external script, `async` or not. The
- * async/defer carve-out applies only to what is IMPLICITLY render-blocking.
+ * The spec's own reading: "Let value be the value of el's blocking attribute... converted to ASCII lowercase...
+ * split on ASCII whitespace", then "An element is potentially render-blocking if its blocking tokens set
+ * contains 'render'", and in prepare the script element, "If el is potentially render-blocking, then block
+ * rendering on el", which is reached for any external script, `async` or not. The async/defer carve-out applies
+ * only to what is IMPLICITLY render-blocking.
  * https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes
  * https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
  *
- * Measured, not assumed: a `<script async blocking="render" src>` held back for two
- * seconds moved first contentful paint from 20 ms to 2,020 ms in Chromium 151 and
- * from 11 ms to 2,009 ms in WebKit 26.5, with Chromium reporting the request's
- * renderBlockingStatus as "blocking". Firefox has not shipped it (bugzil.la/1751383)
- * and simply treats the script as async.
+ * Measured, not assumed: a `<script async blocking="render" src>` held back for two seconds moved first
+ * contentful paint from 20 ms to 2,020 ms in Chromium 151 and from 11 ms to 2,009 ms in WebKit 26.5, with
+ * Chromium reporting the request's renderBlockingStatus as "blocking". Firefox has not shipped it
+ * (bugzil.la/1751383) and simply treats the script as async.
  */
 function blocksRender(tag: StartTag): boolean {
   return (attr(tag, "blocking") ?? "")
@@ -267,16 +262,12 @@ function blocksRender(tag: StartTag): boolean {
 }
 
 /**
- * The eager set, in three buckets, as paths relative to `dist/`.
- *
- * `entry` and `preloads` are Vite's output and stay apart so the caller can tell
- * "Vite stopped emitting preload links" from "this page really does load one
- * chunk": flattened, a build with no preloads reads as a very small app.
- *
- * `blocking` is the classic `<script src>` in `<head>`, which is not Vite's and
- * carries no preload link, but is parser-blocking: it is downloaded and run before
- * the module graph starts. `public/theme-boot.js` is one, and left out it could
- * grow without limit inside a gate whose whole subject is startup JavaScript.
+ * The eager set, in three buckets, as paths relative to `dist/`. `entry` and `preloads` are Vite's output and
+ * stay apart so the caller can tell "Vite stopped emitting preload links" from "this page really does load one
+ * chunk": flattened, a build with no preloads reads as a very small app. `blocking` is the classic `<script
+ * src>` in `<head>`, which is not Vite's and carries no preload link, but is parser-blocking: it is downloaded
+ * and run before the module graph starts. `public/theme-boot.js` is one, and left out it could grow without
+ * limit inside a gate whose whole subject is startup JavaScript.
  */
 export type EagerSet = {
   entry: string[];
@@ -285,22 +276,18 @@ export type EagerSet = {
 };
 
 /**
- * A `type` the browser still runs as a classic script. An absent type is the same
- * thing; anything else (`importmap`, `application/json`, a template) is not code
- * that runs, and `module` is handled on its own.
+ * A `type` the browser still runs as a classic script. An absent type is the same thing; anything else
+ * (`importmap`, `application/json`, a template) is not code that runs, and `module` is handled on its own.
  *
- * Exact strings, deliberately. The spec matches this attribute on JavaScript MIME
- * type ESSENCE, so a parameter makes it match nothing: `text/javascript;
- * charset=utf-8` is not evaluated, and Chromium, Firefox and WebKit do not even
- * fetch such a script. Bytes the browser never requests are not startup cost.
+ * Exact strings, deliberately. The spec matches this attribute on JavaScript MIME type ESSENCE, so a parameter
+ * makes it match nothing: `text/javascript; charset=utf-8` is not evaluated, and Chromium, Firefox and WebKit do
+ * not even fetch such a script. Bytes the browser never requests are not startup cost.
  *
- * The whole essence list, not the four anyone would write today. The legacy
- * spellings are not historical trivia: every one of them still executes. Measured
- * in Chromium 151, a script tagged `application/x-javascript`, `text/jscript`,
- * `text/javascript1.5`, `text/livescript`, `application/x-ecmascript` or
- * `text/x-javascript` runs, while `text/javascript; charset=utf-8` and
- * `application/json` do not. The list is frozen, so this does not grow.
- * https://mimesniff.spec.whatwg.org/#javascript-mime-type
+ * The whole essence list, not the four anyone would write today. The legacy spellings are not historical
+ * trivia: every one of them still executes. Measured in Chromium 151, a script tagged
+ * `application/x-javascript`, `text/jscript`, `text/javascript1.5`, `text/livescript`, `application/x-ecmascript`
+ * or `text/x-javascript` runs, while `text/javascript; charset=utf-8` and `application/json` do not. The list is
+ * frozen, so this does not grow. https://mimesniff.spec.whatwg.org/#javascript-mime-type
  */
 const CLASSIC_TYPES = new Set([
   "application/ecmascript",
@@ -350,19 +337,15 @@ export function eagerSetFromHtml(html: string): EagerSet {
       // Vite's entry, always one of its own hashed assets.
       add(set.entry, attr(tag, "src"), "assets/");
     } else if (!type || CLASSIC_TYPES.has(type)) {
-      // Counts from anywhere in the build, not just assets/. `defer` is included:
-      // a deferred script runs after parsing but BEFORE DOMContentLoaded, in
-      // document order with the module entry, which is itself deferred -- so it is
-      // on exactly the timeline this budgets. Only `async` is out, having no
-      // ordering relationship to the first screen at all. `async` also wins when
-      // both are present, which is why it is the one tested.
-      //
-      // Unless it is asked to block rendering, which restores the relationship the
-      // exclusion assumes is absent: `blocking="render"` is the documented way to
-      // keep a boot script off the parser without letting the unthemed page paint,
-      // and it delays the first screen by the whole fetch and evaluation. Not
-      // counting it would leave the one thing this gate exists to bound -- bytes
-      // between the navigation and the first screen -- unbounded.
+      // Counts from anywhere in the build, not just assets/. `defer` is included: a deferred script runs after
+      // parsing but BEFORE DOMContentLoaded, in document order with the module entry, which is itself deferred, so
+      // it is on exactly the timeline this budgets. Only `async` is out, having no ordering relationship to the
+      // first screen at all. `async` also wins when both are present, which is why it is the one tested. Unless it
+      // is asked to block rendering, which restores the relationship the exclusion assumes is absent:
+      // `blocking="render"` is the documented way to keep a boot script off the parser without letting the
+      // unthemed page paint, and it delays the first screen by the whole fetch and evaluation. Not counting it
+      // would leave the one thing this gate exists to bound, bytes between the navigation and the first screen,
+      // unbounded.
       if (!hasAttr(tag, "async") || blocksRender(tag)) {
         add(set.blocking, attr(tag, "src"));
       }
@@ -385,9 +368,9 @@ export function eagerChunksFromHtml(html: string): string[] {
 type Measured = { name: string; raw: number; transfer: number };
 
 /**
- * What the browser actually downloads. The backend gzips the `/assets` mount only
- * (studio/backend/main.py mounts `_AssetGZipMiddleware` there); everything else
- * goes out through a plain FileResponse, so its raw size IS its transfer size.
+ * What the browser actually downloads. The backend gzips the `/assets` mount only (studio/backend/main.py mounts
+ * `_AssetGZipMiddleware` there); everything else goes out through a plain FileResponse, so its raw size IS its
+ * transfer size.
  */
 function transferBytes(name: string, bytes: Buffer): number {
   return name.startsWith("assets/")
@@ -402,9 +385,8 @@ function measure(names: string[]): Measured[] | string {
     try {
       bytes = readFileSync(join(DIST, name));
     } catch {
-      // index.html names a file the build did not emit. Reporting it rather than
-      // a stack trace, because the alternative reading -- that the budget is fine
-      // -- is the one that must never be reachable.
+      // index.html names a file the build did not emit. Reporting it rather than a stack trace, because the
+      // alternative reading, that the budget is fine, is the one that must never be reachable.
       return `dist/index.html references ${name}, which is not in the build`;
     }
     out.push({
@@ -432,28 +414,21 @@ function main(): number {
   const { entry, preloads, blocking } = eagerSetFromHtml(html);
   const names = [...blocking, ...entry, ...preloads];
 
-  // Counting Vite's own output only: a parser-blocking classic script is not
-  // evidence that the module graph was read correctly, so it cannot stand in for
-  // the entry when deciding whether this still understands the build.
-  //
-  // A code-split build of this app is dozens of chunks. One or none means the
-  // shape this reads has changed and the number below would be fiction: with
-  // `build.modulePreload: false` the links disappear and the entry alone measured
-  // 424 KB of a 5,207 KB startup path, reporting 4.8 MB to spare. A comfortable
-  // pass is the one answer this must never give by accident.
-  //
-  // Counting scripts and links together rather than requiring both: when the entry
-  // module is nothing but imports, Vite inlines it into one `<script>` per imported
-  // chunk and emits no preload links at all, which is a complete measurement. So
-  // the total is what decides whether this is a code-split build.
-  //
-  // But at least one entry is required on top of that total, because preloads
-  // without one is not a build shape Vite emits: a modulepreload link exists to
-  // announce the entry's static import closure, so links surviving while the entry
-  // does not means the entry was read wrong, not that it is absent. Left to the
-  // total alone, the app's 48 links carry the guard while the largest single chunk
-  // in the startup path silently leaves the measurement -- which is exactly how
-  // two mis-parses of this file's own making stayed invisible.
+  // Counting Vite's own output only: a parser-blocking classic script is not evidence that the
+  // module graph was read correctly, so it cannot stand in for the entry when deciding whether this
+  // still understands the build. A code-split build of this app is dozens of chunks. One or none
+  // means the shape this reads has changed and the number below would be fiction: with
+  // `build.modulePreload: false` the links disappear and the entry alone measured 424 KB of a 5,207
+  // KB startup path, reporting 4.8 MB to spare. A comfortable pass is the one answer this must
+  // never give by accident. Counting scripts and links together rather than requiring both: when
+  // the entry module is nothing but imports, Vite inlines it into one `<script>` per imported chunk
+  // and emits no preload links at all, which is a complete measurement. So the total is what
+  // decides whether this is a code-split build. But at least one entry is required on top of that
+  // total, because preloads without one is not a build shape Vite emits: a modulepreload link
+  // exists to announce the entry's static import closure, so links surviving while the entry does
+  // not means the entry was read wrong, not that it is absent. Left to the total alone, the app's
+  // 48 links carry the guard while the largest single chunk in the startup path silently leaves the
+  // measurement, which is exactly how two mis-parses of this file's own making stayed invisible.
   const fromVite = entry.length + preloads.length;
   if (entry.length === 0 || fromVite < 2) {
     console.error(
@@ -511,12 +486,10 @@ function main(): number {
 }
 
 /**
- * True when this file was run, rather than imported by the tests.
- *
- * Compared through realpath on both sides. `import.meta.url` is already the real
- * path (node resolves modules through symlinks), while `process.argv[1]` is the
- * path as typed, so a checkout reached through a symlinked directory made the two
- * disagree and the whole check became a silent no-op that exited 0.
+ * True when this file was run, rather than imported by the tests. Compared through realpath on both sides.
+ * `import.meta.url` is already the real path (node resolves modules through symlinks), while `process.argv[1]`
+ * is the path as typed, so a checkout reached through a symlinked directory made the two disagree and the whole
+ * check became a silent no-op that exited 0.
  */
 function invokedDirectly(): boolean {
   const argv = process.argv[1];

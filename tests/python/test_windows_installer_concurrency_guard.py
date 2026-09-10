@@ -43,9 +43,9 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
         Path(name).write_text(script, encoding = "utf-8-sig")
         result = subprocess.run(
             [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
-            # check = False, then asserted below with the output attached. With check = True the
-            # only thing a failing run reports is "exit status 1" and the PowerShell error that
-            # caused it is discarded, which on a CI runner is the whole diagnosis gone.
+            # check = False, then asserted below with the output attached. check = True
+            # reports only "exit status 1" and discards the PowerShell error, which on a
+            # CI runner is the whole diagnosis.
             check = False,
             capture_output = True,
             text = True,
