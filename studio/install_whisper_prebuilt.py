@@ -1174,7 +1174,10 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
     install the slow path repairs.
     """
     server = installed_server_path(install_dir, host)
-    if not server.is_file():
+    try:
+        if not server.is_file() or server.stat().st_size == 0:
+            return False
+    except OSError:
         return False
     if not host.is_windows and not os.access(server, os.X_OK):
         log(f"existing install at {install_dir} has a non-executable server; reinstalling")
@@ -1544,6 +1547,11 @@ def _existing_install_is_intact(
             return None
     recorded_release = marker.get("release_tag")
     if not isinstance(recorded_release, str) or not recorded_release:
+        return None
+    # The full path holds the marker to its recorded fingerprint; a marker without one
+    # is not a record of a finished install and takes the full path once instead.
+    recorded_fingerprint = marker.get("install_fingerprint")
+    if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
         return None
     # A slim install is only as intact as the llama runtime it hardlinks: a llama update
     # that moved ggml invalidates a whisper install whose own release did not, and

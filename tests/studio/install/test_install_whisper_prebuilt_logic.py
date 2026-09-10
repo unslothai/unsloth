@@ -2320,6 +2320,36 @@ def test_whisper_current_install_needs_no_release_fetch(tmp_path, monkeypatch):
     assert _whisper_check(install_dir, host) is True
 
 
+def test_whisper_keep_paths_reject_an_empty_server_and_a_marker_without_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The lookup-failure keep and the marker-only check share one predicate. A zero-byte
+    server keeps its mode and its marker, and neither the POSIX execute-bit check nor
+    the Windows existence check saw it; a marker missing the fingerprint the full path
+    holds it to is not a record of a finished install."""
+    import json
+
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    assert _whisper_check(install_dir, host) is True
+    server = M.installed_server_path(install_dir, host)
+    saved = server.read_bytes()
+    server.write_bytes(b"")
+    assert _whisper_check(install_dir, host) is False
+    server.write_bytes(saved)
+    assert _whisper_check(install_dir, host) is True
+
+    markers = [p for p in install_dir.rglob("*.json") if "install_fingerprint" in p.read_text(encoding = "utf-8")]
+    assert markers, "the install wrote no marker carrying a fingerprint"
+    marker_path = markers[0]
+    original = marker_path.read_text(encoding = "utf-8")
+    payload = json.loads(original)
+    payload.pop("install_fingerprint")
+    marker_path.write_text(json.dumps(payload), encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is False
+    marker_path.write_text(original, encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is True
+
+
 def test_whisper_second_install_run_downloads_and_fetches_nothing(tmp_path, monkeypatch):
     """The end-to-end shape: a repeat install_prebuilt is now a marker read, not a
     release fetch followed by a fingerprint comparison."""
