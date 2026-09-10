@@ -1909,7 +1909,13 @@ class TestARoundSizesAgainstWhatItsOwnReCostEarned:
         """The result budget one round hands its tool, and the caps it put on the wire."""
         seen: list[int] = []
 
-        def _fake_execute_tool(name, arguments, *, result_budget_tokens = None, **_kwargs):
+        def _fake_execute_tool(
+            name,
+            arguments,
+            *,
+            result_budget_tokens = None,
+            **_kwargs,
+        ):
             seen.append(result_budget_tokens)
             return "Linux kernel 6.10."
 
@@ -1941,9 +1947,7 @@ class TestARoundSizesAgainstWhatItsOwnReCostEarned:
 
     def test_the_result_is_priced_against_the_cap_the_round_actually_sends(self, monkeypatch):
         """Re-costed down to 128, the round sends 128; the result must be sized for 128."""
-        budget, caps = self._round(
-            monkeypatch, opened = self._OPENED, recosted = self._RECOSTED
-        )
+        budget, caps = self._round(monkeypatch, opened = self._OPENED, recosted = self._RECOSTED)
         assert caps[0] == self._RECOSTED, caps
         opened_there, _caps_there = self._round(
             monkeypatch, opened = self._RECOSTED, recosted = self._RECOSTED
@@ -1956,9 +1960,7 @@ class TestARoundSizesAgainstWhatItsOwnReCostEarned:
         assert caps[0] == self._OPENED, caps
         assert stale == self._round(monkeypatch, opened = self._OPENED, recosted = self._OPENED)[0]
         # A narrower cap reserves less reply room, so the result gets more of the window.
-        assert (
-            self._round(monkeypatch, opened = self._OPENED, recosted = self._RECOSTED)[0] > stale
-        )
+        assert self._round(monkeypatch, opened = self._OPENED, recosted = self._RECOSTED)[0] > stale
 
 
 class TestTheSizingSitesReadTheClampedFigure:

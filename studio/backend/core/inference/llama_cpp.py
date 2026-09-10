@@ -33298,9 +33298,7 @@ class LlamaCppBackend:
                         admission_output_allowance = _final_recosted_allowance
                         # As in the loop: the respawn refit below is the one sizing left
                         # under the re-cost, and this attempt's cap is what it sends.
-                        _final_fit_max_tokens = min(
-                            _final_attempt_cap, _final_recosted_allowance
-                        )
+                        _final_fit_max_tokens = min(_final_attempt_cap, _final_recosted_allowance)
                 except LlamaAdmissionRecostRefused:
                     # As in the loop: not sent, and a continuation keeps what it has shown.
                     logger.info(
