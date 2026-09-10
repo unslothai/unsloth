@@ -868,3 +868,46 @@ def test_the_fitter_is_modelled_on_the_cache_size_the_caller_measured():
         opts = replace(opts, kv_bytes_at = None),
     )
     assert untrusted.predicted_fit_request_ms > plan.predicted_fit_request_ms
+
+
+def test_a_load_that_already_fits_gives_the_fitter_nothing_to_move():
+    """--fit on only moves what does not fit, so a load inside the budget is placed whole.
+    Modelling it as a spill invented a cost for the fitter and let the gate accept a spill
+    it should have ranked against a free launch."""
+    from core.inference.offload_planner import (
+        SpillClass,
+        SpillUnit,
+        _cost_gate,
+        _knob_only_gate,
+        _Knobs,
+    )
+
+    roomy = 200 * GIB
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    for layout in (dense_layout(), moe_layout()):
+        placement = _fit_fallback_placement(layout, gated(), roomy, 8192, **args)
+        assert placement is not None, "a load that fits is still a placement, not an unknown"
+        assert placement.host_groups == [], [g.name for g in placement.host_groups]
+        assert placement.kv_host_bytes == 0
+
+    layout = dense_layout()
+    units = [SpillUnit(b.index, SpillClass.FFN_DOWN, b.spillable_bytes) for b in layout.blocks[:4]]
+    declined, plan_ms, fit_ms = _cost_gate(
+        layout,
+        gated(),
+        8192,
+        units,
+        False,
+        roomy,
+        quantised = False,
+        kv_bytes_floor = 0,
+        host_ram_bytes = 512 * GIB,
+    )
+    assert fit_ms == 0.0, fit_ms
+    assert plan_ms > 0.0 and declined is not None and declined.declined_by_gate
+
+    knob_declined, knob_ms, knob_fit_ms = _knob_only_gate(
+        layout, gated(), 8192, roomy, quantised = False, kv_bytes_floor = 0, knobs = _Knobs(n_parallel = 1)
+    )
+    assert knob_fit_ms == 0.0 and knob_ms == 0.0
+    assert knob_declined is None, "a free plan against a free fit is a tie, not a decline"

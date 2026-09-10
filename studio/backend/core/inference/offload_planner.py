@@ -570,6 +570,10 @@ def _fit_boundary_overflow(block: BlockLayout, deficit: int) -> Optional[int]:
     """FFN bytes ``common/fit.cpp`` overflows off its boundary layer to cover ``deficit``, or None
     when even the whole FFN of it does not.
     """
+    if deficit <= 0:
+        # Nothing is short, so the fitter overflows nothing: a rung that "covers" a
+        # non-positive deficit would be a spill llama.cpp never makes.
+        return None
     down = block.class_bytes(SpillClass.FFN_DOWN)
     for nbytes in (down, down + block.class_bytes(SpillClass.FFN_GATE), block.spillable_bytes):
         if nbytes > 0 and nbytes >= deficit:
@@ -610,6 +614,10 @@ def _fit_fallback_placement(
         n_seq = max(1, n_seq),
         trust_floor = trust,
     )
+    if resident <= budget:
+        # --fit on keeps every layer on the device when the load already fits, so the
+        # fallback moves nothing and the gate must rank the spill against a free launch.
+        return Placement(host_groups = [])
     kv_total = (
         0
         if kv_on_host
