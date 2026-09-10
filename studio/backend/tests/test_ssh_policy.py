@@ -18,9 +18,10 @@ from core.inference.ssh_policy import (
     collect_ssh_hosts_for_approval,
     extract_ssh_hosts_from_command,
     extract_ssh_hosts_from_python,
+    filter_ssh_approved_network_blocks,
 )
-from core.inference.tools import _bash_exec, _check_code_safety, _find_blocked_commands
-from state.ssh_approvals import approve_hosts, reset_ssh_approvals
+from core.inference.tools import _bash_exec, _check_code_safety, _check_signal_escape_patterns, _find_blocked_commands
+from state.ssh_approvals import approve_hosts, approved_hosts, clear_session, reset_ssh_approvals
 
 
 @pytest.fixture(autouse = True)
@@ -43,6 +44,11 @@ class TestSshCommandExtraction:
         assert hosts == {"prod.example.com"}
         assert dynamic is False
 
+    def test_scp_host_colon_path_without_at(self):
+        hosts, dynamic = extract_ssh_hosts_from_command("scp host.example:/tmp/file local.txt")
+        assert hosts == {"host.example"}
+        assert dynamic is False
+
     def test_dynamic_host_fails_closed(self):
         hosts, dynamic = extract_ssh_hosts_from_command("ssh $DEPLOY_HOST")
         assert hosts == set()
@@ -55,6 +61,38 @@ class TestSshCommandExtraction:
         err = check_ssh_command_access("$'ssh' deploy@prod.example.com", "sess-1")
         assert err is not None
         assert "unapproved" in err
+
+    def test_wrapped_ssh_command(self):
+        hosts, dynamic = extract_ssh_hosts_from_command("env ssh deploy@prod.example.com uptime")
+        assert hosts == {"prod.example.com"}
+        assert dynamic is False
+
+    def test_ssh_verbose_flag_keeps_hostname(self):
+        hosts, dynamic = extract_ssh_hosts_from_command("ssh -v prod.example.com uptime")
+        assert hosts == {"prod.example.com"}
+        assert dynamic is False
+
+    def test_ssh_hostname_option_redirect(self):
+        hosts, dynamic = extract_ssh_hosts_from_command(
+            "ssh -o HostName=evil.example target.example"
+        )
+        assert "evil.example" in hosts
+        assert "target.example" in hosts
+
+    def test_ssh_proxyjump_option(self):
+        hosts, dynamic = extract_ssh_hosts_from_command("ssh -J jump.example target.example")
+        assert hosts == {"jump.example", "target.example"}
+        assert dynamic is False
+
+    def test_ipv6_bracketed_host(self):
+        hosts, dynamic = extract_ssh_hosts_from_command("ssh deploy@[2001:db8::1]")
+        assert hosts == {"2001:db8::1"}
+        assert dynamic is False
+
+    def test_ipv6_hosts_stay_distinct(self):
+        hosts_a, _ = extract_ssh_hosts_from_command("ssh user@[2001:db8::1]")
+        hosts_b, _ = extract_ssh_hosts_from_command("ssh user@[2001:dead::beef]")
+        assert hosts_a != hosts_b
 
 
 class TestSshPythonExtraction:
@@ -77,6 +115,37 @@ class TestSshPythonExtraction:
         hosts, dynamic, uses = extract_ssh_hosts_from_python(code)
         assert hosts == {"prod.example.com"}
         assert dynamic is False
+        assert uses is True
+
+    def test_asyncssh_direct_import_connect(self):
+        code = "from asyncssh import connect; connect('evil.example')"
+        hosts, dynamic, uses = extract_ssh_hosts_from_python(code)
+        assert hosts == {"evil.example"}
+        assert dynamic is False
+        assert uses is True
+        err = check_ssh_python_access(code, "sess-1")
+        assert err is not None
+        assert "unapproved" in err
+
+    def test_sqlite_connect_not_treated_as_ssh(self):
+        code = "import paramiko, sqlite3; sqlite3.connect('state.db')"
+        hosts, dynamic, uses = extract_ssh_hosts_from_python(code)
+        assert hosts == set()
+        assert dynamic is False
+        assert uses is False
+        assert check_ssh_python_access(code, "sess-1") is None
+
+    def test_subprocess_run_ssh(self):
+        code = "import subprocess; subprocess.run(['ssh', 'evil.example', 'uptime'])"
+        hosts, dynamic, uses = extract_ssh_hosts_from_python(code)
+        assert hosts == {"evil.example"}
+        assert dynamic is False
+        assert uses is True
+
+    def test_os_system_ssh(self):
+        code = "import os; os.system('ssh evil.example uptime')"
+        hosts, dynamic, uses = extract_ssh_hosts_from_python(code)
+        assert hosts == {"evil.example"}
         assert uses is True
 
 
@@ -134,6 +203,12 @@ class TestExecutionIntegration:
         approve_hosts("sess-1", ["prod.example.com"])
         assert _check_code_safety(code, session_id = "sess-1") is None
 
+    def test_python_exec_blocks_subprocess_ssh(self):
+        code = "import subprocess; subprocess.run(['ssh', 'evil.example', 'uptime'])"
+        err = _check_code_safety(code, session_id = "sess-1")
+        assert err is not None
+        assert "unapproved" in err
+
 
 class TestCollectHostsForApproval:
     def test_terminal_tool(self):
@@ -149,3 +224,25 @@ class TestCollectHostsForApproval:
             {"code": "import paramiko; paramiko.SSHClient().connect('prod.example.com')"},
         )
         assert hosts == {"prod.example.com"}
+
+
+class TestNetworkBlockFiltering:
+    def test_only_ssh_line_blocks_are_removed(self):
+        code = (
+            "import paramiko, requests\n"
+            "paramiko.SSHClient().connect('approved.example')\n"
+            "requests.get('http://evil.example')\n"
+        )
+        approve_hosts("sess-1", ["approved.example"])
+        safe, info = _check_signal_escape_patterns(code)
+        assert any(item["type"] == "untrusted_host_blocked" for item in info["network_calls"])
+        filtered = filter_ssh_approved_network_blocks(code, "sess-1", info)
+        assert any(item["type"] == "untrusted_host_blocked" for item in filtered["network_calls"])
+
+
+class TestSessionCleanup:
+    def test_clear_session_drops_approvals(self):
+        approve_hosts("sess-1", ["prod.example.com"])
+        assert "prod.example.com" in approved_hosts("sess-1")
+        clear_session("sess-1")
+        assert approved_hosts("sess-1") == frozenset()

@@ -9113,6 +9113,9 @@ def sandbox_removal_deferred(session_id: str) -> bool:
 
 
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
+    from state.ssh_approvals import clear_session
+
+    clear_session(session_id)
     root = os.path.realpath(sandbox_root())
     claimed = _claimed_by_this_run(session_id, root)
     entry = os.path.join(root, _sandbox_name(session_id))
