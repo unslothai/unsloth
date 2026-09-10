@@ -454,7 +454,6 @@ def _available_system_memory_mib() -> Optional[int]:
     """Available host RAM in MiB, capped by any enforcing cgroup limit."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-
         return LlamaCppBackend._available_system_memory_mib()
     except Exception:  # noqa: BLE001 - the host reading still stands
         return _system_memory_mib()[1]
@@ -464,7 +463,6 @@ def _cgroup_available_memory_mib() -> Optional[int]:
     """What an enforcing cgroup will still let this process charge, else None."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-
         return LlamaCppBackend._cgroup_available_memory_mib()
     except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
         return None
