@@ -4616,6 +4616,21 @@ def _lazy_mode_from_args(
     return mode
 
 
+def _lazy_mode_explicitly_set(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when this launch already carries a --lazy-mode the USER chose.
+
+    Both spellings and the env twin, and ``auto`` counts: someone who typed it asked for
+    llama.cpp's own size test, and Studio overriding that would be the same silent
+    disagreement this exists to remove. Studio's own emitted flag is not in ``args``.
+    """
+    value = str((os.environ if env is None else env).get("LLAMA_ARG_LAZY_MODE", "")).strip().lower()
+    if value in ("on", "auto", "off"):
+        return True
+    return any(_flag_name(str(raw)) in {"-lzm", "--lazy-mode"} for raw in (args or ()))
+
+
 def _per_layer_embd_read_lazily(
     arch: str,
     ple_bytes: int,
@@ -4623,6 +4638,7 @@ def _per_layer_embd_read_lazily(
     supports_lazy_mode: bool,
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
+    emitted_mode: Optional[str] = None,
 ) -> bool:
     """Whether this launch pages the per-layer embeddings instead of holding them resident.
 
@@ -4637,7 +4653,14 @@ def _per_layer_embd_read_lazily(
         return False
     if not supports_lazy_mode:
         return False
-    mode = _lazy_mode_from_args(extra_args, env)
+    # A --lazy-mode Studio itself put on the argv is the LAST one there (user extras are
+    # appended after this decision, and there are none when Studio emits), so it is what the
+    # child resolves. Price that, not the auto the argv would have carried without it.
+    mode = (
+        emitted_mode
+        if emitted_mode in ("on", "auto", "off")
+        else _lazy_mode_from_args(extra_args, env)
+    )
     if mode == "off":
         return False
     return mode == "on" or ple_bytes > _LAZY_MODE_AUTO_MIN_BYTES
@@ -8669,6 +8692,77 @@ class LlamaCppBackend:
         wanted = set(gpu_indices) if gpu_indices else None
         selected = [r for r in rows if wanted is None or r["index"] in wanted]
         return any(r["is_igpu"] for r in selected)
+
+    def _selected_devices_can_mmap(
+        self,
+        *,
+        binary: Optional[str] = None,
+        gpu_indices = None,
+        is_vulkan_backend: bool = False,
+    ) -> bool:
+        """True when every device this launch selects reports ggml's ``mmap_support``.
+
+        ggml sets that capability false for exactly the shared-memory parts Studio can
+        already name: a Vulkan iGPU (ggml/src/ggml-vulkan/ggml-vulkan.cpp:
+        ggml_backend_vk_device_get_props, ``mmap_support = !ctx->is_integrated_gpu``) and an
+        integrated CUDA or HIP device (ggml/src/ggml-cuda/ggml-cuda.cu:
+        ggml_backend_cuda_device_get_props, ``props->type != GGML_BACKEND_DEVICE_TYPE_IGPU``).
+        CPU, Metal, discrete CUDA/HIP and RPC all report true.
+
+        Any, not every, in the negative direction, matching llama.cpp: one device without the
+        capability turns the whole load off (src/llama-model.cpp:
+        llama_model_base::load_tensors).
+        """
+        if is_vulkan_backend:
+            return not self._vulkan_targets_are_igpus(binary, gpu_indices)
+        if self._integrated_cuda_unified_memory(gpu_indices):
+            return False
+        return not self._amd_apu_wants_unified_memory(gpu_indices)
+
+    def _studio_lazy_mode(
+        self,
+        *,
+        model_path: Optional[str],
+        server_caps: Optional[Mapping[str, object]] = None,
+        gpu_indices = None,
+        binary: Optional[str] = None,
+        is_vulkan_backend: bool = False,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> Optional[str]:
+        """The ``--lazy-mode`` Studio emits for this launch, or None to emit nothing.
+
+        Studio emitted none, and llama.cpp's ``auto`` resolves in two places Studio can see
+        and the user cannot. It declines any table at or under 4 GiB
+        (src/llama-model-loader.cpp:llama_model_loader::lazy_read::add), and it silently
+        becomes OFF when any selected device cannot mmap
+        (src/llama-model.cpp:llama_model_base::load_tensors, at b10884 the block commented
+        "resolve AUTO on systems without mmap support (e.g. iGPUs): fall back to OFF"). A
+        planner that priced the per-layer embeddings as paged would then over-commit by the
+        whole table, so say the mode out loud and price the same one.
+
+        None whenever the answer is not Studio's to give: an arch llama.cpp does not mark
+        TENSOR_READ_LAZY, a build with no ``--lazy-mode``, a GGUF with no per-layer table, or
+        a user who already chose a mode. None leaves the argv exactly as it was.
+        """
+        if (self._architecture or "").strip().lower() not in _LAZY_PER_LAYER_EMBD_ARCHS:
+            return None
+        if not (server_caps or {}).get("supports_lazy_mode"):
+            return None
+        if _lazy_mode_explicitly_set(extra_args, env):
+            return None
+        layout = self._tensor_spill_layout(model_path, all_shards = True)
+        if layout is None or int(getattr(layout, "per_layer_embd_bytes", 0) or 0) <= 0:
+            return None
+        return (
+            "on"
+            if self._selected_devices_can_mmap(
+                binary = binary,
+                gpu_indices = gpu_indices,
+                is_vulkan_backend = is_vulkan_backend,
+            )
+            else "off"
+        )
 
     def _weights_in_host_memory(
         self,
@@ -23261,6 +23355,32 @@ class LlamaCppBackend:
                 if _alias:
                     cmd.extend(["--alias", _alias])
 
+                # llama.cpp's --lazy-mode auto is decided inside the child from facts Studio
+                # already has (table size, and whether every selected device can mmap), so an
+                # arch with a lazy per-layer embedding table gets the mode spelled out. Once,
+                # before the placement branches, so every one of them carries it; user extras
+                # are appended after this and would win anyway.
+                _emitted_lazy_mode = self._studio_lazy_mode(
+                    model_path = model_path,
+                    server_caps = server_caps,
+                    gpu_indices = gpu_indices,
+                    binary = binary,
+                    is_vulkan_backend = is_vulkan_backend,
+                    extra_args = extra_args,
+                    env = os.environ,
+                )
+                if _emitted_lazy_mode is not None:
+                    cmd.extend(["-lzm", _emitted_lazy_mode])
+                    logger.info(
+                        "Per-layer embeddings: --lazy-mode %s (%s)",
+                        _emitted_lazy_mode,
+                        "read from the mapping"
+                        if _emitted_lazy_mode == "on"
+                        else "held resident; a selected device cannot mmap",
+                    )
+                if _spill_inputs is not None:
+                    _spill_inputs["emitted_lazy_mode"] = _emitted_lazy_mode
+
                 fully_gpu_offloaded = False
                 self._spill_plan_flags = []
                 self._spill_plan_restore = {}
@@ -28743,6 +28863,9 @@ class LlamaCppBackend:
                     supports_lazy_mode = bool(inputs.get("supports_lazy_mode")),
                     extra_args = extra_args,
                     env = source_env,
+                    # The -lzm load_model is emitting for THIS launch, when it emits one, so
+                    # the price and the child's behaviour cannot disagree.
+                    emitted_mode = inputs.get("emitted_lazy_mode"),
                 ),
                 # -nkvo is not a reason to decline: it moves the cache and the
                 # recurrent state OUT of VRAM, so the deficit is smaller, not
