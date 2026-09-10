@@ -99,7 +99,13 @@ def _inference_double(
 
     inference._openai_catalog_objects = _objects
 
-    async def _default_load(request, fastapi_request, current_subject, *, user_initiated = False):
+    async def _default_load(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
         return types.SimpleNamespace(status = "loaded", model = request.model_path)
 
     async def _default_unload(request, current_subject):

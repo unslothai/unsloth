@@ -35,7 +35,11 @@ LLAMACPP_LOADED_STATES = {"loaded", "sleeping"}
 LLAMACPP_UNLOADED_STATES = {"loading", "unloaded"}
 
 
-def get_provider_model_loaded_state(model: dict, provider: str, manual_model_ids: bool = False):
+def get_provider_model_loaded_state(
+    model: dict,
+    provider: str,
+    manual_model_ids: bool = False,
+):
     """Pinned Open WebUI helper: llama.cpp without ``status`` is assumed loaded."""
     if provider != "llama.cpp":
         return None
@@ -114,7 +118,13 @@ def _catalog(*, resident = "unsloth/Qwen3.8-27B-GGUF", extra_unloaded = True):
     return rows
 
 
-def _inference_double(catalog, *, load_impl = None, unload_impl = None, backend = None):
+def _inference_double(
+    catalog,
+    *,
+    load_impl = None,
+    unload_impl = None,
+    backend = None,
+):
     state = {"resident": {m["id"] for m in catalog if m.get("loaded")}}
 
     async def _objects():
@@ -130,7 +140,13 @@ def _inference_double(catalog, *, load_impl = None, unload_impl = None, backend 
             )
         return out
 
-    async def _load(request, fastapi_request, current_subject, *, user_initiated = False):
+    async def _load(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
         if load_impl is not None:
             return await load_impl(
                 request, fastapi_request, current_subject, user_initiated = user_initiated
@@ -262,10 +278,12 @@ def test_management_requires_auth():
     mod, _ = _load_mod()
     with _client(mod, auth = False) as c:
         assert c.get("/models").status_code == 401
-        assert c.post("/models/load", json = {"model": "unsloth/Laguna-S-2.1-GGUF"}).status_code == 401
-        assert c.post(
-            "/models/unload", json = {"model": "unsloth/Qwen3.8-27B-GGUF"}
-        ).status_code == 401
+        assert (
+            c.post("/models/load", json = {"model": "unsloth/Laguna-S-2.1-GGUF"}).status_code == 401
+        )
+        assert (
+            c.post("/models/unload", json = {"model": "unsloth/Qwen3.8-27B-GGUF"}).status_code == 401
+        )
 
 
 def test_load_unload_open_webui_contract_and_residency_transition(monkeypatch):
@@ -273,7 +291,13 @@ def test_load_unload_open_webui_contract_and_residency_transition(monkeypatch):
     loads = []
     unloads = []
 
-    async def _load(request, fastapi_request, current_subject, *, user_initiated = False):
+    async def _load(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
         loads.append(
             {
                 "model_path": request.model_path,
@@ -353,7 +377,13 @@ def test_load_invalid_body_is_4xx():
 
 
 def test_load_failure_surfaces_error_without_claiming_success(monkeypatch):
-    async def _boom(request, fastapi_request, current_subject, *, user_initiated = False):
+    async def _boom(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
         raise HTTPException(status_code = 500, detail = "Failed to load model")
 
     mod, double = _load_mod(catalog = _catalog(resident = None), load_impl = _boom)
@@ -374,7 +404,13 @@ def test_load_failure_surfaces_error_without_claiming_success(monkeypatch):
 def test_repeated_load_uses_lifecycle_already_loaded(monkeypatch):
     calls = {"n": 0}
 
-    async def _load(request, fastapi_request, current_subject, *, user_initiated = False):
+    async def _load(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
         calls["n"] += 1
         status = "already_loaded" if calls["n"] > 1 else "loaded"
         return types.SimpleNamespace(status = status, model = request.model_path)
@@ -426,7 +462,13 @@ def test_models_routes_are_not_under_v1(monkeypatch):
 def test_quant_suffix_resolves_through_existing_resolver(monkeypatch):
     seen = {}
 
-    async def _load(request, fastapi_request, current_subject, *, user_initiated = False):
+    async def _load(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
         seen["path"] = request.model_path
         seen["variant"] = request.gguf_variant
         return types.SimpleNamespace(status = "loaded", model = request.model_path)

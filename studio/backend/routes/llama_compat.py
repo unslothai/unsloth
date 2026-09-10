@@ -263,7 +263,6 @@ async def _resolve_manageable_model(model_id: str) -> tuple[str, Optional[str], 
     if matched is not None:
         # Catalog-listed (e.g. non-GGUF) without a resolver hit: load by public id.
         from core.inference.openai_auto_download import split_model_ref
-
         base, variant = split_model_ref(matched)
         return base, variant, base
 
@@ -325,8 +324,7 @@ async def manage_load_model(
 @router.post("/models/unload", include_in_schema = False)
 @router.post("/models/unload/", include_in_schema = False)
 async def manage_unload_model(
-    body: _ModelManageBody,
-    current_subject: str = Depends(get_current_subject),
+    body: _ModelManageBody, current_subject: str = Depends(get_current_subject)
 ):
     """Explicit authenticated unload (``POST /models/unload`` with ``{"model":"..."}``).
 
