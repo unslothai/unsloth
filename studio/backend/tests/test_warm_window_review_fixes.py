@@ -27,6 +27,33 @@ from pathlib import Path
 
 import pytest
 
+import contextlib
+
+
+def _health_check_ast():
+    """main.py's ``health_check`` coroutine, parsed rather than imported."""
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    return next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
+    )
+
+
+@contextlib.contextmanager
+def _restores_hardware_verdict():
+    """Hand the hardware module back the verdict it had, whatever the test publishes over it."""
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        yield hw
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -679,12 +706,7 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
 
 def test_health_rereads_the_verdict_after_authentication():
     """The bearer check is an await, so the pre-auth answer must be revalidated."""
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
-    fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
-    )
+    fn = _health_check_ast()
     snapshots = [
         sub.lineno
         for sub in ast.walk(fn)
@@ -1237,12 +1259,7 @@ def test_the_mcp_status_tool_reads_hardware_off_the_event_loop():
 # -------------------------------- an authed reply is not both settled and not
 def test_an_authed_reply_drops_the_provisional_marker():
     """base is built before the bearer await, so its marker can be out of date."""
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
-    fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
-    )
+    fn = _health_check_ast()
     pops = [
         sub
         for sub in ast.walk(fn)
@@ -1260,12 +1277,7 @@ def test_an_authed_reply_drops_the_provisional_marker():
 # ----------------------------------------- deferred detection is not "in progress"
 def test_health_marks_a_deferred_detection_as_deferred(monkeypatch):
     """With the warm off nothing settles, so a poller must be told to stop."""
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
-    fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
-    )
+    fn = _health_check_ast()
     keys = {
         sub.slice.value
         for sub in ast.walk(fn)
@@ -1626,11 +1638,7 @@ def test_a_failed_forced_redetect_does_not_restore_a_retired_verdict():
     DETECTION_COMPLETE, then re-detects; if shutdown retires the pass and the probe raises,
     restoring puts back exactly what shutdown cleared and the next lifespan skips detection.
     The success path checked, the failure path did not."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = hw.DeviceType.MLX
         hw.CHAT_ONLY = True
         hw.CHAT_ONLY_REASON = "mlx_unavailable"
@@ -1647,18 +1655,11 @@ def test_a_failed_forced_redetect_does_not_restore_a_retired_verdict():
         assert hw.DEVICE is None, "a retired pass restored the verdict shutdown cleared"
         assert hw.CHAT_ONLY_REASON is None
         assert not hw.DETECTION_COMPLETE.is_set(), "a retired pass re-announced itself as settled"
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_failed_redetect_inside_its_own_lifespan_still_restores():
     """Negative control: without a shutdown, the rollback must still happen."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = hw.DeviceType.MLX
         hw.CHAT_ONLY = True
         hw.CHAT_ONLY_REASON = "mlx_unavailable"
@@ -1676,9 +1677,6 @@ def test_a_failed_redetect_inside_its_own_lifespan_still_restores():
             hw.CHAT_ONLY_REASON == "mlx_unavailable"
         ), "losing the reason stops the sidebar's MLX recovery poll for good"
         assert hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_broken_torch_install_is_not_reported_as_a_host_without_a_gpu():
@@ -1863,12 +1861,7 @@ def test_a_redetect_during_the_bearer_await_leaves_the_reply_provisional():
     """AST: the authed branch must mark the reply when the second snapshot is None. base
     carries no chat_only_reason, so an unmarked reply is read as measured and stores
     chat_only with reason null, stopping the sidebar's mlx_unavailable poll."""
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
-    fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
-    )
+    fn = _health_check_ast()
     branch = next(
         node
         for node in ast.walk(fn)
@@ -1924,11 +1917,7 @@ def test_a_stale_waiter_does_not_discard_the_new_lifespan_verdict():
     shutdown retires its epoch. The new lifespan's warm takes the lock first and publishes;
     the stale worker then enters, finds DEVICE set so runs no detection, and must not wipe a
     verdict it did not produce -- that leaves the restarted app provisional."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         stale_epoch = hw.current_detection_epoch()
         hw.invalidate_detection()  # the shutdown the worker lost to
         # The new lifespan's verdict, already published while the stale worker waited.
@@ -1948,18 +1937,11 @@ def test_a_stale_waiter_does_not_discard_the_new_lifespan_verdict():
         ), "a stale waiter discarded the new lifespan's verdict"
         assert hw.CHAT_ONLY is False
         assert hw.DETECTION_COMPLETE.is_set(), "the restart was left reporting as unsettled"
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_retired_pass_that_did_detect_still_discards():
     """Negative control: the discard must still fire for a verdict this call produced."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
         epoch = hw.current_detection_epoch()
@@ -1974,9 +1956,6 @@ def test_a_retired_pass_that_did_detect_still_discards():
 
         assert hw.DEVICE is None, "a retired pass published its own verdict anyway"
         assert not hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_the_warm_hands_its_epoch_to_detection():
@@ -2350,11 +2329,7 @@ def test_a_retired_worker_does_not_probe_before_being_discarded():
     """Discarding after the probe still pays for the probe. A health-triggered thread can reach
     _DETECT_LOCK after shutdown retired its epoch; probing there imports the ML stack for a
     stopped lifespan, and the next warm queues on the same lock only to detect again."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
         stale_epoch = hw.current_detection_epoch()
@@ -2367,18 +2342,11 @@ def test_a_retired_worker_does_not_probe_before_being_discarded():
         assert probed == [], "a retired worker imported the ML stack anyway"
         assert hw.DEVICE is None
         assert not hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_live_worker_still_probes():
     """Negative control: an owner of the current epoch must detect as before."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
         probed = []
@@ -2392,9 +2360,6 @@ def test_a_live_worker_still_probes():
 
         assert probed == [1], "a live worker was refused its probe"
         assert hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_measured_authed_reply_drops_both_provisional_markers():
@@ -2403,12 +2368,7 @@ def test_a_measured_authed_reply_drops_both_provisional_markers():
     With the kill switch on, base carries both markers. When a detection finishing during
     the bearer await makes the snapshot measured, a left-over hardware_detection_deferred
     pairs an accelerator verdict with a stale reason: the client reads that marker first."""
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
-    fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
-    )
+    fn = _health_check_ast()
     branch = next(
         node
         for node in ast.walk(fn)
@@ -2446,11 +2406,7 @@ def test_a_shutdown_inside_a_stage_cannot_republish_the_torn_down_verdict():
     get_default_models() -> get_device(), and get_device() takes no epoch. A shutdown after
     the pre-stage check but before that nested read used to let it adopt the epoch it was
     retiring into and publish DEVICE, so the next lifespan skipped detection altogether."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
         warm_epoch = hw.current_detection_epoch()
@@ -2470,18 +2426,11 @@ def test_a_shutdown_inside_a_stage_cannot_republish_the_torn_down_verdict():
             "the next lifespan skips detection and serves the old verdict"
         )
         assert not hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_nested_read_in_a_live_stage_still_publishes():
     """Negative control: without a shutdown the scope changes nothing."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
 
@@ -2494,9 +2443,6 @@ def test_a_nested_read_in_a_live_stage_still_publishes():
 
         assert hw.DEVICE is hw.DeviceType.CUDA, "the scope discarded a live verdict"
         assert hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_the_scope_is_per_thread_and_restores_what_it_replaced():
@@ -2552,11 +2498,7 @@ def test_the_mlx_self_heal_cannot_republish_into_a_stopped_lifespan():
     detect_hardware() guards a shutdown landing mid-pass but read current itself, so a
     repair finishing after teardown adopted the epoch shutdown moved to and published for a
     lifespan that had ended. The next lifespan then found DEVICE set and skipped detection."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
         spawn_epoch = hw.current_detection_epoch()
@@ -2576,18 +2518,11 @@ def test_the_mlx_self_heal_cannot_republish_into_a_stopped_lifespan():
             "lifespan skips detection and inherits it"
         )
         assert not hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_forced_redetect_with_no_shutdown_still_publishes():
     """Negative control: detect_hardware keeps working outside a retired scope."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
 
@@ -2601,9 +2536,6 @@ def test_a_forced_redetect_with_no_shutdown_still_publishes():
 
         assert hw.DEVICE is hw.DeviceType.MLX, "a live self-heal was discarded"
         assert hw.DETECTION_COMPLETE.is_set()
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_the_mlx_worker_reads_its_epoch_before_start():
@@ -2680,11 +2612,7 @@ def test_a_late_repair_cannot_erase_the_restarted_lifespans_verdict():
     detect_hardware() clears DETECTION_COMPLETE, probes, then discards when the epoch moved.
     Reached with an already-stale owning epoch, that runs over a verdict the restarted
     lifespan had settled: the discard wipes DEVICE and the event, so it goes provisional."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         stale_epoch = hw.current_detection_epoch()
         hw.invalidate_detection()  # the restart
 
@@ -2706,9 +2634,6 @@ def test_a_late_repair_cannot_erase_the_restarted_lifespans_verdict():
         )
         assert hw.CHAT_ONLY is False
         assert hw.DETECTION_COMPLETE.is_set(), "the settled event was cleared by a stale pass"
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_repair_that_outlived_its_lifespan_still_reopens_train():
@@ -2717,11 +2642,7 @@ def test_a_repair_that_outlived_its_lifespan_still_reopens_train():
     _attempted is process-wide so no later repair revisits it, and health only reads the
     settled snapshot. Train and Export stay disabled until a restart."""
     import utils.mlx_repair as repair
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         spawn_epoch = hw.current_detection_epoch()
         hw.invalidate_detection()  # the restart, while the install was still running
 
@@ -2747,9 +2668,6 @@ def test_a_repair_that_outlived_its_lifespan_still_reopens_train():
         )
         assert hw.DEVICE is hw.DeviceType.MLX
         assert hw.CHAT_ONLY_REASON is None
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
 
 
 def test_a_cached_path_pass_does_not_publish_its_own_intermediate_state():
@@ -2758,11 +2676,7 @@ def test_a_cached_path_pass_does_not_publish_its_own_intermediate_state():
     Shutdown clears DEVICE, a cached waiter then sets the event, and the next pass starts
     with the event set and DEVICE None. Every accelerator branch assigns CHAT_ONLY = False
     before a probe that can fall back to CPU, so health reads that candidate as settled."""
-    from utils.hardware import hardware as hw
-
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    try:
+    with _restores_hardware_verdict() as hw:
         hw.DEVICE = None
         hw.CHAT_ONLY = True
         hw.DETECTION_COMPLETE.set()  # the stale event
@@ -2784,6 +2698,3 @@ def test_a_cached_path_pass_does_not_publish_its_own_intermediate_state():
             "CHAT_ONLY, so health can serve the first candidate as a measurement"
         )
         assert hw.DETECTION_COMPLETE.is_set(), "the event was not republished once settled"
-    finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()

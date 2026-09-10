@@ -70,9 +70,8 @@ function appendBlocked(
   };
 }
 
-// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the permissive CSP
-// widens too. Dropping those left the canvas blank with no prompt, so label them with the
-// token itself.
+// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the permissive CSP widens
+// too. Dropping those left the canvas blank with no prompt, so label them with the token itself.
 const BLOCKED_KEYWORD = /^[a-z-]+$/;
 
 function blockedHost(uri: string): string | null {

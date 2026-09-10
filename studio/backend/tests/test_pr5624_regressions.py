@@ -305,49 +305,42 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 # Routes-layer strip across the three new families
 
 
-def test_routes_layer_strip_removes_deepseek_envelope():
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "before "
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            '<｜tool▁sep｜>{"city":"Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after",
+            id = "routes_layer_strip_removes_deepseek_envelope",
+        ),
+        pytest.param(
+            "before "
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.web_search:0"
+            '<|tool_call_argument_begin|>{"q":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+            " after",
+            id = "routes_layer_strip_removes_kimi_section",
+        ),
+        # ``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern.
+        pytest.param(
+            "before "
+            "<tool_call>web_search\n"
+            "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
+            "</tool_call>"
+            " after",
+            id = "routes_layer_strip_removes_glm_block",
+        ),
+    ],
+)
+def test_routes_layer_strip_removes_tool_envelopes(text):
     from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<｜tool▁calls▁begin｜>"
-        "<｜tool▁call▁begin｜>get_time"
-        '<｜tool▁sep｜>{"city":"Tokyo"}'
-        "<｜tool▁call▁end｜>"
-        "<｜tool▁calls▁end｜>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
-
-
-def test_routes_layer_strip_removes_kimi_section():
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<|tool_calls_section_begin|>"
-        "<|tool_call_begin|>functions.web_search:0"
-        '<|tool_call_argument_begin|>{"q":"x"}'
-        "<|tool_call_end|>"
-        "<|tool_calls_section_end|>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
-
-
-def test_routes_layer_strip_removes_glm_block():
-    """``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern."""
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<tool_call>web_search\n"
-        "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
-        "</tool_call>"
-        " after"
-    )
     stripped = _routes_strip(text)
     assert stripped == "before  after"
 
@@ -815,25 +808,25 @@ def test_chained_bare_json_owns_kimi_marker_in_later_call():
 def test_nested_gemma_values_keep_commas_and_parens():
     # Nested wrapper-less Gemma mappings/arrays use the top-level delimiter rules, so nested arguments are not split.
     calls = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"web_search"}
     )
-    assert [c["function"]["name"] for c in calls] == ["python"], calls
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "opts": {"code": "print(1,2)", "lang": "py"}
     }
 
     arr = parse_tool_calls_from_text(
-        "call:python{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"python"}
+        "call:web_search{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(arr[0]["function"]["arguments"]) == {"opts": [1, 2, {"a": "f(1,2)"}]}
 
     prose_comma = parse_tool_calls_from_text(
-        "call:python{opts:{note:hello, world}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{note:hello, world}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(prose_comma[0]["function"]["arguments"]) == {"opts": {"note": "hello, world"}}
 
     quoted = parse_tool_calls_from_text(
-        'call:python{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"python"}
+        'call:web_search{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(quoted[0]["function"]["arguments"]) == {
         "opts": {"q": 'say "a, b" now', "n": 3}
@@ -842,15 +835,15 @@ def test_nested_gemma_values_keep_commas_and_parens():
     # Controls: nested quoted values and multi-key mappings are unchanged, and
     # a truncated nested value still falls back to the raw string.
     nested_q = parse_tool_calls_from_text(
-        'call:python{loc:{city:"New York"}}', enabled_tool_names = {"python"}
+        'call:web_search{loc:{city:"New York"}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(nested_q[0]["function"]["arguments"]) == {"loc": {"city": "New York"}}
     multi = parse_tool_calls_from_text(
-        "call:python{opts:{a:1,b:2},n:3}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{a:1,b:2},n:3}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(multi[0]["function"]["arguments"]) == {"opts": {"a": 1, "b": 2}, "n": 3}
     trunc = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(trunc[0]["function"]["arguments"]) == {"opts": "{code:print(1,2}"}
 
