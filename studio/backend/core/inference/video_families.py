@@ -256,6 +256,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear, GPTQ-calibrated), fingerprint-verified
+        # across two builds before publishing. Resident sizes are measured at load and recorded per scheme.
+        prequant_repos = (("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),),
+        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
@@ -283,6 +287,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear, GPTQ-calibrated), fingerprint-verified
+        # across two builds before publishing. Resident sizes are measured at load and recorded per scheme.
+        prequant_repos = (("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),),
+        prequant_filenames = (
+            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
+            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+        ),
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
         # is_moe drives the dual-DiT optimisation layers; cfg2_kwarg names the pipeline kwarg for transformer_2's
@@ -314,6 +325,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear, GPTQ-calibrated), fingerprint-verified
+        # across two builds before publishing. Resident sizes are measured at load and recorded per scheme.
+        prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
         # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
         has_audio = False,
@@ -339,6 +354,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear), fingerprint-verified across two builds
+        # before publishing. RTN with baked activation scales, not GPTQ: the 720p transformer is a separately
+        # trained checkpoint (shard bytes differ from 480p), so the 480p corrections do not apply to it.
+        prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
         guidance_via_guider = True,

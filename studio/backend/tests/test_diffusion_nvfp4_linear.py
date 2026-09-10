@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import types
 
+import os
+
 import pytest
 
 from core.inference import diffusion_nvfp4_linear as nl
@@ -36,6 +38,12 @@ DENSE_GAP_BOUND = 0.002
 
 def _cuda_or_skip():
     torch = pytest.importorskip("torch")
+    # A hermetic run masks every device with an EMPTY CUDA_VISIBLE_DEVICES. torch answers is_available()
+    # from the mask it saw when the driver was first initialised, and another test in the same process
+    # can rewrite the variable (test_gpu_arch_gate_consumers_7624 asserts on it), so the variable is
+    # checked directly as well: a masked process has no device to run these on, whatever torch believes.
+    if os.environ.get("CUDA_VISIBLE_DEVICES", None) == "":
+        pytest.skip("CUDA devices are masked off for this process")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         pytest.skip("needs CUDA")
     capability = tuple(torch.cuda.get_device_capability(0))
@@ -197,6 +205,7 @@ def test_m1_gemm_is_finite_on_both_backends(out_features, in_features, capsys):
 
 def test_a_two_layer_block_compiles_fullgraph():
     torch = _cuda_or_skip()
+    pytest.importorskip("triton")  # inductor cannot build a GPU kernel without it (TritonMissing)
     import torch.nn as nn
 
     class Block(nn.Module):
@@ -489,3 +498,82 @@ def test_prewarm_without_flashinfer_is_a_no_op(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _no_flashinfer)
     assert nl.nvfp4_prewarm(_quantized_tree(), (1, 512)) == 0
+
+
+def test_a_whole_model_artifact_converts_without_a_policy_block():
+    """PR 1's video artifacts quantise EVERY admitted linear and declare no policy at all. The
+    backend keys on the baked scales, not on a policy, so those artifacts get the fast layer too;
+    a conversion that required a policy block would silently leave every video family on torchao."""
+    torch = _cuda_or_skip()
+    import torch.nn as nn
+    from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+    from torchao.quantization import quantize_
+
+    torch.manual_seed(11)
+    tree = nn.Sequential(nn.Linear(3072, 3072), nn.SiLU(), nn.Linear(3072, 3072))
+    tree = tree.to("cuda", torch.bfloat16).eval()
+    quantize_(tree, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
+    x = torch.randn(512, 3072, device = "cuda", dtype = torch.bfloat16) * 0.05
+    with torch.inference_mode():
+        hidden = tree[1](tree[0](x))
+        before = tree(x)
+    metadata = {
+        "scheme": "nvfp4",
+        "family": "wan2.2-ti2v-5b",
+        # Top level, because a whole-model artifact has no policy block to carry it.
+        "activation_scales_baked": True,
+        "act_global_scales": {
+            "0": float(ops.global_scale(x)),
+            "2": float(ops.global_scale(hidden)),
+        },
+    }
+    assert nl.convert_nvfp4_backend(tree, metadata, "flashinfer") == 2
+    assert nl.is_nvfp4_flashinfer_linear(tree[0]) and nl.is_nvfp4_flashinfer_linear(tree[2])
+    with torch.inference_mode():
+        after = tree(x)
+    assert bool(torch.isfinite(after).all())
+    assert _rel(after, before) < FORWARD_REL_BOUND
+
+
+def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
+    """The same distinction the policy artifacts get: a build whose bake produced no scales is a
+    build to rerun, and a checkpoint that never asked for one is a backend to stop asking."""
+    pytest.importorskip("torch")
+
+    logger = _RecordingLogger()
+    metadata = {"scheme": "nvfp4", "activation_scales_baked": True, "act_global_scales": {}}
+    assert nl.convert_nvfp4_backend(_quantized_tree(), metadata, "flashinfer", logger = logger) == 0
+    assert "flag set, scales missing" in logger.text
+
+
+def test_an_fp32_layer_runs_and_answers_in_fp32():
+    """A whole-model video artifact has layers torchao quantises from FP32 weights, and they are
+    fed FP32 activations at run time: Wan2.2's time embedder ships fp32, so its 256-wide linear_1
+    stays dense below the quantise floor and hands the quantized linear_2 an fp32 tensor on every
+    step of every render. FlashInfer's fp4 quantiser raises on fp32, which torchao's does not, so
+    without the cast the fast backend cannot run a video artifact at all -- and it fails on the
+    first forward, after the model is loaded and the request is in flight."""
+    torch = _cuda_or_skip()
+    import torch.nn as nn
+    from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+    from torchao.quantization import quantize_
+
+    torch.manual_seed(3)
+    layer = nn.Linear(3072, 3072).to("cuda", torch.float32).eval()
+    reference = nn.Linear(3072, 3072).to("cuda", torch.float32).eval()
+    reference.load_state_dict(layer.state_dict())
+    quantize_(layer, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
+    quantize_(reference, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
+    x = torch.randn(512, 3072, device = "cuda", dtype = torch.float32) * 0.05
+    with torch.inference_mode():
+        before = reference(x)
+    converted = nl.nvfp4_linear_from_torchao(layer, float(ops.global_scale(x)))
+    with torch.inference_mode():
+        after = converted(x)
+    assert after.dtype == torch.float32  # nn.Linear's contract: the caller's dtype back
+    assert bool(torch.isfinite(after).all())
+    assert _rel(after.float(), before.float()) < FORWARD_REL_BOUND
+    # And the empty-input guard answers in the caller's dtype too.
+    with torch.inference_mode():
+        empty = converted(x[:0])
+    assert empty.shape == (0, 3072) and empty.dtype == torch.float32

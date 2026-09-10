@@ -1361,7 +1361,7 @@ def _video_auto(
     from core.inference import video as vid
 
     monkeypatch.setattr(
-        vid, "select_transformer_quant_scheme", lambda target, requested, family = None: scheme
+        vid, "select_transformer_quant_scheme", lambda target, requested, family = None, base_repo = None: scheme
     )
     kw = dict(
         target = None,
