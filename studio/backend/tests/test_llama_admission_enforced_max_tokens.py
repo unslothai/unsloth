@@ -213,12 +213,22 @@ class TestTheCatalogueCostsAPreambleToo:
     """
 
     _TOOLS = [
-        {"type": "function", "function": {
-            "name": "web_search", "description": "Search the web.",
-            "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}},
-        {"type": "function", "function": {
-            "name": "python", "description": "Run python code.",
-            "parameters": {"type": "object", "properties": {"code": {"type": "string"}}}}},
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "python",
+                "description": "Run python code.",
+                "parameters": {"type": "object", "properties": {"code": {"type": "string"}}},
+            },
+        },
     ]
 
     def test_an_injected_catalogue_carries_the_preamble(self):
@@ -226,6 +236,7 @@ class TestTheCatalogueCostsAPreambleToo:
             _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
             _openai_llama_admission_injected_tool_tokens as catalogue,
         )
+
         assert catalogue(None) == 0, "a tool-free request must be priced exactly as before"
         assert catalogue([]) == 0
         assert catalogue(self._TOOLS) > _PREAMBLE
@@ -237,6 +248,7 @@ class TestTheCatalogueCostsAPreambleToo:
             _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
             _openai_llama_admission_extra_prompt_tokens as extra,
         )
+
         without = extra(_Payload(messages = []))
         with_tools = extra(_Payload(messages = [], tools = self._TOOLS))
         assert without == 0
@@ -251,6 +263,7 @@ class TestTheCatalogueCostsAPreambleToo:
             _openai_llama_admission_prompt_tokens,
             _openai_llama_admission_wire_prompt_tokens,
         )
+
         messages = [{"role": "user", "content": "hi"}]
         loop = _openai_llama_admission_wire_prompt_tokens(messages, injected_tools = self._TOOLS)
         passthrough = _openai_llama_admission_prompt_tokens(
@@ -265,13 +278,17 @@ class TestTheCatalogueCostsAPreambleToo:
         backend = _backend(window = 8192, total = 8192, slots = 4)
         share = 8192 // 4
         from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+
         for count in (1, 2, 4, 8):
             tools = self._TOOLS * count
             messages = [{"role": "user", "content": "write a long essay"}]
             payload = _Payload(messages = messages, max_tokens = 8192)
             bound = _openai_llama_admission_enforced_max_tokens(
-                payload, request = None, llama_backend = backend,
-                conversation = messages, injected_tools = tools,
+                payload,
+                request = None,
+                llama_backend = backend,
+                conversation = messages,
+                injected_tools = tools,
             )
             assert bound is not None
             priced = wire(messages, injected_tools = tools)
