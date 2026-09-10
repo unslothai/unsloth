@@ -421,16 +421,22 @@ def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
     (home / ".unsloth" / "studio").mkdir(parents = True)
     src = SETUP_SH.read_text(encoding = "utf-8")
     block = _slice(src, "# Stripped before anything else", "# Directory-local evidence")
-    script = "\n".join((
-        "set -u", "_STUDIO_HOME_IS_CUSTOM=false", block,
-        'printf "%s\\n" "$_RUNTIME_ROOT_IS_CUSTOM"',
-    ))
+    script = "\n".join(
+        (
+            "set -u",
+            "_STUDIO_HOME_IS_CUSTOM=false",
+            block,
+            'printf "%s\\n" "$_RUNTIME_ROOT_IS_CUSTOM"',
+        )
+    )
 
     def flag(master: str) -> str:
         done = subprocess.run(
             ["bash", "-c", script],
             env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "UNSLOTH_HOME": master},
-            capture_output = True, text = True, timeout = 60,
+            capture_output = True,
+            text = True,
+            timeout = 60,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip()
@@ -451,23 +457,27 @@ def test_only_a_directory_can_be_adopted_at_a_runtime_path(tmp_path):
     """
     src = SETUP_SH.read_text(encoding = "utf-8")
     block = _slice(src, "_studio_path_shape() {", "\n_packaged_frontend_available")
-    script = "\n".join((
-        "set -u",
-        "_STUDIO_OWNED_MARKER=.unsloth-studio-owned",
-        "_studio_owned_adoptable() { return 1; }",
-        "_studio_dir_unsearchable() { return 1; }",
-        "_path_access_denied() { echo DENIED; exit 9; }",
-        "setup_fail() { echo REFUSED; exit 1; }",
-        block,
-        '_assert_studio_owned_or_absent "$1" llama.cpp true',
-        "echo ALLOWED",
-    ))
+    script = "\n".join(
+        (
+            "set -u",
+            "_STUDIO_OWNED_MARKER=.unsloth-studio-owned",
+            "_studio_owned_adoptable() { return 1; }",
+            "_studio_dir_unsearchable() { return 1; }",
+            "_path_access_denied() { echo DENIED; exit 9; }",
+            "setup_fail() { echo REFUSED; exit 1; }",
+            block,
+            '_assert_studio_owned_or_absent "$1" llama.cpp true',
+            "echo ALLOWED",
+        )
+    )
 
     def verdict(path: pathlib.Path) -> str:
         done = subprocess.run(
             ["bash", "-c", script, "_", str(path)],
             env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            capture_output = True, text = True, timeout = 60,
+            capture_output = True,
+            text = True,
+            timeout = 60,
         )
         return done.stdout.strip().splitlines()[-1] if done.stdout.strip() else done.stderr[-120:]
 
