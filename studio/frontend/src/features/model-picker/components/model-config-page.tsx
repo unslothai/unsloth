@@ -3278,7 +3278,15 @@ export function ModelConfigPage({
           >
             Reset
           </Button>
-          {!persistenceOnly && (
+          {/* Not rendered when there is nothing to save and nothing to forget.
+              Both flags seed from initial.remembered, which is false for every
+              model with no stored config -- the resting state of most of the
+              picker -- so a render gated only on persistenceOnly puts a
+              permanently disabled button labelled "Forget settings" between
+              Reset and Load for a model that has never had settings. The
+              disabled predicate below still holds it inert in the states that
+              are transient rather than resting. */}
+          {!persistenceOnly && (remember || savedRemember) && (
             <Button
               type="button"
               variant="outline"

@@ -1365,6 +1365,30 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         assert field in page
 
 
+def test_save_settings_waits_for_gguf_classification():
+    """The Save button that persists without loading (#10216) must carry Load's
+    classification gate.
+
+    Until the GGUF header probe settles, `resolvedIsDiffusion` is false, so the config
+    this page would commit has not been through
+    `withoutUnsupportedDiffusionSettings`. Load is blocked for exactly that window by
+    `stagedMetadataPending`. A Save that is not is worse than a bad load, not better:
+    it writes the unsanitized config to localStorage AND mirrors it to the override an
+    API auto-switch load reads later, where the picker's own later render -- which
+    strips those fields only from what it displays -- never reaches it.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # The block is identified by its handler, so a renamed button label does not
+    # silently stop guarding anything.
+    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    assert "disabled={" in save_button, "the Save button no longer has a disabled gate"
+    gate = save_button.split("disabled={", 1)[1].split("}", 1)[0]
+    assert "stagedMetadataPending" in gate, (
+        "Save settings is enabled while the GGUF classification is still pending; "
+        f"gate was: {gate.strip()!r}"
+    )
+
+
 def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     """The footer must not wrap on demand, or a click can be swallowed (#10216).
 
@@ -1401,31 +1425,6 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     )
 
 
-
-def test_save_settings_waits_for_gguf_classification():
-    """The Save button that persists without loading (#10216) must carry Load's
-    classification gate.
-
-    Until the GGUF header probe settles, `resolvedIsDiffusion` is false, so the config
-    this page would commit has not been through
-    `withoutUnsupportedDiffusionSettings`. Load is blocked for exactly that window by
-    `stagedMetadataPending`. A Save that is not is worse than a bad load, not better:
-    it writes the unsanitized config to localStorage AND mirrors it to the override an
-    API auto-switch load reads later, where the picker's own later render -- which
-    strips those fields only from what it displays -- never reaches it.
-    """
-    page = _read("features/model-picker/components/model-config-page.tsx")
-    # The block is identified by its handler, so a renamed button label does not
-    # silently stop guarding anything.
-    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
-    assert "disabled={" in save_button, "the Save button no longer has a disabled gate"
-    gate = save_button.split("disabled={", 1)[1].split("}", 1)[0]
-    assert "stagedMetadataPending" in gate, (
-        "Save settings is enabled while the GGUF classification is still pending; "
-        f"gate was: {gate.strip()!r}"
-    )
-
-
 def test_save_settings_waits_for_the_vram_budget_to_settle():
     """The Save button (#10216) must carry Load's budget gate as well.
 
@@ -1448,6 +1447,32 @@ def test_save_settings_waits_for_the_vram_budget_to_settle():
         f"gate was: {gate.strip()!r}"
     )
 
+
+def test_save_settings_is_not_rendered_when_it_could_do_nothing():
+    """A model with nothing stored must not show a dead "Forget settings" (#10216).
+
+    `remember` and `savedRemember` both seed from `initial.remembered`, which
+    `readPerModelConfig` returns as false for any model with no stored config. So
+    `!remember && !savedRemember` is not an edge case, it is the resting state of
+    every model the user has never configured -- and a render gated only on
+    `persistenceOnly` puts a permanently disabled button labelled "Forget
+    settings" between Reset and Load for all of them, offering to forget
+    something that was never saved. The button is inert in exactly that
+    condition, so not rendering it changes no behaviour.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    # Tied to this button, not merely present in the file: the guard has to be the
+    # last thing opened before the <Button> that carries handleSave, with no other
+    # button closing in between.
+    before = src.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[0]
+    guard = "!persistenceOnly && (remember || savedRemember) && ("
+    assert guard in before, (
+        "the Save/Forget button is rendered when there is nothing to save and "
+        "nothing to forget; JSX before it ended: " + before[-160:].strip()
+    )
+    assert (
+        "</Button>" not in before.rsplit(guard, 1)[1]
+    ), "the (remember || savedRemember) guard no longer wraps the handleSave button"
 
 
 def test_save_settings_reflects_the_context_it_pinned():
