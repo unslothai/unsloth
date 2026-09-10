@@ -9166,6 +9166,20 @@ class LlamaCppBackend:
                 for col, label in zip(columns, labels):
                     if col != source:
                         matrix[(source, col)] = label.upper()
+            # Every directed pair the header promised, or nothing. Output truncated
+            # at a ROW boundary still exits 0 and parses cleanly, just short: the
+            # header names 8 GPUs and only 4 rows arrive. The surviving entries can
+            # then be uniformly NV#, which reads as "the whole box is NVLinked" and
+            # would let the unpinned-order escape enable P2P on cards whose links
+            # were never seen. Callers only distinguish a matrix from None, so a
+            # partial one has to be None (#10613).
+            if len(matrix) != len(columns) * (len(columns) - 1):
+                logger.debug(
+                    f"nvidia-smi topo -m: {len(matrix)} pairs for {len(columns)} "
+                    "GPUs, expected "
+                    f"{len(columns) * (len(columns) - 1)}; treating as unreadable"
+                )
+                return None
             return matrix or None
         except Exception as e:
             logger.debug(f"nvidia-smi topo probe failed: {e}")

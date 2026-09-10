@@ -1015,3 +1015,31 @@ def test_p2p_opt_out_skips_the_topology_probe(monkeypatch):
     assert "GGML_CUDA_P2P" not in env
     assert env["CUDA_SCALE_LAUNCH_QUEUES"] == "4x"
     assert probed == [], "topology probed despite an explicit opt-out"
+
+
+def test_row_truncated_matrix_is_rejected(monkeypatch):
+    """Output cut at a ROW boundary still exits 0 and parses cleanly, just short.
+    The surviving entries can be uniformly NV#, which would read as "the whole box
+    is NVLinked" and let the unpinned-order escape enable P2P on cards whose links
+    were never seen. A partial matrix must be no matrix (#10613)."""
+    header, *rows = TOPO_NVLINK_8X.splitlines()
+    truncated = "\n".join([header] + rows[:4]) + "\n"
+    _use_topo(monkeypatch, truncated)
+    assert LlamaCppBackend._nvlink_topology() is None
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    # The pairs that DID parse are all NV18, so without the completeness check the
+    # uniform escape would fire and allow this.
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+
+
+def test_complete_matrix_is_still_accepted(monkeypatch):
+    # The completeness check must not reject the real thing.
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    assert len(LlamaCppBackend._nvlink_topology()) == 8 * 7
+    _use_topo(monkeypatch, TOPO_BRIDGED_4X)
+    assert len(LlamaCppBackend._nvlink_topology()) == 4 * 3
+    _use_topo(monkeypatch, TOPO_PCIE_2X)
+    assert len(LlamaCppBackend._nvlink_topology()) == 2 * 1
