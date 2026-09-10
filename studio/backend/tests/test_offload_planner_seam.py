@@ -184,6 +184,7 @@ def _inputs(
     mtp = None,
     shared = None,
     gpus = None,
+    gpu_total_mib = None,
     n_parallel = 1,
     n_threads = None,
     compute_flat = 0,
@@ -209,6 +210,7 @@ def _inputs(
         "env_mmproj_bytes": env_mmproj,
         "env_mmproj_unsized": env_mmproj_unsized,
         "gpu_indices": indices,
+        "gpu_total_mib": gpu_total_mib,
         "soft_overhead": 0,
         "reserve_floor_bytes": reserve_floor,
         "model_path": "/models/stub.gguf",
@@ -545,6 +547,177 @@ def test_repeated_ot_flags_rather_than_a_joined_value():
     tokens = [tok for pat in plan.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
     assert tokens.count("-ot") == 2
     assert ";" not in " ".join(tokens)
+
+
+# ------------------------------------------ free VRAM that exceeds the card
+
+
+def _warnings_of(monkeypatch) -> list:
+    """Collect logger.warning messages; the logger is structlog, not stdlib, so
+    caplog never sees them."""
+    seen: list[str] = []
+    monkeypatch.setattr(
+        llama_mod.logger, "warning", lambda msg, *a, **kw: seen.append(str(msg)), raising = False
+    )
+    return seen
+
+
+def test_a_free_reading_above_the_cards_total_is_clamped(monkeypatch):
+    """More free than the card has is a broken reading, not headroom.
+
+    ggml-org/llama.cpp#12138: a Windows RTX 4080 reports an abnormally large free
+    figure and offload never triggers, because every fit looks like it has room.
+    The 0.97 fraction and the 512 MiB floor only cushion it. The planner is the
+    caller that cannot recover from believing it -- it pins its answer with --fit
+    off, so nothing re-fits the launch -- so free is capped at total before a byte
+    of it is credited, and the usable budget derived from the same reading is
+    capped with it.
+    """
+    LlamaCppBackend._free_over_total_reported.clear()
+
+    # 14 GiB free on a card whose total says 14 GiB: a real spill.
+    honest = _plan(_Stub(), free_mib = 14 * 1024, gpu_total_mib = {0: 14 * 1024})
+    assert honest is not None and honest.spills_anything
+
+    # The same card reporting 64 GiB free. Believed, the load "fits" and nothing
+    # is spilled -- #12138's symptom exactly, and the plan then pins it.
+    believed = _plan(_Stub(), free_mib = 64 * 1024)
+    assert believed is not None and not believed.spills_anything
+
+    # Clamped, it is budgeted as the card it is, and the plan is the honest one.
+    over = _plan(_Stub(), free_mib = 64 * 1024, gpu_total_mib = {0: 14 * 1024})
+    assert over is not None
+    assert over.ot_patterns == honest.ot_patterns
+    assert over.vram_bytes == honest.vram_bytes, "the clamped card is budgeted as itself"
+
+    # gpu_usable_mib comes off the same reading (the VRAM fraction and the reserve
+    # floor applied to free), so the budget is capped with it rather than left as
+    # the only unclamped way in.
+    over_usable = _plan(
+        _Stub(), free_mib = 64 * 1024, usable_mib = 63 * 1024, gpu_total_mib = {0: 14 * 1024}
+    )
+    assert over_usable is not None
+    assert over_usable.ot_patterns == honest.ot_patterns
+
+    # Once per device, not once per load.
+    warned = _warnings_of(monkeypatch)
+    for _ in range(3):
+        _plan(_Stub(), free_mib = 64 * 1024, gpu_total_mib = {0: 14 * 1024})
+    assert len(warned) == 0, "the first plan above already reported this device"
+
+
+def test_the_clamp_leaves_an_honest_or_unstated_total_alone(monkeypatch):
+    """Nothing may move on a card that reports itself sanely, and a total of 0
+    means "not stated": Vulkan reports 0 for an iGPU, and the unified AMD path
+    deliberately credits a pool larger than any one card's total."""
+    LlamaCppBackend._free_over_total_reported.clear()
+    rows = [(0, 12.0 * 1024), (1, 8.0 * 1024)]
+    assert LlamaCppBackend._free_vram_at_most_total(rows, None) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {}) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {0: 0, 1: 0}) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {0: 24 * 1024}) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {0: 12 * 1024}) == rows
+
+    warned = _warnings_of(monkeypatch)
+    clamped = LlamaCppBackend._free_vram_at_most_total(rows, {0: 6 * 1024, 1: 8 * 1024})
+    again = LlamaCppBackend._free_vram_at_most_total(rows, {0: 6 * 1024, 1: 8 * 1024})
+    assert clamped == [(0, 6 * 1024), (1, 8.0 * 1024)]
+    assert again == clamped
+    assert len(warned) == 1, "warned once per device, not once per probe"
+    assert "12138" in warned[0]
+
+    # And the seam hands the totals over in the first place.
+    compact = "".join(_load_model_source().split())
+    assert '"gpu_total_mib":dict(total_by_idx)' in compact
+
+
+# ------------------------------------------------ the split the plan modelled
+
+
+def _multi_device_plan(counts = (46, 19)) -> Plan:
+    """A plan that spills and was budgeted against ``counts`` rows per device."""
+    return Plan(
+        changed = True,
+        priced = True,
+        n_ctx = 32768,
+        ot_patterns = (FFN_SPILL_PATTERN,),
+        spilled_blocks = (0,),
+        device_layer_counts = counts,
+    )
+
+
+def test_a_multi_device_plan_emits_the_split_it_was_budgeted_on():
+    """--fit off leaves the child free to guess the split, and it guesses wrong.
+
+    common/fit.cpp never runs under the pin, so llama.cpp falls back to its
+    default split: the free VRAM ggml_backend_dev_memory reads in the CHILD
+    (llama-model.cpp:1462-1477), which is short of the pre-launch snapshot the
+    plan was budgeted on by at least a CUDA primary context per card. Equal cards
+    absorb a uniform shift in the normalised ratio; a 24 GiB plus 10 GiB pair does
+    not, and upper_bound moves a layer boundary the plan assumed.
+    """
+    flags = LlamaCppBackend._spill_plan_flags_for(_multi_device_plan())
+    assert flags[:4] == ["-ngl", "-1", "--fit", "off"]
+    assert flags[-2:] == ["--tensor-split", "46,19"]
+    # Integer layer counts, as common/fit.cpp:555 writes them, not a ratio.
+    assert re.fullmatch(r"\d+(,\d+)+", flags[-1])
+
+
+def test_one_device_and_a_user_ratio_both_emit_no_split():
+    """Two ways the plan must keep its hands off the split.
+
+    A single GPU has none to pin, and -ts there measured a 20x slowdown
+    (ggml-org/llama.cpp#28218). A ratio the user typed or inherited reaches the
+    child anyway, and it is the one the planner already modelled the rows
+    against, so a second copy of the flag decides last-wins silently.
+    """
+    assert "--tensor-split" not in LlamaCppBackend._spill_plan_flags_for(
+        _multi_device_plan(counts = ())
+    )
+    assert "--tensor-split" not in LlamaCppBackend._spill_plan_flags_for(
+        _multi_device_plan(counts = (65,))
+    )
+    assert "--tensor-split" not in LlamaCppBackend._spill_plan_flags_for(
+        _multi_device_plan(), user_tensor_split = True
+    )
+
+
+def test_the_revocation_takes_the_split_back_out_too():
+    """Every retry that revokes the plan re-places the model, so the split the
+    plan pinned describes a launch that is no longer happening."""
+    stub = _Stub()
+    stub._spill_plan_flags = LlamaCppBackend._spill_plan_flags_for(_multi_device_plan())
+    cmd = ["llama-server", "-m", "x.gguf", *stub._spill_plan_flags, "--port", "8080"]
+    got = stub._drop_tensor_spill(cmd, "noflash")
+    assert "--tensor-split" not in got and "-ot" not in got
+    assert got == ["llama-server", "-m", "x.gguf", "--port", "8080", "--fit", "on"]
+
+    # And when something else took the pair out first -- the arch gate drops any
+    # --tensor-split when it masks a card out -- the rest of the block still goes,
+    # rather than leaving -ngl -1 --fit off standing because the run no longer
+    # matches contiguously.
+    gated = LlamaCppBackend._without_tensor_split(cmd)
+    assert gated is not None and "--tensor-split" not in gated
+    got_gated = stub._drop_tensor_spill(gated, "arch gate")
+    assert "-ot" not in got_gated
+    assert got_gated == ["llama-server", "-m", "x.gguf", "--port", "8080", "--fit", "on"]
+
+
+def test_the_launch_path_pins_the_device_order_it_split_against(monkeypatch):
+    """The shares are POSITIONAL over the child's device list.
+
+    The plan's device order is the ascending physical/PCI order _get_gpu_memory
+    reports, while the CUDA runtime defaults to FASTEST_FIRST, so the child has to
+    be pinned to PCI order exactly as it is for a manual ratio -- otherwise share
+    0 is applied to whichever card CUDA decided to enumerate first.
+    """
+    compact = "".join(_load_model_source().split())
+    assert 'if"--tensor-split"in_spill_flags:' in compact
+    # Two sites set it now: the manual per-GPU ratio, and the plan's own split.
+    assert compact.count("manual_tensor_split_emitted=True") == 2
+    # And the predicate really is read from the launch, not defaulted.
+    assert "user_tensor_split=bool(" in compact
+    assert "_extra_args_set_any_flag(extra_args,_TENSOR_SPLIT_FLAGS)" in compact
 
 
 # ---------------------------------------------------- the argv, structurally
@@ -1312,6 +1485,74 @@ def test_an_integrated_cuda_device_declines_the_plan():
     # Same numbers either way, so the difference is attributable to the flag.
     assert _plan(soc, free_mib = 14 * 1024) is None
     assert _plan(discrete, free_mib = 14 * 1024) is not None, "not vacuous"
+
+
+# --------------------------------- cards the installed CUDA build cannot run
+
+
+def test_a_card_the_build_has_no_kernels_for_declines_the_plan(monkeypatch):
+    """The SM gate is whole-host, so a mixed pair reaches the planner.
+
+    `_cuda_sm_gate_error` proceeds as soon as ANY visible device meets the
+    build's oldest supported SM, which is right for it: its refusal takes the
+    whole launch to the CPU. On an sm_86 plus sm_89 pair under a bundle built for
+    sm_89 only, that leaves the 3090 in the child's device list, holding its
+    share of the rows by free VRAM and aborting there with "not compiled with any
+    CUDA arch <= 86" (ggml-org/llama.cpp#27429). Per-device coverage is what
+    decides, since ggml dispatches on info.devices[id].cc (ggml-cuda.cu:348).
+
+    The planner cannot mask the card out of its own device set -- the child's
+    visibility is pinned in load_model, long after this -- so budgeting without
+    it would model a split llama.cpp is not going to perform. Decline instead,
+    and fall through to --fit on.
+    """
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_cuda_sm_uncovered_devices",
+        classmethod(lambda cls, binary = None: ((1, 86),)),
+    )
+    pair = [(0, 24 * 1024), (1, 24 * 1024)]
+    assert _plan(_Stub(), gpus = pair) is None
+
+    # Not vacuous, and per DEVICE rather than per host: the same pair plans as
+    # soon as the uncovered card is not one of the cards being budgeted, whether
+    # because it is absent or because the load is pinned to the other one.
+    assert _plan(_Stub(), gpus = [(0, 24 * 1024), (2, 24 * 1024)]) is not None
+    assert _plan(_Stub(), gpus = pair, indices = [0]) is not None
+
+
+def test_the_sm_coverage_probe_answers_per_device(monkeypatch):
+    """The helper names the uncovered card while the launch gate stays open.
+
+    Both halves matter: the gate keeps failing open on a mixed pair (refusing
+    there would send a working 4090 to the CPU), and the per-device answer that
+    the planner reads is the one that sees the 3090.
+    """
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/x/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_llama_cuda_sms",
+        staticmethod(lambda binary = None: frozenset({89})),
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 86, 1: 89}))
+    assert LlamaCppBackend._cuda_sm_gate_error() is None
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ((0, 86),)
+
+    # A single card, covered or not, answers exactly as the gate does, so nothing
+    # about the one-device launch moves.
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 89}))
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ()
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 86}))
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ((0, 86),)
+    assert LlamaCppBackend._cuda_sm_gate_error() is not None
+
+    # Unknown coverage and unknown caps both fail open.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_installed_llama_cuda_sms", staticmethod(lambda binary = None: None)
+    )
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ()
 
 
 def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_0():

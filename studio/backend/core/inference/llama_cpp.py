@@ -9489,6 +9489,38 @@ class LlamaCppBackend:
             return None
 
     @classmethod
+    def _cuda_sm_uncovered_devices(
+        cls, binary: Optional[str] = None
+    ) -> "tuple[tuple[int, int], ...]":
+        """``(physical id, sm)`` for every visible CUDA device BELOW the oldest arch
+        the installed bundle was built for, sorted by id; empty when there is
+        nothing to say (unknown coverage, unknown caps, every card covered).
+
+        Per device, because coverage is per device: ggml dispatches on
+        ``info.devices[id].cc`` (ggml-cuda.cu:348), so on a mixed pair a build
+        narrowed to sm_89 runs the 4090 and aborts on the 3090 with "not compiled
+        with any CUDA arch <= 86". A whole-host ``any``/``all`` test cannot see
+        that (ggml-org/llama.cpp#27429). Fails open on unknown, like every other
+        probe here, and never raises.
+        """
+        try:
+            # Coverage first, and only then the caps probe: a marker read is a
+            # cached file read, while _cuda_compute_caps spawns nvidia-smi. Same
+            # ordering, and the same reason, as _arch_gate_survivors.
+            binary = binary or cls._find_llama_server_binary()
+            supported = cls._installed_llama_cuda_sms(binary)
+            if supported is None:
+                return ()
+            caps = cls._cuda_compute_caps()
+            if not caps:
+                return ()
+            oldest = min(supported)
+            return tuple((idx, sm) for idx, sm in sorted(caps.items()) if sm < oldest)
+        except Exception as e:
+            logger.debug(f"cuda sm coverage probe failed: {e}")
+            return ()
+
+    @classmethod
     def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
         installed CUDA bundle was built for, or None to proceed. Fails open on
@@ -9511,6 +9543,13 @@ class LlamaCppBackend:
             return None
         caps = cls._cuda_compute_caps()
         oldest = min(supported)
+        # Whole-host on purpose: this refusal writes CUDA_VISIBLE_DEVICES=-1 and
+        # takes the launch to the CPU, so it may only fire when there is no card
+        # here that can run at all. One covered card among several is still a
+        # working launch for llama.cpp's own placement, which is free to leave the
+        # uncovered one holding nothing. What it is NOT is a device set the spill
+        # planner may pin with --fit off; _cuda_sm_uncovered_devices is the
+        # per-device answer that gate reads.
         if not caps or any(sm >= oldest for sm in caps.values()):
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
@@ -22353,6 +22392,9 @@ class LlamaCppBackend:
                             _idx: max(0.0, _gpu_usable((_idx, _free), _pin_fraction))
                             for _idx, _free in (gpus or ())
                         },
+                        # Read back against free, so a card reporting more free than
+                        # it has (#12138) is caught before the plan is pinned.
+                        "gpu_total_mib": dict(total_by_idx),
                         "gpu_indices": gpu_indices,
                         "soft_overhead": _soft_overhead,
                         # What the usable budget above already withheld from each card, priced into
@@ -23252,9 +23294,23 @@ class LlamaCppBackend:
                         ),
                         may_shrink = bool((_spill_inputs or {}).get("context_policy_fit_only")),
                         emitted_ctx = int(effective_ctx or 0) if "-c" in cmd else 0,
+                        # A ratio the user typed, or one inherited through the env
+                        # twin, reaches the child either way (the extras are appended
+                        # after this block), so the plan emits no second one.
+                        user_tensor_split = bool(
+                            _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
+                            or str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
+                        ),
                     )
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
+                        if "--tensor-split" in _spill_flags:
+                            # Positional over the child's device list, and the plan's
+                            # device order is the ascending physical/PCI order
+                            # _get_gpu_memory reports, so the child's enumeration has
+                            # to be pinned to match it (the env block below reads
+                            # this the same way it does for a manual ratio).
+                            manual_tensor_split_emitted = True
                         self._spill_plan_restore = {}
                         self._spill_plan_append = []
                         _spill_ctx_locals_before = None
@@ -28266,6 +28322,51 @@ class LlamaCppBackend:
             return False
         return True
 
+    # Devices already warned about, so an over-report is reported once per process
+    # rather than on every load. Class level, because the probe is.
+    _free_over_total_reported: "set[int]" = set()
+
+    @classmethod
+    def _free_vram_at_most_total(
+        cls,
+        rows: "Sequence[tuple[int, float]]",
+        total_mib: "Optional[Mapping[int, float]]" = None,
+    ) -> "list[tuple[int, float]]":
+        """``rows`` of ``(device, free MiB)`` with any free figure clamped to that
+        device's reported total.
+
+        Free above total is a broken reading, not headroom: ggml-org/llama.cpp#12138
+        is a Windows RTX 4080 reporting "abnormally large" free VRAM, on which
+        offload never triggers because every fit looks like it has room. The planner
+        is the one caller that cannot recover from believing it -- it pins its answer
+        with ``--fit off``, so nothing re-fits the launch afterwards.
+
+        A total of 0 or one this probe never reported means "not stated" and clamps
+        nothing: Vulkan reports total 0 for an iGPU, and the AMD/HIP unified path
+        deliberately credits a pool larger than any card's own total. Logged once per
+        device per process.
+        """
+        if not total_mib:
+            return list(rows)
+        out: list[tuple[int, float]] = []
+        for idx, free in rows:
+            total = total_mib.get(idx, 0) or 0
+            if total > 0 and free > total:
+                if idx not in cls._free_over_total_reported:
+                    cls._free_over_total_reported.add(idx)
+                    logger.warning(
+                        "GPU %s reports %.0f MiB free against %.0f MiB total; "
+                        "treating the free figure as the total (see "
+                        "ggml-org/llama.cpp#12138)",
+                        idx,
+                        float(free),
+                        float(total),
+                    )
+                out.append((idx, total))
+                continue
+            out.append((idx, free))
+        return out
+
     def _planned_tensor_spill(
         self,
         inputs: Optional[dict],
@@ -28309,7 +28410,13 @@ class LlamaCppBackend:
 
         model_size = int(inputs.get("model_size") or 0)
         kv_cache_bytes = int(inputs.get("kv_cache_bytes") or 0)
-        rows = list(inputs.get("gpus") or ())
+        # Clamped before anything is credited: a free reading above the card's own
+        # total is the #12138 over-report, and every budget below is derived from it.
+        # Through the class, not self, like the probes above: it holds no instance
+        # state, and the seam tests borrow this method onto a stub.
+        rows = LlamaCppBackend._free_vram_at_most_total(
+            list(inputs.get("gpus") or ()), inputs.get("gpu_total_mib")
+        )
         if not model_size or not kv_cache_bytes or not rows:
             return None
         if not self._can_estimate_kv():
@@ -28374,8 +28481,33 @@ class LlamaCppBackend:
         # not describe the child's device list.
         if _extra_args_split_mode(extra_args, {}) == "none" and kept:
             kept = kept[:1]
+        # A card the installed CUDA bundle has no kernels for is not a card this
+        # plan may budget: llama.cpp hands it its share of the rows anyway (the
+        # default split is free VRAM, which an uncovered card reports normally) and
+        # aborts there, and --fit off means nothing re-places the model afterwards.
+        # Masking it out of `kept` is not expressible from here -- the child's
+        # device list is pinned in load_model, well after this -- so budgeting
+        # without it would model a split llama.cpp is not going to perform. Decline
+        # and name the card, so the fallthrough to --fit on keeps today's behaviour.
+        # Whole-host coverage is the launch gate's business (_cuda_sm_gate_error);
+        # this is the mixed pair it deliberately lets through.
+        # Through the class, not self, like _planner_may_run above: the probe has
+        # no instance state, and the seam tests borrow this method onto a stub.
+        _uncovered = LlamaCppBackend._cuda_sm_uncovered_devices()
+        _kept_ids = {idx for idx, _free_mib in kept}
+        _blocked = [(idx, sm) for idx, sm in _uncovered if idx in _kept_ids]
+        if _blocked:
+            logger.info(
+                "Tensor spill: declined, the installed llama.cpp build has no GPU code for %s",
+                ", ".join(f"GPU {idx} (sm_{sm})" for idx, sm in _blocked),
+            )
+            return None
+        # min(), because gpu_usable_mib was computed from the SAME free reading the
+        # clamp above may have just cut: usable is free minus a reserve, so it is
+        # never the smaller of the two on a card that reported itself sanely.
         vram_per_device = [
-            int(usable_mib.get(idx, free_mib) * 1024 * 1024) for idx, free_mib in kept
+            int(min(usable_mib.get(idx, free_mib), free_mib) * 1024 * 1024)
+            for idx, free_mib in kept
         ]
         # llama.cpp sizes its row ranges from RAW free VRAM (llama-model.cpp:1433),
         # so the split must be modelled on the raw numbers. The budget subtracts a
@@ -28703,10 +28835,18 @@ class LlamaCppBackend:
         requested_ctx: int = 0,
         may_shrink: bool = True,
         emitted_ctx: int = 0,
+        *,
+        user_tensor_split: bool = False,
     ) -> "list[str]":
         """The argv tokens for ``plan``, or ``[]`` when it must not be emitted. One flag per
         pattern: llama-server ACCUMULATES repeated ``-ot`` (common/arg.cpp:2657 push_backs into
         the shared override vector).
+
+        ``user_tensor_split`` says a ``--tensor-split`` / ``-ts`` the user typed (or
+        inherited through ``LLAMA_ARG_TENSOR_SPLIT``) reaches the child, in which
+        case the plan does not emit one of its own: theirs is the ratio the planner
+        already modelled the rows against, and last-wins between two of the same
+        flag is not a decision to make silently.
         """
         if plan is None or plan.insufficient or plan.declined_by_gate:
             return []
@@ -28729,7 +28869,19 @@ class LlamaCppBackend:
             return []
         # A plan that spilled nothing but reshaped the launch is still Unsloth's placement, so
         # it takes the same pin the proved arm does.
-        return ["-ngl", "-1", "--fit", "off", *tokens]
+        flags = ["-ngl", "-1", "--fit", "off", *tokens]
+        # ...and the pin is exactly why the split has to go with it. --fit off skips
+        # common/fit.cpp, so llama.cpp falls back to its default split, which is the
+        # free VRAM ggml_backend_dev_memory reads IN THE CHILD (llama-model.cpp:1462-1477)
+        # -- not the pre-launch snapshot this plan was budgeted on, and short of it by
+        # at least one CUDA primary context per card. On unequal cards that moves a
+        # layer boundary the plan assumed. Integer layer counts, the way
+        # common/fit.cpp:555 writes them; LAST, so a site that narrows the argv by
+        # dropping this pair (the arch gate does) leaves the rest of the block
+        # contiguous for the revocation.
+        if len(plan.device_layer_counts) > 1 and not user_tensor_split:
+            flags.extend(["--tensor-split", ",".join(str(n) for n in plan.device_layer_counts)])
+        return flags
 
     def _drop_tensor_spill(self, run_cmd: "list[str]", why: str) -> "list[str]":
         """Take the spill plan back out of an argv and restore ``--fit on``.
@@ -28747,6 +28899,16 @@ class LlamaCppBackend:
         if not self._spill_plan_flags:
             return run_cmd
         stripped = _without_subsequence(run_cmd, self._spill_plan_flags)
+        if stripped == run_cmd and "--tensor-split" in self._spill_plan_flags:
+            # The plan's own --tensor-split is the one token in the block another
+            # site may have taken back out (_without_tensor_split, when the arch
+            # gate masks a card out), and the run is matched contiguously. Retry
+            # without that pair rather than leave -ngl -1 --fit off standing.
+            _ts_at = self._spill_plan_flags.index("--tensor-split")
+            stripped = _without_subsequence(
+                run_cmd,
+                [*self._spill_plan_flags[:_ts_at], *self._spill_plan_flags[_ts_at + 2 :]],
+            )
         if stripped == run_cmd:
             return run_cmd
         # The drafter drop and the projector pin are NOT undone: both reduce VRAM, the
