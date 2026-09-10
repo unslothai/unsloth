@@ -445,11 +445,11 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
     turns it into a line-matched approval that a later payload in the same file
     would ride.
 
-    A (file, check) pair can hold several entries, one per revision of the matched
-    lines that a release has shipped. compiler.py already carries four. Three of them
-    are superseded and unpinned, and those are grandfathered by evidence hash below;
-    any variant added from here on has to be pinned, because an unpinned one
-    suppresses the finding whatever the file contains.
+    A (file, check) pair can hold several entries, one per reviewed release snapshot.
+    compiler.py currently carries five: three superseded unpinned variants grandfathered
+    by evidence hash below, plus two pinned digests that share evidence_hash
+    ``bdfae4c2…`` (2026.9.1 and 2026.9.2/9.3). Any variant added from here on has to
+    be pinned, because an unpinned one suppresses the finding whatever the file contains.
 
     It used to also duplicate each approved digest as a literal here, which pinned
     nothing extra (whoever edits the baseline can edit this file in the same commit)
@@ -2600,3 +2600,210 @@ def test_a_socketed_file_renders_what_it_always_rendered():
     assert len(found) == 1
     code_only = sp._strip_noncode(source)
     assert found[0].evidence == sp._extract_evidence(code_only, sp.RE_REVERSE_SHELL)
+
+
+def test_reviewed_packages_provenance_is_metadata_only(tmp_path):
+    """``reviewed_packages`` must never suppress findings by itself (#10545).
+
+    Recording which release was last re-read is useful for the next zoo bump, but
+    a matching or stale version string cannot stand in for evidence_hash /
+    file_sha256. A finding whose evidence changed stays active even when the
+    provenance map still names that package.
+    """
+    finding = _mk(
+        sp.HIGH,
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        "Obfusc: L1: __import__('x')\nExec: L2: eval(y)",
+    )
+    finding.file_sha256 = "a" * 64
+    bl = tmp_path / "bl.json"
+    sp._write_baseline(
+        str(bl),
+        [finding],
+        reviewed_packages = {
+            "unsloth-zoo": {"version": "2026.9.3", "note": "fixture"},
+        },
+    )
+    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    assert doc["reviewed_packages"]["unsloth-zoo"]["version"] == "2026.9.3"
+    assert "reviewed_packages" in doc and isinstance(doc["reviewed_packages"], dict)
+
+    baseline = sp._load_baseline(str(bl))
+    # Provenance is not a match key; only the written entry suppresses.
+    active, suppressed = sp._partition_baseline([finding], baseline)
+    assert suppressed == [finding] and active == []
+
+    changed = _mk(
+        sp.HIGH,
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        "Obfusc: L1: __import__('x')\nExec: L2: eval(malicious_payload)",
+    )
+    changed.file_sha256 = "a" * 64
+    active2, suppressed2 = sp._partition_baseline([changed], baseline)
+    assert active2 == [changed] and suppressed2 == []
+
+
+def test_write_baseline_preserves_reviewed_packages_provenance(tmp_path):
+    """Regenerating without an explicit map must keep the prior provenance."""
+    bl = tmp_path / "bl.json"
+    f = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    sp._write_baseline(
+        str(bl),
+        [f],
+        reviewed_packages = {"p": {"version": "1.2.3"}},
+    )
+    g = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    sp._write_baseline(str(bl), [g])
+    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    assert doc["reviewed_packages"] == {"p": {"version": "1.2.3"}}
+
+
+def test_same_package_file_check_without_matching_evidence_stays_active(tmp_path):
+    """An unrelated baseline entry cannot suppress a different evidence hash."""
+    listed = _mk(
+        sp.HIGH,
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        "Obfusc: L1: __import__('a')\nExec: L2: exec(f'{m}.forward = forward')",
+    )
+    other = _mk(
+        sp.HIGH,
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        "Obfusc: L1: __import__('a')\nExec: L2: exec(evil)",
+    )
+    bl = tmp_path / "bl.json"
+    sp._write_baseline(str(bl), [listed])
+    baseline = sp._load_baseline(str(bl))
+    active, suppressed = sp._partition_baseline([other], baseline)
+    assert active == [other] and suppressed == []
+    assert sp._finding_key(listed) != sp._finding_key(other)
+
+
+def test_issue_10545_compiler_pin_reopens_on_file_change_and_suppresses_on_restore():
+    """#10545 compiler.py: evidence unchanged; only the file_sha256 pin reopens.
+
+    Canonical matched evidence is byte-identical to the baselined ``bdfae4c2…``
+    entry (hash normalisation absorbs line shifts). The finding reopens because
+    this entry is digest-pinned for danger outside the matched lines, and
+    ``compiler.py`` changed elsewhere in 2026.9.2/9.3. Re-approval is a new pin
+    after a whole-file review, not a new evidence_hash. This test locks that the
+    fix did not turn the baseline into a blanket package/file suppression.
+    """
+    path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    doc = json.loads(path.read_text(encoding = "utf-8"))
+    entries = [
+        e
+        for e in doc["entries"]
+        if e.get("package") == "unsloth-zoo"
+        and e.get("file") == "unsloth_zoo/compiler.py"
+        and e.get("file_sha256")
+        and e.get("evidence_hash")
+        == "bdfae4c24572c2a86fa6a2dede720ebb0723746963e43c2cd42701de5fc48fdb"
+    ]
+    assert entries, "expected a pinned compiler.py revision for the current evidence"
+    # Prefer the digest recorded for 2026.9.2/2026.9.3.
+    current = next(
+        (
+            e
+            for e in entries
+            if e["file_sha256"]
+            == "5e14926abb64b32ca68139938e8b745c7a4d352324dd18c7a3d9a70eed56a15c"
+        ),
+        entries[-1],
+    )
+    baseline = sp._load_baseline(str(path))
+
+    reviewed = _mk(
+        current["severity"],
+        current["package"],
+        current["file"],
+        current["check"],
+        current["evidence"],
+    )
+    reviewed.file_sha256 = current["file_sha256"]
+    active, suppressed = sp._partition_baseline([reviewed], baseline)
+    assert suppressed == [reviewed] and active == []
+
+    # Simulate the bump: evidence unchanged, file bytes changed.
+    bumped = _mk(
+        current["severity"],
+        current["package"],
+        current["file"],
+        current["check"],
+        current["evidence"],
+    )
+    bumped.file_sha256 = "0" * 64
+    active2, suppressed2 = sp._partition_baseline([bumped], baseline)
+    assert active2 == [bumped] and suppressed2 == []
+
+    # Restore the reviewed digest -> suppressed again.
+    restored = _mk(
+        current["severity"],
+        current["package"],
+        current["file"],
+        current["check"],
+        current["evidence"],
+    )
+    restored.file_sha256 = current["file_sha256"]
+    active3, suppressed3 = sp._partition_baseline([restored], baseline)
+    assert suppressed3 == [restored] and active3 == []
+
+
+def test_issue_10545_loader_evidence_change_reopens():
+    """#10545 mlx/loader.py: unpinned; one new ``mx.eval(baseline, perturbed)`` span.
+
+    Unlike compiler.py, this file's reopen is genuine evidence drift. ``mx.eval``
+    is MLX lazy-array evaluation (same class as the other baselined ``mx.eval``
+    sites). A further unmatched span must still reopen.
+    """
+    path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    doc = json.loads(path.read_text(encoding = "utf-8"))
+    current = next(
+        e
+        for e in doc["entries"]
+        if e.get("package") == "unsloth-zoo"
+        and e.get("file") == "unsloth_zoo/mlx/loader.py"
+        and e.get("evidence_hash")
+        == "cf9c8ed7bf9c33f83b6280d7d2d60b072262a04ce3e886a1f38c4003fbef01f4"
+    )
+    baseline = sp._load_baseline(str(path))
+    reviewed = _mk(
+        current["severity"],
+        current["package"],
+        current["file"],
+        current["check"],
+        current["evidence"],
+    )
+    active, suppressed = sp._partition_baseline([reviewed], baseline)
+    assert suppressed == [reviewed] and active == []
+
+    poisoned = _mk(
+        current["severity"],
+        current["package"],
+        current["file"],
+        current["check"],
+        current["evidence"] + " | L9999: eval(__import__('os').system('id'))",
+    )
+    assert sp._evidence_hash(poisoned.evidence) != current["evidence_hash"]
+    active2, suppressed2 = sp._partition_baseline([poisoned], baseline)
+    assert active2 == [poisoned] and suppressed2 == []
+
+
+def test_committed_baseline_records_unsloth_zoo_review_provenance():
+    """Ship a reviewed_packages note for unsloth-zoo so the next bump is not silent."""
+    path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    doc = json.loads(path.read_text(encoding = "utf-8"))
+    provenance = doc.get("reviewed_packages") or {}
+    assert "unsloth-zoo" in provenance, "missing reviewed_packages.unsloth-zoo"
+    zoo = provenance["unsloth-zoo"]
+    assert isinstance(zoo, dict) and zoo.get("version"), zoo
+    # Provenance must not be mistaken for an allowlist entry.
+    baseline = sp._load_baseline(str(path))
+    assert all(isinstance(k, tuple) and len(k) == 4 for k in baseline)

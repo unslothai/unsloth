@@ -2907,6 +2907,9 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     covers only those exact file contents, so any other edit to the file reopens
     the finding. For files whose danger sits outside the matched lines, e.g. a
     credential send whose evidence records the urlopen call but not its destination.
+
+    Top-level metadata (``_comment``, ``version``, ``reviewed_packages``) is
+    ignored for matching so provenance cannot widen or narrow suppressions.
     """
     try:
         with open(path, "r", encoding = "utf-8") as fh:
@@ -2960,17 +2963,36 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     return keys
 
 
+def _read_baseline_doc(path: "str | None") -> dict:
+    """Return the raw baseline JSON object, or ``{}`` if missing/unreadable."""
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError, FileNotFoundError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _write_baseline(
     path: str,
     findings: list[Finding],
     source: "str | None" = None,
+    reviewed_packages: "dict | None" = None,
 ) -> None:
     """Persist CRITICAL/HIGH findings as an allowlist for human triage.
 
     Pins are carried over from `source`, the baseline in effect for this run, so
     regenerating cannot silently widen a reviewed entry. Reading them from `path`
     instead would drop every pin whenever the output goes somewhere new.
+
+    ``reviewed_packages`` is optional reviewer provenance (package -> version /
+    note). When omitted, any existing map from ``source`` is preserved so a
+    regeneration cannot silently erase which release was last re-read. The map
+    never participates in matching.
     """
+    source_doc = _read_baseline_doc(source or path)
     pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -2992,6 +3014,10 @@ def _write_baseline(
         if key in pinned and f.file_sha256:
             entry["file_sha256"] = f.file_sha256
         entries.append(entry)
+    # Preserve or replace provenance without treating it as an entry.
+    provenance = (
+        reviewed_packages if reviewed_packages is not None else source_doc.get("reviewed_packages")
+    )
     doc = {
         "_comment": (
             "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
@@ -3001,12 +3027,16 @@ def _write_baseline(
             "reopen an entry but changed code does. An optional file_sha256 pins an "
             "entry to that exact file, for danger sitting outside the matched lines "
             "(a credential send records the urlopen call, not its destination). "
+            "Optional reviewed_packages records which package release was last "
+            "re-reviewed; it is metadata only and never participates in matching. "
             "severity and evidence are for review only. Regenerate with "
             "--write-baseline AFTER reviewing every line."
         ),
         "version": 1,
-        "entries": entries,
     }
+    if isinstance(provenance, dict) and provenance:
+        doc["reviewed_packages"] = provenance
+    doc["entries"] = entries
     with open(path, "w", encoding = "utf-8") as fh:
         json.dump(doc, fh, indent = 2, sort_keys = False)
         fh.write("\n")
