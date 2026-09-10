@@ -25,8 +25,12 @@ from loggers import get_logger
 
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
-    _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
+    blocked_bare_json_chain_may_continue,
+    blocked_gemma_chain_may_continue,
+    held_bare_gemma_tail_len,
+    leading_bare_gemma_call_is_promotable,
+    promotable_gemma_call_pos,
     _strip_mistral_reasoning,
     strip_segment as _parser_strip_segment,
     BUDGET_EXHAUSTED_NUDGE,
@@ -47,6 +51,7 @@ from core.inference.tool_call_parser import (
 )
 
 from core.tool_healing import (
+    _markerless_promotable,
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
     strip_outside_think,
@@ -115,12 +120,23 @@ def _is_rehearsal_prefix(
 ) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of a ``NAME[ARGS]``
     rehearsal split across chunks (``web_search`` then ``[ARGS]{...}``). A space
-    means prose. Unrestricted mode accepts any identifier; else NAME must be active."""
+    means prose. Unrestricted mode accepts any identifier; else NAME must be active. Either
+    way NAME must be markerless-promotable, so a bare execution-class name streams as prose
+    instead of being held for a call that never comes."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     if unrestricted:
-        return _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is not None
+        if _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is None:
+            return False
+        name, bracket, _ = stripped.partition("[")
+        # Until the ``[`` lands the name is open: ``terminal`` may yet become
+        # ``terminal_logs``, which IS promotable. Decide once the shape settles.
+        return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
+        # Active by construction, so only the class is left. The shared gate, not the built-in
+        # three: an mcp__* name is refused too, and holding its suffix withholds visible text.
+        if not _markerless_promotable(name, None):
+            continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False
@@ -134,15 +150,24 @@ def _held_rehearsal_tail_len(
 ) -> int:
     """Length of a trailing bare tool-name token that may be a split rehearsal call
     (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
-    instead of leaking the name. Returns 0 for ordinary prose."""
+    instead of leaking the name. Returns 0 for ordinary prose.
+
+    A trailing bare-Gemma ``call:NAME{..`` is held the same way: the signal scan only sees it
+    once its ``{`` arrives, so the prefix would otherwise stream ahead of the call."""
     i = len(text)
     while i > 0 and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    return (
+    held = (
         len(tail)
         if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
         else 0
+    )
+    return max(
+        held,
+        held_bare_gemma_tail_len(
+            text, lambda: None if unrestricted else _active_tool_names(active_tools)
+        ),
     )
 
 
@@ -155,14 +180,15 @@ def _rehearsal_name_start(
 ) -> int:
     """For an ``[ARGS]`` signal at ``signal_pos``, return the start of the preceding
     bare tool-name token (``NAME[ARGS]``), else ``signal_pos`` unchanged when the
-    signal is not ``[ARGS]`` or NAME is not an active tool (restricted mode)."""
+    signal is not ``[ARGS]`` or NAME is not markerless-promotable. Draining on a name the
+    parser will not promote would withhold the turn for a call that never comes."""
     if not candidate.startswith("[ARGS]", signal_pos):
         return signal_pos
     j = signal_pos
     while j > 0 and (candidate[j - 1].isalnum() or candidate[j - 1] in "_-"):
         j -= 1
-    if j < signal_pos and (
-        unrestricted or candidate[j:signal_pos] in _active_tool_names(active_tools)
+    if j < signal_pos and _markerless_promotable(
+        candidate[j:signal_pos], None if unrestricted else _active_tool_names(active_tools)
     ):
         return j
     return signal_pos
@@ -181,30 +207,61 @@ def _earliest_tool_signal(
     Non-``[ARGS]`` markup wins on first occurrence. An ``[ARGS]`` hit is a rehearsal
     only when an active tool name (any name in unrestricted mode) precedes it, so a
     literal ``foo[ARGS]`` in prose is skipped rather than draining the turn; for a
-    real ``NAME[ARGS]`` the boundary is pulled back to NAME."""
-    best = -1
-    for sig in signals:
-        if sig != "[ARGS]":
-            p = candidate.find(sig, start)
-            if p >= 0 and (best < 0 or p < best):
-                best = p
-            continue
-        from_idx = start
-        while True:
-            p = candidate.find("[ARGS]", from_idx)
-            if p < 0:
-                break
-            name_start = _rehearsal_name_start(
-                candidate, p, active_tools, unrestricted = unrestricted
-            )
-            if name_start < p:
-                # Genuine ``NAME[ARGS]``: the boundary is the start of NAME.
-                if best < 0 or name_start < best:
-                    best = name_start
-                break
-            # Bare/prose [ARGS]: skip it so a later real call in the same chunk is still found.
-            from_idx = p + len("[ARGS]")
-    return best
+    real ``NAME[ARGS]`` the boundary is pulled back to NAME.
+
+    A marker inside a ``<think>`` / ``[THINK]`` block is NOT a boundary: the parser masks
+    reasoning spans, so draining on one stopped the stream at the marker and a cancel then
+    lost every token after it, including the visible answer past the block. The scan resumes
+    past such a span, with ``floor`` rejecting the look-behind that would re-find it."""
+    think_spans = None
+    floor = 0
+    while True:
+        best = -1
+        for sig in signals:
+            if sig != "[ARGS]":
+                p = candidate.find(sig, start)
+                if p >= 0 and (best < 0 or p < best):
+                    best = p
+                continue
+            from_idx = start
+            while True:
+                p = candidate.find("[ARGS]", from_idx)
+                if p < 0:
+                    break
+                name_start = _rehearsal_name_start(
+                    candidate, p, active_tools, unrestricted = unrestricted
+                )
+                if name_start < p:
+                    # Genuine ``NAME[ARGS]``: the boundary is the start of NAME.
+                    if name_start >= floor and (best < 0 or name_start < best):
+                        best = name_start
+                    break
+                # Bare/prose [ARGS]: skip it so a later real call in the same chunk is
+                # still found.
+                from_idx = p + len("[ARGS]")
+        # Bare Gemma is not in ``signals`` but the parser promotes it anywhere, so a mid-prose
+        # one is a boundary too. Lazy catalogue: this runs per streamed delta.
+        gemma = promotable_gemma_call_pos(
+            candidate,
+            None if unrestricted else (lambda: _active_tool_names(active_tools)),
+            start,
+            floor = floor,
+        )
+        if gemma >= floor and (best < 0 or gemma < best):
+            best = gemma
+        if best < 0:
+            return -1
+        if "<think" not in candidate and "[THINK" not in candidate:
+            return best
+        if think_spans is None:
+            think_spans = _think_spans_outside_tool_markup(candidate)
+        span_end = next((end for begin, end in think_spans if begin <= best < end), None)
+        if span_end is None:
+            return best
+        if span_end <= floor:
+            # Already scanning past this span and it still wins: nothing else is a boundary.
+            return -1
+        start = floor = span_end
 
 
 def _has_genuine_tool_signal(
@@ -460,8 +517,21 @@ def _search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str,
     return search_images_kwargs(func, tool_name)
 
 
-def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
-    """Call a single-turn generator with active tool schemas when supported."""
+def _call_single_turn(
+    single_turn,
+    conversation: list,
+    active_tools: list[dict],
+    tool_protocol_active: bool = True,
+):
+    """Call a single-turn generator with the tool schemas and protocol flag it supports."""
+    try:
+        return single_turn(
+            conversation, active_tools = active_tools, tool_protocol_active = tool_protocol_active
+        )
+    except TypeError as exc:
+        # A bare signature reports the FIRST unexpected kwarg, so accept either name.
+        if "tool_protocol_active" not in str(exc) and "active_tools" not in str(exc):
+            raise
     try:
         return single_turn(conversation, active_tools = active_tools)
     except TypeError as exc:
@@ -690,8 +760,29 @@ def run_safetensors_tool_loop(
             # Safetensors-only Magistral leading-reasoning removal first, then the shared strip.
             return _streaming_stripper.strip(_strip_mistral_reasoning(text))
 
+        def _cancelled_buffer_text() -> str:
+            """Display text a cancel would otherwise drop, in any state.
+
+            BUFFERING holds a blocked call, which is prose the parser never executes, so
+            returning before the resolution below loses text the stream never sent. STREAMING
+            withholds its own tail: ``cal`` may still become ``call:`` and a bare tool name
+            may still become a rehearsal, so both are kept out of ``last_emitted`` until the
+            next snapshot settles them, and a cancel arriving first lost them too. The strip
+            is the final one, which removes promotable markup, so an aborted real call
+            contributes only its surrounding prose."""
+            # The buffer is folded into the display without being cleared, so add it only
+            # while that has not happened. Keying on BUFFERING misses the bare-JSON and
+            # bare-Gemma branches, which enter DRAINING without folding.
+            held = cumulative_display + ("" if buffer_in_display else content_buffer)
+            if not held:
+                return ""
+            cleaned = strip_tool_markup(held, final = True, enabled_tool_names = _enabled_tool_names)
+            return cleaned if len(cleaned) > len(last_emitted) else ""
+
         detect_state = _state_buffering
         content_buffer = ""
+        # Whether content_buffer has already been added to cumulative_display.
+        buffer_in_display = False
         content_accum = ""
         cumulative_display = ""
         last_emitted = ""
@@ -743,7 +834,7 @@ def run_safetensors_tool_loop(
         # The conversation as this turn's prompt renders it, so what the loop appends
         # afterwards can be charged on its own against the count the turn reports.
         prompt_dense_tokens = _dense_message_tokens(conversation)
-        gen = _call_single_turn(single_turn, conversation, active_tools)
+        gen = _call_single_turn(single_turn, conversation, active_tools, tool_protocol_active)
         prev_cumulative = ""
 
         _gen_iter = iter(gen)
@@ -768,6 +859,9 @@ def run_safetensors_tool_loop(
                 raise
 
             if cancel_event is not None and cancel_event.is_set():
+                emit = _cancelled_buffer_text()
+                if emit:
+                    yield {"type": "content", "text": emit}
                 return
 
             if not isinstance(cumulative, str):
@@ -943,11 +1037,22 @@ def run_safetensors_tool_loop(
                     # Closed object that parses as a bare-JSON call -- drain silently.
                     detect_state = _state_draining
                     continue
+                elif blocked_bare_json_chain_may_continue(content_buffer, _enabled_tool_names):
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
+                    # Chain outgrew the bounded buffer: fail closed rather than stream
+                    # content a later peer could make executable.
+                    detect_state = _state_draining
+                    continue
                 # Closed non-call object (or oversized non-call) -- stream as text.
 
             # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
             # buffer it here or it streams raw until the end-of-turn safety net.
             # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
+            # The completed shape takes the parser's gate, so a name it will not promote
+            # streams instead of draining.
+            _gemma_lead = leading_bare_gemma_call_is_promotable(stripped, _enabled_tool_names)
+            _gemma_chain = blocked_gemma_chain_may_continue(stripped, _enabled_tool_names)
             if (
                 not is_match
                 and not is_prefix
@@ -955,10 +1060,26 @@ def run_safetensors_tool_loop(
                 and (
                     "call:".startswith(stripped)
                     or _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None
-                    or _GEMMA_BARE_TC_RE.match(stripped) is not None
+                    or _gemma_lead
+                    or _gemma_chain
                 )
             ):
-                if _GEMMA_BARE_TC_RE.match(stripped):
+                if _gemma_lead:
+                    detect_state = _state_draining
+                    continue
+                if _gemma_chain:
+                    # A promotable peer behind a blocked call must not stream before the
+                    # end-of-turn parser gets it.
+                    if parse_tool_calls_from_text(
+                        stripped,
+                        id_offset = next_call_id,
+                        allow_incomplete = auto_heal_tool_calls,
+                        enabled_tool_names = _enabled_tool_names,
+                    ):
+                        detect_state = _state_draining
+                        continue
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
                     detect_state = _state_draining
                     continue
                 # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet: keep
@@ -978,6 +1099,7 @@ def run_safetensors_tool_loop(
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
                 cumulative_display += content_buffer
+                buffer_in_display = True
                 cleaned = _strip_streaming_display(cumulative_display)
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -1005,6 +1127,7 @@ def run_safetensors_tool_loop(
             else:
                 detect_state = _state_streaming
                 cumulative_display += content_buffer
+                buffer_in_display = True
                 cleaned = _strip_streaming_display(cumulative_display)
                 # Same trailing-name hold as STREAMING for this first flush out of BUFFERING.
                 if tool_protocol_active:
@@ -1020,6 +1143,9 @@ def run_safetensors_tool_loop(
 
         # Stream finished -- resolve what we collected.
         if cancel_event is not None and cancel_event.is_set():
+            emit = _cancelled_buffer_text()
+            if emit:
+                yield {"type": "content", "text": emit}
             return
 
         if detect_state == _state_buffering:
@@ -1049,6 +1175,7 @@ def run_safetensors_tool_loop(
                 # still fire on short emissions like "Let me search." that never exit BUFFERING.
                 if content_buffer:
                     cumulative_display += content_buffer
+                    buffer_in_display = True
                     cleaned = strip_tool_markup(
                         cumulative_display, final = True, enabled_tool_names = _enabled_tool_names
                     )

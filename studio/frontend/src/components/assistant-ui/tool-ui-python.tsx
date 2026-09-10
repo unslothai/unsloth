@@ -9,13 +9,13 @@ import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
 import {
   preferSanitizedFullToolOutput,
+  toolResultText,
   useChatRuntimeStore,
   useChatPreferencesStore,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
 } from "@/features/chat";
-import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
@@ -100,7 +100,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     files = result.files ?? [];
     sessionId = result.sessionId;
   } else if (result != null) {
-    output = stringifyToolResult(result);
+    output = toolResultText(result);
   } else {
     output = "";
   }
