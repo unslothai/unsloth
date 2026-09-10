@@ -1855,3 +1855,65 @@ def test_the_capability_never_probes(monkeypatch):
         tq, "_child_probe_table", lambda device: pytest.fail("the status path spawned a child")
     )
     assert tq.dense_quant_host_capable(_target()) is True
+
+
+# Source precision recovered from the shard header.
+
+
+def _write_shard(tmp_path, attr, dtype):
+    import torch
+    from safetensors.torch import save_file
+
+    sub = tmp_path / attr
+    sub.mkdir(parents = True, exist_ok = True)
+    save_file(
+        {"proj.weight": torch.zeros(4, 4, dtype = dtype)},
+        str(sub / "diffusion_pytorch_model.safetensors"),
+    )
+
+
+def test_a_raw_fp8_checkpoint_is_recognised_from_its_header(tmp_path):
+    """from_pretrained widens fp8 to bf16, so the header is the only surviving evidence."""
+    import torch
+
+    _write_shard(tmp_path, "transformer", torch.float8_e4m3fn)
+    assert tq.stored_denoiser_precision(str(tmp_path)) == "fp8"
+
+
+def test_a_bf16_checkpoint_reports_nothing(tmp_path):
+    import torch
+    _write_shard(tmp_path, "transformer", torch.bfloat16)
+    assert tq.stored_denoiser_precision(str(tmp_path)) is None
+
+
+def test_the_second_denoiser_is_read_too(tmp_path):
+    import torch
+
+    _write_shard(tmp_path, "transformer", torch.bfloat16)
+    _write_shard(tmp_path, "unconditional_transformer", torch.float8_e5m2)
+    assert tq.stored_denoiser_precision(str(tmp_path)) == "fp8"
+
+
+def test_an_int8_checkpoint_is_recognised(tmp_path):
+    import torch
+    _write_shard(tmp_path, "transformer", torch.int8)
+    assert tq.stored_denoiser_precision(str(tmp_path)) == "int8"
+
+
+@pytest.mark.parametrize("local_dir", [None, "", "/nonexistent/path"])
+def test_no_snapshot_is_no_verdict(local_dir):
+    """Without a local snapshot this must not guess, and must never reach the network."""
+    assert tq.stored_denoiser_precision(local_dir) is None
+
+
+def test_a_recovered_source_precision_blocks_the_quant(tmp_path):
+    """The recovered marker feeds the same refusal the Ideogram loader's marker does."""
+    import torch
+
+    _write_shard(tmp_path, "transformer", torch.float8_e4m3fn)
+    widened = _Denoiser()  # bf16 tensors, exactly as the loader leaves them
+    pipe = types.SimpleNamespace(transformer = widened)
+    assert tq.dense_quant_blocker(pipe) is None
+    tq.mark_source_precision(widened, tq.stored_denoiser_precision(str(tmp_path)))
+    blocker = tq.dense_quant_blocker(pipe)
+    assert blocker is not None and "fp8" in blocker and "widened to bf16" in blocker

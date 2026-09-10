@@ -494,6 +494,58 @@ def mark_source_precision(module: Any, precision: str) -> Any:
     return module
 
 
+# safetensors header dtype strings for storage narrower than bf16, mapped to the name the refusal
+# uses. Header strings, not torch dtypes: this is read before anything is instantiated.
+_NARROW_STORED_DTYPES: dict[str, str] = {
+    "F8_E4M3": "fp8",
+    "F8_E5M2": "fp8",
+    "F8_E8M0": "fp8",
+    "I8": "int8",
+    "U8": "uint8",
+    "I4": "int4",
+    "U4": "uint4",
+    "F4": "fp4",
+}
+
+
+def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
+    """The narrow precision a LOCAL snapshot's denoiser shards are stored at, or None.
+
+    ``from_pretrained(torch_dtype = bfloat16)`` widens a raw fp8 checkpoint as it loads, so by the
+    time ``dense_quant_blocker`` walks parameters every tensor reads bf16 and the evidence that this
+    was ever a low-precision checkpoint is gone. Quantising it again compounds a loss that was
+    already taken. Ideogram's dedicated loader records this itself with ``mark_source_precision``;
+    every other family reaches the generic loader, where the shard header is the only place left to
+    look.
+
+    Headers only, and only under a directory we already have: no download, no tensor read, and no
+    verdict at all when there is no local snapshot -- which is the behaviour without this check."""
+    if not local_dir:
+        return None
+    try:
+        from pathlib import Path
+
+        import safetensors
+
+        root = Path(local_dir).expanduser()
+        for attr in DENOISER_ATTRS:
+            sub = root / attr
+            if not sub.is_dir():
+                continue
+            for shard in sorted(sub.glob("*.safetensors")):
+                with safetensors.safe_open(str(shard), "pt") as handle:
+                    for key in handle.keys():
+                        dtype = str(handle.get_slice(key).get_dtype()).upper()
+                        narrow = _NARROW_STORED_DTYPES.get(dtype)
+                        if narrow is not None:
+                            return narrow
+                # One shard settles it: a checkpoint does not mix storage precisions per file.
+                break
+    except Exception:  # noqa: BLE001 -- an unreadable header is not evidence of anything
+        return None
+    return None
+
+
 def _module_quantised_marker(module: Any) -> Optional[str]:
     """Explain why ``module`` is not a dense bf16 source, or return None."""
     if getattr(module, "_unsloth_runtime_quant", None):

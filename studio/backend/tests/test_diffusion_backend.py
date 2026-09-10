@@ -10558,3 +10558,50 @@ def test_a_clean_decline_keeps_the_dense_transformer(fake_runtime, tmp_path, mon
     assert status["transformer_quant"] is None
     assert status["resolved"]["transformer_quant"]["status"] == "applied"
     backend.unload()
+
+
+def test_a_raw_fp8_pipeline_is_not_quantised_a_second_time(fake_runtime, tmp_path, monkeypatch):
+    """A local fp8 checkpoint is widened to bf16 on load; quantising it again compounds loss.
+
+    Non-GGUF loads are gated to unsloth/* or a LOCAL path, so this is the reachable shape: a user
+    pointing at their own fp8 conversion. The header parse itself is covered against real
+    safetensors in test_diffusion_transformer_quant.py; this is the loader wiring, which stamps
+    every denoiser so the existing blocker refuses.
+    """
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    seen: list = []
+
+    def _stored(local_dir):
+        seen.append(local_dir)
+        return "fp8"
+
+    monkeypatch.setattr(dmod, "stored_denoiser_precision", _stored)
+    status = backend.load_pipeline(
+        "unsloth/Qwen-Image-2512",
+        model_kind = "pipeline",
+        _base_local_dir = str(tmp_path),
+    )
+    assert seen == [str(tmp_path)]
+    assert calls == []
+    assert status["transformer_quant"] is None
+    reason = status["resolved"]["transformer_quant"]["reason"]
+    assert "fp8" in reason and "widened to bf16" in reason
+    backend.unload()
+
+
+def test_a_bf16_pipeline_is_unaffected_by_the_header_probe(fake_runtime, tmp_path, monkeypatch):
+    """The probe must not cost the ordinary official-pipeline case."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda local_dir: None)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()

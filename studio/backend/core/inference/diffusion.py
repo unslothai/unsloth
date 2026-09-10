@@ -186,9 +186,11 @@ from .diffusion_transformer_quant import (
     dense_transformer_unsupported_reason,
     denoiser_modules,
     explain_unusable_scheme,
+    mark_source_precision,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
+    stored_denoiser_precision,
     transformer_is_quantised,
 )
 from utils.paths.path_utils import (
@@ -4303,6 +4305,13 @@ class DiffusionBackend:
                     and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
                 ):
+                    # A raw fp8/int8 checkpoint is widened to bf16 by from_pretrained, which erases the one thing
+                    # the blocker below reads. Ideogram's loader stamps its own; recover it from the shard header
+                    # for every family that reaches the generic path.
+                    source_precision = stored_denoiser_precision(_base_local_dir)
+                    if source_precision is not None:
+                        for _attr, denoiser in denoiser_modules(pipe):
+                            mark_source_precision(denoiser, source_precision)
                     pipeline_quant_blocker = pipeline_quant_uncompilable or dense_quant_blocker(
                         pipe
                     )
