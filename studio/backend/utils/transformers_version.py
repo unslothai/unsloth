@@ -2615,7 +2615,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     for it, then finds the package there.
     """
     usable = True
-    offline = _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+    offline = (
+        _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+    )
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
             continue
