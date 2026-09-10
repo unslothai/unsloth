@@ -669,8 +669,14 @@ _configure_uv_cache() {
     # would touch a cache the caller told uv to leave alone, and a marker written here would
     # name one this install never filled. Mirrors _uv_no_cache_requested() in
     # unsloth_cli/commands/studio.py, which skips probing and recording for the same reason.
-    case "${UV_NO_CACHE:-}" in
-        1|true|TRUE|yes|YES|on|ON)
+    # Lowercased, because uv takes this case-insensitively: `True`, `Yes` and `On` all turn
+    # the cache off, and matching a fixed spelling would leave us probing and recording a
+    # cache uv is not using. Not trimmed, since uv rejects a padded value outright rather
+    # than reading it as true.
+    _uv_no_cache=$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')
+    case "$_uv_no_cache" in
+        1|true|yes|on)
+            unset _uv_no_cache
             UV_CACHE_DIR="$_uv_studio_cache"
             _UV_CACHE_MODE=studio
             export UV_CACHE_DIR
@@ -678,6 +684,7 @@ _configure_uv_cache() {
             return 0
             ;;
     esac
+    unset _uv_no_cache
 
     # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank inherited value cannot override them; last line so a notice ahead of the path does not become the path.
     _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \

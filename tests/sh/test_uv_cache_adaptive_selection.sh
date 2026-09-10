@@ -210,6 +210,23 @@ _out=$(_run "$_TMP/r" '' "$_lookalike")
 assert_eq "a bucket lookalike is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 _out=$(_run "$_TMP/t" '' "$_lookalike_dir")
 assert_eq "a lookalike dir is not warmth"      "studio" "$(echo "$_out" | cut -d' ' -f1)"
+
+echo "=== UV_NO_CACHE stands the selection down, in every spelling uv honours ==="
+# uv takes this case-insensitively, so matching a fixed spelling would leave us probing and
+# recording a cache uv is not using.
+for _nc in 1 true True TRUE tRuE yes Yes on On; do
+    UV_NO_CACHE="$_nc"; export UV_NO_CACHE
+    assert_eq "UV_NO_CACHE=$_nc -> studio" "studio" \
+        "$(_run "$_TMP/nc$_nc" '' "$_populated" | cut -d' ' -f1)"
+    unset UV_NO_CACHE
+done
+# ...and a false-ish value must not stand it down.
+for _nc in 0 false; do
+    UV_NO_CACHE="$_nc"; export UV_NO_CACHE
+    assert_eq "UV_NO_CACHE=$_nc -> shared"  "shared" \
+        "$(_run "$_TMP/nf$_nc" '' "$_populated" | cut -d' ' -f1)"
+    unset UV_NO_CACHE
+done
 chmod 700 "$_alien/lost+found"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
