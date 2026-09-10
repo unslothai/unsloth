@@ -170,11 +170,24 @@ for the available system RAM.
 ARM64 CPU devices are primarily intended for inference. Fine-tuning is usually
 better suited to a supported GPU system.
 
-**Docker note:** The official `unsloth/unsloth` Docker image is multi-arch
+**Docker (CPU-only):** Use the dedicated `cpu-arm64` image — a lightweight,
+CUDA-free build for ARM64 CPU hosts (Ampere, Graviton, Raspberry Pi 5, etc.):
+
+```bash
+docker run -d -p 8888:8888 \
+  -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
+  -e JUPYTER_PASSWORD="choose-a-password" \
+  -v "$PWD":/workspace/host \
+  unsloth/unsloth:cpu-arm64
+```
+
+This image runs natively on `linux/arm64` without requiring `nvidia-container-toolkit`.
+It includes Studio, JupyterLab, notebooks, and GGUF tooling (llama.cpp, whisper.cpp).
+Training is not supported.
+
+**Docker (GPU):** The official `unsloth/unsloth` image is multi-arch
 (`linux/amd64` and `linux/arm64`), but the ARM64 variant targets GH200/DGX
-Spark GPU systems. There is currently no official CPU-only ARM64 Docker image.
-For ARM64 CPU devices, use the native Studio installer above. Community Docker
-builds may work but are not an official deployment path.
+Spark GPU systems. For GPU-enabled ARM64, use the standard image with `--gpus all`.
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
