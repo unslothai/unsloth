@@ -9031,9 +9031,9 @@ class LlamaCppBackend:
             # Remembered so the launch preflight can read it without a second probe.
             # Only a completed probe is cached: a torch that raised says nothing about
             # the hardware, and caching its empty answer would make the miss permanent.
-            LlamaCppBackend._INTEGRATED_CUDA_IDS[
-                LlamaCppBackend._integrated_cuda_mask_key()
-            ] = integrated
+            LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = (
+                integrated
+            )
             return integrated
         except Exception:
             return set()
