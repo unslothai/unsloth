@@ -89,9 +89,12 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
+      # Node 24 ships npm 11, which meets setup.sh's floor (Node ^20.19 || >=22.12 with
+      # npm >= 11): this job takes the system-Node path, the developer one. Node 22
+      # ships npm 10 and would take the bundled path, which the other two jobs cover.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '24'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -332,8 +335,8 @@ jobs:
       # Below setup.sh's floor (Node ^20.19 || >=22.12 with npm >= 11) on purpose: with
       # it, setup takes the bundled Node path desktop users without a toolchain take, so
       # the harness's Node marker snapshot and its "nothing from nodejs.org" assertion
-      # measure a managed Node rather than pass vacuously over a system one. The other
-      # two jobs keep a qualifying system Node, the developer path.
+      # measure a managed Node rather than pass vacuously over a system one. The Linux
+      # job keeps a qualifying system Node (Node 24, npm 11), the developer path.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '20.18.0'
@@ -390,6 +393,8 @@ jobs:
         with:
           persist-credentials: false
 
+      # Node 22 ships npm 10, below setup.ps1's npm 11 floor, so this job takes the
+      # bundled Node path as the macOS job does; the Linux job covers the system-Node one.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'

@@ -591,6 +591,12 @@ def test_a_second_update_changes_nothing_on_disk(install, settled):
         f"  {key}:\n    before={before.get(key)!r}\n    after={after.get(key)!r}"
         for key in diff(before, after)
     )
+    # The same run's traffic too: a regression that downloads on this first measured
+    # update and parks its evidence outside the install (an npm or uv cache) would leave
+    # the snapshot alone here and be quiet by the network case that follows.
+    for host in PAYLOAD_HOSTS:
+        assert run.connections_to(host) == 0, f"{host}: {run.report()}"
+        assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
 
 
 def test_a_second_update_downloads_no_payload(install, settled):
