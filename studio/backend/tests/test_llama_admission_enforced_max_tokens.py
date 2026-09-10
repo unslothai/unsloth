@@ -202,6 +202,83 @@ class TestTheMarkupTheBuilderRewrites:
             assert (sent + bound) * 4 < 16384, f"{markers} markers occupy {(sent + bound) * 4}"
 
 
+class TestTheCatalogueCostsAPreambleToo:
+    """A catalogue is a fixed template block plus a per-tool schema, and only the second
+    was priced. Rendered against Qwen3.5-4B at 1, 2, 4 and 8 tools the template charged
+    280, 359, 517 and 833 tokens against an estimate of 90, 171, 335 and 662: the per-tool
+    term already tracked, the one-off tool-use instruction block did not.
+
+    Four tool chats at `-c 8192 --parallel 4 --kv-unified` were each 129 cells past their
+    share and lost all four, in 4 of 4 waves through Studio's own route; none in 4 after.
+    """
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "web_search", "description": "Search the web.",
+            "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "python", "description": "Run python code.",
+            "parameters": {"type": "object", "properties": {"code": {"type": "string"}}}}},
+    ]
+
+    def test_an_injected_catalogue_carries_the_preamble(self):
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
+            _openai_llama_admission_injected_tool_tokens as catalogue,
+        )
+        assert catalogue(None) == 0, "a tool-free request must be priced exactly as before"
+        assert catalogue([]) == 0
+        assert catalogue(self._TOOLS) > _PREAMBLE
+
+    def test_a_client_catalogue_carries_it_on_the_passthrough_pricer(self):
+        """`_build_openai_passthrough_body` prices with no injected catalogue, so the
+        payload's own `tools` must earn the block there or the bound is short by it."""
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
+            _openai_llama_admission_extra_prompt_tokens as extra,
+        )
+        without = extra(_Payload(messages = []))
+        with_tools = extra(_Payload(messages = [], tools = self._TOOLS))
+        assert without == 0
+        assert with_tools > _PREAMBLE
+
+    def test_the_preamble_is_charged_once_on_each_shape(self):
+        """The tool-loop paths price through the wire helper, which never reaches the
+        payload helper, so neither real shape pays it twice."""
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS as _PREAMBLE,
+            _openai_llama_admission_injected_tool_tokens as catalogue,
+            _openai_llama_admission_prompt_tokens,
+            _openai_llama_admission_wire_prompt_tokens,
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        loop = _openai_llama_admission_wire_prompt_tokens(messages, injected_tools = self._TOOLS)
+        passthrough = _openai_llama_admission_prompt_tokens(
+            _Payload(messages = messages, tools = self._TOOLS)
+        )
+        bare = _openai_llama_admission_wire_prompt_tokens(messages)
+        for name, priced in (("tool loop", loop), ("passthrough", passthrough)):
+            paid = priced - bare - (catalogue(self._TOOLS) - _PREAMBLE)
+            assert 0 < paid < 2 * _PREAMBLE, f"{name} paid {paid} of a {_PREAMBLE} block"
+
+    def test_a_catalogue_keeps_the_invariant_at_every_size(self):
+        backend = _backend(window = 8192, total = 8192, slots = 4)
+        share = 8192 // 4
+        from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+        for count in (1, 2, 4, 8):
+            tools = self._TOOLS * count
+            messages = [{"role": "user", "content": "write a long essay"}]
+            payload = _Payload(messages = messages, max_tokens = 8192)
+            bound = _openai_llama_admission_enforced_max_tokens(
+                payload, request = None, llama_backend = backend,
+                conversation = messages, injected_tools = tools,
+            )
+            assert bound is not None
+            priced = wire(messages, injected_tools = tools)
+            assert (priced + bound) * 4 < 8192, f"{count} tools: {(priced + bound) * 4}"
+            assert priced + bound <= share
+
+
 class TestPricingNeverTouchesThePrompt:
     """The bound is priced from a neutralised copy of the conversation. If that rewrite
     reached the caller's list, the prompt the user actually sent would change: a system

@@ -1828,6 +1828,11 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
 
     Serialised and charged at the dense rate, since a JSON schema is punctuation-heavy
     and the four-chars-per-token rule flatters it.
+
+    A catalogue here also earns the template's one-off tool-use block, the same constant
+    ``_openai_llama_admission_injected_tool_tokens`` charges. The passthrough builder prices
+    through this helper with no injected catalogue, so without it a client that sends its own
+    ``tools`` was short exactly that block and four such chats lost every one.
     """
     extra = 0
     for attribute in ("system", "tools", "tool_choice", "instructions"):
@@ -1840,6 +1845,10 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
             continue
         if text:
             extra += estimate_messages_tokens_dense([{"role": "system", "content": text}])
+    # Once, and only where the catalogue itself is: the tool-loop paths price through
+    # `_openai_llama_admission_wire_prompt_tokens`, which never reaches this helper.
+    if getattr(payload, "tools", None):
+        extra += _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS
     return extra
 
 
@@ -2093,6 +2102,13 @@ def _openai_llama_admission_transport_tokens(payload) -> int:
     return total
 
 
+# The tool-use instruction block a chat template emits once whenever a catalogue is present,
+# which the message list never carries. Measured at 171 to 190 tokens on Qwen3.5-4B across 1,
+# 2, 4 and 8 tools; 256 keeps margin for a wordier template. Only charged when there is a
+# catalogue, so a tool-free request is priced exactly as before.
+_OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS = 256
+
+
 def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
     """The tool catalogue Unsloth adds itself, in tokens.
 
@@ -2105,6 +2121,13 @@ def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
     Leaving it out is not a rounding error: at ``-c 4096`` four requests priced at an
     equal share were all admitted and llama.cpp answered every one with ``Context size
     has been exceeded``.
+
+    A catalogue costs a FIXED preamble plus a per-tool schema, and only the second was
+    counted. Rendered against Qwen3.5-4B at 1, 2, 4 and 8 tools the template charged 280,
+    359, 517 and 833 tokens against an estimate of 90, 171, 335 and 662: a per-tool term
+    that already tracks (about 83 a tool either way) and a constant 171 to 190 the message
+    list never shows, which is the tool-use instruction block the template emits once. That
+    shortfall put four tool chats 129 cells past their share each and lost all four.
     """
     if not injected_tools:
         return 0
@@ -2114,7 +2137,9 @@ def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
         return 0
     if not text:
         return 0
-    return estimate_messages_tokens_dense([{"role": "system", "content": text}])
+    return _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS + estimate_messages_tokens_dense(
+        [{"role": "system", "content": text}]
+    )
 
 
 def _openai_llama_admission_prompt_tokens(
