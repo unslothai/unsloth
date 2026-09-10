@@ -62,6 +62,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -98,6 +99,10 @@ ICON_FETCH_CEILING = 64 * 1024
 # prebuilt installers log; setup.sh CONSUMES that and prints its own line, so the log a
 # user (and this harness) sees carries these instead.
 NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
+# What setup.sh prints (step "frontend" "up to date", column-padded) when the built dist
+# is newer than its sources. A pass that rebuilt the frontend instead talks to no
+# forbidden host on a warm npm cache, so the log line is the only witness.
+FRONTEND_CURRENT_MARKER = re.compile(r"frontend\s+up to date")
 # What setup.sh / setup.ps1 print when the version check found a newer release, and when
 # it could not ask PyPI at all (the pass runs on purpose in both cases).
 UPGRADE_MARKER = "available, updating..."
@@ -616,8 +621,14 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
     directory, _ = settled
     run = run_update(directory, "run4-local", local = True)
     assert run.rc == 0, run.log[-8000:]
-    assert "(satisfied, skipped)" in run.log, (
+    # The full message: the MLX stack, base requirements, local plugin and finalization
+    # steps end in the same suffix, and any of them would satisfy a substring match.
+    assert "pip bootstrap (satisfied, skipped)" in run.log, (
         "the pip bootstrap reinstalled pip on a venv that already had one:\n" + run.log[-8000:]
+    )
+    assert FRONTEND_CURRENT_MARKER.search(run.log), (
+        "the frontend was rebuilt on a checkout whose dist was already current:\n"
+        + run.log[-8000:]
     )
     assert run.log.count("sidecar current") == 3, (
         "a settled transformers sidecar was rebuilt:\n" + run.log[-8000:]
@@ -710,12 +721,13 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
     after = snapshot(install)
     changed = diff(before, after)
     assert target.name in changed, f"the damaged sidecar was not rebuilt (changed: {changed})"
-    untouched = [
-        name for name in (".venv_t5_530", ".venv_t5_550", ".venv_t5_510") if name != target.name
-    ]
-    assert [
-        name for name in changed if name in untouched
-    ] == [], f"an unrelated sidecar was rebuilt too: {changed}"
+    # Exactly the damaged component: the other two sidecars, every dist record, both
+    # prebuilt markers and the binaries stay as they were. The manifest may move, as it
+    # records the sidecar evidence the repair renewed.
+    unexpected = sorted(set(changed) - {target.name, "manifest"})
+    assert (
+        unexpected == []
+    ), f"the sidecar repair changed more than the damaged sidecar: {changed}"
 
 
 def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settled):
@@ -857,12 +869,24 @@ def test_the_install_is_left_working(install, settled):
     _assert_install_working(install, before)
 
 
-def _assert_install_working(install: pathlib.Path, before: dict) -> None:
+def _assert_install_working(
+    install: pathlib.Path, before: dict, *, same_distributions: bool = True
+) -> None:
     """The same packages as *before* are installed, and the CLI reports the install
     complete. Shared by the last ordered case and the desktop case's restore, which is
-    the last product operation of the run and is otherwise judged by exit code alone."""
+    the last product operation of the run and is otherwise judged by exit code alone.
+
+    After a real upgrade to PyPI's release the restore reinstalls the checkout only where
+    needed, and a transitive dependency the release moved that the checkout's ranges
+    still admit legitimately stays: then only the checkout's own packages are held to
+    *before*."""
     after = snapshot(install)
-    assert after["distributions"] == before["distributions"]
+    if same_distributions:
+        assert after["distributions"] == before["distributions"]
+    else:
+        core = lambda dists: sorted(d for d in dists if d[0] in LOCAL_CORE)  # noqa: E731
+        assert core(after["distributions"]) == core(before["distributions"])
+        assert core(after["distributions"]), "the checkout's own packages are gone"
     assert after["manifest"] is not None
     verify_env = {**os.environ, "HOME": str(_home()), "USERPROFILE": str(_home())}
     # The same root the measured runs used: under UNSLOTH_IDEMPOTENCY_STUDIO_HOME the
@@ -1003,7 +1027,9 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
         # exit code alone.
         restore = run_update(directory, "run5-restore", local = True)
         assert restore.rc == 0, restore.log[-8000:]
-        _assert_install_working(install, before)
+        _assert_install_working(
+            install, before, same_distributions = UPGRADE_MARKER not in run.log
+        )
         # Why the pass ran, read off the measured run's own log: the separate PyPI
         # lookup above can fail or see another release than the one the update saw.
         if UPGRADE_MARKER in run.log:
@@ -1013,14 +1039,13 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
             pytest.skip(
                 "installed version is not PyPI's latest; the desktop no-op path was not taken"
             )
-        if PYPI_UNREACHABLE_MARKER in run.log or not latest:
+        if PYPI_UNREACHABLE_MARKER in run.log:
             # The product runs the pass on purpose when it cannot ask PyPI: correct
-            # behaviour, and nothing this case can judge.
+            # behaviour, and nothing this case can judge. Only the measured run's own
+            # lookup counts: the harness's separate request above can fail or see
+            # another release while the update's succeeded, and skipping on it would
+            # look away from exactly the equal-version pass this case exists to catch.
             pytest.skip("PyPI was unreachable; the desktop no-op path could not be judged")
-        if installed and latest and installed != latest:
-            pytest.skip(
-                "installed version is not PyPI's latest; the desktop no-op path was not taken"
-            )
         # Equal versions and a reachable index, and the pass still ran: that is the
         # regression this case exists to catch, not a reason to look away.
         pytest.fail(

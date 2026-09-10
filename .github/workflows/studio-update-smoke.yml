@@ -109,6 +109,40 @@ jobs:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
+      - name: A second update does nothing, and proves it
+        # The first updates after the install, measured rather than read off their logs:
+        # the update runs with a CONNECT proxy as its only route out, so "downloaded
+        # nothing" is a byte count per host rather than an impression of speed, and the
+        # install is diffed before and after so "changed nothing" covers the files no log
+        # line mentions. Before the log-only steps below on purpose: a regression that
+        # downloads or rewrites state on the first or second update and then records
+        # enough evidence to go quiet would otherwise be measured only on a fourth.
+        #
+        # It also damages the install on purpose (a sidecar file, the manifest, a
+        # llama.cpp binary, a requirements file) and asserts the update repairs exactly
+        # the damaged part. Those cases restore what they broke, but they run BEFORE the
+        # manifest-removal step below rather than after, so a failure here cannot be
+        # mistaken for the deliberately incomplete install that step creates.
+        timeout-minutes: 30
+        env:
+          UNSLOTH_IDEMPOTENCY_E2E: '1'
+          # Each run's update log and proxy journal, kept for the upload below. A
+          # failure here is unreadable without them: the assertion says which host
+          # served bytes, not which of the eight runs did it.
+          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}/logs/idempotency
+          # The install above is --local and editable, so the CLI would find the
+          # checkout on its own; naming it keeps that working if the install ever
+          # stops being editable.
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          # setup-python's interpreter runs the harness, and it ships without pytest.
+          python -m pip install --quiet pytest
+          python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
+            2>&1 | tee logs/idempotency.log
+
       - name: First update should be a no-op (prebuilt already validated)
         # `unsloth studio update --local` runs studio/setup.sh against
         # the local repo. Right after install.sh the llama.cpp prebuilt
@@ -184,37 +218,6 @@ jobs:
           unsloth studio desktop-capabilities --json | tee /tmp/caps.json
           jq -e '.studio_install_ok == true' /tmp/caps.json
           jq -e '.desktop_manageability_version >= 2' /tmp/caps.json
-
-      - name: A second update does nothing, and proves it
-        # The steps above read the update's LOG. This one measures it: the update runs
-        # with a CONNECT proxy as its only route out, so "downloaded nothing" is a byte
-        # count per host rather than an impression of speed, and the install is diffed
-        # before and after so "changed nothing" covers the files no log line mentions.
-        #
-        # It also damages the install on purpose (a sidecar file, the manifest, a
-        # llama.cpp binary, a requirements file) and asserts the update repairs exactly
-        # the damaged part. Those cases restore what they broke, but they run BEFORE the
-        # manifest-removal step below rather than after, so a failure here cannot be
-        # mistaken for the deliberately incomplete install that step creates.
-        timeout-minutes: 30
-        env:
-          UNSLOTH_IDEMPOTENCY_E2E: '1'
-          # Each run's update log and proxy journal, kept for the upload below. A
-          # failure here is unreadable without them: the assertion says which host
-          # served bytes, not which of the eight runs did it.
-          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}/logs/idempotency
-          # The install above is --local and editable, so the CLI would find the
-          # checkout on its own; naming it keeps that working if the install ever
-          # stops being editable.
-          STUDIO_LOCAL_REPO: ${{ github.workspace }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -o pipefail
-          mkdir -p logs
-          # setup-python's interpreter runs the harness, and it ships without pytest.
-          python -m pip install --quiet pytest
-          python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
-            2>&1 | tee logs/idempotency.log
 
       - name: An incomplete install must not report itself ready
         # An installer killed part-way leaves a working CLI but no studio.txt
@@ -326,9 +329,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Below setup.sh's floor (Node ^20.19 || >=22.12 with npm >= 11) on purpose: with
+      # it, setup takes the bundled Node path desktop users without a toolchain take, so
+      # the harness's Node marker snapshot and its "nothing from nodejs.org" assertion
+      # measure a managed Node rather than pass vacuously over a system one. The other
+      # two jobs keep a qualifying system Node, the developer path.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '20.18.0'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
