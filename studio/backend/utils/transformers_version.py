@@ -2704,7 +2704,6 @@ def _optional_top_up_lock(venv_dir: str):
                     raise
                 time.sleep(0.25)
 
-
         if sys.platform == "win32":
             import msvcrt
             handle.seek(0)
