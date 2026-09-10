@@ -3235,13 +3235,18 @@ export function ModelConfigPage({
         )}
       </div>
 
-      <div
-        className={
-          variant === "sidebar"
-            ? "mt-4 flex flex-col gap-3 border-t border-border/60 pt-4"
-            : "mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4"
-        }
-      >
+      {/* Stacked in both variants, and the checkbox row always on its own line.
+          Wrapping ON DEMAND is what a `flex-wrap` row does, and on demand means
+          the footer changes height while the user is mid-click: the same click
+          that commits a numeric draft can flip `persistenceOnly` false, which
+          mounts the Save/Forget button below, and three buttons plus the label
+          no longer fit on one line. The row reflows onto a second line between
+          mousedown and mouseup, so the button moves out from under the cursor
+          and no click event is dispatched at all -- the panel simply eats the
+          Load. Reserving the second line unconditionally keeps the button row's
+          geometry fixed whatever the button count, and gives the "Remember for
+          this model" label the full width that the wrap was added for. */}
+      <div className="mt-4 flex flex-col gap-3 border-t border-border/60 pt-4">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -3255,13 +3260,7 @@ export function ModelConfigPage({
             Remember for this model
           </label>
         </div>
-        <div
-          className={
-            variant === "sidebar"
-              ? "flex items-center justify-end gap-2"
-              : "ml-auto flex shrink-0 items-center gap-2"
-          }
-        >
+        <div className="flex items-center justify-end gap-2">
           <Button
             type="button"
             variant="ghost"

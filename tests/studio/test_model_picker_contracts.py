@@ -1365,6 +1365,43 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         assert field in page
 
 
+def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
+    """The footer must not wrap on demand, or a click can be swallowed (#10216).
+
+    Observed, not theorised: with `flex-wrap` on the page-variant footer, the
+    repo's own tests/studio/playwright_model_config.py "context length 4096
+    persists" step failed 5/5 on the PR head and passed 5/5 on its merge base,
+    same host, same script. No toast, no POST /api/inference/load, nothing in
+    unsloth_model_configs -- the click never dispatched.
+
+    The mechanism: mousedown blurs the Context Length input, whose blur handler
+    commits the draft. That commit takes `atBaseline` false, so `persistenceOnly`
+    flips false, which mounts the Save/Forget button. Three buttons plus the
+    "Remember for this model" label no longer fit on one line, the row wraps, and
+    the primary button moves ~30px down between mousedown and mouseup -- so the
+    two land on different elements and no click event is produced. A real
+    pointer loses the click exactly as Playwright's does.
+
+    Stacking unconditionally fixes it because the button row's position stops
+    depending on how many buttons are in it, and it gives the label the full
+    width that the wrap was reaching for.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    # Anchored on the checkbox, which is the footer's first child, so the two
+    # <div>s before it are the footer container and the label group.
+    before = src.split("<Checkbox id={rememberId}", 1)[0]
+    footer = before.rsplit("<div", 2)[1]
+    assert "flex-wrap" not in footer, (
+        "the run-settings footer wraps on demand, so its height changes while a "
+        f"click is in flight; container was: {footer.strip()[:200]!r}"
+    )
+    assert "flex flex-col" in footer, (
+        "the run-settings footer is no longer a stacked column, so the button row "
+        f"can move when a button mounts; container was: {footer.strip()[:200]!r}"
+    )
+
+
+
 def test_save_settings_waits_for_gguf_classification():
     """The Save button that persists without loading (#10216) must carry Load's
     classification gate.

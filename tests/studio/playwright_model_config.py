@@ -619,8 +619,13 @@ with sync_playwright() as p:
     def primary_button(popover):
         # exact: get_by_role matches the accessible name as a substring by default, so
         # "Load model" also matches "Reload model" -- and it is swept first, so the
-        # reload case would be found under the wrong name. The panel shows exactly one
-        # of these four.
+        # reload case would be found under the wrong name.
+        #
+        # Two of these four can be on screen at once since #10216: the save-without-load
+        # button carries "Save settings"/"Forget settings" while the primary still reads
+        # "Load model"/"Reload model". The order below is what disambiguates them -- every
+        # caller here wants commit-and-load, and the two load labels are swept first. A
+        # caller that wants the save-only button must not use this helper.
         for name in ("Load model", "Reload model", "Save settings", "Forget settings"):
             b = popover.get_by_role("button", name = name, exact = True).first
             if _count(b):
