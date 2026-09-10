@@ -27,6 +27,85 @@ from core.training.provenance import (
 from hub.utils import dataset_cache, hf_cache_state
 
 
+def _shared_setup_1(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    return snapshot
+
+
+def _shared_setup_2(model_snapshot, tmp_path):
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        SimpleNamespace(),
+        model_load_target = str(model_snapshot),
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    return config, event
+
+
+def _shared_setup_3(config, model):
+    event = build_worker_provenance_event(
+        config,
+        model,
+        model_load_target = "org/selected",
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+    return event, updates
+
+
+def _shared_setup_4(backend, config):
+    backend._db_run_created = True
+    backend._db_config = {
+        **config,
+        "model_snapshot_path": None,
+        "dataset_snapshot_path": None,
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+    }
+
+
+def _shared_setup_5(tmp_path):
+    actual = _model_snapshot(
+        tmp_path,
+        "org/actual-4bit",
+        "actual-commit",
+        quantized = True,
+    )
+    return actual
+
+
+def _shared_setup_6(dataset):
+    config = {
+        "model_name": "org/model",
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+    return config
+
+
+def _shared_setup_7(tmp_path):
+    from core.training.training import TrainingBackend
+
+    config, event, _, _ = _complete_event(tmp_path)
+    backend = TrainingBackend()
+    return backend, config, event
+
+
 def _load_training_route():
     path = Path(__file__).resolve().parents[1] / "routes" / "training.py"
     spec = importlib.util.spec_from_file_location("training_provenance_route", path)
@@ -186,12 +265,7 @@ def test_hub_valid_repo_ids_keep_exact_resume_provenance(tmp_path, repo_id):
 
 def test_loaded_model_metadata_attests_actual_quantized_redirect(tmp_path):
     _model_snapshot(tmp_path, "org/selected", "selected-commit")
-    actual = _model_snapshot(
-        tmp_path,
-        "org/actual-4bit",
-        "actual-commit",
-        quantized = True,
-    )
+    actual = _shared_setup_5(tmp_path)
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
     model = SimpleNamespace(
         config = SimpleNamespace(
@@ -207,14 +281,7 @@ def test_loaded_model_metadata_attests_actual_quantized_redirect(tmp_path):
         "load_in_4bit": True,
     }
 
-    event = build_worker_provenance_event(
-        config,
-        model,
-        model_load_target = "org/selected",
-        model_load_in_4bit = True,
-        dataset_loaded_from_exact_snapshot = True,
-    )
-    updates = normalize_worker_provenance_event(event, config)
+    event, updates = _shared_setup_3(config, model)
 
     assert updates["actual_model_repo_id"] == "org/actual-4bit"
     assert updates["model_snapshot_path"] == str(actual.resolve())
@@ -223,12 +290,7 @@ def test_loaded_model_metadata_attests_actual_quantized_redirect(tmp_path):
 
 def test_resume_load_target_validates_redirect_snapshot_against_actual_repo(tmp_path):
     from core.training.training import resolve_training_model_load_target
-    actual = _model_snapshot(
-        tmp_path,
-        "org/actual-4bit",
-        "actual-commit",
-        quantized = True,
-    )
+    actual = _shared_setup_5(tmp_path)
 
     assert resolve_training_model_load_target(
         {
@@ -246,12 +308,7 @@ def test_resume_route_restores_attested_actual_model_repo(tmp_path):
 
     route = _load_training_route()
 
-    actual = _model_snapshot(
-        tmp_path,
-        "org/actual-4bit",
-        "actual-commit",
-        quantized = True,
-    )
+    actual = _shared_setup_5(tmp_path)
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
     source_config = {
         "model_name": "org/selected",
@@ -306,14 +363,7 @@ def test_4bit_attestation_rejects_full_precision_selected_snapshot(tmp_path):
         "load_in_4bit": True,
     }
 
-    event = build_worker_provenance_event(
-        config,
-        model,
-        model_load_target = "org/selected",
-        model_load_in_4bit = True,
-        dataset_loaded_from_exact_snapshot = True,
-    )
-    updates = normalize_worker_provenance_event(event, config)
+    event, updates = _shared_setup_3(config, model)
 
     assert event["model"]["status"] == "incomplete"
     assert updates["model_snapshot_path"] is None
@@ -337,14 +387,7 @@ def test_4bit_attestation_accepts_verified_runtime_quantization(tmp_path):
         "load_in_4bit": True,
     }
 
-    event = build_worker_provenance_event(
-        config,
-        model,
-        model_load_target = "org/selected",
-        model_load_in_4bit = True,
-        dataset_loaded_from_exact_snapshot = True,
-    )
-    updates = normalize_worker_provenance_event(event, config)
+    event, updates = _shared_setup_3(config, model)
 
     assert event["model"]["status"] == "attested"
     assert event["model"]["load_mode"] == "runtime_4bit"
@@ -391,12 +434,7 @@ def test_mlx_runtime_4bit_metadata_attests_unpinned_hub_load(tmp_path):
         _unsloth_quantized_source = "runtime",
         _unsloth_quantization_policy = {"enabled": True, "bits": 4},
     )
-    config = {
-        "model_name": "org/model",
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": str(dataset),
-        "load_in_4bit": True,
-    }
+    config = _shared_setup_6(dataset)
 
     event = build_worker_provenance_event(
         config,
@@ -460,12 +498,7 @@ def test_mlx_runtime_4bit_attests_however_the_model_stores_metadata(tmp_path, ma
     """
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
-    config = {
-        "model_name": "org/model",
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": str(dataset),
-        "load_in_4bit": True,
-    }
+    config = _shared_setup_6(dataset)
 
     event = build_worker_provenance_event(
         config,
@@ -500,12 +533,7 @@ def test_mlx_runtime_4bit_attestation_requires_exact_runtime_policy(tmp_path, so
         _unsloth_quantized_source = source,
         _unsloth_quantization_policy = policy,
     )
-    config = {
-        "model_name": "org/model",
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": str(dataset),
-        "load_in_4bit": True,
-    }
+    config = _shared_setup_6(dataset)
 
     event = build_worker_provenance_event(
         config,
@@ -524,22 +552,7 @@ def test_mlx_top_level_quantization_attests_prequantized_snapshot(tmp_path):
         json.dumps({"quantization": {"bits": 4, "group_size": 64}}),
         encoding = "utf-8",
     )
-    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
-    config = {
-        "model_name": "org/model",
-        "model_snapshot_path": str(model_snapshot),
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": str(dataset),
-        "load_in_4bit": True,
-    }
-
-    event = build_worker_provenance_event(
-        config,
-        SimpleNamespace(),
-        model_load_target = str(model_snapshot),
-        model_load_in_4bit = True,
-        dataset_loaded_from_exact_snapshot = True,
-    )
+    config, event = _shared_setup_2(model_snapshot, tmp_path)
     updates = normalize_worker_provenance_event(event, config)
 
     assert event["model"]["load_mode"] == "prequantized_4bit"
@@ -552,22 +565,7 @@ def test_mlx_top_level_8bit_quantization_does_not_attest_as_4bit(tmp_path):
         json.dumps({"quantization": {"bits": 8, "group_size": 64}}),
         encoding = "utf-8",
     )
-    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
-    config = {
-        "model_name": "org/model",
-        "model_snapshot_path": str(model_snapshot),
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": str(dataset),
-        "load_in_4bit": True,
-    }
-
-    event = build_worker_provenance_event(
-        config,
-        SimpleNamespace(),
-        model_load_target = str(model_snapshot),
-        model_load_in_4bit = True,
-        dataset_loaded_from_exact_snapshot = True,
-    )
+    config, event = _shared_setup_2(model_snapshot, tmp_path)
 
     assert event["model"]["status"] == "incomplete"
 
@@ -586,22 +584,7 @@ def test_mlx_conflicting_quantization_widths_do_not_attest_as_4bit(tmp_path):
         ),
         encoding = "utf-8",
     )
-    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
-    config = {
-        "model_name": "org/model",
-        "model_snapshot_path": str(model_snapshot),
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": str(dataset),
-        "load_in_4bit": True,
-    }
-
-    event = build_worker_provenance_event(
-        config,
-        SimpleNamespace(),
-        model_load_target = str(model_snapshot),
-        model_load_in_4bit = True,
-        dataset_loaded_from_exact_snapshot = True,
-    )
+    config, event = _shared_setup_2(model_snapshot, tmp_path)
 
     assert event["model"]["status"] == "incomplete"
 
@@ -719,11 +702,7 @@ def test_processed_dataset_cache_is_not_an_immutable_snapshot(tmp_path):
 
 
 def test_exact_dataset_snapshot_rejects_cross_snapshot_symlink(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     _dataset_snapshot(
         tmp_path,
         "org/dataset",
@@ -809,33 +788,21 @@ def _loaded_dataset(*sources: str, num_bytes: int = 7):
     ],
 )
 def test_loaded_hub_dataset_attests_consumed_commit_snapshot(tmp_path, source):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     loaded = _loaded_dataset(source)
 
     assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
 
 
 def test_loaded_hub_dataset_attests_local_snapshot_source(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     loaded = _loaded_dataset(str(snapshot / "train.parquet"))
 
     assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
 
 
 def test_loaded_hub_dataset_rejects_source_size_mismatch(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     loaded = _loaded_dataset(
         str(snapshot / "train.parquet"),
         num_bytes = 6,
@@ -846,11 +813,7 @@ def test_loaded_hub_dataset_rejects_source_size_mismatch(tmp_path):
 
 @pytest.mark.parametrize("num_bytes", [None, True, -1, "7"])
 def test_loaded_hub_dataset_rejects_invalid_recorded_size(tmp_path, num_bytes):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     loaded = SimpleNamespace(
         info = SimpleNamespace(
             download_checksums = {
@@ -879,11 +842,7 @@ def test_loaded_hub_dataset_accepts_snapshot_blob_symlink(tmp_path):
 
 
 def test_loaded_hub_dataset_rejects_local_source_symlink_outside_repo(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     external = tmp_path / "external.parquet"
     external.write_bytes(b"external")
     source = snapshot / "external.parquet"
@@ -894,11 +853,7 @@ def test_loaded_hub_dataset_rejects_local_source_symlink_outside_repo(tmp_path):
 
 
 def test_loaded_hub_dataset_rejects_cross_snapshot_symlink(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     other_snapshot = _dataset_snapshot(
         tmp_path,
         "org/dataset",
@@ -959,11 +914,7 @@ def test_loaded_hub_dataset_requires_every_consumed_source_file(tmp_path):
 
 
 def test_loaded_hub_dataset_rejects_encoded_windows_traversal(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     (snapshot.parent / "outside.parquet").write_bytes(b"outside")
     (snapshot / "..\\outside.parquet").write_bytes(b"outside")
     loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/%2e%2e%5coutside.parquet")
@@ -986,21 +937,13 @@ def test_loaded_hub_dataset_rejects_encoded_windows_traversal(tmp_path):
 )
 def test_dataset_snapshot_source_rejects_cross_platform_paths(tmp_path, source_path):
     from core.training import provenance
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
 
     assert provenance._dataset_snapshot_contains(str(snapshot), source_path) is False
 
 
 def test_loaded_hub_dataset_rejects_external_snapshot_symlink(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     external = tmp_path / "external.parquet"
     external.write_bytes(b"external")
     (snapshot / "external.parquet").symlink_to(external)
@@ -1010,11 +953,7 @@ def test_loaded_hub_dataset_rejects_external_snapshot_symlink(tmp_path):
 
 
 def test_loaded_hub_dataset_rejects_missing_local_snapshot_source(tmp_path):
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
 
     assert attest_loaded_dataset(
         "org/dataset",
@@ -1060,11 +999,7 @@ def test_shared_hf_loader_marks_only_successful_exact_dataset_load(tmp_path):
 def test_shared_hf_loader_attests_first_remote_dataset_load(tmp_path):
     from core.training import worker
 
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/train.parquet")
     config = {
         "hf_dataset": "org/dataset",
@@ -1131,11 +1066,7 @@ def test_first_remote_hub_load_produces_resumable_provenance(tmp_path):
 def test_embedding_hf_loader_attests_first_remote_dataset_load(tmp_path):
     from core.training import worker
 
-    snapshot = _dataset_snapshot(
-        tmp_path,
-        "org/dataset",
-        "dataset-commit",
-    )
+    snapshot = _shared_setup_1(tmp_path)
     loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/train.parquet")
     config = {
         "hf_dataset": "org/dataset",
@@ -1332,13 +1263,7 @@ def test_parent_persists_sanitized_attested_config_and_updates_respawn_state(tmp
     config, event, model, dataset = _complete_event(tmp_path)
     backend = TrainingBackend()
     backend.current_job_id = "run-1"
-    backend._db_run_created = True
-    backend._db_config = {
-        **config,
-        "model_snapshot_path": None,
-        "dataset_snapshot_path": None,
-        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
-    }
+    _shared_setup_4(backend, config)
     backend._last_full_config = {
         **backend._db_config,
         "hf_token": "hf_secret",
@@ -1426,10 +1351,7 @@ def test_db_config_update_only_mutates_running_run(monkeypatch, tmp_path):
 
 
 def test_finalization_persists_provenance_after_event_update_failure(tmp_path):
-    from core.training.training import TrainingBackend
-
-    config, event, _, _ = _complete_event(tmp_path)
-    backend = TrainingBackend()
+    backend, config, event = _shared_setup_7(tmp_path)
     backend.current_job_id = "run-final"
     backend._db_run_created = True
     backend._db_config = {
@@ -1466,18 +1388,9 @@ def test_finalization_persists_provenance_after_event_update_failure(tmp_path):
 
 
 def test_finalization_waits_for_inflight_provenance(tmp_path):
-    from core.training.training import TrainingBackend
-
-    config, event, _, _ = _complete_event(tmp_path)
-    backend = TrainingBackend()
+    backend, config, event = _shared_setup_7(tmp_path)
     backend.current_job_id = "run-race"
-    backend._db_run_created = True
-    backend._db_config = {
-        **config,
-        "model_snapshot_path": None,
-        "dataset_snapshot_path": None,
-        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
-    }
+    _shared_setup_4(backend, config)
     entered = threading.Event()
     release = threading.Event()
     finish_entered = threading.Event()
@@ -1526,18 +1439,9 @@ def test_finalization_waits_for_inflight_provenance(tmp_path):
 
 
 def test_provenance_continues_after_failed_finalization(tmp_path):
-    from core.training.training import TrainingBackend
-
-    config, event, _, _ = _complete_event(tmp_path)
-    backend = TrainingBackend()
+    backend, config, event = _shared_setup_7(tmp_path)
     backend.current_job_id = "run-finalize-failure"
-    backend._db_run_created = True
-    backend._db_config = {
-        **config,
-        "model_snapshot_path": None,
-        "dataset_snapshot_path": None,
-        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
-    }
+    _shared_setup_4(backend, config)
     finish_entered = threading.Event()
     release_finish = threading.Event()
     provenance_done = threading.Event()

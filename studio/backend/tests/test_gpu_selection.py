@@ -41,6 +41,38 @@ async def _inline_to_thread(func, /, *args, **kwargs):
     return func(*args, **kwargs)
 
 
+def _load_model(
+    inference_route,
+    request,
+    *,
+    slots = 1,
+):
+    """Call the load route with a request scope carrying ``slots`` llama-server slots."""
+    scope = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = slots)))
+    return inference_route._load_model_impl(request, scope, current_subject = "test-user")
+
+
+def _gguf_model_config(**overrides):
+    """The GGUF model row the load route reads, with per-test overrides."""
+    return SimpleNamespace(
+        **{
+            "is_gguf": True,
+            "is_lora": False,
+            "gguf_hf_repo": None,
+            "gguf_file": "/tmp/test.gguf",
+            "gguf_mmproj_file": None,
+            "gguf_variant": None,
+            "identifier": "unsloth/test.gguf",
+            "display_name": "unsloth/test.gguf",
+            "is_vision": False,
+            "is_audio": False,
+            "audio_type": None,
+            "has_audio_input": False,
+            **overrides,
+        }
+    )
+
+
 @contextmanager
 def _patched_unsloth_attention_modules(resolver):
     unsloth_module = ModuleType("unsloth")
@@ -1072,20 +1104,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         def _fake_resolve(ids, is_vulkan = False):
             raise ValueError("SENTINEL requested GPUs are outside the parent-visible set")
@@ -1107,17 +1126,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("SENTINEL", exc_info.exception.detail)
@@ -1129,20 +1138,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [99])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         with (
             patch.object(
@@ -1176,17 +1172,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("Vulkan GPU ordinal(s) [99]", exc_info.exception.detail)
@@ -1273,20 +1259,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         with (
             patch.object(
@@ -1312,17 +1285,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids", exc_info.exception.detail.lower())
@@ -1336,20 +1299,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
         fake_backend = SimpleNamespace(
             is_loaded = False,
             model_identifier = None,
@@ -1370,15 +1320,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
@@ -1391,19 +1333,10 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/diffusion.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
+        model_config = _gguf_model_config(
             gguf_file = "/tmp/diffusion.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
             identifier = "unsloth/diffusion.gguf",
             display_name = "unsloth/diffusion.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         fake_backend = SimpleNamespace(
             is_loaded = False,
@@ -1430,15 +1363,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("no defined mapping", exc_info.exception.detail)
 
@@ -1452,21 +1377,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config(gguf_mtp_file = None)
         acquired = []
         # Make [0, 1] invalid on any host (a duplicate id is rejected everywhere): the point is the ORDER, validation before the handoff.
         request.gpu_ids = [0, 0]
@@ -1483,17 +1394,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", lambda owner, register = None: acquired.append(owner)),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertEqual(acquired, [])  # no CHAT handoff before the doomed load errored
 
@@ -1508,19 +1409,12 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
+        model_config = _gguf_model_config(
             gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
             gguf_file = None,
-            gguf_mmproj_file = None,
             gguf_variant = "Q4_K_M",
             identifier = "unsloth/Qwen3-4B-GGUF",
             display_name = "Qwen3-4B",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         acquired = []
         with (
@@ -1537,17 +1431,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", lambda *a, **k: acquired.append(a[0])),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 409)
         self.assertIn("download", exc_info.exception.detail.lower())
         self.assertEqual(acquired, [])  # nothing evicted for a load that cannot start
@@ -1563,19 +1447,12 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
+        model_config = _gguf_model_config(
             gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
             gguf_file = None,
-            gguf_mmproj_file = None,
             gguf_variant = "Q4_K_M",
             identifier = "unsloth/Qwen3-4B-GGUF",
             display_name = "Qwen3-4B",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         marked = []
 
@@ -1600,17 +1477,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", _acquire),
         ):
             with self.assertRaises(HTTPException):
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(marked, [True])
         # The marker is scoped to the request: it must not outlive the failed load.
         self.assertFalse(llama_cpp.chat_load_active())
@@ -1759,17 +1626,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
@@ -1830,17 +1687,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("UUID/MIG", exc_info.exception.detail)

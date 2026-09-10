@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
@@ -763,6 +764,7 @@ function ComparePane({
 }
 
 function useCompareReloadReadiness(pairId: string): (pane: string) => void {
+  const signalReady = useAppShellReadySignal();
   const stateRef = useRef({
     pairId,
     panes: new Set<string>(),
@@ -782,9 +784,9 @@ function useCompareReloadReadiness(pairId: string): (pane: string) => void {
         return;
       }
       state.sent = true;
-      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+      signalReady();
     },
-    [pairId],
+    [pairId, signalReady],
   );
 }
 
@@ -1337,6 +1339,7 @@ function ProjectLanding({
   // view switch now (#8908), so the owner of that one reports readiness down.
   runtimeReady: boolean;
 }): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
@@ -1732,8 +1735,8 @@ function ProjectLanding({
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [dataLoaded, items, previews, runtimeReady]);
+    signalReady();
+  }, [dataLoaded, items, previews, runtimeReady, signalReady]);
 
   return (
     <>
@@ -2321,10 +2324,7 @@ export function ChatPage({
       !search.compare &&
       !search.project &&
       store.activeThreadId == null;
-    if (
-      !onEmptyScratchChat &&
-      !authorizeAgentGraphDraftRouteNavigation()
-    ) {
+    if (!onEmptyScratchChat && !authorizeAgentGraphDraftRouteNavigation()) {
       return;
     }
     store.setIncognito(!store.incognito);

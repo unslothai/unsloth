@@ -120,7 +120,7 @@ import {
   DEFAULT_PER_MODEL_CONFIG,
   isServedByMlx,
   savedContextPin,
-  resolveInitialConfig,
+  resolveResidentInitialConfig,
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker";
@@ -1386,7 +1386,7 @@ export function SharedComposer({
         // for this model/quant, never the other pane's. No saved config means all-null defaults.
         const resolved = config
           ? { config, remembered: true }
-          : resolveInitialConfig(sel.id, sel.ggufVariant ?? null);
+          : resolveResidentInitialConfig(sel.id, sel.ggufVariant ?? null);
         const ownConfig = resolved.config;
         const ownRemembered = resolved.remembered;
         const isAlreadyActive =
