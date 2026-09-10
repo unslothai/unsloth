@@ -471,9 +471,13 @@ def chat(
                 continue
 
             if should_print and getattr(chat_backend, "reply_hit_token_limit", False):
+                hint = (
+                    "raise or omit --max-new-tokens"
+                    if max_new_tokens is not None
+                    else "/reset to clear the history, or reload with a larger --max-seq-length"
+                )
                 console.print(
-                    "(reply stopped at the token limit — /reset to clear the history, "
-                    "or reload with a larger --max-seq-length)",
+                    f"(reply stopped at the token limit — {hint})",
                     style = "bright_black",
                 )
 

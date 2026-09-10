@@ -1575,7 +1575,7 @@ def test_chat_prefers_running_studio_server(monkeypatch):
     assert closed == ["http"]
 
 
-def _chat_run_with_limit_flag(monkeypatch, hit):
+def _chat_run_with_limit_flag(monkeypatch, hit, *flags):
     class _FakeHttpBackend:
         def __init__(self):
             self.reply_hit_token_limit = False
@@ -1592,13 +1592,18 @@ def _chat_run_with_limit_flag(monkeypatch, hit):
     monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: None)
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
 
-    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["fake-model", *flags], input = "hi\n/exit\n")
     assert result.exit_code == 0, result.output
     return result.output
 
 
 def test_chat_tells_the_user_when_a_reply_stopped_at_the_token_limit(monkeypatch):
-    assert "token limit" in _chat_run_with_limit_flag(monkeypatch, True)
+    unset = _chat_run_with_limit_flag(monkeypatch, True)
+    capped = _chat_run_with_limit_flag(monkeypatch, True, "--max-new-tokens", "8")
+
+    # Only an unset limit grows with the context; a chosen one has to be raised itself.
+    assert "--max-seq-length" in unset and "--max-new-tokens" not in unset
+    assert "--max-new-tokens" in capped and "--max-seq-length" not in capped
 
 
 def test_chat_stays_quiet_when_a_reply_ended_on_its_own(monkeypatch):
