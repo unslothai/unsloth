@@ -37,6 +37,12 @@ _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom
 # The subset documenting "continue_final_message" + "add_generation_prompt" on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
+# The subset documenting chat_template_kwargs, the only route to an enable_thinking template variable on a server that
+# renders the template itself (llama.cpp needs --jinja). "custom" is out for the same reason as the flag above: it is
+# any user-supplied base_url, a strict gateway 400s on the unknown key, and Deep Research sends enable_thinking=False
+# on every call, so it would fail requests the toggle never touched.
+_TEMPLATE_KWARGS_PROVIDERS = frozenset({"vllm", "llama_cpp"})
+
 # The subset documenting stream_options.include_usage. An OAI-compatible stream omits usage without it, and these
 # providers report no llama.cpp timings either, so the monitor has no token count to derive a speed from. Same caution
 # as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field. "openai"
@@ -1228,12 +1234,8 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif self.provider_type in ("vllm", "custom") and enable_thinking is not None:
-            # vLLM gates thinking via chat_template_kwargs.enable_thinking, and so does
-            # llama.cpp. Both register as "custom" when added by base_url without a preset,
-            # which _TEMPLATE_APPLYING_PROVIDERS above already assumes of it, so the same
-            # mechanism is the right one. Without "custom" here the toggle survives only as
-            # a top-level body field that neither server reads.
+        elif self.provider_type in _TEMPLATE_KWARGS_PROVIDERS and enable_thinking is not None:
+            # vLLM and llama.cpp gate thinking via chat_template_kwargs.enable_thinking; neither reads a top-level one.
             tpl_kw = body.get("chat_template_kwargs")
             if not isinstance(tpl_kw, dict):
                 tpl_kw = {}
