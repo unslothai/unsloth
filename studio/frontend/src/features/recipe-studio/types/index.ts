@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { Node } from "@xyflow/react";
+import type {
+  DatasetFormat,
+  GradientCheckpointing,
+  TrainingMethod,
+} from "@/types/training";
 
 export type SamplerType =
   | "category"
@@ -58,6 +63,7 @@ export type RecipeNodeData = {
     | "expression"
     | "seed"
     | "note"
+    | "train"
     | "model_provider"
     | "model_config"
     | "tool_config";
@@ -71,6 +77,7 @@ export type RecipeNodeData = {
     | "expression"
     | "seed"
     | "markdown_note"
+    | "train"
     | "model_provider"
     | "model_config"
     | "tool_config";
@@ -389,6 +396,64 @@ export type SchemaTransformProcessorConfig = {
 
 export type RecipeProcessorConfig = SchemaTransformProcessorConfig;
 
+/** Where the Train card sources its dataset from. */
+export type TrainingCardDatasetSource = "recipe" | "huggingface" | "upload";
+
+export type TrainingCardLoraVariant = "lora" | "rslora" | "loftq";
+
+/**
+ * Full training configuration held by a Train node. UI-only: it is not a
+ * dataset column, so it is excluded from the recipe payload and persisted in
+ * `ui.nodes` (mirroring markdown_note). On Run it is mapped into the global
+ * training-config store and launched via startTrainingRun.
+ */
+export type TrainingCardConfig = {
+  id: string;
+  kind: "train";
+  name: string;
+  // ui-only advanced-section accordion state
+  advancedOpen?: boolean;
+  // model + method
+  baseModel: string;
+  trainingMethod: TrainingMethod;
+  // dataset wiring: "recipe" auto-wires from the upstream completed run
+  datasetSource: TrainingCardDatasetSource;
+  hfDataset: string;
+  hfSubset: string;
+  hfSplit: string;
+  datasetFormat: DatasetFormat;
+  uploadedFile: string;
+  // core hyperparameters
+  epochs: number;
+  loraRank: number;
+  loraAlpha: number;
+  loraDropout: number;
+  loraVariant: TrainingCardLoraVariant;
+  batchSize: number;
+  learningRate: number;
+  // max sequence length (maps to training-config contextLength)
+  contextLength: number;
+  // output adapter / project name (maps to training-config projectName)
+  outputName: string;
+  // advanced hyperparameters
+  gradientAccumulation: number;
+  warmupSteps: number;
+  maxSteps: number;
+  weightDecay: number;
+  optimizerType: string;
+  lrSchedulerType: string;
+  packing: boolean;
+  trainOnCompletions: boolean;
+  gradientCheckpointing: GradientCheckpointing;
+  randomSeed: number;
+  targetModules: string[];
+  enableWandb: boolean;
+  wandbProject: string;
+  enableTensorboard: boolean;
+  tensorboardDir: string;
+  hfToken: string;
+};
+
 export type NodeConfig =
   | SamplerConfig
   | LlmConfig
@@ -396,6 +461,7 @@ export type NodeConfig =
   | ExpressionConfig
   | MarkdownNoteConfig
   | SeedConfig
+  | TrainingCardConfig
   | ModelProviderConfig
   | ModelConfig
   | ToolProfileConfig;

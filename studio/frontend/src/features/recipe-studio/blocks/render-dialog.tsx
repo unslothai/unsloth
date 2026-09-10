@@ -20,6 +20,7 @@ import { UniformDialog } from "../dialogs/samplers/uniform-dialog";
 import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
 import { MarkdownNoteDialog } from "../dialogs/markdown-note/markdown-note-dialog";
 import { ToolProfileDialog } from "../dialogs/tool-profile/tool-profile-dialog";
+import { TrainDialog } from "../dialogs/train/train-dialog";
 import { ValidatorDialog } from "../dialogs/validators/validator-dialog";
 
 export function renderBlockDialog(
@@ -129,6 +130,10 @@ export function renderBlockDialog(
     case "markdown_note":
       return config.kind === "markdown_note" ? (
         <MarkdownNoteDialog config={config} onUpdate={update} />
+      ) : null;
+    case "train":
+      return config.kind === "train" ? (
+        <TrainDialog config={config} onUpdate={update} />
       ) : null;
   }
 }
