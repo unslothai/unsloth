@@ -3551,8 +3551,10 @@ def _with_gguf_load_marker(load: Callable):
         # is taken so a save cannot fall through the window before Popen, which means
         # every early return between the two would otherwise leave it stuck on and the
         # route reporting a reload for a child that never started.
-        with _vulkan_probe_memo_scope(), _pending_placement_cleared(self), gguf_load_in_flight(
-            hf_repo
+        with (
+            _vulkan_probe_memo_scope(),
+            _pending_placement_cleared(self),
+            gguf_load_in_flight(hf_repo),
         ):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,

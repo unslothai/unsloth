@@ -2901,7 +2901,12 @@ class TestTheVulkanProbeMemoIsScopedToThePlacement:
     has since been allocated."""
 
     @staticmethod
-    def _count_probes(monkeypatch, m, *, raising = False):
+    def _count_probes(
+        monkeypatch,
+        m,
+        *,
+        raising = False,
+    ):
         calls = []
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
         monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
