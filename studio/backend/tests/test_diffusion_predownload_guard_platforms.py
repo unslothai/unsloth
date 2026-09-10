@@ -162,6 +162,39 @@ def test_an_integrated_gpu_is_the_one_machine_that_is_judged(monkeypatch, platfo
     assert verdict(LUMINA_2) is None
 
 
+def test_unified_cuda_spark_gb10_is_judged_against_system_ram_not_the_carveout(monkeypatch):
+    """#9919: CUDA mem_get_info on GB10 is a few-GB carve-out of unified LPDDR.
+
+    The pre-download guard must size against the 128 GB host pool. Lumina (~20 GB)
+    fits that pool and would be refused against the 3 GB carve-out; FLUX.2-dev
+    (~113 GB) is still too large for 128 GB and stays refused.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        types.SimpleNamespace(
+            cuda = types.SimpleNamespace(
+                current_device = lambda: 0,
+                get_device_properties = lambda _i: types.SimpleNamespace(integrated = True),
+            ),
+            xpu = None,
+        ),
+    )
+    hardware = types.ModuleType("utils.hardware")
+    carve = 3 * GIB_MIB * MIB
+    hardware.trusted_mem_get_info = lambda: (carve, carve)
+    monkeypatch.setitem(sys.modules, "utils.hardware", hardware)
+    monkeypatch.setattr(memory_mod, "_system_memory_mib", lambda: (128 * GIB_MIB, 100 * GIB_MIB))
+    snapshot = snapshot_device_memory(_target("cuda"))
+    assert snapshot.memory_kind == "unified_memory"
+    assert snapshot.total_mib == 128 * GIB_MIB
+    assert snapshot.free_mib == 100 * GIB_MIB
+    verdict = _guard(monkeypatch, snapshot)
+    assert verdict(FLUX2_DEV) is not None
+    assert verdict(LUMINA_2) is None
+
+
 def test_apple_silicon_is_judged_the_same_way(monkeypatch):
     snapshot = _classify(
         monkeypatch,

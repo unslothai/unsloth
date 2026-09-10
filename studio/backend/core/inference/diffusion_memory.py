@@ -379,22 +379,32 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
     try:
         import torch
 
-        # Not torch.cuda.mem_get_info directly: on Windows ROCm its free half is an over-report that does not track
-        # residency, and this feeds the activation refusal that exists BECAUSE Windows WDDM spills to host RAM instead
-        # of raising (#8403). Imported lazily to keep this module free of backend imports at module scope.
+        kind = "discrete_vram"
+        try:
+            # Query the CURRENT device; hardcoding 0 would inspect the wrong GPU and misclassify it.
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            if bool(getattr(props, "integrated", False) or getattr(props, "is_integrated", False)):
+                kind = "unified_memory"  # Jetson / GB10 Spark / other integrated SoC
+        except Exception:
+            pass
+        if kind == "unified_memory":
+            # CUDA mem_get_info on GB10 / Spark is often a small carve-out of the unified LPDDR
+            # pool (a few GB free of a 128 GB machine). Offload frees nothing here, so the
+            # oversize refusal must size against the shared system pool, the same way MPS does
+            # and the same pool llama.cpp already uses for integrated CUDA. Discrete cards keep
+            # the CUDA reading below. A missing host reading fails open rather than budgeting
+            # against the carve-out (#9919).
+            sys_total, sys_free = _system_memory_mib()
+            if sys_free is not None:
+                return int(sys_free), None if sys_total is None else int(sys_total), kind
+            return None, None, kind
+        # Not torch.cuda.mem_get_info directly: on Windows ROCm its free half is an over-report
+        # that does not track residency, and this feeds the activation refusal that exists
+        # BECAUSE Windows WDDM spills to host RAM instead of raising (#8403). Imported lazily
+        # to keep this module free of backend imports at module scope.
         from utils.hardware import trusted_mem_get_info
 
         free, total = trusted_mem_get_info()
-        kind = "discrete_vram"
-        try:
-            # query the CURRENT device; hardcoding 0 would inspect the wrong GPU and misclassify it
-            # Query the CURRENT device (mem_get_info reports it); hardcoding 0 would inspect the wrong GPU and
-            # misclassify it.
-            props = torch.cuda.get_device_properties(torch.cuda.current_device())
-            if bool(getattr(props, "integrated", False) or getattr(props, "is_integrated", False)):
-                kind = "unified_memory"  # e.g. Jetson / integrated SoC
-        except Exception:
-            pass
         return int(free // (1024 * 1024)), int(total // (1024 * 1024)), kind
     except Exception:
         return None, None, "discrete_vram"
