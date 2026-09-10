@@ -3,42 +3,11 @@
 
 """FlashInfer NVFP4 kernels behind ``torch.library`` custom ops, plus the backend decision.
 
-Three things live here and nothing else does:
-
-1. **The ops.** ``unsloth_nvfp4::quantize`` and ``unsloth_nvfp4::mm`` wrap FlashInfer's activation
-   quantiser and its cutlass FP4 GEMM. FlashInfer 0.6.6 ships the *shape* of a custom-op
-   registration but not the registration itself (``flashinfer/utils.py`` defines
-   ``register_custom_op`` as an identity decorator, deliberately), so ``torch.ops.flashinfer`` is
-   empty at runtime and Dynamo has nothing opaque to put in the graph: it tries to trace the whole
-   Python entry point and fails. Wrapping the two calls here is what vLLM and SGLang both do, and
-   it is what makes ``fullgraph = True`` over a quantized block possible at all. The fake impls
-   must reproduce FlashInfer's allocation EXACTLY, not approximately: a wrong meta shape is not an
-   error, it is a silently mis-sized buffer downstream.
-
-2. **The device guard.** ``_device_guard`` is not defensive style. FlashInfer's
-   ``fp4_gemm_cutlass.cu`` takes the STREAM from the tensor but installs no ``CUDADeviceGuard``, so
-   calling ``mm_fp4`` (or ``nvfp4_quantize``) while the current device is not the tensors' device
-   launches onto a stream belonging to another context: the kernel hangs, the card ends up in
-   "GPU requires reset", and nothing short of root recovers it. Three cards on this host were lost
-   that way. Every launch below therefore enters the tensor's own device first, and a test walks
-   this file's AST to prove no launch escapes one.
-
-3. **The layout, and the dequantiser.** ``swizzle_sf`` / ``unswizzle_sf`` move between cutlass's
-   128x4 block-scale tiling and the plain matrix, and ``dequantize_nvfp4_weight`` decodes a packed
-   operand back to a dense ``[N, K]`` weight. That decoder is what the per-step W4A16 branch runs
-   on (see ``diffusion_nvfp4_protect``); it reproduces torchao's ``NVFP4Tensor.dequantize``
-   arithmetic in torchao's order, and a CUDA test holds it to bit equality on real DiT shapes,
-   because a protected step that computed a slightly different weight would be a second quantiser
-   rather than the same one at a different activation precision.
-
-4. **The backend decision.** ``select_nvfp4_backend`` answers "torchao or flashinfer" by PROBING
-   (import, capability, a guarded 128x256 preflight GEMM) rather than by a version table, because
-   the failure this is really about -- FlashInfer's NVFP4 JIT needing CUDA >= 12.9 to emit
-   ``compute_120f``, which most sm_120 stacks do not ship -- is invisible to a version table and
-   shows up only when the kernel is asked to build.
-
-The module imports on a torch-free host: torch and flashinfer are imported inside functions, and
-the ops are registered on first use through ``register_ops()``.
+FlashInfer 0.6.6 registers no custom ops of its own, so Dynamo cannot treat its entry points as
+opaque; wrapping them here is what makes ``fullgraph = True`` over a quantized block possible.
+The fake impls must reproduce FlashInfer's allocation EXACTLY: a wrong meta shape is a silently
+mis-sized buffer, not an error. torch and flashinfer are imported inside functions so the module
+imports on a torch-free host.
 """
 
 from __future__ import annotations
@@ -47,26 +16,19 @@ import os
 import threading
 from typing import Any, Optional
 
-# ``auto`` (probe), ``torchao`` (never flashinfer), ``flashinfer`` (explicit; still probed, and a
-# failed probe falls back to torchao with a warning rather than to a hang).
 NVFP4_BACKEND_ENV = "UNSLOTH_NVFP4_BACKEND"
 NVFP4_BACKENDS = ("auto", "torchao", "flashinfer")
 BACKEND_TORCHAO = "torchao"
 BACKEND_FLASHINFER = "flashinfer"
 
-# Restores the full M x N memset in the GEMM op. Strictly slower and no safer against the
-# mechanism actually established; see ``_mm_impl``.
+# Restores the full M x N memset in the GEMM op. Strictly slower and no safer; see ``_mm_impl``.
 NVFP4_ZERO_BUFFER_ENV = "UNSLOTH_NVFP4_ZERO_BUFFER"
 
-# Where FlashInfer's NVFP4 cutlass kernels are known to exist at all. sm_121 is absent and sm_120
-# is present but routinely fails the preflight on a CUDA 12.8 toolchain, which is why the
-# capability set is a necessary condition and the preflight is the sufficient one.
+# Necessary condition only: sm_120 is listed but routinely fails the preflight on CUDA 12.8.
 NVFP4_FLASHINFER_CAPS = frozenset({(10, 0), (10, 3), (12, 0)})
 
-# The GEMM backend argument passed through to flashinfer. Only cutlass is measured here.
 DEFAULT_MM_BACKEND = "cutlass"
 
-# NVFP4 constants: e2m1 max magnitude and e4m3 max, whose product is the global-scale numerator.
 FP4_MAX = 6.0
 FP8_MAX = 448.0
 
@@ -88,24 +50,15 @@ def _swizzled_sf_numel(
     cols: int,
     row_size: int = 128,
 ) -> int:
-    """Element count of a swizzled scale-factor buffer, mirroring FlashInfer's own helper.
-
-    Copied rather than imported from ``flashinfer/fp4_quantization.py`` on purpose: the fake impls
-    run under ``FakeTensorMode`` and must not touch the FlashInfer JIT machinery at all.
-    """
+    """Element count of a swizzled scale-factor buffer. Copied, not imported: the fake impls must
+    not touch the FlashInfer JIT machinery."""
     return ((rows + row_size - 1) // row_size * row_size) * ((cols + 3) // 4 * 4)
 
 
 def _device_guard(t: Any):
-    """``torch.cuda.device`` for the tensor's own device. Wrap EVERY kernel launch in one.
-
-    See this module's docstring: FlashInfer installs no device guard of its own, and launching its
-    cutlass kernels against a foreign current device bricks the card rather than raising.
-
-    Every flashinfer call site must sit inside one of these guards; the AST test enforces the list.
-    ``_mm_impl`` spans the barrier AND the GEMM, because the barrier has to fire on the device the
-    GEMM will read from.
-    """
+    """``torch.cuda.device`` for the tensor's own device. EVERY flashinfer call must sit inside
+    one: FlashInfer installs no device guard, and a foreign current device bricks the card.
+    ``_mm_impl`` spans the barrier AND the GEMM so the barrier fires on the device the GEMM reads."""
     import torch
     return torch.cuda.device(t.device)
 
@@ -167,11 +120,8 @@ def global_scale(t: Any):
     return (FP4_MAX * FP8_MAX / t.float().abs().amax().clamp(min = 1e-8)).reshape(1).to(t.device)
 
 
-# ── the op bodies ─────────────────────────────────────────────────────────────────────────────
-#
-# Exposed as plain functions as well as through ``torch.ops`` so that a test can call them with a
-# stubbed torch and assert the call ORDER inside them, which is the correctness invariant the
-# barrier below rests on and which is invisible from outside an opaque op.
+# Exposed as plain functions as well as through ``torch.ops`` so that a test can assert the call
+# ORDER inside them, which is what the barrier below rests on.
 
 
 def _quantize_impl(x: Any, global_sf: Any):
@@ -189,40 +139,17 @@ def _quantize_impl(x: Any, global_sf: Any):
 
 
 def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend: str):
-    """NVFP4 GEMM. Takes the weight row-major ``[N, K/2]`` and transposes inside.
+    """NVFP4 GEMM. Takes the weight row-major ``[N, K/2]`` and transposes inside, since a custom
+    op's inputs are functionalised and a ``.T`` view is an alias Dynamo has to reason about.
 
-    The transposes live inside the op rather than at the call site because a custom op's inputs are
-    functionalised: handing Dynamo a ``.T`` view of a buffer is an alias it has to reason about,
-    while ``n`` as a plain int gives the fake impl the output shape without inspecting a view.
-
-    **A kernel MUST run between the activation quantiser and this GEMM.** FlashInfer launches the
-    cutlass FP4 GEMM with PDL while the CUTLASS ``griddepcontrol`` instructions that make PDL safe
-    are compiled out of its build, so without a barrier the GEMM starts reading operands the
-    quantiser has not finished writing. ``enable_pdl = False`` does not help: FlashInfer plumbs
-    that argument only to its cute-dsl runner and silently ignores it for cutlass (verified
-    bit-identical output and identical timing with it on or off).
-
-    What protects the GEMM is a kernel EXISTING between the producer and it, not that kernel
-    writing M x N bytes. Measured on the validated PDL trigger harness, 50 iterations each, where
-    the negative control fires 50/50 and the specificity control 0/50:
-
-        trigger, nothing between        50/50 non-finite
-        trigger, torch.empty only       50/50 non-finite   <- allocation alone protects nothing
-        trigger, ONE-ELEMENT kernel      0/50              <- as good as the full memset
-        trigger, full torch.zeros        0/50
-        trigger, cuda.synchronize        0/50
-
-    The ``empty only`` arm is the discriminator: identical allocation, no kernel, no protection. So
-    a 1-element fill buys the whole guarantee and the memset was paying M x N to get it.
-
-    The barrier buffer is PERSISTENT per device (``_fire_barrier``) and only the fill is per call.
-    The forward-33 objection that argued for a fresh buffer was about caching the GEMM's OUTPUT and
-    does not reach here, because nothing ever reads this buffer.
-
-    ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` restores the full memset. It is strictly slower and no safer
-    against the mechanism established above, but the residual forward-33 misfire has no confirmed
-    cause and zeroing does bound what an unknown fault surfaces to garbage rather than to stale
-    allocator bytes.
+    **A kernel MUST run between the activation quantiser and this GEMM**, or the GEMM reads
+    operands the quantiser has not finished writing (cutlass is launched with PDL while the
+    ``griddepcontrol`` instructions that make PDL safe are compiled out of its build, and
+    ``enable_pdl = False`` is plumbed only to the cute-dsl runner). What protects it is a kernel
+    EXISTING, so a one-element fill is as good as the memset while ``torch.empty`` alone is NOT.
+    The barrier buffer is persistent per device (``_fire_barrier``); only the fill is per call, and
+    nothing ever reads the buffer, so a cached one cannot carry a stale NaN into a later output.
+    ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` restores the full memset (slower, bounds an unknown fault to garbage).
     """
     import flashinfer
     import torch
@@ -269,8 +196,7 @@ def _quantize_fake(x: Any, global_sf: Any):
 
     m, k = x.shape
     cols = k // 16
-    # FlashInfer allocates a FLAT buffer of the padded size and then reshapes it to (-1, k // 16),
-    # so the leading dim is NOT m whenever the padding is non-trivial. Reproduce that, not m.
+    # The leading dim is NOT m whenever the padding is non-trivial. Reproduce that, not m.
     total = _swizzled_sf_numel(m, cols, 128)
     return (
         x.new_empty((m, k // 2), dtype = torch.uint8),
@@ -284,11 +210,8 @@ def _mm_fake(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
 
 
 def register_ops() -> None:
-    """Register the two custom ops. Idempotent, and safe to call from several threads.
-
-    Registration is deferred rather than done at import because ``torch.library`` needs torch and
-    this module has to import on a host that has none (the smoke probe, the validator, Windows).
-    """
+    """Register the two custom ops. Idempotent, thread safe, and deferred rather than done at
+    import because this module has to import on a host with no torch."""
     global _REGISTERED
     if _REGISTERED:
         return
@@ -317,9 +240,6 @@ def register_ops() -> None:
             )
             mm.register_fake(_mm_fake)
         _REGISTERED = True
-
-
-# ── scale-factor layout ───────────────────────────────────────────────────────────────────────
 
 
 def unswizzle_sf(
@@ -356,27 +276,17 @@ def swizzle_sf(sf_lin: Any, m: int, k: int):
     return v.permute(0, 3, 2, 1, 4).reshape(-1).contiguous()
 
 
-# The e2m1 value set, indexed by the 3 magnitude bits; the 16-entry signed table is indexed by the
-# raw nibble (``sign << 3 | magnitude``). These ARE the values the hardware format assigns, which is
-# what makes the dequantised weight below the same weight the FP4 tensor cores read, not an
-# approximation of it.
+# The signed table is indexed by the raw nibble (``sign << 3 | magnitude``).
 _E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 _E2M1_LUT = _E2M1_MAGNITUDES + tuple(-v for v in _E2M1_MAGNITUDES)
 
-# One 16-entry fp32 table per device, shared by every layer. Deliberately NOT a registered buffer:
-# 64 bytes is nothing, but 304 copies of it inside a model whose whole claim is "no second resident
-# operand" is exactly the kind of byte that has to not exist.
+# Deliberately NOT a registered buffer: one copy per layer is the kind of byte that must not exist.
 _LUT_CACHE: dict = {}
 
 
 def e2m1_lut(device: Any):
-    """The signed e2m1 decode table on ``device``, memoised.
-
-    Memoised rather than rebuilt so that it is not ALLOCATED inside a CUDA-graph capture: a buffer
-    first created while recording is only valid while recording. ``GraphedForward`` warms the
-    branch three times before it captures, so the table already exists by then, and it is never
-    freed.
-    """
+    """The signed e2m1 decode table on ``device``, memoised so that it is never ALLOCATED inside a
+    CUDA-graph capture: a buffer first created while recording is only valid while recording."""
     import torch
 
     key = (str(device.type), device.index)
@@ -393,19 +303,10 @@ def reset_lut_cache() -> None:
 
 
 def dequantize_nvfp4_weight(wq: Any, w_sf: Any, per_tensor_scale: Any, *, dtype: Any = None):
-    """The packed NVFP4 operand as a dense ``[N, K]`` weight. TRANSIENT by contract.
-
-    ``wq`` is the row-major ``[N, K / 2]`` e2m1x2 payload, ``w_sf`` the swizzled 128x4 e4m3 block
-    scales, and ``per_tensor_scale`` torchao's own second-level scale (``1 / w_gsf``, the
-    ``w_scale`` buffer the layer carries). The arithmetic is torchao's, in torchao's order:
-    ``value = e2m1(code) * (per_tensor_scale * block_scale)`` in fp32, rounded to ``dtype`` once at
-    the end. It is bit-identical to ``NVFP4Tensor.dequantize`` on a real layer (T-CUDA-PROTECT-1),
-    which matters because the protected step has to be the SAME weight the unprotected step reads,
-    at a different activation precision, and not a second quantisation of it.
-
-    The caller must drop the result. Nothing here caches it: a cached dense weight is a second
-    resident operand, which is the one thing this lever exists to avoid.
-    """
+    """The packed NVFP4 operand as a dense ``[N, K]`` weight. TRANSIENT by contract: the caller
+    must drop it, since caching it is the second resident operand this lever exists to avoid. The
+    arithmetic is torchao's, in torchao's order, so the protected step reads the SAME weight the
+    unprotected step does rather than a second quantisation of it."""
     import torch
 
     if dtype is None:
@@ -415,8 +316,7 @@ def dequantize_nvfp4_weight(wq: Any, w_sf: Any, per_tensor_scale: Any, *, dtype:
     cols = half_k * 2
     blocks = cols // 16
     lut = e2m1_lut(q.device)
-    # int32, not int64: the gather index is the size of the weight, and an int64 copy of it is
-    # 8 bytes per 4-bit code. Under the regional compile this whole chain fuses into one kernel.
+    # int32, not int64: an int64 gather index costs 8 bytes per 4-bit code.
     codes = q.to(torch.int32)
     values = torch.stack((lut[codes & 0x0F], lut[codes >> 4]), dim = -1).reshape(rows, blocks, 16)
     block_scale = unswizzle_sf(w_sf, rows, cols).to(torch.float32)
@@ -429,23 +329,15 @@ def dequantize_nvfp4_weight(wq: Any, w_sf: Any, per_tensor_scale: Any, *, dtype:
 
 
 def sf_matrix_shape(rows: int, cols: int) -> tuple[int, int]:
-    """FlashInfer's own 2D view of a swizzled scale buffer: a flat padded buffer reshaped
-    ``(-1, cols)``. The leading dim is NOT ``rows`` whenever the padding is non-trivial."""
+    """FlashInfer's 2D view of a swizzled scale buffer. The leading dim is NOT ``rows`` whenever
+    the padding is non-trivial."""
     padded_cols = (cols + 3) // 4 * 4
     return (_swizzled_sf_numel(rows, cols, 128) // padded_cols, padded_cols)
 
 
-# ── the preflight ─────────────────────────────────────────────────────────────────────────────
-
-
 def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
-    """A tiny GUARDED 128x256 quantise + GEMM on ``device``, memoised per device index.
-
-    Cheap, and it is the check that would have caught the multi-device hang before it took a card
-    down rather than after. It is also the only honest answer to "will FlashInfer run here": the
-    JIT build is what fails on sm_120 with a CUDA 12.8 toolchain, and only asking it to build finds
-    out. Returns ``{"ok", "reason", "capability", "name"}``; never raises.
-    """
+    """A tiny GUARDED 128x256 quantise + GEMM on ``device``, memoised per device index. Only asking
+    the JIT to build finds out whether FlashInfer runs here. Never raises."""
     import torch
 
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
@@ -526,9 +418,6 @@ def reset_preflight_cache() -> None:
     _WARNED.clear()
 
 
-# ── the backend decision ──────────────────────────────────────────────────────────────────────
-
-
 def nvfp4_backend_env() -> str:
     """The requested backend, normalised. An unrecognised value reads as ``auto``."""
     raw = os.environ.get(NVFP4_BACKEND_ENV, "").strip().lower()
@@ -555,8 +444,8 @@ def _device_capability(device: Any = None) -> Optional[tuple]:
 
 
 def _resolve_backend(device: Any = None) -> tuple[str, str]:
-    """``(backend, reason)``. The reason is REPORTED, not just used: an operator who asked for
-    flashinfer and got torchao has to be able to read why without reproducing the probe."""
+    """``(backend, reason)``: the reason is reported so a fallback is readable without reproducing
+    the probe."""
     requested = nvfp4_backend_env()
     if requested == BACKEND_TORCHAO:
         return BACKEND_TORCHAO, f"{NVFP4_BACKEND_ENV}=torchao"
@@ -588,13 +477,8 @@ def nvfp4_backend_reason(device: Any = None) -> str:
 
 
 def select_nvfp4_backend(device: Any = None) -> str:
-    """``"torchao"`` or ``"flashinfer"`` for ``device``.
-
-    flashinfer only when it imports, when the capability is one it has NVFP4 kernels for, and when
-    the guarded preflight passes on this exact device. An EXPLICIT ``flashinfer`` request that
-    fails any of the three falls back to torchao with a warning rather than to a hang: the
-    alternative is a card that needs a root reset.
-    """
+    """``"torchao"`` or ``"flashinfer"`` for ``device``. An explicit ``flashinfer`` request that
+    fails import, capability or preflight falls back to torchao rather than to a bricked card."""
     backend, reason = _resolve_backend(device)
     if backend != BACKEND_FLASHINFER and nvfp4_backend_env() == BACKEND_FLASHINFER:
         key = (str(device), reason)

@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the NVFP4 per-step precision lever (W4A16 at protected denoising steps).
-
-The hermetic group covers the parts that decide whether the lever fires at all and on WHICH step:
-the schedule parser, the controller's state machine, and the scheduler wrapper that supplies the
-step index. Those need no GPU and no flashinfer, and they are where a silent off-by-one would hide
--- a lever that protects step 1 instead of step 0 measures as "step-aware does nothing".
-
-The CUDA group is the correctness go/no-go. It asserts that the dequantised weight is torchao's own
-dequantisation BIT FOR BIT on real DiT shapes, that a protected forward is exactly
-``F.linear`` against that weight, that the switch costs TWO compiled variants across a 50-step
-render rather than fifty, and that a CUDA-graph capture keeps the two branches apart.
-"""
+"""Tests for the NVFP4 per-step precision lever (W4A16 at protected denoising steps)."""
 
 from __future__ import annotations
 
@@ -25,8 +14,6 @@ from core.inference import diffusion_nvfp4_linear as nl
 from core.inference import diffusion_nvfp4_ops as ops
 from core.inference import diffusion_nvfp4_protect as pr
 
-# z-image / flux / Wan attention and feed-forward projections, plus the (15360, 256) modulation
-# shape whose 16 block-scale columns exercise the padded unswizzle.
 REAL_SHAPES = ((3072, 3072), (18432, 3072), (15360, 256), (5120, 3072))
 
 
@@ -44,7 +31,6 @@ def _cuda_or_skip():
     return torch
 
 
-# ── the schedule ──────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -54,23 +40,17 @@ def _cuda_or_skip():
         ("0,-1", 50, (0, 49)),
         ("0,1,2,3,4,5,6,7,-1", 50, (0, 1, 2, 3, 4, 5, 6, 7, 49)),
         ("auto", 50, (0, 1, 2, 3, 49)),
-        # The auto set scales by fraction: the first 8 percent (rounded up) plus the last step.
         ("auto", 8, (0, 7)),
         ("auto", 100, tuple(range(8)) + (99,)),
         ("auto", 1, (0,)),
-        # Duplicates and whitespace collapse; -1 and the explicit last index are the same step.
         (" 0 , 0 , -1 , 49 ", 50, (0, 49)),
-        # Off in every spelling.
         ("", 50, ()),
         ("off", 50, ()),
         ("none", 50, ()),
         (None, 50, ()),
-        # A step count the schedule does not reach drops the unreachable indices, it does not raise:
-        # one env value has to serve a 4-step smoke render and a 50-step production one.
         ("0,1,2,3,-1", 4, (0, 1, 2, 3)),
         ("0,1,2,3,-1", 2, (0, 1)),
         ("60", 50, ()),
-        # No steps to protect.
         ("0", 0, ()),
     ],
 )
@@ -98,7 +78,6 @@ def test_the_env_reader_treats_blank_and_off_as_off(monkeypatch):
     assert pr.protect_steps_env() == "auto"
 
 
-# ── the controller ────────────────────────────────────────────────────────────────────────────
 
 
 def test_an_unarmed_controller_never_protects():
@@ -123,7 +102,6 @@ def test_the_controller_protects_exactly_the_named_steps():
         ctl.advance()
     assert fired == [0, 1, 2, 3, 49]
     assert ctl.protected_steps_seen == 5
-    # One past the end of the schedule is not protected by accident.
     assert ctl.protected is False
 
 
@@ -133,7 +111,6 @@ def test_reset_leaves_a_controller_protecting_nothing():
     assert ctl.protected is True
     ctl.reset()
     assert (ctl.protected, ctl.index, ctl.steps, ctl.total) == (False, 0, (), 0)
-    # Still armed: reset ends a generation, it does not disarm the load.
     assert ctl.armed is True
 
 
@@ -174,7 +151,6 @@ def test_configure_rearms_and_disarms():
     assert (ctl.armed, ctl.spec) == (False, "")
 
 
-# ── the step counter ──────────────────────────────────────────────────────────────────────────
 
 
 class _FakeScheduler:
@@ -210,8 +186,7 @@ def test_the_scheduler_wrapper_gives_the_forward_the_right_step_index():
 
 
 def test_the_wrapper_is_removed_and_the_controller_reset_afterwards():
-    """And removed by DELETING the instance attribute it added, not by assigning the bound method
-    back: a scheduler that never had its own ``step`` must not be left carrying one."""
+    """Removed by DELETING the instance attribute it added, not by assigning the method back."""
     ctl = pr.NVFP4StepController("0")
     pipe = _FakePipe()
     assert "step" not in pipe.scheduler.__dict__
@@ -234,8 +209,7 @@ def test_the_wrapper_is_removed_when_the_denoise_loop_raises():
 
 
 def test_an_unarmed_controller_wraps_nothing_at_all():
-    """Default OFF has to be free: no wrapper on the scheduler, so not one extra Python frame per
-    step on every fp8 and bf16 render in the product."""
+    """Default OFF has to be free: no wrapper on the scheduler at all."""
     ctl = pr.NVFP4StepController("")
     pipe = _FakePipe()
     with pr.protect_generation(pipe, 50, controller = ctl):
@@ -262,8 +236,7 @@ def test_a_pipeline_with_no_scheduler_protects_nothing():
 
 
 def test_a_second_wrapper_over_the_first_still_counts_once():
-    """The gate harness and the video backend both wrap ``scheduler.step`` for progress. Nesting
-    must not double-count the lever, and unwinding must restore in the order it wrapped."""
+    """The gate harness and the video backend both wrap ``scheduler.step`` for progress."""
     ctl = pr.NVFP4StepController("0,-1")
     pipe = _FakePipe()
     with pr.protect_generation(pipe, 10, controller = ctl):
@@ -284,7 +257,6 @@ def test_a_second_wrapper_over_the_first_still_counts_once():
     assert "step" not in pipe.scheduler.__dict__
 
 
-# ── the graph key ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_the_graph_key_is_empty_when_the_lever_is_off(monkeypatch):
@@ -309,8 +281,7 @@ def test_the_graph_key_separates_the_two_branches(monkeypatch):
 
 
 def test_the_wrapper_does_not_key_a_model_with_no_nvfp4_layers(monkeypatch):
-    """An fp8 load in a process whose environment names protect steps must not double its graphs
-    for a branch none of its layers can take."""
+    """An fp8 load in a process that names protect steps must not double its graph count."""
     torch = pytest.importorskip("torch")
     import torch.nn as nn
     from core.inference import diffusion_cuda_graph as cg
@@ -325,7 +296,6 @@ def test_the_wrapper_does_not_key_a_model_with_no_nvfp4_layers(monkeypatch):
     assert torch is not None
 
 
-# ── the layer, without a GPU ──────────────────────────────────────────────────────────────────
 
 
 def _cpu_layer(torch, *, in_features = 64, out_features = 32):
@@ -344,7 +314,6 @@ def test_a_layer_takes_the_process_controller_and_derives_its_weight_scale():
     torch = pytest.importorskip("torch")
     layer = _cpu_layer(torch)
     assert layer.protect is pr.protect_controller()
-    # alpha * a_gsf when the caller supplies none, so an old construction site still works.
     assert float(layer.w_scale) == pytest.approx(0.25 * 1344.0)
     assert "protect=" not in layer.extra_repr()
 
@@ -371,14 +340,11 @@ def test_attach_controller_reaches_every_nvfp4_layer():
     assert [name for name, _ in pr.protect_layers(tree)] == ["0", "2"]
 
 
-# ── T-CUDA-PROTECT-1: the dequantiser IS torchao's, bit for bit ───────────────────────────────
 
 
 @pytest.mark.parametrize("out_features,in_features", REAL_SHAPES)
 def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
-    """The protected step has to read the SAME weight the unprotected step's GEMM reads. If this
-    decoder drifted from torchao's, the lever would be a second quantiser wearing the name of a
-    precision switch, and every LPIPS number attributed to it would be measuring that instead."""
+    """The protected step has to read the SAME weight the unprotected step's GEMM reads."""
     torch = _cuda_or_skip()
     from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
 
@@ -405,7 +371,6 @@ def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
         f"{int((got != want).sum())} of {got.numel()} elements differ from "
         f"NVFP4Tensor.dequantize"
     )
-    # And in fp32, where a rounding difference could not hide under the bf16 round.
     with torch.cuda.device(0):
         assert torch.equal(
             ops.dequantize_nvfp4_weight(wq, w_sf, per_tensor_scale, dtype = torch.float32),
@@ -414,8 +379,7 @@ def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
 
 
 def test_the_dequantiser_matches_flashinfers_own_packing():
-    """The other producer of these bytes. flashinfer's quantiser takes ``w_gsf = 6*448/amax``
-    where torchao takes its reciprocal, so this also pins which way round the scale goes."""
+    """The other producer of these bytes."""
     torch = _cuda_or_skip()
     import flashinfer
 
@@ -433,14 +397,11 @@ def test_the_dequantiser_matches_flashinfers_own_packing():
             (1.0 / w_gsf),
             dtype = torch.float32,
         )
-        # Every decoded value is a block scale times an e2m1 magnitude, so the relative error
-        # against the bf16 source is the 4-bit grid and nothing else.
         rel = float((deq - w.float()).norm() / w.float().norm())
     assert rel < 0.12, rel
     assert bool(torch.isfinite(deq).all())
 
 
-# ── T-CUDA-PROTECT-2: a protected forward is exactly F.linear ─────────────────────────────────
 
 
 def _torchao_linear(torch, out_features, in_features, *, bias = True, seed = 0):
@@ -475,22 +436,18 @@ def test_a_protected_forward_is_the_dense_bf16_gemm(m):
             want = F.linear(x, weight)
             want = want.to(x.dtype)
             want.add_(converted.bias)
-            # And the unprotected step is the FP4 GEMM again, on the same instance.
             ctl.advance()
             assert ctl.protected is False
             w4a4 = converted(x)
 
     assert torch.equal(got, want)
     assert bool(torch.isfinite(w4a4).all())
-    # The two branches are the same layer at two precisions, not two different layers: they agree
-    # to the size of one activation quantisation, and disagree by more than nothing.
     rel = float((got.float() - w4a4.float()).norm() / w4a4.float().norm())
     assert 0.0 < rel < 0.2, rel
 
 
 def test_the_protected_branch_leaves_no_resident_weight_behind():
-    """The whole claim of this lever: the dense weight is transient. After a protected forward the
-    allocator is back where it was, and the layer's own buffers have not grown."""
+    """The whole claim of this lever: the dense weight is transient."""
     torch = _cuda_or_skip()
 
     with torch.cuda.device(0):
@@ -519,13 +476,10 @@ def test_the_protected_branch_leaves_no_resident_weight_behind():
     assert after == baseline, f"{(after - baseline) / 2 ** 20:.1f} MiB left resident"
 
 
-# ── T-CUDA-PROTECT-3: two compiled variants, not fifty ────────────────────────────────────────
 
 
 def test_the_switch_costs_two_compiled_variants_over_a_fifty_step_render():
-    """Under torch.compile the branch is a host bool, so Dynamo compiles one variant per VALUE. A
-    schedule that flips it five times in fifty steps must still leave exactly two, or the lever
-    would pay a full recompile per protected step and the speed number would be a compile timer."""
+    """Under torch.compile the branch is a host bool, so Dynamo compiles one variant per VALUE."""
     torch = _cuda_or_skip()
     import torch._dynamo as dynamo
 
@@ -536,9 +490,6 @@ def test_the_switch_costs_two_compiled_variants_over_a_fifty_step_render():
         ctl = pr.NVFP4StepController("0,1,2,3,-1")
         converted.protect = ctl
 
-        # Both, and in this order: reset drops the compiled caches, clear drops the PROCESS-wide
-        # counters another test in the same session already moved. Counting without the second is
-        # a test that passes alone and fails in a suite.
         dynamo.reset()
         dynamo.utils.counters.clear()
         compiled = torch.compile(converted, fullgraph = True, dynamic = False)
@@ -553,12 +504,10 @@ def test_the_switch_costs_two_compiled_variants_over_a_fifty_step_render():
     assert ctl.protected_steps_seen == 5
 
 
-# ── T-CUDA-PROTECT-4: capture keeps the branches apart ────────────────────────────────────────
 
 
 def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
-    """Wan does not graph today, but z-image does, and a graph recorded at a W4A4 step replayed at
-    a W4A16 one would report the lever as measured while it never fired."""
+    """A graph recorded at a W4A4 step must never replay at a W4A16 one."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from core.inference import diffusion_cuda_graph as cg
@@ -600,7 +549,5 @@ def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
 
     assert captures == 2, handle.stats
     assert replays == 3, handle.stats
-    # The second unprotected call replays the unprotected graph, bit for bit.
     assert torch.equal(plain, again)
-    # And the protected graph is a different computation, not the same one recorded twice.
     assert not torch.equal(protected, plain)

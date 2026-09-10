@@ -80,9 +80,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 
-# The denoiser subfolder built when nothing else is asked for. Mirrors
-# core.inference.diffusion_prequant.DEFAULT_PREQUANT_COMPONENT, which cannot be imported this
-# early: the backend only joins sys.path inside main().
+# Mirrors core.inference.diffusion_prequant.DEFAULT_PREQUANT_COMPONENT, which cannot be imported this early: the backend only joins sys.path inside main().
 DEFAULT_COMPONENT = "transformer"
 
 
@@ -110,15 +108,10 @@ def resolve_build_family(
     modality: str = "auto",
 ) -> Optional[Any]:
     """The registry row this build quantises against: a ``DiffusionFamily`` or a ``VideoFamily``.
-
-    Two registries, asked image-first because that is the one this script has always used and an
-    image family answering keeps its behaviour byte for byte. Everything downstream reads
-    ``fam.name``, ``fam.transformer_class`` and the prequant tables, which both dataclasses carry,
-    so the video row needs no special case past here.
-
-    ``modality`` pins one registry when the answer must not drift: the two name spaces are
-    disjoint today, and a later family named in both would otherwise silently build against
-    whichever registry is asked first."""
+    
+    Asked image-first, and ``modality`` pins one registry when the answer must not drift: the two
+    name spaces are disjoint today, and a later family named in both would otherwise build against
+    whichever is asked first."""
     from core.inference.diffusion_families import detect_family
     from core.inference.video_families import detect_video_family
 
@@ -129,7 +122,6 @@ def resolve_build_family(
     return detect_video_family(base, override = override)
 
 
-# --policy modes that are not a policy id.
 POLICY_AUTO = "auto"
 POLICY_OFF = "off"
 
@@ -137,15 +129,8 @@ POLICY_OFF = "off"
 def resolve_build_policy(
     mode: Optional[str], scheme: str, family: Optional[str], base_id: Optional[str]
 ) -> tuple:
-    """``(policy, refusal)`` for this build: which per-layer NVFP4 policy applies, or why none can.
-
-    ``auto`` applies whatever the in-tree table resolves for (family, base) and builds the
-    whole-model artifact when nothing does, so the existing invocations keep building exactly what
-    they build today -- including every fp8 and int8 one, which no policy describes.
-
-    A NAMED policy is a pin rather than a lookup: it must be the one this build resolves for the
-    same family and base, so an operator who asks for the set they measured gets a refusal when the
-    table has moved under them instead of a differently-quantised artifact."""
+    """``(policy, refusal)`` for this build. A NAMED policy is a pin rather than a lookup: a moved
+    table refuses instead of producing a differently-quantised artifact."""
     from core.inference.diffusion_nvfp4_policy import policy_by_id, resolve_policy
     from core.inference.diffusion_transformer_quant import TQ_NVFP4
 
@@ -153,8 +138,6 @@ def resolve_build_policy(
     if mode == POLICY_OFF:
         return None, None
     if scheme != TQ_NVFP4:
-        # A policy's rules name nvfp4 and its default precision is fp8, so there is no other scheme
-        # it could describe. Under auto that is simply "no policy applies".
         if mode == POLICY_AUTO:
             return None, None
         return None, (f"--policy {mode!r} describes an nvfp4 build, but --scheme is {scheme!r}")
@@ -222,51 +205,30 @@ def upload_destination(
     return preferred
 
 
-# ── in-builder calibration (GPTQ Hessians and activation-scale baking) ────────────────────────
-# Both passes run the CALIBRATION prompts through the DENSE pipeline before anything is quantised,
-# which is the only point at which the activations a 4-bit layer will see can still be measured
-# against the weights it was solved for.
 
-# The default sample points for a 38-step schedule: the first step, both thirds and the last. A
-# Hessian over every step of every prompt is neither affordable nor better conditioned.
 DEFAULT_GPTQ_STEPS = "0,12,25,37"
 
-# Where --calib-prompts defaults to. A .py file is read for CALIBRATION_PROMPTS; anything else is
-# one prompt per line.
 DEFAULT_CALIB_PROMPTS = str(Path(__file__).resolve().parent / "gptq_prompts.py")
 
 
-# The calibration grid, as --calib-resolution spells it. An IMAGE family renders a square, so the
-# flag has always been one number; a VIDEO family has a third axis that changes the activation
-# ranges as much as the other two, so its grid is WxHxFRAMES.
 DEFAULT_IMAGE_CALIB_GRID = "1024"
 DEFAULT_VIDEO_CALIB_GRID = "832x480x25"
 
-# Denoise steps a VIDEO calibration render takes when --calib-steps says nothing. Not the family's
-# shipped schedule: what these passes measure is a per-layer second moment and a per-layer amax,
-# both of which converge over the trajectory rather than over its resolution, and a 5B video DiT at
-# the shipped 1280x704x121 for 50 steps is hours per artifact for the same numbers. An image family
-# keeps taking its own default schedule, which is already short.
+# Deliberately not the family's shipped schedule: a second moment and an amax converge over the
+# trajectory rather than over its length, and the shipped one is hours per artifact.
 DEFAULT_VIDEO_CALIB_STEPS = 20
 
 
 def is_video_family(fam: Any) -> bool:
-    """True when this build resolved a ``VideoFamily`` rather than a ``DiffusionFamily``.
-
-    Asked by type rather than by a duck-typed attribute: the two dataclasses share most of the
-    names the builder reads, and the ones that differ (a temporal axis, a family-local default
-    schedule, a guider instead of a guidance kwarg) are exactly the ones a wrong answer would get
-    silently wrong."""
+    """True when this build resolved a ``VideoFamily``. Asked by type: the two dataclasses share
+    most of the names the builder reads."""
     from core.inference.video_families import VideoFamily
     return isinstance(fam, VideoFamily)
 
 
 def parse_calib_grid(spec: Optional[str], *, video: bool) -> tuple:
-    """``--calib-resolution`` -> ``(width, height, frames or None)``.
-
-    ``1024`` is a square, ``WxH`` a rectangle, and ``WxHxF`` a video clip; an image build that is
-    handed a frame count is refused rather than quietly rendering a still, because the operator who
-    typed it was calibrating something else. ``None`` takes the modality's default grid."""
+    """``--calib-resolution`` -> ``(width, height, frames or None)``. An image build handed a frame
+    count is refused rather than quietly rendering a still."""
     default = DEFAULT_VIDEO_CALIB_GRID if video else DEFAULT_IMAGE_CALIB_GRID
     text = str(spec if spec is not None else default)
     parts = text.strip().lower().replace("*", "x").split("x")
@@ -295,11 +257,8 @@ def parse_calib_grid(spec: Optional[str], *, video: bool) -> tuple:
 
 
 def frame_count_refusal(fam: Any, frames: Optional[int]) -> Optional[str]:
-    """Why ``frames`` is not on this family's temporal lattice, or None.
-
-    A video pipeline's latent temporal axis is ``k * frame_step + frame_offset``; anything else is
-    either rejected deep inside the pipeline after the dense load, or silently snapped, and a
-    snapped calibration is not the grid the metadata then records."""
+    """Why ``frames`` is off this family's ``k * frame_step + frame_offset`` lattice, or None. An
+    off-lattice count is otherwise silently snapped to one the metadata does not record."""
     if frames is None:
         return None
     step = int(getattr(fam, "frame_step", 1) or 1)
@@ -333,12 +292,8 @@ def parse_step_spec(spec: str) -> tuple:
 
 
 def load_calibration_prompts(path: Optional[str] = None) -> tuple:
-    """The calibration prompts from ``path`` (default ``scripts/gptq_prompts.py``).
-
-    A .py file is imported and read for ``CALIBRATION_PROMPTS``, so the default set is a reviewed
-    file with its rationale beside it rather than a bare list; any other file is one prompt per
-    line, blank lines and ``#`` comments skipped, which is what an operator calibrating on their
-    own set will have."""
+    """The calibration prompts from ``path``: a .py file read for ``CALIBRATION_PROMPTS``, any
+    other file one prompt per line with blanks and ``#`` comments skipped."""
     source = str(path or DEFAULT_CALIB_PROMPTS)
     if source.endswith(".py"):
         import importlib.util
@@ -348,9 +303,6 @@ def load_calibration_prompts(path: Optional[str] = None) -> tuple:
             raise ValueError(f"cannot read the calibration prompts at {source}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        # ``CALIBRATION_PROMPTS`` is what this repo's own file declares; ``CALIB`` is what the
-        # investigation's prompt modules declare, and a build calibrating a video family replays
-        # exactly that set. Neither is guessed at: the file names one of the two.
         prompts = tuple(
             getattr(module, "CALIBRATION_PROMPTS", None) or getattr(module, "CALIB", ()) or ()
         )
@@ -362,19 +314,14 @@ def load_calibration_prompts(path: Optional[str] = None) -> tuple:
     if not prompts:
         raise ValueError(f"{source} defines no calibration prompts")
     if len(set(prompts)) != len(prompts):
-        # A repeated prompt is counted twice in a Hessian and shifts it toward whatever that prompt
-        # activates, which is not what "32 prompts" then means.
+        # A repeated prompt is counted twice in a Hessian and shifts it toward that prompt.
         raise ValueError(f"{source} repeats a calibration prompt")
     return prompts
 
 
 def calibration_stage_order(gptq_prompts: int, bake: bool) -> tuple:
-    """The stages this build runs between the assignment and ``quantize_``, in order.
-
-    Fixed, and asserted: the Hessians must be accumulated on the UNCORRECTED weights (they describe
-    the activations the correction is solved against), and the activation scales must be measured
-    on the weights the artifact actually ships, which are the corrected ones. Swapping the two
-    bakes a scale for a model that was never built."""
+    """The stages between the assignment and ``quantize_``, in order. Fixed and asserted: Hessians
+    on the UNCORRECTED weights, activation scales on the corrected ones the artifact ships."""
     stages: list = []
     if int(gptq_prompts) > 0:
         stages += ["hessians", "gptq"]
@@ -438,29 +385,14 @@ def render_calibration(
     before_prompt: Any = None,
     on_prompt: Any = None,
 ) -> int:
-    """Run ``prompts`` through ``pipe`` for their activations alone. Returns how many ran.
-
-    Every render is seeded from ``seed`` plus its index, because the artifact this feeds is gated on
-    a SECOND build reproducing it byte for byte: an unseeded calibration would give two builds two
-    different Hessians and therefore two different corrected weights, and the fingerprint diff would
-    report that as corruption. ``output_type="latent"`` skips the VAE decode, which this pass has no
-    use for.
-
-    ``before_prompt`` runs before each render (the step gate arms step 0 there, since the pipeline's
-    own callback only fires at the END of a step).
-
-    A VIDEO family adds ``num_frames`` and takes its guidance the way its own pipeline takes it:
-    ``guidance_via_guider`` sets ``pipe.guider.guidance_scale`` for a family whose ``__call__``
-    has no guidance kwarg at all (HunyuanVideo-1.5), and ``cfg2_kwarg`` carries the second
-    expert's guidance for a dual-expert family. Which EXPERT a step reaches is never decided here:
-    the pipeline's own boundary switch does that, so a build hooking one expert measures exactly
-    the steps that expert runs and nothing else."""
+    """Run ``prompts`` through ``pipe`` for their activations alone. Returns how many ran. Every
+    render is seeded, since two builds must produce the same Hessians for the byte-for-byte
+    reproduction gate; ``before_prompt`` covers step 0, which the pipeline callback misses."""
     import inspect as _inspect
 
     import torch
 
-    # An explicit signature says which kwargs this family's pipeline takes; a ``**kwargs`` one says
-    # nothing, so nothing is filtered rather than everything.
+    # A ``**kwargs`` signature says nothing, so nothing is filtered rather than everything.
     kwargs_supported: set = set()
     try:
         parameters = _inspect.signature(pipe.__call__).parameters
@@ -474,9 +406,7 @@ def render_calibration(
             "gated to sampled steps; calibrate this family with --gptq-prompts 0"
         )
     if guidance_via_guider:
-        # No guidance kwarg exists on this pipeline; the scale is an attribute of its guider, and a
-        # calibration that skipped it would measure a model rendering at some other CFG than the
-        # one the artifact ships for.
+        # No guidance kwarg on this pipeline; the scale is an attribute of its guider.
         try:
             pipe.guider.guidance_scale = float(guidance)
         except Exception as exc:  # noqa: BLE001 - a family that declares a guider must have one
@@ -536,11 +466,7 @@ def gptq_metadata_block(
     damps: Mapping,
     seconds: float,
 ) -> dict:
-    """The ``gptq`` metadata block an in-builder calibration writes.
-
-    Per layer, both errors and the damping that produced the correction, plus whether it was
-    applied: an artifact has to be able to say which of its weights are corrected and which are
-    plain round-to-nearest, and a summary count cannot answer that after the fact."""
+    """The per-layer ``gptq`` metadata block: which weights are corrected and which are RTN."""
     applied = set(plan.get("apply") or ())
     layers = {
         fqn: {
@@ -579,20 +505,16 @@ def activation_scale_metadata(
     layers: int,
     grid: Optional[str] = None,
 ) -> dict:
-    """What the baked activation scales were measured on. Documented rather than implied: the scale
-    is a property of a calibration set and a schedule, and an artifact whose scales came from four
-    prompts at four steps is not the one a gate ran on."""
+    """What the baked activation scales were measured on: a scale is a property of a calibration
+    set and a schedule, not of the model alone."""
     values = sorted(float(value) for value in scales.values())
     return {
         "prompts": len(prompts),
         "prompt_sha256": prompt_digest(prompts),
         "schedule_steps": int(schedule_steps),
-        # The grid the amax was measured at. An activation scale is a property of a shape as much
-        # as of a prompt set, so an artifact says which one produced it rather than implying the
-        # family default.
+        # An activation scale is a property of a shape as much as of a prompt set.
         "grid": grid,
-        # Every step of every prompt: the step with the largest activation is the one a sampled
-        # subset would miss, and it is the one the scale has to cover.
+        # Every step: the largest-activation step is the one a sampled subset would miss.
         "steps_sampled": "all",
         "layers": int(layers),
         "scaled": len(values),
@@ -601,10 +523,8 @@ def activation_scale_metadata(
     }
 
 
-# GPTQ scoring modes. "check" decides per layer on the OUTPUT error a held-out activation sample
-# measures through torchao's own quantiser, which is the error GPTQ optimises; "meta" decides on
-# the plain Frobenius WEIGHT error the Hessian pass recorded, which GPTQ raises by construction
-# (it trades weight error for output error) and which therefore admits nothing.
+# GPTQ scoring modes. "check" decides per layer on the OUTPUT error GPTQ optimises; "meta" decides on the Frobenius
+# WEIGHT error, which GPTQ raises by construction and which therefore admits nothing.
 GPTQ_SCORE_MODES = ("check", "meta")
 
 
@@ -622,10 +542,9 @@ def gptq_sources(
     exists = os.path.exists,
 ) -> dict:
     """Where one component's GPTQ weights, Hessian meta and do-no-harm scores live.
-
-    A single-denoiser family writes ``weights/<fqn>.pt`` and ``gptq_meta.json``; a MoE family runs
-    the pass once per expert and writes ``weights/<component>/`` and ``gptq_meta_<component>.json``.
-    Both layouts are probed rather than declared, so the same --gptq-dir serves either."""
+    
+    A MoE family writes per-component paths and a single-denoiser family does not; both layouts are
+    probed rather than declared, so the same --gptq-dir serves either."""
     root = str(gptq_dir).rstrip("/")
     per_component = os.path.join(root, "weights", component)
     weights = per_component if exists(per_component) else os.path.join(root, "weights")
@@ -657,13 +576,10 @@ def plan_gptq(
     has_weight = lambda fqn: True,
 ) -> dict:
     """Which admitted linears take their GPTQ weight, and why each of the rest does not.
-
-    Do no harm, per layer: a correction is applied only where it is MEASURED to help, never
-    because the layer was in the campaign. Everything else is recorded with its reason, so an
-    artifact can always say which of its weights are GPTQ and which are plain RTN.
-
-    ``missing`` is the one that must never pass silently: a layer whose file the pass never wrote
-    (or whose name drifted) would otherwise be indistinguishable from a layer that was corrected."""
+    
+    Do no harm, per layer: a correction is applied only where it is MEASURED to help. ``missing``
+    must never pass silently, or a layer whose file the pass never wrote is indistinguishable from
+    a layer that was corrected."""
     if mode not in GPTQ_SCORE_MODES:
         raise ValueError(f"gptq score mode must be one of {GPTQ_SCORE_MODES}, not {mode!r}")
     layers: dict = {}
@@ -711,12 +627,10 @@ def verify_gptq_idempotency(
     sample: int = 0,
 ) -> dict:
     """Did ``quantize_`` keep the GPTQ weights it was handed, or re-round them?
-
-    The correction is only worth the GPU-hours if the packed 4-bit weight in the artifact IS the
-    corrected one. GPTQ writes a weight that already lies on the NVFP4 grid, so re-quantising it
-    should reproduce it; anything else means the quantiser and the pass disagree about the grid and
-    the artifact is a differently-rounded weight that nothing measured. Reported per build as the
-    worst absolute deviation and the fraction of elements that moved, never asserted away."""
+    
+    GPTQ writes a weight that already lies on the NVFP4 grid, so re-quantising it should reproduce
+    it; anything else means the quantiser and the pass disagree about the grid. Reported, never
+    asserted away."""
     import torch
 
     worst = {"max_abs": 0.0, "fqn": None}
@@ -750,11 +664,9 @@ def verify_gptq_idempotency(
 
 def parse_key(key: str) -> tuple:
     """``'transformer_2/blocks.12.attn1.to_q.weight'`` -> ``(component, block or None, role)``.
-
-    Ported from ``scripts/g840/g840_fingerprint_diff.py``: WHERE two builds differ discriminates
-    between mechanisms that a count cannot. A handful of modules concentrated in one role is a
-    per-shape effect; a spread over every block index is something global; one block is
-    order-dependent. A bare state-dict fqn carries no component prefix, so that half is None."""
+    
+    WHERE two builds differ discriminates between mechanisms that a count cannot. A bare
+    state-dict fqn carries no component prefix, so that half is None."""
     component, sep, field = key.partition("/")
     if not sep:
         component, field = None, key
@@ -774,10 +686,9 @@ def describe_key(key: str) -> str:
 
 def fingerprint_mismatches(mine: Any, other: Any) -> list:
     """The fqns whose packed payload differs between two builds of one artifact, sorted.
-
-    A fqn present in one build and absent from the other counts as differing, so a build that
-    quantised a different SET of linears reports as loudly as one that quantised the same set to
-    different bytes: neither is the artifact the other verified."""
+    
+    A fqn present in one build and absent from the other counts as differing: a build that
+    quantised a different SET of linears is not the artifact the other verified either."""
     a = (mine or {}).get("modules") or {}
     b = (other or {}).get("modules") or {}
     return sorted(key for key in set(a) | set(b) if a.get(key) != b.get(key))
@@ -796,12 +707,10 @@ def verify_against(
     out: Any = print,
 ) -> int:
     """Diff this build's fingerprint against ``other_path``'s. 0 when identical, 3 otherwise.
-
-    The whole publishing gate: build twice in separate processes and compare the packed bytes.
+    
     Two independent quantise passes over the same weights are deterministic, so any difference is
-    a defect in one of them (a bad DMA, a flipped bit on the way to disk, a silently truncated
-    save) and not something to upload. It cannot see corruption that happens AFTER the compare,
-    which is what the loader's own fingerprint check is for."""
+    a defect in one of them. It cannot see corruption that happens AFTER the compare, which is what
+    the loader's own fingerprint check is for."""
     try:
         other = (_read_metadata(other_path) or {}).get("fingerprint") or {}
     except Exception as exc:  # noqa: BLE001 -- an unreadable comparand verifies nothing
@@ -831,9 +740,9 @@ def verify_against(
 
 def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional[str]:
     """Why ``--verify-against`` cannot answer the question it exists for, or None.
-
-    One file compared with itself matches by construction and proves nothing, so a gate that
-    accepts it is worse than no gate: it reports a verified build and publishes it."""
+    
+    One file compared with itself matches by construction, so a gate that accepts it reports a
+    verified build and publishes it."""
     if not verify_path:
         return None
     try:
@@ -851,11 +760,9 @@ def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional
 
 def upload_gate_refusal(upload_repo: Optional[str], verify_path: Optional[str]) -> Optional[str]:
     """Why this build may not publish, or None. No escape hatch by design.
-
+    
     An unverified artifact is indistinguishable from a verified one once it is hosted, and it is
-    then loaded by every auto pick that resolves the repo. The cost of the gate is one more
-    build; the cost of skipping it is a family rendering from corrupted weights with nothing in
-    the logs."""
+    then loaded by every auto pick that resolves the repo."""
     if not upload_repo:
         return None
     if not verify_path:
@@ -1052,14 +959,10 @@ def main(argv = None) -> int:
     if scheme not in TQ_SCHEMES:
         print(f"error: --scheme must be one of {TQ_SCHEMES} (not 'auto')", flush = True)
         return 2
-    # Both gates BEFORE the load: they are decided by the arguments alone, and finding out after
-    # hours of GPU time that the build may not publish helps nobody.
     for refusal in (
         upload_gate_refusal(args.upload_repo, args.verify_against),
         verify_target_refusal(args.out, args.verify_against),
-        # ConvRot rotates the weight before quantize_, which a GPTQ weight has not been corrected
-        # for: the correction was solved against the UNROTATED activation covariance, so rotating
-        # it afterwards discards exactly the thing the pass computed.
+        # ConvRot rotates the weight before quantize_, which a GPTQ weight has not been corrected for: the correction was solved against the UNROTATED activation covariance.
         (
             "--gptq-dir and --convrot-groupsize cannot be combined: the correction was solved "
             "against unrotated activations, so rotating the corrected weight discards it."
@@ -1084,8 +987,7 @@ def main(argv = None) -> int:
         args.policy, scheme, fam.name, args.base_id or args.base
     )
     if policy_refusal is None and policy is not None and args.convrot_groupsize:
-        # Both rewrite the weights before quantize_ and both claim the one format tag slot. The
-        # rotation is also solved for ONE quantiser over the whole model, which a policy is not.
+        # Both rewrite the weights before quantize_ and both claim the one format tag slot.
         policy_refusal = (
             f"--policy {policy.policy_id!r} and --convrot-groupsize cannot be combined: a policy "
             "build quantises its layers at two precisions, and the rotation was solved for one"
@@ -1093,8 +995,7 @@ def main(argv = None) -> int:
     if policy_refusal:
         print(f"error: {policy_refusal}", flush = True)
         return 2
-    # The calibration prompts are read and checked BEFORE the dense load, so a typo in
-    # --calib-prompts costs a second rather than a multi-gigabyte download and an hour of Hessians.
+    # Checked BEFORE the dense load so a typo costs a second, not a multi-gigabyte download.
     calib_prompts: tuple = ()
     calib_grid: tuple = ()
     if args.gptq_prompts > 0 or args.bake_activation_scales:
@@ -1152,11 +1053,8 @@ def main(argv = None) -> int:
     # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears; nvfp4 handles fp32. Mirrors the runtime gate.
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
-    # A policy build has an fp8 half too, so it resolves and records one as well.
     fast_accum = _resolve_fast_accum(None) if (scheme == TQ_FP8 or policy is not None) else None
-    # The same GEMM tiling floor the runtime filter applies. Without it an offline fp8 / nvfp4
-    # build bakes the ragged linears the runtime leaves dense, and the mismatch does not surface
-    # until the first real matmul of the first render.
+    # The same GEMM tiling floor the runtime filter applies. Without it an offline build bakes the ragged linears the runtime leaves dense, and the mismatch surfaces only at the first real matmul.
     require_divisible = divisible_for_scheme(scheme)
     filter_fn = make_filter_fn(
         args.min_features,
@@ -1165,9 +1063,8 @@ def main(argv = None) -> int:
         require_divisible = require_divisible,
     )
 
-    # The per-layer assignment, resolved BEFORE anything touches the weights: the GPTQ corrections
-    # are scoped to it and the metadata records it, and its own count assertions are what turn a
-    # diffusers rename into a refused build rather than a differently-quantised artifact.
+    # Resolved BEFORE anything touches the weights: its count assertions turn a rename into a
+    # refused build rather than a differently-quantised artifact.
     assignment: dict = {}
     if policy is not None:
         from core.inference.diffusion_nvfp4_policy import (
@@ -1185,18 +1082,8 @@ def main(argv = None) -> int:
             flush = True,
         )
 
-    # REPLAYED GPTQ, before both the calibration below and quantize_: the corrected weight is a
-    # plain bf16 tensor that already lies on the NVFP4 grid, so it goes into module.weight and the
-    # quantiser then packs it exactly as it packs any other weight. Only the 4-bit operand is
-    # touched, which is the rule the campaign measured (+46% error when a correction also became
-    # the source of an fp8 replica).
-    #
-    # Before the calibration because an activation scale has to describe the model the artifact
-    # SHIPS: baking it off the uncorrected weights measures a model that is then thrown away, and
-    # every layer downstream of a corrected one sees a different input. The in-builder calibration
-    # keeps its own fixed order (Hessians on the uncorrected weights, correction, then the bake) for
-    # the same reason from the other side; the two GPTQ sources are mutually exclusive, so exactly
-    # one of them ever runs.
+    # REPLAYED GPTQ, before the calibration below and quantize_: only the 4-bit operand may be
+    # corrected, and an activation scale has to describe the weights the artifact SHIPS.
     gptq_plan: Optional[dict] = None
     gptq_pass: dict = {}
     gptq_where: dict = {}
@@ -1233,10 +1120,7 @@ def main(argv = None) -> int:
                 flush = True,
             )
             return 2
-        # Under a policy the corrections go to the NVFP4 layers and nowhere else. The campaign
-        # measured the correction on the 4-bit operand ALONE (+46% error once the corrected weight
-        # also became the source of an fp8 replica), and a static policy gives that by
-        # construction -- but only if the set it is applied to is the policy's, not the filter's.
+        # Corrections go to the policy's NVFP4 set and nowhere else, not to the filter's set.
         if policy is not None:
             admitted = [
                 (fqn, module)
@@ -1266,8 +1150,6 @@ def main(argv = None) -> int:
                 os.path.join(weights_dir, gptq_weight_filename(fqn)), weights_only = True
             )
             if tuple(corrected.shape) != tuple(module.weight.shape):
-                # A shape drift means the campaign and this base are not the same model. Applying
-                # what fits and skipping the rest would ship a half-corrected artifact.
                 print(
                     f"error: GPTQ weight for {fqn} is {tuple(corrected.shape)}, module is "
                     f"{tuple(module.weight.shape)}",
@@ -1285,11 +1167,7 @@ def main(argv = None) -> int:
             flush = True,
         )
 
-    # ── in-builder calibration: Hessians -> GPTQ -> bake a_gsf, all on the DENSE model ────────
-    # The order is fixed (see calibration_stage_order): a Hessian describes the activations the
-    # correction is solved against, so it is accumulated before the weights move; an activation
-    # scale has to describe the model the artifact ships, so it is measured after they have --
-    # including after a REPLAYED --gptq-dir correction, which the block above has already applied.
+    # In-builder calibration on the DENSE model. The order is fixed; see calibration_stage_order.
     inbuilder_gptq: dict = {}
     act_scales: dict = {}
     act_meta: dict = {}
@@ -1312,8 +1190,6 @@ def main(argv = None) -> int:
                 if assignment.get(fqn) == PRECISION_NVFP4
             }
         else:
-            # A whole-model artifact quantises every admitted linear to 4 bits, so every admitted
-            # linear is what gets corrected and what needs a baked scale.
             calib_layers = {
                 fqn: module for fqn, module in transformer.named_modules() if filter_fn(module, fqn)
             }
@@ -1332,8 +1208,6 @@ def main(argv = None) -> int:
             return 2
         video = is_video_family(fam)
         if video:
-            # A VideoFamily carries its own schedule and guidance; the image table is keyed on
-            # image repos and would answer a generic fallback for a video base.
             default_steps = int(fam.default_steps)
             default_guidance = float(fam.default_guidance)
             calib_steps = int(args.calib_steps or DEFAULT_VIDEO_CALIB_STEPS)
@@ -1355,11 +1229,7 @@ def main(argv = None) -> int:
             + " -> ".join(calibration_stage_order(args.gptq_prompts, args.bake_activation_scales)),
             flush = True,
         )
-        # The denoiser this build quantises goes in under ITS OWN name, so a dual-expert family
-        # calibrates the expert that was asked for and loads the other one from the base. The hooks
-        # sit on this module alone and the pipeline's boundary switch routes each step, so the two
-        # experts are measured on disjoint step ranges without either pass knowing where the
-        # boundary is.
+        # Goes in under ITS OWN name, so a dual-expert family calibrates the expert asked for.
         pipe = getattr(diffusers, pipeline_cls_name).from_pretrained(
             args.base,
             torch_dtype = torch.bfloat16,
@@ -1382,7 +1252,7 @@ def main(argv = None) -> int:
             num_frames = calib_frames,
             guidance_via_guider = bool(getattr(fam, "guidance_via_guider", False)),
             # Left unset: WanPipeline defaults the low-noise expert's guidance to the high-noise
-            # one's, which IS this family's default (no separate row declares another).
+            # one's, which IS this family's default.
             cfg2_kwarg = None,
             seed = args.calib_seed,
             **kwargs,
@@ -1413,8 +1283,7 @@ def main(argv = None) -> int:
                 hessians.detach()
             unseen = hessians.unseen()
             if unseen:
-                # A layer the sampled steps never reached would be "corrected" from a Hessian of
-                # zeros, which is not a correction and not something to ship silently.
+                # A layer the sampled steps never reached would be "corrected" from zeros.
                 print(
                     f"error: {len(unseen)} layers saw no calibration activation (first: "
                     f"{unseen[0]}); widen --gptq-steps or raise --gptq-prompts",
@@ -1480,9 +1349,7 @@ def main(argv = None) -> int:
             act_scales = amax.global_scales()
             missing = sorted(set(calib_layers) - set(act_scales))
             if missing:
-                # An amax of zero or a non-finite one. Refused rather than partially baked: the
-                # loader converts all the NVFP4 layers or none, so a missing scale is a silently
-                # torchao artifact wearing a "baked" flag.
+                # Refused rather than partially baked: the loader converts all or none.
                 print(
                     f"error: {len(missing)} layers produced no usable activation amax (first: "
                     f"{missing[0]})",
@@ -1531,9 +1398,7 @@ def main(argv = None) -> int:
         )
 
     if policy is not None:
-        # Two passes over disjoint fqn sets, NVFP4 first. The filter above still defines the
-        # ADMITTED set the policy assigns over; what changes is that one config no longer applies
-        # to all of it.
+        # Two passes over disjoint fqn sets, NVFP4 first.
         quantize_with_policy(
             transformer,
             policy,
@@ -1563,21 +1428,17 @@ def main(argv = None) -> int:
         k: (v.detach().to("cpu") if hasattr(v, "detach") else v)
         for k, v in transformer.state_dict().items()
     }
-    # Over the SAVED state dict, so it describes the bytes that go to disk rather than the module they came from.
     fingerprint = packed_weight_fingerprint(state_dict)
     metadata = {
         "base_model_id": args.base_id or args.base,
         "family": fam.name,
         "scheme": scheme,
-        # Which denoiser this is. Both A14B experts share a family, a scheme, a base and a key set, so every other
-        # check the loader makes passes on the wrong one.
         "component": component,
         "min_features": args.min_features,
         # Let the loader reject a checkpoint that would not match the runtime path.
         "exclude_name_tokens": list(exclude_name_tokens),
         "require_bf16": require_bf16,
         "require_divisible": require_divisible,
-        # Per-weight md5 of the packed payload: the offline verify below and the loader's own check both read it.
         "fingerprint": fingerprint,
         "fast_accum": fast_accum,
         "torch_dtype": args.dtype,
@@ -1591,8 +1452,6 @@ def main(argv = None) -> int:
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
     if policy is not None:
-        # Which layers are at which precision, and the counts the loader re-resolves against the
-        # in-tree table. Writes the v3 format tag through prequant_format_for below.
         metadata.update(
             policy_metadata(
                 policy,
@@ -1601,25 +1460,19 @@ def main(argv = None) -> int:
                 activation_scales_baked = bool(act_scales),
             )
         )
-        # The fp8 half is per-row like every other fp8 build, recorded for the same reason.
         metadata["fp8_granularity"] = FP8_GRANULARITY
     if act_scales:
         from core.inference.diffusion_nvfp4_linear import ACT_SCALES_KEY
 
-        # One activation global scale per 4-bit layer, and what it was measured on. The flashinfer
-        # backend converts a layer only when it finds its scale here.
+        # The flashinfer backend converts a layer only when it finds its scale here.
         metadata[ACT_SCALES_KEY] = {fqn: float(value) for fqn, value in sorted(act_scales.items())}
         metadata["activation_calibration"] = act_meta
         if policy is None:
-            # A whole-model artifact has no policy block to carry the flag, so it declares it at
-            # the top level.
             metadata["activation_scales_baked"] = True
     if inbuilder_gptq:
         metadata["gptq"] = inbuilder_gptq
     if gptq_plan is not None:
-        # Provenance of every corrected weight in this artifact, and of every one that was left
-        # alone. Not part of the fingerprint's identity: the fingerprint hashes the packed payloads,
-        # so a different set of corrections already reads as a different artifact there.
+        # Provenance of every corrected weight. Not part of the fingerprint's identity: it hashes the packed payloads, so a different set of corrections already reads as a different artifact there.
         metadata["gptq"] = {
             "source": os.path.abspath(args.gptq_dir),
             "meta_path": os.path.abspath(gptq_where["meta"]),
@@ -1650,10 +1503,6 @@ def main(argv = None) -> int:
     torch.save(ckpt, out)
     size_gb = out.stat().st_size / 1e9
     print(f"  saved {out}  ({size_gb:.2f} GB) in {time.time() - t0:.0f}s", flush = True)
-    # The fingerprint is one line per quantized weight, so it is summarised here and printed in full only by
-    # scripts/prequant_fingerprint.py.
-    # The per-layer blocks are the size of the summary they would drown: the artifact keeps them,
-    # the console gets the shape of them.
     shown = {
         k: v for k, v in metadata.items() if k not in ("fingerprint", "act_global_scales", "gptq")
     }

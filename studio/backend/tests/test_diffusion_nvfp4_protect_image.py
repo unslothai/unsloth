@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The NVFP4 per-step precision lever on the IMAGE backend.
-
-``DiffusionBackend.generate`` differs from the video one in three ways that the lever has to
-survive, and each gets a test here:
-
-  * it renders in CHUNKS. A batch that splits runs one denoise loop per chunk, each starting again
-    at step 0, so the lever is armed per chunk rather than per request.
-  * it has a STEP CACHE. FBCache skips the transformer's blocks on some steps; it does not skip the
-    loop, so ``scheduler.step`` still fires once per step and the index stays right. A protected
-    step whose forward the cache skipped simply does not run the protected branch.
-  * it CAPTURES CUDA GRAPHS, which the video families do not. Arming the lever splits every input
-    shape into two calls, so the graph cap has to move with it.
-
-``generate`` itself is 400 lines of pipeline assembly that cannot be driven without a model, so the
-wiring is asserted against the SOURCE (the call exists, takes the effective step count, and sits
-inside the chunk's ``inference_mode`` block) and the behaviour is asserted against the pieces,
-driven exactly the way ``generate`` drives them. Torch is stubbed or CPU-only throughout;
-the two-graph capture is the one CUDA test.
-"""
+"""The NVFP4 per-step precision lever on the IMAGE backend."""
 
 from __future__ import annotations
 
@@ -55,12 +37,10 @@ def _calls(node: ast.AST, name: str) -> list:
     return found
 
 
-# ── the wiring ────────────────────────────────────────────────────────────────────────────────
 
 
 def test_generate_arms_the_lever_with_the_effective_step_count():
-    """Not ``steps``: an img2img at strength < 1 denoises a fraction of them, and a schedule
-    naming "the last step" has to land on a step the loop actually reaches."""
+    """Not ``steps``: an img2img at strength < 1 denoises a fraction of them."""
     generate = _generate_body()
     calls = _calls(generate, "protect_generation")
     assert len(calls) == 1, "generate() should arm the lever exactly once, per chunk"
@@ -70,9 +50,7 @@ def test_generate_arms_the_lever_with_the_effective_step_count():
 
 
 def test_the_effective_step_count_is_computed_outside_the_auto_cache_branch():
-    """It used to be local to ``if state.cache_auto``. The lever needs it on every path, so a
-    regression that pushes it back inside would arm the schedule against the wrong step count on
-    every load with an explicit cache setting."""
+    """It used to be local to ``if state.cache_auto``."""
     generate = _generate_body()
     assignments = [
         node for node in ast.walk(generate)
@@ -81,7 +59,6 @@ def test_the_effective_step_count_is_computed_outside_the_auto_cache_branch():
     ]
     assert len(assignments) == 1
     assert _calls(assignments[0], "effective_denoise_steps")
-    # ...and it is not nested inside a conditional.
     for node in ast.walk(generate):
         if isinstance(node, ast.If):
             for sub in ast.walk(node):
@@ -89,8 +66,7 @@ def test_the_effective_step_count_is_computed_outside_the_auto_cache_branch():
 
 
 def test_the_lever_wraps_the_chunk_render_itself():
-    """The context has to be entered around ``pipe(**chunk_kwargs)``, next to inference_mode: one
-    denoise loop per chunk, and a chunk that raises must still restore the scheduler."""
+    """The context is entered around ``pipe(**chunk_kwargs)``: one denoise loop per chunk."""
     generate = _generate_body()
     wrapped = []
     for node in ast.walk(generate):
@@ -115,7 +91,6 @@ def test_the_image_module_imports_the_lever_at_module_scope():
     assert "from .diffusion_nvfp4_protect import protect_generation" in source
 
 
-# ── the step cache ────────────────────────────────────────────────────────────────────────────
 
 
 class _CachedScheduler:
@@ -128,8 +103,7 @@ class _CachedScheduler:
 
 
 class _CachingPipe:
-    """A denoise loop with an FBCache-shaped skip: the transformer's blocks are skipped on some
-    steps, the LOOP is not, so ``scheduler.step`` fires once per step either way."""
+    """A denoise loop with an FBCache-shaped skip: the blocks are skipped, the LOOP is not."""
 
     def __init__(self, skip_steps) -> None:
         self.scheduler = _CachedScheduler()
@@ -143,26 +117,20 @@ class _CachingPipe:
 
 
 def test_a_cached_step_is_simply_not_protected():
-    """The index still counts scheduler steps, so the lever protects the steps that are COMPUTED.
-    A protected step the cache skipped never reads the 4-bit weight at all, so there is nothing
-    there to protect and nothing to reconcile."""
+    """The index still counts scheduler steps, so the lever protects the steps that are COMPUTED."""
     ctl = pr.NVFP4StepController("0,4,-1")
     pipe = _CachingPipe(skip_steps = {4})       # step 4 is protected AND cached away
     seen: list = []
     with pr.protect_generation(pipe, 9, controller = ctl):
         pipe.run(9, lambda: seen.append((ctl.index, ctl.protected)))
-    # Every step ticked the counter, so the indices are unshifted...
     assert pipe.scheduler.calls == 9
     assert [index for index, _ in seen] == [0, 1, 2, 3, 5, 6, 7, 8]
-    # ...and the forwards that ran on a protected step are exactly 0 and 8. Step 4 never ran.
     assert [index for index, protected in seen if protected] == [0, 8]
     assert ctl.protected_steps_seen == 3          # the controller still counts step 4 as protected
 
 
 def test_the_cache_marker_and_the_lever_do_not_fight():
-    """``GraphedForward`` bypasses itself while a step cache is engaged, and the lever's key is
-    read on the same call. Bypass wins (no graph at all), so the two never disagree about which
-    graph to replay."""
+    """``GraphedForward`` bypasses itself while a step cache is engaged, and bypass wins."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_cuda_graph as cg
 
@@ -178,7 +146,6 @@ def test_the_cache_marker_and_the_lever_do_not_fight():
     assert handle.stats["eager_calls"] == 1
 
 
-# ── chunking ──────────────────────────────────────────────────────────────────────────────────
 
 
 def test_each_chunk_restarts_the_schedule_at_step_zero():
@@ -195,13 +162,11 @@ def test_each_chunk_restarts_the_schedule_at_step_zero():
     assert ctl.protected is False
 
 
-# ── short schedules ───────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
     "spec,steps,want",
     [
-        # z-image turbo renders 9 steps, flux schnell 4.
         ("auto", 9, (0, 8)),
         ("auto", 4, (0, 3)),
         ("0", 9, (0,)),
@@ -214,7 +179,6 @@ def test_the_image_schedules(spec, steps, want):
     assert pr.parse_protect_steps(spec, steps) == want
 
 
-# ── the prewarm suspension ────────────────────────────────────────────────────────────────────
 
 
 def test_suspend_protect_disarms_every_controller_it_reaches_and_restores_it():
@@ -242,9 +206,7 @@ def test_suspend_protect_restores_after_a_raise():
 
 
 def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step():
-    """The trap this exists for: a prewarm that fires at a protected step would send every tuning
-    forward down the bf16 branch, tune no tactic, and STILL mark the shape tuned -- so the next
-    capture, on the unprotected branch, would skip the prewarm and record the default tactic."""
+    """A prewarm that fires at a protected step must still tune the FP4 kernel."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_linear as nl
 
@@ -275,22 +237,14 @@ def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step():
         nl.nvfp4_prewarm(tree, (1,))
     finally:
         nl._prewarm_shapes = original
-    # Suspended for the pass...
     assert branches and branches[0] == [False]
-    # ...and armed again afterwards, with the generation state untouched.
     assert ctl.armed is True and ctl.protected is True
 
 
-# ── the graph cap ─────────────────────────────────────────────────────────────────────────────
 
 
 class _BlockHolding:
-    """A denoiser-shaped module that HOLDS an NVFP4 layer without calling it.
-
-    The graph key is decided by the walk, not by the forward, and an NVFP4 layer cannot run on CPU
-    at all: its device guard is ``torch.cuda.device(x.device)``, which raises on a cpu tensor. So
-    the cap tests exercise the key resolution, and the CUDA test below exercises the kernels.
-    """
+    """A denoiser-shaped module that HOLDS an NVFP4 layer without calling it."""
 
     def __new__(cls, inner):
         import torch.nn as nn
@@ -323,9 +277,7 @@ def _cpu_nvfp4_tree(torch):
 
 
 def test_arming_the_lever_doubles_the_graph_cap_once(monkeypatch):
-    """Every input shape becomes two calls, so the same shapes need twice the graphs. Without the
-    raise, half of them fall out of the cap and run eager, and the lever reads as costing speed
-    when what it cost was a graph slot."""
+    """Every input shape becomes two calls, so the same shapes need twice the graphs."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_cuda_graph as cg
 
@@ -337,8 +289,6 @@ def test_arming_the_lever_doubles_the_graph_cap_once(monkeypatch):
         block = _BlockHolding(tree).eval()
         handle = cg.GraphedForward(block, max_graphs = 4).install().enable()
         before = handle.max_graphs
-        # A CPU tensor cannot be captured, so this falls back to eager -- after the key has been
-        # resolved, which is the part under test.
         block(hidden_states = torch.zeros(2, 64), return_dict = False)
         assert handle.protect_keyed is True
         assert handle.max_graphs == before * 2
@@ -365,7 +315,6 @@ def test_an_unarmed_load_keeps_its_graph_cap(monkeypatch):
     cg.uninstall_all([handle])
 
 
-# ── CUDA: one graph per branch, on the image path's own wrapper ────────────────────────────────
 
 
 def _cuda_or_skip():
@@ -384,10 +333,8 @@ def _cuda_or_skip():
 
 
 def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monkeypatch):
-    """The end-to-end image-path claim, on a two-layer DiT: two captures, the FP4 tactic tuned
-    before EITHER of them (even though the first capture is on the protected branch, which does not
-    touch FlashInfer), every replay bit-identical to the un-graphed forward of its own branch, and
-    the second graph costing about what the first one did rather than a second model."""
+    """Two captures, the FP4 tactic tuned before either, every replay bit-identical to the
+    un-graphed forward of its own branch, and the second graph costing about what the first did."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
@@ -452,9 +399,7 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
             handle = cg.GraphedForward(module, max_graphs = 4).install().enable()
 
             def settled() -> tuple:
-                """Reserved and allocated with the ordinary cache released, so the deltas below are
-                the graphs' own bytes. ``empty_cache`` cannot touch a graph pool, which is the
-                property that makes this readable at all."""
+                """Reserved and allocated with the cache released, so the deltas are graph bytes."""
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 return torch.cuda.memory_reserved(), torch.cuda.memory_allocated()
@@ -477,7 +422,6 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
             after_two, _ = settled()
             two_graph_peak = torch.cuda.max_memory_allocated()
 
-            # Replay each branch again and check it is stable.
             ctl.begin(9)
             with torch.inference_mode():
                 first_again = module(hidden_states = x, return_dict = False)[0].clone()
@@ -492,14 +436,11 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
     assert stats["replays"] == 3, stats
     assert stats["fallbacks"] == 0 and stats["cap_skips"] == 0, stats
     assert cap == 8, "arming the lever should have doubled the cap"
-    # The FP4 tactic was tuned at the FIRST capture, which is the protected one.
     assert prewarms and prewarms[0] > 0, prewarms
-    # Each branch's replay is its own eager forward, bit for bit.
     assert torch.equal(first, eager[True])
     assert torch.equal(second, eager[False])
     assert torch.equal(first_again, first)
     assert not torch.equal(first, second)
-    # And the SECOND graph costs about what the first did, not a second model.
     first_graph = after_one - base_reserved
     second_graph = after_two - after_one
     print(f"\n[graph memory] model={base_alloc / 2 ** 20:.1f} MiB "
@@ -509,5 +450,4 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
           f"peak_after_2={two_graph_peak / 2 ** 20:.1f} MiB")
     assert first_graph > 0, "the first capture reserved nothing; the measurement is not reading it"
     assert second_graph <= 1.5 * first_graph, (first_graph, second_graph)
-    # The peak never has to hold two models: the branch that is not replaying owns no weights.
     assert two_graph_peak < base_alloc + 2 * first_graph + (64 << 20)

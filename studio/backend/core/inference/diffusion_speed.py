@@ -413,7 +413,6 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
         return False
     if _denoiser_unet(pipe) is not None:
         return True
-    # A stream-merging DiT compiled static too, so its artifacts are per-shape as well.
     return _dits_merge_streams(_denoiser_dits(pipe))
 
 
@@ -430,35 +429,16 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
-# Repeated blocks measured to make inductor raise CantSplit under dynamic = True.
-#
-# diffusers' "single" MMDiT phase CONCATENATES the text and image streams into ONE sequence inside
-# the block (``torch.cat([encoder_hidden_states, hidden_states], dim = 1)``). Under dynamic = True the
-# two stream lengths reach the block as two SEPARATE dynamic symbols, so a pointwise node over the
-# merged sequence gets extent ``15360*s31 + 15360*s87`` while the kernel group is ``s31 + s87``.
-# Inductor proves the split through ``torch.utils._sympy.functions.Mod``, whose eval only tests
-# ``(p / q).is_integer`` and never cancels an Add over an Add, so the identity
-# ``15360*(s31 + s87) / (s31 + s87) == 15360`` is missed and ``_split_iteration_ranges`` raises
-# ``CantSplit: 15360*s31 + 15360*s87 not divisible by s31 + s87``. FLUX.1 hits it on EVERY arm (bf16,
-# fp8, nvfp4), at the 15360-wide ``torch.cat([attn_output, mlp_hidden_states])`` feeding ``proj_out``.
-# There is no per-dim escape: ``dynamic = True`` overrides ``torch._dynamo.mark_static``, and marking
-# only the text length static leaves ``Mod(15360*s87 + 7864320, s87 + 512)``, equally unprovable. So
-# this block compiles with STATIC shapes and pays a recompile per (height, width, batch), exactly as
-# the ``max`` tier and the U-Net whole-module compile already do. ``dynamic = False`` is not version
-# specific, so this needs no torch-version guard; ``dynamic = None`` would NOT do, it goes dynamic on
-# the second distinct shape and crashes there instead.
-#
-# MEASURED, not inferred. The merge is necessary but NOT sufficient, so nothing joins this set on
-# code reading alone: HunyuanImage-2.1 and FLUX.2-klein both have the identical merge and BOTH
-# compile and run fine under dynamic = True (B200, 1024px, steady median 1.076 dynamic vs 1.067
-# static and 0.4747 vs 0.4782 respectively -- a wash, so flagging them would trade a working shared
-# artifact for a recompile per shape and buy nothing). ``FluxSingleTransformerBlock`` also covers
-# flux.1-kontext, which reuses the class.
+# Repeated blocks measured to make inductor raise CantSplit under dynamic = True: a block that
+# concatenates the text and image streams gets two separate dynamic symbols, and inductor's Mod
+# never cancels an Add over an Add, so the split it needs is unprovable. ``dynamic = False`` is the
+# only escape (mark_static is overridden, and ``dynamic = None`` crashes on the second shape).
+# MEASURED, not inferred: the merge is necessary but NOT sufficient, so nothing joins this set on
+# code reading alone.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
-# The broad sweep: the same cat matched on source, whitespace tolerant, both argument orders. OFF by
-# default because it over-flags (see above). ``UNSLOTH_STATIC_STREAM_MERGE_DETECT=1`` turns it on --
-# the escape hatch for a NEW family that turns out to crash before its class can be named above.
+# The same cat matched on source. OFF by default because it over-flags: the escape hatch for a new
+# family that crashes before its class can be named above.
 _STREAM_MERGE_DETECT_ENV = "UNSLOTH_STATIC_STREAM_MERGE_DETECT"
 _STREAM_MERGE_SOURCE = re.compile(
     r"torch\.cat\(\s*\[\s*(?:encoder_hidden_states\s*,\s*hidden_states"
@@ -468,10 +448,8 @@ _STREAM_MERGE_SOURCE = re.compile(
 
 @lru_cache(maxsize = None)
 def _class_merges_streams(cls: type, broad: bool = False) -> bool:
-    """Whether one repeated-block CLASS is known to need a static compile.
-
-    ``broad`` (the opt-in env) additionally accepts any block whose source shows the same merge.
-    It is an argument rather than an env read inside the body so the memo cannot outlive it."""
+    """Whether one repeated-block CLASS is known to need a static compile. ``broad`` is an argument
+    rather than an env read inside the body, so the memo cannot outlive it."""
     if cls.__name__ in _STREAM_MERGING_BLOCKS:
         return True
     if not broad:
@@ -485,8 +463,8 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
 
 
 def _dits_merge_streams(dits: list) -> bool:
-    """Whether ANY denoiser DiT's repeated blocks merge the streams, so the regional compile of that
-    load must be static. One check per distinct block class, not per block instance."""
+    """Whether ANY denoiser DiT's repeated blocks merge the streams, so that load's regional
+    compile must be static. One check per distinct block class, not per instance."""
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:
@@ -525,8 +503,7 @@ def _compile_repeated_blocks(
     # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
     # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
     # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
-    # The one exception to "default is dynamic": a stream-merging DiT (FLUX.1 and friends) cannot be codegen'd with
-    # dynamic sequence lengths at all, see _STREAM_MERGING_BLOCKS. It joins max on the static side.
+    # The one exception to "default is dynamic": see _STREAM_MERGING_BLOCKS.
     static_shapes = max_autotune or _dits_merge_streams(dits)
     if static_shapes and not max_autotune and logger is not None:
         logger.info(

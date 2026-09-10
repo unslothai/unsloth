@@ -1119,7 +1119,6 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     assert applied["compiled"] is True  # the rest of the tier still engaged
 
 
-# ── stream-merging DiTs compile static (the FLUX.1 CantSplit) ─────────────────
 
 
 class _Block:
@@ -1163,9 +1162,6 @@ def _dit(*block_classes):
 
 
 def test_class_merges_streams_is_crash_confirmed_names_only_by_default():
-    # The merge is necessary but NOT sufficient: HunyuanImage-2.1 and FLUX.2-klein have the identical
-    # cat and both compile fine under dynamic=True (measured), so source shape alone must not flag a
-    # family and cost it a recompile per shape.
     assert ds_mod._class_merges_streams(FluxSingleTransformerBlock) is True
     assert ds_mod._class_merges_streams(_MergingByArgOrderA) is False
     assert ds_mod._class_merges_streams(_MergingByArgOrderB) is False
@@ -1173,15 +1169,12 @@ def test_class_merges_streams_is_crash_confirmed_names_only_by_default():
 
 
 def test_class_merges_streams_broad_sweep_is_opt_in():
-    # The escape hatch for a NEW family that crashes before its class can be named.
     assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is True
     assert ds_mod._class_merges_streams(_MergingByArgOrderB, True) is True
-    # Even the broad sweep does not flag a block that keeps the two sequences apart.
     assert ds_mod._class_merges_streams(_DualStreamBlock, True) is False
 
 
 def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeypatch):
-    # A frozen / source-less build must not crash the load; it degrades to the name list.
     import inspect
 
     monkeypatch.setattr(inspect, "getsource", lambda _obj: (_ for _ in ()).throw(OSError("no source")))
@@ -1192,36 +1185,25 @@ def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeyp
 
 
 def test_dits_merge_streams_honours_the_opt_in_env(monkeypatch):
-    # Off by default even though the block source shows the merge...
     monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
     assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
-    # ...and on when asked for explicitly. The env is read per call, never memoised with the answer.
     monkeypatch.setenv(ds_mod._STREAM_MERGE_DETECT_ENV, "1")
     assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is True
-    # A crash-confirmed class needs no opt-in either way.
     monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
     assert ds_mod._dits_merge_streams([_dit(FluxSingleTransformerBlock)]) is True
 
 
 def test_dits_merge_streams_scans_every_denoiser():
     assert ds_mod._dits_merge_streams([]) is False
-    # A DiT with no _repeated_blocks (a U-Net) is not a stream-merging DiT.
     assert ds_mod._dits_merge_streams([types.SimpleNamespace()]) is False
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock)]) is False
-    # Source-only merge: not flagged without the opt-in.
     assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock, FluxSingleTransformerBlock)]) is True
-    # A dual-DiT family: the SECOND expert alone merging is enough, both are compiled together.
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock), _dit(FluxSingleTransformerBlock)]) is True
 
 
 def test_speed_default_compiles_stream_merging_dit_with_static_shapes(monkeypatch):
-    """FLUX.1 regression: dynamic=True cannot be codegen'd for a stream-merging block.
-
-    Inductor collapses the merged sequence to one flat range, so a pointwise node over it has
-    extent ``15360*s31 + 15360*s87`` against a kernel group of ``s31 + s87``; torch's sympy ``Mod``
-    never cancels an Add over an Add, so ``_split_iteration_ranges`` raises ``CantSplit`` and the
-    whole load falls back to eager (measured on FLUX.1-schnell: fp8, nvfp4 AND bf16)."""
+    """FLUX.1 regression: dynamic=True cannot be codegen'd for a stream-merging block."""
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -1232,24 +1214,16 @@ def test_speed_default_compiles_stream_merging_dit_with_static_shapes(monkeypatc
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is True
-    # dynamic OFF, but everything else about the default tier is unchanged: still fullgraph, still
-    # no autotune mode (the max tier's recipe is not pulled in).
     assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": False}
-    # dynamic=None would NOT do: it compiles static first and goes dynamic on the second distinct
-    # shape, crashing there instead.
     assert pipe.compile_kwargs["dynamic"] is not None
 
 
 def test_compiled_shapes_are_static_reports_the_stream_merging_downgrade(monkeypatch):
-    # The compile-cache layer keys on this to re-save its bundle per shape. A stream-merging DiT
-    # compiles static under `default` too, so it must say so or a new resolution reuses a bundle
-    # that has no artifact for it.
     _stub_torch(monkeypatch)
     merging = types.SimpleNamespace(transformer = _dit(FluxSingleTransformerBlock))
     plain = types.SimpleNamespace(transformer = _dit(_DualStreamBlock))
     assert ds_mod.compiled_shapes_are_static(merging, SPEED_DEFAULT) is True
     assert ds_mod.compiled_shapes_are_static(plain, SPEED_DEFAULT) is False
-    # max is static for everything, off/eager compile nothing at all.
     assert ds_mod.compiled_shapes_are_static(plain, SPEED_MAX) is True
     assert ds_mod.compiled_shapes_are_static(merging, SPEED_OFF) is False
     assert ds_mod.compiled_shapes_are_static(merging, SPEED_EAGER) is False

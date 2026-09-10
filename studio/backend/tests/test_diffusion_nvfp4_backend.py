@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the NVFP4 flashinfer ops module (``diffusion_nvfp4_ops.py``).
-
-Three hermetic groups and one CUDA-gated one:
-
-* the backend selection matrix, with the import, the capability, the preflight and the env var all
-  stubbed, so every rung of the decision is exercised on a machine with no GPU at all;
-* an AST guard proving that no FlashInfer call and no ``torch.ops.unsloth_nvfp4`` launch anywhere in
-  ``core/inference/diffusion_nvfp4_*.py`` sits outside a ``torch.cuda.device`` block. This is not
-  style: FlashInfer installs no device guard of its own and an unguarded launch bricks the card;
-* the fake (meta) shapes against ``_swizzled_sf_numel``, including token counts that pad;
-* the real preflight on the visible device, which is the only thing that can say whether FlashInfer
-  actually builds here.
-"""
+"""Tests for the NVFP4 flashinfer ops module (``diffusion_nvfp4_ops.py``)."""
 
 from __future__ import annotations
 
@@ -60,7 +48,6 @@ def _stub(
     )
 
 
-# ── T-13: the selection matrix ────────────────────────────────────────────────────────────────
 
 
 def test_auto_selects_flashinfer_when_import_capability_and_preflight_all_pass(monkeypatch):
@@ -144,7 +131,6 @@ def test_the_env_value_is_case_and_space_insensitive(monkeypatch, value):
         assert ops.select_nvfp4_backend(0) == "torchao"
 
 
-# ── T-15: no kernel launch outside a device guard ─────────────────────────────────────────────
 
 
 def _dotted(node: ast.AST) -> str:
@@ -295,7 +281,6 @@ def test_the_modules_never_set_the_current_stream_or_device():
     assert not offences, "\n".join(offences)
 
 
-# ── T-16: the fake shapes ─────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -320,8 +305,6 @@ def test_the_fake_impls_reproduce_the_flashinfer_allocation(m, k, n):
     total = ops._swizzled_sf_numel(m, cols, 128)
 
     assert tuple(xq.shape) == (m, k // 2) and xq.dtype == torch.uint8
-    # FlashInfer allocates a FLAT padded buffer and reshapes it to (-1, k // 16), so the leading
-    # dim is the PADDED row count, not m.
     assert tuple(x_sf.shape) == (total // cols, cols) and x_sf.dtype == torch.uint8
     assert x_sf.numel() == total
     assert x_sf.shape[0] >= m
@@ -356,7 +339,6 @@ def test_register_ops_is_idempotent():
     assert hasattr(torch.ops.unsloth_nvfp4, "mm")
 
 
-# ── T-CUDA-1: the real preflight ──────────────────────────────────────────────────────────────
 
 
 def test_real_preflight_reports_ok_on_a_blackwell_card_with_flashinfer():
@@ -374,7 +356,6 @@ def test_real_preflight_reports_ok_on_a_blackwell_card_with_flashinfer():
     assert record["name"]
     assert record["ok"] is True, record["reason"]
     assert record["reason"] == "ok"
-    # Memoised per device index: a second call must not re-run the GEMM.
     ops.nvfp4_preflight(0)
     assert ops.nvfp4_preflight(0) == record
     assert ops.select_nvfp4_backend(0) == "flashinfer"

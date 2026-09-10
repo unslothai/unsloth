@@ -201,11 +201,8 @@ export function precisionLabel(value: string | null | undefined): string | null 
 
 /**
  * Which NVFP4 kernel path served the load, spelled the way the projects spell
- * themselves. Only nvfp4 has two implementations, and which one ran is decided per
- * device at load time (a failed preflight, an artifact without baked activation
- * scales or a Windows host all land on torchao), so the scheme alone does not say
- * what a render's speed should be attributed to. Anything unrecognised is shown as
- * the backend sent it, same rule as precisionLabel.
+ * themselves. Anything unrecognised is shown as the backend sent it, same rule as
+ * precisionLabel.
  */
 export function quantBackendLabel(
   value: string | null | undefined,
@@ -245,8 +242,6 @@ export function describeDiffusionStatus(
         precisionLabel(status.transformer_quant) ??
           precisionLabel(status.gguf_variant) ??
           precisionLabel(status.dtype),
-        // Only nvfp4 reports one, so this adds a part to exactly the rows where the
-        // precision label is ambiguous about what actually ran.
         quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),

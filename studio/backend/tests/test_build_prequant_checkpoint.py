@@ -51,9 +51,6 @@ def test_a_rotated_upload_goes_to_the_name_the_loader_asks_for_not_the_legacy_fa
     # resolve_prequant_source asks for first. transformer_int8.pt is never asked for on this
     # family, so an upload landing there would be invisible.
     assert build.upload_destination(h3, "int8", rotated = True) == "MiniMax-H3-INT8-ConvRot.pt"
-    # A plain build goes to the DERIVED name, which is the one resolve_prequant_source asks for
-    # first; the legacy transformer_int8.pt stays resolvable as the loader's fallback for the
-    # repos that only ever carried it.
     assert (
         build.upload_destination(h3, "int8", rotated = False, repo_id = "unsloth/MiniMax-H3-FP8")
         == "MiniMax-H3-INT8.pt"
@@ -79,21 +76,15 @@ def test_a_rotated_upload_with_no_declared_name_is_refused_rather_than_published
         build.upload_destination(zimage, "fp8", rotated = False, repo_id = "unsloth/Z-Image-Turbo-FP8")
         == "Z-Image-Turbo-FP8.pt"
     )
-    # A plain build derives its name from the destination repo, so publishing without one is
-    # refused rather than guessed at.
     with pytest.raises(ValueError, match = "--upload-repo"):
         build.upload_destination(zimage, "fp8", rotated = False)
 
 
-# ── the publishing gate ──────────────────────────────────────────────────────────
 def test_a_build_may_not_publish_without_a_second_build_to_verify_against():
     build = _script()
-    # An unverified artifact is indistinguishable from a verified one once it is hosted, and every
-    # auto pick that resolves the repo then loads it. There is deliberately no escape hatch flag.
     refusal = build.upload_gate_refusal("unsloth/Wan2.2-TI2V-5B-NVFP4", None)
     assert refusal is not None and "--verify-against" in refusal
     assert build.upload_gate_refusal("unsloth/Wan2.2-TI2V-5B-NVFP4", "other.pt") is None
-    # Nothing to gate when the build is not publishing.
     assert build.upload_gate_refusal(None, None) is None
 
 
@@ -103,7 +94,6 @@ def test_verifying_an_artifact_against_itself_is_refused(tmp_path):
     out.write_bytes(b"x")
     link = tmp_path / "same.pt"
     link.symlink_to(out)
-    # A file always matches itself, so accepting this would report a verified build and publish it.
     assert build.verify_target_refusal(str(out), str(out)) is not None
     assert build.verify_target_refusal(str(out), str(link)) is not None
     assert build.verify_target_refusal(str(out), str(tmp_path / "build_b.pt")) is None
@@ -115,11 +105,9 @@ def test_the_fingerprint_diff_names_every_differing_weight_and_where_it_sits():
     mine = {"count": 2, "modules": {"blocks.3.attn1.to_q.weight": "aa", "proj_out.weight": "bb"}}
     other = {"count": 2, "modules": {"blocks.3.attn1.to_q.weight": "cc", "proj_out.weight": "bb"}}
     assert build.fingerprint_mismatches(mine, other) == ["blocks.3.attn1.to_q.weight"]
-    # A weight one build quantised and the other did not is a difference too: not the same artifact.
     fewer = {"count": 1, "modules": {"proj_out.weight": "bb"}}
     assert build.fingerprint_mismatches(mine, fewer) == ["blocks.3.attn1.to_q.weight"]
     assert build.fingerprint_mismatches(mine, mine) == []
-    # The position is what discriminates between a per-shape effect and a global one.
     assert build.parse_key("transformer_2/blocks.12.attn1.to_q.weight") == (
         "transformer_2",
         12,
@@ -142,28 +130,21 @@ def test_a_verify_against_mismatch_exits_3(monkeypatch, capsys):
     )
     assert build.verify_against("other.pt", mine) == 3
     assert "proj_out.weight" in capsys.readouterr().out
-    # The same two builds agreeing is the only thing that returns 0.
     monkeypatch.setattr(build, "_read_metadata", lambda path: {"fingerprint": mine})
     assert build.verify_against("other.pt", mine) == 0
-    # An artifact with no block verifies nothing, so it is a refusal rather than a match.
     monkeypatch.setattr(build, "_read_metadata", lambda path: {})
     assert build.verify_against("other.pt", mine) == 3
 
 
-# ── families and components ──────────────────────────────────────────────────────
 def test_a_video_base_the_image_registry_does_not_know_resolves_in_the_video_one():
     build = _script()
-    # detect_family answers None for every video family, so without the fallback the builder can
-    # only ever bake image DiTs.
     assert detect_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers", override = "wan2.2-t2v-a14b") is None
     fam = build.resolve_build_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers", override = "wan2.2-t2v-a14b")
     assert fam is not None and fam.name == "wan2.2-t2v-a14b"
     assert fam.transformer_class == "WanTransformer3DModel"
-    # An image family keeps resolving in the image registry, unchanged.
     assert (
         build.resolve_build_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image").name == "z-image"
     )
-    # --modality pins one registry, so a name in the wrong one is refused rather than guessed at.
     assert (
         build.resolve_build_family(
             "Wan-AI/Wan2.2-T2V-A14B-Diffusers", override = "wan2.2-t2v-a14b", modality = "image"
@@ -181,8 +162,6 @@ def test_each_denoiser_component_publishes_under_its_own_name():
     wan = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert wan is not None
     repo = "unsloth/Wan2.2-T2V-A14B-NVFP4"
-    # Both experts share family, scheme, base and key set, so the filename is the only thing
-    # standing between expert 2's slot and expert 1's weights.
     assert (
         build.upload_destination(wan, "nvfp4", rotated = False, repo_id = repo)
         == "Wan2.2-T2V-A14B-NVFP4.pt"
@@ -195,7 +174,6 @@ def test_each_denoiser_component_publishes_under_its_own_name():
     )
 
 
-# ── what a build stamps into the artifact ────────────────────────────────────────
 _UINT8 = object()  # the stub torch's uint8, so the fingerprint's dtype view is a no-op here
 
 
@@ -335,16 +313,11 @@ def test_a_build_stamps_the_component_the_filter_floor_and_a_fingerprint(monkeyp
         ]
     )
     assert code == 0
-    # The component drives which denoiser is loaded ...
     assert saved["from_pretrained"]["subfolder"] == "transformer_2"
     meta = saved["ckpt"]["metadata"]
-    # ... and is recorded, because both experts pass every other check the loader makes.
     assert meta["component"] == "transformer_2"
     assert meta["family"] == "wan2.2-t2v-a14b"
-    # The GEMM tiling floor the runtime filter applies, so an offline build cannot bake the ragged
-    # linears the runtime leaves dense.
     assert meta["require_divisible"] == 16
-    # One entry per quantized weight; the dense norm is skipped and the bias is not a weight.
     assert meta["fingerprint"]["algo"] == "md5-packed-v1"
     assert meta["fingerprint"]["count"] == 2
     assert set(meta["fingerprint"]["modules"]) == {
@@ -352,7 +325,6 @@ def test_a_build_stamps_the_component_the_filter_floor_and_a_fingerprint(monkeyp
         "blocks.1.attn1.to_q.weight",
     }
     assert meta["fingerprint"]["skipped"] == ["blocks.0.norm1.weight"]
-    # Different weights hash differently, which is the only property the check rests on.
     digests = set(meta["fingerprint"]["modules"].values())
     assert len(digests) == 2
 
@@ -371,7 +343,6 @@ def test_a_build_refuses_to_publish_before_it_verifies(monkeypatch, tmp_path):
         "--out",
         str(out),
     ]
-    # Refused before the load, not after the hours: the answer is in the arguments.
     assert build.main([*argv, "--upload-repo", "unsloth/Wan2.2-T2V-A14B-NVFP4"]) == 2
     assert not out.exists()
     assert build.main([*argv, "--verify-against", str(out)]) == 2
@@ -388,7 +359,6 @@ def test_a_build_whose_second_run_differs_exits_3_without_uploading(monkeypatch,
             "fingerprint": {"count": 2, "modules": {"blocks.0.attn1.to_q.weight": "deadbeef"}}
         },
     )
-    # A refused build must not reach the Hub at all, so an upload here is an import error.
     hub = types.ModuleType("huggingface_hub")
 
     def _no_upload(*a, **k):
@@ -416,12 +386,9 @@ def test_a_build_whose_second_run_differs_exits_3_without_uploading(monkeypatch,
     assert code == 3
 
 
-# ── GPTQ corrections ─────────────────────────────────────────────────────────────
 def test_a_correction_that_does_not_help_is_not_applied_and_says_so():
     build = _script()
     meta = {
-        # GPTQ raises the Frobenius weight error on every layer by construction: it trades weight
-        # error for output error, which is why the weight error cannot be the do-no-harm test.
         "blocks.0.attn1.to_q": {"err_rtn": 0.096, "err_gptq": 0.125, "damp": 0.01},
         "blocks.1.attn1.to_q": {"err_rtn": 0.095, "err_gptq": 0.121, "damp": 0.1},
     }
@@ -438,10 +405,7 @@ def test_a_correction_that_does_not_help_is_not_applied_and_says_so():
         "missing": 0,
     }
     assert plan["layers"]["blocks.1.attn1.to_q"]["reason"] == "no_gain"
-    # The weight-space rule is the one the Hessian pass recorded, and on this evidence it admits
-    # nothing at all, which is why it is not the default.
     assert build.plan_gptq(list(meta), meta, score, mode = "meta")["counts"]["applied"] == 0
-    # A layer with no score is left alone rather than applied on faith.
     plan = build.plan_gptq(["blocks.9.ffn.net.2", *meta], meta, score, mode = "check")
     assert plan["counts"]["skipped_unscored"] == 1
     assert plan["layers"]["blocks.9.ffn.net.2"]["reason"] == "unscored"
@@ -451,13 +415,10 @@ def test_a_correction_the_pass_never_wrote_is_counted_not_ignored():
     build = _script()
     meta = {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12}}
     score = {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}
-    # The correction helps, but the file is not there. Silently leaving it out would make an
-    # artifact that claims a calibration it only partly has.
     plan = build.plan_gptq(list(meta), meta, score, has_weight = lambda fqn: False)
     assert plan["apply"] == []
     assert plan["counts"]["missing"] == 1 and plan["counts"]["applied"] == 0
     assert plan["layers"]["blocks.0.attn1.to_q"]["reason"] == "missing"
-    # And the errors are still recorded, so the artifact can say what was skipped and why.
     assert plan["layers"]["blocks.0.attn1.to_q"]["out_err_gptq"] == 0.01
 
 
@@ -469,12 +430,9 @@ def test_the_gptq_layout_of_a_moe_family_resolves_per_expert(tmp_path):
     (root / "gptq_score_transformer_2.json").write_text("{}")
     (root / "gptq_meta.json").write_text("{}")
     where = build.gptq_sources(str(root), "transformer_2")
-    # Both experts share every name in the model, so the per-expert directory is the only thing
-    # keeping expert 1's corrections out of expert 2's artifact.
     assert where["weights"].endswith("weights/transformer_2")
     assert where["meta"].endswith("gptq_meta_transformer_2.json")
     assert where["score"].endswith("gptq_score_transformer_2.json")
-    # A single-denoiser family writes the flat layout, and the same directory serves it.
     flat = tmp_path / "flat"
     (flat / "weights").mkdir(parents = True)
     (flat / "gptq_meta.json").write_text("{}")
@@ -512,11 +470,8 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
             {"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}}
         )
     )
-    # One admitted linear with a correction on disk, one without a file at all.
     (gptq / "weights" / "blocks_0_attn1_to_q.pt").write_bytes(b"w")
 
-    # The runtime filter is the admitted set, so the stub has to look like what it inspects:
-    # nn.Linear, 16-aligned, at or above the min_features floor.
     class _Linear:
         def __init__(self):
             self.in_features = 1024
@@ -541,8 +496,6 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
         classmethod(lambda cls, base, **kwargs: transformer),
     )
     loaded = types.SimpleNamespace(shape = (1024, 1024), to = lambda *a: "corrected")
-    # The idempotency check reads packed NVFP4 payloads off a real GPU; here it stands in for one,
-    # so what is asserted is that its verdict reaches the metadata.
     monkeypatch.setattr(
         build,
         "verify_gptq_idempotency",
@@ -570,8 +523,6 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
         ]
     )
     assert code == 0
-    # The corrected weight replaced the dense one BEFORE quantize_, which is the only order in
-    # which the quantiser packs the correction rather than re-deriving it.
     assert module.weight.data == "corrected"
     block = saved["ckpt"]["metadata"]["gptq"]
     assert block["applied"] == 1 and block["missing"] == 1
@@ -586,8 +537,6 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
         "max_abs_fqn": None,
         "frac_diff": 0.0,
     }
-    # The fingerprint stays a hash of the packed payloads alone, so the block never becomes part
-    # of the artifact's identity by itself.
     assert "gptq" not in saved["ckpt"]["metadata"]["fingerprint"]
 
 
@@ -611,16 +560,12 @@ def test_a_rotated_build_may_not_also_be_a_calibrated_one(monkeypatch, tmp_path)
             "128",
         ]
     )
-    # Refused from the arguments alone: the correction was solved against unrotated activations.
     assert code == 2
     assert not out.exists()
 
 
-# ── per-layer NVFP4 policies ─────────────────────────────────────────────────────
 def test_the_policy_a_build_applies_is_the_one_that_resolves_for_its_base():
     build = _script()
-    # auto is the default and must leave every existing invocation building what it builds today:
-    # no policy describes an fp8 or int8 artifact, and none resolves for the video families.
     assert build.resolve_build_policy("auto", "fp8", "z-image", "Tongyi-MAI/Z-Image-Turbo") == (
         None,
         None,
@@ -632,13 +577,10 @@ def test_the_policy_a_build_applies_is_the_one_that_resolves_for_its_base():
         "auto", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo"
     )
     assert refusal is None and policy.policy_id == "zimg_f8mod_toq34_v1"
-    # off forces the whole-model build even where one would resolve.
     assert build.resolve_build_policy("off", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo") == (
         None,
         None,
     )
-    # A named policy is a pin: the operator says which layer set they measured, and a table that
-    # has moved under them is a refusal rather than a different artifact.
     policy, refusal = build.resolve_build_policy(
         "zimg_f8mod_toq34_v1", "nvfp4", "z-image", "unsloth/Z-Image-Turbo"
     )
@@ -737,7 +679,6 @@ def _stub_policy_build(monkeypatch, tmp_path):
         passes.append({"config": config, "selected": selected})
         for fqn in selected:
             modules[fqn].weight = _Quantized(produced[config.scheme])
-        # A pass that ran is not the whole-model call, which records its filter and nothing else.
         saved["filter_fn"] = filter_fn
 
     sys.modules["torchao.quantization"].quantize_ = _quantize_
@@ -771,24 +712,19 @@ def test_a_policy_build_runs_two_passes_and_stamps_what_it_assigned(monkeypatch,
     saved, passes, modules = _stub_policy_build(monkeypatch, tmp_path)
     out = tmp_path / "policy.pt"
     assert build.main(_policy_argv(out)) == 0
-    # NVFP4 first, then fp8, over disjoint sets: the order is what lets the fp8 filter also
-    # require a plain Parameter, so no layer can be quantised twice.
     assert [p["config"].scheme for p in passes] == ["nvfp4", "fp8"]
     assert passes[0]["selected"] == ["blocks.0.attn1.to_q"]
     assert passes[1]["selected"] == ["blocks.0.ffn.net.0"]
     assert type(modules["blocks.0.attn1.to_q"].weight).__name__ == "NVFP4Tensor"
     assert type(modules["blocks.0.ffn.net.0"].weight).__name__ == "Float8Tensor"
     ckpt = saved["ckpt"]
-    # The tag an older build refuses, rather than loading the mixture as a whole-model artifact.
     assert ckpt["format"] == "unsloth_prequant_transformer_state_dict_v3"
     block = ckpt["metadata"]["nvfp4_policy"]
     assert block["policy_id"] == "tiny_v1" and block["policy_version"] == 3
     assert block["counts"] == {"fp8": 1, "nvfp4": 1}
     assert block["nvfp4_fqns"] == ["blocks.0.attn1.to_q"]
     assert block["activation_scales_baked"] is False and block["gptq"] is False
-    # The scheme token does not change: the policy is metadata about an nvfp4 artifact.
     assert ckpt["metadata"]["scheme"] == "nvfp4"
-    # The fp8 half bakes an accumulate mode and a granularity in, so both are recorded.
     assert ckpt["metadata"]["fp8_granularity"] == "per_row"
     assert ckpt["metadata"]["fast_accum"] is not None
     assert passes[1]["config"].fast_accum == ckpt["metadata"]["fast_accum"]
@@ -800,16 +736,11 @@ def test_a_policy_build_may_not_also_rotate_and_a_family_without_one_may_not_ask
     build = _script()
     saved, passes, _ = _stub_policy_build(monkeypatch, tmp_path)
     out = tmp_path / "policy.pt"
-    # Both rewrite the weights before quantize_ and both claim the one format tag slot.
     assert build.main(_policy_argv(out, "--convrot-groupsize", "128")) == 2
     assert not out.exists()
-    # A policy id that does not resolve for this family and base is refused from the arguments
-    # alone, before the hours: the layer set was solved on another checkpoint's weights.
     assert build.main(_policy_argv(out, "--policy", "zimg_f8mod_toq34_v1")) == 2
     assert build.main(_policy_argv(out, "--policy", "no_such_policy_v1")) == 2
     assert not out.exists()
-    # off builds the whole-model artifact, which is also what every base without a policy gets:
-    # one pass over the filter's set, the v1 tag, and no policy block.
     assert build.main(_policy_argv(out, "--policy", "off")) == 0
     assert [p["config"].scheme for p in passes] == ["nvfp4"]
     assert saved["ckpt"]["format"] == "unsloth_prequant_transformer_state_dict_v1"
@@ -851,15 +782,11 @@ def test_a_calibrated_policy_build_corrects_the_4_bit_layers_only(monkeypatch, t
     out = tmp_path / "policy_gptq.pt"
     assert build.main(_policy_argv(out, "--gptq-dir", str(gptq))) == 0
     block = saved["ckpt"]["metadata"]["gptq"]
-    # Both layers have a correction on disk that scores better, but only the NVFP4 one is in
-    # scope: correcting a weight that then becomes the source of an fp8 replica raised the error
-    # 46 percent in the campaign, and a static policy avoids that by construction.
     assert set(block["layers"]) == {"blocks.0.attn1.to_q"}
     assert block["applied"] == 1
     assert saved["ckpt"]["metadata"]["nvfp4_policy"]["gptq"] is True
 
 
-# ── the in-builder calibration: flags, order, prompts, metadata ──────────────────
 
 
 def _calib_prompts():
@@ -868,9 +795,7 @@ def _calib_prompts():
 
 
 def test_the_calibration_prompts_are_disjoint_from_the_gate_suite():
-    """A quantisation calibrated on the prompts it is then scored on measures how well it memorised
-    them. The gate's seven cases are copied into gptq_prompts.py precisely so this can be asserted
-    rather than remembered."""
+    """A calibration set scored on its own prompts measures memorisation, so the two are disjoint."""
     import importlib.util
 
     path = Path(__file__).resolve().parents[3] / "scripts" / "gptq_prompts.py"
@@ -888,8 +813,6 @@ def test_the_calibration_prompts_are_disjoint_from_the_gate_suite():
     def _normalise(text):
         return " ".join("".join(ch for ch in text.lower() if ch.isalnum() or ch.isspace()).split())
 
-    # Not just character-exact: a prompt that differs from an evaluation one by punctuation is the
-    # same prompt for this purpose.
     assert not {_normalise(p) for p in calibration} & {_normalise(p) for p in gate}
 
 
@@ -924,12 +847,10 @@ def test_the_step_spec_parses_or_refuses():
 
 
 def test_the_calibration_stages_run_hessians_then_gptq_then_the_bake():
-    """The order is the whole contract: a Hessian describes the activations the correction is
-    solved against, and an activation scale has to describe the model that ships."""
+    """Hessians on the uncorrected weights, activation scales on the ones that ship."""
     build = _script()
     assert build.calibration_stage_order(32, True) == ("hessians", "gptq", "bake")
     assert build.calibration_stage_order(32, False) == ("hessians", "gptq")
-    # --gptq-prompts 0 --bake-activation-scales is a supported build on its own.
     assert build.calibration_stage_order(0, True) == ("bake",)
     assert build.calibration_stage_order(0, False) == ()
 
@@ -942,17 +863,13 @@ def test_the_calibration_flags_are_refused_for_a_build_that_cannot_honour_them()
         "convrot_groupsize": 0,
         "available_prompts": 32,
     }
-    # Off: nothing to refuse.
     assert build.calibration_refusal(scheme = "fp8", gptq_prompts = 0, bake = False, **common) is None
-    # A 4-bit grid and a 4-bit activation scale describe an nvfp4 build and nothing else.
     assert "nvfp4" in build.calibration_refusal(scheme = "fp8", gptq_prompts = 0, bake = True, **common)
     assert "nvfp4" in build.calibration_refusal(scheme = "int8", gptq_prompts = 4, bake = False, **common)
-    # Two sources for the same corrected weights.
     both = dict(common, gptq_dir = "/tmp/gptq")
     assert "--gptq-dir" in build.calibration_refusal(
         scheme = "nvfp4", gptq_prompts = 4, bake = False, **both
     )
-    # ... but --gptq-dir plus a BAKE is fine: they touch different halves of the artifact.
     assert build.calibration_refusal(scheme = "nvfp4", gptq_prompts = 0, bake = True, **both) is None
     rotated = dict(common, convrot_groupsize = 64)
     assert "unrotated" in build.calibration_refusal(
@@ -995,7 +912,6 @@ class _StubPipe:
 
 def test_every_calibration_render_is_seeded_so_a_second_build_reproduces_it():
     build = _script()
-    # A ``**kwargs`` pipeline declares nothing, so nothing is filtered out of the call.
     pipe = _StubPipe()
     armed: list = []
     ran = build.render_calibration(
@@ -1014,11 +930,8 @@ def test_every_calibration_render_is_seeded_so_a_second_build_reproduces_it():
     first, second = pipe.calls
     assert first["prompt"] == "a red bicycle" and second["prompt"] == "a blue bicycle"
     assert first["num_inference_steps"] == 4 and first["width"] == first["height"] == 512
-    # The family's own guidance kwarg, not a hardcoded one.
     assert first["true_cfg_scale"] == 3.5 and "guidance_scale" not in first
-    # No VAE decode: this pass wants the denoiser's activations and nothing else.
     assert first["output_type"] == "latent"
-    # Seeded from the index, so two builds accumulate the same Hessians and correct identically.
     assert first["generator"].initial_seed() == 11
     assert second["generator"].initial_seed() == 12
 
@@ -1045,8 +958,6 @@ def test_a_pipeline_with_no_step_callback_cannot_be_hessian_calibrated():
             callback = lambda *a: None,
         )
     assert "callback_on_step_end" in str(excinfo.value)
-    # Without a callback the same pipeline calibrates fine, and unsupported kwargs are dropped
-    # rather than raising.
     assert (
         build.render_calibration(
             _NoCallback(), ("a red bicycle",), steps = 4, guidance = 1.0, device = "cpu"
@@ -1095,8 +1006,6 @@ def test_the_gptq_metadata_block_says_which_weights_are_corrected_and_what_made_
     assert applied["applied"] is True and applied["reason"] == "applied" and applied["damp"] == 0.01
     assert skipped["applied"] is False and skipped["reason"] == "no_gain"
     assert (skipped["err_rtn"], skipped["err_gptq"]) == (1.0, 1.5)
-    # The same prompts hash the same and different ones do not, so an artifact can say which set
-    # made it.
     assert build.prompt_digest(("a red bicycle",)) != block["prompt_sha256"]
 
 
@@ -1109,15 +1018,12 @@ def test_the_baked_scales_record_the_set_and_the_schedule_they_were_measured_on(
         layers = 3,
     )
     assert meta["prompts"] == 2 and meta["schedule_steps"] == 8 and meta["layers"] == 3
-    # Every step of every prompt: the step with the largest activation is the one a sampled subset
-    # would miss.
     assert meta["steps_sampled"] == "all"
     assert (meta["min_a_gsf"], meta["max_a_gsf"], meta["scaled"]) == (4.0, 100.0, 3)
 
 
 def test_a_calibrated_build_is_refused_before_the_dense_download(monkeypatch, tmp_path):
-    """Every calibration refusal is decided by the arguments alone, so it costs a second rather
-    than a multi-gigabyte download."""
+    """Every calibration refusal is decided by the arguments alone, before the dense load."""
     build = _script()
     saved = _stub_build_stack(monkeypatch, _fake_state_dict())
     code = build.main(
@@ -1154,25 +1060,17 @@ def test_a_calibrated_build_is_refused_before_the_dense_download(monkeypatch, tm
     assert "from_pretrained" not in saved
 
 
-# ── the video branch of the calibration pass ──────────────────────────────────────────────────
-# A video family calibrates through its own pipeline, on its own grid, with a third axis and a
-# guidance mechanism the image families do not have. Every one of those differences is silent when
-# it is wrong: a still rendered instead of a clip, a guider left at its default scale, or a MoE
-# build whose hooks saw the other expert's steps all produce a checkpoint that loads and renders.
 
 
 def test_the_calibration_grid_reads_as_wxhxframes_only_for_a_video_family():
     build = _script()
-    # An image family: one number is a square, two are a rectangle, three are not its to render.
     assert build.parse_calib_grid("1024", video = False) == (1024, 1024, None)
     assert build.parse_calib_grid("1024x576", video = False) == (1024, 576, None)
     with pytest.raises(ValueError) as excinfo:
         build.parse_calib_grid("832x480x25", video = False)
     assert "frame count" in str(excinfo.value)
-    # A video family: the third axis, and a default for it when only the frame size is given.
     assert build.parse_calib_grid("832x480x25", video = True) == (832, 480, 25)
     assert build.parse_calib_grid("832x480", video = True) == (832, 480, 25)
-    # The documented defaults, per modality.
     assert build.parse_calib_grid(None, video = False) == (1024, 1024, None)
     assert build.parse_calib_grid(None, video = True) == (832, 480, 25)
     for bad in ("", "832x", "832xW", "0x480x25", "1x2x3x4"):
@@ -1183,10 +1081,8 @@ def test_the_calibration_grid_reads_as_wxhxframes_only_for_a_video_family():
 def test_a_frame_count_the_family_cannot_render_is_refused_before_the_dense_load():
     build = _script()
     wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
-    # 25 = 6 * 4 + 1 sits on the lattice; 26 does not, and the pipeline would only say so hours in.
     assert build.frame_count_refusal(wan, 25) is None
     assert "k * 4 + 1" in build.frame_count_refusal(wan, 26)
-    # An image build has no frame count at all, so there is nothing to refuse.
     assert build.frame_count_refusal(detect_family("Tongyi-MAI/Z-Image-Turbo"), None) is None
 
 
@@ -1247,13 +1143,11 @@ def test_a_video_calibration_renders_a_clip_at_the_grid_it_was_given():
     (call,) = pipe.calls
     assert (call["width"], call["height"], call["num_frames"]) == (832, 480, 25)
     assert call["num_inference_steps"] == 20 and call["guidance_scale"] == 5.0
-    # Still no VAE decode, and still seeded, for the same reasons the image branch is.
     assert call["output_type"] == "latent" and call["generator"].initial_seed() == 3407
 
 
 def test_a_family_with_no_guidance_kwarg_is_calibrated_through_its_guider():
-    """HunyuanVideo-1.5's __call__ takes no guidance at all. Passing one would raise; passing
-    nothing would calibrate at whatever scale the guider shipped with."""
+    """HunyuanVideo-1.5's __call__ takes no guidance at all."""
     build = _script()
     pipe = _StubVideoPipe(
         supports = (
@@ -1281,7 +1175,6 @@ def test_a_family_with_no_guidance_kwarg_is_calibrated_through_its_guider():
     assert pipe.guider.guidance_scale == 6.0
     assert "guidance_scale" not in pipe.calls[0]
 
-    # A family that declares a guider and has none is a wiring mistake, not a silent default.
     with pytest.raises(ValueError) as excinfo:
         build.render_calibration(
             _StubVideoPipe(),
@@ -1309,8 +1202,6 @@ def test_the_second_expert_guidance_is_passed_only_when_the_family_names_a_kwarg
         device = "cpu",
     )
     assert pipe.calls[0]["guidance_scale_2"] == 4.0
-    # Unset, the pipeline's own default (the high-noise expert's scale) applies, which is the
-    # family default this build calibrates at.
     pipe = _StubVideoPipe()
     build.render_calibration(
         pipe, ("a herd of horses",), steps = 20, guidance = 5.0, num_frames = 25, device = "cpu"
@@ -1319,8 +1210,7 @@ def test_the_second_expert_guidance_is_passed_only_when_the_family_names_a_kwarg
 
 
 def test_an_investigation_prompt_module_declaring_CALIB_is_read(tmp_path):
-    """The video calibration set is the campaign's own CALIB list, which is the one the GPTQ
-    weights this build replays were solved on."""
+    """The video calibration set is the CALIB list the replayed GPTQ weights were solved on."""
     build = _script()
     module = tmp_path / "prompts.py"
     module.write_text('CALIB = ["a red fox", "a blue whale"]\n')
@@ -1340,9 +1230,8 @@ def test_the_baked_scales_record_the_grid_they_were_measured_at():
 
 
 def test_a_whole_model_video_build_bakes_its_scales_through_its_own_pipeline(monkeypatch, tmp_path):
-    """The end a video artifact is built for: every admitted linear at 4 bits, one activation
-    scale each, and the TOP-LEVEL flag that tells the flashinfer backend it may convert them --
-    a whole-model artifact has no policy block to carry it."""
+    """A video artifact: every admitted linear at 4 bits, one activation scale each, and the
+    top-level baked flag, since a whole-model artifact has no policy block to carry it."""
     build = _script()
     saved = _stub_build_stack(monkeypatch, _fake_state_dict())
 
@@ -1457,14 +1346,11 @@ def test_a_whole_model_video_build_bakes_its_scales_through_its_own_pipeline(mon
     )
     assert code == 0
     metadata = saved["ckpt"]["metadata"]
-    # Whole-model: every admitted linear has a scale, and the flag sits at the top level.
     assert metadata["activation_scales_baked"] is True
     assert set(metadata["act_global_scales"]) == set(layers)
     assert metadata["activation_calibration"]["grid"] == "832x480x25"
     assert metadata["activation_calibration"]["prompts"] == 2
     assert metadata["activation_calibration"]["schedule_steps"] == 20
-    # The pipeline was built around the denoiser this build quantises, not a second copy of it,
-    # and it rendered a clip at the video default grid with the family's own guidance.
     (pipe,) = _Pipe.instances
     assert pipe.kwargs["transformer"] is transformer
     assert len(pipe.calls) == 2
@@ -1474,9 +1360,7 @@ def test_a_whole_model_video_build_bakes_its_scales_through_its_own_pipeline(mon
 
 
 def test_a_moe_video_build_calibrates_the_expert_it_was_asked_for(monkeypatch, tmp_path):
-    """Both A14B experts share a family, a class and a key set. A build of the second one that
-    handed its denoiser to the pipeline as ``transformer`` would measure the FIRST expert's
-    activations, over the first expert's steps, and stamp them into the second one's artifact."""
+    """Both A14B experts share a family, a class and a key set."""
     build = _script()
     _stub_build_stack(monkeypatch, _fake_state_dict())
 
@@ -1574,17 +1458,12 @@ def test_a_moe_video_build_calibrates_the_expert_it_was_asked_for(monkeypatch, t
         ]
     )
     assert code == 0
-    # The low-noise expert went in under its own name; the high-noise one loads from the base and
-    # the pipeline's boundary switch keeps the hooked expert on its own steps.
     assert built["transformer_2"] is transformer
     assert "transformer" not in built
 
 
 def test_a_replayed_correction_is_in_place_before_the_scales_are_baked(monkeypatch, tmp_path):
-    """--gptq-dir and --bake-activation-scales compose in one order only. An activation scale
-    describes the model the artifact SHIPS, so it has to be measured after the corrected weights
-    are in the module: measured before, it describes a model that is then thrown away, and every
-    layer downstream of a corrected one sees a different input than the one it was scaled for."""
+    """--gptq-dir and --bake-activation-scales compose in one order only."""
     build = _script()
     saved = _stub_build_stack(monkeypatch, _fake_state_dict())
 
@@ -1670,7 +1549,6 @@ def test_a_replayed_correction_is_in_place_before_the_scales_are_baked(monkeypat
     class _Amax:
         def __init__(self, modules):
             self.modules = dict(modules)
-            # What the hooks would have measured through: the weights as they stand right now.
             seen.update({fqn: mod.weight.data for fqn, mod in self.modules.items()})
 
         def attach(self):
@@ -1716,8 +1594,6 @@ def test_a_replayed_correction_is_in_place_before_the_scales_are_baked(monkeypat
     assert code == 0
     assert seen == {"blocks.0.attn1.to_q": "corrected"}
     metadata = saved["ckpt"]["metadata"]
-    # Both provenance blocks survive the composition: which weights are corrected, and what the
-    # scales were measured on.
     assert metadata["gptq"]["applied"] == 1
     assert metadata["activation_scales_baked"] is True
     assert set(metadata["act_global_scales"]) == {"blocks.0.attn1.to_q"}

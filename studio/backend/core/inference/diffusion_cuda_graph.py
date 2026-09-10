@@ -131,10 +131,8 @@ def _drop_pool_if_unused() -> None:
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
-    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``, empty when there is none.
-
-    Imported lazily and swallowed: a load that never touched the NVFP4 backend must not pay the
-    import, and a build without it must not lose CUDA graphs over it."""
+    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``. Imported lazily, so a
+    build without the backend does not lose CUDA graphs over it."""
     try:
         from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
     except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
@@ -150,12 +148,9 @@ def _nvfp4_flashinfer_linears(module: Any) -> list:
 
 
 def _protect_keyed(module: Any) -> bool:
-    """Does this module need the per-step precision branch in its graph key?
-
-    Only when the lever is armed AND the module actually holds FlashInfer NVFP4 layers: an fp8 or
-    bf16 load that happens to run in a process with the env set must not double its graph count for
-    a branch none of its layers can take.
-    """
+    """Does this module need the per-step precision branch in its graph key? Only when the lever is
+    armed AND the module holds NVFP4 layers, so an fp8 load in the same process does not double
+    its graph count for a branch it cannot take."""
     try:
         from .diffusion_nvfp4_protect import protect_controller
 
@@ -173,24 +168,16 @@ def protect_graph_key() -> tuple:
 
 
 def _unbaked_nvfp4_layers(layers: list) -> list:
-    """The fqns among ``layers`` whose activation global scale is not a baked, constant one.
-
-    A layer that still learns its scale mutates a buffer on its first forwards. Under capture that
-    mutation is recorded, not executed, so every later replay runs the scale the capture happened
-    to see, forever -- which is the flux black-frame latch with a graph around it. Fail closed: a
-    layer that does not answer the question at all counts as unbaked."""
+    """The fqns among ``layers`` whose activation global scale is not a baked, constant one. A
+    scale still being learned is recorded rather than executed under capture, so every replay runs
+    whatever the capture saw. Fail closed: no answer counts as unbaked."""
     return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
 
 
 def _prewarm_token_counts(live: list) -> tuple:
-    """Candidate GEMM row counts (M) for this call, smallest first.
-
-    A DiT's NVFP4 layers see two kinds of M: 1 for the per-sample modulation projections, and the
-    token count for the attention ones, which is a function of the resolution this call is running
-    at. The resolution is not knowable at load time, so it is read here, off the shapes the warm-up
-    is about to run anyway: every input tensor contributes the product of its leading dims. Tuning
-    an M no layer takes costs one profiling pass and is otherwise inert, so the set is generous
-    rather than exact, and bounded so a family with many inputs cannot turn a capture into a
+    """Candidate GEMM row counts (M) for this call, smallest first. Read off the warm-up's own
+    shapes, since the resolution is not knowable at load time. Generous rather than exact (tuning
+    an unused M is inert) but bounded, so a family with many inputs cannot turn a capture into a
     profiling session."""
     counts = {1}
     for tensor in live:
@@ -255,9 +242,7 @@ class GraphedForward:
         self.capture_error: Optional[dict] = None
         self.cache: dict = {}
         self.cap_hit = False
-        # Whether this module's cache key has to carry the NVFP4 per-step precision branch.
-        # Resolved on the first call, not here: the layers are converted before the graph is armed
-        # but the walk is O(modules) and must not run per call.
+        # Resolved on the first call, not here: the walk is O(modules) and must not run per call.
         self.protect_keyed: Optional[bool] = None
         self.stats = {
             "captures": 0,
@@ -380,11 +365,8 @@ class GraphedForward:
             if self.protect_keyed is None:
                 self.protect_keyed = _protect_keyed(self.module)
                 if self.protect_keyed:
-                    # Arming the lever splits every input shape into two calls, so the same set of
-                    # shapes now needs twice the graphs. Without this the cap is reached at half
-                    # the shapes it used to hold and the rest run eager, which reads as the lever
-                    # costing speed when what it cost was a graph slot. Raised once, here, because
-                    # this is where the doubling is discovered.
+                    # Arming the lever splits every input shape into two calls, so the same shapes
+                    # need twice the graphs or half of them fall out of the cap and run eager.
                     self.max_graphs *= 2
                     if self.logger is not None:
                         self.logger.info(
@@ -394,9 +376,8 @@ class GraphedForward:
                             self.max_graphs,
                         )
             if self.protect_keyed:
-                # One graph per branch. A graph recorded at a W4A4 step replayed at a W4A16 one
-                # would run the 4-bit kernels the capture baked in and report the lever as
-                # measured while it never fired.
+                # One graph per branch: a graph recorded at a W4A4 step and replayed at a W4A16
+                # one would report the lever as measured while it never fired.
                 key = key + protect_graph_key()
             entry = self.cache.get(key)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
@@ -493,9 +474,8 @@ class GraphedForward:
         static_args, static_kwargs = _rebuild(entry.in_spec, entry.static)
 
         if nvfp4_layers:
-            # BEFORE the warm-up and so before the capture: FlashInfer's autotuner profiles by
-            # launching candidate tactics, which under capture would be recorded rather than
-            # measured, and an untuned layer inside a capture bakes in the default tactic.
+            # BEFORE the warm-up and so before the capture: the autotuner's candidate launches
+            # would be recorded rather than measured, baking in the default tactic.
             from .diffusion_nvfp4_linear import nvfp4_prewarm
             nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
 

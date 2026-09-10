@@ -414,7 +414,6 @@ def test_minimax_h3_offers_every_advertised_aspect_ratio():
         assert width <= rule_width and height <= rule_height, (width, height)
 
 
-# ── the measured resident size of a hosted denoiser ──────────────────────────────
 def _resident_fam(**kwargs):
     from core.inference.video_families import VideoFamily
 
@@ -429,9 +428,7 @@ def _resident_fam(**kwargs):
 
 
 def test_the_per_scheme_row_wins_and_the_float_is_the_fallback():
-    """One float cannot describe a family hosting several schemes at different sizes, and this
-    term is what a hard unified-memory refusal is judged on. A scheme with no row of its own keeps
-    reading the single measurement that predates the table, which is what H3 has."""
+    """The per-scheme row wins and the family-wide float is the fallback."""
     from core.inference.video_families import video_family_prequant_resident_gb
 
     fam = _resident_fam(
@@ -440,13 +437,10 @@ def test_the_per_scheme_row_wins_and_the_float_is_the_fallback():
     )
     assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(8.1)
     assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(13.6)
-    # No row: the family-wide float.
     assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(20.3)
 
 
 def test_an_unmeasured_family_reports_nothing_rather_than_guessing():
-    # None means "not measured", and the caller keeps its generic estimate. A zero or a malformed
-    # row is the same answer, never a 500 on the memory-planning path.
     import types
 
     from core.inference.video_families import video_family_prequant_resident_gb
@@ -458,7 +452,6 @@ def test_an_unmeasured_family_reports_nothing_rather_than_guessing():
 
 
 def test_the_h3_measurement_still_answers_through_the_helper():
-    # The one family with the legacy float keeps resolving it for both of its hosted schemes.
     from core.inference.video_families import video_family_prequant_resident_gb
 
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
@@ -467,9 +460,7 @@ def test_the_h3_measurement_still_answers_through_the_helper():
 
 
 def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
-    """A hosted artifact with no measured row is priced by the generic factor off the dense bf16
-    term. The plan's hard unified-memory refusal reads this term, so the row has to be the measured
-    one and it has to be the DENOISER alone, which is what bf16_components_gb[0] is."""
+    """Every hosted nvfp4 denoiser carries its measured resident size."""
     from core.inference.video_families import (
         _FAMILIES,
         video_family_prequant_resident_gb,
@@ -496,9 +487,7 @@ def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
 
 
 def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
-    """Sanity on direction and magnitude. A 4-bit artifact keeping its scales and its unadmitted
-    layers lands near 0.29 of the bf16 denoiser term on all three architectures; a row recorded as
-    the whole pipeline instead of the denoiser, or in the wrong unit, leaves that band at once."""
+    """Sanity on direction and magnitude."""
     from core.inference.video_families import (
         _FAMILIES,
         video_family_prequant_resident_gb,
@@ -506,8 +495,6 @@ def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
 
     seen = 0
     for fam in _FAMILIES:
-        # Families that actually HOST an nvfp4 denoiser. The helper answers for every family, since
-        # a legacy family-wide float (H3's) is returned whatever scheme is asked for.
         if not any(scheme == "nvfp4" for scheme, _repo in fam.prequant_repos):
             continue
         measured = video_family_prequant_resident_gb(fam, "nvfp4")
@@ -519,8 +506,6 @@ def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
 
 
 def test_the_a14b_row_prices_both_experts_not_one():
-    # transformer + transformer_2 are two artifacts and two residents; the plan subtracts ONE
-    # denoiser term, so a per-expert number here would under-state the load by half.
     from core.inference.video_families import (
         detect_video_family,
         video_family_prequant_resident_gb,
@@ -532,6 +517,4 @@ def test_the_a14b_row_prices_both_experts_not_one():
     assert len(names) == 2
     measured = video_family_prequant_resident_gb(fam, "nvfp4")
     assert measured == pytest.approx(16.2)
-    # One expert's share of the bf16 pair is 28.6; a row that priced a single expert would sit
-    # near 8.1, below this bound.
     assert measured > 0.25 * fam.bf16_components_gb[0]
