@@ -13,6 +13,7 @@ import pytest
 from huggingface_hub import HfApi, ModelCard
 from huggingface_hub.errors import (
     EntryNotFoundError,
+    HfHubHTTPError,
     LocalEntryNotFoundError,
     RevisionNotFoundError,
 )
@@ -327,6 +328,46 @@ def test_existing_pull_request_ref_is_not_created_as_a_branch(saving):
     env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", revision = "refs/pr/3")
     assert records["branches"] == []
     assert records["uploads"][0]["revision"] == "refs/pr/3"
+
+
+@pytest.mark.parametrize("create_pr", [False, True])
+@pytest.mark.parametrize("status", [403, 500])
+def test_branch_errors_allow_only_forbidden_pr_contributions(
+    saving, monkeypatch, create_pr, status
+):
+    import huggingface_hub.hf_api as hf_api
+
+    env, records, _ = saving
+    error = HfHubHTTPError(
+        "branch request failed",
+        response = SimpleNamespace(status_code = status, headers = {}, request = None),
+    )
+    monkeypatch.setattr(
+        hf_api, "get_session", lambda: SimpleNamespace(post = lambda **kwargs: object())
+    )
+
+    def fail_request(response):
+        raise error
+
+    monkeypatch.setattr(hf_api, "hf_raise_for_status", fail_request)
+    api = HfApi(token = False)
+    monkeypatch.setattr(
+        api,
+        "list_repo_refs",
+        lambda **kwargs: SimpleNamespace(branches = [SimpleNamespace(name = "release/candidate")]),
+    )
+    monkeypatch.setattr(
+        env["HfApi"], "create_branch", lambda self, **kwargs: api.create_branch(**kwargs)
+    )
+    kwargs = dict(revision = "release/candidate", create_pr = create_pr)
+    if status == 403 and create_pr:
+        env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", **kwargs)
+        assert records["uploads"][0]["create_pr"] is True
+        assert records["uploads"][0]["revision"] == "release/candidate"
+    else:
+        with pytest.raises(HfHubHTTPError, match = "branch request failed"):
+            env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", **kwargs)
+        assert records["uploads"] == []
 
 
 @pytest.mark.parametrize("revision", [None, "candidate", "refs/pr/3"])

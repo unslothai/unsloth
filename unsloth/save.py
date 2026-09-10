@@ -5387,7 +5387,7 @@ def save_to_gguf_generic(
 def _push_merged_to_hub_revision(save_kwargs):
     import tempfile
     from huggingface_hub import CommitOperationAdd, ModelCard, hf_hub_download
-    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+    from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, LocalEntryNotFoundError
     from unsloth_zoo.saving_utils import get_original_model_id
 
     if not save_kwargs["is_main_process"]:
@@ -5405,7 +5405,12 @@ def _push_merged_to_hub_revision(save_kwargs):
     )
     revision = save_kwargs["revision"]
     if revision is not None and not revision.startswith("refs/pr/"):
-        api.create_branch(repo_id = repo_id, repo_type = "model", branch = revision, exist_ok = True)
+        try:
+            api.create_branch(repo_id = repo_id, repo_type = "model", branch = revision, exist_ok = True)
+        except HfHubHTTPError as error:
+            # PR contributions do not require branch-write permission.
+            if not save_kwargs["create_pr"] or error.response.status_code != 403:
+                raise
     with tempfile.TemporaryDirectory(prefix = "unsloth-merged-") as directory:
         unsloth_generic_save(
             **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
