@@ -414,7 +414,7 @@ def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
     )
     assert result.returncode == 0, result.stderr + result.stdout
     libraries = [
-        line[len("LIB:"):] for line in result.stdout.splitlines() if line.startswith("LIB:")
+        line[len("LIB:") :] for line in result.stdout.splitlines() if line.startswith("LIB:")
     ]
     return result.stdout, libraries
 
