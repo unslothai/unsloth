@@ -940,10 +940,21 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
     [("gfx1151", None, "gfx1151"), ("gfx1151", "gfx1030", "gfx1151"), (None, "gfx1030", None)],
     ids = ["resolved", "resolved_over_inherited", "stale_only"],
 )
-def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, expected):
+@pytest.mark.parametrize("caller_env", sorted(_PRESENCE_PATTERNS), ids = sorted(_PRESENCE_PATTERNS))
+def test_only_this_runs_arch_is_handed_to_the_child(
+    tmp_path, arch, inherited, expected, caller_env
+):
     """A value inherited from an outer process is not this run's answer, so it is cleared rather
-    than forwarded as though the scan had produced it."""
-    out = _run_handoff_lifecycle(tmp_path, arch = arch, inherited = inherited, fails = False)
+    than forwarded as though the scan had produced it.
+
+    Parametrised over the caller patterns, not left on the helper's default. The default is
+    `all`, which sets every caller variable, and a clear that wrongly keyed itself off some
+    other variable's $hadPrevious flag would then find that flag true and clear anyway. The
+    empty-caller case is the one that catches it, and running only the default lost it.
+    """
+    out = _run_handoff_lifecycle(
+        tmp_path, arch = arch, inherited = inherited, fails = False, caller_env = caller_env
+    )
     assert out["seen_by_child"] == expected
 
 
