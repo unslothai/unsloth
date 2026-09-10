@@ -205,6 +205,9 @@ class PlanOptions:
     # 0 means "unknown", which keeps the whole floor charged as live.
     kv_swa_bytes_floor: int = 0
     kv_bytes_at: Optional[Callable[[int, int], int]] = None
+    # The same window-bound half at any (context, slot count): compact SWA storage is per
+    # stream, so rung 1 shrinks it with the slots and the scalar above goes stale.
+    kv_swa_bytes_at: Optional[Callable[[int, int], int]] = None
     overhead_bytes_at: Optional[Callable[[int], int]] = None
     n_ubatch_by_parallel: Mapping[int, int] = field(default_factory = dict)
     draft_bytes: int = 0
@@ -601,6 +604,24 @@ def _fit_boundary_overflow(block: BlockLayout, deficit: int) -> Optional[int]:
     return None
 
 
+def _swa_floor_at(opts: PlanOptions, n_ctx: int, n_seq: int) -> int:
+    """The window-bound half of the cache at ``(n_ctx, n_seq)``; 0 when unknown.
+
+    The scalar was measured at the caller's slot count, and a window is stored per stream
+    (``swa * slots + ubatch`` cells under a unified cache, ``swa + ubatch`` per stream
+    otherwise), so after rung 1 it is stale in the direction that makes the fitter look
+    dearer: ``min(stale, kv_total)`` reads most of a smaller cache as fully live.
+    """
+    slots = max(1, n_seq)
+    if opts.kv_swa_bytes_at is not None:
+        return max(0, int(opts.kv_swa_bytes_at(n_ctx, slots)))
+    base = max(0, opts.kv_swa_bytes_floor)
+    at = max(1, opts.n_parallel)
+    if base <= 0 or slots == at:
+        return base
+    return base * slots // at
+
+
 def _fit_fallback_placement(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -670,6 +691,7 @@ def _fit_fallback_placement(
     # The cache is RESERVED at n_ctx but only the live prefix is ever read, and reading is what
     # costs.
     slot_window = n_ctx if opts.kv_unified else n_ctx // max(1, n_seq)
+    swa_floor = _swa_floor_at(opts, n_ctx, n_seq)
     live_tokens = min(
         max(1, slot_window), max(1, opts.workload_prompt_tokens + opts.workload_generated_tokens)
     )
@@ -679,10 +701,10 @@ def _fit_fallback_placement(
     floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
     if kv_on_host:
         kv_live_total = 0
-    elif layout.has_swa and kv_bytes_floor > 0 and opts.kv_swa_bytes_floor > 0:
+    elif layout.has_swa and kv_bytes_floor > 0 and swa_floor > 0:
         # A saturated window is read in full, but the full-context layers are RESERVED at
         # n_ctx and only their live prefix is ever read.
-        swa_part = min(max(0, opts.kv_swa_bytes_floor), kv_total)
+        swa_part = min(swa_floor, kv_total)
         kv_live_total = swa_part + int((kv_total - swa_part) * live_tokens / max(1, n_ctx))
     elif layout.has_swa and kv_bytes_floor > 0:
         # No split supplied, and the layout cannot say which half is which.
@@ -2235,8 +2257,17 @@ def _finish(
     mmproj_host_bytes = opts.mmproj_bytes if (knobs is not None and knobs.mmproj_to_host) else 0
     # -nkvo puts the cache and the recurrent state in host RAM for the life of the server, so
     # they are part of the host side every decision below spends.
+    # The same reserved cache at the same n_ctx the feasibility and fitter arms priced, so the
+    # caller's exact size is the one to charge: the product reads a q4_0 cache at one byte per
+    # element, 1.78x its bytes, and that inflation refused plans and kept mmap on hosts with room.
     kv_host_bytes = (
-        cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+        cache_bytes(
+            layout,
+            n_ctx,
+            kv_quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            trust_floor = opts.kv_bytes_at is not None,
+        )
         + layout.recurrent_bytes
         * max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
         if kv_on_host

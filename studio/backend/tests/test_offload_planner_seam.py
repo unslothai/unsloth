@@ -3529,3 +3529,15 @@ def test_the_indexer_cache_is_charged_on_the_architecture_that_builds_one(
         )
         == total - indexer
     )
+
+
+def test_the_windowed_half_reaches_the_planner_as_a_callable_too(monkeypatch):
+    """The scalar is the launched count's; rung 1 needs the same half at the count it leaves."""
+    at = lambda ctx, slots: slots * 300 * MIB  # noqa: E731
+    opts, _ = _captured_opts(monkeypatch, _Stub(), free_mib = 14 * 1024, kv_swa_bytes_at = at)
+    assert opts.kv_swa_bytes_at is at
+
+    plain, _ = _captured_opts(monkeypatch, _Stub(), free_mib = 14 * 1024)
+    assert plain.kv_swa_bytes_at is None
+    stale, _ = _captured_opts(monkeypatch, _Stub(), free_mib = 14 * 1024, kv_swa_bytes_at = 7)
+    assert stale.kv_swa_bytes_at is None, "a snapshot that carries a number is not a callable"

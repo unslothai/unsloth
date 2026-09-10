@@ -22541,6 +22541,21 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                         )
 
+                    # The same half at any context and slot count, so rung 1 re-prices the
+                    # window with the slots instead of reading the launched count's part.
+                    @functools.lru_cache(maxsize = 256)
+                    def _kv_swa_bytes_at(ctx: int, slots: int) -> int:
+                        return self._estimate_kv_cache_parts(
+                            max(256, int(ctx)),
+                            cache_type_kv,
+                            n_parallel = max(1, int(slots)),
+                            swa_full = swa_full,
+                            kv_unified = planned_kv_unified,
+                            n_ubatch = _ubatch_for_slots(max(1, int(slots))),
+                            ctx_checkpoints = 0,
+                            flash_attn = planned_flash_attn,
+                        )[1]
+
                     # The window-bound half of the same measurement kv_cache_bytes sums, which
                     # the planner charges at a different rate and cannot decompose itself.
                     _spill_kv_swa_bytes = (
@@ -22667,6 +22682,7 @@ class LlamaCppBackend:
                         # The floor map without its fixed context: the planner asks this rather than
                         # scaling a measurement it cannot decompose. A callable, never serialised.
                         "kv_bytes_at": _kv_bytes_at if _planner_owns_fit else None,
+                        "kv_swa_bytes_at": _kv_swa_bytes_at if _planner_owns_fit else None,
                         "n_ubatch_by_parallel": _spill_ubatch_by_parallel,
                         "kv_recurrent_bytes_per_slot": int(self._rollback_state_bytes(1)),
                         # Rung 0: the projector, separable from extra_gpu_bytes so the planner
@@ -26896,7 +26912,10 @@ class LlamaCppBackend:
                                 gpu_indices = gpu_indices,
                                 model_bytes = int(model_size or 0),
                                 is_vulkan_backend = is_vulkan_backend,
-                                fully_gpu_offloaded = fully_gpu_offloaded,
+                                # A plan that moved no weight pins every layer on the card
+                                # under -ngl -1 --fit off, the launch WDDM can page silently.
+                                fully_gpu_offloaded = fully_gpu_offloaded
+                                or _spill_keeps_every_layer_on_gpu,
                             ),
                         )
                     except Exception as e:
@@ -28983,6 +29002,11 @@ class LlamaCppBackend:
                 # No _attention_floor: the window-bound layers hold no recurrent state, so
                 # there is nothing in this half for that correction to take out.
                 kv_swa_bytes_floor = max(0, int(inputs.get("kv_swa_bytes") or 0)),
+                kv_swa_bytes_at = (
+                    inputs.get("kv_swa_bytes_at")
+                    if callable(inputs.get("kv_swa_bytes_at"))
+                    else None
+                ),
                 # The same measurement at any context, so the ladder re-prices the cache
                 # instead of scaling the floor. Absent leaves the planner's own rules in place.
                 kv_bytes_at = kv_bytes_at,

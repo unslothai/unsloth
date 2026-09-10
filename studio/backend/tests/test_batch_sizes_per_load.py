@@ -657,9 +657,10 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # eight sites: sizing, embedding clamp, fit-time reduction, spill cache floors,
-    # _spill_ubatch_by_parallel, _kv_bytes_at, planner slot reduction, launch record
-    assert len(calls) == 8, f"expected eight re-derivations, found {len(calls)}"
+    # nine sites: sizing, embedding clamp, fit-time reduction, spill cache floors,
+    # _spill_ubatch_by_parallel, _kv_bytes_at, _kv_swa_bytes_at, planner slot reduction,
+    # launch record
+    assert len(calls) == 9, f"expected nine re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact

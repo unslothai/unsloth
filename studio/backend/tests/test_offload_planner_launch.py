@@ -1009,3 +1009,60 @@ def test_the_snapshot_carries_the_windowed_half_of_the_cache(tmp_path, monkeypat
     # The sum pins the ARGUMENTS: a split priced at another geometry would not add back up.
     assert sum(parts) == inputs["kv_cache_bytes"]
     assert parts[1] == swa
+
+
+def test_the_snapshot_carries_the_windowed_half_as_a_callable(tmp_path, monkeypatch):
+    """A window is stored per stream, so rung 1 shrinks it with the slots; the scalar half is
+    the launched count's and went stale the moment the planner priced a smaller one, in the
+    direction that read most of the smaller cache as fully live and overcharged the fitter."""
+    monkeypatch.setitem(DENSE, "_sliding_window", 1024)
+    monkeypatch.setitem(DENSE, "_sliding_window_pattern", tuple(i % 6 != 5 for i in range(64)))
+    _cmd, backend, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
+    inputs = seen["inputs"]
+    at = inputs["kv_swa_bytes_at"]
+    assert callable(at)
+    # Agrees with the scalar where the two overlap, and moves with the slots where it does not.
+    assert at(inputs["n_ctx"], inputs["n_parallel"]) == inputs["kv_swa_bytes"]
+    one = at(inputs["n_ctx"], 1)
+    assert 0 < one < inputs["kv_swa_bytes"]
+    assert (
+        one
+        == backend._estimate_kv_cache_parts(
+            inputs["n_ctx"],
+            inputs["cache_type_kv"],
+            n_parallel = 1,
+            kv_unified = inputs["kv_unified"],
+            n_ubatch = inputs["n_ubatch"],
+            ctx_checkpoints = 0,
+        )[1]
+    )
+
+    _cmd, _b, off = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"), owns = False)
+    assert off["inputs"]["kv_swa_bytes_at"] is None
+
+
+def test_a_plan_that_moves_no_weight_is_watched_for_sysmem_fallback(tmp_path, monkeypatch):
+    """On Windows CUDA a knob-only plan launches -ngl -1 --fit off with every layer on the
+    card, which is exactly the placement WDDM pages silently, but the watch was keyed on the
+    coarse fit's flag alone and stayed off for it. A plan with -ot spills stays unwatched:
+    slow with VRAM full is what a spill legitimately looks like."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen = []
+
+    def spy(self, **kw):
+        seen.append(bool(kw.get("fully_gpu_offloaded")))
+        return None
+
+    monkeypatch.setattr(LlamaCppBackend, "_windows_sysmem_fallback_watch", spy)
+    caps = {"supports_metrics": True}
+    _launch_with(tmp_path, monkeypatch, Plan(changed = True, n_ctx = 8192, n_parallel = 1), caps = caps)
+    assert seen == [True], seen
+    seen.clear()
+    _launch_with(
+        tmp_path,
+        monkeypatch,
+        Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,)),
+        caps = caps,
+    )
+    assert seen == [False], seen

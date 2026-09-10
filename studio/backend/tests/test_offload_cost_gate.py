@@ -1031,3 +1031,88 @@ def test_the_windowed_split_moves_the_gate_verdict():
     assert accepted.spills_anything, accepted.reason
     assert not declined.spills_anything and declined.declined_by_gate, declined.reason
     assert declined.predicted_fit_request_ms < accepted.predicted_fit_request_ms
+
+
+def test_the_windowed_split_is_repriced_for_the_slots_rung_1_leaves():
+    """The window half was measured at the launched slot count and a window is stored per
+    stream, so at one slot the stale 4-slot part covered the whole of the smaller cache and the
+    fitter's every moved layer was charged as fully live: an overcharge that biased the gate
+    toward a spill the repriced fitter beats."""
+    layout = swa_split_layout()
+    n_ctx, floor_at_one, windowed_at_four = 131072, 2 * GIB, 4 * GIB
+    shape = dict(workload_prompt_tokens = 2048, workload_generated_tokens = 0, n_parallel = 4)
+    args = dict(quantised = False, kv_bytes_floor = floor_at_one, kv_on_host = False, n_seq = 1)
+    # The scalar alone: scaled with the slots, which is what per-stream storage does.
+    scaled = _fit_fallback_placement(
+        layout, gated(kv_swa_bytes_floor = windowed_at_four, **shape), 8 * GIB, n_ctx, **args
+    )
+    measured = _fit_fallback_placement(
+        layout,
+        gated(
+            kv_swa_bytes_floor = windowed_at_four,
+            kv_swa_bytes_at = lambda _c, slots: slots * (windowed_at_four // 4),
+            **shape,
+        ),
+        8 * GIB,
+        n_ctx,
+        **args,
+    )
+    whole = _fit_fallback_placement(layout, gated(**shape), 8 * GIB, n_ctx, **args)
+    assert all(p is not None for p in (scaled, measured, whole))
+    assert whole.kv_host_bytes > 0
+    # One slot's window is a quarter of the four-slot part, and the rest is read over its live
+    # prefix; the stale scalar read all of the smaller cache as live.
+    live = (1 + 1 / 64) / 2
+    assert abs(measured.kv_host_bytes / whole.kv_host_bytes - live) < 0.001
+    assert scaled.kv_host_bytes == measured.kv_host_bytes
+    assert measured.kv_host_bytes < whole.kv_host_bytes
+
+
+def test_the_nkvo_host_side_is_the_cache_size_the_caller_measured():
+    """Same reserved cache, same n_ctx, so the exact size is the one to charge: the product
+    reads a q4_0 cache at one byte per element and that 1.78x refused a spill the host had
+    room for and kept mmap on."""
+    from core.inference.offload_planner import _device_reserve, all_resident_bytes
+
+    layout = dense_layout(kv_gib_at_32k = 6.0)
+    exact = int(layout.kv_bytes(32768, 1) * 0.5625)
+    product = layout.kv_bytes(32768, 1)
+    assert product > exact
+
+    def kv_at(n_ctx: int, slots: int) -> int:
+        return int(layout.kv_bytes(n_ctx, 1) * 0.5625)
+
+    base = dict(
+        host = HostProfile(threads = 6),
+        kv_on_host = True,
+        cache_quantised = True,
+        kv_bytes_at = kv_at,
+        min_penalty_reduction = 0.0,
+    )
+    needed = all_resident_bytes(layout, 32768, kv_on_host = True)
+    card = [needed + _device_reserve(PlanOptions(), 32768) - 2 * GIB]
+    roomy = plan_placement(layout, card, 200 * GIB, 32768, kv_bytes_floor = exact, opts = gated(**base))
+    assert roomy.spills_anything, roomy.reason
+    weights = sum(layout.blocks[i].spillable_bytes for i in roomy.spilled_blocks)
+    without = layout.token_embd_bytes + weights
+    assert roomy.host_bytes == without + exact, (roomy.host_bytes, without, exact, product)
+
+    headroom = PlanOptions().host_ram_headroom_bytes
+    fits = plan_placement(
+        layout,
+        card,
+        headroom + without + exact + MIB,
+        32768,
+        kv_bytes_floor = exact,
+        opts = gated(**base),
+    )
+    assert fits.spilled_blocks == roomy.spilled_blocks and fits.load_mode_none, fits.reason
+    refused = plan_placement(
+        layout,
+        card,
+        headroom + without + exact - MIB,
+        32768,
+        kv_bytes_floor = exact,
+        opts = gated(**base),
+    )
+    assert refused.declined_by_gate and "host RAM" in refused.reason, refused.reason
