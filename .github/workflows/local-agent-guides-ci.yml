@@ -47,11 +47,8 @@ on:
   push:
     branches: [main]
     paths:
-      # The CLI modules and command files, not unsloth_cli/**: `unsloth run` imports
-      # _studio_deps, _studio_runtime_gate, _studio_stage, _inference and _password_prompt
-      # at studio.py:31-33, __init__.py imports every command module before registering
-      # `run`, and the agent recipes ship the *.ts / *.md files at the package root. Only
-      # unsloth_cli/tests/** is left out; the cells never run it.
+      # The import closure of `unsloth run` (studio.py:31-33, __init__.py:70-77) plus the
+      # recipe files at the package root; only unsloth_cli/tests/** is left out.
       - 'unsloth_cli/*'
       - 'unsloth_cli/commands/*.py'
       # inference.py declares every endpoint the preflight curls (/v1/models,
