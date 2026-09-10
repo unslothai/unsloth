@@ -163,7 +163,7 @@ jobs:
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -605,7 +605,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
+        uses: trufflesecurity/trufflehog@363923b901c911a9164f50b6c423f47c15372b1c  # v3.97.4
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -846,7 +846,7 @@ jobs:
       # Per-job allowlist: pip-scan-packages only fetches PyPI archives
       # via scan_packages.py + pip download. No npm or cargo traffic.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -1058,7 +1058,7 @@ jobs:
       # registry.npmjs.org. GitHub endpoints retained for checkout +
       # setup-python action machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -1144,7 +1144,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
           disable-sudo: true
