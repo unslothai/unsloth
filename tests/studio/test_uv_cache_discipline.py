@@ -205,3 +205,208 @@ def test_the_action_is_actually_used() -> None:
         if "install-unsloth-local" in p.read_text(encoding = "utf-8")
     ]
     assert len(users) >= 5, f"only {len(users)} workflows use the action: {users}"
+
+
+# The Windows jobs run install.ps1 from a hand-written pwsh step and never come through
+# install-unsloth-local, so the restore and the save are their own composite actions,
+# which that composite delegates to and the Windows jobs call directly. What follows
+# holds that shape: one key, every warm installer job restoring it, every restore paired
+# with a save that reads its outputs, and the cold lanes untouched.
+
+ACTIONS = REPO_ROOT / ".github" / "actions"
+UV_RESTORE = ACTIONS / "uv-cache-restore" / "action.yml"
+UV_SAVE = ACTIONS / "uv-cache-save" / "action.yml"
+
+# Cold at JOB level, inside a workflow whose other jobs legitimately use the cache; the
+# same list tests/studio/test_frontend_dist_cache.py keeps for the dist.
+COLD_INSTALL_JOBS = (("studio-windows-inference-smoke.yml", "no-vs-cpu"),)
+
+# An INVOCATION, not a mention: mlx-ci.yml explains in a comment why it does NOT run
+# `install.sh --local`, and a bare substring match called that an uncached install.
+_INSTALLER = re.compile(r"(?m)^\s*[^#\n]*?(?:^|[\s/&'\"])install\.(?:ps1|sh) --local")
+_HELPER = re.compile(r"\.github/scripts/([A-Za-z0-9_.-]+\.sh)")
+
+
+def _runs_installer(step: dict) -> bool:
+    """Whether ``step`` runs the installer itself or through a helper under .github/scripts.
+
+    studiobench-ui-parity installs each side through parity-install-side.sh, so the
+    invocation is one file away from the workflow; followed one level, like the smoke
+    trigger guard does for its helpers.
+    """
+    run = str(step.get("run", ""))
+    if _INSTALLER.search(run):
+        return True
+    for helper in _HELPER.findall(run):
+        path = REPO_ROOT / ".github" / "scripts" / helper
+        if path.is_file() and _INSTALLER.search(path.read_text(encoding = "utf-8", errors = "replace")):
+            return True
+    return False
+
+
+def _jobs():
+    for f in sorted(WORKFLOWS.glob("*.yml")):
+        doc = yaml.safe_load(f.read_text(encoding = "utf-8"))
+        if isinstance(doc, dict) and isinstance(doc.get("jobs"), dict):
+            for jid, job in doc["jobs"].items():
+                if isinstance(job, dict):
+                    yield f.name, jid, job
+
+
+def _produces_on_main(name: str) -> bool:
+    """Same rule as the dist guard: `push` to main or `schedule`, never `workflow_dispatch`."""
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    on = doc.get("on", doc.get(True)) or {}
+    if isinstance(on, str):
+        on = {on: None}
+    elif isinstance(on, list):
+        on = dict.fromkeys(on)
+    if "schedule" in on:
+        return True
+    if "push" not in on:
+        return False
+    push = on.get("push")
+    branches = push.get("branches") if isinstance(push, dict) else None
+    return branches is None or "main" in branches
+
+
+def test_the_uv_cache_key_has_exactly_one_definition() -> None:
+    """A second copy agrees today and drifts silently, with the cache still hitting."""
+    definers = []
+    for path in sorted(list(ACTIONS.rglob("action.yml")) + list(WORKFLOWS.glob("*.yml"))):
+        if re.search(r"key:\s*uv-\$\{\{", path.read_text(encoding = "utf-8")):
+            definers.append(str(path.relative_to(REPO_ROOT)))
+    assert definers == [
+        ".github/actions/uv-cache-restore/action.yml"
+    ], f"the uv cache key is defined in {definers}; it must have exactly one definition"
+
+
+def test_install_unsloth_local_delegates_the_uv_cache() -> None:
+    uses = [str(s.get("uses", "")) for s in _own_steps()]
+    assert "./.github/actions/uv-cache-restore" in uses, uses
+    assert "./.github/actions/uv-cache-save" in uses, uses
+    assert not any("actions/cache" in u for u in uses), (
+        "install-unsloth-local carries its own cache step again; the key must stay in "
+        "uv-cache-restore"
+    )
+
+
+def test_the_uv_actions_nest_nothing() -> None:
+    """`uses: ./...` inside a composite resolves from GITHUB_WORKSPACE and takes no expressions.
+
+    install-unsloth-local nests these two and is root-checkout-only for it. The leaf
+    actions must stay leaves, so a nested-checkout job can still call them directly.
+    """
+    for action in (UV_RESTORE, UV_SAVE):
+        nested = [
+            str(s.get("uses", ""))
+            for s in _own_steps(action)
+            if str(s.get("uses", "")).startswith("./")
+        ]
+        assert not nested, f"{action.relative_to(REPO_ROOT)} nests {nested}"
+
+
+def test_every_warm_installer_job_restores_the_uv_cache() -> None:
+    """A job that runs the installer without the cache pays the full download every run.
+
+    The cold lanes are the deliberate exception, named in COLD_INSTALL_WORKFLOWS and
+    COLD_INSTALL_JOBS, and a new installer call site has to either restore the cache or
+    be added to one of those lists in a diff someone reads.
+    """
+    offenders = []
+    for name, jid, job in _jobs():
+        if name in COLD_INSTALL_WORKFLOWS or (name, jid) in COLD_INSTALL_JOBS:
+            continue
+        steps = job.get("steps") or []
+        runs_installer = any(_runs_installer(s) for s in steps)
+        if not runs_installer:
+            continue
+        restores = any(
+            "uv-cache-restore" in str(s.get("uses", ""))
+            or "install-unsloth-local" in str(s.get("uses", ""))
+            for s in steps
+        )
+        if not restores:
+            offenders.append(f"{name}:{jid}")
+    assert not offenders, (
+        "these jobs run the installer with no uv download cache, so every run downloads "
+        "every wheel again:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_every_uv_restore_is_paired_with_a_save_wired_to_it() -> None:
+    """A restore with no save fills nothing; a save reading the wrong id saves nothing.
+
+    The upload half is derived from the workflow's triggers rather than allowlisted, as
+    for the dist: a consumer-only lane (no `push`, no `schedule`) passes `save: 'false'`
+    and a producer must not.
+    """
+    offenders = []
+    for name, jid, job in _jobs():
+        steps = job.get("steps") or []
+        restore = next((s for s in steps if "uv-cache-restore" in str(s.get("uses", ""))), None)
+        save = next((s for s in steps if "uv-cache-save" in str(s.get("uses", ""))), None)
+        if restore is None and save is None:
+            continue
+        if restore is None or save is None:
+            offenders.append(f"{name}:{jid}: restore={restore is not None} save={save is not None}")
+            continue
+        ident = restore.get("id")
+        if not ident:
+            offenders.append(f"{name}:{jid}: the restore step has no id")
+            continue
+        with_ = save.get("with") or {}
+        for field in ("cache-hit", "key"):
+            if f"steps.{ident}.outputs.{field}" not in str(with_.get(field, "")):
+                offenders.append(f"{name}:{jid}: save does not take {field} from steps.{ident}")
+        installs = [i for i, s in enumerate(steps) if _runs_installer(s)]
+        if not installs:
+            offenders.append(f"{name}:{jid}: restores the uv cache but never runs an installer")
+            continue
+        if steps.index(restore) > min(installs):
+            offenders.append(f"{name}:{jid}: the restore runs after the install")
+        if steps.index(save) < max(installs):
+            offenders.append(f"{name}:{jid}: the save runs before the install")
+        uploads = str(with_.get("save", "true")) != "false"
+        if uploads and not _produces_on_main(name):
+            offenders.append(
+                f"{name}:{jid}: saves, but {name} never runs on main; pass save: 'false'"
+            )
+        if not uploads and _produces_on_main(name):
+            offenders.append(f"{name}:{jid}: passes save: 'false', but {name} runs on main")
+    assert not offenders, "\n  ".join(["broken uv cache wiring:"] + offenders)
+
+
+@pytest.mark.parametrize("name", COLD_INSTALL_WORKFLOWS)
+def test_cold_install_lanes_never_adopt_the_uv_actions(name: str) -> None:
+    path = WORKFLOWS / name
+    if not path.exists():
+        pytest.skip(f"{name} no longer exists")
+    assert "uv-cache-" not in path.read_text(
+        encoding = "utf-8"
+    ), f"{name} restores a warm uv cache; a cached cold-install test proves nothing"
+
+
+@pytest.mark.parametrize("name,jid", COLD_INSTALL_JOBS)
+def test_cold_install_jobs_never_adopt_the_uv_actions(name: str, jid: str) -> None:
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    job = (doc.get("jobs") or {}).get(jid)
+    assert job is not None, f"{name} no longer has job {jid}; update COLD_INSTALL_JOBS"
+    offenders = [
+        str(s.get("uses", ""))
+        for s in job.get("steps") or []
+        if "uv-cache-" in str(s.get("uses", ""))
+    ]
+    assert not offenders, f"{name}:{jid} is a deliberate cold-install lane: {offenders}"
+
+
+def test_the_uv_actions_are_actually_used_directly() -> None:
+    """The Windows jobs are the reason the pair exists; if none calls it, it is dead code."""
+    direct = [
+        p.name
+        for p in WORKFLOWS.glob("*.yml")
+        if "uv-cache-restore" in p.read_text(encoding = "utf-8")
+    ]
+    assert (
+        len(direct) >= 4
+    ), f"only {len(direct)} workflows call uv-cache-restore directly: {direct}"

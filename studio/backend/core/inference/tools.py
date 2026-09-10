@@ -15151,7 +15151,10 @@ def _appended_by_the_loop(text: str) -> float:
     except Exception:  # noqa: BLE001 -- an unpriced nudge, not a failed tool call
         logger.debug("result budget: tool error nudge unavailable", exc_info = True)
         return 0.0
-    if not text.startswith(TOOL_ERROR_PREFIXES):
+    # `lstrip` because `is_tool_error` does: a result whose first byte is a newline still
+    # gets the nudge, so measuring the unstripped text reserves nothing for one that will
+    # certainly be appended.
+    if not text.lstrip().startswith(TOOL_ERROR_PREFIXES):
         return 0.0
     return _text_token_cost(TOOL_ERROR_NUDGE, _window_context_tokens())
 
@@ -15162,6 +15165,7 @@ def _truncate(
     workdir: str | None = None,
     scope: "str | None" = "",
     hint: str = "",
+    reserve_tokens: float = 0.0,
 ) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant
     # before any model is loaded, which is exactly when the window is still unknown.
@@ -15175,7 +15179,11 @@ def _truncate(
     # the prompt with the nudge past the end of it. Charged only to the results that will
     # actually carry one, since a reserve taken from every result spends room the thread
     # has.
-    cap, cost = limit, _appended_by_the_loop(text)
+    # `reserve_tokens` is whatever the CALLER will put after this result, priced the same
+    # way as the loop's own nudge. Without it a caller that concatenates two fitted
+    # strings spends the room twice: each `_truncate` reads the same `_request_result_room`
+    # and neither knows about the other, so the message the model is handed is the sum.
+    cap, cost = limit, _appended_by_the_loop(text) + reserve_tokens
     if hint:
         # Priced in tokens, not characters, and taken off the budget before it is converted
         # (see `_dense_char_limit`). A failing absolute path is dense: subtracting its
@@ -15191,7 +15199,7 @@ def _truncate(
             # Nothing to spend on advice: at zero room the stub IS the message, and when
             # paying for it would cut the output in half the output is worth more than the
             # advice about it. Nothing is dropped while the result fits anyway.
-            limit, hint, cost = plain, "", _appended_by_the_loop(text)
+            limit, hint, cost = plain, "", _appended_by_the_loop(text) + reserve_tokens
     else:
         limit = _dense_char_limit(text, limit, cost)
     # Mode-neutral notice: this result serves both the streaming UI and
@@ -16576,6 +16584,34 @@ def _created_file_sentinels(
     return out
 
 
+def _timed_out_result(
+    output: str | None, timeout: int, workdir: str | None, scope: "str | None"
+) -> str:
+    """Captured output, then the timeout status line.
+
+    Output leads: a finished card shows the live stream when the result is a prefix of it
+    (`preferFullToolOutput`), so a leading status would show the output twice.
+    """
+    ended = _truncate(f"Execution timed out after {timeout} seconds.")
+    partial = _defuse_sentinels(output or "")
+    if not partial.strip():
+        return ended
+    # Both cuts price against the same room, so the head reserves the status line's share.
+    ctx = _window_context_tokens()
+    head = _truncate(
+        partial,
+        workdir = workdir,
+        scope = scope,
+        reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
+    )
+    result = f"{head}\n{ended}"
+    # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
+    room = _request_result_room()
+    if room is not None and _text_token_cost(result, ctx) + _appended_by_the_loop(result) > room:
+        return ended
+    return result
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -16691,7 +16727,7 @@ def _python_exec(
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16844,7 +16880,7 @@ def _bash_exec(
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
