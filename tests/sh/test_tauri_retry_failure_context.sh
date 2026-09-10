@@ -377,13 +377,37 @@ if ! grep -q '\$env:UNSLOTH_TAURI_MODE = if (\$TauriMode)' "$INSTALL_PS1"; then
     exit 1
 fi
 
-_ps_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_PS1" || true)
-if [ "$_ps_setup_exit_count" -ne 1 ] ||
-    ! grep -q '^[[:space:]]*exit \$Code$' "$SETUP_PS1"; then
-    echo "  FAIL: Windows setup has explicit exits outside Exit-SetupFailure"
-    exit 1
+# Counted from the parse tree, not by grepping lines. setup.ps1 builds a probe
+# script inside a here-string and that child legitimately exits on its own, so a
+# line-wise count reads its `exit 1` as this file's own and the guard fails on a
+# correct tree. Filtering here-strings out by regex first does not rescue it:
+# line 909 ends with @' inside a URL-redaction replacement, so a range filter
+# runs from there to the real terminator and silently swallows 785 lines of real
+# code, which would hide exactly the stray exit this is looking for.
+if command -v pwsh >/dev/null 2>&1; then
+    _ps_setup_exits=$(SETUP_PS1="$SETUP_PS1" pwsh -NoProfile -Command '
+        $tokens = $null; $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path $env:SETUP_PS1).Path, [ref]$tokens, [ref]$errors)
+        if ($errors.Count) { Write-Output "PARSE_ERROR"; exit 0 }
+        $ast.FindAll({
+            $args[0] -is [System.Management.Automation.Language.ExitStatementAst]
+        }, $true) | ForEach-Object { $_.Extent.Text }' 2>/dev/null)
+    if [ "$_ps_setup_exits" = "PARSE_ERROR" ]; then
+        echo "  FAIL: Windows setup no longer parses as PowerShell"
+        exit 1
+    fi
+    _ps_setup_exit_count=$(printf '%s\n' "$_ps_setup_exits" | grep -c . || true)
+    if [ "$_ps_setup_exit_count" -ne 1 ] ||
+        [ "$(printf '%s' "$_ps_setup_exits" | tr -d '[:space:]')" != 'exit$Code' ]; then
+        echo "  FAIL: Windows setup has explicit exits outside Exit-SetupFailure"
+        printf '        found: %s\n' "$_ps_setup_exits"
+        exit 1
+    fi
+    echo "  PASS: Windows setup routes explicit exits through Exit-SetupFailure"
+else
+    echo "  SKIP: pwsh unavailable, cannot parse setup.ps1 for stray exits"
 fi
-echo "  PASS: Windows setup routes explicit exits through Exit-SetupFailure"
 
 _ps_command_block=$(sed -n \
     '/function Invoke-InstallCommand {/,/function New-StudioShortcuts {/p' \
