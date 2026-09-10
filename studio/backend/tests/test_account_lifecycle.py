@@ -187,7 +187,7 @@ def test_create_code_hash_expiry_duplicate_and_public_fields(auth_env):
     assert before + timedelta(minutes = 60) <= expiry <= after + timedelta(minutes = 60)
     assert policy.login_mode() == "multi"
     record = next(row for row in db_rows("auth_user") if row["username"] == "alice")
-    assert record["setup_code_hash"] == storage._hash_token(body["setup_code"])
+    assert record["setup_code_hash"] == storage._hash_setup_code(body["setup_code"])
     assert body["setup_code"] not in str(record)
     assert record["must_change_password"] == 1
     listing = client.get("/api/accounts", headers = headers())

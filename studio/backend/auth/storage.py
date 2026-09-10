@@ -698,6 +698,8 @@ def issue_account_setup_code(
         username = validate_account_username(username)
     code = secrets.token_urlsafe(32)
     salt, pwd_hash = hash_password(code)
+    # Before the transaction: a first-run salt creation opens its own connection.
+    code_hash = _hash_setup_code(code)
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(minutes = 60)).isoformat()
     with account_mutation():
@@ -724,7 +726,7 @@ def issue_account_setup_code(
                             salt,
                             pwd_hash,
                             secrets.token_urlsafe(64),
-                            _hash_token(code),
+                            code_hash,
                             expires_at,
                         ),
                     )
@@ -735,7 +737,7 @@ def issue_account_setup_code(
                         """UPDATE auth_user SET account_password_salt = ?, account_password_hash = ?,
                            must_change_password = 1, setup_code_hash = ?, setup_code_expires_at = ?
                            WHERE account_id = ?""",
-                        (salt, pwd_hash, _hash_token(code), expires_at, account_id),
+                        (salt, pwd_hash, code_hash, expires_at, account_id),
                     )
                 account = _public_account(_managed_account(conn, account_id))
         finally:
@@ -767,10 +769,11 @@ def authenticate_account_login(
         if row is None or not row["is_active"]:
             return miss()
         if row["must_change_password"]:
+            # The setup-code hash is the PBKDF2 round a miss would otherwise spend.
             if not row["setup_code_hash"] or not hmac.compare_digest(
-                row["setup_code_hash"], _hash_token(password)
+                row["setup_code_hash"], _hash_setup_code(password)
             ):
-                return miss()
+                return None
             # Compare-and-swap on expiry, activity and generation: no code is spent twice.
             with conn:
                 cursor = conn.execute(
@@ -785,7 +788,7 @@ def authenticate_account_login(
                     ),
                 )
                 if cursor.rowcount != 1:
-                    return miss()
+                    return None
         elif not verify_password(password, row["password_salt"], row["password_hash"]):
             return None
         return (
@@ -1079,6 +1082,11 @@ def _pbkdf2_api_key(raw_key: str) -> str:
 
 def _pbkdf2_desktop_secret(raw_secret: str) -> str:
     return _pbkdf2_api_key(raw_secret)
+
+
+def _hash_setup_code(code: str) -> str:
+    """A setup code is typed where a password goes, so it is stored like an API key."""
+    return _pbkdf2_api_key(code)
 
 
 # Keyed by a salted HMAC, not the key; revocation/expiry are still enforced by the SQLite read, and
