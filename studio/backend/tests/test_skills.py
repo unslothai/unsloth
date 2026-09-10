@@ -462,6 +462,7 @@ def test_skill_tool_selection_honors_explicit_allowlist(isolated_skills, monkeyp
 
     home, _ = isolated_skills
     _write_skill(home, "agents", "guided")
+    _write_skill(home, "agents", "skill-creator")
     roots = (
         ("agents", home / ".agents" / "skills"),
         ("claude", home / ".claude" / "skills"),
@@ -505,6 +506,7 @@ def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypa
 
     home, _ = isolated_skills
     _write_skill(home, "agents", "guided", description = "Guide this task")
+    _write_skill(home, "agents", "skill-creator")
     roots = (
         ("agents", home / ".agents" / "skills"),
         ("claude", home / ".claude" / "skills"),
@@ -539,6 +541,18 @@ def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypa
     assert "- guided: Guide this task" in narrow
     assert inference_routes._TOOL_BASE_NUDGE not in narrow
     assert "web_search" not in narrow
+
+    skills.set_skill_enabled("skill-creator", False, home = home)
+    selected = asyncio.run(
+        inference_routes._select_request_tools(payload, tools_on = True, mcp_allowed = False)
+    )
+    assert [tool["function"]["name"] for tool in selected] == ["read_skill"]
+    assert "create_skill" not in inference_routes._build_tool_action_nudge(
+        tools = selected, model_name = "test"
+    )
+    with pytest.raises(skills.SkillError, match = "disabled"):
+        skills.read_skill_resource("skill-creator", home = home)
+
 
     skills.set_skill_enabled("guided", False, home = home)
     selected = asyncio.run(

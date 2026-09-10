@@ -5146,10 +5146,13 @@ async def _select_request_tools(
         for tool in tools
         if tool["function"]["name"] not in {"read_skill", "create_skill"}
     ]
-    if tools_on and _enabled_agent_skills():
+    enabled_skills = _enabled_agent_skills() if tools_on else []
+    if enabled_skills:
         from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
 
-        skill_tools = (READ_SKILL_TOOL, CREATE_SKILL_TOOL)
+        skill_tools = (READ_SKILL_TOOL,)
+        if any(skill["name"] == "skill-creator" for skill in enabled_skills):
+            skill_tools += (CREATE_SKILL_TOOL,)
         if payload.enabled_tools is not None:
             skill_tools = tuple(
                 tool for tool in skill_tools if tool["function"]["name"] in payload.enabled_tools
