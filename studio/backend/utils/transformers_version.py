@@ -2588,7 +2588,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
     damaged. One process at a time does this; another that finds the lock held waits
     for it, then finds the package there.
     """
-    if _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES:
+    # UV_OFFLINE in every spelling uv accepts (_runtime_repair_is_offline): under it the
+    # install could only miss, and the miss would be remembered as a failure for hours.
+    if _env_offline() or _runtime_repair_is_offline():
         return
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):

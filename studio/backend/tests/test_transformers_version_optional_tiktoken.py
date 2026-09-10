@@ -337,6 +337,13 @@ def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, m
     monkeypatch.setenv("UV_OFFLINE", "1")
     tv._top_up_optional_packages(str(root), packages)
     assert installed == []
+    # Every spelling uv accepts, or an offline miss would be remembered as a failure.
+    for spelling in ("t", "y", "on", "TRUE"):
+        monkeypatch.setenv("UV_OFFLINE", spelling)
+        tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+        tv._top_up_optional_packages(str(root), packages)
+        assert installed == [], spelling
+    assert not (root / tv._OPTIONAL_TOP_UP_FAILED).exists()
     monkeypatch.delenv("UV_OFFLINE")
     # Another process holds the sidecar's top-up lock: this one waits for it, up to the
     # bound, and leaves the package to the holder when the bound passes.
