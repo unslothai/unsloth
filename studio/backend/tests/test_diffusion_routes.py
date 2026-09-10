@@ -2409,3 +2409,66 @@ def test_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(cl
     resp = client.post("/api/inference/images/download-plan", json = {**body, "gpu_ids": [7]})
     assert resp.status_code == 400
     assert "visible to this process" in resp.json()["detail"]
+
+
+def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
+    """Pipeline picks may request a supported transformer precision."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8"
+    )
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+    )
+
+
+def test_a_single_file_pick_still_cannot_pin_a_precision(monkeypatch):
+    """Single-file picks retain their stored precision."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "ltx-2.3"),
+            model_kind = "single_file",
+            transformer_quant = "fp8",
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "single_file" in str(excinfo.value)
+    assert "GGUF and pipeline" in str(excinfo.value)
+
+
+def test_a_pipeline_pick_is_still_refused_on_a_device_that_cannot_quantise(monkeypatch):
+    """Pipeline precision requests still require a capable device."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "z-image"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)

@@ -438,6 +438,130 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+# GGUF substitutes dense base weights; pipeline rewrites its loaded weights in place. Single-file
+# artifacts keep their stored precision. Pipeline eligibility is checked later by ``dense_quant_blocker``.
+DENSE_QUANT_KINDS: tuple[str, ...] = ("gguf", "pipeline")
+
+
+def dense_quant_supported_kind(model_kind: Optional[str]) -> bool:
+    """Whether ``model_kind`` can reach the dense transformer-quant path at all."""
+    return (model_kind or "").strip().lower() in DENSE_QUANT_KINDS
+
+
+def dense_quant_unsupported_kind_reason(model_kind: Optional[str]) -> str:
+    """Explain why a load kind cannot use dense transformer quantisation."""
+    return (
+        f"the dense transformer-quant path applies to GGUF and pipeline picks, and this is a "
+        f"'{model_kind}' load, which runs the precision its checkpoint carries"
+    )
+
+
+# Both Ideogram branches must use the same precision.
+DENOISER_ATTRS: tuple[str, ...] = ("transformer", "unconditional_transformer")
+
+# Some dense DiTs retain norms or embedders in fp32. Other parameter dtypes are not dense sources.
+_DENSE_PARAM_DTYPE_NAMES = ("bfloat16", "float32")
+
+
+class DenoiserView:
+    """Expose ``pipe.<attr>`` as ``pipe.transformer`` for the quantisation helpers."""
+
+    def __init__(self, pipe: Any, attr: str) -> None:
+        object.__setattr__(self, "_pipe", pipe)
+        object.__setattr__(self, "_attr", attr)
+
+    @property
+    def transformer(self) -> Any:
+        return getattr(object.__getattribute__(self, "_pipe"), object.__getattribute__(self, "_attr"))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_pipe"), name)
+
+
+def denoiser_modules(pipe: Any) -> tuple[tuple[str, Any], ...]:
+    """The ``(attribute, module)`` denoisers present on ``pipe``, in conversion order."""
+    found = []
+    for attr in DENOISER_ATTRS:
+        module = getattr(pipe, attr, None)
+        if module is not None:
+            found.append((attr, module))
+    return tuple(found)
+
+
+# Records a quantised source that a loader widened to a dense dtype.
+SOURCE_PRECISION_ATTR = "_unsloth_source_precision"
+
+
+def mark_source_precision(module: Any, precision: str) -> Any:
+    """Record the precision from which a loader dequantised ``module``."""
+    try:
+        setattr(module, SOURCE_PRECISION_ATTR, precision)
+    except Exception:  # noqa: BLE001 -- a marker must never fail the load it describes
+        pass
+    return module
+
+
+def _module_quantised_marker(module: Any) -> Optional[str]:
+    """Explain why ``module`` is not a dense bf16 source, or return None."""
+    if getattr(module, "_unsloth_runtime_quant", None):
+        return "it is already quantised by this loader"
+    source = getattr(module, SOURCE_PRECISION_ATTR, None)
+    if source:
+        return (
+            f"its published weights are {source} and were widened to bf16 on load, so quantising "
+            "them again would compound that loss"
+        )
+    for flag, what in (("is_loaded_in_4bit", "4-bit"), ("is_loaded_in_8bit", "8-bit")):
+        if getattr(module, flag, False):
+            return f"it was loaded {what} (bitsandbytes)"
+    config = getattr(module, "config", None)
+    if getattr(config, "quantization_config", None) is not None:
+        return "its checkpoint declares a quantization_config"
+    try:
+        for param in module.parameters(recurse = True):
+            name = str(getattr(param, "dtype", "")).rsplit(".", 1)[-1]
+            if name not in _DENSE_PARAM_DTYPE_NAMES:
+                return f"its weights are stored as {name}, not dense bfloat16"
+    except Exception:  # noqa: BLE001 -- an unwalkable module is not evidence of anything
+        return None
+    return None
+
+
+def dense_quant_blocker(pipe: Any) -> Optional[str]:
+    """Explain why a pipeline cannot be quantised in place, or return None."""
+    denoisers = denoiser_modules(pipe)
+    if not denoisers:
+        return (
+            "this pipeline has no transformer to quantise (its denoiser is a UNet, which the "
+            "dense torchao schemes do not cover)"
+        )
+    for attr, module in denoisers:
+        marker = _module_quantised_marker(module)
+        if marker is not None:
+            where = "its transformer" if attr == "transformer" else f"its {attr}"
+            return f"{where} is not a dense bf16 source: {marker}"
+    return None
+
+
+def transformer_is_quantised(module: Any) -> bool:
+    """Whether any Linear weight has been replaced by a torchao tensor subclass."""
+    try:
+        import torch
+
+        for sub in module.modules():
+            if not isinstance(sub, torch.nn.Linear):
+                continue
+            weight = getattr(sub, "weight", None)
+            data = getattr(weight, "data", None)
+            if data is not None and type(data) is not torch.Tensor:
+                return True
+            if weight is not None and type(weight) not in (torch.nn.Parameter, torch.Tensor):
+                return True
+    except Exception:  # noqa: BLE001 -- a probe must never replace the failure it is describing
+        return False
+    return False
+
+
 def dense_transformer_supported(target: Any) -> bool:
     """Whether the dense-source quant path is usable for ``target``: a CUDA device with bf16
     dtype (the only config any torchao dynamic scheme accelerates). Cheap loader pre-check."""
@@ -511,6 +635,16 @@ def select_transformer_quant_scheme(
                     return scheme
             return None
     return None
+
+
+def dense_quant_host_capable(target: Any) -> bool:
+    """Whether hardware could run an ``auto`` scheme, without the allocating smoke probe."""
+    if not dense_transformer_supported(target):
+        return False
+    cap = _capability()
+    if cap is None:
+        return False
+    return any(cap >= floor for floor, _schemes in _AUTO_LADDER)
 
 
 def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[str, ...]:

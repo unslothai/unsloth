@@ -22,6 +22,8 @@ from core.inference.diffusion_transformer_quant import (
     TQ_INT8,
     TQ_MXFP8,
     TQ_NVFP4,
+    dense_quant_supported_kind,
+    dense_quant_unsupported_kind_reason,
     dense_transformer_supported,
     make_filter_fn,
     normalize_transformer_quant,
@@ -1598,3 +1600,140 @@ def test_real_torchao_configs_carry_set_inductor_config_false():
         assert cfg.set_inductor_config is False, scheme
     if ic is not None:
         assert getattr(ic, "coordinate_descent_tuning", None) == before
+
+
+# Load-kind eligibility.
+
+
+def test_the_dense_quant_kinds_are_gguf_and_pipeline():
+    """GGUF and pipeline loads can reach dense quantisation; single files cannot."""
+    assert tq.DENSE_QUANT_KINDS == ("gguf", "pipeline")
+    assert dense_quant_supported_kind("gguf") is True
+    assert dense_quant_supported_kind("pipeline") is True
+    assert dense_quant_supported_kind("single_file") is False
+    assert dense_quant_supported_kind(" PIPELINE ") is True
+    assert dense_quant_supported_kind(None) is False
+    assert dense_quant_supported_kind("") is False
+
+
+def test_the_unsupported_kind_reason_names_the_kind_and_the_two_that_work():
+    """The refusal identifies both the rejected kind and supported alternatives."""
+    reason = dense_quant_unsupported_kind_reason("single_file")
+    assert "single_file" in reason
+    assert "GGUF and pipeline" in reason
+    assert "the precision its checkpoint carries" in reason
+
+
+# Built-pipeline eligibility.
+
+
+class _Denoiser:
+    """A module as the gate reads one: parameters that report a dtype."""
+
+    def __init__(self, dtype = "torch.bfloat16", **attrs) -> None:
+        self._params = [types.SimpleNamespace(dtype = dtype)]
+        for key, value in attrs.items():
+            setattr(self, key, value)
+
+    def parameters(self, recurse = True):
+        return iter(self._params)
+
+
+def test_a_dense_bf16_pipeline_is_the_one_shape_that_passes():
+    pipe = types.SimpleNamespace(transformer = _Denoiser())
+    assert tq.dense_quant_blocker(pipe) is None
+    assert [attr for attr, _m in tq.denoiser_modules(pipe)] == ["transformer"]
+
+
+def test_a_unet_pipeline_is_blocked_by_having_no_transformer():
+    """UNet pipelines are blocked because they expose no transformer."""
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(unet = _Denoiser()))
+    assert blocker is not None and "UNet" in blocker
+
+
+@pytest.mark.parametrize(
+    "dtype", ["torch.uint8", "torch.float8_e4m3fn", "torch.float16", "torch.int8"]
+)
+def test_a_pre_quantised_pipeline_is_blocked_by_its_parameter_dtypes(dtype):
+    """Non-dense parameter dtypes block repeated quantisation."""
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Denoiser(dtype)))
+    assert blocker is not None and dtype.split(".")[-1] in blocker
+
+
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ({"_unsloth_runtime_quant": "int8"}, "already quantised"),
+        ({"is_loaded_in_4bit": True}, "4-bit"),
+        ({"is_loaded_in_8bit": True}, "8-bit"),
+        ({"config": types.SimpleNamespace(quantization_config = object())}, "quantization_config"),
+    ],
+)
+def test_a_declared_quantisation_blocks_it_too(attrs, expected):
+    """Explicit quantisation markers block repeated quantisation."""
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Denoiser(**attrs)))
+    assert blocker is not None and expected in blocker
+
+
+def test_the_second_denoiser_is_enumerated_and_judged():
+    """Every denoiser in a multi-branch pipeline is checked."""
+    pipe = types.SimpleNamespace(
+        transformer = _Denoiser(), unconditional_transformer = _Denoiser("torch.float8_e4m3fn")
+    )
+    assert [attr for attr, _m in tq.denoiser_modules(pipe)] == [
+        "transformer",
+        "unconditional_transformer",
+    ]
+    blocker = tq.dense_quant_blocker(pipe)
+    assert blocker is not None and "unconditional_transformer" in blocker
+
+
+def test_the_denoiser_view_presents_an_arbitrary_attribute_as_the_transformer():
+    """Denoiser views expose alternate branches through ``transformer``."""
+    second = _Denoiser()
+    pipe = types.SimpleNamespace(transformer = _Denoiser(), unconditional_transformer = second, vae = "v")
+    view = tq.DenoiserView(pipe, "unconditional_transformer")
+    assert view.transformer is second
+    assert view.vae == "v"  # everything else reads through
+
+
+def test_a_pipeline_that_cannot_be_walked_is_not_called_quantised():
+    """An inspection failure is not evidence of prior quantisation."""
+    class _Unwalkable:
+        def parameters(self, recurse = True):
+            raise RuntimeError("no")
+
+    assert tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Unwalkable())) is None
+
+
+def test_a_dequantised_source_blocks_the_quant_even_though_its_tensors_are_bf16():
+    """A widened quantised source remains ineligible despite its bf16 tensors."""
+    widened = _Denoiser()  # bf16 tensors, exactly as the loader leaves them
+    assert tq.dense_quant_blocker(types.SimpleNamespace(transformer = widened)) is None
+    tq.mark_source_precision(widened, "fp8")
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = widened))
+    assert blocker is not None
+    assert "fp8" in blocker and "widened to bf16" in blocker
+
+
+def test_the_source_marker_is_best_effort_and_returns_the_module():
+    """Source-precision markers are chainable and best effort."""
+    module = _Denoiser()
+    assert tq.mark_source_precision(module, "fp8") is module
+
+    class _Frozen:
+        __slots__ = ()
+
+    frozen = _Frozen()
+    assert tq.mark_source_precision(frozen, "fp8") is frozen
+    assert getattr(frozen, tq.SOURCE_PRECISION_ATTR, None) is None
+
+
+def test_the_ideogram_fp8_loader_stamps_what_it_widened():
+    """The Ideogram FP8 loader records its widened source precision."""
+    import pathlib
+
+    import core.inference.diffusion_ideogram4 as ideo
+
+    source = pathlib.Path(ideo.__file__).read_text(encoding = "utf-8")
+    assert "mark_source_precision(model, \"fp8\")" in source

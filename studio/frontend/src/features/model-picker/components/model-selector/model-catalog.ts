@@ -10,9 +10,11 @@ import {
   classifyGgufFit as classifyGgufFitForDevice,
 } from "../../../../lib/gguf-fit.ts";
 import {
+  DENSE_QUANT_PRECISION_CHIP,
   type HostClass,
   curatedArtifactIsOfferable,
   h3PerfSuffix,
+  hostRunsDenseQuant,
 } from "./host-artifact-policy.ts";
 import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
@@ -27,8 +29,10 @@ export interface ModelArtifact {
   loadKind: LoadKind;
   /** single_file loads name their exact checkpoint inside the repo. */
   filename?: string;
-  /** Second-level row label ("GGUF", "FP8", "BF16 (official)", "BF16 - 720p"). */
+  /** Second-level row label ("GGUF", "FP8", "BF16", "BF16 - 720p"). */
   label: string;
+  /** Whether this bf16 pipeline exposes a transformer eligible for dense quantisation. */
+  denseQuantable?: boolean;
   /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless
    *  downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
   approxSizeGb?: number;
@@ -114,9 +118,10 @@ const bf16Pipeline = (
   repoId,
   format: "bf16",
   loadKind: "pipeline",
-  label: "BF16 (official)",
+  label: "BF16",
   approxSizeGb,
   keywords: ["bf16", "safetensors", "full precision"],
+  denseQuantable: true,
   ...extra,
 });
 
@@ -132,9 +137,10 @@ const bf16Single = (
   format: "bf16",
   loadKind: "single_file",
   filename,
-  label: "BF16 (official)",
+  label: "BF16",
   approxSizeGb,
   keywords: ["bf16", "safetensors", "full precision"],
+  denseQuantable: true,
   ...extra,
 });
 
@@ -335,7 +341,14 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "SDXL Turbo",
     description: "Text-to-image",
     scope: "image",
-    artifacts: [bf16Pipeline("stabilityai/sdxl-turbo", 8, { label: "Safetensors", totalParams: 2567463684 })],
+    artifacts: [
+      // SDXL uses a UNet rather than a transformer.
+      bf16Pipeline("stabilityai/sdxl-turbo", 8, {
+        label: "Safetensors",
+        totalParams: 2567463684,
+        denseQuantable: false,
+      }),
+    ],
   },
   {
     canonicalId: "stabilityai/stable-diffusion-xl-base-1.0",
@@ -343,9 +356,11 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
+      // SDXL uses a UNet rather than a transformer.
       bf16Pipeline("stabilityai/stable-diffusion-xl-base-1.0", 8, {
         label: "Safetensors",
         totalParams: 2567463684,
+        denseQuantable: false,
       }),
     ],
   },
@@ -815,7 +830,7 @@ export function curatedDisplayNameFor(
   // A row that earns a speed qualifier must read the same closed as open: this helper names the
   // trigger and curatedRowLabelFor names the row, so a divergence would rename the model as
   // the popover opens.
-  if (h3PerfSuffix(repoId, host)) {
+  if (curatedPerfSuffix(hit, host)) {
     return curatedRowLabelFor(repoId, catalog, host)?.name ?? hit.group.displayName;
   }
   return hit.group.artifacts.length > 1
@@ -827,12 +842,52 @@ export function curatedDisplayNameFor(
 // resolution qualifier are chips; anything else stays in the name, since it is the only thing
 // telling two rows of one group apart.
 const LABEL_PART_SEPARATOR = " - ";
-const OFFICIAL_SUFFIX_RE = /\s*\(official\)$/i;
 const GGUF_SUFFIX_RE = /-gguf$/i;
 const RESOLUTION_RE = /^\d{3,4}p$/i;
 
+/** Whether a known artifact can accept transformer quantisation. Unknown ids defer to the backend. */
+export function curatedArtifactTakesDenseQuant(
+  repoId: string,
+  catalog: CatalogGroup[],
+): boolean | undefined {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return undefined;
+  // GGUF reaches quantisation through dense base-weight substitution.
+  if (hit.artifact.format === "gguf") return true;
+  // Other artifacts must contain a dense bf16 transformer.
+  return (
+    hit.artifact.format === "bf16" &&
+    hit.artifact.loadKind === "pipeline" &&
+    hit.artifact.denseQuantable === true
+  );
+}
+
+/** Whether this row will use dense quantisation on the current host. */
+function artifactTakesDenseQuant(
+  group: CatalogGroup,
+  artifact: ModelArtifact,
+  host: HostClass,
+): boolean {
+  return (
+    hostRunsDenseQuant(host) &&
+    group.scope === "image" &&
+    artifact.format === "bf16" &&
+    artifact.loadKind === "pipeline" &&
+    artifact.denseQuantable === true
+  );
+}
+
+/** Speed qualifier from the dense-quant path or an artifact-specific rule. */
+function curatedPerfSuffix(
+  hit: { group: CatalogGroup; artifact: ModelArtifact },
+  host: HostClass,
+): string | null {
+  if (artifactTakesDenseQuant(hit.group, hit.artifact, host)) return "Fast";
+  return h3PerfSuffix(hit.artifact.repoId, host);
+}
+
 /** A curated row as name plus chips. The name used to carry the artifact inside brackets ("MiniMax
- *  H3 (BF16 (official))"), which pushed the part a user scans for behind the part they do
+ *  H3 (BF16)"), which pushed the part a user scans for behind the part they do
  *  not. Null for ids outside the catalog. */
 export function curatedRowLabelFor(
   repoId: string,
@@ -843,17 +898,26 @@ export function curatedRowLabelFor(
   if (!hit) return null;
   // Only where the host can run both rows, so the qualifier compares things the user can pick
   // between rather than advertising a speed they cannot have.
-  const perf = h3PerfSuffix(repoId, host);
-  const qualify = (name: string) => (perf ? `${name} (${perf})` : name);
+  const perf = curatedPerfSuffix(hit, host);
+  // Avoid duplicating variant names such as "Fast (distilled)".
+  const qualify = (name: string) =>
+    perf && !new RegExp(`\\b${perf}\\b`, "i").test(name) ? `${name} (${perf})` : name;
   // GGUF reads like a text model's row: the repo name already ends in -GGUF, so a chip would only repeat the suffix.
   if (hit.artifact.format === "gguf") {
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
     return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
   }
-  // A group with one artifact has nothing to distinguish, so it stays bare.
-  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
+  // Single-artifact groups omit format chips but retain the runtime precision chip.
+  const denseQuant = artifactTakesDenseQuant(hit.group, hit.artifact, host);
+  if (hit.group.artifacts.length <= 1) {
+    return {
+      name: qualify(hit.group.displayName),
+      tags: denseQuant ? [DENSE_QUANT_PRECISION_CHIP] : [],
+    };
+  }
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
-  const tags = [format.replace(OFFICIAL_SUFFIX_RE, "").trim()].filter(Boolean);
+  // Show runtime precision for dense-quant rows and stored precision otherwise.
+  const tags = [denseQuant ? DENSE_QUANT_PRECISION_CHIP : format.trim()].filter(Boolean);
   const kept: string[] = [];
   for (const part of rest) {
     if (RESOLUTION_RE.test(part.trim())) tags.push(part.trim());

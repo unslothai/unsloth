@@ -5,6 +5,7 @@
 Main FastAPI application for Unsloth UI Backend
 """
 
+import functools
 import os
 import sys
 import threading
@@ -2128,6 +2129,34 @@ def _get_cached_system_gpu_info(
         return combined_info
 
 
+@functools.lru_cache(maxsize = 1)
+def _dense_quant_supported() -> bool:
+    """Whether every visible card can run dense quantisation.
+
+    The picker cannot see the selected card, so mixed-capability hosts report False. The result is
+    cached because hardware capability is static and this endpoint is polled frequently."""
+    try:
+        from core.inference.diffusion_device import (
+            diffusion_device_scope,
+            resolve_diffusion_device_target,
+        )
+        from core.inference.diffusion_transformer_quant import dense_quant_host_capable
+
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
+        for ordinal in range(count):
+            with diffusion_device_scope(ordinal):
+                target = resolve_diffusion_device_target(ordinal = ordinal)
+                if not dense_quant_host_capable(target):
+                    return False
+        return True
+    except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
+        return False
+
+
 @app.get("/api/system")
 def get_system_info(
     current_subject: str = Depends(get_current_subject), refresh_memory: bool = False
@@ -2224,6 +2253,8 @@ def get_system_info(
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
         **video_capability(),
+        # Device backend alone cannot distinguish unsupported CUDA cards.
+        "dense_quant_supported": _dense_quant_supported(),
     }
 
 

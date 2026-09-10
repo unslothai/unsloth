@@ -21,6 +21,7 @@ import {
   classifyMediaGgufFit,
   curatedArtifactFitsDevice,
   curatedDisplayNameFor,
+  curatedArtifactTakesDenseQuant,
   curatedRowLabelFor,
   ggufFitRuns,
   groupForRepoId,
@@ -258,7 +259,7 @@ assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)
 // On a host that can place a diffusion pipeline the two H3 rows say which is which: the
 // gap is roughly 10x and the names alone gave nothing to choose on.
 assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"), {
-  name: "MiniMax H3 (Fast FP8)",
+  name: "MiniMax H3 (Fast)",
   tags: ["BF16"],
 });
 assert.deepEqual(
@@ -273,7 +274,7 @@ assert.deepEqual(
 // The trigger and the row must agree, or the model renames itself as the popover opens.
 assert.equal(
   curatedDisplayNameFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"),
-  "MiniMax H3 (Fast FP8)",
+  "MiniMax H3 (Fast)",
 );
 assert.equal(
   curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "accelerated"),
@@ -284,6 +285,120 @@ assert.deepEqual(
   curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "accelerated"),
   curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG),
 );
+// H3's measured qualifier applies to every accelerated host.
+assert.deepEqual(
+  curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "dense-quant"),
+  curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"),
+);
+
+// Dense-quant rows show their runtime precision.
+assert.deepEqual(curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant"), {
+  name: "Z-Image-Turbo (Fast)",
+  tags: ["FP8 / INT8"],
+});
+assert.equal(
+  curatedDisplayNameFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant"),
+  "Z-Image-Turbo (Fast)",
+);
+// Pre-quantised and GGUF siblings keep their artifact labels.
+assert.deepEqual(
+  curatedRowLabelFor("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", IMAGE_CATALOG, "dense-quant"),
+  { name: "Z-Image-Turbo", tags: ["bnb-4bit"] },
+);
+assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG, "dense-quant"), {
+  name: "Z-Image-Turbo-GGUF",
+  tags: [],
+});
+// Hosts without dense quant show the stored precision.
+for (const host of ["accelerated", "gguf-only", "unknown"] as const) {
+  assert.deepEqual(
+    curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, host),
+    { name: "Z-Image-Turbo", tags: ["BF16"] },
+    host,
+  );
+}
+// SDXL uses a UNet and never receives the transformer-quant label.
+for (const id of ["stabilityai/sdxl-turbo", "stabilityai/stable-diffusion-xl-base-1.0"]) {
+  const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant");
+  assert.ok(row && !row.name.includes("(Fast)"), `${id} reads "${row?.name}"`);
+  assert.equal(row?.tags.includes("FP8 / INT8"), false, id);
+}
+
+// Only eligible bf16 image pipelines claim the path.
+for (const [label, catalog] of [
+  ["image", IMAGE_CATALOG],
+  ["audio", AUDIO_CATALOG],
+] as const) {
+  for (const group of catalog) {
+    for (const artifact of group.artifacts) {
+      if (artifact.format !== "bf16" || artifact.loadKind !== "pipeline") continue;
+      const row = curatedRowLabelFor(artifact.repoId, catalog, "dense-quant");
+      const claims = row?.name.includes("(Fast)") || row?.tags.includes("FP8 / INT8");
+      assert.equal(
+        Boolean(claims),
+        label === "image" && artifact.denseQuantable === true,
+        `${label}: ${artifact.repoId} reads "${row?.name}" ${JSON.stringify(row?.tags)}`,
+      );
+    }
+  }
+}
+
+// Only compatible artifacts may receive a precision request.
+for (const [id, expected] of [
+  ["unsloth/Z-Image-Turbo-GGUF", true],
+  ["Tongyi-MAI/Z-Image-Turbo", true],
+  ["krea/Krea-2-Turbo", true],
+  ["stabilityai/sdxl-turbo", false],
+  ["stabilityai/stable-diffusion-xl-base-1.0", false],
+  ["unsloth/Z-Image-Turbo-unsloth-bnb-4bit", false],
+  ["ideogram-ai/ideogram-4-fp8", false],
+  ["ideogram-ai/ideogram-4-nf4-diffusers", false],
+] as const) {
+  assert.equal(curatedArtifactTakesDenseQuant(id, IMAGE_CATALOG), expected, id);
+}
+// Unknown ids defer to the loader.
+assert.equal(curatedArtifactTakesDenseQuant("someone/pasted", IMAGE_CATALOG), undefined);
+
+// Label and request eligibility must agree.
+for (const group of IMAGE_CATALOG) {
+  for (const artifact of group.artifacts) {
+    const row = curatedRowLabelFor(artifact.repoId, IMAGE_CATALOG, "dense-quant");
+    if (!row?.tags.includes("FP8 / INT8")) continue;
+    assert.equal(
+      curatedArtifactTakesDenseQuant(artifact.repoId, IMAGE_CATALOG),
+      true,
+      artifact.repoId,
+    );
+  }
+}
+
+// Single-artifact groups retain runtime precision while omitting format chips.
+for (const id of [
+  "krea/Krea-2-Turbo",
+  "Alpha-VLLM/Lumina-Image-2.0",
+  "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
+]) {
+  const group = groupForRepoId(id, IMAGE_CATALOG);
+  assert.equal(group?.artifacts.length, 1, id);
+  assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant")?.tags, ["FP8 / INT8"], id);
+  assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "accelerated")?.tags, [], id);
+}
+
+// Do not duplicate a qualifier already present in the variant name.
+assert.deepEqual(
+  curatedRowLabelFor("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG, "dense-quant"),
+  { name: "HiDream I1 (Fast (distilled))", tags: ["FP8 / INT8"] },
+);
+
+// Pre-quantised pipelines never claim dense quantisation.
+for (const id of [
+  "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+  "ideogram-ai/ideogram-4-fp8",
+]) {
+  const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant");
+  assert.ok(row && !row.name.includes("(Fast)"), `${id} reads "${row?.name}"`);
+  assert.equal(row?.tags.includes("FP8 / INT8"), false, id);
+}
 
 // A gguf-only host loses exactly the artifacts the backend refuses there. Non-GGUF is NOT
 // the test: diffusion runs on MPS and audio STT runs through the whisper.cpp sidecar.
@@ -367,6 +482,27 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
       const key = `${row.name} | ${row.tags.join(",")}`;
       assert.equal(seen.has(key), false, `${group.displayName}: two rows both read "${key}"`);
       seen.add(key);
+    }
+  }
+}
+
+// Publication source is not part of a precision label.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
+  for (const group of catalog) {
+    for (const artifact of group.artifacts) {
+      for (const text of [
+        artifact.label,
+        curatedDisplayNameFor(artifact.repoId, catalog) ?? "",
+        ...catalogToModelOptions(catalog)
+          .filter((o) => o.id === artifact.repoId)
+          .map((o) => o.description ?? ""),
+      ]) {
+        assert.equal(
+          /official/i.test(text),
+          false,
+          `${artifact.repoId} still reads "${text}"`,
+        );
+      }
     }
   }
 }

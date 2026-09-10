@@ -42,6 +42,16 @@ export interface ResolvedBadgeInfo {
 // toast DESCRIPTION under this title instead of as an unreadable single line.
 export const PRECISION_REFUSAL_TITLE = "Requested precision is not available";
 
+/** Load kinds that can reach the dense transformer-quant path. Mirrors the backend constant. */
+export const DENSE_QUANT_KINDS = ["gguf", "pipeline"] as const;
+
+/** Whether this load kind can reach the dense transformer-quant path at all. */
+export function isDenseQuantKind(kind: string | null | undefined): boolean {
+  return (DENSE_QUANT_KINDS as readonly string[]).includes(
+    (kind ?? "").trim().toLowerCase(),
+  );
+}
+
 /** Whether a load failure is that refusal, so it can be presented as an actionable choice. */
 export function isPrecisionRefusal(message: string): boolean {
   return /_quant='[^']*' could not be used/.test(message);

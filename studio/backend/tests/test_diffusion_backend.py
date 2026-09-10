@@ -11,6 +11,7 @@ GPU, weights, or network access is needed (sub-second, CI-friendly).
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import re
 import sys
 import threading
@@ -10097,3 +10098,268 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a diffusion backend"),
     )
     assert diffusion_mod.generation_in_flight() is False
+
+
+# Pipeline dense quantisation.
+
+
+class _FakeDenoiser:
+    """A denoiser whose parameters expose a dtype to the quantisation gate."""
+
+    def __init__(self, dtype = "torch.bfloat16") -> None:
+        self._params = [types.SimpleNamespace(dtype = dtype)]
+
+    def parameters(self, recurse = True):
+        return iter(self._params)
+
+
+def _init_with_denoiser(dtype):
+    """A ``_FakePipe.__init__`` whose transformer reports ``dtype``, for the gate's dtype walk."""
+    real_init = _FakePipe.__init__
+
+    def _init(self):
+        real_init(self)
+        self.transformer = _FakeDenoiser(dtype)
+
+    return _init
+
+
+def _stub_pipeline_dense_quant(backend, monkeypatch, *, engages = "fp8", denoisers = ("transformer",)):
+    """Stub a capable CUDA host and record transformer quantisation calls."""
+    from core.inference import diffusion as dmod
+
+    calls: list = []
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    real_init = _FakePipe.__init__
+
+    def _init(self):
+        real_init(self)
+        for attr in denoisers:
+            setattr(self, attr, _FakeDenoiser())
+
+    monkeypatch.setattr(_FakePipe, "__init__", _init)
+
+    def _quantize(pipe, target, **kwargs):
+        calls.append({"pipe": pipe, "transformer": pipe.transformer, **kwargs})
+        return engages
+
+    monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
+    return calls
+
+
+def test_a_pipeline_pick_quantises_its_transformer_in_place(fake_runtime, tmp_path, monkeypatch):
+    """Official bf16 pipelines quantise their assembled transformer in place."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert len(calls) == 1
+    assert calls[0]["transformer"] is backend._state.pipe.transformer
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == "fp8"
+    assert resolved["source"] == "auto" and resolved["status"] == "applied"
+    backend.unload()
+
+
+def test_a_pipeline_pick_keeps_bf16_when_the_scheme_declines(fake_runtime, tmp_path, monkeypatch):
+    """An automatic clean decline keeps the pipeline in bf16."""
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] is None
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == "off" and resolved["source"] == "auto"
+    assert resolved["status"] == "applied"
+    backend.unload()
+
+
+def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """A pinned scheme fails closed when pipeline quantisation declines."""
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+
+
+def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path, monkeypatch):
+    """Offloaded pipelines stay dense because torchao tensors cannot move."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _offloading_plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        return dataclasses.replace(plan, offload_policy = "model")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offloading_plan)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "offload" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_a_pipeline_pick_bakes_its_adapters_before_quantising(fake_runtime, tmp_path, monkeypatch):
+    """Adapters are baked before torchao replaces their dense base layers."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    order: list = []
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        lambda self, specs, **kw: [("a", "/loras/a.safetensors", 0.8)],
+    )
+    real_init = _FakePipe.__init__
+
+    def _init(self):
+        real_init(self)
+        self.transformer = _FakeDenoiser()
+
+    monkeypatch.setattr(_FakePipe, "__init__", _init)
+
+    def _quantize(pipe, target, **kwargs):
+        order.append("quantize")
+        return "int8"
+
+    monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
+
+    def _load_lora(self, path, adapter_name = None):
+        order.append(f"bake:{adapter_name}")
+
+    monkeypatch.setattr(_FakePipe, "load_lora_weights", _load_lora, raising = False)
+    monkeypatch.setattr(
+        _FakePipe, "set_adapters", lambda self, names, adapter_weights = None: None,
+        raising = False,
+    )
+    backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        loras = [("a", 0.8)],
+        _base_local_dir = str(tmp_path),
+    )
+    assert order == ["bake:a", "quantize"]
+    assert backend._state.pipe._unsloth_loras_baked is True
+    backend.unload()
+
+
+def test_a_unet_pipeline_is_never_quantised(fake_runtime, tmp_path, monkeypatch):
+    """UNet pipelines never enter transformer quantisation."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch, denoisers = ())
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "UNet" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("dtype", "expected"),
+    [
+        ("torch.uint8", "uint8"),  # bitsandbytes packs NF4 into uint8 storage
+        ("torch.float8_e4m3fn", "float8_e4m3fn"),  # a published fp8 repo
+        ("torch.float16", "float16"),
+    ],
+)
+def test_an_already_quantised_pipeline_is_never_requantised(
+    fake_runtime, tmp_path, monkeypatch, dtype, expected
+):
+    """Pre-quantised pipeline weights are not quantised again."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(_FakePipe, "__init__", _init_with_denoiser(dtype))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert expected in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_a_blocked_pipeline_still_refuses_an_explicit_scheme(fake_runtime, tmp_path, monkeypatch):
+    """A blocker cannot silently downgrade an explicit scheme."""
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, denoisers = ())
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "UNet" in str(excinfo.value)
+
+
+def test_every_denoiser_is_quantised_or_none_is(fake_runtime, tmp_path, monkeypatch):
+    """Every denoiser in a multi-branch pipeline uses the same precision."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(
+        backend, monkeypatch, denoisers = ("transformer", "unconditional_transformer")
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] == "fp8"
+    pipe = backend._state.pipe
+    assert [call["transformer"] for call in calls] == [
+        pipe.transformer,
+        pipe.unconditional_transformer,
+    ]
+    backend.unload()
+
+
+def test_a_partially_converted_transformer_fails_the_load(fake_runtime, tmp_path, monkeypatch):
+    """A partially converted transformer makes the pipeline unusable."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda module: True)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+        )
+    assert "neither dense nor usable" in str(excinfo.value)
+
+
+def test_a_clean_decline_keeps_the_dense_transformer(fake_runtime, tmp_path, monkeypatch):
+    """A decline that changed no weights safely retains the dense transformer."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda module: False)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] is None
+    assert status["resolved"]["transformer_quant"]["status"] == "applied"
+    backend.unload()
