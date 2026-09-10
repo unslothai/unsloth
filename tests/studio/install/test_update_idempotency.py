@@ -563,7 +563,6 @@ def diff(before: dict, after: dict) -> list[str]:
 # ── run 1 and run 2 ──
 
 
-
 @pytest.fixture(scope = "session")
 def settled(install, tmp_path_factory):
     """One update, so whatever the install left half-decided is decided. Everything
@@ -698,9 +697,9 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
         # itself and advance the mtime the rebuild assertion reads.
         restored = victim.read_bytes() if victim.is_file() else b""
         assert restored != b"", "the update exited 0 and left the truncated sidecar file as it was"
-        assert restored == saved, (
-            "the rebuilt sidecar file differs from the bytes the settled install had"
-        )
+        assert (
+            restored == saved
+        ), "the rebuilt sidecar file differs from the bytes the settled install had"
     finally:
         if victim.is_file() and victim.read_bytes() == b"":
             victim.write_bytes(saved)
@@ -936,7 +935,11 @@ def test_the_harness_measures_a_real_proxy(tmp_path):
                     break
                 received += chunk
         assert received.endswith(body), received[:200]
-        counted = lambda: module.summary(str(log_path))["by_host"].get("127.0.0.1", {}).get("bytes_down", 0)
+        counted = (
+            lambda: module.summary(str(log_path))["by_host"]
+            .get("127.0.0.1", {})
+            .get("bytes_down", 0)
+        )
         if not _wait_until(lambda: counted() >= len(body)):
             pytest.fail(
                 f"the proxy relayed {len(received)} bytes but journalled {counted()} for the host: {log_path}"
@@ -978,7 +981,10 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     before = snapshot(install)
     run = run_update(directory, "run5-desktop", local = False)
     assert run.rc == 0, run.log[-8000:]
-    print(f"[idempotency] installed={_installed_version(install)!r} pypi={_pypi_latest()!r}", flush = True)
+    print(
+        f"[idempotency] installed={_installed_version(install)!r} pypi={_pypi_latest()!r}",
+        flush = True,
+    )
     took_fast_path = NO_WORK_MARKERS[0] in run.log
     if not took_fast_path:
         # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp and
