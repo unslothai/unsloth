@@ -1670,7 +1670,14 @@ def test_the_mlx_and_codec_skips_ask_for_the_evidence_too() -> None:
     """Both skips live inside install_python_stack's body, so the guard is pinned on the
     source: a satisfied pin must not outrank a forced or repair pass."""
     source = STACK_PATH.read_text(encoding = "utf-8")
-    assert "if _may_skip_on_evidence() and _mlx_stack_is_current():" in source
+    mlx_guard = (
+        "                _may_skip_on_evidence()\n"
+        "                and _mlx_stack_is_current()\n"
+        '                and _inputs_unchanged(["single-env/overrides-darwin-arm64.txt"])\n'
+    )
+    # The arm64 overrides reach uv through UV_OVERRIDE and shape MLX's dependency graph:
+    # a bundle whose overrides moved runs the resolver even with the four pins satisfied.
+    assert mlx_guard in source
     assert "_may_skip_on_evidence()\n            and not _codec_rebuild\n" in source
 
 

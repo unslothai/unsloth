@@ -9055,7 +9055,15 @@ def install_python_stack() -> int:
             # _may_skip_on_evidence, not _mlx_stack_is_current alone: the pins are exact,
             # so they read as satisfied on the very run a forced or repair pass was asked
             # for, and the three distributions they name would never be reinstalled.
-            if _may_skip_on_evidence() and _mlx_stack_is_current():
+            # ...and the arm64 overrides file too: it reaches uv through UV_OVERRIDE and
+            # shapes MLX's dependency graph, so a bundle whose overrides moved has to run
+            # the resolver even when the four pinned versions read as satisfied, as the
+            # requirements-step gates already require.
+            if (
+                _may_skip_on_evidence()
+                and _mlx_stack_is_current()
+                and _inputs_unchanged(["single-env/overrides-darwin-arm64.txt"])
+            ):
                 _progress("MLX stack (satisfied, skipped)")
                 _record_step("mlx", "skipped")
             else:
