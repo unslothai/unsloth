@@ -89,7 +89,7 @@ def _rms_layernorm_backward(
     r += row_idx * r_row_stride
 
     if GEMMA:
-        dX += row_idx * dY_row_stride
+        dX += row_idx * dX_row_stride
     else:
         dX = dY
 
@@ -169,6 +169,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         shape = X.shape
         dim: int = shape[-1]
         X = X.reshape(-1, dim).contiguous()
+        # The kernels read W with unit column stride, and this is also the W saved
+        # for backward, so a sliced or expanded weight has to be materialized too.
+        W = W.contiguous()
         n_rows: int
         n_cols: int
         n_rows, n_cols = X.shape
