@@ -4341,6 +4341,10 @@ class DiffusionBackend:
 
                 # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and
                 # pre-quantised pipelines; offloaded plans remain dense because torchao tensors cannot move.
+                # The pipeline is still on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe
+                # places it. Both orders are safe and give bit-identical output: apply_memory_plan's resident
+                # `pipe.to(placement)` is a one-shot device move, which the tensor subclasses do survive (measured on
+                # sm_89, fp8 and int8, max|diff| 0.0). Only the per-forward offload hooks are the ones they reject.
                 if (
                     pipe is not None
                     and kind == "pipeline"
