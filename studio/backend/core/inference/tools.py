@@ -2036,6 +2036,18 @@ _AUTO_SAFE_WRAPPERS = frozenset(
     }
 )
 
+# These read-named tools launch unsandboxed Blender on a caller-selected file.
+_BLENDER_CLI_SUMMARY_TOOLS = frozenset(
+    {
+        "get_blendfile_summary_datablocks_for_cli",
+        "get_blendfile_summary_missing_files_for_cli",
+        "get_blendfile_summary_of_linked_libraries_for_cli",
+        "get_blendfile_summary_path_info_for_cli",
+        "get_blendfile_summary_usage_guess_for_cli",
+    }
+)
+
+
 # MCP tools whose names look read-only auto-run; anything else asks.
 _AUTO_SAFE_MCP_TOOL_RE = re.compile(
     r"^(get|list|search|read|fetch|query|find|describe|show|view|lookup|"
@@ -4623,6 +4635,8 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
+        if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
+            return True
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
         # overrides a read-only prefix.
         if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
@@ -6611,6 +6625,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
+        if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
+            return True
         # Split camelCase into `_`-delimited terms so the term-boundary regexes
         # below match camelCase names too.
         tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
@@ -10239,7 +10255,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not _mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
-        name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+        server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+        name = f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
         # Bad chars or oversized names would 400 the whole request; skip + warn
         # so the rest of the tools still ship.
         if not _OPENAI_FN_NAME_RE.fullmatch(name):
@@ -10482,9 +10499,10 @@ def execute_tool(
             _, server_id, tool_name = name.split("__", 2)
         except ValueError:
             return f"Error: malformed MCP tool name '{name}'"
-        server = mcp_servers_db.get_server(server_id)
+        server = mcp_servers_db.get_server_for_tool(server_id)
         if not server:
             return f"Error: MCP server for tool '{tool_name}' not found"
+        server_id = server["id"]
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
@@ -11524,21 +11542,93 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Ceiling on one probe dial, and on the whole probe pass as a fraction of the timeout.
+_PINNED_DIAL_TIMEOUT = 1.0
+_PINNED_PROBE_BUDGET = 0.25
+
+
+def _pinned_create_connection(addresses):
+    """``socket.create_connection`` that walks *addresses* instead of resolving.
+
+    Pinning to one validated address dropped the walk every other client gets. Walking
+    here rather than around ``opener.open`` keeps the caller's timeout covering one
+    whole response.
+    """
+    import socket
+
+    def create(
+        address,
+        timeout = socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address = None,
+    ):
+        if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+            timeout = socket.getdefaulttimeout()
+        # A proxy dial is not an origin dial, and callers withhold the addresses for it.
+        if address[0] not in addresses:
+            return socket.create_connection(address, timeout, source_address)
+
+        port = address[1]
+        expiry = None if timeout is None else time.monotonic() + timeout
+        probe_timeout = (
+            None
+            if timeout is None
+            else min(
+                timeout * _PINNED_PROBE_BUDGET / len(addresses),
+                _PINNED_DIAL_TIMEOUT,
+            )
+        )
+        error = None
+        # A brief look at every address, so one answering neither way cannot hold up the
+        # reachable ones, then an equal share of the rest so none strands the next.
+        passes = (True, False) if len(addresses) > 1 and timeout is not None else (False,)
+        for probe in passes:
+            for index, ip in enumerate(addresses):
+                if timeout is None:
+                    dial_timeout = None
+                elif probe:
+                    dial_timeout = probe_timeout
+                else:
+                    # An overrun leaves nothing; zero still attempts, negative raises.
+                    dial_timeout = max(
+                        (expiry - time.monotonic()) / (len(addresses) - index),
+                        0,
+                    )
+                try:
+                    sock = socket.create_connection((ip, port), dial_timeout, source_address)
+                except OSError as exc:
+                    error = exc
+                    continue
+                # create_connection leaves the caller's timeout on the socket, not its own.
+                sock.settimeout(timeout)
+                return sock
+        raise error
+
+    return create
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection to a pinned IP, using a different hostname for SNI and
     cert verification.
 
     SSRF IP-pinning rewrites URLs to raw IPs; a normal HTTPSConnection would then
     send no SNI and verify the cert against the IP (both fail). This splits the
-    concerns: TCP connects to the pinned IP (``host``), TLS uses ``sni_hostname``.
+    concerns: TCP connects to a validated IP, TLS uses ``sni_hostname``.
     """
 
-    def __init__(self, host: str, *, sni_hostname: str, **kwargs):
+    def __init__(
+        self,
+        host: str,
+        *,
+        sni_hostname: str,
+        addresses = (),
+        **kwargs,
+    ):
         super().__init__(host, **kwargs)
         self._sni_hostname = sni_hostname
+        if addresses:
+            self._create_connection = _pinned_create_connection(tuple(addresses))
 
     def connect(self):
-        # TCP connect to the pinned IP in self.host.
         http.client.HTTPConnection.connect(self)
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
@@ -11552,19 +11642,45 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 
     SSRF IP-pinning breaks SNI and cert verification; this returns a
     ``_PinnedHTTPSConnection`` that connects to the pinned IP but verifies TLS
-    against the original hostname.
+    against the original hostname. *addresses* are every validated address, pinned
+    one first, for ``_pinned_create_connection`` to walk.
     """
 
-    def __init__(self, hostname: str):
+    def __init__(
+        self,
+        hostname: str,
+        addresses = (),
+    ):
         super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
+        self._addresses = tuple(addresses)
 
     def https_open(self, req):
         return self.do_open(self._sni_connection, req)
 
     def _sni_connection(self, host, **kwargs):
         kwargs["context"] = _tls_ctx
-        return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
+        return _PinnedHTTPSConnection(
+            host,
+            sni_hostname = self._sni_hostname,
+            addresses = self._addresses,
+            **kwargs,
+        )
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, addresses = ()):
+        super().__init__()
+        self._addresses = tuple(addresses)
+
+    def http_open(self, req):
+        return self.do_open(self._pinned_connection, req)
+
+    def _pinned_connection(self, host, **kwargs):
+        conn = http.client.HTTPConnection(host, **kwargs)
+        if self._addresses:
+            conn._create_connection = _pinned_create_connection(self._addresses)
+        return conn
 
 
 def _explicit_proxy_applies(scheme: str, host: str) -> bool:
@@ -11591,12 +11707,12 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
-def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
-    """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
+def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, list[str]]:
+    """Resolve *hostname*, reject non-public IPs, return the pinned IP strings.
 
-    Returns ``(ok, reason_or_empty, resolved_ip)``. The caller should connect
-    to *resolved_ip* (with a ``Host`` header) to prevent DNS rebinding between
-    validation and the actual fetch.
+    Returns ``(ok, reason_or_empty, resolved_ips)`` in resolver order. The caller pins
+    to these (with a ``Host`` header) rather than resolving again, which is the DNS
+    rebinding window, and walks them as ``socket.create_connection`` would.
     """
     import ipaddress
     import socket
@@ -11605,11 +11721,12 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except (OSError, UnicodeError) as e:
         # IDNA encoding rejects a hostname with UnicodeError, not OSError.
-        return False, f"Failed to resolve host: {e}", ""
+        return False, f"Failed to resolve host: {e}", []
 
     if not infos:
-        return False, f"Failed to resolve host: no addresses for {hostname!r}", ""
+        return False, f"Failed to resolve host: no addresses for {hostname!r}", []
 
+    resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
         # `not ip.is_global` is the source of truth (also rejects CGNAT and
@@ -11623,11 +11740,11 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
             or ip.is_reserved
             or ip.is_unspecified
         ):
-            return False, f"Blocked: refusing to fetch non-public address {ip}.", ""
+            return False, f"Blocked: refusing to fetch non-public address {ip}.", []
+        if sockaddr[0] not in resolved:
+            resolved.append(sockaddr[0])
 
-    # Return the first resolved address for pinning.
-    first_ip = infos[0][4][0]
-    return True, "", first_ip
+    return True, "", resolved
 
 
 # Binary application subtypes rejected by MIME; other application types are
@@ -11768,7 +11885,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     """
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
-        return False, budget_error, ""
+        return False, budget_error, []
     if deadline is None and cancel_event is None:
         return _validate_and_resolve_host(hostname, port)
 
@@ -11778,13 +11895,13 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
         try:
             result.put(_validate_and_resolve_host(hostname, port))
         except Exception as exc:  # defensive: never let the worker die silently
-            result.put((False, f"Failed to resolve host: {exc}", ""))
+            result.put((False, f"Failed to resolve host: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
     while True:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
-            return False, budget_error, ""
+            return False, budget_error, []
         try:
             return result.get(timeout = 0.05)
         except queue.Empty:
@@ -11884,6 +12001,11 @@ def _normalize_url_scheme(url: str) -> str:
     return "https://" + rest
 
 
+def _pinned_netloc(ip: str, port: int | None) -> str:
+    host = f"[{ip}]" if ":" in ip else ip
+    return f"{host}:{port}" if port else host
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -11922,7 +12044,7 @@ def _fetch_url_raw(
     # check_url_access already parsed this and read .port, so this cannot raise.
     parsed = urlparse(url)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ip = _resolve_with_budget(
+    ok, reason, pinned_ips = _resolve_with_budget(
         canonical_host,
         port,
         deadline,
@@ -11964,12 +12086,16 @@ def _fetch_url_raw(
                 # interception, and they resolve it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
-                # Pin to the validated IP to prevent DNS rebinding.
-                ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-                ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-                request_url = urlunparse(cp._replace(netloc = ip_netloc))
+                # Pin the first validated IP against DNS rebinding; the rest are below.
+                request_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
-            handlers = [_NoRedirect, _SNIHTTPSHandler(current_host)]
+            # The proxy makes the origin connection, to the one address the URL pins.
+            walk = () if proxied else pinned_ips
+            handlers = [
+                _NoRedirect,
+                _SNIHTTPSHandler(current_host, walk),
+                _PinnedHTTPHandler(walk),
+            ]
             if not proxied:
                 # An empty ProxyHandler is the documented way to opt a request out.
                 handlers.append(urllib.request.ProxyHandler({}))
@@ -12003,7 +12129,7 @@ def _fetch_url_raw(
                     return policy_reason, "", ""
                 rp = urlparse(current_url)
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ip = _resolve_with_budget(
+                ok2, reason2, pinned_ips = _resolve_with_budget(
                     redirect_host,
                     rp_port,
                     deadline,
@@ -14584,7 +14710,10 @@ def _appended_by_the_loop(text: str) -> float:
     except Exception:  # noqa: BLE001 -- an unpriced nudge, not a failed tool call
         logger.debug("result budget: tool error nudge unavailable", exc_info = True)
         return 0.0
-    if not text.startswith(TOOL_ERROR_PREFIXES):
+    # `lstrip` because `is_tool_error` does: a result whose first byte is a newline still
+    # gets the nudge, so measuring the unstripped text reserves nothing for one that will
+    # certainly be appended.
+    if not text.lstrip().startswith(TOOL_ERROR_PREFIXES):
         return 0.0
     return _text_token_cost(TOOL_ERROR_NUDGE, _window_context_tokens())
 
@@ -14595,6 +14724,7 @@ def _truncate(
     workdir: str | None = None,
     scope: "str | None" = "",
     hint: str = "",
+    reserve_tokens: float = 0.0,
 ) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant
     # before any model is loaded, which is exactly when the window is still unknown.
@@ -14608,7 +14738,11 @@ def _truncate(
     # the prompt with the nudge past the end of it. Charged only to the results that will
     # actually carry one, since a reserve taken from every result spends room the thread
     # has.
-    cap, cost = limit, _appended_by_the_loop(text)
+    # `reserve_tokens` is whatever the CALLER will put after this result, priced the same
+    # way as the loop's own nudge. Without it a caller that concatenates two fitted
+    # strings spends the room twice: each `_truncate` reads the same `_request_result_room`
+    # and neither knows about the other, so the message the model is handed is the sum.
+    cap, cost = limit, _appended_by_the_loop(text) + reserve_tokens
     if hint:
         # Priced in tokens, not characters, and taken off the budget before it is converted
         # (see `_dense_char_limit`). A failing absolute path is dense: subtracting its
@@ -14624,7 +14758,7 @@ def _truncate(
             # Nothing to spend on advice: at zero room the stub IS the message, and when
             # paying for it would cut the output in half the output is worth more than the
             # advice about it. Nothing is dropped while the result fits anyway.
-            limit, hint, cost = plain, "", _appended_by_the_loop(text)
+            limit, hint, cost = plain, "", _appended_by_the_loop(text) + reserve_tokens
     else:
         limit = _dense_char_limit(text, limit, cost)
     # Mode-neutral notice: this result serves both the streaming UI and
@@ -16009,6 +16143,34 @@ def _created_file_sentinels(
     return out
 
 
+def _timed_out_result(
+    output: str | None, timeout: int, workdir: str | None, scope: "str | None"
+) -> str:
+    """Captured output, then the timeout status line.
+
+    Output leads: a finished card shows the live stream when the result is a prefix of it
+    (`preferFullToolOutput`), so a leading status would show the output twice.
+    """
+    ended = _truncate(f"Execution timed out after {timeout} seconds.")
+    partial = _defuse_sentinels(output or "")
+    if not partial.strip():
+        return ended
+    # Both cuts price against the same room, so the head reserves the status line's share.
+    ctx = _window_context_tokens()
+    head = _truncate(
+        partial,
+        workdir = workdir,
+        scope = scope,
+        reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
+    )
+    result = f"{head}\n{ended}"
+    # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
+    room = _request_result_room()
+    if room is not None and _text_token_cost(result, ctx) + _appended_by_the_loop(result) > room:
+        return ended
+    return result
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -16124,7 +16286,7 @@ def _python_exec(
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16277,7 +16439,7 @@ def _bash_exec(
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )

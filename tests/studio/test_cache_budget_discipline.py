@@ -732,9 +732,9 @@ def _matrix_rows(job) -> list[dict]:
     """One substitution map per job the matrix can actually produce.
 
     The base lists are expanded, not just `include`. `ui-smoke` declares its shards in a
-    base `shard: [chat, extra, banner, picker]` and uses `include` only to attach
+    base `shard: [chat, extra]` and uses `include` only to attach
     `engines`/`engine_key` to each, so reading `include` alone happens to give the right
-    four rows today -- and would silently skip a shard added to the base list without a
+    rows today -- and would silently skip a shard added to the base list without a
     matching include entry, which GitHub still runs, with those fields empty. The empty
     engine set then trips the assertion in the caller, which is the point.
 

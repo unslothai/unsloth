@@ -28,6 +28,7 @@ from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
 
@@ -659,8 +660,14 @@ def test_module_autoloading_is_restored():
 
 
 @requires_pwsh
-def test_install_ps1_parses():
-    """A syntax error here is a total install failure, and the file is not imported by anything."""
+@pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+def test_the_powershell_entrypoints_parse(script):
+    """A syntax error here is a total install failure, and neither file is imported by anything.
+
+    setup.ps1 is here for the same reason install.ps1 is, and because the tests that read it
+    extract single functions: an extraction still parses when the file around it does not, so
+    nothing else in the suite would notice a broken brace at file scope.
+    """
     # A nonzero exit here is claimed to mean install.ps1 has a syntax error, and pwsh aborting before it ever reached
     # the parser exits nonzero too.
     res = run_pwsh(
@@ -670,7 +677,7 @@ def test_install_ps1_parses():
             "-NonInteractive",
             "-Command",
             "$errs = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile("
-            f"{_ps_literal(INSTALL_PS1)}, [ref]$null, [ref]$errs); "
+            f"{_ps_literal(script)}, [ref]$null, [ref]$errs); "
             'if ($errs) { $errs | ForEach-Object { "ERR $($_.Extent.StartLineNumber): '
             '$($_.Message)" }; exit 1 }',
         ],

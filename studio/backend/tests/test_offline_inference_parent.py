@@ -86,6 +86,9 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _env_offline as _env_offline_tv,
 )
+import importlib.util
+import json
+import pathlib
 
 
 @pytest.fixture
@@ -269,8 +272,6 @@ class TestInferenceWorkerProbesForItself:
     into the retry paths the parent already ruled out."""
 
     def _block(self):
-        import pathlib
-
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         src = (backend_root / "core" / "inference" / "worker.py").read_text(
             encoding = "utf-8",
@@ -281,8 +282,6 @@ class TestInferenceWorkerProbesForItself:
         return src[start : src.index("\n    import warnings", start)]
 
     def test_the_probe_exists_and_runs_before_activation(self):
-        import pathlib
-
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         src = (backend_root / "core" / "inference" / "worker.py").read_text(
             encoding = "utf-8",
@@ -322,9 +321,6 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
     was DNS-only on main for training, and absent entirely for inference."""
 
     def _load(self, relpath, name):
-        import importlib.util
-        import pathlib
-
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         spec = importlib.util.spec_from_file_location(name, backend_root / relpath)
         mod = importlib.util.module_from_spec(spec)
@@ -358,8 +354,6 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
     def test_inference_gate_reads_a_local_adapter_base_from_disk(self, tmp_path):
         """A local adapter pointing at a REMOTE base still needs the probe, and the base
         is readable without touching the network."""
-        import json
-
         w = self._load("core/inference/worker.py", "inference_worker_gate_adapter")
         (tmp_path / "adapter_config.json").write_text(
             json.dumps({"base_model_name_or_path": "org/base"}),
@@ -375,8 +369,6 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
         assert w._recorded_local_base("org/model") == (None, False)
 
     def test_both_probes_sit_behind_the_gate(self):
-        import pathlib
-
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         inf = (backend_root / "core" / "inference" / "worker.py").read_text(
             encoding = "utf-8",
@@ -396,9 +388,6 @@ class TestLocalLoraTrainingJobStillProbes:
     training and security code fetches, so the job is not filesystem-only."""
 
     def _worker(self):
-        import importlib.util
-        import pathlib
-
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         spec = importlib.util.spec_from_file_location(
             "training_worker_lora_gate",
@@ -409,8 +398,6 @@ class TestLocalLoraTrainingJobStillProbes:
         return mod
 
     def test_local_adapter_with_a_remote_base_is_not_local(self, tmp_path):
-        import json
-
         w = self._worker()
         (tmp_path / "adapter_config.json").write_text(
             json.dumps({"base_model_name_or_path": "org/base"}),
@@ -419,8 +406,6 @@ class TestLocalLoraTrainingJobStillProbes:
         assert w._training_job_is_local({"model_name": str(tmp_path)}) is False
 
     def test_local_adapter_with_a_local_base_is_local(self, tmp_path):
-        import json
-
         w = self._worker()
         base = tmp_path / "base"
         base.mkdir()
@@ -437,8 +422,6 @@ class TestLocalLoraTrainingJobStillProbes:
     def test_a_null_recorded_base_still_probes(self, tmp_path):
         """An explicit null reads the same as a missing key: no base on disk, so the
         resolver falls through to get_base_model_from_lora, which is a Hub call."""
-        import json
-
         w = self._worker()
         (tmp_path / "adapter_config.json").write_text(
             json.dumps({"base_model_name_or_path": None}),
@@ -448,10 +431,6 @@ class TestLocalLoraTrainingJobStillProbes:
 
     def test_both_workers_agree(self, tmp_path):
         """The two gates must classify the same adapter the same way."""
-        import importlib.util
-        import json
-        import pathlib
-
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         (tmp_path / "adapter_config.json").write_text(
             json.dumps({"base_model_name_or_path": "org/base"}),
@@ -476,9 +455,6 @@ class TestFullCheckpointBaseKeepsTheProbe:
     job is not filesystem-only even though every path on disk is local."""
 
     def _module(self, relative_path, name):
-        import importlib.util
-        import pathlib
-
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         spec = importlib.util.spec_from_file_location(name, backend_root / relative_path)
         mod = importlib.util.module_from_spec(spec)
@@ -486,7 +462,6 @@ class TestFullCheckpointBaseKeepsTheProbe:
         return mod
 
     def _checkpoint(self, tmp_path, config_json):
-        import json
         (tmp_path / "config.json").write_text(json.dumps(config_json), encoding = "utf-8")
         return str(tmp_path)
 
@@ -517,8 +492,6 @@ class TestFullCheckpointBaseKeepsTheProbe:
 
     def test_an_adapter_base_still_wins_over_config_json(self, tmp_path):
         """Ordering matches the resolver: the adapter's base, not the config.json one."""
-        import json
-
         target = self._checkpoint(tmp_path, {"model_name": "org/from-config"})
         (tmp_path / "adapter_config.json").write_text(
             json.dumps({"base_model_name_or_path": "org/from-adapter"}),
@@ -530,8 +503,6 @@ class TestFullCheckpointBaseKeepsTheProbe:
     def test_a_baseless_adapter_needs_the_hub(self, tmp_path):
         """With no base on disk the resolver falls through to get_base_model_from_lora,
         which is a Hub call, so the gate must fail closed."""
-        import json
-
         (tmp_path / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
         inf = self._module("core/inference/worker.py", "inference_worker_baseless_gate")
         trn = self._module("core/training/worker.py", "training_worker_baseless_gate")
@@ -542,7 +513,6 @@ class TestFullCheckpointBaseKeepsTheProbe:
     def test_the_gate_agrees_with_the_resolver(self, tmp_path):
         """Anti-drift: this bug was the gate reading less than _resolve_base_model does.
         For every on-disk shape the two must name the same base."""
-        import json
         import sys
 
         backend_root = str(__import__("pathlib").Path(__file__).resolve().parent.parent)
@@ -602,7 +572,6 @@ class TestLoadRouteResolvesConfigOffTheLoop:
 
     def test_the_guard_and_config_resolution_run_in_a_thread(self):
         import ast
-        import pathlib
 
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         src = (backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")

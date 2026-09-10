@@ -2,21 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
-  "utf8",
-);
-const en = readFileSync(
-  new URL("../src/i18n/locales/en.ts", import.meta.url),
-  "utf8",
-);
-const audioSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/settings/tabs/voice-tab.tsx");
+const en = readSrc("i18n/locales/en.ts");
+const audioSource = readSrc("features/audio/audio-page.tsx");
 
 test("the studio TTS row offers the Audio page it tells the user to use", () => {
   // Settings is a modal, so it must close or Audio opens behind it.

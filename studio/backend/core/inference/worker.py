@@ -709,7 +709,9 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         # These options are MLX-only. The transformers backend declares none of
         # them and takes no **kwargs, so forwarding unconditionally would turn
         # its documented "ignores them" behavior into a TypeError.
-        for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
+        # ``tool_protocol_active`` rides here rather than above: MLX declares no such
+        # parameter and takes no **kwargs, so an unconditional forward would raise.
+        for gated in ("seed", "frequency_penalty", "logit_bias", "stop", "tool_protocol_active"):
             if gated in cmd and _backend_declares(backend, gated):
                 gen_kwargs[gated] = cmd[gated]
 

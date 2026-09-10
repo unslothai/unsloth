@@ -22,6 +22,7 @@ const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
   "models_dir",
   "ollama",
+  "hermes",
   "custom",
 ]);
 

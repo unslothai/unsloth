@@ -77,6 +77,7 @@ except ImportError:
     sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, _FIT_MIN_CTX, LlamaCppBackend
+from core.inference import llama_cpp as lc
 
 # Helpers
 
@@ -457,8 +458,6 @@ class TestDynamicSwaResolver:
     """4-tier resolver: GGUF metadata, on-disk cache, bootstrap, HF fetch."""
 
     def _isolate_cache(self, monkeypatch, tmp_path):
-        from core.inference import llama_cpp as lc
-
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
         monkeypatch.setattr(lc, "_SWA_CACHE", None)
         return tmp_path
@@ -506,7 +505,6 @@ class TestDynamicSwaResolver:
 
     def test_bootstrap_tier_used_when_no_cache(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         def boom(*a, **kw):
             raise AssertionError("HF fetch must not run when bootstrap covers the arch")
@@ -534,7 +532,6 @@ class TestDynamicSwaResolver:
 
     def test_hf_fetch_populates_cache(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         calls = []
 
@@ -555,7 +552,6 @@ class TestDynamicSwaResolver:
 
     def test_hf_fetch_falls_back_to_other_candidates(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(
             lc,
@@ -574,7 +570,6 @@ class TestDynamicSwaResolver:
     def test_offline_env_skips_network(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
         monkeypatch.setenv("UNSLOTH_STUDIO_OFFLINE", "1")
-        from core.inference import llama_cpp as lc
 
         def boom(*a, **kw):
             raise AssertionError("HF fetch must not run when offline=1")
@@ -589,7 +584,6 @@ class TestDynamicSwaResolver:
 
     def test_hf_fetch_failure_falls_through_silently(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", lambda repo_id: None)
         # Force failure into Tier 3; bypass Tier 2.5.
@@ -607,8 +601,6 @@ class TestTransformersIntrospection:
     """Tier 2.5: default-init the matching Config; on failure, parse via inspect."""
 
     def _isolate_cache(self, monkeypatch, tmp_path):
-        from core.inference import llama_cpp as lc
-
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
         monkeypatch.setattr(lc, "_SWA_CACHE", None)
         return tmp_path
@@ -629,8 +621,6 @@ class TestTransformersIntrospection:
         assert _resolve_swa_entry_from_transformers("cohere2") == 4
 
     def test_falls_back_to_inspect_when_default_init_raises(self, monkeypatch):
-        from core.inference import llama_cpp as lc
-
         class _FakeBrokenConfig:
             """Class with sliding_window_pattern: int = 7 in its docstring."""
 
@@ -650,7 +640,6 @@ class TestTransformersIntrospection:
         assert lc._resolve_swa_entry_from_transformers("brokenarch") == 7
 
     def test_returns_none_when_transformers_unavailable(self, monkeypatch):
-        from core.inference import llama_cpp as lc
         import sys
 
         orig_import = (
@@ -677,7 +666,6 @@ class TestTransformersIntrospection:
     def test_full_resolver_uses_transformers_before_hf_fetch(self, monkeypatch, tmp_path):
         # Bootstrap empty: Tier 2.5 must answer before Tier 3 fires.
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(lc, "_BOOTSTRAP_SWA_DEFAULTS", {})
 
