@@ -1393,7 +1393,9 @@ def test_a_marker_older_than_the_shell_accepts_is_not_current():
     assert not _studio_prefetch.marker_is_current(marker)
     assert _studio_prefetch.marker_is_current({**marker, "created_at": int(_time.time() * 1000)})
     # A clock that went backwards reads as a negative age, which is not old.
-    assert _studio_prefetch.marker_is_current({**marker, "created_at": int(_time.time() * 1000) + 10_000})
+    assert _studio_prefetch.marker_is_current(
+        {**marker, "created_at": int(_time.time() * 1000) + 10_000}
+    )
 
 
 def test_a_prefetch_that_prepares_nothing_still_retires_another_offers_marker(managed, monkeypatch):
@@ -1404,7 +1406,9 @@ def test_a_prefetch_that_prepares_nothing_still_retires_another_offers_marker(ma
     root.mkdir(parents = True, exist_ok = True)
     (root / _studio_prefetch.OWNED_MARKER).write_text("", encoding = "utf-8")
     (root / _studio_prefetch.MARKER_NAME).write_text(
-        json.dumps({"schema": _studio_prefetch.MARKER_SCHEMA, "state": "ready", "shell_version": "1.0.1"}),
+        json.dumps(
+            {"schema": _studio_prefetch.MARKER_SCHEMA, "state": "ready", "shell_version": "1.0.1"}
+        ),
         encoding = "utf-8",
     )
     monkeypatch.setattr(_studio_prefetch.shutil, "which", lambda name: None)
@@ -1416,10 +1420,11 @@ def test_a_prefetch_that_prepares_nothing_still_retires_another_offers_marker(ma
     root.mkdir(parents = True, exist_ok = True)
     (root / _studio_prefetch.OWNED_MARKER).write_text("", encoding = "utf-8")
     (root / _studio_prefetch.MARKER_NAME).write_text(
-        json.dumps({"schema": _studio_prefetch.MARKER_SCHEMA, "state": "ready", "shell_version": "1.0.2"}),
+        json.dumps(
+            {"schema": _studio_prefetch.MARKER_SCHEMA, "state": "ready", "shell_version": "1.0.2"}
+        ),
         encoding = "utf-8",
     )
     with pytest.raises(_studio_prefetch.PrefetchSkipped):
         _studio_prefetch.run(studio_home = managed, shell_version = "1.0.2", echo = lambda line: None)
     assert (root / _studio_prefetch.MARKER_NAME).exists()
-
