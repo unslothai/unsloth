@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import os
 import pathlib
+import sys
 import types
 
 import pytest
@@ -211,11 +212,13 @@ def test_suspend_protect_restores_after_a_raise():
     assert ctl.armed is True
 
 
-def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step():
+def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step(monkeypatch):
     """A prewarm that fires at a protected step must still tune the FP4 kernel."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_linear as nl
 
+    # The prewarm bails without flashinfer; the tuning loop itself is stubbed below.
+    monkeypatch.setitem(sys.modules, "flashinfer", types.ModuleType("flashinfer"))
     layer = nl.nvfp4_linear_class()(
         64,
         32,
