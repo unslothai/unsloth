@@ -2546,7 +2546,7 @@ class TestChatCompletionRequestToolFields:
         """Stop leaves an empty assistant turn between the tool result and the next question. The
         coalesce cannot merge across it and the passthrough drops it downstream without
         coalescing, so the two user turns land adjacent again -- the failure above, one Stop
-        later. Dropping the sentinels before the fold is what holds it."""
+        later. Sanitizing before the fold, not after it, is what holds it."""
         import routes.inference as inference_route
 
         captured = {}

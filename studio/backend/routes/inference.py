@@ -3922,21 +3922,19 @@ def _folds_studio_tool_history(payload, llama_backend) -> bool:
 
 
 def _folded_studio_tool_messages(messages) -> list:
-    # _sanitize_anthropic_openai_messages' chain, in its order. Each step reads as redundant with
-    # something downstream until it is removed:
-    #   sentinels first: a stopped turn between the result and the next question blocks the
-    #     coalesce, and the passthrough drops it later without coalescing (Gemma 400s on parity).
-    #   synthetic pairs next: downstream they are matched through their role="tool" reply, which
-    #     folding destroys, so a Gemini code_execution card would ride on as user prose.
+    # _sanitize_anthropic_openai_messages' chain, in its order, and both halves earn their place:
+    #   strip first (it ends in _drop_empty_assistant_sentinels, so this drops those too).
+    #     A stopped turn left between the result and the next question would block the coalesce,
+    #     and the passthrough drops it later without coalescing, so Gemma 400s on role parity.
+    #     Downstream a synthetic pair is matched through its role="tool" reply, which folding
+    #     destroys, so a Gemini code_execution card would ride on as user prose.
     #   fold before coalesce: what merges a folded result with the note after it.
     return [
         ChatMessage.model_validate(_revalidatable(message))
         for message in _coalesce_consecutive_user_turns(
             fold_tool_results_into_user(
                 _strip_provider_synthetic_tool_history(
-                    _drop_empty_assistant_sentinels(
-                        [m.model_dump(exclude_none = True) for m in messages]
-                    )
+                    [m.model_dump(exclude_none = True) for m in messages]
                 )
             )
         )

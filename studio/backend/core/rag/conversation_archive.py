@@ -273,8 +273,49 @@ def _without_retrieval(group: list[dict]) -> list[dict]:
         if str(message.get("role") or "") == "tool":
             if str(message.get("tool_call_id") or "") in dropped_ids:
                 continue
+        message = _without_folded_retrieval(message, names)
+        if message is None:
+            continue
         out.append(message)
     return out
+
+
+def _without_folded_retrieval(message: dict, names: frozenset):
+    """The message with any folded retrieval result cut out of its text, or None if that was all
+    it was.
+
+    A toolless template gets its ``role="tool"`` turns rewritten to user text by
+    ``fold_tool_results_into_user``, so the id match above stops firing and the retrieved passage
+    is archived as new conversation -- the self-nesting this whole helper exists to stop, back
+    again by another door. Matched on the shape the fold emits rather than on the role.
+
+    Cut rather than drop: every route folds before it coalesces, so the passage usually arrives
+    already merged with the question the user asked after it, and dropping the message would take
+    that question with it. ``json.dumps(..., indent = 2)`` never emits a blank line, so the
+    ``"\\n\\n"`` the coalesce joins on cannot occur inside one folded block.
+    """
+    if str(message.get("role") or "") != "user":
+        return message
+    content = message.get("content")
+    if not isinstance(content, str) or '"tool_response"' not in content:
+        return message
+    kept = []
+    for segment in content.split("\n\n"):
+        try:
+            payload = json.loads(segment)
+        except (ValueError, TypeError):
+            kept.append(segment)
+            continue
+        response = payload.get("tool_response") if isinstance(payload, dict) else None
+        if not isinstance(response, dict):
+            kept.append(segment)
+            continue
+        if str(response.get("tool") or "") in names:
+            continue
+        kept.append(segment)
+    if not kept:
+        return None
+    return {**message, "content": "\n\n".join(kept)}
 
 
 def enabled() -> bool:
