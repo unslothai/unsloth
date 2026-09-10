@@ -2460,14 +2460,29 @@ def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> None:
     with both gone, _optional_package_absent reads the package as absent and the next
     top-up tries again instead of the sidecar shadowing a working ambient copy.
     """
-    name = pkg_spec.split("==")[0]
+    # Every top-level entry the wheel owns, not only the import package: tiktoken ships
+    # tiktoken/, tiktoken_ext/ (the plugin namespace, whose openai_public module would
+    # shadow the ambient one on its own) and tiktoken-<v>.dist-info; a .libs directory
+    # would follow the same naming. The prefix is the project name followed by the end,
+    # an underscore, a dot or a hyphen, which no other package in these sidecars shares.
+    stem = pkg_spec.split("==")[0].lower().replace("-", "_")
     root = Path(venv_dir)
-    for candidate in {name, name.replace("-", "_"), name.replace("_", "-")}:
-        payload = root / candidate
-        if payload.is_dir() and not payload.is_symlink():
-            shutil.rmtree(payload, ignore_errors = True)
-    for entry in _dist_info_entries(venv_dir, name):
-        shutil.rmtree(root / entry, ignore_errors = True)
+    try:
+        entries = os.listdir(venv_dir)
+    except OSError:
+        return
+    for entry in entries:
+        lowered = entry.lower().replace("-", "_")
+        if lowered != stem and not lowered.startswith((stem + "_", stem + ".")):
+            continue
+        path = root / entry
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors = True)
+        elif path.exists() or path.is_symlink():
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def _remove_recordless_dist_infos(venv_dir: str, pkg_spec: str) -> None:
@@ -2637,6 +2652,9 @@ def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
         return True
     except OSError as exc:
         logger.warning("staging %s into %s failed: %s", pkg, venv_dir, exc)
+        # Entries moved before the failure would sit ahead of site-packages without
+        # their dist-info for the whole retry backoff; absent is the only safe shape.
+        _remove_optional_remnants(venv_dir, pkg)
         return False
     finally:
         shutil.rmtree(staging, ignore_errors = True)

@@ -69,6 +69,8 @@ def test_a_failed_optional_install_leaves_no_partial_payload(tmp_path, monkeypat
         if pkg.startswith("tiktoken"):
             (Path(target) / "tiktoken").mkdir()
             (Path(target) / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+            (Path(target) / "tiktoken_ext").mkdir()
+            (Path(target) / "tiktoken_ext" / "openai_public.py").write_text("", encoding = "utf-8")
             (Path(target) / "tiktoken-0.9.0.dist-info").mkdir()
             (Path(target) / "tiktoken-0.9.0.dist-info" / "METADATA").write_text(
                 "", encoding = "utf-8"
@@ -79,7 +81,45 @@ def test_a_failed_optional_install_leaves_no_partial_payload(tmp_path, monkeypat
     monkeypatch.setattr(tv, "_install_to_dir", fake_install)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert not (root / "tiktoken").exists()
+    # The plugin namespace too: a partial tiktoken_ext ahead of site-packages shadows
+    # the ambient one's openai_public module by itself.
+    assert not (root / "tiktoken_ext").exists()
     assert not list(root.glob("tiktoken-*.dist-info"))
+    assert tv._optional_package_absent(str(root), "tiktoken") is True
+
+
+def test_a_staging_move_that_fails_part_way_rolls_the_moved_entries_back(tmp_path, monkeypatch):
+    """os.replace failing on the second entry used to leave the first one in the sidecar
+    with no dist-info for the whole retry backoff; the package must read as absent."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+
+    def fake_install(pkg, target):
+        (Path(target) / "tiktoken").mkdir()
+        (Path(target) / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+        (Path(target) / "tiktoken_ext").mkdir()
+        (Path(target) / "tiktoken_ext" / "openai_public.py").write_text("", encoding = "utf-8")
+        (Path(target) / "tiktoken-0.9.0.dist-info").mkdir()
+        (Path(target) / "tiktoken-0.9.0.dist-info" / "RECORD").write_text("", encoding = "utf-8")
+        return True
+
+    monkeypatch.setattr(tv, "_install_to_dir", fake_install)
+    real_replace = tv.os.replace
+    moved = []
+
+    def flaky_replace(source, target):
+        if ".top-up-staging" in str(source) and len(moved) == 1:
+            raise OSError("disk full")
+        moved.append(target)
+        return real_replace(source, target)
+
+    monkeypatch.setattr(tv.os, "replace", flaky_replace)
+    assert tv._stage_optional_package("tiktoken", str(root)) is False
+    assert len(moved) == 1
+    assert not (root / "tiktoken").exists()
+    assert not (root / "tiktoken_ext").exists()
+    assert not list(root.glob("tiktoken-*.dist-info"))
+    assert not (root / ".top-up-staging").exists()
     assert tv._optional_package_absent(str(root), "tiktoken") is True
 
 
