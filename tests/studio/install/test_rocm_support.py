@@ -76,8 +76,10 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     """Return a shell function body from `source` by brace matching."""
     needle = f"{name}() {{"
     start = source.find(needle)
-    if start < 0:
-        return ""
+    # Raise rather than return "". Every caller names a function that install.sh defines,
+    # so a miss is a rename, and an empty body makes each caller fail on its own subject
+    # -- a vendor_id check reported as missing when the vendor_id check is still there.
+    assert start >= 0, f"install.sh defines no {name}()"
     depth = 0
     i = start + len(needle) - 1  # land on the opening brace
     n = len(source)
@@ -1866,12 +1868,15 @@ class TestHasRocmGpuKfdVendorGuard:
         ), "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
 
     def test_install_sh_has_vendor_check(self):
-        """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
+        """The install.sh sysfs fallback must also check vendor_id 4098.
+
+        The probe and the NVIDIA veto live in one function: tests/sh lifts helpers out of
+        install.sh one at a time by name, so a wrapper over a private helper leaves those
+        harnesses calling something undefined.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
-        func_end = source.find("\n}", func_start)
-        func_body = source[func_start:func_end]
+        func_body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
         assert "vendor_id" in func_body, "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
         assert "4098" in func_body, "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
 
@@ -2533,12 +2538,10 @@ class TestInstallShStructure:
         assert "export UNSLOTH_TORCH_BACKEND" in source
 
     def test_kfd_sysfs_amd_vendor_check_in_has_amd_rocm_gpu(self):
-        """_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (nvidia-open registers KFD nodes too)."""
+        """The sysfs fallback must require AMD vendor_id 4098 (nvidia-open registers KFD nodes too)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
-        func_end = source.find("\n}", func_start)
-        func_body = source[func_start:func_end]
+        func_body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
         assert (
             "vendor_id" in func_body
         ), "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
@@ -2559,9 +2562,7 @@ class TestInstallShStructure:
         """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
-        func_end = source.find("\n}", func_start)
-        func_body = source[func_start:func_end]
+        func_body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
         assert "$2 == 4098" in func_body, (
             "_has_amd_rocm_gpu KFD awk must match `vendor_id 4098` as a single-line "
             "condition so no per-node state can leak across KFD nodes"
@@ -7257,3 +7258,21 @@ class TestRocmMiscomputingArchDemotion:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_the_shell_extractor_says_so_when_a_function_is_gone():
+    """A rename must fail as a rename. Three checks here read the ROCm probe with find()
+    and an empty body on a miss, so folding _amd_rocm_gpu_visible back into
+    _has_amd_rocm_gpu made all three report a missing vendor_id check that was still
+    there. The helper now refuses the name instead."""
+    source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+    with pytest.raises(AssertionError, match = "_amd_rocm_gpu_visible"):
+        _extract_sh_function_body(source, "_amd_rocm_gpu_visible")
+
+
+def test_the_extractor_still_returns_the_probe_it_does_define():
+    """The control: the surviving name must still come back with a body, or the check
+    above would pass on a helper that refuses everything."""
+    source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+    body = _extract_sh_function_body(source, "_has_amd_rocm_gpu")
+    assert body.startswith("_has_amd_rocm_gpu() {") and "vendor_id" in body

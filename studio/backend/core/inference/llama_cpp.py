@@ -9905,10 +9905,185 @@ class LlamaCppBackend:
             if _metal_capable_host():
                 # Same check as the load site: an Intel Mac wants its real reason.
                 return "this probe reads CUDA and HIP only; Apple Silicon offloads through Metal"
-            if LlamaCppBackend._is_vulkan_backend(binary):
-                return "the Vulkan probe reported no device"
+            # Before the backend branches, because it is the reason underneath BOTH: a
+            # render node this user cannot open leaves HIP with no device and the Vulkan
+            # loader with nothing to enumerate, and "the Vulkan probe reported no device"
+            # then sends the user after a driver that is fine (#10466). A Vulkan binary is
+            # asked only about the render node, never /dev/kfd, and keeps its own reason.
+            #
+            # Asked only of a build that can drive an AMD card, and only about the nodes
+            # that build opens: _is_vulkan_backend answers which backend the install defers
+            # to, so a CUDA-plus-Vulkan build counts as CUDA and a CPU-only build as
+            # neither. An install this probe cannot read stays eligible, so a detection
+            # miss does not lose the #10466 host.
+            _is_vulkan = LlamaCppBackend._is_vulkan_backend(binary)
+            _backends = LlamaCppBackend._installed_ggml_backends(binary)
+            _amd_capable = not LlamaCppBackend._backend_lacks_gpu_lib(binary) and (
+                _is_vulkan or "hip" in _backends or not _backends
+            )
+
+            # The ordinal space the three device lists index, so an entry can be checked
+            # against something rather than only read. None on any host whose KFD topology
+            # cannot be read, which is the direction that leaves a selector alone.
+            try:
+                from utils.hardware.amd import amd_kfd_gpu_node_count
+                _amd_gpu_count = amd_kfd_gpu_node_count()
+            except Exception:  # noqa: BLE001
+                _amd_gpu_count = None
+
+            def _post_rocr_device_count() -> "int | None":
+                # ROCr filters the physical list FIRST and renumbers what survives, and
+                # the HIP layer indexes those (_rocm_visibility_masks_are_stacked), so a
+                # HIP ordinal is judged against the post-ROCr count: on two GPUs with
+                # ROCR_VISIBLE_DEVICES=0 one survives, and HIP ordinal 1 hides everything
+                # where the physical count of 2 reads it as harmless. None when the
+                # survivors cannot be counted, which leaves the HIP selector alone.
+                if not _rocr_filters:
+                    return _amd_gpu_count
+                _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
+                if not _raw or not _amd_gpu_count:
+                    return None
+                # ROCr's own rule, from RvdFilter's documentation in
+                # core/inc/amd_filter_device.h: it "builds the list of Gpu devices to
+                # surface using tokens that are Legal and NOT Terminating", an index
+                # terminates when its "value ... lies outside the interval
+                # [0 - (numGpuDevices - 1)]" OR "maps to a device that has been previously
+                # selected", and a token is Illegal when it "can't be evaluated into an
+                # instance of Device UUID or Enumeration Index". Every ending is therefore
+                # a PREFIX whose length is known -- including a repeated ordinal ("0,0"
+                # surfaces one device, not two) and an empty token ("0," ends after the
+                # first, leaving one survivor). Only a UUID is unknowable here, since the
+                # KFD count is an ordinal space and nothing in it can match one.
+                _survivors = 0
+                _selected: "set[int]" = set()
+                for _entry in _raw.split(","):
+                    _entry = _entry.strip()
+                    if not _entry.isdigit():
+                        # AMD documents the UUID form as the literal "GPU-XX"; anything
+                        # else that is not an index is Illegal to ROCr too, so it ends the
+                        # list at a length this does know.
+                        return None if _entry.lower().startswith("gpu-") else _survivors
+                    _idx = int(_entry)
+                    if _idx >= _amd_gpu_count or _idx in _selected:
+                        return _survivors
+                    _selected.add(_idx)
+                    _survivors += 1
+                return _survivors
+
+            def _hides_every_device(
+                value: str,
+                count: "int | None" = None,
+                *,
+                strict: bool = False,
+            ) -> bool:
+                # CUDA and HIP read the list left to right and stop at the first entry
+                # that names no device, so a value that is empty, or whose FIRST entry
+                # is empty or negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still
+                # exposes GPU 0.
+                first = value.split(",")[0].strip()
+                if first == "" or first.startswith("-"):
+                    return True
+                # Nor does a token have to LOOK like a number to end the list. clr takes
+                # `index = atoi(str_id)` and rejects the token unless `str_id` is that
+                # index written back out, so HIP_VISIBLE_DEVICES=garbage (and 0x1, and 00)
+                # terminates on the FIRST token, exactly as -1 does. Asked only for the
+                # clr-layer variables: ROCr's illegal-token rule is a separate parser, in
+                # _is_an_illegal_rocr_selector, and a UUID token is left to
+                # _cannot_be_resolved since resolving it needs the agents.
+                if strict and not first.lower().startswith("gpu-"):
+                    try:
+                        _index = int(first)
+                    except ValueError:
+                        return True
+                    if str(_index) != first:
+                        return True
+                # An entry that looks valid can still name nothing: the list stops at the
+                # first index no device answers to, so HIP_VISIBLE_DEVICES=3 on a one-GPU
+                # host exposes zero devices, which is the empty probe being explained. Only
+                # ordinals, and only against a count actually read: reading an unknown
+                # count as a bound would call every selector here a blocker.
+                _bound = _amd_gpu_count if count is None else count
+                if not _bound or not first.isdigit():
+                    return False
+                return int(first) >= _bound
+
+            def _cannot_be_resolved(value: str) -> bool:
+                # ROCr accepts a UUID as well as an ordinal ("0,GPU-4b2c..."), and a UUID
+                # naming no device on this host stops the list exactly as a bad ordinal
+                # does. Nothing here can match one -- the KFD count is an ordinal space --
+                # so it is reported as unresolved rather than judged either way: calling it
+                # a blocker would invent a fault, and dropping it silently leaves the user
+                # with no mention of the one variable that may be hiding their card.
+                # Only the UUID form: every other non-index is Illegal to ROCr, which is a
+                # different answer and is decided by _is_an_illegal_rocr_selector. clr
+                # resolves a UUID too (rocdevice.cpp matches "GPU-" against each agent's
+                # HSA_AMD_AGENT_INFO_UUID), so the HIP layer gets the same answer rather
+                # than a silence that would be a suppression when the UUID names nothing.
+                first = value.split(",")[0].strip()
+                return first.lower().startswith("gpu-")
+
+            def _vk_selects_no_device(value: str) -> bool:
+                # ggml stops reading at the first token that has no integer prefix, so if
+                # the FIRST one does not, device_indices stays empty and the Vulkan backend
+                # enumerates nothing. A leading sign counts as a prefix: size_t extraction
+                # accepts "-1" and wraps it, which then throws as out of range rather than
+                # selecting nothing.
+                _first = value.replace(",", " ").split()
+                if not _first:
+                    return True
+                _token = _first[0]
+                _digits = _token[1:] if _token[:1] in ("+", "-") else _token
+                return not _digits[:1].isdigit()
+
+            def _is_an_illegal_rocr_selector(value: str) -> bool:
+                # ROCr's filter (ROCR-Runtime, core/inc/amd_filter_device.h) calls a token
+                # Illegal when it "can't be evaluated into an instance of Device UUID or
+                # Enumeration Index", and an Illegal token terminates the list -- so an
+                # illegal FIRST token leaves zero survivors, exactly as an out-of-range
+                # ordinal does, and _post_rocr_device_count already counts it that way.
+                # Reported as a definite blocker rather than as something to check only if
+                # the group change fails, since no membership makes the runtime enumerate
+                # a device again.
+                first = value.split(",")[0].strip()
+                return (
+                    bool(first)
+                    and not first.startswith("-")
+                    and not first.isdigit()
+                    and not first.lower().startswith("gpu-")
+                )
+
+            # Which of the four this host actually reads, per variable rather than one
+            # rule applied to all of them alike. Reaching a node hint at all means an
+            # AMD-capable install and a closed AMD node, so the runtime being explained
+            # is HIP, and clr's own precedence holds: rocdevice.cpp reads
+            # HIP_VISIBLE_DEVICES when its FIRST BYTE is not NUL and CUDA_VISIBLE_DEVICES
+            # otherwise, so an empty CUDA mask behind a valid HIP one is never consulted
+            # and naming it sends the user after a change that fixes nothing -- while an
+            # empty HIP mask does not win, since clr's flag defaults to "" and cannot tell
+            # it from unset, so the CUDA value below it is what runs. ROCr sits
+            # BELOW that layer and composes with it rather than deferring
+            # (_rocm_visibility_masks_are_stacked), so an empty ROCr mask does blind the
+            # runtime while HIP wins above it; Windows has no ROCr layer at all.
+            # GPU_DEVICE_ORDINAL has its own predicate, and it reads whitespace as no
+            # filter. _active_gpu_visibility_mask is deliberately not the predicate
+            # here: it gates the same chain on torch being a ROCm build, which is the
+            # right question for torch's own device list and the wrong one for a HIP
+            # llama-server sitting beside the CPU torch wheel this host tends to have.
+            _hip_layer_var = (
+                "HIP_VISIBLE_DEVICES"
+                if os.environ.get("HIP_VISIBLE_DEVICES", "")
+                else "CUDA_VISIBLE_DEVICES"
+            )
+            _rocr_filters = (
+                sys.platform != "win32" and os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+            )
+            _ordinal_filters = LlamaCppBackend._gpu_device_ordinal_active()
+
+            _post_rocr_count = _post_rocr_device_count()
 
             masks = []
+            blocking = []
+            unresolved = []
             for var in (
                 "CUDA_VISIBLE_DEVICES",
                 "HIP_VISIBLE_DEVICES",
@@ -9916,35 +10091,208 @@ class LlamaCppBackend:
                 "GPU_DEVICE_ORDINAL",
             ):
                 raw = os.environ.get(var)
-                if raw is not None:
-                    masks.append(f"{var}={raw!r}" if raw.strip() else f"{var} is empty")
+                if raw is None:
+                    continue
+                phrase = f"{var}={raw!r}" if raw.strip() else f"{var} is empty"
+                masks.append(phrase)
+                if var == "GPU_DEVICE_ORDINAL":
+                    _consulted = _ordinal_filters
+                elif var == "ROCR_VISIBLE_DEVICES":
+                    _consulted = _rocr_filters
+                else:
+                    _consulted = var == _hip_layer_var
+                # A Vulkan build reads none of the four, so none of them blocks it.
+                if _is_vulkan or not _consulted:
+                    continue
+                # ROCr indexes the physical list, the HIP layer indexes ROCr's survivors.
+                _rocr = var == "ROCR_VISIBLE_DEVICES"
+                _bound = _amd_gpu_count if _rocr else _post_rocr_count
+                if _hides_every_device(raw, _bound, strict = not _rocr) or (
+                    _rocr and _is_an_illegal_rocr_selector(raw)
+                ):
+                    blocking.append(phrase)
+                elif _cannot_be_resolved(raw):
+                    unresolved.append(phrase)
+            # The four above are the HIP/CUDA selectors, which a Vulkan build reads none
+            # of. GGML_VK_VISIBLE_DEVICES is the one it DOES read, and _run_vulkan_probe
+            # passes it through to ggml deliberately, so it is the only selector that can
+            # empty a Vulkan probe -- and reporting the node repair without it named a
+            # complete explanation that reopening the node does not deliver.
+            #
+            # Only the two ends are decidable here. ggml_vk_instance_init replaces commas
+            # with spaces and reads ordinals with `ss >> tmp` against the RAW
+            # vkEnumeratePhysicalDevices list, before CPU devices are dropped and ICDs
+            # deduplicated, so this process does not have the bound: a value whose first
+            # token has no integer prefix -- the empty string included -- extracts nothing
+            # and selects no device at all, while an ordinal past the raw end throws
+            # "Invalid device index" rather than hiding. Anything else is reported as
+            # unresolved, since naming it a blocker would invent a fault.
+            if _is_vulkan:
+                _vk_raw = os.environ.get("GGML_VK_VISIBLE_DEVICES")
+                if _vk_raw is not None:
+                    _vk_phrase = (
+                        f"GGML_VK_VISIBLE_DEVICES={_vk_raw!r}"
+                        if _vk_raw.strip()
+                        else "GGML_VK_VISIBLE_DEVICES is empty"
+                    )
+                    masks.append(_vk_phrase)
+                    if _vk_selects_no_device(_vk_raw):
+                        blocking.append(_vk_phrase)
+                    else:
+                        unresolved.append(_vk_phrase)
+
             mask_note = f" ({', '.join(masks)})" if masks else ""
+
+            node_hint = None
+            if _amd_capable:
+                try:
+                    from utils.hardware.amd import amd_node_permission_hint
+                    node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
+                except Exception:  # noqa: BLE001
+                    node_hint = None
+
+            def _closed_nodes_block_the_runtime() -> bool:
+                # A host this cannot read answers True, which keeps the closed node as the
+                # stated reason -- what this returned before the sibling check existed.
+                try:
+                    from utils.hardware.amd import amd_closed_nodes_block_the_runtime
+                    return amd_closed_nodes_block_the_runtime(needs_kfd = not _is_vulkan)
+                except Exception:  # noqa: BLE001
+                    return True
+
+            def _another_vendor_has_an_open_node() -> bool:
+                # Vulkan enumerates any vendor, so an open Intel or NVIDIA render node is a
+                # complete path for THIS binary and the closed AMD one cannot be the whole
+                # story. Asked only for Vulkan: HIP needs /dev/kfd and an AMD render node,
+                # which no other vendor's node substitutes for. False on a host this cannot
+                # read, which keeps the behaviour it had before the check existed.
+                if not _is_vulkan:
+                    return False
+                # Which drivers the loader would actually load decides this, and a forced
+                # list is only one of the three things that decide it: the search dirs it
+                # replaces, the driver filters applied on top of either, and whether each
+                # manifest still resolves to a library. A loader that can only load AMD
+                # never opens the other vendor's driver, so its open node is no path. A
+                # loader that can load that vendor is the opposite case and must NOT
+                # suppress: the AMD node is then not a path either, so it cannot be why the
+                # probe came back empty.
+                try:
+                    from utils.hardware.amd import (
+                        a_non_amd_render_node_is_open,
+                        the_vulkan_loader_can_only_load_amd,
+                    )
+                    if the_vulkan_loader_can_only_load_amd():
+                        return False
+                    return a_non_amd_render_node_is_open()
+                except Exception:  # noqa: BLE001
+                    return False
+
+            # The closed node when it does NOT explain the empty probe, appended to whatever
+            # reason does rather than returned in place of it.
+            _second_finding = ""
+
+            def _the_vulkan_loader_has_no_driver() -> bool:
+                try:
+                    from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
+                    return the_vulkan_loader_has_no_usable_driver()
+                except Exception:  # noqa: BLE001
+                    return False
+
+            def _the_loader_override_to_blame() -> "str | None":
+                # Which of the three causes it is, since only two are repaired by
+                # installing anything.
+                try:
+                    from utils.hardware.amd import the_vulkan_loader_override_to_blame
+                    return the_vulkan_loader_override_to_blame()
+                except Exception:  # noqa: BLE001
+                    return None
+
+            def _reason(text: str) -> str:
+                return f"{text}{_second_finding}"
+
+            if node_hint:
+                # A mask hides devices whatever the node permissions are, so a host with
+                # both needs both fixes and the early return was hiding the second one.
+                # Only a mask that can hide EVERY device is a second blocker, though: a
+                # valid selector beside a closed node is not why the probe came back
+                # empty, and naming it sends the user after a change that fixes nothing.
+                # mask_note below is deliberately left listing all four -- there it
+                # annotates what torch was looking at rather than claiming a repair.
+                if blocking:
+                    node_hint = (
+                        f"{node_hint} A device visibility mask is also in force "
+                        f"({', '.join(blocking)}), which the groups do not clear."
+                    )
+                elif unresolved:
+                    node_hint = (
+                        f"{node_hint} {', '.join(unresolved)} names a device this cannot "
+                        f"resolve, so whether it also hides the card is unknown; check it "
+                        f"if the groups do not help."
+                    )
+                # A second blocker the node repair cannot clear, and the only one this can
+                # state about the loader itself: manifests were found and not one of them
+                # is loadable, so the probe stays empty however the node is owned. Appended
+                # rather than returned, exactly like the mask sentences above -- the closed
+                # node is still true and still needs fixing.
+                if _is_vulkan and _the_vulkan_loader_has_no_driver():
+                    # The repair depends on WHY, and the sentence used to prescribe the one
+                    # that cannot work for two of the three: a filter that disables every
+                    # manifest and a forced list pointing at paths that do not resolve are
+                    # environment settings, which reinstalling a driver leaves exactly as
+                    # they were. Named rather than described, so the user has something to
+                    # unset.
+                    _override = _the_loader_override_to_blame()
+                    if _override:
+                        node_hint = (
+                            f"{node_hint} The Vulkan loader also has no driver it can load "
+                            f"here, and {_override} is what leaves it with none: clear or "
+                            f"correct that variable, since reinstalling the driver does not "
+                            f"change an environment override."
+                        )
+                    else:
+                        node_hint = (
+                            f"{node_hint} The Vulkan loader also has no driver it can load "
+                            f"here: every ICD manifest it would read is missing its library "
+                            f"or is 32-bit, so reinstall the Vulkan driver as well."
+                        )
+                # A closed node explains an empty probe only when it is a node the runtime
+                # would have used. On a multi-AMD host one render node can be shut while a
+                # sibling is open, and the runtime then had a complete path and enumerated
+                # nothing anyway, so the closed one is a SECOND finding: returning it as the
+                # reason sends the user after a repair that leaves the probe just as empty.
+                # Asked per backend, since HIP also needs /dev/kfd and that node has no
+                # sibling. Still reported either way, because it is still true.
+                if _closed_nodes_block_the_runtime() and not _another_vendor_has_an_open_node():
+                    return node_hint
+                _second_finding = f" Separately, and not why the probe is empty: {node_hint}"
+            if _is_vulkan:
+                return _reason("the Vulkan probe reported no device")
 
             try:
                 import torch
             except Exception:  # noqa: BLE001
-                return f"torch is not importable, so no GPU could be enumerated{mask_note}"
+                return _reason(f"torch is not importable, so no GPU could be enumerated{mask_note}")
             if not hasattr(torch, "cuda") or not torch.cuda.is_available():
-                return f"torch reports no usable CUDA or HIP device{mask_note}"
+                return _reason(f"torch reports no usable CUDA or HIP device{mask_note}")
             # Counting devices does not create a context; reading their memory would.
             count = torch.cuda.device_count()
             if not count:
-                return f"torch enumerated 0 devices{mask_note}"
+                return _reason(f"torch enumerated 0 devices{mask_note}")
 
             if LlamaCppBackend._torch_is_rocm(torch):
                 coverage = LlamaCppBackend._installed_llama_gfx_archs(binary)
                 if coverage:
                     present = sorted(set(LlamaCppBackend._rocm_arch_by_physical_id().values()))
                     if present and not (set(present) & set(coverage)):
-                        return (
+                        return _reason(
                             f"the installed llama.cpp build covers {sorted(coverage)} but this "
                             f"host has {present}, so the arch gate dropped every device"
                         )
-                return (
+                return _reason(
                     f"torch sees {count} ROCm device(s) but the probe returned none, so "
                     f"amd-smi and the torch fallback both declined{mask_note}"
                 )
-            return f"torch sees {count} device(s) but the probe returned none{mask_note}"
+            return _reason(f"torch sees {count} device(s) but the probe returned none{mask_note}")
         except Exception as e:  # noqa: BLE001 -- diagnostics must not break a load
             return f"the reason could not be determined ({type(e).__name__})"
 
