@@ -291,16 +291,22 @@ def test_a_finite_limit_caps_capacity_even_when_the_remainder_is_slack():
     """
     from core.inference import diffusion_memory as dm
 
-    saved = (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
-             dm._cgroup_memory_limit_mib)
+    saved = (
+        dm._available_system_memory_mib,
+        dm._cgroup_available_memory_mib,
+        dm._cgroup_memory_limit_mib,
+    )
     dm._available_system_memory_mib = lambda: 16 * 1024
     dm._cgroup_available_memory_mib = lambda: 44 * 1024
     dm._cgroup_memory_limit_mib = lambda: 64 * 1024
     try:
         free_mib, total_mib = dm._unified_reclaimable_memory_mib(10 * 1024, 124609)
     finally:
-        (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
-         dm._cgroup_memory_limit_mib) = saved
+        (
+            dm._available_system_memory_mib,
+            dm._cgroup_available_memory_mib,
+            dm._cgroup_memory_limit_mib,
+        ) = saved
 
     assert (free_mib, total_mib) == (16 * 1024, 64 * 1024)
     budget = diffusion_memory._safe_device_budget_mib(
@@ -321,16 +327,22 @@ def test_free_memory_above_a_finite_limit_is_not_free():
     """The driver's host-wide MemFree can exceed what the container may charge."""
     from core.inference import diffusion_memory as dm
 
-    saved = (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
-             dm._cgroup_memory_limit_mib)
+    saved = (
+        dm._available_system_memory_mib,
+        dm._cgroup_available_memory_mib,
+        dm._cgroup_memory_limit_mib,
+    )
     dm._available_system_memory_mib = lambda: 100 * 1024
     dm._cgroup_available_memory_mib = lambda: 90 * 1024
     dm._cgroup_memory_limit_mib = lambda: 32 * 1024
     try:
         answer = dm._unified_reclaimable_memory_mib(80 * 1024, 124609)
     finally:
-        (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
-         dm._cgroup_memory_limit_mib) = saved
+        (
+            dm._available_system_memory_mib,
+            dm._cgroup_available_memory_mib,
+            dm._cgroup_memory_limit_mib,
+        ) = saved
 
     assert answer == (32 * 1024, 32 * 1024)
 
