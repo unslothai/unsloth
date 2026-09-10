@@ -7424,6 +7424,12 @@ def _target_is_vision(
     # invariant (the resolver only yields local paths, where the token is unused,
     # but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
+    if is_ollama_manifest_ref(load_path):
+        from hub.services.models.ollama import ollama_model_ref_files
+        from utils.models.gguf_metadata import mmproj_accepts_image
+
+        _, projector = ollama_model_ref_files(load_path)
+        return projector is not None and (not need_image or mmproj_accepts_image(projector))
     try:
         # Deliberately unguarded: the resolver only yields local paths, so this returns
         # from the mmproj filesystem branch without touching the hub. A reachability
@@ -7504,6 +7510,9 @@ def _target_accepts_request_input(
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
     from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
 
+    if is_ollama_manifest_ref(load_path):
+        from hub.services.models.ollama import ollama_model_ref_files
+        return ollama_model_ref_files(load_path)[0]
     local_path = os.path.expanduser(load_path)
     if gguf_variant and Path(local_path).is_dir():
         return _find_local_gguf_by_variant(local_path, gguf_variant)
