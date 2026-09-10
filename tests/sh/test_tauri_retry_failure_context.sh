@@ -4,6 +4,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/sh/_ps1_source.sh
+. "$SCRIPT_DIR/_ps1_source.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
@@ -377,9 +379,14 @@ if ! grep -q '\$env:UNSLOTH_TAURI_MODE = if (\$TauriMode)' "$INSTALL_PS1"; then
     exit 1
 fi
 
-_ps_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_PS1" || true)
+# The code view, not the raw file: setup.ps1 emits a probe script through a
+# here-string, and that probe ends in `exit 1`. Counting it made this assertion
+# read the emitted script's control flow as the installer's own.
+_ps_setup_code=$(ps1_code "$SETUP_PS1")
+_ps_setup_exit_count=$(printf '%s\n' "$_ps_setup_code" |
+    grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)
 if [ "$_ps_setup_exit_count" -ne 1 ] ||
-    ! grep -q '^[[:space:]]*exit \$Code$' "$SETUP_PS1"; then
+    ! printf '%s\n' "$_ps_setup_code" | grep -q '^[[:space:]]*exit \$Code$'; then
     echo "  FAIL: Windows setup has explicit exits outside Exit-SetupFailure"
     exit 1
 fi

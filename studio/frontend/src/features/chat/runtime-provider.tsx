@@ -119,6 +119,7 @@ import {
   generationIsCorroboratedLive,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
+  restoreCarriedPartsFromRaw,
   isLiveGenerationRun,
   generationRawContent,
   loadGenerationOverlaySnapshot,
@@ -132,6 +133,7 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import {
   extractDeltaText,
@@ -872,7 +874,10 @@ function scheduleGenerationRecovery(
   const recovery = (async () => {
     let cursor = Number(metadata.generationSeq ?? 0);
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
-    let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
+    const stored = generationRawContent(storedMessage.content);
+    const carried = stored.carried;
+    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor);
+    let { raw, reasoningOpen } = stored;
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -904,6 +909,22 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
+    // Save and finalisation share ONE rebuild: derived apart, the names lag a publish or are empty.
+    const rebuild = () =>
+      toolRecovery.withSources(
+        restoreCarriedPartsFromRaw(
+          reasoningOpen ? `${raw}</think>` : raw,
+          carried,
+        ),
+      ) as MessageRecord["content"];
+    const toolNames = (content: MessageRecord["content"]): string[] =>
+      (Array.isArray(content) ? content : []).flatMap((part) => {
+        const card = part as { type?: string; toolName?: unknown };
+        return card.type === "tool-call" && typeof card.toolName === "string"
+          ? [card.toolName]
+          : [];
+      });
+
     /** Write one state of the reply to storage and to every view showing it. `running` is the
      *  caller's, not derived here: a follow that hit its no-progress deadline settles the message
      *  while its persisted run status is still non-terminal. */
@@ -912,9 +933,7 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      const content = parseAssistantContent(
-        reasoningOpen ? `${raw}</think>` : raw,
-      ) as MessageRecord["content"];
+      const content = rebuild();
       await saveStoredChatMessage({
         id: storedMessage.id,
         threadId,
@@ -1000,6 +1019,7 @@ function scheduleGenerationRecovery(
           timings: recoveryTimings,
           firstChunkAt,
           totalChunks,
+          toolCalls: toolNames(rebuild()),
         });
       }
       await commit(nextMetadata, generationNeedsRecovery(nextMetadata));
@@ -1013,7 +1033,7 @@ function scheduleGenerationRecovery(
       let followStalled = false;
       try {
         for await (const update of followChatGenerationRun(runId, {
-          replayFrom: cursor,
+          replayFrom: toolRecovery.replayFrom,
         })) {
           if (!identityValidated) {
             if (
@@ -1039,7 +1059,18 @@ function scheduleGenerationRecovery(
             }
             identityValidated = true;
           }
+          // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
+          let advanced = false;
+          if (update.event?.type === "chunk") {
+            toolRecovery.apply(
+              update.event.payload,
+              raw.length,
+              update.event.seq,
+              update.run.requestPayload.session_id,
+            );
+          }
           if (update.event && update.event.seq > cursor) {
+            advanced = true;
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
@@ -1129,7 +1160,7 @@ function scheduleGenerationRecovery(
             }
           }
           const shouldPublish =
-            update.event?.type === "chunk" ||
+            (update.event?.type === "chunk" && advanced) ||
             update.run.status !== lastPublishedStatus ||
             (["cancelled", "completed", "failed"].includes(update.run.status) &&
               cursor >= update.run.lastEventSeq);
