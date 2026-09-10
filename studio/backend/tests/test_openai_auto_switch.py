@@ -5229,12 +5229,9 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
 
 
 def test_chat_count_tokens_folds_a_stopped_studio_tool_thread(monkeypatch):
-    """The counter skips its own coalesce on the passthrough, so once a Stop sentinel sits between
-    a folded Studio tool result and the next question, only the fold helper can keep the shape
-    alternating. Without that the bar prices a prompt the completion would be 400ed for.
-
-    Distinct from ``..._keeps_adjacent_user_turns_on_the_passthrough`` above: that thread has no
-    tool history, is never folded, and must keep its two user turns.
+    """The counter skips its own coalesce on the passthrough, so only the fold helper keeps a
+    Stop-sentinel thread alternating; without it the bar prices a prompt the completion 400s on.
+    Unlike ``..._keeps_adjacent_user_turns_on_the_passthrough`` above, this thread IS folded.
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99)
     thread = [

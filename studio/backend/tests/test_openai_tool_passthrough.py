@@ -2543,11 +2543,10 @@ class TestChatCompletionRequestToolFields:
     def test_studio_tool_history_under_guided_decoding_survives_a_stopped_turn(
         self, monkeypatch, sentinel
     ):
-        """Stop, pressed on the answer a Studio tool just fed, leaves an empty assistant turn
-        between the tool result and the next question. The fold cannot coalesce across it, and
-        the passthrough drops it downstream without coalescing, so the two user turns end up
-        adjacent again and Gemma 400s the request -- the same failure the coalesce above exists
-        to prevent, one Stop later. Dropping the sentinels before the fold is what holds it."""
+        """Stop leaves an empty assistant turn between the tool result and the next question. The
+        coalesce cannot merge across it and the passthrough drops it downstream without
+        coalescing, so the two user turns land adjacent again -- the failure above, one Stop
+        later. Dropping the sentinels before the fold is what holds it."""
         import routes.inference as inference_route
 
         captured = {}
@@ -2602,10 +2601,9 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_studio_fold_drops_a_provider_synthetic_card_rather_than_folding_it(self):
-        """Downstream, a Gemini server-side tool card is dropped by matching its role="tool"
-        reply to the synthetic call. Folding destroys that handle, so a thread switched from
-        Gemini to a local GGUF would carry code_execution into the prompt as user prose forever.
-        The fold has to strip before it folds, which is the order /v1/messages already uses."""
+        """Downstream a Gemini tool card is dropped by matching its role="tool" reply to the
+        synthetic call, and folding destroys that handle, so a thread switched from Gemini to a
+        local GGUF would carry code_execution on as user prose. Strip before folding."""
         from routes.inference import _folded_studio_tool_messages
 
         folded = _folded_studio_tool_messages(
@@ -2646,10 +2644,9 @@ class TestChatCompletionRequestToolFields:
         assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
 
     def test_studio_fold_keeps_an_audio_only_follow_up_validatable(self):
-        """``_normalise_chat_content_parts`` lifts an input_audio part onto ``audio_base64`` and
-        leaves ``content = []`` for ``_inject_audio_part`` to refill. Nothing re-validated a
-        message after that lift until this fold did, and ChatMessage rejects the placeholder, so
-        speaking the next turn of a folded thread raised out of the route instead of answering."""
+        """The audio lift leaves ``content = []`` for ``_inject_audio_part`` to refill, and
+        ChatMessage rejects that placeholder, so speaking the next turn of a folded thread raised
+        out of the route instead of answering."""
         from routes.inference import _folded_studio_tool_messages
 
         messages = [

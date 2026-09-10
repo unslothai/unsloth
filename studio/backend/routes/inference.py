@@ -3922,25 +3922,13 @@ def _folds_studio_tool_history(payload, llama_backend) -> bool:
 
 
 def _folded_studio_tool_messages(messages) -> list:
-    # The whole chain _sanitize_anthropic_openai_messages runs, in its order, because every step
-    # of it is load-bearing here too.
-    #
-    # Fold before coalesce is what merges a folded result with the note after it. Every other
-    # route coalesces downstream, but the guided-decoding passthrough deliberately does not, so a
-    # response_format request on this same thread would reach llama-server with two user turns in
-    # a row and Gemma, which checks alternation by index parity, 400s the whole request.
-    #
-    # Drop the sentinels FIRST, or that holds only until the Stop button: a stopped turn leaves an
-    # empty assistant message between the tool result and the next question, the coalesce cannot
-    # merge across it, and the passthrough then removes it downstream without coalescing --
-    # landing back on the same two adjacent user turns. Every consumer of this list drops those
-    # sentinels anyway, so removing them here changes nothing but what the coalesce can see.
-    #
-    # Strip the provider-synthetic pairs in the same breath, for a reason the other routes never
-    # face: downstream they are dropped by matching a role="tool" reply to its synthetic call, and
-    # folding is what destroys that handle. A Gemini thread that ran code_execution and was then
-    # switched to a local GGUF would otherwise have its server-side tool card folded into user
-    # prose and carried into the prompt forever, where every other path drops it.
+    # _sanitize_anthropic_openai_messages' chain, in its order. Each step reads as redundant with
+    # something downstream until it is removed:
+    #   sentinels first: a stopped turn between the result and the next question blocks the
+    #     coalesce, and the passthrough drops it later without coalescing (Gemma 400s on parity).
+    #   synthetic pairs next: downstream they are matched through their role="tool" reply, which
+    #     folding destroys, so a Gemini code_execution card would ride on as user prose.
+    #   fold before coalesce: what merges a folded result with the note after it.
     return [
         ChatMessage.model_validate(_revalidatable(message))
         for message in _coalesce_consecutive_user_turns(
@@ -3956,14 +3944,10 @@ def _folded_studio_tool_messages(messages) -> list:
 
 
 def _revalidatable(message: dict) -> dict:
-    """An emptied content list is an internal placeholder, not a message ChatMessage will take.
-
-    ``_normalise_chat_content_parts`` lifts an ``input_audio`` part onto ``payload.audio_base64``
-    and leaves ``content = []`` behind for ``_inject_audio_part`` to fill back in. Nothing
-    re-validated a message after that lift until this fold did, so the validator never had to
-    accept it -- and it does not, so an audio-only follow-up on a folded thread raised straight
-    out of the route. ``""`` is the same placeholder in a shape it does take, and
-    ``_inject_audio_part`` already reads it that way (``content or ""``).
+    """``content = []`` is the placeholder ``_normalise_chat_content_parts`` leaves behind when it
+    lifts an ``input_audio`` part onto ``payload.audio_base64``. ChatMessage rejects it, and until
+    this fold nothing re-validated a message after that lift. ``""`` is the same placeholder in a
+    shape it accepts, and ``_inject_audio_part`` already reads it that way (``content or ""``).
     """
     if message.get("content") == [] and message.get("role") != "assistant":
         return {**message, "content": ""}
