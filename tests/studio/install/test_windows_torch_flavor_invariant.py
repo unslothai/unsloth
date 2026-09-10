@@ -415,7 +415,7 @@ class TestManifestRecordsTheFlavor:
         read = _line_of(
             _STACK_SRC, "_RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()"
         )
-        drop = _line_of(_STACK_SRC, "if not install_manifest.remove_manifest():")
+        drop = _line_of(_STACK_SRC, "if install_manifest.remove_manifest():")
         assert read < drop
         assert (
             "def install_python_stack"
