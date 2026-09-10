@@ -1606,7 +1606,13 @@ _setup_uv_sha256() {
 _setup_uv_probe_exec() {
     _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        # TERM can be caught or ignored; KILL five seconds later cannot. -k where the
+        # timeout at hand takes it (coreutils, current busybox), plain otherwise.
+        if timeout -k 1 5 true >/dev/null 2>&1; then
+            timeout -k 5 "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        else
+            timeout "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        fi
         return $?
     fi
     "$1" --version >/dev/null 2>&1 </dev/null &
@@ -1615,8 +1621,16 @@ _setup_uv_probe_exec() {
     while kill -0 "$_supe_pid" 2>/dev/null; do
         if [ "$_supe_waited" -ge "$_supe_secs" ]; then
             kill "$_supe_pid" 2>/dev/null
+            # The same escalation as timeout -k: a binary that ignores TERM would
+            # otherwise hold the wait below for as long as it likes.
+            _supe_grace=0
+            while [ "$_supe_grace" -lt 5 ] && kill -0 "$_supe_pid" 2>/dev/null; do
+                sleep 1
+                _supe_grace=$((_supe_grace + 1))
+            done
+            kill -9 "$_supe_pid" 2>/dev/null
             wait "$_supe_pid" 2>/dev/null
-            unset _supe_pid _supe_waited
+            unset _supe_pid _supe_waited _supe_grace
             return 124
         fi
         sleep 1

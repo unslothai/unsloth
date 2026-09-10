@@ -133,6 +133,22 @@ for shell in sh bash; do
         else
             bad "$shell: ...and the fallback bound held"
         fi
+        # A uv that ignores TERM: the ceiling has to end in KILL in both branches, or
+        # the probe waits on it for as long as it likes.
+        DEAF="$CASE/ignores term"
+        mkdir -p "$DEAF"
+        printf '#!/bin/sh\ntrap "" TERM\nsleep 60\n' > "$DEAF/uv"
+        chmod +x "$DEAF/uv"
+        for _deaf_path in "$BARE_PATH" "$NOTO"; do
+            _hang_started=$(date +%s)
+            assert_eq "$shell: a uv that ignores TERM is not reused (PATH=$_deaf_path)" \
+                "none" "$(env -i PATH="$_deaf_path" HOME="$HOME_DIR" UV_INSTALL_DIR="$DEAF" "$shell" "$HANG_PROBE")"
+            if [ $(( $(date +%s) - _hang_started )) -lt 30 ]; then
+                ok "$shell: ...and the KILL escalation held the bound"
+            else
+                bad "$shell: ...and the KILL escalation held the bound"
+            fi
+        done
     fi
 done
 
