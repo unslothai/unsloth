@@ -217,18 +217,19 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app, so it belongs beside the
-    # identity fields where a reader can see whether the order was balanced.
-    "ab_plan": "header",
+    # A/B order bookkeeping gets its own section beside the identity fields. Filing it under
+    # `header` would discard it when that section collapses to one run_meta row (#9580).
+    # See `COLLAPSED_SECTIONS`.
+    "ab_plan": "ab_plan",
     # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI, not a
     # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
     # The comparability key. Its own section rather than `header` for two reasons: `header` is
-    # collapsed to its FIRST row when the payload is assembled, so a second row filed there is dropped
-    # without a word; and the row's `fields` block is identity bookkeeping, not a measurement, so the
-    # section is exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the
-    # row fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
-    # session on `$.unknown_rows[0].fields.instrument_level = 0`.
+    # collapsed to one record when the payload is assembled, so a second row type filed there is
+    # dropped without a word (see `COLLAPSED_SECTIONS`); and the row's `fields` block is identity
+    # bookkeeping, not a measurement, so the section is exempted from the bare-zero ban rather than
+    # made to fake a Measure. Left unmapped the row fell into `unknown_rows`, which nothing exempts,
+    # and the walker killed every real-path session on `$.unknown_rows[0].fields.instrument_level = 0`.
     "comparability": "comparability",
     # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer reads,
     # and NOT an exclusion source: the `cell` row it follows is emitted with `completed: false`
@@ -237,6 +238,31 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     # reader scanning FORWARD can discard the cell's window rows.
     "cell_aborted": "aborted_cells",
 }
+
+
+#: The sections reported as ONE record rather than a list, and the row type each collapses to.
+#: A section named here may hold exactly one row type: a second type filed into it is routed by
+#: `ROW_TYPE_SECTIONS` and then discarded by the collapse, with no `unknown_rows` entry to show
+#: for it. `report/selftest/test_studiobench_payload_sections.py` enforces that.
+COLLAPSED_SECTIONS: Mapping[str, str] = {
+    "header": "run_meta",
+    "ab_plan": "ab_plan",
+    "comparability": "comparability",
+}
+
+
+def _collapsed(sections: Mapping[str, list[dict[str, Any]]], name: str) -> dict[str, Any]:
+    """The single record a collapsed section reports, chosen by row type rather than position.
+
+    The FIRST match, not the last, because `Recorder` appends: a resumed payload holds several
+    sessions, and the collapsed sections all have to describe the same one.
+    """
+
+    row_type = COLLAPSED_SECTIONS[name]
+    for row in sections.get(name, []):
+        if row.get("row_type") == row_type:
+            return row
+    return {}
 
 
 def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
@@ -268,13 +294,18 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
 
     cells = sections.get("cells", [])
     completed_cells = [c for c in cells if c.get("completed") is True]
+    # The `run_meta` row itself, not merely a non-empty `header` section: the section used to hold
+    # `ab_plan` too, so an emptiness test read a run that had recorded only its A/B order as one
+    # that had recorded its identity.
+    header = _collapsed(sections, "header")
     payload: dict[str, Any] = {
         "schema": "studiobench/payload/1",
         "source": "recorder_rows",
-        "complete": bool(sections.get("header")) and bool(completed_cells),
+        "complete": bool(header) and bool(completed_cells),
         "truncated_records": discarded,
         "record_counts": {name: len(rows) for name, rows in sections.items() if rows},
-        "header": sections.get("header", [{}])[0] if sections.get("header") else {},
+        "header": header,
+        "ab_plan": _collapsed(sections, "ab_plan"),
         "selfcheck": sections.get("selfcheck", []),
         "windows": sections.get("windows", []),
         "actions": sections.get("actions", []),
@@ -282,7 +313,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "samples": sections.get("samples", []),
         "surfaces": sections.get("surfaces", []),
         "aborted_cells": sections.get("aborted_cells", []),
-        "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
+        "comparability": _collapsed(sections, "comparability"),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,
