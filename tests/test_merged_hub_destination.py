@@ -39,7 +39,7 @@ class FullModel:
 @pytest.fixture
 def saving(monkeypatch, tmp_path):
     source = Path(__file__).resolve().parents[1] / "unsloth/save.py"
-    tree = ast.parse(source.read_text())
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
     records = {
         "merges": [],
         "uploads": [],
@@ -132,7 +132,7 @@ def saving(monkeypatch, tmp_path):
                     repo_id = kwargs["repo_id"], operations = [], commit_message = None
                 )
             files = {
-                operation.path_in_repo: Path(operation.path_or_fileobj).read_text()
+                operation.path_in_repo: Path(operation.path_or_fileobj).read_text(encoding = "utf-8")
                 for operation in kwargs["operations"]
             }
             records["uploads"].append({**kwargs, "files": files, "token": self.token})
