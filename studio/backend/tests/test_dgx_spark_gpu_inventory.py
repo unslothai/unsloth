@@ -308,3 +308,126 @@ def test_a_hip_torch_is_never_read_with_the_cuda_rule(monkeypatch):
     )
 
     assert hw._cuda_props_are_integrated(_SparkProps(), "cuda") is False
+
+
+def _smi_visible_utilization(monkeypatch, rows) -> dict:
+    payload = {
+        "available": True,
+        "devices": rows,
+        "backend_cuda_visible_devices": "0",
+        "parent_visible_gpu_ids": [0],
+        "index_kind": "physical",
+    }
+    monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: payload)
+    return payload
+
+
+def _unsized_row(index = 0, ordinal = 0, index_kind = "physical") -> dict:
+    return {
+        "index": index,
+        "index_kind": index_kind,
+        "visible_ordinal": ordinal,
+        "gpu_utilization_pct": 0.0,
+        "temperature_c": 46.0,
+        "vram_used_gb": None,
+        "vram_total_gb": None,
+        "vram_utilization_pct": None,
+        "power_draw_w": 12.09,
+        "power_limit_w": None,
+        "power_utilization_pct": None,
+    }
+
+
+def test_the_system_poll_function_is_the_one_that_gets_repaired(monkeypatch):
+    """/api/system reads get_visible_gpu_utilization, NOT get_gpu_utilization.
+
+    main.py::_get_cached_system_gpu_info calls the former, so repairing only the latter
+    left the floating monitor showing Unknown / 0.00 GiB, which is the screen #10691 is
+    actually about.
+    """
+    _cuda_host(monkeypatch, _SparkProps())
+    _smi_visible_utilization(monkeypatch, [_unsized_row()])
+    monkeypatch.setattr(
+        psutil, "virtual_memory",
+        lambda: types.SimpleNamespace(total = 121 * GIB, available = 100 * GIB),
+    )
+
+    device = hw.get_visible_gpu_utilization()["devices"][0]
+
+    assert device["vram_total_gb"] == SPARK_TOTAL_GB
+    assert device["vram_used_gb"] == 21.0
+
+
+def test_a_uuid_mask_still_reaches_the_reconciliation(monkeypatch):
+    """A UUID or MIG mask resolves to numeric_ids=None, and nvidia.py answers anyway.
+
+    Its rows are relative-indexed and ordered by the mask, which is the order torch
+    enumerates too, so the join is on visible_ordinal rather than a physical id.
+    """
+    _cuda_host(monkeypatch, _SparkProps())
+    monkeypatch.setattr(
+        hw, "_get_parent_visible_gpu_spec",
+        lambda: {"raw": "GPU-9254a6cb", "numeric_ids": None, "supports_explicit_gpu_ids": False},
+    )
+    monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
+    _smi_visible_utilization(monkeypatch, [_unsized_row(index = 0, index_kind = "relative")])
+
+    device = hw.get_visible_gpu_utilization()["devices"][0]
+
+    assert device["vram_total_gb"] == SPARK_TOTAL_GB
+
+
+def test_a_mismatched_device_order_refuses_the_join(monkeypatch):
+    """FASTEST_FIRST puts torch ordinals in a different space from nvidia-smi rows.
+
+    Joining them anyway attaches another card's capacity to a row. The module already
+    rejects this exact cross-source mapping for its SMI VRAM query; the repair uses the
+    same gate rather than guessing.
+    """
+    _cuda_host(monkeypatch, _DiscreteProps())
+    monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: False)
+    _smi_rows(monkeypatch, None)
+
+    # The resolver refuses outright rather than handing back a mapping to guess with.
+    assert hw._integrated_cuda_inventory([0]) == ({}, "index")
+
+    # The endpoint then answers from ONE source, the torch inventory, instead of an
+    # SMI row wearing another card's capacity. Nothing is classified unified.
+    device = hw.get_backend_visible_gpu_info()["devices"][0]
+    assert device["name"] == "NVIDIA GB200"
+    assert device["memory_total_gb"] == 183.0
+    assert device["unified_memory"] is False
+
+
+def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
+    """_torch_get_device_inventory skips a device whose probe failed, so its list can
+    be SHORT rather than empty. A short list must not replace the cards nvidia-smi saw.
+    """
+    _cuda_host(monkeypatch, _SparkProps())
+    monkeypatch.setattr(
+        hw, "_get_parent_visible_gpu_spec",
+        lambda: {"raw": "0,1", "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1])
+    monkeypatch.setattr(
+        nvidia, "_query_gpu_inventory",
+        lambda caller: [
+            {"index": 0, "name": "NVIDIA GB10", "memory_total_gb": None},
+            {"index": 1, "name": "NVIDIA GB10", "memory_total_gb": None},
+        ],
+    )
+    # Only ordinal 0 answers, the shape a fallen-off-the-bus card produces.
+    monkeypatch.setattr(
+        hw, "_torch_get_device_inventory",
+        lambda indices: [
+            {"index": 0, "visible_ordinal": 0, "name": "NVIDIA GB10",
+             "total_gb": SPARK_TOTAL_GB, "used_gb": None, "shared_memory": False,
+             "shared_memory_host_backed_gb": None, "_rocm_known_unified": False,
+             "_rocm_gfx": "", "_cuda_integrated": True}
+        ],
+    )
+
+    result = hw.get_backend_visible_gpu_info()
+
+    assert len(result["devices"]) == 2
+    assert [d["name"] for d in result["devices"]] == ["NVIDIA GB10", "NVIDIA GB10"]

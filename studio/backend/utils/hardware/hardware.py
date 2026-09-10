@@ -4891,7 +4891,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
             numeric_ids = parent_visible_spec.get("numeric_ids")
             if IS_ROCM and numeric_ids is not None:
                 _reconcile_rocm_unified_memory(result, numeric_ids)
-            elif not IS_ROCM and numeric_ids is not None:
+            elif not IS_ROCM:
+                # numeric_ids is None under a UUID/MIG mask, which nvidia.py resolves
+                # itself and answers with relative-indexed rows: still repairable.
                 _reconcile_cuda_integrated_memory(result, numeric_ids)
 
             return _gpu_utilization_payload(
@@ -5114,8 +5116,40 @@ def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: 
         _apply_unified_memory_correction(dev, td)
 
 
+def _integrated_cuda_inventory(
+    device_indices: Optional[list[int]],
+) -> tuple[Dict[Any, Dict[str, Any]], str]:
+    """torch's context-free inventory, keyed the way the SMI rows are indexed.
+
+    Returns ``({key: row}, key_field)``, empty when the two sources cannot be joined.
+
+    Two index spaces, and picking the wrong one attaches another card's capacity to a
+    row. With a NUMERIC mask the SMI rows carry physical ids, so the join is on
+    ``index`` -- but only behind ``_cuda_order_matches_smi``, because CUDA enumerates
+    FASTEST_FIRST by default while nvidia-smi reports PCI order, and equal-sized cards
+    defeat every other check. Same gate the SMI VRAM query already applies. With a UUID
+    or MIG mask there are no physical ids: nvidia.py resolves the mask itself and
+    returns rows ordered by it, and torch enumerates that same mask in that same order,
+    so ``visible_ordinal`` joins them whatever CUDA_DEVICE_ORDER says.
+    """
+    if device_indices is None:
+        ordinals = list(range(_torch_get_physical_gpu_count() or 0))
+        if not ordinals:
+            return {}, "visible_ordinal"
+        return {
+            td["visible_ordinal"]: td for td in _torch_get_device_inventory(ordinals)
+        }, "visible_ordinal"
+    if not _cuda_order_matches_smi():
+        # Refusing beats guessing: the caller keeps whatever the CLI reported.
+        return {}, "index"
+    inventory = _torch_get_device_inventory(
+        device_indices if device_indices else list(range(_torch_get_physical_gpu_count() or 0))
+    )
+    return {td["index"]: td for td in inventory}, "index"
+
+
 def _reconcile_cuda_integrated_memory(
-    utilization: Dict[str, Any], device_indices: list[int]
+    utilization: Dict[str, Any], device_indices: Optional[list[int]]
 ) -> None:
     """Fill the VRAM columns nvidia-smi leaves at ``[N/A]`` on an integrated CUDA SoC.
 
@@ -5135,11 +5169,11 @@ def _reconcile_cuda_integrated_memory(
     if not missing:
         return
     try:
-        inventory = _torch_get_device_inventory(device_indices)
+        inventory, key_field = _integrated_cuda_inventory(device_indices)
     except Exception as e:  # noqa: BLE001 - reached on a host that HAS nvidia-smi
         logger.debug("torch inventory unavailable while sizing an integrated GPU: %s", e)
         return
-    integrated = {td["index"]: td for td in inventory if td.get("_cuda_integrated")}
+    integrated = {key: td for key, td in inventory.items() if td.get("_cuda_integrated")}
     if not integrated:
         return
     used_gb = None
@@ -5151,7 +5185,7 @@ def _reconcile_cuda_integrated_memory(
     except Exception as e:  # noqa: BLE001 - a total alone still beats Unknown / 0.00
         logger.debug("host memory probe failed while sizing an integrated GPU: %s", e)
     for dev in missing:
-        td = integrated.get(dev.get("index"))
+        td = integrated.get(dev.get(key_field))
         if td is None:
             continue
         total_gb = td["total_gb"]
@@ -5356,6 +5390,11 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             if IS_ROCM and numeric_ids is not None:
                 # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.).
                 _reconcile_rocm_unified_memory(result, numeric_ids)
+            elif not IS_ROCM:
+                # THIS is what /api/system reads (main.py::_get_cached_system_gpu_info),
+                # so the floating monitor's Unknown / 0.00 GiB is repaired here; the twin
+                # in get_gpu_utilization serves the training-side callers.
+                _reconcile_cuda_integrated_memory(result, numeric_ids)
             return result
 
         # Windows AMD/ROCm (issue #7072): the System tab's VRAM source. The torch
@@ -6938,20 +6977,12 @@ def _repair_smi_visible_devices(
     if all(dev.get("memory_total_gb") is not None for dev in devices):
         return True
     try:
-        inventory = _torch_get_device_inventory(
-            parent_visible_ids
-            if parent_visible_ids
-            else list(range(_torch_get_physical_gpu_count() or 0))
-        )
+        inventory, key_field = _integrated_cuda_inventory(parent_visible_ids)
     except Exception as e:  # noqa: BLE001 - the caller keeps the rows nvidia-smi found
         logger.debug("torch inventory unavailable while repairing a GPU capacity: %s", e)
         return False
-    by_index = {td["index"]: td for td in inventory}
-    by_ordinal = {td["visible_ordinal"]: td for td in inventory}
     for dev in devices:
-        td = by_index.get(dev.get("index"))
-        if td is None:
-            td = by_ordinal.get(dev.get("visible_ordinal"))
+        td = inventory.get(dev.get(key_field))
         if td is None:
             continue
         if dev.get("memory_total_gb") is None:
@@ -7043,6 +7074,16 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 }
                 for td in torch_devices
             ]
+            # A per-device probe failure leaves this list SHORT rather than empty, and
+            # a shorter list drops cards nvidia-smi could see. The repair's guarantee is
+            # that it never reports fewer devices than before it existed.
+            if (
+                unrepaired_smi_result is not None
+                and len(devices) < len(unrepaired_smi_result.get("devices") or [])
+            ):
+                unrepaired_smi_result["backend"] = _backend_label(device)
+                return unrepaired_smi_result
+
             return {
                 "available": True,
                 "backend": _backend_label(device),
