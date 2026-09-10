@@ -161,9 +161,7 @@ def _strip_bos_from_chat_template_text(chat_template):
     # Keep the `{{` when bos_token is only one term of a larger expression, e.g. Llama 2's
     # `{{ bos_token + '[INST] ' + ... }}`. Dropping it too leaves a dangling `}}` and turns the
     # rest of the expression into literal text.
-    return re.sub(
-        r"(\{[\s\-]*\{[\s\-]*)bos\_token[\s\-]*\+[\s\-]*", r"\1", stripped, count = 1
-    )
+    return re.sub(r"(\{[\s\-]*\{[\s\-]*)bos\_token[\s\-]*\+[\s\-]*", r"\1", stripped, count = 1)
 
 
 def _dedupe_bos_chat_template(tokenizer):
