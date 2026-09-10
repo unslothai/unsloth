@@ -54,7 +54,7 @@ import math
 from loggers import get_logger
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
 from utils.datasets.audio_decode import ensure_audio_decoding
@@ -265,6 +265,25 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     except Exception:  # noqa: BLE001 - unreadable row, empty dataset, odd row type
         return None
     return False if saw_a_usable_value else None
+
+
+# Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
+_UNSET = object()
+
+
+def normalize_gradient_checkpointing(value) -> Union[str, bool]:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("", "unsloth"):
+            return "unsloth"
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no", "none", "off"):
+            return False
+    elif value in (True, False, "unsloth"):
+        return value
+    logger.warning(f"Invalid gradient_checkpointing value: {value}, defaulting to 'unsloth'")
+    return "unsloth"
 
 
 class UnslothTrainer:
@@ -821,10 +840,14 @@ class UnslothTrainer:
         local_files_only: bool = False,
         actual_model_repo_id: Optional[str] = None,
         model_revision: Optional[str] = None,
+        use_gradient_checkpointing: Union[str, bool] = "unsloth",
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit
         self.trust_remote_code = trust_remote_code
+        # The loader installs the checkpointing implementation; a full finetune never reinstalls it.
+        use_gradient_checkpointing = normalize_gradient_checkpointing(use_gradient_checkpointing)
+        self._use_gradient_checkpointing = use_gradient_checkpointing
         lookup_name = model_load_name or model_name
         self.model_load_error = None
         try:
@@ -981,6 +1004,7 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -1001,6 +1025,7 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 self.model.generation_config.language = "<|en|>"
                 self.model.generation_config.task = "transcribe"
@@ -1021,6 +1046,7 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -1060,6 +1086,7 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 logger.info("Loaded Spark-TTS (bicodec) model")
 
@@ -1075,6 +1102,7 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
@@ -1091,6 +1119,7 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -1106,6 +1135,7 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 logger.info("Loaded vision model")
 
@@ -1133,6 +1163,7 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 logger.info("Loaded text model")
 
@@ -1152,7 +1183,9 @@ class UnslothTrainer:
                 return False
 
             if full_finetuning:
-                self.model.for_training()
+                self.model.for_training(
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                )
 
             self._update_progress(status_message = "Model loaded successfully")
             logger.info("Model loaded successfully")
@@ -1181,6 +1214,7 @@ class UnslothTrainer:
                     local_files_only = local_files_only,
                     actual_model_repo_id = actual_model_repo_id,
                     model_revision = model_revision,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -1238,7 +1272,7 @@ class UnslothTrainer:
         lora_r: int = 16,
         lora_alpha: int = 16,
         lora_dropout: float = 0.0,
-        use_gradient_checkpointing: str = "unsloth",
+        use_gradient_checkpointing: Union[str, bool] = _UNSET,
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
@@ -1251,30 +1285,26 @@ class UnslothTrainer:
             if self.model is None:
                 raise ValueError("Model not loaded. Call load_model() first.")
 
-            if isinstance(use_gradient_checkpointing, str):
-                use_gradient_checkpointing = use_gradient_checkpointing.strip().lower()
-                if use_gradient_checkpointing == "" or use_gradient_checkpointing == "unsloth":
-                    use_gradient_checkpointing = "unsloth"
-                elif use_gradient_checkpointing in ("true", "1", "yes"):
-                    use_gradient_checkpointing = True
-                elif use_gradient_checkpointing in ("false", "0", "no", "none", "off"):
-                    use_gradient_checkpointing = False
-                else:
-                    logger.warning(
-                        f"Invalid gradient_checkpointing value: {use_gradient_checkpointing}, defaulting to 'unsloth'"
-                    )
-                    use_gradient_checkpointing = "unsloth"
-            elif use_gradient_checkpointing not in (True, False, "unsloth"):
-                logger.warning(
-                    f"Invalid gradient_checkpointing type/value: {use_gradient_checkpointing}, defaulting to 'unsloth'"
+            if use_gradient_checkpointing is _UNSET:
+                use_gradient_checkpointing = self._use_gradient_checkpointing
+            else:
+                use_gradient_checkpointing = normalize_gradient_checkpointing(
+                    use_gradient_checkpointing
                 )
-                use_gradient_checkpointing = "unsloth"
-            self._use_gradient_checkpointing = use_gradient_checkpointing
 
             if not use_lora:
+                if use_gradient_checkpointing != self._use_gradient_checkpointing:
+                    # Nothing after loading reinstalls a full finetune's implementation.
+                    logger.warning(
+                        f"Gradient checkpointing {use_gradient_checkpointing} was requested after the "
+                        f"model was loaded with {self._use_gradient_checkpointing}. A full finetune "
+                        f"keeps the loaded mode, so pass it to load_model() instead."
+                    )
                 self._update_progress(status_message = "Full finetuning mode - no LoRA adapters")
                 logger.info("Full finetuning mode - training all parameters\n")
                 return True
+
+            self._use_gradient_checkpointing = use_gradient_checkpointing
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
@@ -3972,7 +4002,7 @@ class UnslothTrainer:
                     logger.info("Configuring DeepSeek OCR data collator...\n")
                     FastVisionModel.for_training(
                         self.model,
-                        use_gradient_checkpointing = bool(self._use_gradient_checkpointing),
+                        use_gradient_checkpointing = self._use_gradient_checkpointing,
                     )
                     # (image_size, base_size, crop_mode) is a coupled preset: changing image_size alone desyncs the per-
                     # crop grid from num_queries.
@@ -4002,12 +4032,10 @@ class UnslothTrainer:
                 logger.info("Configuring audio VLM data collator...\n")
                 from unsloth import FastModel
 
-                # The module flags decide whether a layer checkpoints; SFTConfig only ever turns
-                # checkpointing on. A full finetune arrives here already flagged by load_model's
-                # for_training(), so the choice has to be reapplied or "none" is ignored.
+                # The module flags decide whether a layer checkpoints, as in the image VLM branch.
                 FastModel.for_training(
                     self.model,
-                    use_gradient_checkpointing = bool(self._use_gradient_checkpointing),
+                    use_gradient_checkpointing = self._use_gradient_checkpointing,
                 )
                 processor = self.tokenizer
 
@@ -4050,7 +4078,7 @@ class UnslothTrainer:
 
                 FastVisionModel.for_training(
                     self.model,
-                    use_gradient_checkpointing = bool(self._use_gradient_checkpointing),
+                    use_gradient_checkpointing = self._use_gradient_checkpointing,
                 )
                 vision_image_size = training_args.get("vision_image_size")
                 if vision_image_size is None:
@@ -4096,6 +4124,8 @@ class UnslothTrainer:
                     serial_as_none = False,
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
+                # TRL defaults this on, and train() re-enables checkpointing from it.
+                "gradient_checkpointing": bool(self._use_gradient_checkpointing),
             }
             if training_args.get("enable_tensorboard", False):
                 config_args["logging_dir"] = str(
@@ -4175,12 +4205,10 @@ class UnslothTrainer:
                 logger.info(f"Configuring {label} model training parameters\n")
                 optim_value = training_args.get("optim", "adamw_torch_fused")
                 lr_scheduler_type_value = training_args.get("lr_scheduler_type", "cosine")
-                gradient_checkpointing = bool(self._use_gradient_checkpointing)
                 config_args.update(
                     {
                         "optim": optim_value,
                         "lr_scheduler_type": lr_scheduler_type_value,
-                        "gradient_checkpointing": gradient_checkpointing,
                         "max_grad_norm": 0.3,
                         "remove_unused_columns": False,
                         "dataset_text_field": "",
@@ -4188,7 +4216,7 @@ class UnslothTrainer:
                         "max_length": training_args.get("max_seq_length", 2048),
                     }
                 )
-                if gradient_checkpointing:
+                if config_args["gradient_checkpointing"]:
                     config_args["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
             else:
                 is_cpt = training_args.get("is_cpt", False)
