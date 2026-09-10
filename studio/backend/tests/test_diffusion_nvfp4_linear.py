@@ -358,6 +358,31 @@ def test_conversion_refuses_when_one_layer_has_no_scale():
     assert type(tree.attn.to_q).__name__ != "NVFP4FlashInferLinear"
 
 
+def test_a_layer_that_fails_half_way_leaves_the_whole_tree_on_torchao(monkeypatch):
+    # The refusal is all-or-nothing by contract, and the loader ignores the return value: a raise
+    # after the first child was swapped in left a mixed tree under a log line saying it stayed on
+    # torchao, with the status badge reading flashinfer off the layers that did convert.
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    tree = _quantized_tree()
+    originals = dict(nl._iter_linears(tree))
+    logger = _RecordingLogger()
+    metadata = {"act_global_scales": {"attn.to_q": 1.0, "attn.to_k": 2.0}}
+
+    def _convert(linear, a_gsf, **kwargs):
+        if linear is originals["attn.to_k"]:
+            raise ValueError("this NVFP4 weight carries no per_tensor_scale")
+        return nn.Identity()
+
+    monkeypatch.setattr(nl, "nvfp4_linear_from_torchao", _convert)
+    assert nl.convert_nvfp4_backend(tree, metadata, "flashinfer", logger = logger) == 0
+    assert "attn.to_k could not move" in logger.text
+    assert tree.attn.to_q is originals["attn.to_q"]
+    assert tree.attn.to_k is originals["attn.to_k"]
+    assert torch is not None
+
+
 def test_a_declared_but_empty_scale_block_is_refused_as_loudly_as_a_missing_one():
     pytest.importorskip("torch")
 

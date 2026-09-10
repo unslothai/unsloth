@@ -103,6 +103,33 @@ def nvfp4_gate_record(
     return None
 
 
+def _passing_record(
+    family: Any,
+    base_repo: Any,
+    *,
+    path: Any = None,
+) -> Optional[dict]:
+    """The record that says PASS for this family and base at the policy this commit resolves, or
+    None. Every way of answering None means "nothing measured this model"."""
+    try:
+        from .diffusion_nvfp4_policy import resolve_policy
+        policy = resolve_policy(family, base_repo)
+    except Exception:  # noqa: BLE001 -- an unresolvable policy is "not gated", never a load error
+        return None
+    if policy is None:
+        return None
+    record = nvfp4_gate_record(family, base_repo, policy.policy_id, path = path)
+    if record is None or record.get("all_pass") is not True:
+        return None
+    try:
+        recorded = (str(record.get("policy_id", "")).strip(), int(record.get("policy_version")))
+    except (TypeError, ValueError):
+        return None
+    if recorded != (str(policy.policy_id), int(policy.version)):
+        return None
+    return record
+
+
 def nvfp4_gate_passed(
     family: Any,
     base_repo: Any,
@@ -110,19 +137,20 @@ def nvfp4_gate_passed(
     path: Any = None,
 ) -> bool:
     """Whether a reviewed record says the NVFP4 gate PASSED for this family and base at the policy
-    this commit resolves. Every way of answering False means "nothing measured this model"."""
-    try:
-        from .diffusion_nvfp4_policy import resolve_policy
-        policy = resolve_policy(family, base_repo)
-    except Exception:  # noqa: BLE001 -- an unresolvable policy is "not gated", never a load error
-        return False
-    if policy is None:
-        return False
-    record = nvfp4_gate_record(family, base_repo, policy.policy_id, path = path)
-    if record is None or record.get("all_pass") is not True:
-        return False
-    try:
-        recorded = (str(record.get("policy_id", "")).strip(), int(record.get("policy_version")))
-    except (TypeError, ValueError):
-        return False
-    return recorded == (str(policy.policy_id), int(policy.version))
+    this commit resolves."""
+    return _passing_record(family, base_repo, path = path) is not None
+
+
+def nvfp4_gate_backend(
+    family: Any,
+    base_repo: Any,
+    *,
+    path: Any = None,
+) -> Optional[str]:
+    """The NVFP4 backend the passing record was MEASURED on, lowercased, or None. A verdict covers
+    one numerical path (baked activation scales on flashinfer, a run-time scale on torchao)."""
+    record = _passing_record(family, base_repo, path = path)
+    if record is None:
+        return None
+    backend = str(record.get("backend") or "").strip().lower()
+    return backend or None

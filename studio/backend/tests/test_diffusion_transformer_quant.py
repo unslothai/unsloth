@@ -948,7 +948,7 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     keep = make_filter_fn(512, exclude_name_tokens = _INT8_EXCLUDE_NAME_TOKENS)
-    big = lambda: _Lin(3072, 18432)  # noqa: E731 — large enough to pass min_features
+    big = lambda: _Lin(3072, 18432)  # noqa: E731 - large enough to pass min_features
     # Excluded (M=1 modulation / conditioning embedders), despite large features:
     for fqn in (
         "transformer_blocks.0.norm1.linear",
@@ -2224,6 +2224,9 @@ def _gate_row(family, base_repo, policy_id, **overrides):
         "policy_version": 1,
         "checkpoint_sha256": "b" * 64,
         "all_pass": True,
+        # Every checked-in record was measured here; the gated head only stands on the backend
+        # its record names.
+        "backend": "flashinfer",
     }
     row.update(overrides)
     return row
@@ -2258,6 +2261,7 @@ def _zimage_candidates(
 def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, tmp_path):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, "flashinfer")
     _gate(monkeypatch, tmp_path)
     assert _zimage_candidates(monkeypatch) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
     _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"))
@@ -2331,6 +2335,7 @@ def test_auto_will_not_offer_nvfp4_without_a_checkpoint_to_run(monkeypatch, tmp_
 def test_a_record_lifts_the_qwen_nvfp4_deny_for_the_gated_base_only(monkeypatch, tmp_path):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, "flashinfer")
     _gate(monkeypatch, tmp_path)
     assert tq._family_denied("qwen-image", TQ_NVFP4, _QWEN_BASE) is True
     assert (
@@ -2397,6 +2402,7 @@ def test_the_candidate_head_stays_the_selector_winner_under_the_gate(
 ):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, allowed)
+    _stub_nvfp4_backend(monkeypatch, "flashinfer")
     rows = [_gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1")] if gated else []
     _gate(monkeypatch, tmp_path, *rows)
     kwargs = {"base_repo": _ZIMAGE_BASE, "has_prequant": lambda scheme: has_prequant}
@@ -2404,3 +2410,49 @@ def test_the_candidate_head_stays_the_selector_winner_under_the_gate(
     chosen = select_transformer_quant_scheme(_target(), "auto", family = "z-image", **kwargs)
     assert (candidates[0] if candidates else None) == chosen, (allowed, gated, has_prequant)
     assert (TQ_NVFP4 in candidates) == (gated and has_prequant and TQ_NVFP4 in allowed)
+
+
+@pytest.mark.parametrize(
+    ("probe", "recorded", "offered"),
+    [
+        ("flashinfer", "flashinfer", True),
+        ("torchao", "flashinfer", False),
+        ("flashinfer", "torchao", False),
+        ("torchao", "torchao", True),
+        ("raises", "flashinfer", False),
+        ("flashinfer", None, False),
+    ],
+    ids = [
+        "measured",
+        "unmeasured-torchao",
+        "unmeasured-flashinfer",
+        "torchao-record",
+        "unprobed",
+        "no-backend",
+    ],
+)
+def test_a_gated_row_stands_only_on_the_backend_its_record_was_measured_on(
+    monkeypatch, tmp_path, probe, recorded, offered
+):
+    """The two NVFP4 backends quantise activations differently, so a verdict measured on one does
+    not enable the other."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, probe)
+    _gate(
+        monkeypatch,
+        tmp_path,
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1", backend = recorded),
+    )
+    candidates = _zimage_candidates(monkeypatch)
+    assert (TQ_NVFP4 in candidates) is offered
+    assert candidates[0] == TQ_FP8
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    chosen = select_transformer_quant_scheme(
+        _target(),
+        "auto",
+        family = "z-image",
+        base_repo = _ZIMAGE_BASE,
+        has_prequant = lambda scheme: True,
+    )
+    assert chosen == (TQ_NVFP4 if offered else TQ_MXFP8)

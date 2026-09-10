@@ -1005,6 +1005,32 @@ def _has_active_lora(loras: Any) -> bool:
     return False
 
 
+def _planned_quant_scheme(
+    fam: Optional[DiffusionFamily],
+    target: Any,
+    requested: Optional[str],
+    *,
+    base_repo: Optional[str],
+    prequant_path: Optional[str],
+) -> Optional[str]:
+    """The scheme the load will resolve, asked with the base and the hosted-checkpoint probe that
+    gate the auto rungs: a planner that leaves either out plans one scheme and the load takes
+    another, fetching a second denoiser inline past the plan's progress, disk and cancel staging."""
+    return select_transformer_quant_scheme(
+        target,
+        requested,
+        family = getattr(fam, "name", None),
+        base_repo = base_repo,
+        has_prequant = lambda candidate: (
+            fam is not None
+            and usable_prequant_source(
+                fam, candidate, path_override = prequant_path, base_repo = base_repo
+            )
+            is not None
+        ),
+    )
+
+
 def _uncached_prequant_repo(
     fam: Optional[DiffusionFamily],
     target: Any,
@@ -1019,8 +1045,8 @@ def _uncached_prequant_repo(
     instead. Shared by ``load_pipeline`` and ``_dense_quant_prefetch_needed`` so the load and the
     download plan decline together. Cheap (a refs read + stat) and never raises."""
     try:
-        scheme = select_transformer_quant_scheme(
-            target, requested, family = getattr(fam, "name", None)
+        scheme = _planned_quant_scheme(
+            fam, target, requested, base_repo = base_repo, prequant_path = prequant_path
         )
         if scheme is None:
             return None
@@ -1122,8 +1148,8 @@ def _dense_candidate_is_prequant(
         )
         if candidate is not None:
             return bool(candidate.prequant)
-        scheme = select_transformer_quant_scheme(
-            target, requested, family = getattr(fam, "name", None)
+        scheme = _planned_quant_scheme(
+            fam, target, requested, base_repo = base_repo, prequant_path = prequant_path
         )
         if scheme is None:
             return False
@@ -2362,8 +2388,12 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                scheme = select_transformer_quant_scheme(
-                    target, mode, family = getattr(fam, "name", None)
+                scheme = _planned_quant_scheme(
+                    fam,
+                    target,
+                    mode,
+                    base_repo = kwargs.get("base_repo"),
+                    prequant_path = kwargs.get("transformer_prequant_path"),
                 )
                 if scheme is None:
                     return None
@@ -3495,8 +3525,12 @@ class DiffusionBackend:
                     )
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 elif transformer_quant_pinned is not None and (
-                    select_transformer_quant_scheme(
-                        target, transformer_quant_pinned, family = getattr(fam, "name", None)
+                    _planned_quant_scheme(
+                        fam,
+                        target,
+                        transformer_quant_pinned,
+                        base_repo = base,
+                        prequant_path = transformer_prequant_path,
                     )
                     is None
                 ):
@@ -3570,8 +3604,12 @@ class DiffusionBackend:
                     elif (
                         not _transformer_prefetched
                         and dense_transformer_supported(target)
-                        and select_transformer_quant_scheme(
-                            target, transformer_quant, family = getattr(fam, "name", None)
+                        and _planned_quant_scheme(
+                            fam,
+                            target,
+                            transformer_quant,
+                            base_repo = base,
+                            prequant_path = transformer_prequant_path,
                         )
                         is not None
                         and not _dense_candidate_is_prequant(
@@ -3585,8 +3623,12 @@ class DiffusionBackend:
                             target,
                             fam,
                             transformer_quant,
-                            select_transformer_quant_scheme(
-                                target, transformer_quant, family = getattr(fam, "name", None)
+                            _planned_quant_scheme(
+                                fam,
+                                target,
+                                transformer_quant,
+                                base_repo = base,
+                                prequant_path = transformer_prequant_path,
                             ),
                             base_repo = base,
                             path_override = transformer_prequant_path,
@@ -3705,10 +3747,12 @@ class DiffusionBackend:
                                 target,
                                 fam,
                                 transformer_quant,
-                                select_transformer_quant_scheme(
+                                _planned_quant_scheme(
+                                    fam,
                                     target,
                                     transformer_quant,
-                                    family = getattr(fam, "name", None),
+                                    base_repo = base,
+                                    prequant_path = transformer_prequant_path,
                                 ),
                                 base_repo = base,
                                 path_override = transformer_prequant_path,
@@ -3743,10 +3787,12 @@ class DiffusionBackend:
                     else:
                         # This materialises the dense bf16 transformer, so re-check the fit rather than OOMing after
                         # eviction (skipped for a prequant).
-                        scheme = select_transformer_quant_scheme(
+                        scheme = _planned_quant_scheme(
+                            fam,
                             target,
                             transformer_quant,  # normalized above
-                            family = getattr(fam, "name", None),
+                            base_repo = base,
+                            prequant_path = transformer_prequant_path,
                         )
                         # usable_prequant_source (not resolve_): a missing/non-allowlisted local path must not skip
                         # the dense-fit re-check
@@ -4656,20 +4702,9 @@ class DiffusionBackend:
         """
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
-        scheme = select_transformer_quant_scheme(
-            target,
-            mode,
-            family = getattr(fam, "name", None),
-            base_repo = base,
-            # usable_ (not resolve_): the same question step 1 below asks, so the ladder cannot
-            # pick a rung the very next line then cannot serve.
-            has_prequant = lambda candidate: (
-                fam is not None
-                and usable_prequant_source(
-                    fam, candidate, path_override = prequant_path, base_repo = base
-                )
-                is not None
-            ),
+        # The same call every planning site makes (usable_, not resolve_), so plan and load agree.
+        scheme = _planned_quant_scheme(
+            fam, target, mode, base_repo = base, prequant_path = prequant_path
         )
         if scheme is None:
             # Bail BEFORE the multi-GB dense download: an unsupported scheme (fp8 on Ampere, nvfp4 off Blackwell)

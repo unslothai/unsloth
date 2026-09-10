@@ -21,6 +21,7 @@ from core.inference.diffusion_nvfp4_gate import (
     GATE_RECORD_VERSION,
     RECORD_KEY_FIELDS,
     load_gate_records,
+    nvfp4_gate_backend,
     nvfp4_gate_passed,
     nvfp4_gate_record,
 )
@@ -53,6 +54,7 @@ def _record(**overrides):
         "all_pass": True,
         "num_pairs": 28,
         "num_passed": 28,
+        "backend": "flashinfer",
     }
     record.update(overrides)
     return record
@@ -123,6 +125,34 @@ def test_a_matching_record_reads_true_and_canonicalises_the_base(tmp_path):
     ]
     for mirror in mirrors:
         assert nvfp4_gate_passed("z-image", mirror, path = path) is True
+
+
+def test_the_backend_a_verdict_was_measured_on_is_readable(tmp_path):
+    """The ladder keeps the deny unless this is the backend serving the device: the same bytes
+    quantise activations differently on the other one and no gate rendered that."""
+    path = _gate_file(tmp_path, _record())
+    assert nvfp4_gate_backend("z-image", ZIMAGE_BASE, path = path) == "flashinfer"
+    assert nvfp4_gate_backend("Z-Image", ZIMAGE_BASE, path = path) == "flashinfer"
+    for record in (_record(all_pass = False), _record(backend = None), _record(backend = "")):
+        assert (
+            nvfp4_gate_backend("z-image", ZIMAGE_BASE, path = _gate_file(tmp_path, record)) is None
+        ), record
+    assert nvfp4_gate_backend("z-image", ZIMAGE_BASE, path = _gate_file(tmp_path)) is None
+    assert (
+        nvfp4_gate_backend(
+            "z-image", ZIMAGE_BASE, path = _gate_file(tmp_path, _record(backend = "TorchAO "))
+        )
+        == "torchao"
+    )
+
+
+def test_every_shipped_record_names_the_backend_it_was_measured_on():
+    for record in load_gate_records():
+        assert str(record.get("backend") or "").strip(), record
+        assert (
+            nvfp4_gate_backend(record["family"], record["base_repo"])
+            == str(record["backend"]).strip().lower()
+        ), record
 
 
 def test_a_failed_run_reads_false(tmp_path):
