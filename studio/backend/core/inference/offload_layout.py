@@ -329,7 +329,11 @@ def hybrid_layer_split(
         if fai <= 0:
             fai = _FULL_ATTENTION_INTERVAL_DEFAULT.get(arch, 0)
         if fai > 0:
-            n_recurrent = max(0, n_layers - -(-n_layers // fai))
+            # Floor, not ceiling: llama.cpp marks row il attention iff (il + 1) % fai == 0 over
+            # il < n_layer() (models/qwen3next.cpp, qwen35.cpp, qwen35moe.cpp, qwen4exp.cpp), so a
+            # 30-layer model at interval 4 has 7 attention rows, not 8. Every hybrid shipped so far
+            # divides evenly, which is the only reason this never showed up as a byte.
+            n_recurrent = max(0, n_layers - n_layers // fai)
             known = True
     n_attention = n_layers - n_recurrent
 

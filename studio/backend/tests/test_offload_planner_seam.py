@@ -2991,3 +2991,36 @@ def test_a_hybrid_without_the_interval_key_is_still_a_hybrid_to_the_estimator():
         )
         == total
     )
+
+
+def test_the_hybrid_attention_count_divides_the_way_llama_cpp_does():
+    """llama.cpp marks row il attention iff (il + 1) % full_attention_interval == 0
+    over il < n_layer() (models/qwen3next.cpp, and the identical loop in qwen35,
+    qwen35moe and qwen4exp), which is FLOOR division. Both readers used ceiling, so a
+    30-layer hybrid at interval 4 was charged 8 attention layers where llama.cpp
+    allocates 7 -- +14%, and one recurrent state too few. Every hybrid shipped so far
+    has a layer count divisible by 4, which is the only reason it never showed up as a
+    byte; the arithmetic is still wrong until it does."""
+    from test_offload_planner import (
+        _StubReader,
+        _StubTensor,
+        _layout_from_reader,
+        _qwen3next_fields,
+    )
+
+    b = _qwen3next_backend(_n_layers = 30)
+    total = b._estimate_kv_cache_bytes(
+        8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    assert total == 7 * 8192 * 2 * (256 + 256) * 2 + 23 * (24576 + 524288) * 4
+
+    layout = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(
+                **{"qwen3next.block_count": 30, "qwen3next.attention.head_count": 16}
+            ),
+            [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(30)],
+        )
+    )
+    assert layout.n_attention_layers == 7
+    assert total == layout.kv_bytes(8192) + layout.recurrent_bytes
