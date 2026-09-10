@@ -2034,6 +2034,116 @@ html[data-chat-font] .aui-root {
 		transform: rotate(45deg);
 	}
 
+	/* Size container for the composer. Sits outside the surface so the tight
+	   rules below can trim the surface's own padding. */
+	.unsloth-composer-shell {
+		container-type: inline-size;
+		container-name: composer-shell;
+	}
+
+	/* Mobile and very shrunk windows: the dictate/send cluster was dropping to
+	   a second line. Take the width back from the gutters, not the controls. */
+	@container composer-shell (max-width: 30rem) {
+		/* Was 12px; the 32px corner still clears the plus/send circles. */
+		.unsloth-composer-surface {
+			padding-left: 0.5rem;
+			padding-right: 0.5rem;
+		}
+
+		.unsloth-composer-line {
+			padding-left: 0;
+			padding-right: 0;
+			/* One gap for every control, so the row spaces evenly. */
+			--composer-tight-gap: 0.125rem;
+		}
+
+		.unsloth-composer-left,
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			gap: var(--composer-tight-gap);
+		}
+
+		/* Plus and send hug their edges by the same amount. */
+		.unsloth-composer-left {
+			margin-left: -0.125rem;
+		}
+
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			margin-right: -0.125rem;
+		}
+
+		/* Send's own inset stacks on the gap above; drop it. */
+		.unsloth-composer-line .aui-composer-send,
+		.unsloth-composer-line .aui-composer-cancel {
+			margin-left: 0;
+		}
+
+		/* Keeps the text starting just right of the plus glyph below it. */
+		.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
+			padding-left: 0.5rem;
+		}
+	}
+
+	/* ~375px and under. Each control is a circle around a much smaller glyph,
+	   so built-in air, not the gap, sets the spacing. Overlap the circles
+	   instead of shrinking them; hit targets stay full size. */
+	@container composer-shell (max-width: 22rem) {
+		.unsloth-composer-line {
+			--composer-tight-gap: 0rem;
+		}
+
+		/* > button skips the hidden file inputs the + menu keeps in this row. */
+		.unsloth-composer-left > button,
+		.unsloth-composer-line .aui-composer-action-wrapper > button {
+			margin-inline: -0.125rem;
+		}
+
+		/* Outer edges give the 2px back, keeping the row's inset. */
+		.unsloth-composer-left {
+			margin-left: 0;
+		}
+
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			margin-right: 0;
+		}
+
+		/* Plus and send were the row's only 36px circles. Match the rest. */
+		.unsloth-composer-left > .unsloth-composer-plus,
+		.unsloth-composer-line .aui-composer-send,
+		.unsloth-composer-line .aui-composer-cancel {
+			width: 2rem;
+			height: 2rem;
+		}
+
+		/* Plus carries less air than the pills, so skip its inward pull. */
+		.unsloth-composer-left > .unsloth-composer-plus {
+			margin-right: 0;
+		}
+
+		/* Send commits, so keep it clear of the toggle strip. Needs the same
+		   `> button` shape as the pull above to outrank it. */
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-send,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-cancel {
+			margin-left: 0.25rem;
+		}
+	}
+
+	/* ~275px and under: trim the vertical padding and row gap so the box is no
+	   taller than the rows it holds. */
+	@container composer-shell (max-width: 16rem) {
+		.unsloth-composer-surface {
+			padding-top: 0.5rem;
+			padding-bottom: 0.5rem;
+		}
+
+		.unsloth-composer-line[data-expanded="true"] {
+			row-gap: 0.5rem;
+		}
+	}
+
 	/* Keyboard focus shows a subtle brand ring, not the browser's blue outline;
 	   mouse clicks (no :focus-visible) stay ring-free. */
 	.composer-pill-btn:focus-visible,
@@ -3340,6 +3450,15 @@ html[data-chat-font] .aui-root {
 	& .unsloth-composer-plus svg {
 		width: calc(var(--ui-icon-size) * 1.375);
 		height: calc(var(--ui-icon-size) * 1.375);
+	}
+	/* ~375px and under the plus sits in a 32px circle, which 1.375x fills.
+	   Step down to the dictate glyph's 1.2x. Must live here: this block is
+	   unlayered, so a copy in @layer utilities would lose to it. */
+	@container composer-shell (max-width: 22rem) {
+		& .unsloth-composer-plus svg {
+			width: calc(var(--ui-icon-size) * 1.2);
+			height: calc(var(--ui-icon-size) * 1.2);
+		}
 	}
 	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
 	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
