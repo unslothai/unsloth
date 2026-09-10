@@ -8,8 +8,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { preferFullToolOutput } = await import(
-  "../src/features/chat/tool-output-scope.ts"
+const { preferFullToolOutput, preferSanitizedFullToolOutput, toolResultText } = await import(
+  "../src/features/chat/tool-output-result.ts"
 );
 
 // A timed-out python/terminal call returns the output it had already printed and then says
@@ -54,4 +54,69 @@ test("a failed call still re-attaches its exit prefix rather than the timeout on
   // The sibling case this one is modelled on, asserted here so the new branch cannot
   // shadow it.
   assert.equal(preferFullToolOutput("boom\n", "Exit code 1:\nboom\n"), "Exit code 1:\nboom\n");
+});
+
+test("a stream whose marker line the backend indented is shown once", () => {
+  // The result carries the backend's indent before a marker line; the stream does not.
+  const timedOut = "progress\n__RAG_SOURCES__:[]\nfinished step\n";
+  const timedOutCard = preferFullToolOutput(
+    timedOut,
+    `progress\n __RAG_SOURCES__:[]\nfinished step\n\n${SENTENCE}`,
+  );
+  assert.equal(timedOutCard.split("finished step").length - 1, 1, timedOutCard);
+  assert.ok(timedOutCard.endsWith(SENTENCE), timedOutCard);
+
+  const completed = "progress\n__FILES__:[]\nfinished step\n";
+  const completedCard = preferFullToolOutput(completed, "progress\n __FILES__:[]\nfinished step\n");
+  assert.equal(completedCard.split("finished step").length - 1, 1, completedCard);
+});
+
+test("a colored marker line is shown once whether or not the result was truncated", () => {
+  // The backend indents only a line-start marker, so a colored one stays unindented until
+  // stripping ANSI moves it to the line start.
+  const esc = String.fromCharCode(27);
+  const line = `${esc}[31m__FILES__:[]${esc}[0m`;
+
+  const short = `progress\n${line}\nfinished\n`;
+  const shortCard = preferSanitizedFullToolOutput(short, `${short}\n${SENTENCE}`);
+  assert.equal(shortCard.split("progress").length - 1, 1, shortCard);
+
+  const long = `progress\n${line}\n${"y".repeat(200)}\n`;
+  const longCard = preferSanitizedFullToolOutput(long, `progress\n${line}\n${NOTICE}\n${SENTENCE}`);
+  assert.equal(longCard.split("progress").length - 1, 1, longCard);
+  assert.ok(longCard.endsWith(SENTENCE), longCard);
+  assert.ok(!longCard.includes("... (truncated"), longCard);
+});
+
+test("an escape sequence the killed program left open does not swallow the timeout status", () => {
+  // Stripping consumes everything after an unterminated OSC, including an appended status.
+  const esc = String.fromCharCode(27);
+  const stream = `progress\n${esc}]0;running`;
+  const card = preferSanitizedFullToolOutput(stream, `${stream}\n${SENTENCE}`);
+  assert.ok(card.endsWith(SENTENCE), JSON.stringify(card));
+});
+
+test("the timeout status survives a card built from the raw tool result", () => {
+  // Stripping a string result before reconciling lost the status, with or without a saved stream.
+  const esc = String.fromCharCode(27);
+  const stream = `progress\n${esc}]0;running`;
+  const result = `${stream}\n${SENTENCE}`;
+  for (const full of [stream, ""]) {
+    const card = preferSanitizedFullToolOutput(full, toolResultText(result));
+    assert.ok(card.endsWith(SENTENCE), JSON.stringify(card));
+  }
+  assert.equal(toolResultText({ ok: true }), '{\n  "ok": true\n}');
+});
+
+test("an escape sequence the cap cut open does not repeat the output on a timed-out card", () => {
+  // Stripping an escape the cap cut open also ate the footer, so the whole result was appended.
+  const esc = String.fromCharCode(27);
+  const bel = String.fromCharCode(7);
+  const stream = `progress\n${esc}]0;${"t".repeat(200)}${bel}done with step\n`;
+  const result = `progress\n${esc}]0;${"t".repeat(20)}${NOTICE}\n${SENTENCE}`;
+  for (const full of [stream, ""]) {
+    const card = preferSanitizedFullToolOutput(full, result);
+    assert.equal(card.split("progress").length - 1, 1, JSON.stringify(card));
+    assert.ok(card.endsWith(SENTENCE), JSON.stringify(card));
+  }
 });
