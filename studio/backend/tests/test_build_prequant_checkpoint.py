@@ -1598,3 +1598,65 @@ def test_a_replayed_correction_is_in_place_before_the_scales_are_baked(monkeypat
     assert metadata["gptq"]["applied"] == 1
     assert metadata["activation_scales_baked"] is True
     assert set(metadata["act_global_scales"]) == {"blocks.0.attn1.to_q"}
+
+
+def test_a_rotated_second_expert_is_published_under_its_own_declared_name():
+    """The declared-name lookup is per COMPONENT: the task-agnostic row is expert 1's artifact."""
+    build = _script()
+    wan = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert wan is not None
+    assert (
+        build.upload_destination(wan, "nvfp4", rotated = True, component = "transformer_2")
+        == "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"
+    )
+    assert build.upload_destination(wan, "nvfp4", rotated = True) == "Wan2.2-T2V-A14B-NVFP4.pt"
+    # A component the family names no artifact for is refused rather than published over expert 1's.
+    with pytest.raises(ValueError, match = "prequant_filenames"):
+        build.upload_destination(wan, "nvfp4", rotated = True, component = "transformer_3")
+
+
+def test_two_families_in_one_repo_publish_under_their_declared_names():
+    """The derived name is a function of the REPO, so the 480p and 720p variants derive the same
+    one and the second build would publish over the first."""
+    build = _script()
+    repo = "unsloth/HunyuanVideo-1.5-NVFP4"
+    p480 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
+    p720 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v")
+    assert p480 is not None and p720 is not None and p480.name != p720.name
+    assert (
+        build.upload_destination(p480, "nvfp4", rotated = False, repo_id = repo)
+        == "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"
+    )
+    assert (
+        build.upload_destination(p720, "nvfp4", rotated = False, repo_id = repo)
+        == "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"
+    )
+    assert build.families_sharing_prequant_repo(p480, "nvfp4", repo) == (p720.name,)
+    # A repo one family owns keeps the derived name every hosted layout already uses.
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert build.families_sharing_prequant_repo(wan, "nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4") == ()
+    assert (
+        build.upload_destination(
+            wan, "nvfp4", rotated = False, repo_id = "unsloth/Wan2.2-TI2V-5B-NVFP4"
+        )
+        == "Wan2.2-TI2V-5B-NVFP4.pt"
+    )
+
+
+def test_a_second_expert_never_takes_the_flat_gptq_layout(tmp_path):
+    """The experts share every fqn and shape, so expert 1's flat correction would load into expert
+    2, pass the shape check and be baked in."""
+    build = _script()
+    flat = tmp_path / "flat"
+    (flat / "weights").mkdir(parents = True)
+    (flat / "gptq_meta.json").write_text("{}")
+    (flat / "gptq_check.json").write_text("{}")
+    where = build.gptq_sources(str(flat), "transformer_2")
+    assert where["weights"].endswith("weights/transformer_2")
+    assert where["meta"].endswith("gptq_meta_transformer_2.json")
+    assert where["score"] is None
+    # The default component is what the flat layout describes, and it still reads it.
+    default = build.gptq_sources(str(flat), "transformer")
+    assert default["weights"].endswith("flat/weights")
+    assert default["meta"].endswith("flat/gptq_meta.json")
+    assert default["score"].endswith("flat/gptq_check.json")
