@@ -45,7 +45,11 @@ class _CPUTorch:
     def __getattr__(self, name):
         return getattr(torch, name)
 
-    def device(self, spec, index = None):
+    def device(
+        self,
+        spec,
+        index = None,
+    ):
         if isinstance(spec, int):
             return torch.device("cpu", spec)
         return torch.device(spec) if index is None else torch.device(spec, index)
@@ -54,7 +58,11 @@ class _CPUTorch:
 def _load_longrope():
     tree = ast.parse(LLAMA.read_text(encoding = "utf-8"))
     cls = next(
-        (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "LongRopeRotaryEmbedding"),
+        (
+            n
+            for n in tree.body
+            if isinstance(n, ast.ClassDef) and n.name == "LongRopeRotaryEmbedding"
+        ),
         None,
     )
     if cls is None:
