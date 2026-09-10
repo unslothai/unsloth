@@ -5027,6 +5027,14 @@ def test_mlx_vlm_does_not_size_a_budget_from_a_prompt_carrying_an_image(monkeypa
     assert budget == UNSET_GENERATION_BUDGET
 
 
+def test_mlx_vlm_image_budget_stays_inside_a_narrow_served_window(monkeypatch):
+    # A load pinned below the default rotates its KV cache at the served window, so a flat
+    # 2048 would evict the image it is still answering about.
+    budget = _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), None, served = 1024)
+
+    assert budget == 1024 - _BUDGET_PROMPT_N
+
+
 def test_mlx_vlm_counts_a_text_only_turn_by_the_vision_marker_rule(monkeypatch):
     # A vision model still counts a text-only turn, by mlx_vlm's marker rule, not the text one.
     budget = _run_vlm_budget(monkeypatch, _TEXT_TURN, None, None, served = 32768, marker_tokens = 1)
