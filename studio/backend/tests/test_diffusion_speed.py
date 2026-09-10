@@ -1119,8 +1119,6 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     assert applied["compiled"] is True  # the rest of the tier still engaged
 
 
-
-
 class _Block:
     """A repeated block whose ``forward`` source is what the detector reads."""
 
@@ -1140,7 +1138,7 @@ class _MergingByArgOrderA(_Block):
 
 class _MergingByArgOrderB(_Block):
     def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
-        hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim=1)  # noqa: F821
+        hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim = 1)  # noqa: F821
         return hidden_states, encoder_hidden_states
 
 
@@ -1177,7 +1175,9 @@ def test_class_merges_streams_broad_sweep_is_opt_in():
 def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeypatch):
     import inspect
 
-    monkeypatch.setattr(inspect, "getsource", lambda _obj: (_ for _ in ()).throw(OSError("no source")))
+    monkeypatch.setattr(
+        inspect, "getsource", lambda _obj: (_ for _ in ()).throw(OSError("no source"))
+    )
     ds_mod._class_merges_streams.cache_clear()
     assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is False
     assert ds_mod._class_merges_streams(FluxSingleTransformerBlock, True) is True
@@ -1199,7 +1199,10 @@ def test_dits_merge_streams_scans_every_denoiser():
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock)]) is False
     assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
     assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock, FluxSingleTransformerBlock)]) is True
-    assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock), _dit(FluxSingleTransformerBlock)]) is True
+    assert (
+        ds_mod._dits_merge_streams([_dit(_DualStreamBlock), _dit(FluxSingleTransformerBlock)])
+        is True
+    )
 
 
 def test_speed_default_compiles_stream_merging_dit_with_static_shapes(monkeypatch):

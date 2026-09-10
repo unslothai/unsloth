@@ -825,8 +825,6 @@ def test_real_cuda_capture_replays_bit_identically():
         cg.uninstall_all([handle])
 
 
-
-
 class _FakeNVFP4Linear:
     """Named exactly as the real class, since ``is_nvfp4_flashinfer_linear`` gates on the NAME."""
 

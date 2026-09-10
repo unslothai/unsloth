@@ -68,8 +68,6 @@ def _gate_file(
     return path
 
 
-
-
 def test_the_shipped_gate_record_parses_and_declares_this_schema():
     document = json.loads(GATE_RECORD_PATH.read_text(encoding = "utf-8"))
     assert document["version"] == GATE_RECORD_VERSION
@@ -106,8 +104,6 @@ def test_the_shipped_record_leaves_every_family_ungated():
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE) is False
     assert nvfp4_gate_passed("qwen-image", "Qwen/Qwen-Image") is False
     assert nvfp4_gate_passed("flux.1", "black-forest-labs/FLUX.1-schnell") is False
-
-
 
 
 def test_no_record_at_all_reads_false(tmp_path):
@@ -174,8 +170,6 @@ def test_a_rewritten_file_is_re_read_rather_than_served_from_the_cache(tmp_path)
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False
     _gate_file(tmp_path, _record())
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is True
-
-
 
 
 def _results(**overrides):

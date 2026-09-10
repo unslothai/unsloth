@@ -20,8 +20,6 @@ from core.inference import diffusion_nvfp4_linear as nl
 from core.inference import diffusion_nvfp4_ops as ops
 
 
-
-
 class _FakeDevice:
     def __init__(
         self,
@@ -238,8 +236,6 @@ def _launch_devices(recorder, *names) -> list[int]:
     return [device for name, device in recorder.launches if name in names]
 
 
-
-
 def test_the_stub_records_the_device_a_launch_actually_sees(stub_kernels):
     """The detector's own control: without a guard the launch reads the CURRENT device."""
     import flashinfer
@@ -319,8 +315,6 @@ def test_no_guard_is_left_open_when_a_launch_raises(stub_kernels, monkeypatch):
     assert stub_kernels.stack == []
 
 
-
-
 def test_a_layer_on_card_one_runs_correctly_while_the_current_device_is_card_zero():
     """Unguarded, the cutlass FP4 GEMM launches against whatever context is current."""
     torch = pytest.importorskip("torch")
@@ -353,8 +347,6 @@ def test_a_layer_on_card_one_runs_correctly_while_the_current_device_is_card_zer
     torch.cuda.synchronize(1)
     assert bool(torch.isfinite(got).all())
     assert torch.equal(got, want)
-
-
 
 
 def _mm_once(
@@ -447,8 +439,6 @@ def test_the_barrier_is_not_an_op_argument():
     assert params == ["xq", "wq", "x_sf", "w_sf", "alpha", "n", "backend"]
 
 
-
-
 def _nvfp4_cuda_or_skip():
     torch = pytest.importorskip("torch")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
@@ -531,7 +521,6 @@ def test_the_barrier_pointer_is_stable_across_a_capture_and_replay():
         assert ops._BARRIERS[0].data_ptr() == before
     del graph
     ops.reset_barriers()
-
 
 
 BIAS_SHAPES = (

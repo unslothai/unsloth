@@ -37,8 +37,6 @@ FP8 = "fp8"
 BF16 = "bf16"
 
 
-
-
 def _zimage_rows() -> list:
     """Z-Image-Turbo's 276 linears: 30 transformer layers, 2 noise refiners, 2 context refiners."""
     rows = [
@@ -184,8 +182,6 @@ def test_the_synthetic_trees_reproduce_the_census_they_came_from():
         assert sum(1 for fqn, m in tree.linears.items() if admitted(m, fqn)) == admits
 
 
-
-
 def test_a_policy_resolves_for_the_bases_it_was_solved_on_and_no_others():
     assert resolve_policy("z-image", "Tongyi-MAI/Z-Image-Turbo") is ZIMAGE_F8MOD_TOQ34
     assert resolve_policy("flux.1", "black-forest-labs/FLUX.1-schnell") is FLUX_MOD_SINGLE
@@ -200,8 +196,6 @@ def test_a_policy_resolves_for_the_bases_it_was_solved_on_and_no_others():
     assert resolve_policy(None, "Tongyi-MAI/Z-Image-Turbo") is None
     assert policy_by_id("qwen_p02_v1") is QWEN_P02
     assert policy_by_id("qwen_p02_v2") is None
-
-
 
 
 @pytest.mark.parametrize(
@@ -241,8 +235,6 @@ def test_qwen_takes_both_modulation_streams_and_nothing_else():
     assert sum(1 for fqn in nvfp4 if fqn.endswith(".img_mod.1")) == 60
     assert sum(1 for fqn in nvfp4 if fqn.endswith(".txt_mod.1")) == 60
     assert assignment["transformer_blocks.0.img_mlp.net.0.proj"] == FP8
-
-
 
 
 def test_a_renamed_layer_raises_rather_than_shipping_a_different_model():
@@ -309,8 +301,6 @@ def test_a_table_that_spells_out_a_zero_total_still_applies():
     assert assign_precisions(_flux(), spelled)
 
 
-
-
 def test_the_flux_rule_takes_the_single_blocks_modulation_and_no_other_linear():
     assignment = assign_precisions(_flux(), FLUX_MOD_SINGLE)
     nvfp4 = sorted(fqn for fqn, precision in assignment.items() if precision == NVFP4)
@@ -340,8 +330,6 @@ def test_a_suffix_never_matches_a_longer_leaf_name():
     assert not prefixed.matches("single_transformer_blocks.7.norm1.linear")
 
 
-
-
 def test_the_timestep_embedder_mlp_stays_dense_under_every_image_policy():
     assignment = assign_precisions(_zimage(), ZIMAGE_F8MOD_TOQ34)
     assert assignment["t_embedder.mlp.0"] == BF16
@@ -352,8 +340,6 @@ def test_the_timestep_embedder_mlp_stays_dense_under_every_image_policy():
     assert qwen["time_text_embed.timestep_embedder.linear_1"] == BF16
     assert flux["x_embedder"] == BF16 and flux["proj_out"] == BF16
     assert qwen["img_in"] == BF16 and qwen["proj_out"] == BF16
-
-
 
 
 class _FakeQuantized:
@@ -428,12 +414,9 @@ def test_a_layer_the_quantiser_silently_declined_fails_the_build(monkeypatch):
 
 def test_a_pass_that_produced_the_wrong_tensor_class_fails_the_build(monkeypatch):
     import core.inference.diffusion_transformer_quant  # noqa: F401 - the stub patches the module
-
     _stub_quantize(monkeypatch, produced = {"cfg:nvfp4": "Float8Tensor", "cfg:fp8": "Float8Tensor"})
     with pytest.raises(PolicyMismatch, match = "wanted NVFP4Tensor"):
         quantize_with_policy(_zimage(), ZIMAGE_F8MOD_TOQ34)
-
-
 
 
 def test_the_metadata_block_records_the_set_that_was_built():
