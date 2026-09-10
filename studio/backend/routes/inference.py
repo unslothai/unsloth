@@ -2188,7 +2188,7 @@ def _openai_llama_admission_tokens(
         ) + _openai_llama_admission_transport_tokens(payload)
     else:
         prompt_tokens = _openai_llama_admission_prompt_tokens(
-            payload, image_tokens = image_tokens, injected_tools = injected_tools
+            payload, image_tokens = image_tokens, injected_tools = injected_tools, markup = markup
         )
     if prompt_tokens is None:
         return max(1, budget // max(1, capacity))
