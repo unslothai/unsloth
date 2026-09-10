@@ -5384,6 +5384,58 @@ def save_to_gguf_generic(
     return metadata
 
 
+def _push_merged_to_hub_revision(save_kwargs):
+    import tempfile
+    from huggingface_hub import ModelCard
+
+    if not save_kwargs["is_main_process"]:
+        return
+    token = save_kwargs["token"]
+    if token is None:
+        token = get_token()
+    repo_id, username = _determine_username(save_kwargs["save_directory"], None, token)
+    api = HfApi(token = token)
+    api.create_repo(
+        repo_id = repo_id,
+        repo_type = "model",
+        private = save_kwargs["private"],
+        exist_ok = True,
+    )
+    with tempfile.TemporaryDirectory(prefix = "unsloth-merged-") as directory:
+        unsloth_generic_save(
+            **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
+        )
+        card_path = Path(directory) / "README.md"
+        if card_path.is_file():
+            card = ModelCard.load(card_path)
+        else:
+            model = save_kwargs["model"]
+            card = ModelCard(
+                MODEL_CARD.format(
+                    username = username,
+                    base_model = model.config._name_or_path,
+                    model_type = model.config.model_type,
+                    method = "",
+                    extra = "unsloth",
+                )
+            )
+        if save_kwargs["datasets"]:
+            card.data.datasets = save_kwargs["datasets"]
+        card.data.tags = list(
+            dict.fromkeys([*(card.data.tags or []), *(save_kwargs["tags"] or []), "unsloth"])
+        )
+        card.save(card_path)
+        return api.upload_folder(
+            repo_id = repo_id,
+            repo_type = "model",
+            folder_path = directory,
+            revision = save_kwargs["revision"],
+            create_pr = save_kwargs["create_pr"],
+            commit_message = save_kwargs["commit_message"],
+            commit_description = save_kwargs["commit_description"],
+        )
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5411,6 +5463,9 @@ def unsloth_generic_save(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
+    if push_to_hub and (create_pr or revision is not None):
+        return _push_merged_to_hub_revision(dict(locals()))
+
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
