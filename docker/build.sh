@@ -90,6 +90,16 @@ DOCKER_BUILDKIT=1 docker build \
     -t "${IMAGE_NAME}:${TAG}" \
     .
 
+if [[ "${BUILD_TARGET:-}" == "cpu-arm64" ]]; then
+    echo "Building ARM64 CPU-only image..."
+    DOCKER_BUILDKIT=1 docker build \
+        --progress=plain \
+        -f Dockerfile.cpu-arm64 \
+        -t "unsloth-cpu-arm64:${TAG}" \
+        .
+    echo "Built unsloth-cpu-arm64:${TAG}"
+fi
+
 echo
 echo "Built ${IMAGE_NAME}:${TAG}"
 echo

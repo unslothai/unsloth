@@ -1,0 +1,41 @@
+# Dockerfile for Unsloth Studio on ARM64 CPU (non-GPU)
+# This image provides a lightweight, CUDA-free environment for CPU-based
+# inference (GGUF) and Studio tools on aarch64 Linux hosts.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    cmake \
+    build-essential \
+    libcurl4-openssl-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 10001 unsloth \
+ && useradd --uid 10001 --gid 10001 --create-home --shell /bin/sh unsloth \
+ && mkdir -p /workspace \
+ && chown -R unsloth:unsloth /workspace
+
+USER unsloth
+ENV HOME=/home/unsloth
+ENV UNSLOTH_STUDIO_HOME=/home/unsloth/.unsloth/studio
+# Ensure CPU mode is enabled by default for this image
+ENV UNSLOTH_ALLOW_CPU=1
+
+# Install Unsloth via official installer.
+# UNSLOTH_NO_TORCH=1 avoids installing heavy CUDA-bound torch wheels.
+RUN curl -fsSL https://unsloth.ai/install.sh | \
+  UNSLOTH_NO_TORCH=1 \
+  UNSLOTH_SKIP_AUTOSTART=1 \
+  sh \
+ && rm -rf "${HOME}/.cache"
+
+EXPOSE 8888
+WORKDIR /workspace
+
+# Launch Studio on all interfaces
+CMD ["/home/unsloth/.unsloth/studio/bin/unsloth", "studio", "-H", "0.0.0.0", "-p", "8888"]

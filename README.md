@@ -161,6 +161,21 @@ docker run -d --gpus all --ipc=host \
 ```
 Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
+#### Linux ARM64 / AArch64
+
+Unsloth Studio supports native Linux ARM64 devices for CPU-based chat and
+data-recipe workflows. For local inference, use GGUF-quantized models sized
+for the available system RAM.
+
+ARM64 CPU devices are primarily intended for inference. Fine-tuning is usually
+better suited to a supported GPU system.
+
+**Docker note:** The official `unsloth/unsloth` Docker image is multi-arch
+(`linux/amd64` and `linux/arm64`), but the ARM64 variant targets GH200/DGX
+Spark GPU systems. There is currently no official CPU-only ARM64 Docker image.
+For ARM64 CPU devices, use the native Studio installer above. Community Docker
+builds may work but are not an official deployment path.
+
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
 
