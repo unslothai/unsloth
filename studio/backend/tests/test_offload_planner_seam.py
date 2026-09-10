@@ -2915,12 +2915,12 @@ def test_a_build_without_lazy_mode_keeps_the_full_charge(monkeypatch):
     assert _ple_lazily(monkeypatch, _ple_stub(), supports_lazy_mode = False) is False
 
 
-def test_a_launch_that_asked_for_no_mapping_keeps_the_full_charge(monkeypatch):
-    """--load-mode none is the user asking for residency. llama.cpp in fact still maps a
-    lazy context (llama-model-loader.cpp:llama_model_loader::init_mappings maps whenever
-    lazy.any()), so this is a deliberate margin: it can only keep a plan off the none
-    branch, never admit one that does not fit."""
-    assert _ple_lazily(monkeypatch, _ple_stub(), load_mode = "none") is False
+def test_a_launch_that_asked_for_no_mapping_still_reads_the_table_lazily(monkeypatch):
+    """--load-mode none does not make a lazy tensor resident: llama.cpp maps a lazy context
+    whatever the load mode (llama-model-loader.cpp:llama_model_loader::init_mappings maps
+    whenever lazy.any(), load_all_data reads it from_mapping), so the load mode is not a
+    clause of this predicate."""
+    assert _ple_lazily(monkeypatch, _ple_stub(), load_mode = "none") is True
 
 
 def test_lazy_mode_off_keeps_the_full_charge(monkeypatch):

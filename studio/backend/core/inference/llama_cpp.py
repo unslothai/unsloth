@@ -4617,27 +4617,21 @@ def _per_layer_embd_read_lazily(
     ple_bytes: int,
     *,
     supports_lazy_mode: bool,
-    load_mode: Optional[str] = None,
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
     """Whether this launch pages the per-layer embeddings instead of holding them resident.
 
     Every clause fails CLOSED, i.e. back to the full host-RAM charge this replaced: an arch
-    llama.cpp does not mark lazy, a build with no --lazy-mode, an explicit --lazy-mode off, a
-    table too small for the auto threshold, or a launch that asked for no mapping at all.
-
-    That last one is the conservative clause, not a modelled one. llama.cpp maps a lazy
-    context whatever the load mode (llama-model-loader.cpp:llama_model_loader::init_mappings
-    maps when ``lazy.any()``, and load_all_data reads it ``from_mapping``), so --load-mode
-    none does NOT in fact fault the table in; charging it there is a margin against a user
-    who asked for residency, and it only ever keeps a plan off the "none" branch.
+    llama.cpp does not mark lazy, a build with no --lazy-mode, an explicit --lazy-mode off, or
+    a table too small for the auto threshold. The load mode is NOT a clause: llama.cpp maps a
+    lazy context whatever the load mode (llama-model-loader.cpp:llama_model_loader::init_mappings
+    maps when ``lazy.any()``, and load_all_data reads it ``from_mapping``), so --load-mode none
+    leaves the table paged too.
     """
     if arch not in _LAZY_PER_LAYER_EMBD_ARCHS or ple_bytes <= 0:
         return False
     if not supports_lazy_mode:
-        return False
-    if str(load_mode or "").strip().lower() == "none":
         return False
     mode = _lazy_mode_from_args(extra_args, env)
     if mode == "off":
@@ -28339,7 +28333,6 @@ class LlamaCppBackend:
                     layout.arch,
                     int(getattr(layout, "per_layer_embd_bytes", 0) or 0),
                     supports_lazy_mode = bool(inputs.get("supports_lazy_mode")),
-                    load_mode = inputs.get("load_mode"),
                     extra_args = extra_args,
                     env = source_env,
                 ),

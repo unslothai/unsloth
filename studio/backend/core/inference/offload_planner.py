@@ -244,8 +244,7 @@ class Plan:
     draft_dropped: bool = False
     cache_ram_mib: int = -1
     declined_by_gate: bool = False
-    # Whether host_bytes above includes the per-layer embeddings, so the branch this plan was sized on is on the record
-    # rather than inferable only from load_mode_none.
+    # Whether host_bytes above includes the per-layer embeddings (False when llama.cpp reads them lazily from the mapping).
     ple_charged_to_host: bool = True
     # The decline is a MEASUREMENT rather than a comparison, and it does not move with the
     # context, so FIT_ONLY must not retry smaller.
@@ -2230,16 +2229,12 @@ def _finish(
 
     # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but only
     # when host RAM holds the host side; otherwise mmap keeps an over-commit pageable.
-    # "none" is the branch that has to pay for the PLE: this plan asks for no mapping, so the tensor it was excused
-    # from above has to fit in RAM before that flag can be emitted.
+    # The lazy PLE stays out on BOTH branches: llama.cpp maps a lazy context whatever the load mode
+    # (llama-model-loader.cpp:llama_model_loader::init_mappings maps whenever lazy.any()), so "none" does not fault it in.
     if host_ram_bytes is None or opts.prompt_cache_unbounded:
         load_mode_none = False
     else:
-        load_mode_none = host_bytes + ple_lazy_bytes <= max(
-            0, host_ram_bytes - opts.host_ram_headroom_bytes
-        )
-    if load_mode_none:
-        host_bytes += ple_lazy_bytes
+        load_mode_none = host_bytes <= max(0, host_ram_bytes - opts.host_ram_headroom_bytes)
 
     # The prompt cache is host RAM llama-server takes on top of the spill, 8 GiB by default, and
     # the cheapest thing in the system to give up.
@@ -2287,7 +2282,7 @@ def _finish(
         spilled_lm_head = spill_lm_head,
         vram_bytes = vram_bytes,
         host_bytes = host_bytes,
-        ple_charged_to_host = not ple_lazy_bytes or load_mode_none,
+        ple_charged_to_host = not ple_lazy_bytes,
         kv_spilled_to_host = kv_on_host_rung,
         predicted_gen_penalty_ms = _spill_penalty_ms(
             layout,

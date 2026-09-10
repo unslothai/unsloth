@@ -3150,8 +3150,9 @@ def test_a_lazily_read_per_layer_embedding_leaves_the_mmap_branch_host_side():
     the plan has to buy. Charging Qwen3.8-Flash-Next's 26.82 GiB in full flipped this plan
     to pageable on machines that had the room.
 
-    Both plans stay on the mmap branch here (one byte short of ``none``), so the delta IS
-    the tensor, and VRAM must not move by a byte.
+    RAM is one byte short of holding the charged plan unmapped, so the charged plan stays
+    pageable while the lazy one, 5 GiB lighter, takes ``none``; the host delta IS the tensor,
+    and VRAM must not move by a byte.
     """
     from core.inference.offload_planner import PlanOptions
 
@@ -3163,16 +3164,19 @@ def test_a_lazily_read_per_layer_embedding_leaves_the_mmap_branch_host_side():
     charged = plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts)
     lazy = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
 
-    assert charged.load_mode_none is False and lazy.load_mode_none is False
+    assert charged.load_mode_none is False and lazy.load_mode_none is True
     assert charged.vram_bytes == lazy.vram_bytes
     assert charged.spilled_blocks == lazy.spilled_blocks
     assert charged.host_bytes - lazy.host_bytes == 5 * GIB
     assert charged.ple_charged_to_host is True and lazy.ple_charged_to_host is False
 
 
-def test_the_none_branch_pays_for_the_per_layer_embedding_it_was_excused():
-    """--load-mode none asks for no mapping, so the tensor comes back before the flag may
-    be emitted, and the plan's host figure says so."""
+def test_the_none_branch_does_not_pay_for_a_table_llama_cpp_keeps_mapped():
+    """llama.cpp maps a lazy context whatever the load mode (llama-model-loader.cpp:
+    llama_model_loader::init_mappings maps whenever lazy.any()), so --load-mode none does not
+    fault the table in and the none branch is sized without it. Charging it there put
+    Qwen3.8-Flash-Next's 26.82 GiB table on the mmap branch on hosts that had the room for
+    the spill, at 2x on prefill."""
     from core.inference.offload_planner import PlanOptions
 
     layout = _ple_layout(5 * GIB)
@@ -3181,14 +3185,20 @@ def test_the_none_branch_pays_for_the_per_layer_embedding_it_was_excused():
     lazy = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = lazy_opts)
 
     assert charged.load_mode_none is True and lazy.load_mode_none is True
-    assert lazy.host_bytes == charged.host_bytes
-    assert lazy.ple_charged_to_host is True
+    assert lazy.host_bytes == charged.host_bytes - 5 * GIB
+    assert lazy.ple_charged_to_host is False
+
+    # RAM that holds the spill but not the table: the plan still takes none.
+    ram = lazy.host_bytes + lazy_opts.host_ram_headroom_bytes
+    tight = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
+    assert tight.load_mode_none is True
+    assert plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts).load_mode_none is False
 
 
-def test_a_host_that_holds_only_the_mapped_plan_keeps_mmap_rather_than_refusing():
+def test_a_host_that_holds_only_the_mapped_plan_takes_it_unmapped_rather_than_refusing():
     """The two decisions the over-charge moved, on one host: the spill is admitted, and it
-    is admitted UNDER mmap, because the bytes that made it look unaffordable are the ones
-    llama.cpp never faults in."""
+    takes --load-mode none, because the bytes that made it look unaffordable are the ones
+    llama.cpp never faults in under either load mode."""
     from core.inference.offload_planner import PlanOptions
 
     layout = _ple_layout(20 * GIB)
@@ -3203,5 +3213,5 @@ def test_a_host_that_holds_only_the_mapped_plan_keeps_mmap_rather_than_refusing(
 
     assert charged.declined_by_gate is True and "host RAM" in charged.reason
     assert lazy.declined_by_gate is False and lazy.spilled_blocks
-    assert lazy.load_mode_none is False, "the none branch would have to pay the 20 GiB back"
+    assert lazy.load_mode_none is True, "the lazy table is paged under none as well"
     assert lazy.ple_charged_to_host is False
