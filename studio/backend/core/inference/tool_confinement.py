@@ -83,7 +83,7 @@ def unconfined_tools_allowed() -> bool:
 def refusal_message() -> str:
     return (
         "Code execution is unavailable for this account: this host cannot confine tool "
-        "processes to your workspace (Landlock ABI 3 on Linux 6.2 or later, sandbox-exec "
+        "processes to your workspace (Landlock ABI 6 on Linux 6.12 or later, sandbox-exec "
         f"on macOS). The installation owner can set {_OVERRIDE_ENV}=1 to allow unconfined "
         "tool processes for managed accounts."
     )
@@ -330,8 +330,9 @@ def _landlock_preexec(
         os.close(ruleset_fd)
 
 
-# Only ABI 3+ (Linux 6.2) handles truncation; below that a child could empty a foreign file.
-_MIN_LANDLOCK_ABI = 3
+# ABI 3+ (Linux 6.2) handles truncation; only ABI 6+ (Linux 6.12) scopes signals, and below
+# that a managed child can kill the server or another account's processes over the shared UID.
+_MIN_LANDLOCK_ABI = 6
 
 
 def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
@@ -342,7 +343,7 @@ def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     rules = _landlock_rules(abi, sandbox_site_dir)
     return Confinement(
         mechanism = f"landlock-abi{abi}",
-        preexec = partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL if abi >= 6 else 0),
+        preexec = partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL),
     )
 
 

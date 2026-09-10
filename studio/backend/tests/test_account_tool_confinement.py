@@ -18,7 +18,10 @@ from .test_account_lifecycle import auth_env, matrix  # noqa: F401
 ALICE = AccountContext("alice-id", "alice")
 BOB = AccountContext("bob-id", "bob")
 
-LANDLOCK = sys.platform == "linux" and tool_confinement.landlock_abi() > 0
+LANDLOCK = (
+    sys.platform == "linux"
+    and tool_confinement.landlock_abi() >= tool_confinement._MIN_LANDLOCK_ABI
+)
 
 
 @pytest.fixture(autouse = True)
@@ -304,9 +307,6 @@ def test_managed_child_cannot_plant_a_link_in_its_own_tree(tmp_path):
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
-@pytest.mark.skipif(
-    tool_confinement.landlock_abi() < 6, reason = "signal scoping needs Landlock ABI 6"
-)
 def test_managed_child_cannot_signal_another_accounts_process(tmp_path):
     """Two accounts' tools run as one Unix user; signals stay inside the child's own domain."""
     _seed(tmp_path)

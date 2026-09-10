@@ -711,6 +711,20 @@ _REGISTRY_HOSTNAMES = frozenset(
 )
 
 
+def _public_registry_hostname(host: str) -> bool:
+    """A shipped public vendor hostname (not the ollama or llama.cpp local presets), usable
+    by a managed account without a lookup a transient resolver failure would refuse."""
+    host = (host or "").lower().rstrip(".")
+    if host not in _REGISTRY_HOSTNAMES:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return ipaddress.ip_address(_canonical_host(host)).is_global
+    except ValueError:
+        return True
+
+
 def _metadata_address(address: str) -> bool:
     """``_metadata_host`` for a RESOLVED address: the exact services, no net.
 
@@ -856,7 +870,13 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
     )
 
 
-def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
+def _managed_account_caller() -> bool:
+    """True when this validation runs for a managed (non-owner) account."""
+    from utils.account_context import is_owner_context
+    return not is_owner_context()
+
+
+def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
     """Raise when ``hostname`` is, or resolves to, a non-public address."""
     try:
         addresses = [ipaddress.ip_address(hostname)]
@@ -884,10 +904,7 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
             resolved = tuple(str(info[4][0]) for info in infos)
         addresses = [ipaddress.ip_address(address.split("%", 1)[0]) for address in resolved]
     if not addresses or any(not ip.is_global for ip in addresses):
-        raise ValueError(
-            "Provider base URL points at a private address, which is disabled on this "
-            f"server ({_BLOCK_PRIVATE_ENV}=1)."
-        )
+        raise ValueError(reason)
 
 
 def validate_provider_base_url(base_url: str) -> str:
@@ -900,7 +917,8 @@ def validate_provider_base_url(base_url: str) -> str:
     loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
     stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
     caller-supplied hostname is resolved far enough to apply the metadata block
-    to DNS aliases of it; rejecting other private addresses stays opt-in.
+    to DNS aliases of it; rejecting other private addresses stays opt-in for the
+    owner, and is always on for a managed account (as managed MCP servers are).
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -932,7 +950,22 @@ def validate_provider_base_url(base_url: str) -> str:
         raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
 
     if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":
-        _reject_non_public(hostname, port, scheme)
+        _reject_non_public(
+            hostname,
+            port,
+            scheme,
+            "Provider base URL points at a private address, which is disabled on this "
+            f"server ({_BLOCK_PRIVATE_ENV}=1).",
+        )
+    elif _managed_account_caller() and not _public_registry_hostname(hostname):
+        # The managed MCP rule: caller-controlled egress must not reach the owner's
+        # loopback models or the host's LAN. The owner keeps Ollama and llama.cpp.
+        _reject_non_public(
+            hostname,
+            port,
+            scheme,
+            "Managed accounts may only use public-network provider base URLs.",
+        )
 
     return raw.rstrip("/")
 
