@@ -944,6 +944,10 @@ def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, 
     assert (workdir / ".cache" / "huggingface" / "hub").read_text() == "not a directory"
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root reads and writes regardless of the mode bits, so the premise is void",
+)
 def test_an_unreadable_directory_is_refused(tmp_path):
     """A mode-000 directory hides a link out from the scan, and the process that
     owns it can chmod it back."""

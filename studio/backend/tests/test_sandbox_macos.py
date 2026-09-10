@@ -574,6 +574,10 @@ def test_the_openssl_directory_is_granted_by_component_not_whole(profile):
         assert f"/private/etc/ssl/{component}" in backend._TLS_TRUST_PATHS
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root reads and writes regardless of the mode bits, so the premise is void",
+)
 def test_a_toolchain_directory_the_user_can_write_is_not_trusted(tmp_path):
     """`xcode-select -p` honours $DEVELOPER_DIR, so a Studio started with that
     aimed at a directory under $HOME would otherwise hand recursive file-read*
@@ -592,6 +596,10 @@ def test_a_toolchain_directory_the_user_can_write_is_not_trusted(tmp_path):
     assert backend._trusted_system_dir("/usr") is True
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root reads and writes regardless of the mode bits, so the premise is void",
+)
 def test_the_developer_dir_variable_never_reaches_xcode_select(monkeypatch, tmp_path):
     mine = tmp_path / "Developer"
     mine.mkdir()
@@ -728,3 +736,19 @@ def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(tmp_path,
     deny = _rule(profile, "(deny file-write* ")
     for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
         assert f'(subpath "{spelling}")' in deny, deny
+
+
+def test_a_path_that_cannot_be_encoded_is_refused_rather_than_carried():
+    """Non-ASCII is kept raw so TinyScheme sees the character rather than a \\u
+    escape it has no rule for. The other half of that: the profile is an argv
+    string, so a path carrying undecodable bytes -- a lone surrogate, after
+    surrogateescape -- would raise at the spawn instead. In `auto` an exception
+    there is caught and the call runs UNISOLATED, which is the silent loss the
+    raw spelling exists to prevent, so it is refused here where the caller can
+    still see it."""
+    with pytest.raises(SandboxUnavailableError, match = "encodable as UTF-8"):
+        backend._validated("/tmp/session-\udcff")
+    # The positive control: an ordinary accented path is NOT refused, or this
+    # guard would be undoing the fix it is protecting.
+    assert backend._validated("/tmp/session-café") == "/tmp/session-café"
+    assert "\\u00" not in backend._sbpl_string("/tmp/session-café")

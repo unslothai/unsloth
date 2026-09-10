@@ -249,6 +249,19 @@ def _validated(path: str) -> str:
         raise SandboxUnavailableError(
             f"Seatbelt paths must be absolute and free of NUL/newline: {path!r}"
         )
+    try:
+        # The profile is handed to sandbox-exec as an argv string, so it has to
+        # survive the UTF-8 encode. Now that non-ASCII is kept raw rather than
+        # \u-escaped, a lone surrogate -- what a path carrying undecodable bytes
+        # looks like after surrogateescape -- reaches that encode and raises
+        # there instead of here. Refusing is the whole point: in `auto` an
+        # exception at spawn is caught and the call runs UNISOLATED, which is
+        # the silent loss the escaping change exists to prevent.
+        path.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SandboxUnavailableError(
+            f"Seatbelt paths must be encodable as UTF-8: {path!r}"
+        ) from exc
     return path
 
 
