@@ -280,6 +280,7 @@ class JobManager:
         return self.get_status(job_id)
 
     def get_current_job_id(self) -> str | None:
+        """Return current job_id (or None)."""
         with self._lock:
             return None if self._job is None else self._job.job_id
 
@@ -318,7 +319,9 @@ class JobManager:
             base_dataset_path = Path(artifact_path)
             parquet_dir = base_dataset_path / "parquet-files"
             if not parquet_dir.exists():
-                return {"error": f"dataset path missing: {parquet_dir}"}
+                if job_status in {"completed", "error", "cancelled"}:
+                    return {"error": f"dataset path missing: {parquet_dir}"}
+                return None
 
             return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
         except Exception as exc:
@@ -544,6 +547,12 @@ class JobManager:
                 return
             if et == EVENT_JOB_STARTED:
                 self._job.status = "active"
+                artifact_path = event.get("artifact_path")
+                if isinstance(artifact_path, str) and artifact_path.strip():
+                    self._job.artifact_path = artifact_path.strip()
+                execution_type = event.get("execution_type")
+                if isinstance(execution_type, str) and execution_type.strip():
+                    self._job.execution_type = execution_type.strip()
             if et == EVENT_JOB_COMPLETED:
                 self._job.status = "completed"
                 self._job.finished_at = time.time()
