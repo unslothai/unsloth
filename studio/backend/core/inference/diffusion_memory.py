@@ -420,12 +420,19 @@ def _unified_reclaimable_free_mib(free_mib: int, total_mib: int) -> int:
 
     Through the llama.cpp helper, which caps it by the cgroup remainder: a
     ``--memory``-capped Spark is where an over-credit reaches the OOM kill this
-    guard pre-empts.
+    guard pre-empts. That cap is then applied AGAIN as a ceiling, because reading it
+    only as a lower bound throws it away whenever the driver's host-wide ``MemFree``
+    is larger, which is the normal case in a container.
     """
     available_mib = _available_system_memory_mib()
+    cgroup_mib = _cgroup_available_memory_mib()
     if available_mib is None:
-        return free_mib
-    return max(free_mib, min(int(available_mib), total_mib))
+        credited = free_mib
+    else:
+        credited = max(free_mib, min(int(available_mib), total_mib))
+    if cgroup_mib is not None:
+        credited = min(credited, int(cgroup_mib))
+    return credited
 
 
 def _available_system_memory_mib() -> Optional[int]:
@@ -436,6 +443,16 @@ def _available_system_memory_mib() -> Optional[int]:
         return LlamaCppBackend._available_system_memory_mib()
     except Exception:  # noqa: BLE001 - the host reading still stands
         return _system_memory_mib()[1]
+
+
+def _cgroup_available_memory_mib() -> Optional[int]:
+    """What an enforcing cgroup will still let this process charge, else None."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        return LlamaCppBackend._cgroup_available_memory_mib()
+    except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
+        return None
 
 
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:

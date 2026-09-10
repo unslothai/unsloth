@@ -64,6 +64,7 @@ def test_unified_free_credits_reclaimable_page_cache(
     monkeypatch.setattr(
         diffusion_memory, "_available_system_memory_mib", lambda: available_mib
     )
+    monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
 
     assert (
         diffusion_memory._unified_reclaimable_free_mib(driver_free_mib, 121 * 1024)
@@ -73,6 +74,7 @@ def test_unified_free_credits_reclaimable_page_cache(
 
 def test_unified_free_is_unchanged_when_system_memory_is_unreadable(monkeypatch):
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: None)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
 
     assert diffusion_memory._unified_reclaimable_free_mib(3 * 1024, 121 * 1024) == 3 * 1024
 
@@ -137,3 +139,32 @@ def test_a_rocm_apu_snapshot_is_not_credited(monkeypatch):
 
     assert memory.memory_kind == "unified_memory"
     assert memory.free_mib == 90 * 1024
+
+
+@pytest.mark.parametrize(
+    ("driver_free_mib", "available_mib", "cgroup_mib", "expected_mib"),
+    [
+        # A container's limit is a CEILING. Reading it only as a lower bound threw it
+        # away whenever the driver's host-wide MemFree was larger, which is the normal
+        # case in a container: the load is then sized above memory.max and killed.
+        (102400, 16384, 16384, 16384),
+        # ... including when the credit itself would have stopped lower.
+        (4096, 16384, 16384, 16384),
+        # No enforcing limit: the credited pool stands.
+        (29509, 118451, None, 118451),
+    ],
+)
+def test_unified_free_is_bounded_by_an_enforcing_cgroup(
+    monkeypatch, driver_free_mib, available_mib, cgroup_mib, expected_mib
+):
+    monkeypatch.setattr(
+        diffusion_memory, "_available_system_memory_mib", lambda: available_mib
+    )
+    monkeypatch.setattr(
+        diffusion_memory, "_cgroup_available_memory_mib", lambda: cgroup_mib
+    )
+
+    assert (
+        diffusion_memory._unified_reclaimable_free_mib(driver_free_mib, 124609)
+        == expected_mib
+    )
