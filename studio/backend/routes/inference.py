@@ -9948,6 +9948,38 @@ def _inherited_ctx_size() -> int:
         return 0
 
 
+def _launch_vision_mmproj(
+    config,
+    llama_extra_args: Optional[list[str]] = None,
+    disable_vision: bool = False,
+) -> Optional[str]:
+    """The vision projector this launch really opens, or None.
+
+    What ``_batch_ubatch_for_mmproj`` needs so a panel and the admission guard price
+    the micro-batch the child runs at. Vision off drops it: the loader keeps only an
+    audio-only projector past the switch, and that one produces no image tokens. An
+    inherited ``LLAMA_ARG_MMPROJ(_URL)`` counts even under ``--no-mmproj``, which
+    empties the command line without clearing ``mmproj.path``.
+    """
+    from core.inference.llama_cpp import _extra_args_device, extra_args_disable_mmproj
+
+    if not getattr(config, "is_vision", False) or disable_vision:
+        return None
+    if not extra_args_disable_mmproj(llama_extra_args):
+        # A --mmproj in the extras is appended after Studio's and last-wins at the child.
+        override = _extra_args_device(llama_extra_args, {"--mmproj", "-mm"})
+        if override and Path(override).is_file():
+            return str(override)
+        own = getattr(config, "gguf_mmproj_file", None)
+        if own:
+            return str(own)
+    url = (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+    if url:
+        return url
+    inherited = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+    return inherited if inherited and Path(inherited).is_file() else None
+
+
 def _gguf_runtime_bytes(
     gguf_path: str,
     max_seq_length: int,
@@ -9962,6 +9994,7 @@ def _gguf_runtime_bytes(
     is_diffusion: bool = False,
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
+    launch_vision_mmproj: Optional[str] = None,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -9977,10 +10010,21 @@ def _gguf_runtime_bytes(
     over-reserves on purpose; a panel quoting a number to a user wants the other
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
+        from core.inference.llama_cpp import _batch_ubatch_for_mmproj
         from core.inference.llama_server_args import (
             parse_ctx_override,
             resolve_ctx_checkpoints,
             resolve_requested_ctx,
+        )
+
+        # load_model raises the pair for a vision-projector launch, so price that pair
+        # here too: the panel would otherwise quote, and admission approve against, a
+        # micro-batch the child does not run at.
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+            None if is_diffusion else launch_vision_mmproj,
+            n_batch,
+            n_ubatch,
+            llama_extra_args,
         )
 
         probe = _probe_backend()
@@ -10265,6 +10309,7 @@ def _estimate_gguf_kv_gb(
     n_devices: int = 1,
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
+    launch_vision_mmproj: Optional[str] = None,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
@@ -10284,6 +10329,7 @@ def _estimate_gguf_kv_gb(
         n_devices = n_devices,
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
+        launch_vision_mmproj = launch_vision_mmproj,
     )
     return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
 
@@ -10687,6 +10733,9 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 is_diffusion = is_diffusion,
                 model_identifier = getattr(config, "identifier", None),
+                launch_vision_mmproj = _launch_vision_mmproj(
+                    config, llama_extra_args, disable_vision
+                ),
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -11725,6 +11774,7 @@ def _gguf_memory_breakdown(
         # An embedding model is recognised from its identifier, not its header, so the
         # panel has to hand over the same one /load does or it prices a generation model.
         model_identifier = getattr(config, "identifier", None),
+        launch_vision_mmproj = _launch_vision_mmproj(config, llama_extra_args, disable_vision),
     )
     files_gb = _gguf_resident_file_gb(
         config,

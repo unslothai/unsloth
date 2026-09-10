@@ -5797,23 +5797,22 @@ def _extra_args_n_ubatch(
 
 
 def _batch_ubatch_for_mmproj(
-    launch_mmproj_path: Optional[str],
+    launch_vision_mmproj: Optional[str],
     n_batch: Optional[int],
     n_ubatch: Optional[int],
     extra_args: Optional[Iterable[str]],
-    *,
-    is_vision: bool = False,
-    disable_vision: bool = False,
 ) -> tuple[Optional[int], Optional[int]]:
-    """Raise the default batch/ubatch for a load that will launch a vision projector.
+    """Raise the default batch/ubatch for a launch that opens a vision projector.
 
     See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the pair has to be equal. Takes the
-    RESOLVED launch path, not the requested one: a missing or family-mismatched file
-    launches a text-only server, which must not pay the bigger compute buffer. Only
-    when the caller named neither size and nothing else already sets one: an env var
-    or an extra_arg is the user sizing the child, and this must not undo it.
+    projector the child will really open, not the one the request named: a suppressed,
+    missing or family-mismatched file launches a text-only server, which must not pay
+    the bigger compute buffer, while an inherited one launches a vision server nothing
+    in the request mentions. Only when the caller named neither size and nothing else
+    already sets one: an env var or an extra_arg is the user sizing the child, and this
+    must not undo it.
     """
-    if not launch_mmproj_path or not is_vision or disable_vision:
+    if not launch_vision_mmproj:
         return n_batch, n_ubatch
     if n_batch is not None or n_ubatch is not None:
         return n_batch, n_ubatch
@@ -19952,25 +19951,35 @@ class LlamaCppBackend:
                 return False
 
             # Here, not at the intent unpack: a Hub load carries no mmproj_path of its
-            # own, the companion download above is what assigns it, and the fit below
+            # own, the companion download above is what assigns it, and Phase 3's fit
             # must price the micro-batch the child will actually launch with. Resolved
-            # exactly as the launch block resolves it, so a stale or family-mismatched
+            # as the launch block resolves it, so a suppressed or family-mismatched
             # file leaves the text-only server it produces at the llama.cpp defaults.
-            _fit_mmproj_path = (
-                None
-                if extra_args_disable_mmproj(extra_args)
-                else self._resolve_launch_mmproj_path(
-                    model_path = model_path,
-                    mmproj_path = mmproj_path,
+            _fit_vision_mmproj = None
+            if is_vision and not disable_vision:
+                _fit_vision_mmproj = (
+                    None
+                    if extra_args_disable_mmproj(extra_args)
+                    else self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    )
                 )
-            )
+                if not _fit_vision_mmproj:
+                    # arg.cpp reads LLAMA_ARG_MMPROJ(_URL) before argv, and --no-mmproj
+                    # never clears mmproj.path, so an inherited projector opens whatever
+                    # Unsloth resolved. A URL is a download this cannot open; the child
+                    # will, so it counts.
+                    _env_mmproj = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+                    _fit_vision_mmproj = (
+                        (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+                        or (_env_mmproj if os.path.isfile(_env_mmproj) else "")
+                    ) or None
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-                _fit_mmproj_path,
+                _fit_vision_mmproj,
                 n_batch,
                 n_ubatch,
                 extra_args,
-                is_vision = is_vision,
-                disable_vision = disable_vision,
             )
 
             # Backstop for everything the pre-teardown probes fail open on: refuse from the
