@@ -5,6 +5,7 @@
 
 import re
 from pathlib import Path
+from tests.studio._js_source import binding_joining, gates_the_markup
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -488,7 +489,14 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
-    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
+    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
+    # of it. A rename or a rewrap is a refactor; dropping desktopAuthReady is the regression.
+    gate = binding_joining(source, "&&", {'status === "running"', "desktopAuthReady"})
+    assert gate, "no binding requires both a running status and desktopAuthReady"
+    assert gates_the_markup(
+        source, gate
+    ), f"{gate} is computed but does not condition the mount in the markup"
     assert "Preparing Unsloth" not in source
     assert "Signing in to desktop session" not in source
     assert "desktopBooting" not in source

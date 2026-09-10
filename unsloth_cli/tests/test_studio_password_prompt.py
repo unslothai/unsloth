@@ -1610,6 +1610,44 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
     assert bootstrap_file.read_text() == ""
 
 
+def test_reset_clears_cached_cli_api_keys(monkeypatch, tmp_path):
+    # reset-password DELETEs every api_keys row, so a cached key is left as
+    # plaintext for a credential that no longer exists.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    for name in ("cli", "my key"):
+        studio_mod._write_auth_secret(
+            studio_mod._cli_api_key_secret_path(name), "sk-unsloth-" + "0" * 32
+        )
+    auth_dir = tmp_path / "auth"
+    assert len(list(auth_dir.glob(f"{studio_mod.CLI_API_KEY_FILE_PREFIX}*"))) == 2
+
+    conn = studio_mod._connect_auth_db()
+    studio_mod._cli_update_password(
+        conn, studio_mod.DEFAULT_ADMIN_USERNAME, "fresh-new-pw-123", revoke_api_keys = True
+    )
+    conn.close()
+
+    assert list(auth_dir.glob(f"{studio_mod.CLI_API_KEY_FILE_PREFIX}*")) == []
+
+
+def test_ordinary_password_change_keeps_cached_cli_api_keys(monkeypatch, tmp_path):
+    # Without revoke_api_keys the api_keys rows survive, so the cached key is
+    # still valid and deleting it would just force a pointless re-mint.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    path = studio_mod._cli_api_key_secret_path("cli")
+    studio_mod._write_auth_secret(path, "sk-unsloth-" + "0" * 32)
+
+    conn = studio_mod._connect_auth_db()
+    studio_mod._cli_update_password(conn, studio_mod.DEFAULT_ADMIN_USERNAME, "fresh-new-pw-123")
+    conn.close()
+
+    assert path.exists()
+
+
 def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
     # Fresh install: the CLI gate writes the password hash + JWT secret before
     # the backend ever runs, so this path must apply the same 0700/0600 modes
