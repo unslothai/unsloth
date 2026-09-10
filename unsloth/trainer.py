@@ -901,8 +901,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless the gated-delta conv and scan reset at sequence
-            # boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
+            # Hybrid models corrupt packed batches unless the recurrent and conv ops reset at sequence
+            # boundaries (gated-delta or Mamba2), so enable the experimental varlen shim (flag plus
+            # kernels) or keep them blocked.
             if (
                 is_hybrid
                 and not isinstance(model, str)

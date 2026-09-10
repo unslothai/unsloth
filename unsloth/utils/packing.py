@@ -21,6 +21,7 @@ import copy
 import inspect
 import logging
 import os
+import sys
 from collections import OrderedDict
 from functools import wraps
 from typing import Any, Iterable, Optional, Sequence, Tuple
@@ -280,12 +281,18 @@ def enable_padding_free_metadata(model, trainer):
     collator._unsloth_padding_free_lengths_wrapped = True
 
 
-# Experimental correct packing / padding-free for hybrid linear-attention: Qwen3.5 / Qwen3-Next
-# mix a gated-delta recurrence with a causal conv1d, and packing flattens the batch so both leak
-# state across sequence boundaries unless seq_idx (conv) and cu_seqlens (scan) are passed. Only
-# the accelerated kernels accept these, so it fails closed on the pure-torch fallbacks, behind an
-# env flag, and overrides only the per-module prefill kernels (causal_conv1d_fn /
-# chunk_gated_delta_rule), leaving decode untouched.
+# Experimental correct packing / padding-free for hybrid linear-attention: Qwen3.5 / Qwen3-Next mix a
+# gated-delta recurrence with a causal conv1d and Nemotron-H mixes Mamba2 with attention, and packing
+# flattens the batch so those ops leak state across sequence boundaries unless seq_idx (conv, Mamba2
+# fused kernel) and cu_seqlens (gated-delta scan) are passed. Only the accelerated kernels accept these,
+# so it fails closed on the pure-torch fallbacks, behind an env flag. Gated-delta overrides the
+# per-module prefill kernels (causal_conv1d_fn / chunk_gated_delta_rule); Mamba2 injects seq_idx into
+# mixer.forward, forces a packed prefill so transformers takes the fused path, and wraps the fused and
+# chunk-scan kernels. Decode is left untouched.
+_MAMBA2_FUSED_NAMES = (
+    "mamba2_split_conv1d_scan_combined",
+    "mamba_split_conv1d_scan_combined",
+)
 _HYBRID_PACKING_ENV_VAR = "UNSLOTH_EXPERIMENTAL_HYBRID_PACKING"
 _HYBRID_LOGGER = logging.getLogger("unsloth.hybrid_packing")
 _HYBRID_WARNED: set = set()
@@ -321,6 +328,222 @@ def _iter_gated_delta_modules(model):
         if type(module).__name__.endswith("GatedDeltaNet") and hasattr(module, "conv1d"):
             modules.append(module)
     return modules
+
+
+def _iter_mamba2_modules(model):
+    modules, seen = [], set()
+    for module in model.modules():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        name = type(module).__name__
+        if name.endswith("Mamba2Mixer") and hasattr(module, "conv1d") and hasattr(module, "A_log"):
+            modules.append(module)
+    return modules
+
+
+def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
+    """None if ``seq_idx`` is a named parameter. ``**kwargs``-only stubs are
+    rejected so transformers' unused hub fallback is not treated as varlen-ready."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return "kernel signature not introspectable"
+    if "seq_idx" in params:
+        return None
+    return "mamba2 fused kernel does not accept seq_idx"
+
+
+_MAMBA2_NAMESPACE_SUBSTR = (
+    "unsloth_compiled",
+    "nemotron",
+    "mamba_ssm",
+    "modeling_nemotron",
+)
+
+
+def _force_install_mamba2_fused(namespace, wrapped) -> None:
+    """Overwrite fused names in a module/function dict, including stale compile-time imports.
+
+    Unsloth's compiler does ``from modeling import mamba_split_conv1d_scan_combined``
+    when it writes ``unsloth_compiled_cache``. That binding is whatever the
+    modeling module had *at compile import*, often ``None`` or a hub stub, while
+    mixer ``__init__`` later stores the real kernel only on the modeling module.
+    Compiled ``cuda_kernels_forward`` still LOAD_GLOBALs the stale copy.
+    """
+    if wrapped is None or not isinstance(namespace, dict):
+        return
+    for name in _MAMBA2_FUSED_NAMES:
+        namespace[name] = wrapped
+    if "is_fast_path_available" in namespace:
+        namespace["is_fast_path_available"] = True
+    for value in list(namespace.values()):
+        inner = getattr(value, "__dict__", None)
+        if not isinstance(inner, dict):
+            continue
+        for name in _MAMBA2_FUSED_NAMES:
+            if name in inner:
+                inner[name] = wrapped
+
+
+def _iter_mamba2_install_namespaces(mamba2_modules):
+    seen: set[int] = set()
+
+    def take(ns):
+        if isinstance(ns, dict) and id(ns) not in seen:
+            seen.add(id(ns))
+            return True
+        return False
+
+    for module in mamba2_modules:
+        modeling = inspect.getmodule(type(module))
+        ns = getattr(modeling, "__dict__", None)
+        if take(ns):
+            yield ns
+    for name, mod in list(sys.modules.items()):
+        lname = (name or "").lower()
+        if not any(s in lname for s in _MAMBA2_NAMESPACE_SUBSTR):
+            continue
+        ns = getattr(mod, "__dict__", None)
+        if take(ns):
+            yield ns
+
+
+def _mamba2_handshake_debug(modules) -> str:
+    """One-line summary of why the packed dispatch handshake failed."""
+    if not modules:
+        return ""
+    module = modules[0]
+    cls = type(module)
+    modeling = inspect.getmodule(cls)
+    globs = getattr(modeling, "__dict__", {}) if modeling is not None else {}
+    return (
+        f"Mixer {cls.__name__} from {getattr(cls, '__module__', None)}: "
+        f"is_fast_path_available={globs.get('is_fast_path_available', '<missing>')} "
+        f"fused_hit={getattr(module, '_unsloth_varlen_fused_hit', None)} "
+        f"conv_hit={getattr(module, '_unsloth_varlen_conv_hit', None)} "
+        f"scan_hit={getattr(module, '_unsloth_varlen_scan_hit', None)}"
+    )
+
+
+def _call_as_packed_mamba2_prefill(fn, args, kwargs):
+    """Invoke ``fn`` with ``attention_mask=None`` and ``cache_params=None``.
+
+    transformers 5.5 only calls ``mamba_split_conv1d_scan_combined`` when the
+    mask is all-ones *and* ``cache_params is None``. Packed 8k batches still
+    carry pad zeros, and Nemotron-H layers pass an empty ``Cache`` into the
+    mixer, so the fused wrapper never runs.
+    """
+    kwargs = dict(kwargs)
+    try:
+        sig = inspect.signature(fn)
+        names = sig.parameters
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in names.values())
+        if not has_var_kw and "attention_mask" not in names and "cache_params" not in names:
+            return fn(*args, **kwargs)
+        bound = sig.bind_partial(*args, **kwargs)
+        if "attention_mask" in names or has_var_kw:
+            bound.arguments["attention_mask"] = None
+        if "cache_params" in names or has_var_kw:
+            bound.arguments["cache_params"] = None
+        return fn(*bound.args, **bound.kwargs)
+    except (TypeError, ValueError):
+        kwargs["attention_mask"] = None
+        kwargs["cache_params"] = None
+        return fn(*args, **kwargs)
+
+
+_MAMBA2_MASK_CLEAR_NAMES = ("cuda_kernels_forward",)
+
+
+def _is_mamba2_mask_clear_name(name: str) -> bool:
+    if name in _MAMBA2_MASK_CLEAR_NAMES:
+        return True
+    if name.endswith("Mamba2Mixer_cuda_kernels_forward"):
+        return True
+    if name.endswith("Mamba2Mixer_forward") and not name.endswith("torch_forward"):
+        return True
+    return False
+
+
+def _wrap_clear_attention_mask(fn, varlen_getter):
+    if fn is None or not callable(fn) or getattr(fn, "_unsloth_varlen_mask_cleared", False):
+        return fn
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        if varlen_getter() is not None:
+            return _call_as_packed_mamba2_prefill(fn, args, kwargs)
+        return fn(*args, **kwargs)
+
+    wrapped._unsloth_varlen_mask_cleared = True
+    return wrapped
+
+
+def _install_mamba2_mask_clear(namespace, varlen_getter) -> None:
+    """Packed pad tokens keep 0s in ``attention_mask``, and Nemotron-H passes
+    an empty ``Cache`` into the mixer. transformers 5.5 only calls
+    ``mamba_split_conv1d_scan_combined`` when the mask is all-ones *and*
+    ``cache_params is None``.
+    """
+    if not isinstance(namespace, dict):
+        return
+    for name, value in list(namespace.items()):
+        if not _is_mamba2_mask_clear_name(name) or not callable(value):
+            continue
+        namespace[name] = _wrap_clear_attention_mask(value, varlen_getter)
+
+
+_MAMBA2_FALLBACK_SEQ_IDX = {
+    "mamba_chunk_scan_combined": "_unsloth_varlen_scan_hit",
+    "causal_conv1d_fn": "_unsloth_varlen_conv_hit",
+}
+
+
+def _install_mamba2_seq_idx_fallbacks(namespace, mixers, varlen_slot) -> None:
+    """Wrap the non-fused cuda path so packed seq_idx still resets state."""
+    if not isinstance(namespace, dict):
+        return
+    for name, hit_attr in _MAMBA2_FALLBACK_SEQ_IDX.items():
+        fn = namespace.get(name)
+        if not callable(fn) or getattr(fn, "_unsloth_varlen_seq_idx_wrapped", False):
+            continue
+        namespace[name] = _wrap_mamba2_seq_idx_call(
+            fn,
+            mixers,
+            varlen_slot = varlen_slot,
+            hit_attr = hit_attr,
+        )
+
+
+def _resolve_mamba2_fused(module):
+    """Locate the fused conv1d+scan kernel this mixer will call.
+
+    Prefers an instance attribute (tests / some vendor copies), then the
+    mixer's owning module, then ``mamba_ssm``.
+    """
+    orig = getattr(module, "_unsloth_varlen_orig_fused", None)
+    if callable(orig):
+        return orig, ("instance", None, None)
+    for name in _MAMBA2_FUSED_NAMES:
+        fn = getattr(module, name, None)
+        if callable(fn):
+            return fn, ("instance", None, name)
+    modeling = inspect.getmodule(type(module))
+    if modeling is not None:
+        modeling_dict = getattr(modeling, "__dict__", None)
+        if isinstance(modeling_dict, dict):
+            for name in _MAMBA2_FUSED_NAMES:
+                fn = modeling_dict.get(name)
+                if callable(fn):
+                    return fn, ("modeling", modeling, name)
+    try:
+        from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
+            mamba_split_conv1d_scan_combined as fn,
+        )
+    except Exception:
+        return None, None
+    return fn, ("ssm", None, "mamba_split_conv1d_scan_combined")
 
 
 def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
@@ -362,6 +585,203 @@ def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
         except (TypeError, ValueError):
             return "kernel signature not introspectable"
     return None
+
+
+def _mamba2_varlen_kernels_available(mamba2_modules) -> Optional[str]:
+    """None if every Mamba2 mixer can take ``seq_idx`` on its fused kernel."""
+    if not mamba2_modules:
+        return "no mamba2 modules found"
+    for module in mamba2_modules:
+        fn, _loc = _resolve_mamba2_fused(module)
+        if fn is None:
+            return "mamba2 fused kernel missing (install mamba_ssm)"
+        if getattr(fn, "__name__", "").startswith("torch_"):
+            return "pure-torch kernel fallback in use"
+        reason = _callable_accepts_named_seq_idx(fn)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _hybrid_varlen_dispatched(module) -> bool:
+    if type(module).__name__.endswith("Mamba2Mixer"):
+        if getattr(module, "_unsloth_varlen_fused_hit", False):
+            return True
+        # transformers' non-fused cuda path: causal_conv1d_fn + mamba_chunk_scan_combined
+        return bool(
+            getattr(module, "_unsloth_varlen_conv_hit", False)
+            and getattr(module, "_unsloth_varlen_scan_hit", False)
+        )
+    return bool(
+        getattr(module, "_unsloth_varlen_conv_hit", False)
+        and getattr(module, "_unsloth_varlen_scan_hit", False)
+    )
+
+
+def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
+    """True when ``seq_idx`` covers exactly the tokens this kernel call sees.
+
+    ``generate()`` bypasses the wrapped ``model.forward``, so mixers can still
+    hold the last training step's boundaries while the kernel is handed a
+    prompt of a different length. Injecting then trips the kernel's own
+    ``seq_idx must have shape (batch_size, seqlen)`` check.
+    """
+    if seq_idx is None:
+        return False
+    total = seq_idx.shape[-1]
+    tensor = None
+    for name in ("x", "hidden_states", "zxbcdt"):
+        candidate = kwargs.get(name)
+        if isinstance(candidate, torch.Tensor):
+            tensor = candidate
+            break
+    if tensor is None:
+        for arg in args:
+            if isinstance(arg, torch.Tensor):
+                tensor = arg
+                break
+    if tensor is None or tensor.dim() < 2:
+        return False
+    # Fused/scan kernels take (batch, seqlen, ...); causal_conv1d_fn takes
+    # (batch, dim, seqlen).
+    return total in (tensor.shape[1], tensor.shape[-1])
+
+
+def _wrap_mamba2_seq_idx_call(
+    orig,
+    mixers,
+    *,
+    varlen_slot = None,
+    hit_attr = "_unsloth_varlen_fused_hit",
+):
+    """Inject packed ``seq_idx`` into a Mamba2 conv/scan kernel and mark dispatch.
+
+    Returns ``orig`` unchanged when it is already a wrapper: Nemotron-H has one
+    mixer per layer sharing a single kernel name, so re-wrapping per module
+    would nest ~one frame per layer and blow the recursion limit on the first
+    packed forward.
+    """
+    if getattr(orig, "_unsloth_varlen_seq_idx_wrapped", False):
+        return orig
+
+    @wraps(orig)
+    def wrapped(*args, **kwargs):
+        varlen = varlen_slot[0] if varlen_slot else None
+        if varlen is None:
+            # Gradient-checkpoint recompute runs during backward, outside the
+            # model.forward wrapper, so the per-mixer stash is the only source.
+            donors = [m for m in mixers if getattr(m, "_unsloth_varlen", None) is not None]
+            if donors:
+                varlen = donors[0]._unsloth_varlen
+        if varlen is not None:
+            if kwargs.get("seq_idx") is None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
+                kwargs["seq_idx"] = varlen[1]
+            if kwargs.get("seq_idx") is not None:
+                for mixer in mixers:
+                    setattr(mixer, hit_attr, True)
+        return orig(*args, **kwargs)
+
+    wrapped._unsloth_varlen_seq_idx_wrapped = True
+    return wrapped
+
+
+def _wrap_mamba2_fused_call(
+    orig,
+    mixers,
+    *,
+    on_module = None,
+    attr_name = None,
+    varlen_slot = None,
+):
+    """Inject packed ``seq_idx`` into the fused conv1d+scan kernel.
+
+    ``mixers`` is the list of Mamba2 modules sharing this kernel. On a packed
+    forward they all stash the same boundary metadata. ``varlen_slot`` is a
+    1-element list set by the outer model.forward wrapper so injection still
+    works if PEFT/compile replaced mixer instances after patch time.
+    """
+    fused_fn = _wrap_mamba2_seq_idx_call(
+        orig,
+        mixers,
+        varlen_slot = varlen_slot,
+        hit_attr = "_unsloth_varlen_fused_hit",
+    )
+    if on_module is not None and attr_name is not None:
+        setattr(on_module, attr_name, fused_fn)
+    return fused_fn
+
+
+def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
+    """Point every imported fused-kernel name at ``wrapped``.
+
+    Unsloth's Fast Nemotron-H compile copies the transformers mixer source into
+    ``unsloth_compiled_cache``, which imports ``mamba_split_conv1d_scan_combined``
+    into its own module globals. Wrapping only the transformers modeling import
+    leaves that copy bound to the original, so packed forwards never reach the
+    varlen wrapper. A LOAD_GLOBAL resolves through the module dict at call time,
+    so reassigning the name here is enough; anything this misses is caught by the
+    dispatch handshake rather than silently training unpacked.
+    """
+    if orig is None or wrapped is orig:
+        return
+    for mod in list(sys.modules.values()):
+        if mod is None:
+            continue
+        namespace = getattr(mod, "__dict__", None)
+        if not isinstance(namespace, dict):
+            continue
+        for key, value in list(namespace.items()):
+            if value is orig:
+                namespace[key] = wrapped
+
+
+def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
+    if getattr(module, "_unsloth_mamba2_forward_wrapped", False):
+        return
+    forward_orig = module.forward
+    cuda_orig = getattr(module, "cuda_kernels_forward", None)
+    # Only pass seq_idx through mixer.forward when it names the parameter. A
+    # forward that merely collects **kwargs may splat them into the kernel
+    # while also passing seq_idx itself, which is a duplicate-keyword
+    # TypeError. The kernel wrappers inject it in that case.
+    forward_names_seq_idx = False
+    try:
+        forward_names_seq_idx = "seq_idx" in inspect.signature(forward_orig).parameters
+    except (TypeError, ValueError):
+        pass
+
+    def _packed():
+        if varlen_getter is not None:
+            varlen = varlen_getter()
+            if varlen is not None:
+                return varlen
+        return getattr(module, "_unsloth_varlen", None)
+
+    @wraps(forward_orig)
+    def mixer_forward(*args, **kwargs):
+        varlen = _packed()
+        if varlen is not None:
+            if (
+                forward_names_seq_idx
+                and kwargs.get("seq_idx") is None
+                and _varlen_seq_idx_applies(varlen[1], args, kwargs)
+            ):
+                kwargs["seq_idx"] = varlen[1]
+            return _call_as_packed_mamba2_prefill(forward_orig, args, kwargs)
+        return forward_orig(*args, **kwargs)
+
+    module.forward = mixer_forward
+    if callable(cuda_orig) and not getattr(cuda_orig, "_unsloth_varlen_mask_cleared", False):
+
+        @wraps(cuda_orig)
+        def cuda_kernels_forward(*args, **kwargs):
+            if _packed() is not None:
+                return _call_as_packed_mamba2_prefill(cuda_orig, args, kwargs)
+            return cuda_orig(*args, **kwargs)
+
+        cuda_kernels_forward._unsloth_varlen_mask_cleared = True
+        module.cuda_kernels_forward = cuda_kernels_forward
+    module._unsloth_mamba2_forward_wrapped = True
 
 
 def _varlen_from_position_ids(position_ids):
@@ -449,26 +869,37 @@ def _hybrid_varlen_metadata(kwargs):
 
 
 def patch_hybrid_linear_attention_varlen(model) -> bool:
-    """Feed seq_idx / cu_seqlens to the gated-delta conv + scan so packing and
-    padding-free reset state at sequence boundaries. Gated by
-    UNSLOTH_EXPERIMENTAL_HYBRID_PACKING and fail-closed. Returns True when the
-    varlen path is active, so the caller may allow packing for the model.
-    Idempotent: repeat calls on an already-patched model return True."""
+    """Feed seq_idx / cu_seqlens to hybrid mixers so packing resets state.
+
+    Gated-delta: wrap ``causal_conv1d_fn`` + ``chunk_gated_delta_rule``.
+    Mamba2: wrap ``mamba2_split_conv1d_scan_combined`` and inject ``seq_idx``
+    into mixer.forward kwargs (transformers already forwards ``**kwargs`` into
+    the fused kernel). Gated by ``UNSLOTH_EXPERIMENTAL_HYBRID_PACKING`` and
+    fail-closed. Returns True when the varlen path is active.
+    Idempotent: repeat calls on an already-patched model return True.
+    """
     if not _hybrid_packing_enabled():
         return False
     gated_delta_modules = _iter_gated_delta_modules(model)
+    mamba2_modules = _iter_mamba2_modules(model)
+    hybrid_modules = gated_delta_modules + mamba2_modules
+    if not hybrid_modules:
+        return _hybrid_reject("no gated-delta or mamba2 modules found")
 
     # Idempotency: an already fully-patched model stays active without re-validation.
-    if (
-        getattr(model, "_unsloth_varlen_forward_wrapped", False)
-        and gated_delta_modules
-        and all(getattr(m, "_unsloth_varlen_wrapped", False) for m in gated_delta_modules)
+    if getattr(model, "_unsloth_varlen_forward_wrapped", False) and all(
+        getattr(m, "_unsloth_varlen_wrapped", False) for m in hybrid_modules
     ):
         return True
 
-    reason = _hybrid_varlen_kernels_available(gated_delta_modules)
-    if reason is not None:
-        return _hybrid_reject(reason)
+    if gated_delta_modules:
+        reason = _hybrid_varlen_kernels_available(gated_delta_modules)
+        if reason is not None:
+            return _hybrid_reject(reason)
+    if mamba2_modules:
+        reason = _mamba2_varlen_kernels_available(mamba2_modules)
+        if reason is not None:
+            return _hybrid_reject(reason)
 
     # Transactional: every module validated above, now wrap each and stash originals.
     for module in gated_delta_modules:
@@ -511,6 +942,65 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
+    wrapped_fused: dict[int, Any] = {}
+    varlen_slot: list = [None]
+
+    def _ensure_mamba2_fused_wrapped(fn):
+        if fn is None:
+            return None
+        if getattr(fn, "_unsloth_varlen_seq_idx_wrapped", False):
+            return fn
+        wrapped = wrapped_fused.get(id(fn))
+        if wrapped is None:
+            wrapped = _wrap_mamba2_fused_call(fn, mamba2_modules, varlen_slot = varlen_slot)
+            wrapped_fused[id(fn)] = wrapped
+            _rebind_mamba2_fused_aliases(fn, wrapped)
+        return wrapped
+
+    for module in mamba2_modules:
+        if getattr(module, "_unsloth_varlen_wrapped", False):
+            continue
+        fn, loc = _resolve_mamba2_fused(module)
+        wrapped = _ensure_mamba2_fused_wrapped(fn)
+        kind = loc[0] if loc is not None else None
+        if kind == "instance" and wrapped is not None:
+            name = loc[2]
+            module._unsloth_varlen_orig_fused = fn
+            if name is not None:
+                setattr(module, name, wrapped)
+            else:
+                module.mamba2_split_conv1d_scan_combined = wrapped
+        elif kind == "modeling" and wrapped is not None:
+            modeling, name = loc[1], loc[2]
+            setattr(modeling, name, wrapped)
+            modeling._unsloth_mamba2_fused_wrapped = True
+        elif kind == "ssm":
+            module._unsloth_varlen_orig_fused = fn
+        elif kind == "globals" and wrapped is not None:
+            globs, name = loc[1], loc[2]
+            globs[name] = wrapped
+        _wrap_mamba2_mixer_forward(module, varlen_getter = lambda: varlen_slot[0])
+        module._unsloth_varlen = None
+        module._unsloth_varlen_wrapped = True
+    if mamba2_modules:
+        try:
+            from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
+                mamba_split_conv1d_scan_combined as _ssm_fused,
+            )
+        except Exception:
+            _ssm_fused = None
+        wrapped_real = _ensure_mamba2_fused_wrapped(_ssm_fused)
+        if wrapped_real is None:
+            wrapped_real = wrapped
+
+        def packed():
+            return varlen_slot[0]
+
+        for ns in _iter_mamba2_install_namespaces(mamba2_modules):
+            _force_install_mamba2_fused(ns, wrapped_real)
+            _install_mamba2_mask_clear(ns, packed)
+            _install_mamba2_seq_idx_fallbacks(ns, mamba2_modules, varlen_slot)
+
     # Refresh the boundary stash on the outermost forward, once per step and outside gradient-checkpoint
     # recompute so it stays valid for recomputed inner forwards.
     if not getattr(model, "_unsloth_varlen_forward_wrapped", False):
@@ -534,39 +1024,66 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                 "_unsloth_varlen_handshake_done",
                 False,
             )
-            for module in gated_delta_modules:
+            for module in hybrid_modules:
                 module._unsloth_varlen = varlen
                 if first_pack:
                     module._unsloth_varlen_conv_hit = False
                     module._unsloth_varlen_scan_hit = False
-            out = forward_orig(*args, **kwargs)
-            # Runtime dispatch handshake: on the first packed forward, confirm BOTH boundary kernels ran for
-            # EVERY module.
+                    module._unsloth_varlen_fused_hit = False
+            varlen_slot[0] = varlen
+            try:
+                out = forward_orig(*args, **kwargs)
+            finally:
+                varlen_slot[0] = None
+            # Runtime dispatch handshake: on the first packed forward, confirm the load-bearing kernels ran
+            # for every module. Gated-delta needs conv plus scan, Mamba2 needs the fused conv1d+scan.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
                 missing = [
-                    type(m).__name__
-                    for m in gated_delta_modules
-                    if not (
-                        getattr(m, "_unsloth_varlen_conv_hit", False)
-                        and getattr(m, "_unsloth_varlen_scan_hit", False)
-                    )
+                    type(m).__name__ for m in hybrid_modules if not _hybrid_varlen_dispatched(m)
                 ]
                 if missing:
-                    for m in gated_delta_modules:
+                    for m in hybrid_modules:
                         m._unsloth_varlen = None
-                    _hybrid_reject("varlen conv/scan not both dispatched (dispatch changed?)")
+                    _hybrid_reject("varlen kernels not dispatched (dispatch changed?)")
                     raise RuntimeError(
                         "Unsloth: experimental hybrid packing cannot continue because the "
                         "varlen conv/scan wrappers were not both invoked for "
                         f"{sorted(set(missing))}. Unset UNSLOTH_EXPERIMENTAL_HYBRID_PACKING "
-                        "to train these models on the padded path."
+                        "to train these models on the padded path.\n"
+                        + _mamba2_handshake_debug(
+                            [m for m in hybrid_modules if type(m).__name__.endswith("Mamba2Mixer")]
+                            or hybrid_modules
+                        )
                     )
             return out
 
         model.forward = forward_with_varlen
         model._unsloth_varlen_forward_wrapped = True
+
+    _wrap_generate_clears_varlen(model, hybrid_modules)
     return True
+
+
+def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
+    """Drop the packed boundaries for the duration of ``generate()``.
+
+    ``generate()`` reaches the decoder without going through the wrapped
+    ``model.forward``, so the per-mixer stash would otherwise still hold the
+    last training step's ``seq_idx`` while the kernels see a prompt.
+    """
+    generate_orig = getattr(model, "generate", None)
+    if not callable(generate_orig) or getattr(model, "_unsloth_varlen_generate_wrapped", False):
+        return
+
+    @wraps(generate_orig)
+    def generate_without_varlen(*args, **kwargs):
+        for module in hybrid_modules:
+            module._unsloth_varlen = None
+        return generate_orig(*args, **kwargs)
+
+    model.generate = generate_without_varlen
+    model._unsloth_varlen_generate_wrapped = True
 
 
 def get_packed_info_from_kwargs(
