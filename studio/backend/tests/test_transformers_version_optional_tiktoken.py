@@ -22,6 +22,7 @@ install that had just failed.
 """
 
 import pathlib
+import shutil
 import sys
 import types as _types
 from pathlib import Path
@@ -162,10 +163,75 @@ def test_a_valid_sidecar_missing_tiktoken_is_topped_up_once(tmp_path, monkeypatc
     assert len(installed) == 1, "an unavailable wheel is asked for once per process"
     # A tiktoken that is there is left alone.
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    (root / tv._OPTIONAL_TOP_UP_FAILED).unlink()
     (root / "tiktoken").mkdir()
     (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+    (root / "tiktoken-0.9.0.dist-info").mkdir()
+    (root / "tiktoken-0.9.0.dist-info" / "RECORD").write_text("", encoding = "utf-8")
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert len(installed) == 1
+
+
+def test_a_failed_top_up_is_remembered_across_processes_and_retried_later(tmp_path, monkeypatch):
+    """Each job spawns its own workers, and every one of them used to run the same
+    doomed install: the failure is written beside the sidecar, read by the next process,
+    and forgotten after a while in case it was the network."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    packages = tv._VENV_T5_550_PACKAGES
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or False)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), packages)
+    assert installed == ["tiktoken"]
+    # A fresh process: the in-memory set is empty, the file is not.
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), packages)
+    assert installed == ["tiktoken"]
+    # Old enough to try again.
+    failures = tv._read_top_up_failures(str(root))
+    failures["tiktoken"] -= tv._OPTIONAL_TOP_UP_RETRY_SECONDS + 1
+    tv._write_top_up_failures(str(root), failures)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), packages)
+    assert installed == ["tiktoken", "tiktoken"]
+    # A success clears the record.
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
+    failures = tv._read_top_up_failures(str(root))
+    failures["tiktoken"] -= tv._OPTIONAL_TOP_UP_RETRY_SECONDS + 1
+    tv._write_top_up_failures(str(root), failures)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), packages)
+    assert not (root / tv._OPTIONAL_TOP_UP_FAILED).exists()
+
+
+def test_an_interrupted_top_up_is_finished_by_the_next_one(tmp_path, monkeypatch):
+    """A process killed between moving tiktoken/ in and its dist-info left a payload no
+    scan could judge and no activation would complete: a package counts as present only
+    once its dist-info has landed, and the next top-up replaces the partial entries."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    (root / "tiktoken").mkdir()
+    (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+    assert tv._optional_package_absent(str(root), "tiktoken") is True
+    (root / "tiktoken-0.9.0.dist-info").mkdir()
+    assert tv._optional_package_absent(str(root), "tiktoken") is True
+    (root / "tiktoken-0.9.0.dist-info" / "RECORD").write_text("", encoding = "utf-8")
+    assert tv._optional_package_absent(str(root), "tiktoken") is False
+    shutil.rmtree(root / "tiktoken-0.9.0.dist-info")
+
+    def fake_install(pkg, target):
+        for d in ("tiktoken", "tiktoken_ext", "tiktoken-0.9.0.dist-info"):
+            (pathlib.Path(target) / d).mkdir()
+            (pathlib.Path(target) / d / "RECORD").write_text(d, encoding = "utf-8")
+        (pathlib.Path(target) / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+        return True
+
+    monkeypatch.setattr(tv, "_install_to_dir", fake_install)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), tv._VENV_T5_550_PACKAGES)
+    assert tv._optional_package_absent(str(root), "tiktoken") is False
+    assert (root / "tiktoken_ext" / "RECORD").is_file()
 
 
 def test_latest_sidecar_activation_tops_up_a_missing_tiktoken(tmp_path, monkeypatch):
