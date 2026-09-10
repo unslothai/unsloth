@@ -1094,7 +1094,10 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
         # POST also updates existing rows. Fence every archived payload before
         # the upsert, including ids created concurrently with this request.
         if payload.archived:
-            fence = begin_project_retirement(payload.id)
+            try:
+                fence = begin_project_retirement(payload.id)
+            except (RuntimeError, OSError) as exc:
+                raise HTTPException(status_code = 409, detail = str(exc)) from exc
             begun = True
         return ChatProject(**upsert_chat_project(payload.model_dump()))
     except ProjectWorkspaceError as exc:
@@ -1109,8 +1112,6 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
             event = "chat_history.create_project_workspace_failed",
             log = logger,
         ) from exc
-    except (RuntimeError, OSError) as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     finally:
         if begun:
             finish_project_retirement(payload.id, fence)
@@ -1146,11 +1147,12 @@ def patch_project(
         raise HTTPException(status_code = 404, detail = "Project not found.")
     try:
         if retiring:
-            fence = begin_project_retirement(project_id)
+            try:
+                fence = begin_project_retirement(project_id)
+            except (RuntimeError, OSError) as exc:
+                raise HTTPException(status_code = 409, detail = str(exc)) from exc
             begun = True
         project = update_chat_project(project_id, patch)
-    except (RuntimeError, OSError) as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     finally:
         if begun:
             finish_project_retirement(project_id, fence)

@@ -18,11 +18,11 @@ def isolated_projects(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
 
 
-def _client():
+def _client(*, raise_server_exceptions = True):
     app = FastAPI()
     app.include_router(chat_history.router, prefix = "/history")
     app.dependency_overrides[get_current_subject] = lambda: "test"
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions = raise_server_exceptions)
 
 
 def _project():
@@ -102,7 +102,7 @@ def test_post_archive_holds_retirement_until_upsert_finishes(monkeypatch, existi
         else SimpleNamespace(begin_git_retirement = begin, finish_git_retirement = finish),
     )
     monkeypatch.setattr(chat_history, "upsert_chat_project", upsert)
-    with _client() as client:
+    with _client(raise_server_exceptions = False) as client:
         response = client.post(
             "/history/projects",
             json = {
@@ -113,7 +113,7 @@ def test_post_archive_holds_retirement_until_upsert_finishes(monkeypatch, existi
                 "archived": True,
             },
         )
-    assert response.status_code == (409 if fail_write else 200)
+    assert response.status_code == (500 if fail_write else 200)
     assert events == ["begin", "write", "finish"]
     if not fail_write:
         assert studio_db.get_chat_project("lifecycle")["archived"] is True
@@ -192,3 +192,33 @@ def test_unexpected_feature_import_failure_is_not_treated_as_absent(monkeypatch)
     monkeypatch.setattr(lifecycle.importlib, "import_module", broken)
     with pytest.raises(ModuleNotFoundError):
         lifecycle.begin_project_retirement("p")
+
+
+@pytest.mark.parametrize("operation", ["post", "patch"])
+@pytest.mark.parametrize("archived", [False, True])
+@pytest.mark.parametrize("error_type", [RuntimeError, OSError])
+def test_unrelated_project_write_errors_keep_server_error_status(
+    monkeypatch, operation, archived, error_type
+):
+    project = _project()
+    released = []
+    monkeypatch.setattr(lifecycle, "begin_project_retirement", lambda *_args, **_kwargs: "retired")
+    monkeypatch.setattr(
+        lifecycle, "finish_project_retirement", lambda *_args: released.append(True)
+    )
+
+    def fail(*_args, **_kwargs):
+        raise error_type("unrelated storage failure")
+
+    monkeypatch.setattr(
+        chat_history, "upsert_chat_project" if operation == "post" else "update_chat_project", fail
+    )
+    with _client(raise_server_exceptions = False) as client:
+        response = (
+            client.post("/history/projects", json = {**project, "archived": archived})
+            if operation == "post"
+            else client.patch("/history/projects/lifecycle", json = {"archived": archived})
+        )
+    assert response.status_code == 500
+    assert released == ([True] if archived else [])
+    assert studio_db.get_chat_project("lifecycle")["archived"] is False
