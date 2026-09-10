@@ -29766,10 +29766,6 @@ def _select_anthropic_server_tools(
     selected_names = set(requested_studio_tools)
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
-    if _enabled_agent_skills():
-        # Anthropic Messages has no confirmation callback. Keep creation in Studio,
-        # where the high-risk tool can receive real per-call approval.
-        selected_names.add("read_skill")
 
     return [tool for tool in available if tool["function"]["name"] in selected_names]
 

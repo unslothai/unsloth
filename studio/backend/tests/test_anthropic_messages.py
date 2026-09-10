@@ -1203,6 +1203,29 @@ class TestAnthropicToolsToOpenAI:
 
         assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
 
+
+    @pytest.mark.parametrize(
+        ("requested_studio_tools", "enabled_tools"),
+        [({"web_search"}, None), (set(), ["web_search"])],
+    )
+    def test_explicit_server_tool_selection_does_not_add_read_skill(
+        self, monkeypatch, requested_studio_tools, enabled_tools
+    ):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        result = _select_anthropic_server_tools(
+            [{"type": "function", "function": {"name": "web_search"}}],
+            requested_studio_tools = requested_studio_tools,
+            enabled_tools = enabled_tools,
+        )
+
+        assert [tool["function"]["name"] for tool in result] == ["web_search"]
+
     def test_pydantic_model_input(self):
         tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
         result = anthropic_tools_to_openai([tool])

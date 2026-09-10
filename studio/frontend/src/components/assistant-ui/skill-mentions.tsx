@@ -23,6 +23,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -210,6 +211,7 @@ export function useTextareaSkillMentions({
 }) {
   const { skills } = useSkillsCatalog();
   const [range, setRange] = useState<MentionRange>(null);
+  const listboxId = useId();
   const [highlighted, setHighlighted] = useState(0);
   const results = useMemo(() => {
     if (!range) return [];
@@ -221,6 +223,11 @@ export function useTextareaSkillMentions({
         skill.description.toLowerCase().includes(query),
     );
   }, [mentionsEnabled, range, skills]);
+
+  const open = range !== null && results.length > 0;
+  const activeOptionId = open
+    ? `${listboxId}-option-${highlighted}`
+    : undefined;
   useEffect(() => {
     if (
       !mentionsEnabled ||
@@ -302,42 +309,63 @@ export function useTextareaSkillMentions({
     [composingRef, highlighted, insert, range, results],
   );
 
-  const popover =
-    range && results.length > 0 ? (
-      <div className="animate-in fade-in-0 zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100">
-        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-          Agent Skills
-        </div>
-        <div ref={resultsRef} className="max-h-64 overflow-y-auto">
-          {results.map((skill, index) => (
-            <button
-              key={`${skill.source}:${skill.name}`}
-              type="button"
-              data-mention-index={index}
-              data-highlighted={index === highlighted}
-              className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-[highlighted=true]:bg-accent data-[highlighted=true]:text-accent-foreground"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => insert(skill)}
-              onMouseEnter={() => setHighlighted(index)}
-            >
-              <HugeiconsIcon
-                icon={BookOpen01Icon}
-                strokeWidth={1.75}
-                className="mt-0.5 size-4 shrink-0 text-primary"
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">
-                  {skill.name}
-                </span>
-                <span className="line-clamp-2 max-h-8 overflow-hidden break-words text-xs leading-4 text-muted-foreground">
-                  {skill.description}
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
+  const popover = open ? (
+    <div className="animate-in fade-in-0 zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100">
+      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+        Agent Skills
       </div>
-    ) : null;
+      <div
+        ref={resultsRef}
+        id={listboxId}
+        role="listbox"
+        aria-label="Agent Skills"
+        className="max-h-64 overflow-y-auto"
+      >
+        {results.map((skill, index) => (
+          <button
+            key={`${skill.source}:${skill.name}`}
+            type="button"
+            id={`${listboxId}-option-${index}`}
+            role="option"
+            aria-selected={index === highlighted}
+            tabIndex={-1}
+            data-mention-index={index}
+            data-highlighted={index === highlighted}
+            className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-[highlighted=true]:bg-accent data-[highlighted=true]:text-accent-foreground"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => insert(skill)}
+            onMouseEnter={() => setHighlighted(index)}
+          >
+            <HugeiconsIcon
+              icon={BookOpen01Icon}
+              strokeWidth={1.75}
+              className="mt-0.5 size-4 shrink-0 text-primary"
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">
+                {skill.name}
+              </span>
+              <span className="line-clamp-2 max-h-8 overflow-hidden break-words text-xs leading-4 text-muted-foreground">
+                {skill.description}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
-  return { update, onKeyDown, popover, close: () => setRange(null) };
+  return {
+    update,
+    onKeyDown,
+    popover,
+    close: () => setRange(null),
+    inputProps: {
+      role: "combobox" as const,
+      "aria-autocomplete": "list" as const,
+      "aria-expanded": open,
+      "aria-controls": open ? listboxId : undefined,
+      "aria-activedescendant": activeOptionId,
+    },
+  };
 }

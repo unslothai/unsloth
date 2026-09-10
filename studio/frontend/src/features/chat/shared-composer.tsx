@@ -2257,6 +2257,7 @@ export function SharedComposer({
       {skillMentions.popover}
 
       <textarea
+        {...skillMentions.inputProps}
         ref={textareaRef}
         value={text}
         onChange={(e) => {
