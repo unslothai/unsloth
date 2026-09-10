@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 import ast
 import gc
 import json
@@ -7,7 +10,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from huggingface_hub import ModelCard
+from huggingface_hub import HfApi, ModelCard
+from huggingface_hub.errors import EntryNotFoundError, RevisionNotFoundError
 
 
 class PeftModel:
@@ -29,10 +33,18 @@ class FullModel:
 
 
 @pytest.fixture
-def saving(monkeypatch):
+def saving(monkeypatch, tmp_path):
     source = Path(__file__).resolve().parents[1] / "unsloth/save.py"
     tree = ast.parse(source.read_text())
-    records = {"merges": [], "uploads": [], "repos": [], "directories": []}
+    records = {
+        "merges": [],
+        "uploads": [],
+        "repos": [],
+        "directories": [],
+        "branches": [],
+        "downloads": [],
+        "revisions": {"main"},
+    }
     artifacts = {
         "config.json": '{"model_type": "llama"}',
         "generation_config.json": "{}",
@@ -74,6 +86,26 @@ def saving(monkeypatch):
     zoo.get_original_model_id = lambda path: records.get("original_model_id")
     monkeypatch.setitem(sys.modules, "unsloth_zoo.saving_utils", zoo)
 
+    def download(
+        repo_id,
+        filename,
+        *,
+        revision = None,
+        token = None,
+        **kwargs,
+    ):
+        records["downloads"].append((repo_id, filename, revision, token))
+        if records.get("download_error"):
+            raise records["download_error"]
+        content = records.get("remote_cards", {}).get(revision or "main")
+        if content is None:
+            raise EntryNotFoundError("No README at destination")
+        path = tmp_path / "remote-card.md"
+        path.write_text(content)
+        return str(path)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
+
     class Api:
         def __init__(self, token):
             self.token = token
@@ -81,7 +113,20 @@ def saving(monkeypatch):
         def create_repo(self, **kwargs):
             records["repos"].append(kwargs)
 
+        def create_branch(self, **kwargs):
+            records["branches"].append(kwargs)
+            records["revisions"].add(kwargs["branch"])
+
         def create_commit(self, **kwargs):
+            if (
+                records.get("enforce_revision")
+                and (kwargs["revision"] or "main") not in records["revisions"]
+            ):
+                raise RevisionNotFoundError("Requested branch does not exist")
+            if kwargs["commit_message"] is None:
+                HfApi(token = False).create_commit(
+                    repo_id = kwargs["repo_id"], operations = [], commit_message = None
+                )
             files = {
                 operation.path_in_repo: Path(operation.path_or_fileobj).read_text()
                 for operation in kwargs["operations"]
@@ -248,3 +293,67 @@ def test_staged_cache_metadata_is_excluded_but_nested_artifacts_survive(saving):
     }
     env["unsloth_generic_push_to_hub_merged"](PeftModel(), "owner/model", create_pr = True)
     assert set(records["uploads"][0]["files"]) == {*artifacts, "README.md", "nested/tokenizer.json"}
+
+
+def test_none_commit_message_uses_default(saving):
+    env, records, _ = saving
+    env["unsloth_generic_push_to_hub_merged"](
+        FullModel(), "owner/model", create_pr = True, commit_message = None
+    )
+    assert records["uploads"][0]["commit_message"] == "Trained with Unsloth"
+
+
+@pytest.mark.parametrize("create_pr", [False, True])
+def test_missing_destination_branch_is_created(saving, create_pr):
+    env, records, _ = saving
+    records["enforce_revision"] = True
+    env["unsloth_generic_push_to_hub_merged"](
+        FullModel(), "owner/model", revision = "candidate", create_pr = create_pr
+    )
+    assert records["branches"] == [
+        {"repo_id": "owner/model", "repo_type": "model", "branch": "candidate", "exist_ok": True}
+    ]
+    assert records["uploads"][0]["revision"] == "candidate"
+
+
+def test_existing_pull_request_ref_is_not_created_as_a_branch(saving):
+    env, records, _ = saving
+    records["enforce_revision"] = True
+    records["revisions"].add("refs/pr/3")
+    env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", revision = "refs/pr/3")
+    assert records["branches"] == []
+    assert records["uploads"][0]["revision"] == "refs/pr/3"
+
+
+@pytest.mark.parametrize("revision", [None, "candidate", "refs/pr/3"])
+@pytest.mark.parametrize("model_class", [FullModel, PeftModel])
+def test_remote_destination_card_survives(saving, revision, model_class):
+    env, records, _ = saving
+    records["existing_card"] = True
+    records["remote_cards"] = {
+        revision
+        or "main": "---\nlicense: apache-2.0\ntags:\n- custom\ndatasets:\n- owner/original\n---\nCustom destination description"
+    }
+    env["unsloth_generic_push_to_hub_merged"](
+        model_class(),
+        "owner/model",
+        revision = revision,
+        create_pr = revision is None,
+        token = "explicit-fixture",
+        tags = ["fine-tuned"],
+    )
+    card = ModelCard(records["uploads"][0]["files"]["README.md"])
+    assert card.data.license == "apache-2.0"
+    assert card.data.datasets == ["owner/original"]
+    assert card.data.tags == ["custom", "fine-tuned", "unsloth"]
+    assert "Custom destination description" in card.content
+    assert records["downloads"] == [("owner/model", "README.md", revision, "explicit-fixture")]
+
+
+def test_card_download_failure_does_not_overwrite_remote_card(saving):
+    env, records, _ = saving
+    records["download_error"] = OSError("connection failed")
+    with pytest.raises(OSError, match = "connection failed"):
+        env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", create_pr = True)
+    assert records["uploads"] == []
+    assert not any(directory.exists() for directory in records["directories"])

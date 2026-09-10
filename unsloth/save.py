@@ -5386,7 +5386,8 @@ def save_to_gguf_generic(
 
 def _push_merged_to_hub_revision(save_kwargs):
     import tempfile
-    from huggingface_hub import CommitOperationAdd, ModelCard
+    from huggingface_hub import CommitOperationAdd, ModelCard, hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError
     from unsloth_zoo.saving_utils import get_original_model_id
 
     if not save_kwargs["is_main_process"]:
@@ -5402,14 +5403,26 @@ def _push_merged_to_hub_revision(save_kwargs):
         private = save_kwargs["private"],
         exist_ok = True,
     )
+    revision = save_kwargs["revision"]
+    if revision is not None and not revision.startswith("refs/pr/"):
+        api.create_branch(repo_id = repo_id, repo_type = "model", branch = revision, exist_ok = True)
     with tempfile.TemporaryDirectory(prefix = "unsloth-merged-") as directory:
         unsloth_generic_save(
             **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
         )
         card_path = Path(directory) / "README.md"
-        if card_path.is_file():
-            card = ModelCard.load(card_path)
-        else:
+        try:
+            remote_card_path = hf_hub_download(
+                repo_id = repo_id,
+                filename = "README.md",
+                repo_type = "model",
+                revision = revision,
+                token = token,
+            )
+            card = ModelCard.load(remote_card_path)
+        except EntryNotFoundError:
+            card = ModelCard.load(card_path) if card_path.is_file() else None
+        if card is None:
             model = save_kwargs["model"]
             base_model = model.config._name_or_path
             if os.path.isdir(base_model):
@@ -5447,7 +5460,11 @@ def _push_merged_to_hub_revision(save_kwargs):
             ],
             revision = save_kwargs["revision"],
             create_pr = save_kwargs["create_pr"],
-            commit_message = save_kwargs["commit_message"],
+            commit_message = (
+                save_kwargs["commit_message"]
+                if save_kwargs["commit_message"] is not None
+                else "Trained with Unsloth"
+            ),
             commit_description = save_kwargs["commit_description"],
         )
 
