@@ -401,7 +401,10 @@ def test_setup_helpers_gate_on_canonical_custom_root():
     """setup.sh/setup.ps1 ownership guards must gate on a canonical custom-vs-legacy root comparison."""
     sh_src = SETUP_SH.read_text(encoding = "utf-8")
     sh_idx = sh_src.index("_assert_studio_owned_or_absent() {")
-    sh_func = sh_src[sh_idx : sh_idx + 600]
+    # To the end of the function, not a fixed width, for the reason the PowerShell half below
+    # already gives: a new parameter or comment pushes the assertions out of a fixed window and
+    # the test fails while the guard it is about is intact.
+    sh_func = sh_src[sh_idx:].split("\n}\n", 1)[0]
     # The caller may name the flag (the runtime children pass _RUNTIME_ROOT_IS_CUSTOM), but the
     # default has to stay the canonical one.
     assert (
@@ -413,9 +416,14 @@ def test_setup_helpers_gate_on_canonical_custom_root():
         and "_studio_home_canon=" in sh_src
         and "_STUDIO_HOME_IS_CUSTOM=" in sh_src
     ), "setup.sh must compute the canonical custom-root flag"
+    # A master root moves the runtime children, so the flag has to widen to cover them. Not the
+    # exact one-liner this used to name: UNSLOTH_HOME can legitimately name ~/.unsloth, the root a
+    # default install already uses, and treating that as custom made an update reject a legacy
+    # source-built llama.cpp that carries no owner marker. tests/test_setup_master_root.py runs
+    # the shipped derivation for that case; the rule here is the two halves being present.
+    assert '_RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"' in sh_src
     assert (
-        '_RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"' in sh_src
-        and '[ -z "$_MASTER_ROOT" ] || _RUNTIME_ROOT_IS_CUSTOM=true' in sh_src
+        "_RUNTIME_ROOT_IS_CUSTOM=true" in sh_src and "$_MASTER_ROOT" in sh_src
     ), "setup.sh must widen the flag to a master root, which moves the runtime children"
 
     ps_src = SETUP_PS1.read_text(encoding = "utf-8")
