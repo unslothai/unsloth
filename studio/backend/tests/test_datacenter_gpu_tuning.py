@@ -1006,7 +1006,8 @@ def test_p2p_opt_out_skips_the_topology_probe(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     probed = []
     monkeypatch.setattr(
-        LlamaCppBackend, "_nvlink_topology",
+        LlamaCppBackend,
+        "_nvlink_topology",
         classmethod(lambda cls, *a, **k: (probed.append(1), None)[1]),
     )
     env: dict = {}

@@ -24190,9 +24190,7 @@ class LlamaCppBackend:
                     and self._effective_gpu_count(gpu_indices) > 1
                     and not LlamaCppBackend._warned_no_nvlink
                 ):
-                    _p2p_veto = self._p2p_veto_reason(
-                        gpu_indices, _p2p_launch_order_pinned
-                    )
+                    _p2p_veto = self._p2p_veto_reason(gpu_indices, _p2p_launch_order_pinned)
                     if _p2p_veto is not None:
                         LlamaCppBackend._warned_no_nvlink = True
                         logger.warning(
