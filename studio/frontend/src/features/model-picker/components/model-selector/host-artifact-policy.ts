@@ -75,6 +75,36 @@ export function denseQuantPrecisionChip(
   return value.toUpperCase();
 }
 
+/** Load controls that keep the backend on bf16 whatever Precision asks for. Each is decidable from
+ *  the request alone, and the loader refuses an EXPLICIT scheme under every one of them, so a row
+ *  under any of these must read exactly as it does with Precision=Off.
+ *
+ *  Speed=Off is the one that depends on the precision: it rewrites an AUTO quant to off, but an
+ *  explicit scheme still runs, so the caller passes `precision` and it is judged here rather than
+ *  lumped in with the rest. */
+export function loadControlsBlockDenseQuant({
+  precision,
+  speedMode,
+  memoryMode,
+  cpuOffload,
+}: {
+  precision: RequestedPrecision;
+  speedMode?: string | null;
+  memoryMode?: string | null;
+  cpuOffload?: boolean;
+}): boolean {
+  const speed = (speedMode ?? "").trim().toLowerCase();
+  const memory = (memoryMode ?? "").trim().toLowerCase();
+  // Eager never compiles, and an uncompiled torchao transformer loses to the bf16 it replaces.
+  if (speed === "eager") return true;
+  // balanced / low_vram name their offload policy outright, and offload hooks move modules with
+  // Module.to(), which torchao tensors do not survive. The bare flag forces it when no mode is set.
+  if (memory === "balanced" || memory === "low_vram") return true;
+  if (!memory && cpuOffload) return true;
+  // Bit-exact output is incompatible with an automatic quant, so the backend rewrites auto to off.
+  return speed === "off" && (precision ?? "auto").trim().toLowerCase() === "auto";
+}
+
 /** The precision a row should describe, given what this host can actually run. An explicit scheme
  *  the card lacks is refused at load, so the row has to read exactly as it does with Precision=Off
  *  rather than advertise a click that ends in the refusal. */

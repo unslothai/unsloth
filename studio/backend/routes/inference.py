@@ -35080,6 +35080,9 @@ async def diffusion_download_plan(
                     # anything is measured, and an offloaded transformer skips the dense quant.
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    # Eager never compiles, and an uncompiled torchao transformer is slower than the
+                    # bf16 it replaces, so the loader keeps a pipeline dense under it.
+                    speed_mode = getattr(request, "speed_mode", None),
                     # Judged on the card this pick would load on, as the loader does.
                     gpu_ordinal = gpu_ordinal,
                 )
@@ -35267,6 +35270,7 @@ async def load_diffusion_model_gated(
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = getattr(request, "memory_mode", None),
                 cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                speed_mode = getattr(request, "speed_mode", None),
                 gpu_ordinal = gpu_ordinal,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
@@ -35330,6 +35334,7 @@ async def load_diffusion_model_gated(
                     text_encoder_quant = request.text_encoder_quant,
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    speed_mode = getattr(request, "speed_mode", None),
                     gpu_ordinal = gpu_ordinal,
                 )
 

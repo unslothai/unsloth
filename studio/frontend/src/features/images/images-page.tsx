@@ -60,6 +60,7 @@ import {
   type HostClass,
   type RequestedPrecision,
   effectiveRowPrecision,
+  loadControlsBlockDenseQuant,
 } from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   IMAGE_CATALOG,
@@ -1294,15 +1295,6 @@ export function ImagesPage({
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
-  // What the next load will ask the transformer to run at, as the picker must describe it. Speed=Off
-  // is bit-exact, so the backend rewrites an auto quant to off for it; a row promising the fast path
-  // there would send the user to the wrong one. An explicit scheme this host cannot run reads the
-  // same way, since that click is refused rather than loaded.
-  const requestedPrecision: RequestedPrecision = effectiveRowPrecision(
-    speedMode === "off" && transformerQuant === "auto" ? "none" : transformerQuant,
-    denseQuantSchemes,
-  );
-  const imageModels = useImageModels(hostClass, requestedPrecision);
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
@@ -1317,6 +1309,22 @@ export function ImagesPage({
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
+  // What the next load will ask the transformer to run at, as the picker must describe it. Every
+  // load control that deterministically keeps the weights dense reads as Precision=Off here, and so
+  // does an explicit scheme this host cannot run, since both end in bf16 or a refusal rather than
+  // the fast path the row would be advertising.
+  const requestedPrecision: RequestedPrecision = effectiveRowPrecision(
+    loadControlsBlockDenseQuant({
+      precision: transformerQuant,
+      speedMode,
+      memoryMode,
+      cpuOffload,
+    })
+      ? "none"
+      : transformerQuant,
+    denseQuantSchemes,
+  );
+  const imageModels = useImageModels(hostClass, requestedPrecision);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,

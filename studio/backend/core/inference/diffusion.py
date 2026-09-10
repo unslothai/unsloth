@@ -1216,6 +1216,37 @@ def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool
     return mode is None and bool(cpu_offload)
 
 
+def _pipeline_quant_uncompilable_reason(
+    target: Any, fam: Any, speed_mode: Optional[str], *, model_kind: str
+) -> Optional[str]:
+    """Why a PIPELINE load must keep its dense weights rather than quantise them, or None.
+
+    A torchao transformer that is never compiled is ~30x slower than the bf16 it replaced, so
+    converting without a compile is a pessimisation. Both callers ask this one question: the route
+    preflight, so the refusal lands before the arbiter evicts anything, and the loader, so an
+    automatic request declines to bf16 instead. GGUF is out of scope -- it substitutes dense base
+    weights and falls back to the packed file, which this PR leaves alone.
+
+    speed=off is absent on purpose: an engaged quant upgrades it to `default`, and an AUTO request
+    under it is rewritten to off long before either caller."""
+    if model_kind != "pipeline":
+        return None
+    # Compared as a string rather than through resolve_speed_mode: this runs on the route, where an
+    # unvalidated value must not raise, and `eager` is the only mode the comparison has to catch.
+    if str(speed_mode or "").strip().lower() == SPEED_EAGER:
+        return (
+            "Speed is set to 'eager', and a quantised transformer that is not compiled runs far "
+            "slower than the bf16 weights it replaces. Pick a compiling speed mode to combine the two"
+        )
+    if not compile_eligible(target, is_gguf = False, family = fam):
+        return (
+            "this process cannot run a torch.compile (no Triton, TORCHDYNAMO_DISABLE, or a "
+            "family/device that does not compile), and a quantised transformer that is not "
+            "compiled runs far slower than the bf16 weights it replaces"
+        )
+    return None
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -1373,6 +1404,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         memory_mode: Optional[str] = None,
         cpu_offload: bool = False,
+        speed_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
@@ -1406,6 +1438,7 @@ class DiffusionBackend:
                 te_mode = te_mode,
                 memory_mode = memory_mode,
                 cpu_offload = cpu_offload,
+                speed_mode = speed_mode,
             )
 
     def _assert_precision_for_target(
@@ -1418,6 +1451,7 @@ class DiffusionBackend:
         te_mode: Optional[str],
         memory_mode: Optional[str],
         cpu_offload: bool,
+        speed_mode: Optional[str] = None,
     ) -> None:
         """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
@@ -1447,6 +1481,14 @@ class DiffusionBackend:
                 )
             elif not dense_transformer_supported(target):
                 reason = dense_transformer_unsupported_reason(target)
+            elif (
+                uncompilable := _pipeline_quant_uncompilable_reason(
+                    target, fam, speed_mode, model_kind = model_kind
+                )
+            ) is not None:
+                # Deterministic from the request, so it belongs here for the same reason the offload branch above
+                # does: the loader would otherwise raise the identical refusal after the eviction and the download.
+                reason = uncompilable
             elif (
                 select_transformer_quant_scheme(
                     target,
@@ -2074,6 +2116,9 @@ class DiffusionBackend:
             model_kind = resolve_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            # An uncompiled torchao transformer loses to the bf16 it replaces, so the loader keeps a pipeline dense
+            # under 'eager'; refusing an explicit scheme here rather than after the download says so sooner.
+            speed_mode = speed_mode,
             gpu_ordinal = gpu_ordinal,
         )
 
@@ -4350,24 +4395,11 @@ class DiffusionBackend:
                                 _base_local_dir or fetch_base, **pipe_kwargs
                             )
 
-                # A torchao transformer that is never compiled is ~30x slower than the bf16 it replaced (the forcing
-                # branch below measures the same thing from the other side), so a load that cannot compile must keep its
-                # dense weights rather than "optimise" into that. speed=off is fine: an engaged quant upgrades it to
-                # `default`. `eager` is an explicit refusal to compile, and compile_eligible covers the process that
-                # cannot run inductor at all -- a normal Windows CUDA install has no Triton wheel, and
-                # TORCHDYNAMO_DISABLE turns every compile into a silent no-op.
-                pipeline_quant_uncompilable: Optional[str] = None
-                if resolve_speed_mode(speed_mode, is_gguf = kind == "gguf") == SPEED_EAGER:
-                    pipeline_quant_uncompilable = (
-                        "Speed is set to 'eager', and a quantised transformer that is not compiled runs far slower "
-                        "than the bf16 weights it replaces. Pick a compiling speed mode to combine the two"
-                    )
-                elif not compile_eligible(target, is_gguf = False, family = fam):
-                    pipeline_quant_uncompilable = (
-                        "this process cannot run a torch.compile (no Triton, TORCHDYNAMO_DISABLE, or a family/device "
-                        "that does not compile), and a quantised transformer that is not compiled runs far slower "
-                        "than the bf16 weights it replaces"
-                    )
+                # Same question the route preflight asked, from the one helper, so the two cannot disagree about
+                # which loads are worth quantising.
+                pipeline_quant_uncompilable = _pipeline_quant_uncompilable_reason(
+                    target, fam, speed_mode, model_kind = kind
+                )
 
                 # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and
                 # pre-quantised pipelines; offloaded plans remain dense because torchao tensors cannot move.

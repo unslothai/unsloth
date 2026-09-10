@@ -11,6 +11,7 @@ import {
   denseQuantPrecisionChip,
   effectiveRowPrecision,
   h3PerfSuffix,
+  loadControlsBlockDenseQuant,
   hostIsAccelerated,
   hostRunsDenseQuant,
 } from "../src/features/model-picker/components/model-selector/host-artifact-policy.ts";
@@ -112,6 +113,29 @@ test("an explicit scheme the host cannot run is not advertised", () => {
   }
   // An empty list is an answer, not a missing one: the host runs nothing.
   assert.equal(denseQuantPrecisionChip("int8", []), null);
+});
+
+// Every load control the backend decides bf16 from must read the same way in the picker.
+test("a load control that forces bf16 takes the fast label with it", () => {
+  const blocked = (over: Record<string, unknown>) =>
+    loadControlsBlockDenseQuant({ precision: "auto", ...over });
+  // Eager never compiles, and uncompiled torchao loses to the bf16 it replaces.
+  assert.equal(blocked({ speedMode: "eager" }), true);
+  // Offload moves modules with Module.to(), which torchao tensors do not survive.
+  assert.equal(blocked({ memoryMode: "balanced" }), true);
+  assert.equal(blocked({ memoryMode: "low_vram" }), true);
+  assert.equal(blocked({ cpuOffload: true }), true);
+  // The bare flag only forces offload when no mode was named, matching the backend.
+  assert.equal(blocked({ memoryMode: "fast", cpuOffload: true }), false);
+  // Speed=Off rewrites an AUTO quant to off, but an explicit scheme still runs.
+  assert.equal(blocked({ speedMode: "off" }), true);
+  assert.equal(loadControlsBlockDenseQuant({ precision: "fp8", speedMode: "off" }), false);
+  // Eager blocks an explicit scheme too, since that one is refused outright.
+  assert.equal(loadControlsBlockDenseQuant({ precision: "fp8", speedMode: "eager" }), true);
+  // The defaults leave the fast path alone.
+  assert.equal(blocked({}), false);
+  assert.equal(blocked({ speedMode: "auto", memoryMode: "auto", cpuOffload: false }), false);
+  assert.equal(blocked({ speedMode: "default", memoryMode: "fast" }), false);
 });
 
 test("the backends that only run the native engine are gguf-only", () => {

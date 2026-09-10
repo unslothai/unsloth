@@ -12,6 +12,24 @@ from __future__ import annotations
 
 import types
 
+
+def _cuda_target():
+    """A compilable bf16 CUDA target, as ``_resolve_device_target`` returns on a real card.
+
+    The dtype is the real ``torch.bfloat16`` and ``supports_default_torch_compile`` is set, because
+    the precision preflight now asks ``compile_eligible`` whether a quantised pipeline could be
+    compiled at all: a stub missing either reads as a card that cannot compile and refuses loads a
+    real one accepts.
+    """
+    import torch
+    return types.SimpleNamespace(
+        device = "cuda",
+        dtype = torch.bfloat16,
+        _cc = (10, 0),
+        supports_default_torch_compile = True,
+    )
+
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -2112,7 +2130,7 @@ def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch,
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     with pytest.raises(RuntimeError) as excinfo:
         backend.assert_precision_available(
@@ -2170,7 +2188,7 @@ def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     # Support and the torchao install are not what is under test here.
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
@@ -2196,7 +2214,7 @@ def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: True)
@@ -2220,7 +2238,7 @@ def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(mon
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
@@ -2242,7 +2260,7 @@ def test_layerwise_fp8_does_not_need_torchao(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
@@ -2419,7 +2437,7 @@ def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
@@ -2438,7 +2456,7 @@ def test_a_single_file_pick_still_cannot_pin_a_precision(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
     with pytest.raises(RuntimeError) as excinfo:
@@ -2460,7 +2478,7 @@ def test_a_pipeline_pick_is_still_refused_on_a_device_that_cannot_quantise(monke
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
     with pytest.raises(RuntimeError) as excinfo:
@@ -2480,7 +2498,7 @@ def test_a_unet_family_is_refused_before_the_eviction_and_the_download(monkeypat
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
@@ -2507,7 +2525,7 @@ def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
     seen: list = []
@@ -2523,3 +2541,64 @@ def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
         transformer_quant = "fp8",
     )
     assert seen
+
+
+def test_an_eager_pipeline_precision_is_refused_before_the_eviction(monkeypatch):
+    """Eager plus an explicit scheme is decidable from the request, so it must not cost a download."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: pytest.fail("the eager refusal must not need a scheme probe"),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "z-image"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            speed_mode = "eager",
+        )
+    assert "eager" in str(excinfo.value)
+
+
+def test_a_gguf_pick_still_accepts_an_eager_precision(monkeypatch):
+    """The compile guard is the pipeline path's; GGUF substitutes weights and is left as on main."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "gguf",
+        transformer_quant = "fp8",
+        speed_mode = "eager",
+    )
+
+
+def test_a_process_that_cannot_compile_refuses_a_pipeline_precision_up_front(monkeypatch):
+    """A Windows install without Triton is knowable here too, so it refuses before the download."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "z-image"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+        )
+    assert "compile" in str(excinfo.value)
