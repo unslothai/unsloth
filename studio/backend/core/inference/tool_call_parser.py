@@ -705,6 +705,11 @@ def _top_level_maskable_values(
                 while k < end and text[k].isspace():
                     k += 1
                 if k < end and text[k] == ":":
+                    # The KEY is data too. A truncated object cannot be claimed by the
+                    # balanced-leading-object guard, so a wrapper spelled into a key was
+                    # reconsidered on its own and promoted; only its value was masked.
+                    if key not in _BARE_JSON_CLASSIFY_KEYS:
+                        spans.append((i + 1, min(j, end)))
                     k += 1
                     while k < end and text[k].isspace():
                         k += 1
@@ -1062,6 +1067,25 @@ def _strip_leading_code_fence(text: str) -> str:
     return text[m.end() :] if m else text
 
 
+# Cheap necessary condition for a blocked name being present anywhere in the text.
+_EXECUTION_CLASS_HINTS = tuple(_tool_healing.EXECUTION_CLASS_TOOL_NAMES) + (
+    _tool_healing._MCP_TOOL_PREFIX,
+)
+
+
+# Every opener that OWNS the text behind it, so skipping across one would re-read that call's
+# own arguments. ``call:`` is Gemma's, spelled out since _GEMMA_BARE_SENTINEL is defined below.
+_MARKUP_OPENERS = _CONTAINING_WRAPPERS + ("[ARGS]", "call:")
+
+
+def _has_execution_class_hint(text: str) -> bool:
+    """Whether ``text`` could name an execution-class tool at all.
+
+    A backslash counts on its own: ``"\\u0070ython"`` is ``python`` to ``json.loads`` and no
+    literal search finds it, so escapes must fall on the permissive side."""
+    return "\\" in text or any(hint in text for hint in _EXECUTION_CLASS_HINTS)
+
+
 def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     """``(start, end)`` of the argument body of every blocked markerless call, ordered.
 
@@ -1076,6 +1100,8 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     # because a PROMOTABLE call's arguments are that call's own input: masking a blocked
     # candidate quoted inside them rewrote what the tool actually received.
     protected: list = []
+    # Hoisted: it scans the whole buffer, and the resume below runs once per prose gap.
+    execution_hint = _has_execution_class_hint(text)
     cursor = 0
     while cursor < len(text):
         rest = text[cursor:]
@@ -1099,7 +1125,24 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
                     (begin + shift, stop + shift)
                     for begin, stop, _ in _top_level_args_values(probe, 0, len(probe))
                 )
-            break
+            # A value STARTS here but did not resolve, so the rest is its truncated body and
+            # nothing behind it is a sibling.
+            if probe[:1] in ("{", "["):
+                break
+            # Otherwise prose merely PREFIXES the call ("Answer:\n{...}"), which left the whole
+            # chain unwalked and executed the wrapper quoted inside the blocked call behind it.
+            # Resume at the next brace; with no execution name there is no blocked body to hide.
+            # Linear: every brace either resolves and is stepped past, or breaks above.
+            nxt = text.find("{", shift) if execution_hint else -1
+            if nxt < 0:
+                break
+            # Only across INERT prose: markup in the gap OWNS the object behind it, as arguments
+            # or as its marker. ``<|python_tag|>{...}{"name":"terminal",...}`` came back with its
+            # command blanked instead of executed.
+            if any(opener in text[cursor:nxt] for opener in _MARKUP_OPENERS):
+                break
+            cursor = nxt
+            continue
         # A leading ARRAY is a valid JSON value with no object in it, so ``index`` raised.
         obj = probe.find("{", 0, lead)
         if obj < 0:

@@ -1361,6 +1361,9 @@
       "_EMBEDDED_MARKER_RE": {
         "kind": "assign"
       },
+      "_EXECUTION_CLASS_HINTS": {
+        "kind": "assign"
+      },
       "_EXTENSION_SAMPLE": {
         "kind": "assign"
       },
@@ -1479,6 +1482,9 @@
         "kind": "assign"
       },
       "_MARKERLESS_TRUSTED_PREFIXES": {
+        "kind": "assign"
+      },
+      "_MARKUP_OPENERS": {
         "kind": "assign"
       },
       "_MAX_GEMMA_PREFIX_TAIL": {
@@ -1654,6 +1660,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, vs: int, *, strict: bool=False"
+      },
+      "_has_execution_class_hint": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_has_gemma_bare_trigger": {
         "decorators": [],
