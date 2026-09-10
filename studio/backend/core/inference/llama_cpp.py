@@ -2079,6 +2079,8 @@ def _llama_predicted_n(chunk) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
+
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 # Below this, a tool result carries no content: what comes back is the notice saying it was
@@ -32148,7 +32150,8 @@ class LlamaCppBackend:
                                 if (
                                     _output_frame
                                     and on_tokens is not None
-                                    and _tokens_this_stream - _tokens_reported >= _TOKEN_REPORT_EVERY
+                                    and _tokens_this_stream - _tokens_reported
+                                    >= _TOKEN_REPORT_EVERY
                                 ):
                                     _tokens_reported = _tokens_this_stream
                                     try:
