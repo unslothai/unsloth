@@ -344,18 +344,26 @@ def test_recording_forward_slices_per_layer_inputs_from_the_resume_offset(fake_m
     assert seen[0].rows == list(range(43)) and seen[1] is short and seen[2] is short
 
 
-def test_recording_forward_withholds_only_prompt_wide_position_ids(fake_mx):
+def test_recording_forward_withholds_prompt_wide_position_ids_only_after_a_resume(fake_mx):
     language_model = FakeLanguageModel()
     shaped = types.SimpleNamespace
-    embedded = dict(inputs = [1, 2, 3, 4, 5], inputs_embeds = shaped(shape = (1, 5, 8)), cache = [])
+    wide = lambda cache: dict(cache = cache, position_ids = shaped(shape = (3, 1, 900)))
+    embedded = dict(inputs = [1, 2, 3, 4, 5], inputs_embeds = shaped(shape = (1, 5, 8)))
+    # Unreused: mlx-vlm's own kwargs are the right ones and pass through untouched.
     with RecordingForward(language_model):
-        language_model(shaped(shape = (1, 256)), cache = [], position_ids = shaped(shape = (3, 1, 900)))
-        language_model(shaped(shape = (1, 256)), cache = [], position_ids = shaped(shape = (3, 1, 256)))
-        language_model(position_ids = shaped(shape = (1, 5)), **embedded)
-        language_model(position_ids = shaped(shape = (3, 1, 900)), **embedded)
-        language_model([1, 2], cache = [], position_ids = None)
+        language_model(shaped(shape = (1, 256)), **wide([]))
+        language_model(**embedded, **wide([]))
+    resumed = [shaped(offset = 512, advance = lambda _tokens: None)]
+    with RecordingForward(language_model):
+        language_model(shaped(shape = (1, 256)), **wide(resumed))
+        language_model(
+            shaped(shape = (1, 256)), cache = resumed, position_ids = shaped(shape = (3, 1, 256))
+        )
+        language_model(position_ids = shaped(shape = (1, 5)), cache = resumed, **embedded)
+        language_model(**embedded, **wide(resumed))
+        language_model([1, 2], cache = resumed, position_ids = None)
     kept = ["position_ids" in kw for kw in language_model.seen_kwargs]
-    assert kept == [False, True, True, False, True]
+    assert kept == [True, True, False, True, True, False, True]
 
 
 def test_store_serves_the_longest_prefix_and_evicts_to_fit(fake_mx):

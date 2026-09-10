@@ -240,7 +240,9 @@ def _recording_class(base):
                 record.resume_offset = offset or 0
                 if record.on_resume is not None:
                     record.on_resume(record.resume_offset)
-            if _prompt_wide_position_ids(args, kwargs):
+            # Only a resumed prompt: mlx-vlm's own kwargs are right for an unreused one, and
+            # Qwen VL models fed none reuse the positions of the request before.
+            if record.resume_offset and _prompt_wide_position_ids(args, kwargs):
                 kwargs.pop("position_ids")
             _place_per_layer_inputs(
                 kwargs, _chunk_rows(args, kwargs), (offset or 0) - record.resume_offset
