@@ -5919,6 +5919,12 @@ function Repair-SidecarTiktoken {
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf })
     $payload = Join-Path $TargetDir "tiktoken"
     if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
+    # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
+    # the new version beside it, and importlib.metadata may keep answering the stale
+    # one. The recordless metadata goes first.
+    Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf) } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
     # --upgrade: a --target install without it does not replace existing files, so a
     # damaged tiktoken\ directory an interrupted install left would be kept under fresh
     # metadata and read as present on the next run.
