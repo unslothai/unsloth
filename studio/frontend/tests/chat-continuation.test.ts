@@ -279,7 +279,7 @@ test("the adapter latches the backend window-exhaustion event", () => {
   // through the resolver, so a window the provider reported outranks what the client inferred.
   assert.match(
     adapter,
-    /incomplete: \{\s*reason: resolveIncompleteReason\(\s*generationDecision === "durable" \?\s*"cancelled"\s*:\s*"interrupted",\s*contextWindowExceeded,\s*\)/,
+    /incomplete: \{\s*reason: resolveIncompleteReason\(\s*(?:\/\/[^\n]*\n\s*)*incompleteReason \?\?\s*\(\s*generationDecision === "durable" \?\s*"cancelled"\s*:\s*"interrupted"\),\s*contextWindowExceeded,\s*\)/,
     "an abort saves a bare cancelled again, losing the gate that names a walk-away and what the provider reported",
   );
   // The finish chunk carries no delta, so nothing between here and `[DONE]` need yield.

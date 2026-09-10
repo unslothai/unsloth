@@ -5176,7 +5176,11 @@ export function createOpenAIStreamAdapter(
         // A window the provider reported as full outranks either guess (utils/continuation.ts).
         incomplete: {
           reason: resolveIncompleteReason(
-            generationDecision === "durable" ? "cancelled" : "interrupted",
+            // Once an explicit Stop has latched its reason, streamed yields that
+            // still go out carry it -- a stopped legacy turn must persist as
+            // cancelled, not read back as a walk-away interruption.
+            incompleteReason ??
+                (generationDecision === "durable" ? "cancelled" : "interrupted"),
             contextWindowExceeded,
           ),
         },
@@ -7872,37 +7876,48 @@ export function createOpenAIStreamAdapter(
             });
           }
         }
-        if (!abortSignal.aborted) {
+        // An explicit Stop is an abort too, but it must persist its reason instead of
+        // leaving the last streamed yield's label standing: the replacement yield
+        // below carries the latched "cancelled" (the durable path reads the latch at
+        // 5098-101 style already; legacy only got it via this gate staying shut).
+        if (!abortSignal.aborted || generationStopRequested) {
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          const partialTiming = buildTiming(
-            streamStartTime,
-            totalChunks,
-            firstTokenTime,
-            Date.now() - streamStartTime,
-            estimateTokenCount(partialText),
-            toolCallParts.length,
-          );
-          yield {
-            content: partialContent,
-            metadata: {
-              timing: partialTiming,
-              custom: {
-                ...reasoningDurationTracker.metadata(),
-                contextTruncation,
-                // Unfinished too, so it also offers Continue -- unless the provider already
-                // said why the model stopped.
-                incomplete: {
-                  reason: resolveIncompleteReason(
-                    err instanceof GenerationLengthError
-                      ? ("length" as const)
-                      : err instanceof ChatGenerationTerminalError &&
-                          err.generationStatus === "cancelled"
-                        ? ("cancelled" as const)
-                        : ("interrupted" as const),
-                    contextWindowExceeded,
-                  ),
+          if (partialContent.length > 0) {
+            const partialTiming = buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(partialText),
+              toolCallParts.length,
+            );
+            yield {
+              content: partialContent,
+              metadata: {
+                timing: partialTiming,
+                custom: {
+                  ...reasoningDurationTracker.metadata(),
+                  contextTruncation,
+                  // Unfinished too, so it also offers Continue -- unless the provider already
+                  // said why the model stopped.
+                  incomplete: {
+                    reason: resolveIncompleteReason(
+                      // An explicit Stop latched incompleteReason = "cancelled" at the abort
+                      // handler; that outranks the error-derived guess below.
+                      incompleteReason ??
+                          (err instanceof GenerationLengthError
+                              ? ("length" as const)
+                              : err instanceof ChatGenerationTerminalError &&
+                                    err.generationStatus === "cancelled"
+                                ? ("cancelled" as const)
+                                : ("interrupted" as const)),
+                      contextWindowExceeded,
+                    ),
+                  },
+                  timing: partialTiming,
+                  ...generationCustom(),
                 },
                 timing: partialTiming,
                 ...generationCustom(),
