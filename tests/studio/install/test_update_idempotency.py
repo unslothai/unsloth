@@ -979,22 +979,28 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     # Its own baseline, taken now: this is the last case, and the fault-injection cases
     # before it legitimately rebuilt a sidecar and advanced a binary's mtime.
     before = snapshot(install)
+    # Read BEFORE the run: after it the installed version may already be PyPI's.
+    installed, latest = _installed_version(install), _pypi_latest()
+    print(f"[idempotency] installed={installed!r} pypi={latest!r}", flush = True)
     run = run_update(directory, "run5-desktop", local = False)
     assert run.rc == 0, run.log[-8000:]
-    print(
-        f"[idempotency] installed={_installed_version(install)!r} pypi={_pypi_latest()!r}",
-        flush = True,
-    )
     took_fast_path = NO_WORK_MARKERS[0] in run.log
     if not took_fast_path:
-        # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp and
-        # whisper.cpp pins can legitimately differ from the checkout's: it may rebuild or
-        # download any of them, so nothing below can be asserted of it. What can is that
-        # it succeeded, and that the checkout is put back for the workflow steps after
-        # this harness, which run the CLI and expect the code under test.
+        # The checkout goes back first either way: the workflow steps after this harness
+        # run the CLI and expect the code under test.
         restore = run_update(directory, "run5-restore", local = True)
         assert restore.rc == 0, restore.log[-8000:]
-        pytest.skip("installed version is not PyPI's latest; the desktop no-op path was not taken")
+        if installed and latest and installed != latest:
+            # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp
+            # and whisper.cpp pins can legitimately differ from the checkout's: it may
+            # rebuild or download any of them, so nothing below can be asserted of it.
+            pytest.skip("installed version is not PyPI's latest; the desktop no-op path was not taken")
+        # Equal versions (or none to compare) and the pass still ran: that is the
+        # regression this case exists to catch, not a reason to look away.
+        pytest.fail(
+            f"the desktop update ran the dependency pass with unsloth {installed!r} installed "
+            f"and {latest!r} on PyPI; the fast path was not taken:\n{run.log[-8000:]}"
+        )
     for host in PAYLOAD_HOSTS:
         assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
