@@ -78,7 +78,7 @@ def _is_opaque_cache(value):
 
 def _copy_value(value, mx):
     if isinstance(value, mx.array):
-        return value + 0
+        return copy.copy(value)
     if isinstance(value, list):
         return [_copy_value(item, mx) for item in value]
     if isinstance(value, tuple):
@@ -131,7 +131,7 @@ def release_cache_entries(entries):
 
 
 def copy_cache_entries(entries):
-    """Copies, object-shallow and array-deep, evaluated so they own their data."""
+    """Copy cache containers and array handles; MLX isolates subsequent writes."""
     import mlx.core as mx
 
     for entry in entries:
