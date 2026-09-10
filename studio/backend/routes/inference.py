@@ -2545,6 +2545,13 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # up to a second old, and the holders parked since are not this snapshot's to give.
         _gguf_slots_seen["parked"] = parked_before
         if occupancy is None:
+            # GET /slots is on by default in every build that can start here
+            # (ggml-org/llama.cpp#15630), so this is --no-slots, a 401, or a socket error.
+            # Said once per generation: the only other symptom is a preemptor that arms and
+            # never reclaims.
+            if not _gguf_slots_seen.get("said_unavailable"):
+                _gguf_slots_seen["said_unavailable"] = True
+                _llama_preemption_log("slots-probe-unavailable", level = "debug", base = base)
             return
         # Reclaim dead residue the moment it is SEEN, not once a victim has been chosen: by then
         # llama-server has usually entered its shrinking-batch retry.
