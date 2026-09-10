@@ -304,7 +304,8 @@ class _AutoPrefer:
     Blackwell and the ordering does not carry over untested.
 
     ``gated``: the head applies only where ``nvfp4_gate_passed(family, base_repo)`` covers THIS base
-    at the policy this commit resolves, so image rows can ship ahead of their evidence and stay inert.
+    at the policy this commit resolves AND the record's own backend is the one serving this device,
+    so image rows can ship ahead of their evidence and stay inert.
 
     ``backend``: the head applies only where ``select_nvfp4_backend`` picks that backend for THIS
     device; the same bytes are faster than fp8 on flashinfer and slower on torchao."""
@@ -357,6 +358,20 @@ def _nvfp4_gate_passed(family, base_repo) -> bool:
         from .diffusion_nvfp4_gate import nvfp4_gate_passed
         return bool(nvfp4_gate_passed(family, base_repo))
     except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable gate keeps the deny
+        return False
+
+
+def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
+    """Whether the passing gate record was measured on the backend ``select_nvfp4_backend`` picks
+    for THIS device. Lazy import as in ``_nvfp4_gate_passed``; never raises, an unanswerable probe
+    KEEPS the deny."""
+    try:
+        from .diffusion_nvfp4_gate import nvfp4_gate_backend
+        from .diffusion_nvfp4_ops import select_nvfp4_backend
+
+        recorded = nvfp4_gate_backend(family, base_repo)
+        return bool(recorded) and recorded == str(select_nvfp4_backend(device)).strip().lower()
+    except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe keeps the deny
         return False
 
 
@@ -755,8 +770,12 @@ def _auto_scheme_order(
     head: tuple[str, ...] = ()
     if prefer is not None and cap >= prefer.floor:
         if prefer.consumer_ok or not _is_consumer_gpu(device):
-            # Without a record the row is not a weaker preference, it is an untested one.
-            if not prefer.gated or _nvfp4_gate_passed(family, base_repo):
+            # Without a record the row is untested, and a record measured on one NVFP4 backend says
+            # nothing about the other.
+            if not prefer.gated or (
+                _nvfp4_gate_passed(family, base_repo)
+                and _nvfp4_gate_backend_ok(family, base_repo, device)
+            ):
                 # The same bytes reverse the ordering through the other backend, so the head
                 # stands only where the measured one serves this device.
                 if prefer.backend is None or _nvfp4_backend_is(device, prefer.backend):

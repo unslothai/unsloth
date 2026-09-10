@@ -10151,3 +10151,43 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a diffusion backend"),
     )
     assert diffusion_mod.generation_in_flight() is False
+
+
+def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
+    # The load-time selector asks with the base and a hosted-checkpoint probe, because a gated auto
+    # rung is offered only for the base its record covers. A planning selector that leaves either
+    # out answers a different scheme, and _uncached_prequant_repo is the guard that keeps an auto
+    # GGUF pick from fetching a second denoiser: it cleared a rung whose checkpoint was cached
+    # while the load went and pulled the NVFP4 one inline, past the plan's progress, disk-space and
+    # cancellation staging.
+    from types import SimpleNamespace
+
+    import core.inference.diffusion as dmod
+    from core.inference import diffusion_nvfp4_ops as ops
+    from core.inference import diffusion_transformer_quant as tq
+
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    assert fam is not None and fam.name == "flux.1"
+    base = "black-forest-labs/FLUX.1-schnell"
+
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: False)
+    # fp8 is the head of the flux row, so auto reaches nvfp4 only when its probe fails.
+    monkeypatch.setattr(
+        tq, "_scheme_supported", lambda scheme, device, unproven_ok = False: scheme != "fp8"
+    )
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
+    # The gate record was measured on flashinfer, and the head stands only where that backend
+    # serves the device.
+    monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
+
+    target = SimpleNamespace(device = "cuda", dtype = None)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        == "nvfp4"
+    )
+    assert (
+        dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
+        == "unsloth/FLUX.1-schnell-NVFP4"
+    )

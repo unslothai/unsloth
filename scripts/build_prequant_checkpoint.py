@@ -409,6 +409,13 @@ def calibration_refusal(
             "--gptq-prompts and --convrot-groupsize cannot be combined: the correction is solved "
             "against unrotated activations, so rotating the corrected weight discards it."
         )
+    if convrot_groupsize and bake:
+        # Scales are measured before the rotation, and convert_nvfp4_backend replaces the rotating Linear.
+        return (
+            "--bake-activation-scales and --convrot-groupsize cannot be combined: the scales are "
+            "measured before the weights are rotated, and the flashinfer backend that reads them "
+            "replaces the rotating Linear, so the rotation would be dropped at load time."
+        )
     if int(gptq_prompts) > available_prompts:
         return (
             f"--gptq-prompts {gptq_prompts} exceeds the {available_prompts} prompts the "

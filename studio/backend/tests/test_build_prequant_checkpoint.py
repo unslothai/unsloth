@@ -873,6 +873,12 @@ def test_the_calibration_flags_are_refused_for_a_build_that_cannot_honour_them()
     assert "unrotated" in build.calibration_refusal(
         scheme = "nvfp4", gptq_prompts = 4, bake = False, **rotated
     )
+    # The scales are measured before the rotation, and convert_nvfp4_backend replaces the
+    # ConvRotLinear the loader installed, so the online half would be dropped.
+    for prompts in (0, 4):
+        assert "--convrot-groupsize" in build.calibration_refusal(
+            scheme = "nvfp4", gptq_prompts = prompts, bake = True, **rotated
+        ), prompts
     assert "exceeds" in build.calibration_refusal(
         scheme = "nvfp4", gptq_prompts = 64, bake = False, **common
     )

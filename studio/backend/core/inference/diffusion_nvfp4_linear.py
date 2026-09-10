@@ -286,10 +286,11 @@ def convert_nvfp4_backend(
         return 0
 
     register_ops()
-    converted = 0
+    # Build every replacement BEFORE swapping any child in: all or nothing, as the docstring promises.
+    replacements = []
     for name, module in candidates:
         try:
-            replacement = nvfp4_linear_from_torchao(module, scales[name])
+            replacements.append((name, nvfp4_linear_from_torchao(module, scales[name])))
         except Exception as exc:  # noqa: BLE001 - one unconvertible layer must not lose the model
             _log(
                 logger,
@@ -297,9 +298,10 @@ def convert_nvfp4_backend(
                 f"[nvfp4] {name} could not move to the flashinfer path ({type(exc).__name__}: "
                 f"{exc}); staying on torchao",
             )
-            return converted
+            return 0
+    for name, replacement in replacements:
         _replace_child(transformer, name, replacement)
-        converted += 1
+    converted = len(replacements)
     _log(logger, "info", f"[nvfp4] flashinfer backend: {converted} linears converted")
     return converted
 
