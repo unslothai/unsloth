@@ -692,9 +692,7 @@ def create_job_dataset_download_url(
     )
     if resolved:
         try:
-            name = download_filename(
-                artifact_path = resolved, export_format = export_format, stem = stem
-            )
+            name = download_filename(artifact_path = resolved, export_format = export_format, stem = stem)
         except RecipeDatasetExportError as exc:
             raise log_and_http_error(
                 exc,
