@@ -8558,7 +8558,11 @@ def _recorded_direct_url(dist_name: str) -> "dict | None":
     return payload if isinstance(payload, dict) else None
 
 
-def _git_remote_commit(url: str, revision: str, timeout: int = 45) -> "str | None":
+def _git_remote_commit(
+    url: str,
+    revision: str,
+    timeout: int = 45,
+) -> "str | None":
     """The commit *revision* names on the remote right now (lower-case hex), or None
     when the remote cannot be asked: no git, no network, no such ref, a timeout.
 

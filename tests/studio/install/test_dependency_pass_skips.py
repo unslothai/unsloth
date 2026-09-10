@@ -458,7 +458,11 @@ def test_a_mutable_git_ref_is_evidence_only_while_the_remote_still_points_at_it(
     asked: list = []
 
     def _remote(answer):
-        def _ask(url, revision, timeout = 45):
+        def _ask(
+            url,
+            revision,
+            timeout = 45,
+        ):
             asked.append((url, revision))
             return answer
 
@@ -510,7 +514,9 @@ def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -
     monkeypatch.setattr(stack.shutil, "which", lambda _name: "/usr/bin/git")
     monkeypatch.setattr(stack.subprocess, "run", _fake_run)
 
-    _fake_run.answer = _Done(0, "aaaa000000000000000000000000000000000001\trefs/heads/release/3.6.x\n")
+    _fake_run.answer = _Done(
+        0, "aaaa000000000000000000000000000000000001\trefs/heads/release/3.6.x\n"
+    )
     assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") == (
         "aaaa000000000000000000000000000000000001"
     )
