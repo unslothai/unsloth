@@ -20,7 +20,7 @@ class TestBatchUbatchForMmproj:
             None,
             None,
             None,
-            is_vision=True,
+            is_vision = True,
         )
         assert n_batch == _MMPROJ_DEFAULT_N_BATCH_UBATCH
         assert n_ubatch == _MMPROJ_DEFAULT_N_BATCH_UBATCH
@@ -31,7 +31,7 @@ class TestBatchUbatchForMmproj:
             None,
             None,
             None,
-            is_vision=False,
+            is_vision = False,
         )
         assert n_batch is None
         assert n_ubatch is None
@@ -42,7 +42,7 @@ class TestBatchUbatchForMmproj:
             1024,
             None,
             None,
-            is_vision=True,
+            is_vision = True,
         )
         assert n_batch == 1024
         assert n_ubatch is None
@@ -53,7 +53,7 @@ class TestBatchUbatchForMmproj:
             None,
             1024,
             None,
-            is_vision=True,
+            is_vision = True,
         )
         assert n_batch is None
         assert n_ubatch == 1024
@@ -64,7 +64,7 @@ class TestBatchUbatchForMmproj:
             None,
             None,
             ["--batch-size", "1024"],
-            is_vision=True,
+            is_vision = True,
         )
         assert n_batch is None
         assert n_ubatch is None
@@ -75,7 +75,7 @@ class TestBatchUbatchForMmproj:
             None,
             None,
             ["--ubatch-size", "1024"],
-            is_vision=True,
+            is_vision = True,
         )
         assert n_batch is None
         assert n_ubatch is None
