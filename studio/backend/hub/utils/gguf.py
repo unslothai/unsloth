@@ -912,7 +912,9 @@ def stored_variant_spelling(
         return wanted
     matches: list[str] = []
     try:
-        stored = list(download_manifest.iter_variant_manifests("model", repo_id, hub_cache = hub_cache))
+        stored = list(
+            download_manifest.iter_variant_manifests("model", repo_id, hub_cache = hub_cache)
+        )
     except Exception:
         return wanted
     for spelling, _path in stored:

@@ -3058,7 +3058,8 @@ def _cached_variant_candidates(
         for snap in snapshots:
             cached_files = listed[snap]
             matches = [
-                f for f in _gguf_files_for_variant(cached_files, hf_variant)
+                f
+                for f in _gguf_files_for_variant(cached_files, hf_variant)
                 if _gguf_variant_key(f).lower() in target_keys
             ]
             if not matches:

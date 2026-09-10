@@ -334,7 +334,9 @@ def _bare_state_belongs_to_another_build(
         try:
             recorded = any(
                 str(v).lower() == bare.lower()
-                for v, _p in download_manifest.iter_variant_manifests("model", repo_id, hub_cache = root)
+                for v, _p in download_manifest.iter_variant_manifests(
+                    "model", repo_id, hub_cache = root
+                )
             ) or download_manifest.has_cancel_marker("model", repo_id, bare, hub_cache = root)
         except Exception:
             return True

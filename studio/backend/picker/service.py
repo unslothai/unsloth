@@ -394,7 +394,10 @@ def read_default_chat_template(
             held: dict = {}
             for snapshot in snapshots:
                 try:
-                    held[snapshot] = {gguf_variant_key(p.relative_to(snapshot).as_posix()).lower() for p in _iter_ggufs(snapshot)}
+                    held[snapshot] = {
+                        gguf_variant_key(p.relative_to(snapshot).as_posix()).lower()
+                        for p in _iter_ggufs(snapshot)
+                    }
                 except OSError:
                     held[snapshot] = set()
             keys = set().union(*held.values()) if held else set()
@@ -402,7 +405,9 @@ def read_default_chat_template(
                 target = resolve_variant_alias(sorted(keys), gguf_variant)
                 # Only the snapshots that HOLD the decided key are asked, so the per-directory
                 # lookup cannot re-alias the bare spelling onto a tagged file the union rejected.
-                snapshots = [s for s in snapshots if target is not None and target.lower() in held[s]]
+                snapshots = [
+                    s for s in snapshots if target is not None and target.lower() in held[s]
+                ]
         for snapshot in snapshots:
             cached_template = _chat_template_from_dir(snapshot, target)
             if cached_template:

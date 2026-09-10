@@ -354,7 +354,9 @@ def _local_gguf_entry(
         if cache_repo_dir is not None:
             for root in local_gguf_companion_roots(str(load_dir), repo_level = True)[1:]:
                 try:
-                    sibling_variants, _ = list_local_gguf_variants(root, require_existing_files = True)
+                    sibling_variants, _ = list_local_gguf_variants(
+                        root, require_existing_files = True
+                    )
                 except Exception:
                     continue
                 inventory.extend(sibling_variants)

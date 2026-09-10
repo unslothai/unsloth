@@ -1247,12 +1247,19 @@ def test_the_resident_check_canonicalises_both_spellings(monkeypatch):
     from core.inference import local_model_resolver
     from routes.inference import _resident_variant_matches
 
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("gemma-4-31B_q4_0-it",))
+    monkeypatch.setattr(
+        local_model_resolver, "local_variant_keys", lambda base, **kw: ("gemma-4-31B_q4_0-it",)
+    )
     assert _resident_variant_matches("repo", "gemma-4-31B_q4_0-it", "q4_0") is True
     assert _resident_variant_matches("repo", "q4_0", "gemma-4-31B_q4_0-it") is True
     # A plain sibling owning the bare key keeps the two apart.
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"))
+    monkeypatch.setattr(
+        local_model_resolver,
+        "local_variant_keys",
+        lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"),
+    )
     assert _resident_variant_matches("repo", "Q4_K_M", "model-Q4_K_M-mtp") is False
+
 
 def test_the_estimate_resolves_the_bare_spelling_across_every_revision(tmp_path):
     """Two revisions each caching one tagged build looked unambiguous on their own, so the
@@ -1434,18 +1441,29 @@ def test_a_bare_manifest_that_exists_but_will_not_parse_keeps_its_state(tmp_path
     from hub.services.models import deletion
 
     state = {"manifests": [], "marker": False}
-    monkeypatch.setattr(deletion.download_manifest, "read_manifest",
-                        lambda repo_type, repo_id, variant = None, *, hub_cache = None: None)
-    monkeypatch.setattr(deletion.download_manifest, "iter_variant_manifests",
-                        lambda repo_type, repo_id, *, hub_cache = None: iter(state["manifests"]))
-    monkeypatch.setattr(deletion.download_manifest, "has_cancel_marker",
-                        lambda repo_type, repo_id, variant = None, *, hub_cache = None: state["marker"])
-    keep = lambda: deletion._bare_state_belongs_to_another_build("org/repo", "q4_k_m", {"model-q4_k_m-mtp"}, None)
-    assert keep() is False                                  # nothing recorded: free to purge
+    monkeypatch.setattr(
+        deletion.download_manifest,
+        "read_manifest",
+        lambda repo_type, repo_id, variant = None, *, hub_cache = None: None,
+    )
+    monkeypatch.setattr(
+        deletion.download_manifest,
+        "iter_variant_manifests",
+        lambda repo_type, repo_id, *, hub_cache = None: iter(state["manifests"]),
+    )
+    monkeypatch.setattr(
+        deletion.download_manifest,
+        "has_cancel_marker",
+        lambda repo_type, repo_id, variant = None, *, hub_cache = None: state["marker"],
+    )
+    keep = lambda: deletion._bare_state_belongs_to_another_build(
+        "org/repo", "q4_k_m", {"model-q4_k_m-mtp"}, None
+    )
+    assert keep() is False  # nothing recorded: free to purge
     state["manifests"] = [("q4_k_m", tmp_path / "m.json")]  # present but unreadable: keep
     assert keep() is True
     state["manifests"] = []
-    state["marker"] = True                                   # cancelled before a manifest: keep
+    state["marker"] = True  # cancelled before a manifest: keep
     assert keep() is True
 
 
@@ -1479,8 +1497,11 @@ def test_the_progress_matcher_is_callable_and_matches_the_resolved_build(monkeyp
     from hub.services import snapshot_progress
 
     plans = build_gguf_variant_plans([_Sibling("gemma-4-31B_q4_0-it.gguf", 17)])
-    monkeypatch.setattr(gguf_variants, "gguf_variant_requirements",
-                        lambda repo_id, variant, hf_token = None: plan_for_variant(plans, variant))
+    monkeypatch.setattr(
+        gguf_variants,
+        "gguf_variant_requirements",
+        lambda repo_id, variant, hf_token = None: plan_for_variant(plans, variant),
+    )
     captured = {}
 
     async def fake_progress(**kw):
@@ -1496,7 +1517,9 @@ def test_the_progress_matcher_is_callable_and_matches_the_resolved_build(monkeyp
     assert matcher("mmproj-F16.gguf") is True
 
 
-def test_the_progress_matcher_reads_the_resolved_key_off_the_manifest_when_the_hub_is_down(monkeypatch):
+def test_the_progress_matcher_reads_the_resolved_key_off_the_manifest_when_the_hub_is_down(
+    monkeypatch,
+):
     """Offline, the requirements lookup is None and the matcher fell back to the bare spelling,
     so every finalized ``model-Q4_K_M-mtp`` shard of a legacy ``Q4_K_M`` job read as absent and
     hydration retired resumable state that was present. The job's manifest names the same files."""
@@ -1506,10 +1529,14 @@ def test_the_progress_matcher_reads_the_resolved_key_off_the_manifest_when_the_h
     from hub.services import snapshot_progress
     from hub.utils import download_manifest
 
-    monkeypatch.setattr(gguf_variants, "gguf_variant_requirements",
-                        lambda repo_id, variant, hf_token = None: None)
+    monkeypatch.setattr(
+        gguf_variants, "gguf_variant_requirements", lambda repo_id, variant, hf_token = None: None
+    )
     manifest = download_manifest.Manifest(
-        repo_type = "model", repo_id = "org/repo", variant = "Q4_K_M", started_at = "",
+        repo_type = "model",
+        repo_id = "org/repo",
+        variant = "Q4_K_M",
+        started_at = "",
         expected_files = (
             download_manifest.ExpectedFile("mmproj-F16.gguf", 1),
             download_manifest.ExpectedFile("model-Q4_K_M-mtp.gguf", 17),
@@ -1574,7 +1601,9 @@ def test_a_request_for_the_other_root_build_is_not_satisfied_by_the_resident(mon
     from core.inference import local_model_resolver
 
     backend = types.SimpleNamespace(
-        is_loaded = True, model_identifier = "org/repo", _openai_advertised_id = "org/repo",
+        is_loaded = True,
+        model_identifier = "org/repo",
+        _openai_advertised_id = "org/repo",
         hf_variant = "model-Q4_K_M-mtp",
     )
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
@@ -1586,7 +1615,9 @@ def test_a_request_for_the_other_root_build_is_not_satisfied_by_the_resident(mon
         return ("/p", index[v], "org/repo") if v in index else None
 
     monkeypatch.setattr(local_model_resolver, "resolve_local_gguf", resolve)
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: tuple(index.values()))
+    monkeypatch.setattr(
+        local_model_resolver, "local_variant_keys", lambda base, **kw: tuple(index.values())
+    )
     assert inf._loaded_satisfies("org/repo:model-Q4_K_M-fp16") is False
     assert inf._loaded_satisfies("org/repo:model-Q4_K_M-mtp") is True
     # A tag that names no build at all still means the repo, as before.
@@ -1605,7 +1636,9 @@ def test_an_uncached_root_build_of_the_resident_repo_is_not_satisfied_by_the_res
     from core.inference import local_model_resolver
 
     backend = types.SimpleNamespace(
-        is_loaded = True, model_identifier = "org/repo", _openai_advertised_id = "org/repo",
+        is_loaded = True,
+        model_identifier = "org/repo",
+        _openai_advertised_id = "org/repo",
         hf_variant = "model-Q4_K_M-mtp",
     )
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
@@ -1615,8 +1648,9 @@ def test_an_uncached_root_build_of_the_resident_repo_is_not_satisfied_by_the_res
         raise AssertionError("the index is not what decides an uncached build")
 
     monkeypatch.setattr(local_model_resolver, "resolve_local_gguf", never)
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys",
-                        lambda base, **kw: ("model-Q4_K_M-mtp",))
+    monkeypatch.setattr(
+        local_model_resolver, "local_variant_keys", lambda base, **kw: ("model-Q4_K_M-mtp",)
+    )
     assert inf._loaded_satisfies("org/repo:model-Q4_K_M-fp16") is False
     assert inf._loaded_satisfies("org/repo:model-Q8_0-mtp") is False
     assert inf._loaded_satisfies("org/repo:model-Q4_K_M-mtp") is True
@@ -1697,8 +1731,12 @@ def test_a_catalog_shaped_gguf_repo_on_a_non_gguf_resident_never_satisfies_a_roo
     import routes.inference as inf
     from core.inference import local_model_resolver
 
-    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: types.SimpleNamespace(is_loaded = False))
-    backend = types.SimpleNamespace(active_model_name = "unsloth/model-GGUF", _openai_advertised_id = None)
+    monkeypatch.setattr(
+        inf, "get_llama_cpp_backend", lambda: types.SimpleNamespace(is_loaded = False)
+    )
+    backend = types.SimpleNamespace(
+        active_model_name = "unsloth/model-GGUF", _openai_advertised_id = None
+    )
     monkeypatch.setattr(inf, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(inf, "public_model_id", lambda name: name)
 
@@ -1722,24 +1760,40 @@ def test_a_catalog_shaped_gguf_repo_on_a_non_gguf_resident_never_satisfies_a_roo
 
 def _manifest(variant, *paths):
     from hub.utils import download_manifest
-
     return download_manifest.Manifest(
-        repo_type = "model", repo_id = "org/repo", variant = variant, started_at = "",
+        repo_type = "model",
+        repo_id = "org/repo",
+        variant = variant,
+        started_at = "",
         expected_files = tuple(download_manifest.ExpectedFile(p, 1) for p in paths),
     )
 
 
-def _stub_state(monkeypatch, manifests: dict, markers = ()):
+def _stub_state(
+    monkeypatch,
+    manifests: dict,
+    markers = (),
+):
     """Manifests keyed by the spelling they were written under; readers folded on case."""
     from hub.utils import download_manifest
 
     lowered = {k.lower(): v for k, v in manifests.items()}
-    monkeypatch.setattr(download_manifest, "read_manifest",
-                        lambda rt, repo, variant = None, **kw: lowered.get((variant or "").lower()))
-    monkeypatch.setattr(download_manifest, "has_cancel_marker",
-                        lambda rt, repo, variant = None, **kw: (variant or "").lower() in {m.lower() for m in markers})
-    monkeypatch.setattr(download_manifest, "iter_variant_manifests",
-                        lambda rt, repo, **kw: [(k, None) for k in manifests])
+    monkeypatch.setattr(
+        download_manifest,
+        "read_manifest",
+        lambda rt, repo, variant = None, **kw: lowered.get((variant or "").lower()),
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "has_cancel_marker",
+        lambda rt, repo, variant = None, **kw: (variant or "").lower()
+        in {m.lower() for m in markers},
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "iter_variant_manifests",
+        lambda rt, repo, **kw: [(k, None) for k in manifests],
+    )
 
 
 def test_a_qualified_row_finds_the_state_its_download_wrote_under_the_bare_spelling(monkeypatch):
@@ -1755,24 +1809,40 @@ def test_a_qualified_row_finds_the_state_its_download_wrote_under_the_bare_spell
     assert stored_variant_spelling("org/repo", "model-Q4_K_M-mtp") == "Q4_K_M"
     assert stored_variant_spelling("org/repo", "model-Q4_K_M-fp16") == "model-Q4_K_M-fp16"
     # State under the row's own spelling wins outright.
-    _stub_state(monkeypatch, {"Q4_K_M": tagged, "model-Q4_K_M-mtp": _manifest("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf")})
+    _stub_state(
+        monkeypatch,
+        {
+            "Q4_K_M": tagged,
+            "model-Q4_K_M-mtp": _manifest("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
+        },
+    )
     assert stored_variant_spelling("org/repo", "model-Q4_K_M-mtp") == "model-Q4_K_M-mtp"
     # The plain build's bare-spelled manifest is another build's state.
     _stub_state(monkeypatch, {"Q4_K_M": _manifest("Q4_K_M", "model-Q4_K_M.gguf")})
     assert stored_variant_spelling("org/repo", "model-Q4_K_M-mtp") == "model-Q4_K_M-mtp"
     # A bare lookup reaches the qualified state only while no build owns the bare spelling.
-    _stub_state(monkeypatch, {"model-Q4_K_M-mtp": _manifest("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf")})
+    _stub_state(
+        monkeypatch, {"model-Q4_K_M-mtp": _manifest("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf")}
+    )
     assert stored_variant_spelling("org/repo", "Q4_K_M") == "model-Q4_K_M-mtp"
-    assert stored_variant_spelling("org/repo", "Q4_K_M", keys = ["Q4_K_M", "model-Q4_K_M-mtp"]) == "Q4_K_M"
+    assert (
+        stored_variant_spelling("org/repo", "Q4_K_M", keys = ["Q4_K_M", "model-Q4_K_M-mtp"])
+        == "Q4_K_M"
+    )
     # Two tagged builds both spelled qualified: the bare spelling names neither.
-    _stub_state(monkeypatch, {
-        "model-Q4_K_M-mtp": _manifest("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
-        "model-Q4_K_M-fp16": _manifest("model-Q4_K_M-fp16", "model-Q4_K_M-fp16.gguf"),
-    })
+    _stub_state(
+        monkeypatch,
+        {
+            "model-Q4_K_M-mtp": _manifest("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
+            "model-Q4_K_M-fp16": _manifest("model-Q4_K_M-fp16", "model-Q4_K_M-fp16.gguf"),
+        },
+    )
     assert stored_variant_spelling("org/repo", "Q4_K_M") == "Q4_K_M"
 
 
-def test_the_variants_listing_reads_a_rows_partial_state_under_the_legacy_spelling(monkeypatch, tmp_path):
+def test_the_variants_listing_reads_a_rows_partial_state_under_the_legacy_spelling(
+    monkeypatch, tmp_path
+):
     """The marker and manifest a legacy ``Q4_K_M`` start wrote were invisible to the
     ``model-Q4_K_M-mtp`` row, which listed as whole beside its own cancelled download."""
     import asyncio
@@ -1793,7 +1863,9 @@ def test_the_variants_listing_reads_a_rows_partial_state_under_the_legacy_spelli
     (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = active, hf_home = tmp_path, source = "studio", cache_home = tmp_path),
+        lambda: SimpleNamespace(
+            hub_cache = active, hf_home = tmp_path, source = "studio", cache_home = tmp_path
+        ),
     )
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
@@ -1801,13 +1873,19 @@ def test_the_variants_listing_reads_a_rows_partial_state_under_the_legacy_spelli
         lambda create = False, root = None, **kw: root if root is not None else active,
     )
     row = GgufVariantInfo(
-        filename = "Model-Q4_K_M-mtp.gguf", quant = "Model-Q4_K_M-mtp",
-        display_label = "Q4_K_M (mtp)", size_bytes = 256,
+        filename = "Model-Q4_K_M-mtp.gguf",
+        quant = "Model-Q4_K_M-mtp",
+        display_label = "Q4_K_M (mtp)",
+        size_bytes = 256,
     )
     monkeypatch.setattr(GV, "list_gguf_variants", lambda repo_id, hf_token = None: ([row], False, []))
     assert download_manifest.write_manifest(
-        "model", "Org/Quant", "Q4_K_M",
-        [download_manifest.ExpectedFile("Model-Q4_K_M-mtp.gguf", 256)], "http", hub_cache = active,
+        "model",
+        "Org/Quant",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile("Model-Q4_K_M-mtp.gguf", 256)],
+        "http",
+        hub_cache = active,
     )
     assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q4_K_M", hub_cache = active)
 
@@ -1832,21 +1910,33 @@ def test_status_cancel_and_progress_by_the_qualified_key_reach_the_bare_keyed_jo
     tagged = _manifest("Q4_K_M", "model-Q4_K_M-mtp.gguf")
     _stub_state(monkeypatch, {"Q4_K_M": tagged})
     metadata = download_registry.DownloadMetadata(
-        repo_type = "model", repo_id = "org/repo", variant = "Q4_K_M", transport = "http",
+        repo_type = "model",
+        repo_id = "org/repo",
+        variant = "Q4_K_M",
+        transport = "http",
     )
     jobs = {"org/repo::q4_k_m": download_registry.DownloadState("running")}
 
     class Registry:
         def get_job(self, key):
-            return jobs.get(download_registry.normalize_job_key(key), download_registry.DownloadState("idle"))
+            return jobs.get(
+                download_registry.normalize_job_key(key), download_registry.DownloadState("idle")
+            )
 
         def active_job_refs(self, repo_id = None):
-            return [download_registry.ActiveDownloadRef(
-                key = "org/repo::q4_k_m", state = "running", metadata = metadata, generation = 3,
-            )]
+            return [
+                download_registry.ActiveDownloadRef(
+                    key = "org/repo::q4_k_m",
+                    state = "running",
+                    metadata = metadata,
+                    generation = 3,
+                )
+            ]
 
         def get_job_metadata(self, key):
-            return metadata if download_registry.normalize_job_key(key) == "org/repo::q4_k_m" else None
+            return (
+                metadata if download_registry.normalize_job_key(key) == "org/repo::q4_k_m" else None
+            )
 
         def current_generation(self, key):
             return 3
@@ -1862,9 +1952,14 @@ def test_status_cancel_and_progress_by_the_qualified_key_reach_the_bare_keyed_jo
     assert status.state == "running"
 
     cancelled = {}
-    monkeypatch.setattr(download_lifecycle, "cancel_worker",
-                        lambda registry, key, **kw: cancelled.setdefault("key", key) and "cancelling")
-    body = types.SimpleNamespace(repo_id = "org/repo", gguf_variant = "model-Q4_K_M-mtp", generation = None)
+    monkeypatch.setattr(
+        download_lifecycle,
+        "cancel_worker",
+        lambda registry, key, **kw: cancelled.setdefault("key", key) and "cancelling",
+    )
+    body = types.SimpleNamespace(
+        repo_id = "org/repo", gguf_variant = "model-Q4_K_M-mtp", generation = None
+    )
     asyncio.run(downloads.cancel_download_model_response(body))
     assert cancelled["key"] == "org/repo::q4_k_m"
 
@@ -1895,7 +1990,9 @@ def test_a_non_gguf_resident_does_not_satisfy_a_request_for_a_tagged_gguf_build(
     import routes.inference as inf
     from core.inference import local_model_resolver
 
-    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: types.SimpleNamespace(is_loaded = False))
+    monkeypatch.setattr(
+        inf, "get_llama_cpp_backend", lambda: types.SimpleNamespace(is_loaded = False)
+    )
     backend = types.SimpleNamespace(active_model_name = "org/repo", _openai_advertised_id = None)
     monkeypatch.setattr(inf, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(inf, "public_model_id", lambda name: name)
@@ -1930,21 +2027,30 @@ def test_cached_load_candidates_resolve_the_spelling_across_every_snapshot(tmp_p
     newer = _materialize(tmp_path / "newer", [("model-Q4_K_M-mtp.gguf", 1)])
     older = _materialize(tmp_path / "older", [("model-Q4_K_M.gguf", 1)])
     monkeypatch.setattr(model_config, "_iter_hf_cache_snapshots", lambda repo_id: [newer, older])
-    found = [main for _path, main, _shards, _snap in llama_cpp._cached_variant_candidates("org/repo", "Q4_K_M")]
+    found = [
+        main
+        for _path, main, _shards, _snap in llama_cpp._cached_variant_candidates(
+            "org/repo", "Q4_K_M"
+        )
+    ]
     assert found == ["model-Q4_K_M.gguf"]
     other = _materialize(tmp_path / "other", [("model-Q4_K_M-fp16.gguf", 1)])
     monkeypatch.setattr(model_config, "_iter_hf_cache_snapshots", lambda repo_id: [newer, other])
     assert list(llama_cpp._cached_variant_candidates("org/repo", "Q4_K_M")) == []
 
 
-def test_the_cached_template_walk_resolves_the_spelling_across_every_snapshot(tmp_path, monkeypatch):
+def test_the_cached_template_walk_resolves_the_spelling_across_every_snapshot(
+    tmp_path, monkeypatch
+):
     """Same shape in the template lookup: the newest revision's tagged build answered a bare
     spelling the plain build in an older revision owns exactly."""
     import picker.service as ps
 
     newer = _materialize(tmp_path / "newer", [("model-Q4_K_M-mtp.gguf", 1)])
     older = _materialize(tmp_path / "older", [("model-Q4_K_M.gguf", 1)])
-    monkeypatch.setattr(ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older])
+    monkeypatch.setattr(
+        ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older]
+    )
     monkeypatch.setattr(ps, "read_gguf_chat_template", lambda path: f"template-of:{path}")
     monkeypatch.setattr(ps, "cache_reads_authorized", lambda token, **kw: True)
     monkeypatch.setattr(ps, "is_local_path", lambda name: False)
@@ -1952,18 +2058,28 @@ def test_the_cached_template_walk_resolves_the_spelling_across_every_snapshot(tm
     assert template == f"template-of:{older / 'model-Q4_K_M.gguf'}"
 
 
-def test_a_resident_loaded_through_a_bare_spelling_is_not_trusted_once_a_sibling_appears(monkeypatch):
+def test_a_resident_loaded_through_a_bare_spelling_is_not_trusted_once_a_sibling_appears(
+    monkeypatch,
+):
     """Loaded through the legacy bare ``Q4_K_M`` while only the tagged build existed, the resident
     records ``Q4_K_M``. Once a plain sibling is cached, that same request names the plain build,
     and an equality shortcut on the two spellings served the tagged weights for it."""
     from core.inference import local_model_resolver
     from routes.inference import _resident_variant_matches
 
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("model-Q4_K_M-mtp",))
+    monkeypatch.setattr(
+        local_model_resolver, "local_variant_keys", lambda base, **kw: ("model-Q4_K_M-mtp",)
+    )
     assert _resident_variant_matches("repo", "Q4_K_M", "Q4_K_M") is True
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"))
+    monkeypatch.setattr(
+        local_model_resolver,
+        "local_variant_keys",
+        lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"),
+    )
     assert _resident_variant_matches("repo", "Q4_K_M", "Q4_K_M") is False
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "Q8_0"))
+    monkeypatch.setattr(
+        local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "Q8_0")
+    )
     assert _resident_variant_matches("repo", "Q4_K_M", "Q4_K_M") is True
 
 
@@ -1982,9 +2098,15 @@ def test_the_recipe_gate_never_resolves_an_empty_active_variant(monkeypatch):
     # The same inventory-growth rule the resident short circuit applies: loaded through the bare
     # spelling while only the tagged build existed, then a plain sibling appears -- the resident
     # may be either build, so a recipe selecting the plain one must not run against it.
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("model-Q4_K_M-mtp",))
+    monkeypatch.setattr(
+        local_model_resolver, "local_variant_keys", lambda base, **kw: ("model-Q4_K_M-mtp",)
+    )
     assert jobs._recipe_variant_matches("org/repo", "Q4_K_M", "Q4_K_M") is True
-    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"))
+    monkeypatch.setattr(
+        local_model_resolver,
+        "local_variant_keys",
+        lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"),
+    )
     assert jobs._recipe_variant_matches("org/repo", "Q4_K_M", "Q4_K_M") is False
 
 
@@ -2000,7 +2122,9 @@ def test_the_cached_template_walk_folds_key_case_across_snapshots(tmp_path, monk
     # spelling rather than its identity. Folded keys keep the newer snapshot regardless.
     newer = _materialize(tmp_path / "newer", [("model-Q4_K_M.gguf", 1)])
     older = _materialize(tmp_path / "older", [("model-q4_k_m.gguf", 1)])
-    monkeypatch.setattr(ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older])
+    monkeypatch.setattr(
+        ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older]
+    )
     monkeypatch.setattr(ps, "read_gguf_chat_template", lambda path: f"template-of:{path}")
     monkeypatch.setattr(ps, "cache_reads_authorized", lambda token, **kw: True)
     monkeypatch.setattr(ps, "is_local_path", lambda name: False)

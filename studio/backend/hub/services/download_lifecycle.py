@@ -1341,7 +1341,10 @@ def _published_variant(metadata) -> Optional[str]:
 
         hub_cache = getattr(metadata, "hub_cache", None)
         manifest = download_manifest.read_manifest(
-            metadata.repo_type, metadata.repo_id, variant, hub_cache = Path(hub_cache) if hub_cache else None
+            metadata.repo_type,
+            metadata.repo_id,
+            variant,
+            hub_cache = Path(hub_cache) if hub_cache else None,
         )
         key = manifest_build_key(manifest) if manifest is not None else None
     except Exception:

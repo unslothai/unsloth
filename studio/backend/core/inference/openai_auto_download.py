@@ -159,7 +159,10 @@ def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
 
 
 def looks_like_quant(
-    variant: Optional[str], *, allow_root_stem: bool = False, known_keys = None
+    variant: Optional[str],
+    *,
+    allow_root_stem: bool = False,
+    known_keys = None,
 ) -> bool:
     """Whether a ``:suffix`` names a GGUF quant rather than a foreign tag.
 
@@ -200,7 +203,8 @@ def looks_like_quant(
     # falls through to its inventory checks -- which find a real pin and miss a foreign tag.
     vouched = allow_root_stem or (
         known_keys is not None
-        and normalized.strip().lower() in {str(k).replace("\\", "/").strip().lower() for k in known_keys if k}
+        and normalized.strip().lower()
+        in {str(k).replace("\\", "/").strip().lower() for k in known_keys if k}
     )
     if (
         vouched

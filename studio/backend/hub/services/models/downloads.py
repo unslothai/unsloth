@@ -629,12 +629,18 @@ def _manifest_hashes(manifest: download_manifest.Manifest) -> frozenset[str]:
     return frozenset(f"{f.sha256 or ''}:{f.path}:{f.size}" for f in (manifest.expected_files or ()))
 
 
-def _progress_matcher_variant(requirement, progress_variant: str, manifest = None) -> str:
+def _progress_matcher_variant(
+    requirement,
+    progress_variant: str,
+    manifest = None,
+) -> str:
     """The key the progress scan matches main shards against: the resolved plan's when there is
     one, else the job's own manifest's, since offline the Hub lookup has nothing to resolve with."""
     from hub.utils.gguf import gguf_variant_key
 
-    main = sorted(getattr(requirement, "main_filenames", ()) or ()) if requirement is not None else []
+    main = (
+        sorted(getattr(requirement, "main_filenames", ()) or ()) if requirement is not None else []
+    )
     if not main and manifest is not None:
         main = sorted(
             file.path
@@ -741,7 +747,9 @@ async def get_gguf_download_progress_response(
         # only with neither does this fall back to the request's spelling. Resolved once per poll.
         if not matcher_key:
             try:
-                requirement = gguf_variants.gguf_variant_requirements(repo_id, progress_variant, hf_token)
+                requirement = gguf_variants.gguf_variant_requirements(
+                    repo_id, progress_variant, hf_token
+                )
             except Exception:
                 requirement = None
             manifest = None

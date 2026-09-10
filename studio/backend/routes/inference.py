@@ -8071,8 +8071,8 @@ def _resident_variant_matches(base: str, requested_variant: str, loaded_variant:
     """
     # One rule, shared with the recipe gate: see ``resident_variant_serves``.
     from core.inference.local_model_resolver import resident_variant_serves
-
     return resident_variant_serves(base, requested_variant, loaded_variant)
+
 
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
@@ -8128,7 +8128,6 @@ def _loaded_satisfies(requested: str) -> bool:
             return False
         try:
             from core.inference.local_model_resolver import resolve_local_gguf
-
             hit = resolve_local_gguf(f"{base}:{variant}", allow_scan = False)
         except Exception:
             hit = None

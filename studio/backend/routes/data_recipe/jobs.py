@@ -162,7 +162,9 @@ def _loaded_local_model_identity() -> tuple[bool, str, str]:
     return False, "", ""
 
 
-def _recipe_variant_matches(target: str, active_variant: Optional[str], gguf_variant: Optional[str]) -> bool:
+def _recipe_variant_matches(
+    target: str, active_variant: Optional[str], gguf_variant: Optional[str]
+) -> bool:
     """Whether the ACTIVE variant is the one the recipe selected.
 
     The same rule the resident short circuit applies (``resident_variant_serves``), so the two

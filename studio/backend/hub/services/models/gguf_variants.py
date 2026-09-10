@@ -1722,7 +1722,9 @@ async def get_gguf_variants_answer(
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
                 partial_resumable = (
                     is_partial
-                    and _partial_resumable_for_variant(repo_id, _state_quant(v.quant), repo_cache_dir)
+                    and _partial_resumable_for_variant(
+                        repo_id, _state_quant(v.quant), repo_cache_dir
+                    )
                 ),
                 dependency_key = _variant_dependency_key(repo_id, v.filename),
             )
