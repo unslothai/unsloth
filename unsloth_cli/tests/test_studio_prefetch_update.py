@@ -1366,9 +1366,13 @@ def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path):
     assert _studio_prefetch.resolved_cache_dir(None) is None
     assert _studio_prefetch.resolved_cache_dir("  ") is None
     absolute = tmp_path / "cache"
-    assert _studio_prefetch.resolved_cache_dir(str(absolute), tmp_path / "elsewhere") == str(absolute)
+    assert _studio_prefetch.resolved_cache_dir(str(absolute), tmp_path / "elsewhere") == str(
+        absolute
+    )
     assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "uv-cache")
     assert _studio_prefetch.resolved_cache_dir("./uv-cache", tmp_path) == str(tmp_path / "uv-cache")
     # Without an explicit anchor, the working directory the prefetch's uv calls run from.
     with _studio_prefetch._working_directory(tmp_path / "script"):
-        assert _studio_prefetch.resolved_cache_dir("uv-cache") == str(tmp_path / "script" / "uv-cache")
+        assert _studio_prefetch.resolved_cache_dir("uv-cache") == str(
+            tmp_path / "script" / "uv-cache"
+        )
