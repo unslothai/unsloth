@@ -7,6 +7,7 @@ import {
   seededMeasuredTransfer,
 } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
@@ -236,6 +237,12 @@ export function finalize(
   dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
+  // The operation that used the space is the one that should surface the pressure. requestStart
+  // reads the disk before a download, which is the right moment to refuse one, but a download
+  // that STARTS with room and then eats it crosses the threshold with nobody looking: there is
+  // no interval, so without this the warning waits for the next download attempt. Throttled and
+  // in-flight-shared like every other caller, so a queue finishing together asks once.
+  void checkDiskSpace();
   if (job.kind === DOWNLOAD_KIND.MODEL) {
     invalidateGgufVariantsCache(job.repoId);
   }

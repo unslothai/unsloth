@@ -795,19 +795,45 @@ def _matching(name: str, patterns: Optional[Iterable[str]]) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 
-def _entry_size(entry: os.DirEntry, seen: set) -> int:
+class LinkLedger:
+    """Bytes a removal would actually free, counted per inode rather than per name.
+
+    One link frees its bytes when it goes. Several free nothing unless every one of them goes
+    too, and that is not a corner case: uv's default link mode on Windows is hardlink, so an
+    installed environment's files ARE links into the uv cache. The Hugging Face cache does the
+    same for blobs on filesystems without symlinks, but there both links live inside the cache.
+
+    So links are tallied as they are met and a multi-link inode contributes only once the number
+    seen inside the roots being measured reaches st_nlink. Anything still linked from outside is
+    left out, which understates rather than promises space that unlinking will not return.
+    """
+
+    def __init__(self) -> None:
+        self._single = 0
+        self._multi: dict[tuple[int, int], list[int]] = {}
+
+    def add(self, stat) -> None:
+        if stat.st_nlink <= 1:
+            self._single += int(stat.st_size)
+            return
+        record = self._multi.get((stat.st_dev, stat.st_ino))
+        if record is None:
+            self._multi[(stat.st_dev, stat.st_ino)] = [int(stat.st_size), int(stat.st_nlink), 1]
+        else:
+            record[2] += 1
+
+    def freeable_bytes(self) -> int:
+        return self._single + sum(
+            size for size, links, met in self._multi.values() if met >= links
+        )
+
+
+def _record_entry(entry: os.DirEntry, ledger: LinkLedger) -> None:
     try:
         stat = entry.stat(follow_symlinks = False)
     except OSError:
-        return 0
-    if stat.st_nlink > 1:
-        # The Hugging Face cache hardlinks blobs on filesystems without symlink
-        # support, so the same bytes appear under several names.
-        key = (stat.st_dev, stat.st_ino)
-        if key in seen:
-            return 0
-        seen.add(key)
-    return int(stat.st_size)
+        return
+    ledger.add(stat)
 
 
 def _descendable(entry: os.DirEntry) -> bool:
@@ -817,8 +843,12 @@ def _descendable(entry: os.DirEntry) -> bool:
     return not _is_junction(entry.path)
 
 
-def _measure_tree(path: Path, seen: set) -> tuple[int, int]:
-    total = 0
+def _measure_tree(path: Path, ledger: LinkLedger) -> int:
+    """Record every file below *path* in *ledger* and return the entry count.
+
+    The size is not returned: a multi-link inode's contribution is not known until every root
+    has been walked, so only the ledger can answer that, and only at the end.
+    """
     count = 0
     stack = [path]
     while stack:
@@ -833,15 +863,14 @@ def _measure_tree(path: Path, seen: set) -> tuple[int, int]:
                         if _descendable(entry):
                             stack.append(Path(entry.path))
                         continue
-                    total += _entry_size(entry, seen)
+                    _record_entry(entry, ledger)
         except OSError:
             continue
-    return total, count
+    return count
 
 
 def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tuple[int, int]:
-    seen: set = set()
-    total = 0
+    ledger = LinkLedger()
     entries = 0
     try:
         if Path(root).is_symlink() or _is_junction(root) or not Path(root).is_dir():
@@ -858,13 +887,12 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
                     continue
                 if entry.is_dir(follow_symlinks = False):
                     if _descendable(entry):
-                        size, _ = _measure_tree(Path(entry.path), seen)
-                        total += size
+                        _measure_tree(Path(entry.path), ledger)
                     continue
-                total += _entry_size(entry, seen)
+                _record_entry(entry, ledger)
     except OSError as exc:
         logger.debug(f"Could not size {root}: {exc}")
-    return total, entries
+    return ledger.freeable_bytes(), entries
 
 
 def _resolve_roots(definition: CacheDefinition) -> list[Path]:
@@ -921,6 +949,13 @@ def describe_cache(definition: CacheDefinition) -> dict:
         # What a clear will do: purge_cache skips a refused root and carries on,
         # so one bad root does not put the others out of reach.
         purgeable = bool(measurable)
+    # Whatever the roots say, a cache the environment is LINKED into cannot be offered: the row
+    # would advertise bytes whose removal breaks the install rather than costing a re-download.
+    # After the root checks so a genuinely refused root still names its own reason first.
+    if blocked_reason is None:
+        blocked_reason = _link_mode_refusal(definition.key)
+        if blocked_reason is not None:
+            purgeable = False
     if definition.custom_measure is not None:
         total, entries = (0, 0) if blocked_reason is not None else definition.custom_measure()
     else:
@@ -1047,29 +1082,32 @@ def _total_disk_bytes() -> Optional[int]:
     return int(usage.total) if usage is not None else None
 
 
-def _remove_entry(entry: os.DirEntry, root: Path, outcome: PurgeOutcome, seen: set) -> None:
+def _remove_entry(entry: os.DirEntry, root: Path, outcome: PurgeOutcome, ledger: LinkLedger) -> None:
+    """Remove one top-level entry, recording what it would free rather than adding it up here.
+
+    The freed total is read off the ledger once the whole root is done: an inode still linked
+    from outside frees nothing, and whether that is so cannot be decided one entry at a time.
+    """
     path = Path(entry.path)
     try:
         if entry.is_symlink():
             # The link, never its target: this is the escape a cache can hold.
-            size = 0
             os.unlink(path)
         elif entry.is_dir(follow_symlinks = False):
             real = _safe_resolve(path)
             if real is None or not _is_within(real, root):
                 outcome.errors.append(f"Skipped {path}: it resolves outside the cache root")
                 return
-            size, _ = _measure_tree(path, seen)
+            _measure_tree(path, ledger)
             # rmtree refuses a symlinked directory and does not follow links it
             # finds inside, so the walk cannot leave *root*.
             shutil.rmtree(path)
         else:
-            size = _entry_size(entry, seen)
+            _record_entry(entry, ledger)
             os.unlink(path)
     except OSError as exc:
         outcome.errors.append(f"Could not remove {path}: {exc}")
         return
-    outcome.freed_bytes += size
     outcome.removed_entries += 1
 
 
@@ -1083,7 +1121,7 @@ def empty_cache_root(
 ) -> PurgeOutcome:
     outcome = PurgeOutcome()
     resolved = assert_purgeable_root(root, protected = protected, trees = trees, keep = keep)
-    seen: set = set()
+    ledger = LinkLedger()
     try:
         with os.scandir(resolved) as scan:
             entries = list(scan)
@@ -1093,7 +1131,8 @@ def empty_cache_root(
     for entry in entries:
         if not _matching(entry.name, patterns):
             continue
-        _remove_entry(entry, resolved, outcome, seen)
+        _remove_entry(entry, resolved, outcome, ledger)
+    outcome.freed_bytes += ledger.freeable_bytes()
     return outcome
 
 
@@ -1176,10 +1215,82 @@ def _any_training_active() -> bool:
         return False
 
 
+def _uv_symlink_refusal() -> Optional[str]:
+    """Refuse the uv cache when an installed environment is linked into it, not copied from it.
+
+    uv's own `uv help sync` warns that clearing the cache under UV_LINK_MODE=symlink "will break
+    all installed packages": the environment's files are not copies, they are links into this
+    cache. That turns a bulk clear, which is meant to cost a re-download at worst, into a broken
+    install, so the cache is refused rather than offered.
+
+    Two cheap answers, no walk. The mode this process would use, and the evidence on disk: a
+    top-level entry in the running interpreter's site-packages that is a symlink into one of the
+    uv cache roots. uv links at that level, so the directory's own entries are enough.
+    """
+    if (os.environ.get("UV_LINK_MODE") or "").strip().lower() == "symlink":
+        return "uv is set to link packages from this cache; clearing it would break them."
+    try:
+        import sysconfig
+        site_packages = sysconfig.get_paths().get("purelib")
+    except Exception as exc:  # noqa: BLE001 - no site-packages means nothing linked from here
+        logger.debug(f"Could not locate site-packages for the uv link check: {exc}")
+        return None
+    if not site_packages:
+        return None
+    roots = [root for root in _uv_dirs() if root is not None]
+    if not roots:
+        return None
+    try:
+        with os.scandir(site_packages) as entries:
+            for entry in entries:
+                if not entry.is_symlink():
+                    continue
+                target = _safe_resolve(Path(entry.path))
+                if target is None:
+                    continue
+                if any(_is_within(target, _safe_resolve(root) or root) for root in roots):
+                    return (
+                        "The installed packages are symlinked into this cache; "
+                        "clearing it would break them."
+                    )
+    except OSError as exc:
+        logger.debug(f"Could not read site-packages for the uv link check: {exc}")
+    return None
+
+
+def _link_mode_refusal(key: str) -> Optional[str]:
+    return _uv_symlink_refusal() if key == "uv" else None
+
+
 def _training_refusal(key: str) -> Optional[str]:
     if key not in _WORKER_SENSITIVE_KEYS:
         return None
     return "Stop the training run before clearing this cache." if _any_training_active() else None
+
+
+def _inference_refusal(key: str) -> Optional[str]:
+    """Refuse a model-cache clear while an inference backend is holding cached weights.
+
+    Deleting ONE repo already runs these guards (hub/services/models/deletion.py), and emptying
+    the whole cache is every repo at once, so skipping them here was the wider action with the
+    weaker check. sd.cpp re-reads its companion VAE and text-encoder files for every generation,
+    so this breaks a model that was loaded long before the clear, not only one mid-load.
+
+    Fails CLOSED on a query that raises, as the per-repo path does: not being able to tell
+    whether weights are in use is not permission to unlink them.
+    """
+    if key not in _WORKER_SENSITIVE_KEYS:
+        return None
+    try:
+        from hub.services.models.deletion import any_model_load_blocks_cache_clear
+    except Exception as exc:  # noqa: BLE001 - no guard module means no backend to hold anything
+        logger.debug(f"Could not import the inference load-state guard: {exc}")
+        return None
+    try:
+        return any_model_load_blocks_cache_clear()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Could not verify the inference load state; refusing the clear: {exc}")
+        return "Could not verify whether a model is loaded. Try again in a moment."
 
 
 def purge_cache(key: str) -> dict:
@@ -1189,6 +1300,14 @@ def purge_cache(key: str) -> dict:
     if training is not None:
         logger.warning(f"Refusing to purge the {key} cache: {training}")
         return _purge_result(definition, PurgeOutcome(errors = [training]))
+    inference = _inference_refusal(key)
+    if inference is not None:
+        logger.warning(f"Refusing to purge the {key} cache: {inference}")
+        return _purge_result(definition, PurgeOutcome(errors = [inference]))
+    linked = _link_mode_refusal(key)
+    if linked is not None:
+        logger.warning(f"Refusing to purge the {key} cache: {linked}")
+        return _purge_result(definition, PurgeOutcome(errors = [linked]))
     reserved, busy = _reserve_downloads(key)
     if busy is not None:
         logger.warning(f"Refusing to purge the {key} cache: {busy}")

@@ -267,3 +267,24 @@ test("the cache row is reachable from settings search", () => {
   assert.match(search, /"settings\.resources\.storage\.caches\.label"/);
   assert.match(search, /"settings\.resources\.storage\.caches\.keywords"/);
 });
+
+test("the download that used the space is the one that reports it", () => {
+  // requestStart reads the disk BEFORE a download, which is the right moment to refuse one. A
+  // download that starts with room and then eats it crosses the threshold with nobody looking:
+  // there is no interval, so without a completion-side reading the warning waits for the next
+  // download attempt. finalize is the single terminal path for complete, cancelled and error.
+  const loop = readFileSync(
+    new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(loop, /import \{ checkDiskSpace \}/);
+  const finalize = loop.slice(loop.indexOf("export function finalize"));
+  const body = finalize.slice(0, finalize.indexOf("\nexport "));
+  // void, not await: a reading must never delay the teardown of a finished job.
+  assert.match(body, /\n  void checkDiskSpace\(\);/);
+  // After the early returns, or a job that was already terminal asks again on every poll.
+  assert.ok(
+    body.indexOf("TERMINAL_DISPLAY_STATES") < body.indexOf("void checkDiskSpace()"),
+    "the reading runs before the already-terminal guard",
+  );
+});

@@ -1493,3 +1493,108 @@ def test_setting_the_cache_home_invalidates_the_inventory(monkeypatch):
 
     hf_cache_settings.set_hf_cache_home(None)
     assert called == ["sizes"]
+
+
+def test_bytes_still_linked_from_outside_are_not_called_reclaimable(tmp_path, isolated_caches):
+    """uv's default link mode on Windows is hardlink: an installed environment's files ARE
+    links into this cache, so unlinking the cache copy frees nothing.
+
+    Counting them anyway is how a reclaimable total, and the freed_bytes a purge reports,
+    came to overstate by the size of the installed packages.
+    """
+    root = tmp_path / "uv"
+    shared = _write(root / "archive" / "wheel.so", "w" * 800)
+    venv = tmp_path / "venv" / "lib"
+    venv.mkdir(parents = True)
+    os.link(shared, venv / "wheel.so")  # the installed environment, outside the cache
+    _write(root / "archive" / "own.bin", "o" * 20)
+
+    entry = describe_cache(definition_for("uv"))
+
+    assert entry["size_bytes"] == 20
+
+
+def test_a_purge_reports_only_the_bytes_it_actually_freed(tmp_path, isolated_caches):
+    root = tmp_path / "uv"
+    shared = _write(root / "archive" / "wheel.so", "w" * 800)
+    venv = tmp_path / "venv" / "lib"
+    venv.mkdir(parents = True)
+    os.link(shared, venv / "wheel.so")
+    _write(root / "archive" / "own.bin", "o" * 20)
+
+    outcome = empty_cache_root(root)
+
+    assert outcome.errors == []
+    assert outcome.freed_bytes == 20
+    assert (venv / "wheel.so").read_text(encoding = "utf-8") == "w" * 800
+
+
+def test_a_whole_hub_clear_waits_for_a_loaded_model(monkeypatch, isolated_caches):
+    """Deleting ONE repo already runs the inference load-state guards.
+
+    Emptying the whole cache is every repo at once, so skipping them was the wider action with
+    the weaker check. sd.cpp re-reads its companion VAE and text-encoder files for every
+    generation, so this breaks a model loaded long before the clear, not only one mid-load.
+    """
+    import hub.services.models.deletion as deletion
+
+    monkeypatch.setattr(
+        deletion, "any_model_load_blocks_cache_clear", lambda: "Unload the model before clearing"
+    )
+    result = cache_inventory.purge_cache("hf_hub")
+
+    assert result["errors"] == ["Unload the model before clearing"]
+    assert result["freed_bytes"] == 0
+
+
+def test_an_unverifiable_load_state_refuses_rather_than_clears(monkeypatch, isolated_caches):
+    """Not being able to tell whether weights are in use is not permission to unlink them.
+    The per-repo path answers 503 for the same reason."""
+    import hub.services.models.deletion as deletion
+
+    def _raise():
+        raise RuntimeError("backend wedged")
+
+    monkeypatch.setattr(deletion, "any_model_load_blocks_cache_clear", _raise)
+    result = cache_inventory.purge_cache("hf_hub")
+
+    assert result["errors"] and "Could not verify" in result["errors"][0]
+
+
+def test_a_cache_the_environment_is_symlinked_into_is_not_offered(tmp_path, monkeypatch, isolated_caches):
+    """uv help sync: clearing the cache under UV_LINK_MODE=symlink "will break all installed
+    packages". A bulk clear is meant to cost a re-download at worst, never a broken install."""
+    _write(tmp_path / "uv" / "archive" / "pkg" / "__init__.py", "x")
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    (site / "pkg").symlink_to(tmp_path / "uv" / "archive" / "pkg", target_is_directory = True)
+    import sysconfig
+
+    monkeypatch.setattr(sysconfig, "get_paths", lambda *a, **k: {"purelib": str(site)})
+
+    entry = describe_cache(definition_for("uv"))
+    assert entry["purgeable"] is False
+    assert "symlinked" in (entry["blocked_reason"] or "")
+
+    result = cache_inventory.purge_cache("uv")
+    assert result["errors"] and "symlinked" in result["errors"][0]
+    assert (tmp_path / "uv" / "archive" / "pkg" / "__init__.py").exists()
+
+
+def test_the_declared_link_mode_alone_is_enough_to_refuse(tmp_path, monkeypatch, isolated_caches):
+    _write(tmp_path / "uv" / "a.bin", "a" * 10)
+    monkeypatch.setenv("UV_LINK_MODE", "symlink")
+
+    entry = describe_cache(definition_for("uv"))
+
+    assert entry["purgeable"] is False
+    assert "link packages" in (entry["blocked_reason"] or "")
+
+
+def test_an_ordinary_uv_cache_is_still_offered(tmp_path, isolated_caches):
+    _write(tmp_path / "uv" / "a.bin", "a" * 10)
+
+    entry = describe_cache(definition_for("uv"))
+
+    assert entry["purgeable"] is True
+    assert entry["blocked_reason"] is None
