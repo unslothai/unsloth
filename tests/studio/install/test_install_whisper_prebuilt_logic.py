@@ -2338,7 +2338,11 @@ def test_whisper_keep_paths_reject_an_empty_server_and_a_marker_without_a_finger
     server.write_bytes(saved)
     assert _whisper_check(install_dir, host) is True
 
-    markers = [p for p in install_dir.rglob("*.json") if "install_fingerprint" in p.read_text(encoding = "utf-8")]
+    markers = [
+        p
+        for p in install_dir.rglob("*.json")
+        if "install_fingerprint" in p.read_text(encoding = "utf-8")
+    ]
     assert markers, "the install wrote no marker carrying a fingerprint"
     marker_path = markers[0]
     original = marker_path.read_text(encoding = "utf-8")

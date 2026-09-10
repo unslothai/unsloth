@@ -6910,8 +6910,5 @@ def test_the_host_profile_records_the_rocm_runtime_the_upstream_selector_reads(m
     monkeypatch.setattr(M, "_detect_host_rocm_version", lambda: None)
     assert M.host_profile(rocm_host)["rocm_runtime"] is None
     # Never probed off ROCm hosts.
-    monkeypatch.setattr(
-        M, "_detect_host_rocm_version", lambda: pytest.fail("probed the runtime")
-    )
+    monkeypatch.setattr(M, "_detect_host_rocm_version", lambda: pytest.fail("probed the runtime"))
     assert M.host_profile(host)["rocm_runtime"] is None
-
