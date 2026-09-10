@@ -836,6 +836,39 @@ def test_apply_overflow_truncation_mutates_body_and_clamps_max_tokens():
     assert body["max_tokens"] <= max(1024, int(67584 * 0.25))
 
 
+def test_apply_overflow_truncation_re_prices_the_admission_bound():
+    """A prompt over the window prices at the one-token floor, and the drop is what makes
+    the room. Narrowing to it keeps the floor, so the surviving messages are re-priced."""
+    body = {"messages": _conversation(), "max_tokens": 1}
+    seen: list[list] = []
+
+    def _reprice(fitted):
+        seen.append(fitted)
+        return 4096
+
+    assert _apply_overflow_truncation(body, _NICK_ERROR, reprice_max_tokens = _reprice) is True
+    assert seen and seen[0] is body["messages"], "priced on what is left, not what was sent"
+    assert body["max_tokens"] == 4096
+
+
+def test_apply_overflow_truncation_leaves_an_unbounded_body_alone():
+    """None is "no reservation applies here", not "cap it at nothing"."""
+    body = {"messages": _conversation(), "max_tokens": 32000}
+
+    assert _apply_overflow_truncation(body, _NICK_ERROR, reprice_max_tokens = lambda _f: None) is True
+    assert body["max_tokens"] <= max(1024, int(67584 * 0.25))
+
+
+def test_a_repriced_bound_still_takes_the_generation_headroom():
+    """The re-price replaces the stale figure; the headroom clamp still runs after it."""
+    body = {"messages": _conversation(), "max_tokens": 1}
+
+    assert (
+        _apply_overflow_truncation(body, _NICK_ERROR, reprice_max_tokens = lambda _f: 60000) is True
+    )
+    assert body["max_tokens"] == max(1024, int(67584 * 0.25))
+
+
 def test_apply_overflow_truncation_returns_false_when_nothing_droppable():
     body = {
         "messages": [

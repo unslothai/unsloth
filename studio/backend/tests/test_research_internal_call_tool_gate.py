@@ -125,6 +125,7 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
         "preempt_event",
         "preempt_policy",
         "on_tokens",
+        "on_prompt_fitted",
     }
     # But dropping perf_callback outright would also pass if the opt-out stopped supplying it at
     # all, silently costing that path its tok/s readout. Compare presence first, then exclude.
@@ -137,6 +138,9 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
         assert _kwargs.get("preempt_event") is not None
         assert _kwargs.get("preempt_policy") is not None
         assert callable(_kwargs.get("on_tokens"))
+        # And the re-pricing hook, which is a fresh closure per request for the same
+        # reason: without it an overlong chat is sent the one-token floor the fit lifted.
+        assert callable(_kwargs.get("on_prompt_fitted"))
     # `tools_withheld` reaches the compaction gate, never the prompt: it tells
     # `_can_reset_epoch` that THIS request withdrew the tool loop, which the process-wide
     # policy cannot see. A default install can still re-admit `search_conversation` alone

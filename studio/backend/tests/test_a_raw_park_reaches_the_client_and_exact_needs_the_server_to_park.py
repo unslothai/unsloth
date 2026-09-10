@@ -33,6 +33,7 @@ import routes.inference as inference
 from core.inference import llama_exact as exact
 from core.inference import llama_preemption as preemption_mod
 from core.inference.llama_cpp import LlamaCppBackend
+from routes.inference import _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS as _RESERVE
 from .preempt_fakes import (
     PreemptRecorder,
     RecordingPolicy,
@@ -777,8 +778,11 @@ class TestARawStreamIsParkableWhenTheServerParks:
         studio_only = inference._openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = self._StudioOnly(), pausable = False
         )
-        assert studio_only == 16384 // 4 - 1000, "Studio-only: the honest share"
-        assert parked == 16384 - 1000, "a parking server: the window, like every other stream"
+        # Both less the wire reserve, which comes out of every bound.
+        assert studio_only == 16384 // 4 - 1000 - _RESERVE, "Studio-only: the honest share"
+        assert parked == 16384 - 1000 - _RESERVE, (
+            "a parking server: the window, like every other stream"
+        )
 
 
 class TestAParkDuringPrefillIsExcusedToo:

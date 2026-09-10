@@ -505,6 +505,7 @@
     "tests/test_length_truncated_reasoning_continuation.py",
     "tests/test_llama_admission_enforced_paths.py",
     "tests/test_llama_admission_enforced_paths.py",
+    "tests/test_llama_admission_enforced_paths.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",

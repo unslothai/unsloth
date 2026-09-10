@@ -29,7 +29,11 @@ if _BACKEND_DIR not in sys.path:
 import core.inference.llama_cpp as llama_cpp_mod
 import routes.inference as inf_mod
 from core.inference.api_monitor import ApiMonitor
-from core.inference.context_window import tool_result_budget
+from core.inference.chat_template_helpers import (
+    model_markup,
+    neutralize_control_markup_in_messages,
+)
+from core.inference.context_window import estimate_messages_tokens_dense, tool_result_budget
 from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KV_BUDGET_ENV,
@@ -46,6 +50,7 @@ from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+    _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS as _RESERVE,
     _build_openai_passthrough_body,
     _openai_llama_admission_retry_max_tokens,
     _openai_llama_admission_wire_prompt_tokens,
@@ -156,6 +161,11 @@ def _caps(payloads: list[dict]) -> list[int]:
     return [payload["max_tokens"] for payload in payloads]
 
 
+def _count_by_length(messages, *_args, **_kwargs) -> int:
+    """Stands in for the template render, on the estimator's four-characters-a-token."""
+    return sum(len(str(message.get("content") or "")) for message in messages) // 4
+
+
 _TOOL = {
     "type": "function",
     "function": {"name": "web_search", "parameters": {"type": "object", "properties": {}}},
@@ -235,6 +245,71 @@ class TestTheGeneratorsSendIt:
 
         assert len(payloads) == 2, "expected the first attempt and the post-respawn retry"
         assert _caps(payloads) == [_SHARE, _SHARE]
+
+    def test_a_truncated_plain_chat_is_re_priced_from_what_it_sends(self, monkeypatch):
+        """A history over the window prices at the one-token floor before the fit runs.
+
+        The plain path has no re-cost, so that floor used to reach llama-server even
+        though `truncate_oldest` had just made room, turning any overlong chat into a
+        one-token reply. The bound is re-priced from the messages the fit leaves.
+        """
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [[_sse({"content": "hi"}), _done()]], payloads)
+        monkeypatch.setattr(backend, "count_chat_tokens", _count_by_length)
+        stub = _backend_stub(window = _CTX, total = _CTX, slots = 4)
+        history = [
+            {"role": "user", "content": f"turn {index} " + "word " * 400} for index in range(10)
+        ]
+
+        def _price(messages):
+            return _openai_llama_admission_enforced_max_tokens(
+                _Payload(messages = messages),
+                request = None,
+                llama_backend = stub,
+                conversation = messages,
+            )
+
+        assert _price(history) == 1, "the pre-fit prompt has to price at the floor"
+
+        list(
+            backend.generate_chat_completion(
+                messages = history,
+                context_overflow = "truncate_oldest",
+                admission_output_allowance = _price(history),
+                on_prompt_fitted = _price,
+            )
+        )
+
+        sent = _caps(payloads)[0]
+        fitted = _openai_llama_admission_wire_prompt_tokens(payloads[0]["messages"])
+        assert sent > 1, "the fit made room and the bound never moved"
+        assert fitted + sent <= _CTX, (fitted, sent)
+
+    def test_a_plain_chat_that_fits_keeps_the_bound_it_was_priced(self, monkeypatch):
+        """No truncation, so the re-price is the same figure and nothing widens."""
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [[_sse({"content": "hi"}), _done()]], payloads)
+        stub = _backend_stub(window = _CTX, total = _CTX, slots = 4)
+
+        def _price(messages):
+            return _openai_llama_admission_enforced_max_tokens(
+                _Payload(messages = messages),
+                request = None,
+                llama_backend = stub,
+                conversation = messages,
+            )
+
+        messages = [{"role": "user", "content": "hello"}]
+        list(
+            backend.generate_chat_completion(
+                messages = messages,
+                context_overflow = "truncate_oldest",
+                admission_output_allowance = _price(messages),
+                on_prompt_fitted = _price,
+            )
+        )
+
+        assert _caps(payloads) == [_price(messages)]
 
     def test_the_tool_round_and_the_final_pass_both_send_it(self, monkeypatch):
         """The final pass carries the whole run's history and skips the top of the loop."""
@@ -659,7 +734,10 @@ class TestTheLedgerBoundsTheAggregate:
         refused before any generation ran."""
         budget = 16384
         share = budget // 4
-        system = "You are a careful assistant. " * 500
+        # 480, not 500: at 500 the prompt lands inside the wire reserve of its share, where
+        # it is deliberately priced the flat allowance instead. This test is about the path
+        # that DOES fit its share.
+        system = "You are a careful assistant. " * 480
         payload = _Payload(
             messages = [{"role": "user", "content": "hi"}],
             system = system,
@@ -785,6 +863,39 @@ class TestEveryCallSiteCarriesIt:
             if not any(keyword.arg == "admission_output_allowance" for keyword in call.keywords)
         ]
         assert not unbounded, f"these call sites send the whole window: {unbounded}"
+
+    def test_a_fitting_call_site_re_prices_what_the_fit_leaves(self):
+        """`context_overflow` turns the fit on, and the fit moves the prompt the bound was
+        priced from. The loop re-prices through its re-cost; the plain path has no re-cost,
+        so it needs the fitted hook or it sends the pre-fit floor."""
+        # Which hook re-prices the bound on each generator.
+        _REPRICES = {
+            "generate_chat_completion": "on_prompt_fitted",
+            "generate_chat_completion_with_tools": "on_conversation_grew",
+        }
+        tree = self._routes_tree()
+        blind = [
+            name
+            for name, call in self._generator_calls(tree)
+            if any(keyword.arg == "context_overflow" for keyword in call.keywords)
+            and not any(keyword.arg == _REPRICES[name] for keyword in call.keywords)
+        ]
+        assert not blind, f"these fit the prompt but keep the pre-fit bound: {blind}"
+
+    def test_an_overflow_retry_re_prices_the_cap_it_kept(self):
+        """The passthrough twins drop history on an upstream overflow. The cap in the body
+        was priced on that history, so a retry that does not re-price sends the floor."""
+        import ast
+
+        tree = self._routes_tree()
+        blind = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "_apply_measured_overflow_truncation"
+            and not any(keyword.arg == "reprice_max_tokens" for keyword in node.keywords)
+        ]
+        assert not blind, f"{len(blind)} overflow retries keep their pre-truncation bound"
 
     def test_a_tool_loop_bound_is_priced_with_the_catalogue_it_sends(self):
         """`payload.tools` omits Studio's server-side catalogue, which the lease charges."""
@@ -924,7 +1035,7 @@ class TestWhatTheWireActuallyCarries:
         conversation_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        assert wire == share - conversation_tokens, (wire, share, conversation_tokens)
+        assert wire == share - _RESERVE - conversation_tokens, (wire, share, conversation_tokens)
 
     def test_image_transport_bytes_do_not_come_off_the_answer(self):
         """Only OpenAI `image_url` parts are compacted, so an Anthropic image keeps base64."""
@@ -962,10 +1073,10 @@ class TestWhatTheWireActuallyCarries:
             payload, request = None, llama_backend = backend, conversation = translated
         )
         assert (
-            raw == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+            raw == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
         ), "the base64 transport should have swamped the share, leaving the flat allowance"
         assert wire > raw, "the normalised part is priced as an image, not as prompt text"
-        assert wire == 32768 // 4 - _openai_llama_admission_wire_prompt_tokens(
+        assert wire == 32768 // 4 - _RESERVE - _openai_llama_admission_wire_prompt_tokens(
             translated, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
 
@@ -1156,6 +1267,12 @@ class TestWhatTheWireActuallyCarries:
         assert with_clip > without
         assert with_clip >= len(clip) // 4
 
+    @staticmethod
+    def _marker_paste(markers: int):
+        """A transcript pasted into one turn, carrying the loaded model's own markers."""
+        body = "".join(f"<|im_start|>user\nq {index}<|im_end|>\n" for index in range(markers // 2))
+        return [{"role": "user", "content": "Explain this log:\n" + body}]
+
 
 class TestARetryThatGrewItsPrompt:
     def test_the_nudge_retry_is_bounded_by_its_own_prompt(self):
@@ -1207,10 +1324,9 @@ class TestARetryThatGrewItsPrompt:
         first_prompt = _openai_llama_admission_wire_prompt_tokens(
             first_messages, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        # The first attempt's wire occupancy is exactly its share, and the ledger never
-        # charged it more than the wire may write.
-        assert first_prompt + allowance == budget // slots
-        assert charge <= first_prompt + allowance
+        # The charge IS the first attempt's wire occupancy plus the reserve it never sends.
+        assert charge == budget // slots
+        assert first_prompt + allowance == charge - _RESERVE
 
         grown = first_messages + [
             # The whole allowance came back as an unparseable call.
@@ -1229,7 +1345,7 @@ class TestARetryThatGrewItsPrompt:
             llama_backend = backend,
         )
         # Without the first attempt to measure against, a fresh flat allowance.
-        assert unbounded == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert unbounded == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
 
         bound = _openai_llama_admission_retry_max_tokens(
             {"messages": grown},
@@ -1255,7 +1371,7 @@ class TestARetryThatGrewItsPrompt:
         allowance = _openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = backend, conversation = first_messages
         )
-        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
         charge = _openai_llama_admission_tokens(
             payload,
             budget = budget,
@@ -1278,7 +1394,7 @@ class TestARetryThatGrewItsPrompt:
             first_messages = first_messages,
         )
         assert bound > 1
-        assert retry_prompt + bound == charge
+        assert retry_prompt + bound == charge - _RESERVE
 
     def test_a_client_that_named_a_cap_is_left_alone(self):
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
@@ -1491,7 +1607,7 @@ class TestTheAnthropicSurface:
         prompt = _openai_llama_admission_wire_prompt_tokens(sent)
         allowance = seen["plain"]["admission_output_allowance"]
         assert raw < share <= prompt, (raw, share, prompt)
-        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, allowance
+        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE, allowance
         assert charged and charged[0] >= prompt + allowance, (charged, prompt, allowance)
 
     def test_the_tool_generator_is_bounded(self, monkeypatch):
@@ -1780,6 +1896,76 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
         assert self._final_pass_recall_cap(monkeypatch, None) == _CTX
 
 
+class TestARoundSizesAgainstWhatItsOwnReCostEarned:
+    """The re-cost runs below the fit, so everything under it has this round's figure.
+
+    The fit has to price against the previous round's -- the re-cost cannot run until the
+    prompt it charges for exists. Every sizing decision AFTER it can, and the result
+    budget, the recall budget and the reply-room gates were all still reading the figure
+    the fit used. A round that opened with a roomy allowance and re-costed down to a
+    narrow one then cut its tool result to reserve output the wire is no longer sending.
+    """
+
+    _OPENED = 1024
+    _RECOSTED = 128
+
+    @staticmethod
+    def _round(monkeypatch, *, opened, recosted):
+        """The result budget one round hands its tool, and the caps it put on the wire."""
+        seen: list[int] = []
+
+        def _fake_execute_tool(name, arguments, *, result_budget_tokens = None, **_kwargs):
+            seen.append(result_budget_tokens)
+            return "Linux kernel 6.10."
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _fake_execute_tool)
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10"}), _done()],
+            ],
+            payloads,
+        )
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "Which kernel?"}],
+                tools = [_TOOL],
+                max_tool_iterations = 1,
+                permission_mode = "off",
+                max_tokens = _CTX,
+                admission_output_allowance = opened,
+                on_conversation_grew = (
+                    None if recosted is None else lambda _conversation, _tools = None: recosted
+                ),
+            )
+        )
+        assert seen, "the tool never ran, so nothing was priced"
+        return seen[0], _caps(payloads)
+
+    def test_the_result_is_priced_against_the_cap_the_round_actually_sends(self, monkeypatch):
+        """Re-costed down to 128, the round sends 128; the result must be sized for 128."""
+        budget, caps = self._round(
+            monkeypatch, opened = self._OPENED, recosted = self._RECOSTED
+        )
+        assert caps[0] == self._RECOSTED, caps
+        opened_there, _caps_there = self._round(
+            monkeypatch, opened = self._RECOSTED, recosted = self._RECOSTED
+        )
+        assert budget == opened_there, (budget, opened_there)
+
+    def test_a_round_that_kept_its_allowance_is_unchanged(self, monkeypatch):
+        """A re-cost that says nothing leaves the figure alone, so nothing else moves."""
+        stale, caps = self._round(monkeypatch, opened = self._OPENED, recosted = None)
+        assert caps[0] == self._OPENED, caps
+        assert stale == self._round(monkeypatch, opened = self._OPENED, recosted = self._OPENED)[0]
+        # A narrower cap reserves less reply room, so the result gets more of the window.
+        assert (
+            self._round(monkeypatch, opened = self._OPENED, recosted = self._RECOSTED)[0] > stale
+        )
+
+
 class TestTheSizingSitesReadTheClampedFigure:
     """Source-level, because a seventh sizing site added against the unclamped name is
     the same defect again and no single behaviour test sees all of them."""
@@ -1869,3 +2055,26 @@ class TestTheSizingSitesReadTheClampedFigure:
                     if keyword.value.id not in self._CLAMPED:
                         unclamped.append(f"{name}(max_tokens = {keyword.value.id})")
         assert not unclamped, f"these size against a cap the wire will not send: {unclamped}"
+
+    def test_a_re_cost_that_moves_the_allowance_re_sizes_with_it(self):
+        """The fit above a re-cost cannot price against this round's allowance; the re-cost
+        needs the fitted prompt first. Everything below it can, so both re-costs rebuild
+        the sizing figure, and the final pass has no behaviour test that reaches its
+        respawn refit."""
+        import ast
+
+        resized: set = set()
+        tree = ast.parse(Path(llama_cpp_mod.__file__).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            assigned = [
+                target.id
+                for statement in node.body
+                if isinstance(statement, ast.Assign)
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            ]
+            if "admission_output_allowance" in assigned:
+                resized.update(name for name in assigned if name in self._CLAMPED)
+        assert set(self._CLAMPED) <= resized, resized

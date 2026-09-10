@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 import routes.inference as inf
+from routes.inference import _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS as _RESERVE
 from core.inference import llama_exact as exact
 from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
@@ -460,7 +461,8 @@ class TestTheWireClampFollowsTheSwitches:
         )
 
     def test_admission_on_and_preemption_off_still_clamps_to_a_share(self, monkeypatch):
-        # By design: with nothing able to pause, a share each is what physically fits.
+        # By design: with nothing able to pause, a share each is what physically fits, less
+        # the wire reserve that leaves the pool a cell to step into.
         monkeypatch.setenv(PREEMPT_ENV, "0")
         backend = _backend()
         payload = _chat()
@@ -468,7 +470,7 @@ class TestTheWireClampFollowsTheSwitches:
         clamp = inf._openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = backend
         )
-        assert clamp == max(1, _BUDGET // _SLOTS) - prompt
+        assert clamp == max(1, _BUDGET // _SLOTS) - prompt - _RESERVE
 
     def test_a_stated_cap_at_or_above_the_window_is_still_unstated(self):
         # `_build_passthrough_payload` sends max_tokens = backend_ctx and "Max" sends the
@@ -480,7 +482,7 @@ class TestTheWireClampFollowsTheSwitches:
             inf._openai_llama_admission_enforced_max_tokens(
                 payload, request = None, llama_backend = backend
             )
-            == _BUDGET - prompt
+            == _BUDGET - prompt - _RESERVE
         )
 
     def test_a_stated_cap_below_the_window_is_left_alone(self):
@@ -618,7 +620,7 @@ class TestAnUnpausableRequestIsChargedWhatItIsPermitted:
         )
         assert charged == share - prompt
 
-    def test_the_charge_matches_the_wire_cap_it_is_sent(self):
+    def test_the_charge_is_the_wire_cap_plus_the_reserve_it_never_sends(self):
         backend = _backend()
         payload = _chat(None)
         prompt = _prompt_tokens(payload, backend)
@@ -631,7 +633,8 @@ class TestAnUnpausableRequestIsChargedWhatItIsPermitted:
                 request = None, llama_backend = backend, payload = payload, pausable = False
             )
             try:
-                assert _charge(reservation) == prompt + wire
+                # The reserve comes out of the wire cap, not out of the charge.
+                assert _charge(reservation) == prompt + wire + _RESERVE
             finally:
                 reservation.cancel()
 
