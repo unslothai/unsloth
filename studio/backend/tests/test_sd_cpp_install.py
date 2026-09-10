@@ -3586,3 +3586,56 @@ def test_a_stalled_download_is_not_retried_into_a_tripled_deadline(tmp_path, mon
     with pytest.raises(urllib.error.URLError):
         sdmod._download("https://example.test/a.zip", tmp_path / "a.zip", timeout = 7.0)
     assert attempts == [7.0]
+
+
+def test_an_unwritable_destination_is_not_retried(tmp_path, monkeypatch):
+    """A directory that cannot be written will not become writable on the next attempt;
+    retrying would only re-download the whole archive to fail the same way."""
+    import io
+
+    opened = []
+
+    def served(req, timeout = None):
+        opened.append(req.full_url)
+        return io.BytesIO(b"archive-bytes")
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", served)
+    missing_parent = tmp_path / "no-such-dir" / "a.zip"
+    with pytest.raises(FileNotFoundError):
+        sdmod._download("https://example.test/a.zip", missing_parent)
+    assert len(opened) == 1
+
+
+def test_a_failed_connect_leaves_no_empty_archive_behind(tmp_path, monkeypatch):
+    """The socket opens before the file, so a refused connection never creates dest."""
+    import urllib.error
+
+    def refused(req, timeout = None):
+        raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", refused)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    with pytest.raises(urllib.error.URLError):
+        sdmod._download("https://example.test/a.zip", dest, attempts = 2)
+    assert not dest.exists()
+
+
+def test_a_malformed_response_is_retried_like_a_dropped_connection(tmp_path, monkeypatch):
+    import http.client
+    import io
+
+    calls = []
+
+    def flaky(req, timeout = None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise http.client.RemoteDisconnected("closed")
+        return io.BytesIO(b"archive-bytes")
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    sdmod._download("https://example.test/a.zip", dest)
+    assert dest.read_bytes() == b"archive-bytes"
+    assert len(calls) == 2

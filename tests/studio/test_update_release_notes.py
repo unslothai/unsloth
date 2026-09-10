@@ -838,7 +838,7 @@ def test_notes_honor_shared_github_backoff_and_resume_after_reset(
     monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
     now = time.monotonic()
     monkeypatch.setattr(time, "monotonic", lambda: now)
-    freshness_flow.note_github_rate_limited(wait = 60)
+    freshness_flow.note_github_rate_limited(_force_wait = 60)
     calls = []
 
     def capture(request, **kwargs):
@@ -863,7 +863,7 @@ def test_shared_github_backoff_does_not_block_a_release_notes_mirror(notes_modul
     notes_module.reset_release_notes_cache()
     url = "https://mirror.example/releases"
     monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url)
-    freshness_flow.note_github_rate_limited(wait = 60)
+    freshness_flow.note_github_rate_limited(_force_wait = 60)
     calls = []
 
     def capture(request, **kwargs):
@@ -890,6 +890,9 @@ def test_a_token_is_sent_only_to_the_github_api_host(notes_module, monkeypatch):
         raise urllib.error.URLError("offline")
 
     monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    # The code reads GITHUB_TOKEN first; a developer with one exported would otherwise
+    # see their own token here and the assertion below would fail on their machine.
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
     monkeypatch.setenv("GH_TOKEN", "ghp_test_token")
     monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
     notes_module._fetch_latest_release()

@@ -880,7 +880,7 @@ def test_a_redirect_fallback_tag_is_not_cached_for_the_success_ttl(monkeypatch):
     monkeypatch.setattr(fr._flow.time, "time", lambda: wall[0])
     monkeypatch.setattr(fr._flow.time, "monotonic", lambda: mono[0])
     fr.reset_caches(drop_disk = True)
-    fr._flow.note_github_rate_limited(wait = 1800)
+    fr._flow.note_github_rate_limited(_force_wait = 1800)
     calls = []
 
     def _fetch(repo, timeout = 5.0):
@@ -905,7 +905,7 @@ def test_a_redirect_fallback_tag_is_never_written_to_the_disk_cache(monkeypatch)
     """A restart re-reads the disk cache as a fresh 24h success, so persisting the
     degraded tag would survive the lockout it was bounded by."""
     fr.reset_caches(drop_disk = True)
-    fr._flow.note_github_rate_limited(wait = 1800)
+    fr._flow.note_github_rate_limited(_force_wait = 1800)
     monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9500")
     assert fr.latest_published_release("unslothai/llama.cpp") == "b9500"
     assert fr._load_disk_cache("unslothai/llama.cpp") is None
@@ -935,7 +935,7 @@ def test_a_redirect_tag_stays_bounded_when_the_reset_lands_mid_request(monkeypat
     """The lockout can expire while the redirect is still in flight. Asking the clock
     again after the fetch would read zero and bank the lagging tag as a full success."""
     fr.reset_caches(drop_disk = True)
-    fr._flow.note_github_rate_limited(wait = 1)
+    fr._flow.note_github_rate_limited(_force_wait = 1)
 
     def _redirect(repo, timeout, *, log_message):
         fr._flow.clear_github_rate_limit()  # the reset lands during the request
@@ -973,7 +973,7 @@ def test_concurrent_refusals_cannot_shorten_a_longer_lockout():
     def note(seconds):
         start.wait()
         for _ in range(200):
-            fr._flow.note_github_rate_limited(wait = seconds)
+            fr._flow.note_github_rate_limited(_force_wait = seconds)
 
     threads = [threading.Thread(target = note, args = (s,)) for s in (5,) * 4 + (1800,) * 4]
     for t in threads:
@@ -1065,3 +1065,67 @@ def test_a_permission_403_with_a_plain_body_is_still_not_throttling(monkeypatch)
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
     assert fr._flow.github_rate_limit_remaining() == 0
+
+
+def test_a_malformed_redirect_response_fails_open(monkeypatch):
+    """A garbled response from GitHub or a proxy is an http.client.HTTPException, which
+    is neither URLError nor OSError. Escaping, it would fail the update-status route
+    instead of answering None as documented."""
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    def fake_urlopen(req, timeout = 5.0):
+        if "api.github.com" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 403, "rate limited", None, None)
+        raise http.client.BadStatusLine("HTTP/1.1 \\x00garbage")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+
+
+def test_a_malformed_api_response_fails_open(monkeypatch):
+    import http.client
+    import urllib.request
+
+    def fake_urlopen(req, timeout = 5.0):
+        raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+
+
+def test_an_older_disk_entry_does_not_outlive_the_degraded_memo(monkeypatch):
+    """A disk entry from an earlier API answer, still inside its 24h, would be what
+    the lookup after the degraded memo expires reloads: the tag reverts and the
+    update stays hidden until the entry ages out on its own."""
+    wall = [100_000.0]
+    mono = [100.0]
+    monkeypatch.setattr(fr._flow.time, "time", lambda: wall[0])
+    monkeypatch.setattr(fr._flow.time, "monotonic", lambda: mono[0])
+    fr.reset_caches(drop_disk = True)
+
+    # An API answer an hour ago, on disk and inside its 24h.
+    fr._save_disk_cache("unslothai/llama.cpp", "b9400")
+    wall[0] += 3600
+    fr._release_memo.clear()
+
+    # Then a forced check while rate limited: the redirect answers.
+    fr._flow.note_github_rate_limited(_force_wait = 1800)
+    monkeypatch.setattr(
+        fr._flow, "download_host_latest_release_tag", lambda repo, timeout, *, log_message: "b9500"
+    )
+    assert fr.latest_published_release("unslothai/llama.cpp", force_refresh = True) == "b9500"
+    disk = fr._load_disk_cache("unslothai/llama.cpp")
+    assert disk[1] == "b9400", "the last-good value is kept for the dead-network fallback"
+
+    # The lockout ends and the memo with it: the API must be asked, not the old disk entry.
+    mono[0] += 1801
+    wall[0] += 1801
+    fr._flow.clear_github_rate_limit()
+    monkeypatch.setattr(
+        fr._flow,
+        "_fetch_newest_published_release",
+        lambda repo, timeout, *, log_message: {"tag_name": "b9600"},
+    )
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9600"

@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import http.client
 import os
 import platform
 import re
@@ -602,18 +603,34 @@ def _download(
     """Stream ``url`` to ``dest`` with an explicit timeout. ``urlretrieve`` takes no
     timeout and can hang forever on a stalled socket. A User-Agent is set because the
     GitHub asset CDN can reject header-less requests; the API fetch carries any token.
-    Retried, except on 404."""
+    Retried on a dropped connection or a malformed response; a 404, a timeout, and a
+    destination that cannot be opened are terminal, since none of them change on the
+    next attempt."""
     import shutil
     import time
 
+    if attempts < 1:
+        # Otherwise the loop never runs and the caller gets None with no file written.
+        raise ValueError("attempts must be at least 1")
     for attempt in range(1, attempts + 1):
         req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
         try:
+            # Socket first, file second: a failed connect must not leave an empty dest.
             with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
                 shutil.copyfileobj(resp, f)
             return
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                raise
+            # A destination that cannot be opened (read-only dir, missing parent) will
+            # not open on the next attempt either; retrying would only re-download the
+            # whole archive to fail the same way. open() names the file it could not
+            # open, and a socket error never does, which tells the two apart.
+            if (
+                isinstance(exc, OSError)
+                and not isinstance(exc, urllib.error.URLError)
+                and getattr(exc, "filename", None)
+            ):
                 raise
             # A stalled socket already spent the whole timeout; retrying it would spend
             # the same wait again, so three attempts would triple the deadline rather
@@ -902,7 +919,9 @@ def _resolve_repo_asset(
     """Fetch ``repo``'s release and pick the asset for this host. Returns
     ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release
     (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no
-    asset for this host, so the caller can fall back."""
+    asset for this host, so the caller can fall back. A fetch the API refused for
+    quota raises ``GitHubRateLimited`` instead: the other rungs share that quota, so
+    there is nothing to fall back to."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
     except Exception as exc:  # noqa: BLE001 - network -> fall back
@@ -933,8 +952,9 @@ def _resolve_with_fallback(
     Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate
     repo before any repo's unpinned latest, so a mirror that is missing the pinned release
     prefers the pinned upstream build over an unpinned mirror-latest. Returns
-    ``(primary, None, None)`` when nothing serves this host. Shared by ``install`` and
-    ``--print-asset`` so both honour the same fallback."""
+    ``(primary, None, None)`` when nothing serves this host, and raises
+    ``GitHubRateLimited`` as soon as any rung is refused for quota. Shared by
+    ``install`` and ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
     primary = _repo()
     # Only substitute upstream when no UNSLOTH_SD_CPP_REPO is pinned: an explicit repo gets exactly that repo.
@@ -998,8 +1018,9 @@ def install(
     Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror can't
     serve this host (release missing, or a host we don't build) AND the default repo is
     in use, falls back to leejet upstream so native install still works. Raises
-    ``RuntimeError`` only when neither source has an asset for the host, or the archive
-    has no ``sd-cli``.
+    ``RuntimeError`` when neither source has an asset for the host or the archive has
+    no ``sd-cli``, and its subclass ``GitHubRateLimited`` when the release lookups are
+    refused for quota, in which case no source was tried past the first refusal.
     """
     target = install_dir or default_install_dir()
     # Claim ownership of `target` only if we created it, it was empty, or it is already marked: adopting a user's

@@ -143,7 +143,10 @@ def _release_for_tag(
     # Memory-only, so monotonic throughout: a backward clock step must not be able
     # to extend the TTL. freshness_flow uses wall time because it persists to disk.
     now = time.monotonic()
-    if force_refresh:
+    # Before the debounce is spent, not after: a forced refresh during the lockout fetches
+    # nothing, and burning its slot would leave "check now" dead until the interval passes.
+    locked_out = github_rate_limit_remaining() > 0
+    if force_refresh and not locked_out:
         forced_at = _release_forced_at.get(key)
         if forced_at is not None and now - forced_at < FORCE_REFRESH_MIN_INTERVAL_SECONDS:
             force_refresh = False
@@ -160,7 +163,7 @@ def _release_for_tag(
             return cached[1]
     # A Retry into a rate-limited API spends nothing and only delays the reset, so the
     # lockout holds even for force_refresh.
-    if github_rate_limit_remaining() > 0:
+    if locked_out:
         cached = _release_memo.get(key)
         if cached and now - cached[0] < RELEASE_CACHE_TTL_SECONDS:
             return cached[1]

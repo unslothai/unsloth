@@ -12,6 +12,7 @@ so the modules' monkeypatch seams keep working.
 
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import time
@@ -55,6 +56,15 @@ def rate_limit_wait_seconds(headers: Any, *, now: Optional[float] = None) -> Opt
             return None
 
     after = _number(headers.get("Retry-After"))
+    if after is None:
+        # RFC 9110 also permits an HTTP-date here; the installer already treats any
+        # Retry-After as throttling, and the two must not disagree on that input.
+        try:
+            import email.utils
+            when = email.utils.parsedate_to_datetime(str(headers.get("Retry-After") or ""))
+            after = when.timestamp() - now
+        except (TypeError, ValueError, OverflowError):
+            after = None
     if after is not None:
         return max(after, 0.0)
     if str(headers.get("X-RateLimit-Remaining") or "").strip() == "0":
@@ -117,12 +127,34 @@ def _quota_left(headers: Any) -> bool:
         return False
 
 
+def rate_limit_verdict(
+    headers: Any = None,
+    *,
+    status: Optional[int] = None,
+    body: object = None,
+) -> Optional[float]:
+    """How long a refusal says to wait, bounded to one window, or None when the refusal
+    was not a rate limit at all.
+
+    The single place that decides. A 429 always is; so is a 403 that names Retry-After,
+    that reports the primary quota spent, or whose body carries GitHub's throttling
+    text. A 403 with none of those is a permission or policy refusal. Every caller,
+    shared lockout or local, must reach the same verdict for the same response.
+    """
+    wait = rate_limit_wait_seconds(headers)
+    if wait is None:
+        if status != 429 and not names_a_rate_limit(body) and _quota_left(headers):
+            return None
+        wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
+    return min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
+
+
 def note_github_rate_limited(
     headers: Any = None,
     *,
-    wait: Optional[float] = None,
     status: Optional[int] = None,
     body: object = None,
+    _force_wait: Optional[float] = None,
 ) -> float:
     """Record the lockout and return its length; 0 when this was not a rate limit.
 
@@ -135,15 +167,17 @@ def note_github_rate_limited(
     describes the PRIMARY quota, and a secondary limit leaves it untouched. A secondary
     limit can also answer 403 with quota to spare and no Retry-After, and then only
     ``body`` names it.
+
+    ``_force_wait`` is for tests that need a lockout without a response. It skips
+    every check above, which is exactly why no production caller may use it: passing
+    a precomputed wait here is how a permission 403 once became a shared lockout.
     """
     global _api_rate_limited_until
+    wait = _force_wait
     if wait is None:
-        wait = rate_limit_wait_seconds(headers)
+        wait = rate_limit_verdict(headers, status = status, body = body)
     if wait is None:
-        if status != 429 and not names_a_rate_limit(body) and _quota_left(headers):
-            return 0.0
-        wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
-    wait = min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
+        return 0.0
     with _api_rate_limited_lock:
         _api_rate_limited_until = max(_api_rate_limited_until, time.monotonic() + wait)
     return wait
@@ -155,7 +189,8 @@ def github_rate_limit_remaining() -> float:
 
 def clear_github_rate_limit() -> None:
     global _api_rate_limited_until
-    _api_rate_limited_until = 0.0
+    with _api_rate_limited_lock:
+        _api_rate_limited_until = 0.0
 
 
 def read_install_marker(
@@ -220,14 +255,20 @@ def load_disk_cache(repo: str, cache_dir: Path) -> Optional[tuple[float, Optiona
 
 
 def save_disk_cache(
-    repo: str, latest_tag: Optional[str], cache_dir: Path, *, log_message: str
+    repo: str,
+    latest_tag: Optional[str],
+    cache_dir: Path,
+    *,
+    log_message: str,
+    fetched_at: Optional[float] = None,
 ) -> None:
     path = cache_path_for(repo, cache_dir)
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".tmp")
+        stamp = time.time() if fetched_at is None else fetched_at
         tmp.write_text(
-            json.dumps({"fetched_at": time.time(), "latest_tag": latest_tag}),
+            json.dumps({"fetched_at": stamp, "latest_tag": latest_tag}),
             encoding = "utf-8",
         )
         tmp.replace(path)
@@ -305,6 +346,7 @@ def _fetch_newest_published_release_blocking(
     except (
         urllib.error.URLError,
         OSError,
+        http.client.HTTPException,
         json.JSONDecodeError,
     ) as exc:
         logger.debug(log_message, repo = repo, error = str(exc))
@@ -338,7 +380,10 @@ def _download_host_latest_release_tag_blocking(repo: str, timeout: float) -> Opt
     try:
         with urllib.request.urlopen(req, timeout = timeout) as resp:
             final_url = resp.geturl()
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        # HTTPException covers a malformed response (BadStatusLine, IncompleteRead)
+        # from GitHub or an intermediary: neither URLError nor OSError, and letting it
+        # escape would fail the update-status route instead of answering None.
         return None
     marker = "/releases/tag/"
     index = final_url.find(marker)
@@ -485,7 +530,22 @@ def latest_published_release(
         # 24h TTL. Floored, because the reset can land while the redirect is in flight
         # and a zero here would bank the degraded tag as a full success.
         hold = max(github_rate_limit_remaining(), RELEASE_FAILURE_CACHE_TTL_SECONDS)
-        memo[repo] = (wall_now - (RELEASE_CACHE_TTL_SECONDS - hold), latest)
+        expires_at = wall_now - (RELEASE_CACHE_TTL_SECONDS - hold)
+        memo[repo] = (expires_at, latest)
+        # A disk entry from an earlier API answer can still be inside its own 24h. Left
+        # alone, it is what the lookup after this memo expires would reload, reverting
+        # the tag and hiding the update until it aged out. Age it to expire with the
+        # memo. Its value is kept, not replaced: it stays the last-good answer for the
+        # dead-network fallback above, which reads disk regardless of age.
+        disk = load_disk_cache(repo, cache_dir())
+        if disk and disk[0] > expires_at:
+            save_disk_cache(
+                repo,
+                disk[1],
+                cache_dir(),
+                log_message = "freshness cache age failed",
+                fetched_at = expires_at,
+            )
         return latest
     memo[repo] = (wall_now, latest)
     save(repo, latest)

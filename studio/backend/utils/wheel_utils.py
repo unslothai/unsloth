@@ -444,8 +444,10 @@ def url_exists(url: str, *, attempts: int = 2) -> bool | None:
     """True if reachable, False for a 404, None when availability cannot be checked."""
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
-    # Only a 404 means "not published"; a refusal is retried and reported, or the caller
-    # starts a many-minute source build for a wheel that exists.
+    # Only a 404 means "not published". A refusal (403/429/5xx, dropped connection) is
+    # retried once and then reported as None: callers still take their slow path, since
+    # the wheel may well exist, but they say "could not check" rather than "not
+    # published", and never treat a refusal as proof that no prebuilt exists.
     for attempt in range(1, attempts + 1):
         try:
             request = urllib.request.Request(url, method = "HEAD")

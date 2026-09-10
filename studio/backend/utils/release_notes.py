@@ -20,6 +20,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from utils.prebuilt.freshness_flow import (
+    GITHUB_RATE_LIMIT_MAX_SECONDS,
+    GITHUB_RATE_LIMITED_DEFAULT_SECONDS,
+    clear_github_rate_limit,
+    error_body,
+    github_rate_limit_remaining,
+    note_github_rate_limited,
+    rate_limit_verdict,
+)
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,10 +49,11 @@ RELEASES_SUCCESS_TTL_SECONDS = 30 * 60
 RELEASES_FAILURE_TTL_SECONDS = 5 * 60
 # Unauthenticated callers get 60 requests an hour per IP, so a spent address backs off instead of
 # retrying every 5 minutes. Used when the response carries no reset to wait for.
-RELEASES_RATE_LIMITED_TTL_SECONDS = 15 * 60
+# The same window the freshness and changelog fetches use: one quota, one policy.
+RELEASES_RATE_LIMITED_TTL_SECONDS = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
 # GitHub's X-RateLimit-Reset wins over the back-off above, but the window is an hour, so a skewed
 # or proxied header is held to that ceiling rather than trusted outright.
-RELEASES_RATE_LIMIT_MAX_SECONDS = 60 * 60
+RELEASES_RATE_LIMIT_MAX_SECONDS = GITHUB_RATE_LIMIT_MAX_SECONDS
 RELEASE_NOTES_MAX_CHARS = 20_000
 
 # The repo also publishes llama.cpp prebuilts, legacy month tags and desktop drafts; only an
@@ -200,8 +211,6 @@ def reset_release_notes_cache() -> None:
         _remote_last_good = None
         _rate_limited_until = 0.0
         _cache_condition.notify_all()
-    from utils.prebuilt.freshness_flow import clear_github_rate_limit
-
     clear_github_rate_limit()
 
 
@@ -679,16 +688,15 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
         )
 
     if urllib.parse.urlparse(url).hostname == "api.github.com":
-        from utils.prebuilt.freshness_flow import github_rate_limit_remaining
-        remaining = github_rate_limit_remaining()
-        if remaining > 0:
+        locked_out_for = github_rate_limit_remaining()
+        if locked_out_for > 0:
             return (
                 ReleaseSource(
                     release = None,
                     source = None,
                     error = "GitHub is rate limiting release note requests.",
                 ),
-                remaining,
+                locked_out_for,
             )
 
     headers = {
@@ -802,38 +810,28 @@ def _http_error_source(
         return _remote_last_good, RELEASES_SUCCESS_TTL_SECONDS
 
     if error.code in (403, 429):
+        # One verdict for the local popup lockout and the shared one, from the same
+        # helper the freshness and changelog fetches use: Retry-After, then a spent
+        # primary quota, then GitHub's throttling text, else the plain back-off; and
+        # None for a 403 that was a permission refusal, which is no lockout at all.
+        # The helper already bounds the wait to one window, so a skewed header cannot
+        # park the popup for as long as it liked.
+        body = error_body(error)
+        wait = rate_limit_verdict(error.headers, status = error.code, body = body)
+        if wait is None:
+            return (
+                ReleaseSource(release = None, source = None, error = "Could not fetch release notes."),
+                RELEASES_FAILURE_TTL_SECONDS,
+            )
         now = time.time()
-        # GitHub's order: Retry-After, which is how a secondary limit states its
-        # wait, then the primary limit's reset, then a plain back-off. Every one
-        # records a deadline, or Retry requests straight back into the limit.
-        after = _epoch_header(error.headers.get("Retry-After"))
-        reset = (
-            _epoch_header(error.headers.get("X-RateLimit-Reset"))
-            if error.headers.get("X-RateLimit-Remaining") == "0"
-            else None
-        )
-        if after is not None:
-            deadline = now + after
-        elif reset is not None:
-            deadline = reset
-        else:
-            deadline = now + RELEASES_RATE_LIMITED_TTL_SECONDS
-        # The deadline itself is bounded, not just the first wait on it: the next
-        # fetch answers from it, so capping only the TTL left a skewed header
-        # parking the popup for as long as it liked.
-        _rate_limited_until = min(deadline, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
-        ttl = max(_rate_limited_until - now, 0.0)
+        _rate_limited_until = now + wait
+        ttl = wait
         # The quota is shared with the freshness and changelog fetches; tell them too.
         # Only for GitHub's own API host: an UNSLOTH_RELEASES_URL mirror refusing us
         # says nothing about api.github.com, and a lockout recorded from one would send
         # those checks to the lagging redirect for up to an hour.
-        #
-        # The headers go with it rather than the deadline computed above: a 403 whose
-        # headers still report quota is a permission refusal, and forcing `wait` would
-        # walk straight past the helper's check for exactly that.
         if urllib.parse.urlparse(url).hostname == "api.github.com":
-            from utils.prebuilt.freshness_flow import error_body, note_github_rate_limited
-            note_github_rate_limited(error.headers, status = error.code, body = error_body(error))
+            note_github_rate_limited(error.headers, status = error.code, body = body)
         return (
             ReleaseSource(
                 release = None,
@@ -847,13 +845,6 @@ def _http_error_source(
         ReleaseSource(release = None, source = None, error = "Could not fetch release notes."),
         RELEASES_FAILURE_TTL_SECONDS,
     )
-
-
-def _epoch_header(value: str | None) -> float | None:
-    try:
-        return float((value or "").strip())
-    except ValueError:
-        return None
 
 
 def select_release(payload: Any) -> Release | None:
