@@ -315,9 +315,9 @@ def editable_source_roots() -> tuple[str, ...]:
         distributions = list(metadata.distributions())
     except Exception:  # noqa: BLE001
         return ()
-    for distribution in distributions:
+    for dist in distributions:
         try:
-            raw = distribution.read_text("direct_url.json")
+            raw = dist.read_text("direct_url.json")
             if not raw:
                 continue
             record = json.loads(raw)
@@ -331,7 +331,7 @@ def editable_source_roots() -> tuple[str, ...]:
             continue
         if path in ("/", "/usr") or not os.path.isdir(path):
             continue
-        for importable in _importable_entries(path, _declared_names(distribution)):
+        for importable in _importable_entries(path, _declared_names(dist)):
             if importable not in roots:
                 roots.append(importable)
     return tuple(roots)
@@ -351,7 +351,7 @@ def editable_import_roots() -> tuple[str, ...]:
     return tuple(dict.fromkeys(os.path.dirname(path) for path in editable_source_roots()))
 
 
-def _declared_names(distribution) -> frozenset[str]:
+def _declared_names(dist) -> frozenset[str]:
     """Top-level names the distribution itself declares.
 
     A PEP 420 namespace package has no __init__.py on purpose, so presence of one
@@ -361,12 +361,12 @@ def _declared_names(distribution) -> frozenset[str]:
     """
     names: set[str] = set()
     try:
-        raw = distribution.read_text("top_level.txt") or ""
+        raw = dist.read_text("top_level.txt") or ""
         names.update(line.strip() for line in raw.splitlines() if line.strip())
     except Exception:  # noqa: BLE001 - a missing or unreadable record is not fatal
         pass
     try:
-        project = (distribution.metadata["Name"] or "").strip()
+        project = (dist.metadata["Name"] or "").strip()
     except Exception:  # noqa: BLE001
         project = ""
     if project:

@@ -558,13 +558,18 @@ def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatc
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
-def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call():
+def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call(monkeypatch):
     if not os_sandbox.capability_snapshot().available:
         pytest.skip("this host cannot isolate, so there is no boundary to switch off")
     workdir = tools._get_workdir(_SESSION)
     planted = os.path.join(workdir, "planted.sock")
     holder = socket.socket(socket.AF_UNIX)
-    holder.bind(planted)
+    # Bound RELATIVE: an AF_UNIX address is capped at ~108 bytes, and under
+    # `pytest -n 4` the studio home is a per-worker tmp_path that alone exceeds
+    # it, so the absolute spelling raised "AF_UNIX path too long" instead of
+    # planting anything. Backend CI runs -n 4.
+    monkeypatch.chdir(workdir)
+    holder.bind("planted.sock")
     try:
         tools._last_tool_execution_record = None
         out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
