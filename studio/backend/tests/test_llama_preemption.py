@@ -1026,7 +1026,6 @@ class TestTheAdmissionLeaseGivesItsCommitmentBack:
         assert queue.snapshot().committed == 4000, "an unpreempted lease must not be re-costed"
 
 
-
 class TestTheRegistry:
     def test_one_controller_per_key_and_an_idle_one_retires_but_a_busy_one_is_kept(self):
         assert get_preemption_controller("a") is get_preemption_controller("a")

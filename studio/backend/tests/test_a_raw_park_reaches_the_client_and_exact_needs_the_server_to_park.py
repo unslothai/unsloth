@@ -780,9 +780,9 @@ class TestARawStreamIsParkableWhenTheServerParks:
         )
         # Both less the wire reserve, which comes out of every bound.
         assert studio_only == 16384 // 4 - 1000 - _RESERVE, "Studio-only: the honest share"
-        assert parked == 16384 - 1000 - _RESERVE, (
-            "a parking server: the window, like every other stream"
-        )
+        assert (
+            parked == 16384 - 1000 - _RESERVE
+        ), "a parking server: the window, like every other stream"
 
 
 class TestAParkDuringPrefillIsExcusedToo:
