@@ -211,6 +211,35 @@ def note_resident_account(modality: str, *references: str) -> None:
         _resident_accounts[modality] = (current_account_id(), frozenset(references))
 
 
+# Admits a media load and scans for one at retirement, so neither slips between the other's steps.
+media_load_lock = threading.Lock()
+
+
+def admit_media_load(modality: str, start, *references: str):
+    """Start a load under the retirement scan's lock: a tombstoned account starts none, and one
+    started here is what the scan finds."""
+    with media_load_lock:
+        if managed_account():
+            from core.training.account_jobs import account_is_retired
+            if account_is_retired():
+                raise HTTPException(status_code = 403, detail = "Account is retired")
+        result = start()
+        note_resident_account(modality, *references)
+        return result
+
+
+def retire_media_load(modality: str, account_id: str, engine) -> bool:
+    """Tear down ``engine``'s in-flight load when ``account_id`` started it; True when one was."""
+    with media_load_lock:
+        resident = _resident_accounts.get(modality)
+        if engine is None or resident is None or resident[0] != account_id:
+            return False
+        if not engine.loading_repo_ids():
+            return False
+        engine.unload()
+        return True
+
+
 _resident_components: dict[str, tuple[str, frozenset[str]]] = {}
 
 

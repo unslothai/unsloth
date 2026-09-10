@@ -111,6 +111,22 @@ def cancel_generation_for_account(account_id: str) -> bool:
     return cancelled
 
 
+def retire_load_for_account(account_id: str) -> bool:
+    """Tear down an in-flight image load ``account_id`` started; True when one was found."""
+    from hub.services.models.account_access import retire_media_load
+
+    retired = False
+    for module_name, attribute in (
+        ("core.inference.diffusion", "_diffusion_backend"),
+        ("core.inference.sd_cpp_backend", "_sd_cpp_backend"),
+    ):
+        module = sys.modules.get(module_name)
+        engine = getattr(module, attribute, None) if module is not None else None
+        if retire_media_load("diffusion", account_id, engine):
+            retired = True
+    return retired
+
+
 def active_engine_name() -> str:
     return _active_engine_name
 

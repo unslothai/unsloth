@@ -35950,7 +35950,12 @@ async def load_diffusion_model_gated(
 
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
-            return begin_load_on(engine, _start_engine_load)
+            return begin_load_on(
+                engine,
+                lambda: account_access.admit_media_load(
+                    "diffusion", _start_engine_load, request.model_path
+                ),
+            )
 
         if needs_gpu:
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
@@ -35972,7 +35977,6 @@ async def load_diffusion_model_gated(
             extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
             user_action = user_initiated,
         )
-        account_access.note_resident_account("diffusion", request.model_path)
         account_access.note_resident_components(
             "diffusion",
             request.model_path,

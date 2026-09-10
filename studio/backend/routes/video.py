@@ -343,7 +343,7 @@ async def load_video_model_gated(
         # no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
-        def _begin_load():
+        def _start_load():
             # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates
             # network-free.
             return backend.begin_load(
@@ -370,6 +370,9 @@ async def load_video_model_gated(
                 gpu_ordinal = gpu_ordinal,
             )
 
+        def _begin_load():
+            return account_access.admit_media_load("video", _start_load, request.model_path)
+
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
         if device != "cpu":
@@ -394,7 +397,6 @@ async def load_video_model_gated(
             request.h3_task or _derived_h3_task(request.gguf_filename, kind),
             user_action = user_initiated,
         )
-        account_access.note_resident_account("video", request.model_path)
         account_access.note_resident_components(
             "video",
             request.model_path,

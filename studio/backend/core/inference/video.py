@@ -6432,6 +6432,12 @@ def generation_in_flight() -> bool:
     return backend is not None and bool(backend._generate_job_active)
 
 
+def retire_load_for_account(account_id: str) -> bool:
+    """Tear down an in-flight video load ``account_id`` started, without constructing the backend."""
+    from hub.services.models.account_access import retire_media_load
+    return retire_media_load("video", account_id, _backend)
+
+
 def generation_account_in_flight() -> Optional[str]:
     """The account whose video job is running, read without constructing the backend."""
     backend = _backend
