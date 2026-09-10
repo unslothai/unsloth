@@ -170,10 +170,8 @@ def chat(
     max_new_tokens: Optional[int] = typer.Option(
         None,
         "--max-new-tokens",
-        help = "Cap on generated tokens. Unset generates until the model stops against "
-        "a server or a GGUF loaded in process; the in-process transformers and MLX "
-        "backends use 2048, the same default the server applies to a request that "
-        "omits the limit.",
+        help = "Cap on generated tokens. Unset lets a reply use whatever the "
+        "model's context window leaves free after the conversation.",
     ),
     repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
     system_prompt: str = typer.Option(
@@ -471,6 +469,13 @@ def chat(
                 if is_mlx_distributed:
                     raise typer.Exit(code = 1)
                 continue
+
+            if should_print and getattr(chat_backend, "reply_hit_token_limit", False):
+                console.print(
+                    "(reply stopped at the token limit — /reset to clear the history, "
+                    "or reload with a larger --max-seq-length)",
+                    style = "bright_black",
+                )
 
             messages.append(
                 {"role": "assistant", "content": visible_text(answer, show_thinking = False)}
