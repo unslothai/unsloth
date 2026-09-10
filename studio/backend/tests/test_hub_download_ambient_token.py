@@ -425,7 +425,7 @@ def test_unusable_cached_login_does_not_block_an_anonymous_worker(
 
     token_path = Path(constants.HF_TOKEN_PATH)
     if failure == "invalid_encoding":
-        token_path.write_bytes(b"\xff\xfe\xff")
+        token_path.write_bytes(b"\x81")
     else:
         original_read_text = Path.read_text
 
