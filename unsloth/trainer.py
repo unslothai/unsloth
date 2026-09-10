@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -550,7 +547,6 @@ class UnslothTrainer(SFTTrainer):
             target_modules = config.target_modules,
         )
 
-        # --- Split embedding params with custom LR (Fix #2) ---
         if embedding_lr is not None:
             # Fast param -> name lookup, O(N) instead of O(N*M).
             param_to_name = {id(p): name for name, p in self.model.named_parameters()}
@@ -586,7 +582,6 @@ class UnslothTrainer(SFTTrainer):
                     new_groups.append(embed_group)
             param_groups = new_groups
 
-        # --- Forward optimizer hyperparameters (Fix #3) ---
         self.optimizer = QGaLoreAdamW8bit(
             param_groups,
             lr = lr,

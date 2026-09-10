@@ -316,7 +316,6 @@ class JobManager:
 
     @job_read(lambda self, *args, **kwargs: None)
     def get_current_job_id(self) -> str | None:
-        """Return current job_id (or None)."""
         with self._lock:
             return None if self._job is None else self._job.job_id
 

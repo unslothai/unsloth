@@ -88,9 +88,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      // Always check the server first; localStorage flags can be stale (e.g.
-      // tokens from a previous install). /api/auth/status is the source of
-      // truth for requires_password_change.
+      // Always check the server first; localStorage flags can be stale (e.g. tokens from a previous
+      // install). /api/auth/status is the source of truth for requires_password_change.
       try {
         const result = await fetchAuthStatus();
         const requiresChange = result.login_mode === "multi"
@@ -123,8 +122,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             return;
           }
 
-          // On login, skip to the app if a valid session exists and no
-          // password change is required.
+          // On login, skip to the app if a valid session exists and no password change is required.
           if (isLoginMode && !requiresChange) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
