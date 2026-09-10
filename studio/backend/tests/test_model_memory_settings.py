@@ -3253,10 +3253,7 @@ class TestOnlyAClassifiableTargetConfirms:
         monkeypatch.setattr(m.sys, "platform", "win32")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
         (tmp_path / lib).write_text("")
-        assert (
-            m.LlamaCppBackend._offload_target_is_classifiable("llama-server", {})
-            is classifiable
-        )
+        assert m.LlamaCppBackend._offload_target_is_classifiable("llama-server", {}) is classifiable
 
     def test_it_follows_an_external_backend_path(self, monkeypatch, tmp_path):
         """Third check to need this: scanning only beside the binary answered
@@ -3264,7 +3261,8 @@ class TestOnlyAClassifiableTargetConfirms:
         import core.inference.llama_cpp as m
 
         beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir(); external.mkdir()
+        beside.mkdir()
+        external.mkdir()
         (external / "ggml-cuda.dll").write_text("")
         monkeypatch.setattr(m.sys, "platform", "win32")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: beside)
