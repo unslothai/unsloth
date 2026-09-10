@@ -7,8 +7,16 @@
 
 import {
   MarkdownText,
+  MarkdownTextSource,
   SearchImagesEnabledContext,
 } from "@/components/assistant-ui/markdown-text";
+import {
+  type ReasoningPageBoundary,
+  ReasoningPageSelector,
+  createReasoningPageBoundary,
+  isReasoningPageBoundaryValid,
+  shouldPaginateReasoning,
+} from "@/components/assistant-ui/reasoning-pagination";
 import {
   Collapsible,
   CollapsibleContent,
@@ -47,6 +55,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -242,18 +251,24 @@ function ReasoningContent({
 }
 
 function ReasoningText({
+  autoScroll,
   className,
+  pageKey,
   streaming,
   children,
   ...props
-}: ComponentProps<"div"> & { streaming?: boolean }) {
+}: ComponentProps<"div"> & {
+  autoScroll?: boolean;
+  pageKey?: string;
+  streaming?: boolean;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const detachedFromBottomRef = useRef(false);
   const lastScrollTopRef = useRef(0);
 
   useEffect(() => {
-    if (!(streaming && scrollRef.current)) {
+    if (!(streaming && (autoScroll ?? true) && scrollRef.current)) {
       return;
     }
     const el = scrollRef.current;
@@ -298,8 +313,13 @@ function ReasoningText({
       el.removeEventListener("scroll", updateAutoScroll);
       el.removeEventListener("wheel", handleWheel);
     };
-  }, [streaming]);
+  }, [autoScroll, streaming]);
 
+  useEffect(() => {
+    if (autoScroll === false && scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+  }, [autoScroll, pageKey]);
   return (
     <div
       ref={scrollRef}
@@ -333,7 +353,81 @@ const ReasoningImpl: ReasoningMessagePartComponent = () => (
 
 const COPY_RESET_MS = 2000;
 
-function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; endIndex: number }) {
+function ReasoningPageNavigation({
+  hasEarlier,
+  hasNewer,
+  onEarlier,
+  onLatest,
+  onNewer,
+  start,
+  end,
+  total,
+}: {
+  hasEarlier: boolean;
+  hasNewer: boolean;
+  onEarlier: () => void;
+  onLatest: () => void;
+  onNewer: () => void;
+  start: number;
+  end: number;
+  total: number;
+}) {
+  const buttonClass =
+    "rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
+  return (
+    <nav
+      data-slot="reasoning-page-navigation"
+      aria-label="Reasoning pages"
+      className="sticky top-0 z-10 mb-2 flex min-w-0 items-center gap-1 border-b border-border/60 bg-background/95 pb-2 backdrop-blur-sm"
+    >
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={!hasEarlier}
+        onClick={onEarlier}
+      >
+        Earlier
+      </button>
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={!hasNewer}
+        onClick={onNewer}
+      >
+        Newer
+      </button>
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={!hasNewer}
+        onClick={onLatest}
+      >
+        Latest
+      </button>
+      <span className="ml-auto truncate text-xs text-muted-foreground tabular-nums">
+        {start + 1}–{end} of {total}
+      </span>
+    </nav>
+  );
+}
+
+function OversizedReasoningCode({ source }: { source: string }) {
+  return (
+    <div data-slot="reasoning-oversized-code" className="min-w-0">
+      <p className="mb-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
+        Showing part of an oversized code block. Copy reasoning preserves the
+        full source.
+      </p>
+      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs">
+        {source}
+      </pre>
+    </div>
+  );
+}
+function ReasoningCopyButton({
+  startIndex,
+  endIndex,
+}: { startIndex: number; endIndex: number }) {
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -402,6 +496,127 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
     return true;
   });
+
+  const messageId = useAuiState(({ message }) => message.id);
+
+  const reasoningText = useAuiState(({ message }) =>
+    message.parts
+      .slice(startIndex, endIndex + 1)
+      .filter((part) => part.type === "reasoning")
+      .map((part) => ("text" in part ? (part as { text: string }).text : ""))
+      .join("\n"),
+  );
+  const wantsPagination = shouldPaginateReasoning(reasoningText);
+  const [storedPaginationSession, setPaginationSession] = useState(() => ({
+    history: [] as ReasoningPageBoundary[],
+    messageId,
+    started: wantsPagination,
+  }));
+  const paginationSession =
+    storedPaginationSession.messageId === messageId
+      ? storedPaginationSession
+      : { history: [], messageId, started: wantsPagination };
+  if (paginationSession !== storedPaginationSession) {
+    setPaginationSession(paginationSession);
+  }
+  const pageSelector = useMemo(() => new ReasoningPageSelector(), [messageId]);
+
+  // An already-long saved trace paginates on its first render. Only the live
+  // transition from short to long waits for an active selection to finish.
+  useEffect(() => {
+    if (!wantsPagination) {
+      if (paginationSession.started || paginationSession.history.length > 0) {
+        setPaginationSession({ history: [], messageId, started: false });
+      }
+      return;
+    }
+    if (paginationSession.started) {
+      return;
+    }
+
+    const startPagination = () => {
+      setPaginationSession((current) =>
+        current.messageId === messageId
+          ? { ...current, started: true }
+          : { history: [], messageId, started: true },
+      );
+    };
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      startPagination();
+      return;
+    }
+    const handleSelectionChange = () => {
+      if (window.getSelection()?.isCollapsed !== false) {
+        startPagination();
+      }
+    };
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () =>
+      document.removeEventListener("selectionchange", handleSelectionChange);
+  }, [messageId, paginationSession, wantsPagination]);
+
+  const historyIsValid = paginationSession.history.every((boundary) =>
+    isReasoningPageBoundaryValid(reasoningText, boundary),
+  );
+  useEffect(() => {
+    if (!historyIsValid) {
+      setPaginationSession((current) =>
+        current.messageId === messageId
+          ? { ...current, history: [] }
+          : current,
+      );
+    }
+  }, [historyIsValid, messageId]);
+  const validHistory = historyIsValid ? paginationSession.history : [];
+  const selectedEnd = validHistory.at(-1)?.end ?? null;
+  const paginationActive = paginationSession.started && wantsPagination;
+  const page = useMemo(
+    () =>
+      pageSelector.select(reasoningText, {
+        end: paginationActive ? selectedEnd : reasoningText.length,
+
+        streaming:
+          paginationActive && isReasoningStreaming && selectedEnd === null,
+      }),
+    [
+      isReasoningStreaming,
+      pageSelector,
+      paginationActive,
+      reasoningText,
+      selectedEnd,
+    ],
+  );
+  const viewingLatestPage = !(paginationActive && page.hasNewer);
+
+  const showEarlierPage = useCallback(() => {
+    if (!page.hasEarlier) {
+      return;
+    }
+    setPaginationSession((current) =>
+      current.messageId === messageId
+        ? {
+            ...current,
+            history: [
+              ...current.history,
+              createReasoningPageBoundary(reasoningText, page.start),
+            ],
+          }
+        : current,
+    );
+  }, [messageId, page.hasEarlier, page.start, reasoningText]);
+  const showNewerPage = useCallback(() => {
+    setPaginationSession((current) =>
+      current.messageId === messageId
+        ? { ...current, history: current.history.slice(0, -1) }
+        : current,
+    );
+  }, [messageId]);
+  const showLatestPage = useCallback(() => {
+    setPaginationSession((current) =>
+      current.messageId === messageId ? { ...current, history: [] } : current,
+    );
+  }, [messageId]);
 
   const persistedDuration = useAuiState(({ message }) => {
     return resolveReasoningGroupDuration(
@@ -520,9 +735,38 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         streaming={isReasoningStreaming}
       >
         <ReasoningText
+          autoScroll={viewingLatestPage}
+          pageKey={paginationActive ? `${page.start}:${page.end}` : undefined}
           streaming={isReasoningStreaming || retainStreamingHeight}
         >
-          {children}
+          {paginationActive ? (
+            <>
+              <ReasoningPageNavigation
+                hasEarlier={page.hasEarlier}
+                hasNewer={page.hasNewer}
+                onEarlier={showEarlierPage}
+                onNewer={showNewerPage}
+                onLatest={showLatestPage}
+                start={page.start}
+                end={page.end}
+                total={reasoningText.length}
+              />
+              {page.oversizedCode ? (
+                <OversizedReasoningCode source={page.markdown} />
+              ) : (
+                <SearchImagesEnabledContext.Provider value={false}>
+                  <MarkdownTextSource
+
+                    messageId={messageId}
+                    sourceText={page.markdown}
+                    streaming={isReasoningStreaming && viewingLatestPage}
+                  />
+                </SearchImagesEnabledContext.Provider>
+              )}
+            </>
+          ) : (
+            children
+          )}
         </ReasoningText>
       </ReasoningContent>
     </ReasoningRoot>
