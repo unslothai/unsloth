@@ -1446,7 +1446,9 @@ def test_a_compiled_cache_the_clear_would_refuse_says_so_on_the_row(
     assert result["errors"]
 
 
-def test_moving_the_models_folder_forgets_the_old_roots_sizes(tmp_path, monkeypatch, isolated_caches):
+def test_moving_the_models_folder_forgets_the_old_roots_sizes(
+    tmp_path, monkeypatch, isolated_caches
+):
     """The memo is keyed by cache, not by path, so nothing about a new root evicts it.
 
     A browser hides this by forcing a refresh off the inventory-version event. An API-key
