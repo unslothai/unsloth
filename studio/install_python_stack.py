@@ -8159,6 +8159,27 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     Must run BEFORE remove_manifest: the manifest is the only copy, and it is dropped
     up front precisely so a run killed mid-pass cannot leave a valid one behind.
     """
+    # The evidence is read, and the parked copy consumed, before any of the refusals
+    # below: a forced pass (UNSLOTH_STUDIO_FULL_DEPS, a development shape, a caller's
+    # resolver input) mutates the venv too, and one killed part-way must not leave the
+    # parked copy for the next ordinary run to read as evidence of a completed pass.
+    manifest, manifest_error = None, False
+    try:
+        manifest = install_manifest.read_manifest()
+        # setup.ps1 drops the live manifest before pip, torch and triton are replaced,
+        # which is before this runs; the parked copy is what the last completed pass
+        # recorded. Evidence only: every skip is still re-verified on disk below and
+        # in _requirements_satisfied, and the deep verify is run against this same copy.
+        if not manifest:
+            manifest = install_manifest.read_previous_manifest()
+            # Read once. The live manifest is removed before a pass so a pass killed
+            # part-way leaves nothing that verifies as complete; the parked copy has to
+            # follow the same rule, or the next run would read the last completed pass
+            # as evidence over an environment the killed pass had half-modified.
+            if manifest:
+                install_manifest.consume_previous_manifest()
+    except Exception:  # noqa: BLE001 - an unreadable manifest is a full pass, never a crash
+        manifest_error = True
     if _full_deps_requested():
         return _refuse_evidence("UNSLOTH_STUDIO_FULL_DEPS requested")
     # Dev shapes: an editable overlay or a different package name means the tree on disk
@@ -8180,21 +8201,7 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     foreign = _foreign_resolver_inputs()
     if foreign:
         return _refuse_evidence(f"caller-supplied resolver input in effect: {', '.join(foreign)}")
-    try:
-        manifest = install_manifest.read_manifest()
-        # setup.ps1 drops the live manifest before pip, torch and triton are replaced,
-        # which is before this runs; the parked copy is what the last completed pass
-        # recorded. Evidence only: every skip is still re-verified on disk below and
-        # in _requirements_satisfied, and the deep verify is run against this same copy.
-        if not manifest:
-            manifest = install_manifest.read_previous_manifest()
-            # Read once. The live manifest is removed before a pass so a pass killed
-            # part-way leaves nothing that verifies as complete; the parked copy has to
-            # follow the same rule, or the next run would read the last completed pass
-            # as evidence over an environment the killed pass had half-modified.
-            if manifest:
-                install_manifest.consume_previous_manifest()
-    except Exception:  # noqa: BLE001 - an unreadable manifest is a full pass, never a crash
+    if manifest_error:
         return _refuse_evidence("manifest unreadable")
     if not manifest or manifest.get("schema") != install_manifest.MANIFEST_SCHEMA:
         return _refuse_evidence("no manifest, or a schema this build does not read")

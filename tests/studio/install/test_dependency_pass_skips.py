@@ -1739,6 +1739,12 @@ def test_the_parked_manifest_is_consumed_when_it_is_read_as_evidence(monkeypatch
     source = open(stack.__file__, encoding = "utf-8").read()
     at = source.index("manifest = install_manifest.read_previous_manifest()")
     assert "install_manifest.consume_previous_manifest()" in source[at : at + 700]
+    # And before every refusal: a forced pass (full deps, a development shape, a
+    # caller's resolver input) mutates the venv too, and one killed part-way must not
+    # leave the parked copy behind for the next ordinary run.
+    planner = source[source.index("def _plan_pass(") :]
+    assert planner.index("consume_previous_manifest()") < planner.index("_full_deps_requested()")
+    assert planner.index("consume_previous_manifest()") < planner.index("_foreign_resolver_inputs()")
 
 
 def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatch, tmp_path):
