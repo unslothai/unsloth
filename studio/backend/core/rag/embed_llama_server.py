@@ -737,10 +737,9 @@ class LlamaServerBackend:
 
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
-        # Not routed through _llama_server_env_for_binary, so it needs its own
-        # strip: an inherited GGML_CUDA_P2P=0 means OFF to the user and ON to
-        # llama.cpp, and a corrupt embedding degrades retrieval quietly rather
-        # than producing visibly garbled text (#10613).
+        # Not routed through _llama_server_env_for_binary, so it needs its own strip:
+        # an inherited GGML_CUDA_P2P=0 means OFF to the user and ON to llama.cpp, and
+        # a corrupt embedding degrades retrieval quietly (#10613).
         from core.inference.llama_cpp import LlamaCppBackend
 
         LlamaCppBackend._sanitize_p2p_env(env)

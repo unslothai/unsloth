@@ -4,18 +4,15 @@
 """Probe: do GPU-to-GPU peer copies on this host actually transfer the data?
 
 On bare-metal Linux with a translating IOMMU, a PCIe peer-to-peer copy between two
-NVIDIA GPUs can be discarded by the chipset while CUDA still reports
-``cudaSuccess``, and ``torch.cuda.can_device_access_peer`` still returns True, so
-nothing upstream of the data notices. In llama.cpp with ``GGML_CUDA_P2P`` set, the
-model emits ``!!!!!``, ``/////``, a repeated token or word salad, which looks
-exactly like a broken quant or chat template. See issue #10613.
+NVIDIA GPUs can be discarded by the chipset while CUDA reports ``cudaSuccess`` and
+``torch.cuda.can_device_access_peer`` returns True, so nothing notices. In
+llama.cpp with ``GGML_CUDA_P2P`` set, the model emits ``!!!!!``, a repeated token
+or word salad, looking exactly like a broken quant or chat template (#10613).
 
-The destination is filled with a sentinel before each copy, so a transfer that
-moves nothing is distinguishable from one that legitimately writes zeros. Every
-ordered pair is tested at several sizes, because small copies can succeed through
-a different path than large ones.
-
-Run with no arguments on the host in question::
+The destination is sentinel-filled before each copy, so a transfer that moves
+nothing is distinguishable from one that legitimately writes zeros, and every
+ordered pair is tested at several sizes, since small copies can take a different
+path than large ones. Run with no arguments on the host in question::
 
     python scripts/p2p_integrity_probe.py
 
@@ -41,8 +38,8 @@ REPEATS = 3
 
 def _print_topology() -> None:
     """Show `nvidia-smi topo -m`, the cheap read that answers this in advance. NV#
-    means NVLink, which does not traverse the PCIe root complex and is not exposed
-    to this failure; NODE / PHB / PXB / PIX / SYS all go over PCIe."""
+    is NVLink, which never traverses the PCIe root complex; NODE / PHB / PXB / PIX
+    / SYS all do."""
     if shutil.which("nvidia-smi") is None:
         print("nvidia-smi not found; skipping topology.\n")
         return
@@ -60,7 +57,7 @@ def _print_topology() -> None:
         print("topology read returned non-zero; skipping.\n")
         return
     print("=== nvidia-smi topo -m ===")
-    # The legend after the matrix is long and not what the reader needs.
+    # The legend after the matrix is not what the reader needs.
     for line in out.stdout.splitlines():
         if line.strip().startswith("Legend"):
             break
@@ -107,9 +104,8 @@ def main() -> int:
         or "rocm" in getattr(torch, "__version__", "").lower()
     ):
         # ROCm reuses the torch.cuda namespace, so every test below would run and
-        # PASS on AMD hardware, then recommend GGML_CUDA_P2P, which only the CUDA
-        # backend reads. A pass that ends in a no-op instruction is worse than no
-        # answer, so decline instead of measuring hardware this cannot advise on.
+        # PASS on AMD, then recommend GGML_CUDA_P2P, which only the CUDA backend
+        # reads. A pass ending in a no-op instruction is worse than no answer.
         print(
             "This is a ROCm/HIP build of torch. GGML_CUDA_P2P is read only by\n"
             "llama.cpp's CUDA backend, so this probe has no advice to give for AMD\n"
@@ -158,21 +154,18 @@ def main() -> int:
                                 device = f"cuda:{dst}",
                             )
                         except Exception as alloc_exc:  # noqa: BLE001
-                            # Could not even build the buffers, usually because a
-                            # model is resident. No transfer was attempted, so this
-                            # is inconclusive, NOT evidence that peer copies drop
-                            # data: reporting it as failure would tell the user to
-                            # turn off an optimisation that was never tested.
+                            # No transfer was attempted (usually a resident model
+                            # holds the memory), so this is inconclusive, NOT
+                            # evidence that peer copies drop data.
                             setup_error = alloc_exc
                             break
                         d.copy_(s)
                         torch.cuda.synchronize(src)
                         torch.cuda.synchronize(dst)
                         # Compare against the source, not just the sentinel: a
-                        # scrambled transfer overwrites it with wrong data, which
-                        # a sentinel-only test scores as a pass. The sentinel
-                        # count stays because "never written" is a different
-                        # diagnosis, pointing at a dropped DMA specifically.
+                        # scrambled transfer overwrites it and would score as a
+                        # pass. The sentinel count stays because "never written"
+                        # is a different diagnosis, a dropped DMA.
                         host_dst = d.cpu()
                         wrong = int((host_dst != s.cpu()).sum())
                         dropped = int((host_dst == SENTINEL).sum())
@@ -188,10 +181,9 @@ def main() -> int:
                 checked += 1
                 pair = f"{src}->{dst}"
                 access = "yes" if can else "no"
-                # Corruption already observed on an earlier repeat outranks a later
-                # allocation failure. Repeats exist to catch INTERMITTENT drops, so
-                # letting a subsequent setup error downgrade a real mismatch to
-                # SKIPPED would hide exactly what the repeating is for.
+                # Corruption seen on an earlier repeat outranks a later allocation
+                # failure: repeats exist to catch INTERMITTENT drops, so downgrading
+                # a real mismatch to SKIPPED would hide what they are for.
                 if setup_error is not None and not worst_wrong:
                     inconclusive += 1
                     print(
@@ -235,9 +227,8 @@ def main() -> int:
         return 1
 
     if inconclusive:
-        # Exit 1 is reserved for copies that were tested and lost data. Nothing
-        # was tested here, so saying "unsafe" would push someone off a working
-        # optimisation over a busy GPU.
+        # Exit 1 is for copies that were tested and lost data. Nothing was tested
+        # here, so "unsafe" would push someone off a working optimisation.
         print(
             f"INCONCLUSIVE: {inconclusive} of {checked} tests could not allocate "
             "their buffers,\n"
