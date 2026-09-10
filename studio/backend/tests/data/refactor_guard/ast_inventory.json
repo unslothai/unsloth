@@ -29,6 +29,9 @@
       "CountAborted": {
         "kind": "class"
       },
+      "GgufDownloadCancelled": {
+        "kind": "class"
+      },
       "GgufLoadIntent": {
         "kind": "class"
       },
@@ -101,6 +104,9 @@
       "_CTX_FIT_VRAM_FRACTION": {
         "kind": "assign"
       },
+      "_CombinedCancelEvent": {
+        "kind": "class"
+      },
       "_CpuFallbackRuntime": {
         "kind": "class"
       },
@@ -155,6 +161,9 @@
       "_GEMMA_MTP_FAMILY_RE": {
         "kind": "assign"
       },
+      "_GENERATION_CPU_AFFINITY_FLAGS": {
+        "kind": "assign"
+      },
       "_GGML_GPU_BACKEND_RE": {
         "kind": "assign"
       },
@@ -164,6 +173,15 @@
       "_GGUF_KNOWN_QUANT_RE": {
         "kind": "assign"
       },
+      "_GGUF_METADATA_LOGGED": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_LOCK": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_MAX": {
+        "kind": "assign"
+      },
       "_GGUF_REHEARSAL_ARGS_RE": {
         "kind": "assign"
       },
@@ -171,6 +189,9 @@
         "kind": "assign"
       },
       "_GPU_DEVICE_PREFIXES": {
+        "kind": "assign"
+      },
+      "_GPU_MODEL_BUFFER_RE": {
         "kind": "assign"
       },
       "_GPU_OFFLOAD_MARKERS": {
@@ -215,7 +236,13 @@
       "_LLAMA_ARG_TRUE_VALUES": {
         "kind": "assign"
       },
+      "_LLAMA_FIT_MIN_CTX": {
+        "kind": "assign"
+      },
       "_LLAMA_FIT_TARGET_DEFAULT_MIB": {
+        "kind": "assign"
+      },
+      "_LLAMA_RANDOM_SEED": {
         "kind": "assign"
       },
       "_LOADS_IN_FLIGHT": {
@@ -245,6 +272,9 @@
       "_MISS": {
         "kind": "assign"
       },
+      "_MLA_MTP_FAST_ARCHS": {
+        "kind": "assign"
+      },
       "_MMPROJ_OFFLOAD_ENV_VAR": {
         "kind": "assign"
       },
@@ -257,6 +287,9 @@
       "_MTP_MIN_SIZE_B": {
         "kind": "assign"
       },
+      "_MTP_SHARD_SUFFIX_RE": {
+        "kind": "assign"
+      },
       "_MTP_VRAM_RESERVE_FRAC": {
         "kind": "assign"
       },
@@ -264,6 +297,12 @@
         "kind": "assign"
       },
       "_OVERRIDE_TENSOR_FLAGS": {
+        "kind": "assign"
+      },
+      "_PAGEABLE_OVERRIDE_NOTE": {
+        "kind": "assign"
+      },
+      "_PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE": {
         "kind": "assign"
       },
       "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
@@ -341,6 +380,9 @@
       "_UNRECOVERABLE_LOCAL_ERRNOS": {
         "kind": "assign"
       },
+      "_UNSET": {
+        "kind": "assign"
+      },
       "_VALID_CACHE_TYPES": {
         "kind": "assign"
       },
@@ -356,6 +398,9 @@
       "_WINDOW_NOTICE_MARKER": {
         "kind": "assign"
       },
+      "_ZERO_ROOM_MARKER": {
+        "kind": "assign"
+      },
       "_accumulated_spec_types": {
         "kind": "def"
       },
@@ -368,7 +413,16 @@
       "_apply_igpu_host_reserve_mib": {
         "kind": "def"
       },
+      "_apply_seeded_llama_request": {
+        "kind": "def"
+      },
       "_arch_aliases": {
+        "kind": "def"
+      },
+      "_arch_has_fast_mla_mtp": {
+        "kind": "def"
+      },
+      "_arch_mtp_skips_target_kv_copy": {
         "kind": "def"
       },
       "_archive_and_recall": {
@@ -396,6 +450,9 @@
         "kind": "def"
       },
       "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_boundary_metadata": {
         "kind": "def"
       },
       "_branch_boundary": {
@@ -446,6 +503,9 @@
       "_coerce_reasoning_effort": {
         "kind": "def"
       },
+      "_compaction_fit_kwargs": {
+        "kind": "def"
+      },
       "_companion_snapshot_sibling": {
         "kind": "def"
       },
@@ -468,6 +528,9 @@
         "kind": "def"
       },
       "_drafter_set_bytes": {
+        "kind": "def"
+      },
+      "_effective_headroom_ratio": {
         "kind": "def"
       },
       "_effective_main_cache_types": {
@@ -635,6 +698,9 @@
       "_hub_download_in_flight": {
         "kind": "def"
       },
+      "_idle_slot_clearing_active": {
+        "kind": "def"
+      },
       "_inject_recall": {
         "kind": "def"
       },
@@ -671,6 +737,9 @@
       "_is_positive_int": {
         "kind": "def"
       },
+      "_is_published_mtp_drafter_name": {
+        "kind": "def"
+      },
       "_is_rehearsal_prefix": {
         "kind": "def"
       },
@@ -698,6 +767,9 @@
       "_lib_dir_has_ggml_backend": {
         "kind": "def"
       },
+      "_linux_math_core_count": {
+        "kind": "def"
+      },
       "_llama_lib_dir": {
         "kind": "def"
       },
@@ -708,6 +780,9 @@
         "kind": "def"
       },
       "_memory_tool_withheld": {
+        "kind": "def"
+      },
+      "_metal_capable_host": {
         "kind": "def"
       },
       "_metal_device_is_paravirtual": {
@@ -723,6 +798,9 @@
         "kind": "def"
       },
       "_normalized_load_mode": {
+        "kind": "def"
+      },
+      "_note_gguf_metadata_read": {
         "kind": "def"
       },
       "_pad_kv_cells": {
@@ -755,6 +833,9 @@
       "_pick_mtp": {
         "kind": "def"
       },
+      "_pick_mtp_root_only": {
+        "kind": "def"
+      },
       "_pipeline_parallel_disabled_by_args": {
         "kind": "def"
       },
@@ -783,6 +864,9 @@
         "kind": "def"
       },
       "_report_live_llama_timings": {
+        "kind": "def"
+      },
+      "_request_uses_checkpoint": {
         "kind": "def"
       },
       "_resolve_llama_binary": {
@@ -836,10 +920,16 @@
       "_source_declares_option": {
         "kind": "def"
       },
+      "_spilled_decode_threads": {
+        "kind": "def"
+      },
       "_split_mode_confines_to_one_device": {
         "kind": "def"
       },
       "_sticky_compaction_boundary": {
+        "kind": "def"
+      },
+      "_sticky_compaction_state": {
         "kind": "def"
       },
       "_strip_flag_pairs": {
@@ -957,6 +1047,9 @@
       "_coerce_arguments_with_provenance": {
         "kind": "def"
       },
+      "_dense_message_tokens": {
+        "kind": "def"
+      },
       "_detect_render_html_tool_start": {
         "kind": "def"
       },
@@ -987,6 +1080,9 @@
       "_search_images_kwargs": {
         "kind": "def"
       },
+      "_spent_prompt_tokens": {
+        "kind": "def"
+      },
       "_status_for_tool": {
         "kind": "def"
       },
@@ -1012,9 +1108,11 @@
       "INTENT_SIGNAL": "\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b|(?:dig\\\\s+in|help\\\\s+analy[sz]e)\\\\b(?=[^\\\\w]*\\\\Z)))|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+(?:dig\\\\s+in|help\\\\s+analy[sz]e)\\\\b(?=[^\\\\w]*\\\\Z))(?!\\\\s+to\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b|(?:dig\\\\s+in|help\\\\s+analy[sz]e)\\\\b(?=[^\\\\w]*\\\\Z)))|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render)\\\\b|\\\\b(?:step \\\\d+:?|here['\\\\u2019]?s (?:my |the |a )?(?:plan|approach))|\\\\b(?:now i|next i)\\\\b)\" flags=42",
       "_ATTR_FUNC_OPEN_RE": "'<function\\\\s+name=\"' flags=32",
       "_BARE_JSON_NAME_RE": "'\"name\"\\\\s*:\\\\s*\"([^\"]+)\"' flags=32",
+      "_BLOCKED_BODY_MASK_RUN_RE": "'\\ue000+' flags=32",
       "_DEEPSEEK_BEGIN_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>' flags=32",
       "_DEEPSEEK_R1_CLOSE_RE": "'```[\\\\s\\\\r\\\\n]*<｜tool▁call▁end｜>' flags=32",
       "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>' flags=32",
+      "_FENCE_ONLY_RE": "'[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*' flags=32",
       "_FUNC_CLOSE_TAG_RE": "'</function>' flags=32",
       "_GEMMA_BARE_TC_PREFIX_RE": "'(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$' flags=32",
       "_GEMMA_BARE_TC_RE": "'(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
@@ -1023,6 +1121,7 @@
       "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
       "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
       "_KIMI_ID_RE": "'^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$' flags=32",
+      "_LEADING_JSON_FENCE_RE": "'^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n' flags=32",
       "_LLAMA3_CALL_CHAIN_RE": "'\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_KEY_RE": "'\\\\w+' flags=32",
       "_LLAMA3_LIT_RE": "'true|false|null' flags=32",
@@ -1097,6 +1196,7 @@
       "re.compile('<tool_call>\\\\s*\\\\{')": 1,
       "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
       "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*')": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
@@ -1107,7 +1207,9 @@
       "re.compile('\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(')": 1,
       "re.compile('\\\\s*</(?:parameter|param)>\\\\s*$')": 1,
       "re.compile('\\\\w+')": 1,
+      "re.compile('\\ue000+')": 1,
       "re.compile('^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$')": 1,
+      "re.compile('^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n')": 1,
       "re.compile('```[\\\\s\\\\r\\\\n]*' + re.escape(_DEEPSEEK_CALL_END))": 1,
       "re.compile('true|false|null')": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$', re.DOTALL)": 1,
@@ -1208,7 +1310,22 @@
       "_ATTR_FUNC_OPEN_RE": {
         "kind": "assign"
       },
+      "_BARE_JSON_ARGS_KEYS": {
+        "kind": "assign"
+      },
+      "_BARE_JSON_CLASSIFY_KEYS": {
+        "kind": "assign"
+      },
       "_BARE_JSON_NAME_RE": {
+        "kind": "assign"
+      },
+      "_BLOCKED_BODY_MASK": {
+        "kind": "assign"
+      },
+      "_BLOCKED_BODY_MASK_RUN_RE": {
+        "kind": "assign"
+      },
+      "_CONTAINING_WRAPPERS": {
         "kind": "assign"
       },
       "_DEEPSEEK_BEGIN_RE": {
@@ -1244,7 +1361,13 @@
       "_EMBEDDED_MARKER_RE": {
         "kind": "assign"
       },
+      "_EXECUTION_CLASS_HINTS": {
+        "kind": "assign"
+      },
       "_EXTENSION_SAMPLE": {
+        "kind": "assign"
+      },
+      "_FENCE_ONLY_RE": {
         "kind": "assign"
       },
       "_FUNC_CLOSE_TAG_RE": {
@@ -1301,6 +1424,9 @@
       "_HELP_OFFER": {
         "kind": "assign"
       },
+      "_INFERENCE_WRAPPER_OPENERS": {
+        "kind": "assign"
+      },
       "_KIMI_ARG_BEGIN": {
         "kind": "assign"
       },
@@ -1317,6 +1443,9 @@
         "kind": "assign"
       },
       "_KIMI_SECTION_END": {
+        "kind": "assign"
+      },
+      "_LEADING_JSON_FENCE_RE": {
         "kind": "assign"
       },
       "_LENGTH_PROGRESS_TAIL_CHARS": {
@@ -1350,6 +1479,15 @@
         "kind": "assign"
       },
       "_LLAMA3_WS_RE": {
+        "kind": "assign"
+      },
+      "_MARKERLESS_TRUSTED_PREFIXES": {
+        "kind": "assign"
+      },
+      "_MARKUP_OPENERS": {
+        "kind": "assign"
+      },
+      "_MAX_GEMMA_PREFIX_TAIL": {
         "kind": "assign"
       },
       "_MISTRAL_ARGS_MARKER": {
@@ -1423,20 +1561,40 @@
         "kind": "def",
         "signature": "src: str, start: int"
       },
+      "_balanced_paren_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, paren_start: int"
+      },
       "_bare_json_call_shaped": {
         "decorators": [],
         "kind": "def",
         "signature": "obj"
+      },
+      "_blocked_markerless_body_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names"
       },
       "_consume_mistral_call": {
         "decorators": [],
         "kind": "def",
         "signature": "obj_text: str, out: list[dict], id_offset: int"
       },
+      "_decoded_key": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "literal: str"
+      },
       "_disabled_gemma_call_end_containing_signal": {
         "decorators": [],
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]"
+      },
+      "_escaped_string_content_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
       },
       "_find_outside_json_strings": {
         "decorators": [],
@@ -1451,7 +1609,7 @@
       "_first_sentinel": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, start: int"
+        "signature": "text: str, start: int, enabled_tool_names=None"
       },
       "_gemma_balanced_brace_end": {
         "decorators": [],
@@ -1503,6 +1661,26 @@
         "kind": "def",
         "signature": "text: str, vs: int, *, strict: bool=False"
       },
+      "_has_execution_class_hint": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_has_gemma_bare_trigger": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_inference_wrapper_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_inside_leading_markerless_body": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, signal: int, enabled_tool_names: Optional[set]"
+      },
       "_inside_open_parameter": {
         "decorators": [],
         "kind": "def",
@@ -1512,6 +1690,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, found: int"
+      },
+      "_last_bare_call_word": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_leading_json_value_end": {
         "decorators": [],
@@ -1528,15 +1711,44 @@
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]=None"
       },
+      "_markerless_blocked_execution": {
+        "kind": "assign"
+      },
+      "_markerless_execution_class": {
+        "kind": "assign"
+      },
+      "_markerless_promotable": {
+        "kind": "assign"
+      },
+      "_mask_blocked_bodies": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names, *, think: bool=False"
+      },
+      "_merge_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans: list"
+      },
       "_mistral_region_end": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, idx: int"
+        "signature": "text: str, idx: int, *, open_envelope_runs_to_eof: bool=False"
+      },
+      "_next_top_level_comma": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
       },
       "_normalize_for_repeat": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "_only_a_code_fence": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "between: str"
       },
       "_parse_bare_rehearsals": {
         "decorators": [],
@@ -1603,6 +1815,16 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
       },
+      "_partial_call_word_len": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, enabled_tool_names"
+      },
       "_safe_cut": {
         "decorators": [],
         "kind": "def",
@@ -1617,6 +1839,16 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, pos: int"
+      },
+      "_strictly_inside": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans: list, pos: int"
+      },
+      "_string_content_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
       },
       "_strip_function_xml_calls": {
         "decorators": [],
@@ -1633,6 +1865,11 @@
         "kind": "def",
         "signature": "text: str, *, final: bool"
       },
+      "_strip_leading_code_fence": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_strip_mistral_closed_calls": {
         "decorators": [],
         "kind": "def",
@@ -1643,13 +1880,28 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "_top_level_args_values": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
+      },
       "_top_level_bare_json_name": {
         "decorators": [],
         "kind": "def",
         "signature": "probe: str"
       },
+      "_top_level_maskable_values": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int, keep: str=None"
+      },
       "_trim_param_value": {
         "kind": "assign"
+      },
+      "_unmask_blocked_bodies": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, bodies: list"
       },
       "_unmatched_think_closer": {
         "decorators": [],
@@ -1671,15 +1923,40 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "blocked_bare_json_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
+      "blocked_gemma_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
+      "blocked_markerless_prefix_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, enabled_tool_names"
+      },
       "continue_after_length_message": {
         "decorators": [],
         "kind": "def",
         "signature": ""
       },
+      "gemma_tail_may_hide_a_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tail: str, enabled_tool_names: Optional[set]"
+      },
       "has_tool_signal": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "held_bare_gemma_tail_len": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
       },
       "is_reprompt_repeat": {
         "decorators": [],
@@ -1696,10 +1973,20 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "leading_bare_gemma_call_is_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "stripped: str, enabled_tool_names"
+      },
       "parse_tool_calls_from_text": {
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
+      },
+      "promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names, start: int=0, *, floor: int=0"
       },
       "reasoning_cap_spent_message": {
         "decorators": [],
@@ -1763,7 +2050,7 @@
       "_REHEARSAL_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)' flags=32",
       "_REHEARSAL_TAIL_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$' flags=48",
       "_TC_END_TAG_RE": "'</tool_call>|<\\\\|end_message\\\\|>' flags=32",
-      "_TC_FUNC_CLOSED_PAT": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TC_FUNC_CLOSED_PAT": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TC_FUNC_CLOSE_RE": "'\\\\s*</function>\\\\s*$' flags=32",
       "_TC_FUNC_START_RE": "'<function=([\\\\w-]+)>\\\\s*' flags=32",
       "_TC_GEMMA_CLOSED_PAT": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
@@ -1781,7 +2068,7 @@
       "_TOOL_ALL_PATS[11]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$' flags=48",
       "_TOOL_ALL_PATS[1]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
       "_TOOL_ALL_PATS[2]": "'<tool_call\\\\|>' flags=32",
-      "_TOOL_ALL_PATS[3]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_ALL_PATS[3]": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TOOL_ALL_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_ALL_PATS[5]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_ALL_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
@@ -1789,11 +2076,11 @@
       "_TOOL_ALL_PATS[8]": "'<\\\\|tool_call>.*$' flags=48",
       "_TOOL_ALL_PATS[9]": "'<function=[\\\\w-]+>.*$' flags=48",
       "_TOOL_CLOSED_BLOCK_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
-      "_TOOL_CLOSED_BLOCK_PATS[1]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_CLOSED_BLOCK_PATS[1]": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TOOL_CLOSED_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
       "_TOOL_CLOSED_PATS[1]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
       "_TOOL_CLOSED_PATS[2]": "'<tool_call\\\\|>' flags=32",
-      "_TOOL_CLOSED_PATS[3]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_CLOSED_PATS[3]": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TOOL_CLOSED_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_CLOSED_PATS[5]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_CLOSED_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
@@ -1813,7 +2100,7 @@
       "re.compile('<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w.\\\\-]+)\\\\s*\\\\{')": 1,
       "re.compile('<function=([\\\\w-]+)>\\\\s*')": 1,
       "re.compile('<function=[\\\\w-]+>.*$', re.DOTALL)": 1,
-      "re.compile('<function=[\\\\w-]+>.*?</function>', re.DOTALL)": 1,
+      "re.compile('<function=[\\\\w.-]+>.*?</function>', re.DOTALL)": 1,
       "re.compile('<parameter=([\\\\w-]+)>[^\\\\S\\\\n]*')": 1,
       "re.compile('<think>.*?(?:</think>|$)|\\\\[THINK\\\\].*?(?:\\\\[/THINK\\\\]|$)', re.DOTALL)": 1,
       "re.compile('<think>|\\\\[THINK\\\\]')": 1,
@@ -1834,6 +2121,9 @@
       "re.search('<tool_call>\\\\s*$', content[:span_start])": 1
     },
     "symbols": {
+      "EXECUTION_CLASS_TOOL_NAMES": {
+        "kind": "assign"
+      },
       "_BRACKETED_JSON_ONE_LEVEL": {
         "kind": "assign"
       },
@@ -1850,6 +2140,9 @@
         "kind": "assign"
       },
       "_MAX_BRACKET_SCAN_CHARS": {
+        "kind": "assign"
+      },
+      "_MCP_TOOL_PREFIX": {
         "kind": "assign"
       },
       "_MISTRAL_ARRAY_RE": {
@@ -1995,10 +2288,30 @@
         "kind": "def",
         "signature": "content: str, markers"
       },
+      "_markerless_blocked_execution": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
+      },
+      "_markerless_execution_class": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name"
+      },
+      "_markerless_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
+      },
       "_normalise_gemma_quoted_strings": {
         "decorators": [],
         "kind": "def",
         "signature": "src: str"
+      },
+      "_normalized_tool_name": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name"
       },
       "_quote_gemma_array_elements": {
         "decorators": [],
