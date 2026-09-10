@@ -2720,6 +2720,106 @@ class TestResponsesStreamAdapter:
         assert done[0]["item"]["type"] == "function_call"
         assert self._payloads(lines, "response.function_call_arguments.done")
 
+    def test_studio_ownership_marker_reaches_the_chat_request(self):
+        """ResponsesRequest takes the marker as an extra field, and every fold downstream reads
+        it off the ChatCompletionRequest. Dropped in translation, only the legacy
+        search_conversation arm can claim a Studio thread, so one that ran terminal or
+        search_knowledge_base is refused non-streaming and forwarded raw when streamed."""
+        from routes.inference import _build_chat_request
+
+        payload = ResponsesRequest.model_validate(
+            {"input": "hi", "stream": True, "model": "org/M-GGUF", "studio_tool_history": True}
+        )
+        chat_req = _build_chat_request(
+            payload, [ChatMessage(role = "user", content = "hi")], stream = True
+        )
+        assert chat_req.studio_tool_history is True
+
+        # Absent stays absent: a plain client must not be read as Studio's.
+        plain = _build_chat_request(
+            ResponsesRequest.model_validate({"input": "hi", "model": "org/M-GGUF"}),
+            [ChatMessage(role = "user", content = "hi")],
+            stream = False,
+        )
+        assert not plain.studio_tool_history
+
+    def test_studio_tool_history_is_folded_on_the_direct_stream(self, monkeypatch):
+        """This half of /v1/responses builds the passthrough body itself, so it has to fold the
+        way openai_chat_completions does. Otherwise the same thread on the same model answers
+        non-streaming and ships role="tool" to a toolless template when streamed."""
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            content = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+        )
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                supports_tools = False,
+                supports_tool_passthrough = False,
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+
+        payload = ResponsesRequest(input = "and now?", stream = True, model = "org/M-GGUF")
+        messages = [
+            ChatMessage(role = "user", content = "what did we say about seeds?"),
+            ChatMessage(
+                role = "assistant",
+                content = None,
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_conversation",
+                            "arguments": '{"query": "seeds"}',
+                        },
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "call_1",
+                name = "search_conversation",
+                content = "we said 3407",
+            ),
+            ChatMessage(role = "user", content = "and now?"),
+        ]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        roles = [m.get("role") for m in captured["body"]["messages"]]
+        assert "tool" not in roles, roles
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+        assert "we said 3407" in json.dumps(captured["body"]["messages"])
+
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod
 
