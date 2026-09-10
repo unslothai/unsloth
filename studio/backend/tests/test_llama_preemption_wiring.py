@@ -982,7 +982,7 @@ class TestTheStreamActuallyReportsGrowth:
     def test_the_report_is_batched_not_per_token(self):
         """A lock per token would put the preemptor on the hot path. Measured from the last
         report rather than by modulo, since the server's count can step past a multiple."""
-        source = self._source()
+        source = " ".join(self._source().split())
         assert "_tokens_this_stream - _tokens_reported >= _TOKEN_REPORT_EVERY" in source
         assert "_tokens_reported = _tokens_this_stream" in source
 
