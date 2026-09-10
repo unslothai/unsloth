@@ -1955,6 +1955,29 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
     return cap + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 
 
+_ADMISSION_IMAGE_PART_TYPES = ("image_url", "image")
+
+
+def _openai_llama_admission_compact_image_part(part: dict) -> dict:
+    """One image part with its transport bytes replaced by a marker.
+
+    Keeps the wrapper the part really has, since that little JSON is prompt text the
+    request does send; only the base64 goes.
+    """
+    if part.get("type") == "image":
+        source = part.get("source")
+        compact_source = {"type": "base64", "data": "[image]"}
+        if isinstance(source, dict) and source.get("media_type") is not None:
+            compact_source["media_type"] = source["media_type"]
+        return {"type": "image", "source": compact_source}
+
+    image_url = part.get("image_url")
+    compact_image_url = {"url": "[image]"}
+    if isinstance(image_url, dict) and image_url.get("detail") is not None:
+        compact_image_url["detail"] = image_url["detail"]
+    return {"type": "image_url", "image_url": compact_image_url}
+
+
 def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
     """Remove image bytes before estimating the textual part of a prompt.
 
@@ -1977,21 +2000,31 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
         if isinstance(content, list):
             estimate_content = []
             for part in content:
-                if not isinstance(part, dict) or part.get("type") != "image_url":
+                if not isinstance(part, dict):
+                    estimate_content.append(part)
+                    continue
+
+                part_type = part.get("type")
+                # The same filter anthropic_messages_to_openai applies, so the estimate
+                # charges what that sends. The content list is untyped, so a screenshot an
+                # agent's tool returned, a document and a future block type all arrive
+                # here, and none of them reach the wire to earn an allowance.
+                if part_type == "tool_result" and isinstance(part.get("content"), list):
+                    part = dict(part)
+                    part["content"] = [
+                        block
+                        for block in part["content"]
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    estimate_content.append(part)
+                    continue
+
+                if part_type not in _ADMISSION_IMAGE_PART_TYPES:
                     estimate_content.append(part)
                     continue
 
                 image_parts += 1
-                image_url = part.get("image_url")
-                compact_image_url = {"url": "[image]"}
-                if isinstance(image_url, dict) and image_url.get("detail") is not None:
-                    compact_image_url["detail"] = image_url["detail"]
-                estimate_content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": compact_image_url,
-                    }
-                )
+                estimate_content.append(_openai_llama_admission_compact_image_part(part))
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
     return estimate_messages, image_parts
@@ -3693,6 +3726,33 @@ def _sf_reasoning_prefill_mode(
     return _generation_prompt_opens_think(tpl, enable_thinking, reasoning_effort, messages)
 
 
+def _sf_parse_think_markers(
+    features: dict,
+    enable_thinking: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+) -> bool:
+    """Whether <think> markup in a safetensors/MLX reply can be genuine reasoning.
+
+    Both raw fields reach the template, which reads only the dial it branches on; a
+    hybrid sent both reads enable_thinking first (Kimi-K3).
+    """
+    if features.get("reasoning_always_on"):
+        return True
+    if not features.get("supports_reasoning"):
+        return False
+    style = features.get("reasoning_style")
+    resolved: dict = {}
+    if style == "reasoning_effort":
+        if reasoning_effort is not None:
+            resolved["reasoning_effort"] = reasoning_effort
+    elif enable_thinking is not None:
+        resolved["enable_thinking"] = enable_thinking
+    elif style == "enable_thinking_effort" and reasoning_effort is not None:
+        resolved["reasoning_effort"] = reasoning_effort
+    # No launch default on this backend: an empty dict leaves the template's own.
+    return _resolved_kwargs_think(None, resolved)
+
+
 def _effective_enable_tools(payload) -> Optional[bool]:
     """Resolve `payload.enable_tools` against the process-level tool policy.
 
@@ -4216,6 +4276,25 @@ def _anthropic_preserve_thinking(llama_backend, payload) -> bool:
     return bool(getattr(llama_backend, "preserve_thinking_default", False))
 
 
+def _resolved_kwargs_think(llama_backend, resolved) -> bool:
+    """Whether the resolved template kwargs leave thinking on.
+
+    Effort dials think at every level except "none", which Inkling's
+    _coerce_reasoning_effort rewrites to numeric 0. With no kwargs the model
+    runs on the default it was launched with.
+    """
+    if "enable_thinking" in resolved:
+        return bool(resolved["enable_thinking"])
+    if "reasoning_effort" in resolved:
+        effort = resolved["reasoning_effort"]
+        if isinstance(effort, str):
+            return effort.strip().lower() != "none"
+        if isinstance(effort, (int, float)) and not isinstance(effort, bool):
+            return float(effort) != 0.0
+        return True
+    return bool(getattr(llama_backend, "reasoning_default", True))
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Whether <think> markup in this reply can be genuine reasoning.
 
@@ -4244,13 +4323,7 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
         )
         or {}
     )
-    if "enable_thinking" in resolved:
-        return bool(resolved["enable_thinking"])
-    if "reasoning_effort" in resolved:
-        # Effort-dial templates think at every level except "none".
-        return resolved["reasoning_effort"] != "none"
-    # No explicit kwargs: the template's own default decides whether it thinks.
-    return bool(getattr(llama_backend, "reasoning_default", True))
+    return _resolved_kwargs_think(llama_backend, resolved)
 
 
 def _anthropic_count_template_kwargs(llama_backend, payload):
@@ -4786,8 +4859,8 @@ _roster_failure_logged = False
 # character after them, so one file name can rewrite how the rest of the sentence renders
 # (CVE-2021-42574, "Trojan Source"); U+200B and the joiners split a name into pieces that
 # read as one; ESC is a terminal control sequence in any console or log that echoes the
-# prompt. Only linked folders can carry them -- uploads pass an allowlist at
-# routes/rag.py:_sanitize_filename -- but a linked folder indexes a relative path exactly
+# prompt. Only linked folders can carry them -- routes/rag.py:_document_label strips
+# them out of an uploaded name -- but a linked folder indexes a relative path exactly
 # as it came off disk, and every byte except "/" and NUL is legal in one.
 #
 # The whitespace-like controls map to a space instead of being dropped, so that a name
@@ -5469,21 +5542,24 @@ def _strip_tool_xml_for_display(
     so literal markup inside a value is data), then the ``_TOOL_XML_RE`` arms cover the
     DeepSeek / Kimi / orphan forms. ``<think>`` blocks are preserved verbatim and the
     ``\\Z``-anchored tail arms run only on the last segment (prose ``foo[ARGS]`` before a
-    block survives). ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
-    ``NAME[ARGS]{...}`` and wrapper-less Gemma ``call:NAME{...}`` strips on the active tool
-    list; an inactive NAME is prose and is kept. The ``[TOOL_CALLS]`` control-token arms strip
-    unconditionally regardless of NAME."""
+    block survives). The ambiguous bare-rehearsal ``NAME[ARGS]{...}`` and wrapper-less Gemma
+    ``call:NAME{...}`` strips run only on a markerless-promotable NAME, so a name outside
+    ``enabled_tool_names`` or an execution-class one is kept as prose. The ``[TOOL_CALLS]``
+    control-token arms strip unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+    from core.tool_healing import (
+        _markerless_promotable,
+        _strip_bracket_tag_calls,
+        strip_outside_think,
+    )
 
     def _keep_inactive_rehearsal(m) -> str:
-        # Only the bare-rehearsal arm captures ``reh``; with a tool list an inactive
-        # NAME[ARGS]{...} is prose -- keep it.
-        if enabled_tool_names is not None:
-            name = m.groupdict().get("reh")
-            if name is not None and name not in enabled_tool_names:
-                return m.group(0)
+        # Only the bare-rehearsal arm captures ``reh``. Deleting one the parser will not
+        # promote leaves the turn with no call AND no text.
+        name = m.groupdict().get("reh")
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            return m.group(0)
         return ""
 
     def _strip_segment(seg: str, is_last: bool) -> str:
@@ -5500,7 +5576,17 @@ def _strip_tool_xml_for_display(
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
-    return strip_outside_think(text, _strip_segment)
+    # Same masking the parser-side strip uses: these passes would otherwise edit the body of
+    # a blocked call, which is prose, so the displayed text and stored history stopped
+    # matching what the model actually said.
+    from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
+
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    result = strip_outside_think(masked, _strip_segment)
+    if not bodies:
+        return result
+    restored = _unmask_blocked_bodies(result, bodies)
+    return restored if restored is not None else strip_outside_think(text, _strip_segment)
 
 
 class _ReasoningSpanGuard:
@@ -13853,6 +13939,11 @@ _scoped_load_attempts: dict[tuple[str, str], _ScopedLoadAttempt] = {}
 _scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
 _running_load_attempt: Optional[_ScopedLoadAttempt] = None
 _pending_load_attempts: dict[str, _ScopedLoadAttempt] = {}
+# Latched by cancel_pending_loads, cleared by begin_load_lifecycle. A snapshot alone
+# misses a request uvicorn already admitted but schedules while shutdown is running:
+# should_exit stops new connections, not existing request tasks. Lifecycle-scoped, not
+# permanent, or an embedded host's second run_server could never load anything.
+_loads_shutting_down = False
 _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
 # Bound on waiting for a cancel's teardown to report back. Only the /unload
 # handler sets cancel_complete for a running attempt, so a disconnect or a
@@ -13861,6 +13952,50 @@ _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
 # to_thread's executor threads are non-daemon, so it also blocks process exit.
 _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S = 15.0
 _SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT = 256
+
+
+def cancel_pending_loads() -> int:
+    """Cancel every in-flight /load. Called by the app shutdown, before the kill.
+
+    The backend's shutdown flag only guards its own spawn, and a request between
+    admission and that call is not yet holding anything the flag can see: it can
+    sit in the lifecycle gate or preflight for minutes, then reach the backend in
+    a lifecycle that has already been reset and load a model the new server never
+    asked for. Cancelling through the attempt's own event stops it wherever it is,
+    including mid-download, using the path /unload already uses.
+
+    Best-effort and non-blocking: shutdown must not wait on a load's teardown.
+    """
+    global _loads_shutting_down
+    with _scoped_load_attempts_lock:
+        _loads_shutting_down = True
+        attempts = list(_pending_load_attempts.values())
+        running = _running_load_attempt
+    if running is not None and all(a.token != running.token for a in attempts):
+        attempts.append(running)
+    for attempt in attempts:
+        _cancel_for_shutdown(attempt)
+    return len(attempts)
+
+
+def _cancel_for_shutdown(attempt: _ScopedLoadAttempt) -> None:
+    """Cancel an attempt AND close its handshake.
+
+    Only /unload sets cancel_complete, and at shutdown there is no /unload to do it,
+    so setting cancel_event alone leaves _run_tracked_load_model_impl's finally
+    waiting the full handshake timeout in a to_thread. Those executor threads are
+    non-daemon and would hold the process open. Shutdown owns the teardown, so there
+    is nothing to report back.
+    """
+    attempt.cancel_event.set()
+    attempt.cancel_complete.set()
+
+
+def begin_load_lifecycle() -> None:
+    """Clear the shutdown latch so a restarted server accepts loads again."""
+    global _loads_shutting_down
+    with _scoped_load_attempts_lock:
+        _loads_shutting_down = False
 
 
 def _prune_scoped_load_cancel_tombstones(now: float) -> None:
@@ -14037,6 +14172,12 @@ async def load_model_gated(
     attempt = _begin_load_attempt(request, current_subject)
     with _scoped_load_attempts_lock:
         _pending_load_attempts[attempt.token] = attempt
+        # Registered after the shutdown sweep took its snapshot, so nothing else
+        # will ever cancel it. Under the same lock as the latch, so it cannot
+        # register between the latch and the sweep either.
+        _shutting_down_now = _loads_shutting_down
+    if _shutting_down_now:
+        _cancel_for_shutdown(attempt)
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the lifecycle gate across the load so idle auto-unload can't unload the
@@ -14121,6 +14262,16 @@ async def _load_model_impl(
 
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
+
+        # Auto-switch and preview call this impl directly, without a _ScopedLoadAttempt,
+        # so the shutdown sweep has no event to set for them. Reading the latch here puts
+        # both on the same footing as /load: the callers of this helper are the points of
+        # no return, so a shutdown seen before one still stops the load rather than
+        # spawning a worker that outlives quit.
+        with _scoped_load_attempts_lock:
+            _shutting_down_now = _loads_shutting_down
+        if _shutting_down_now:
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
 
     # A new load starts here; arm the progress throttle so this load's first
@@ -21407,6 +21558,24 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     return (value or "").strip() == "1"
 
 
+# The loaded model serves the request, so a caller that cannot use speech says so per request.
+REQUIRE_TEXT_HEADER = "X-Unsloth-Require-Text"
+
+
+def _text_output_required(request: Optional[Request]) -> bool:
+    """Whether this request refuses a spoken reply, whatever model ends up serving it."""
+    if request is None:
+        return False
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return False
+    try:
+        value = headers.get(REQUIRE_TEXT_HEADER)
+    except Exception:
+        return False
+    return (value or "").strip() == "1"
+
+
 class _DroppedFrameKeepalive:
     """Paces an SSE keepalive comment in place of dropped UI control frames.
 
@@ -21787,6 +21956,11 @@ async def produce_openai_chat_completions(
     monitor_id = None
 
     async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
+        if _text_output_required(request):
+            raise HTTPException(
+                status_code = 400,
+                detail = "This request requires text output; select a text model.",
+            )
         tts_monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(
@@ -21871,7 +22045,14 @@ async def produce_openai_chat_completions(
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
+        model_info = backend.models.get(backend.active_model_name, {})
         if _response_format_constrains_decoding(payload):
+            if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
+                _raise_unsupported_openai_parameter(
+                    "response_format",
+                    "response_format cannot be honored by an audio reply; send the request to a text model "
+                    "to use guided decoding.",
+                )
             _raise_unsupported_openai_parameter(
                 "response_format",
                 "response_format needs the llama.cpp grammar engine; load a GGUF model to use it.",
@@ -21879,7 +22060,6 @@ async def produce_openai_chat_completions(
 
         # ── Audio TTS path: auto-route to audio generation ────
         # (Whisper is ASR not TTS -- handled below in audio input path)
-        model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("non-GGUF audio chat completions")
@@ -24231,6 +24411,11 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
+    # Transformers vision generation drops both reasoning fields; MLX forwards them.
+    _sf_vision_drops_reasoning = image is not None and not _sf_model_info.get("is_mlx", False)
+    _sf_gate_enable_thinking = None if _sf_vision_drops_reasoning else payload.enable_thinking
+    _sf_gate_reasoning_effort = None if _sf_vision_drops_reasoning else payload.reasoning_effort
+
     def _sf_response_protocol(
         tools = None,
         template = None,
@@ -24255,8 +24440,10 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
-        parse_think = bool(
-            features.get("supports_reasoning") or features.get("reasoning_always_on")
+        parse_think = _sf_parse_think_markers(
+            features,
+            _sf_gate_enable_thinking,
+            _sf_gate_reasoning_effort,
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -27863,9 +28050,19 @@ def _responses_should_parse_think_markers(
     if llama_backend is not None and getattr(llama_backend, "is_loaded", False):
         if getattr(llama_backend, "reasoning_always_on", False):
             return True
-        if getattr(llama_backend, "supports_reasoning", False):
-            return True
-        return False
+        if not getattr(llama_backend, "supports_reasoning", False):
+            return False
+        # Same rule as _think_parsing_expected: decide from the resolved kwargs.
+        resolved = (
+            _reasoning_template_kwargs(
+                llama_backend,
+                chat_req.enable_thinking,
+                chat_req.reasoning_effort,
+                chat_req.preserve_thinking,
+            )
+            or {}
+        )
+        return _resolved_kwargs_think(llama_backend, resolved)
     if chat_req.enable_thinking is True:
         return True
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")

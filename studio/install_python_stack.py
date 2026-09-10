@@ -514,6 +514,27 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     return match.group(1)[:2] if match else ""
 
 
+# `nvidia-npp-cu13` is a wheel-less stub ("DEPRECATED: Use nvidia-npp instead"); plain
+# `nvidia-npp` is the 13.x runtime. WRONG to widen into "13 drops the suffix": `nvidia-cudnn`
+# and `nvidia-nccl` kept theirs, and their unsuffixed names are fake warning packages.
+_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12
+
+
+def _npp_requirement(cuda_major: str) -> str:
+    """The NPP runtime for this CUDA major, spelled the way its publisher spells it.
+
+    Bounded because `nvidia-npp` carries the same 0.0.0a0 junk the stub is made of, and a cu14
+    host must not take a 13 runtime. `[0-9]+` not `isdigit()`, as in _hsa_override_gfx_arch:
+    isdigit() also takes the superscripts, where `int()` below raises, and the non-ASCII digits,
+    which reach a str `\\d` and emit an unparseable `>=١٣`.
+    """
+    if not re.fullmatch(r"[0-9]+", cuda_major):
+        return f"nvidia-npp-cu{cuda_major}"
+    if int(cuda_major) <= _NPP_SUFFIXED_THROUGH_CUDA_MAJOR:
+        return f"nvidia-npp-cu{cuda_major}"
+    return f"nvidia-npp>={cuda_major},<{int(cuda_major) + 1}"
+
+
 # Any sign of the CUDA runtime, versioned or not: nvcudart_hybrid64.dll is the Windows cu130
 # spelling and carries no major. Absent entirely from a cpu build, which is what makes "" safe.
 _CUDA_RUNTIME_MARKER_RE = re.compile(
@@ -8116,11 +8137,10 @@ def install_python_stack() -> int:
                 "the rest of the install is unaffected"
             )
         elif _codec_index:
-            # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is NOT in
-            # torch's own dependency set, so a --no-deps install from a cuNNN index reports
-            # success and then fails to import, disabling audio for a reason nothing here
-            # would otherwise name. docker/Dockerfile installs nvidia-npp-cu12 beside the
-            # same wheel for exactly this. cu13x wheels want nvidia-npp-cu13.
+            # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is not in torch's
+            # dependency set, so an older cuNNN wheel installs fine under --no-deps and then
+            # fails to import. 0.12+ no longer links NPP, so this only guards the older pins.
+            # _npp_requirement spells the name, which stops being suffixed after 12.
             _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
             if _codec_fellback:
                 # The pin is gone, so the tag no longer describes this wheel. Probe EVERY
@@ -8134,13 +8154,14 @@ def install_python_stack() -> int:
                         "which its torch tag implies -- matching NPP to the wheel"
                     )
                     _npp_major = _npp_probed
-            if _npp_major and not pip_install_try(
+            _npp_spec = _npp_requirement(_npp_major) if _npp_major else ""
+            if _npp_spec and not pip_install_try(
                 "Installing torchcodec CUDA runtime (NPP)",
                 "--no-cache-dir",
-                f"nvidia-npp-cu{_npp_major}",
+                _npp_spec,
             ):
                 _note(
-                    f"could not install nvidia-npp-cu{_npp_major} -- torchcodec may fail to "
+                    f"could not install {_npp_spec} -- torchcodec may fail to "
                     "import on a host without the CUDA toolkit, leaving audio disabled"
                 )
 
