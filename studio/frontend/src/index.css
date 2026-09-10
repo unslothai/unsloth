@@ -2083,6 +2083,14 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* ~400px and under: settle the control row toward the bottom edge, since
+	   12px under a 32px circle is more air than the trimmed sides carry. */
+	@container composer-shell (max-width: 23.5rem) {
+		.unsloth-composer-surface {
+			padding-bottom: 0.5rem;
+		}
+	}
+
 	/* ~375px and under. Each control is a circle around a much smaller glyph,
 	   so built-in air, not the gap, sets the spacing. Overlap the circles
 	   instead of shrinking them; hit targets stay full size. */
@@ -2104,6 +2112,13 @@ html[data-chat-font] .aui-root {
 
 		.unsloth-composer-line .aui-composer-action-wrapper {
 			margin-right: 0;
+		}
+
+		/* A 32px corner is a big fraction of a box this small. The drop
+		   overlay tracks it, or its edge shows against the surface. */
+		.unsloth-composer-surface,
+		.unsloth-composer-surface .aui-composer-drop-overlay {
+			border-radius: 1.5rem;
 		}
 
 		/* Plus and send were the row's only 36px circles. Match the rest. */
@@ -2192,6 +2207,41 @@ html[data-chat-font] .aui-root {
 			var(--font-sans)
 		);
 		font-weight: 500;
+	}
+
+	/* Narrow panes shrink the greeting along with the composer under it, or a
+	   30px title wraps over two lines above a tightened box. Sized off the
+	   text tokens so the UI font scale still applies. */
+	@container (max-width: 31.5rem) {
+		.unsloth-welcome-title {
+			font-size: var(--text-2xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: 2.125rem;
+			height: 2.125rem;
+		}
+
+		.unsloth-welcome-greeting {
+			gap: 0.625rem;
+		}
+	}
+
+	/* ~300px and under: one step further, so the greeting holds a single line
+	   beside the mascot instead of wrapping over the composer. */
+	@container (max-width: 18.75rem) {
+		.unsloth-welcome-title {
+			font-size: var(--text-xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: 1.75rem;
+			height: 1.75rem;
+		}
+
+		.unsloth-welcome-greeting {
+			gap: 0.5rem;
+		}
 	}
 
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
