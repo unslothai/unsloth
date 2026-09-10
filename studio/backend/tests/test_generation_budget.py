@@ -56,9 +56,8 @@ def test_a_prompt_with_no_room_left_gets_the_default_not_a_token():
 
 
 def test_the_selected_window_wins_over_a_wider_checkpoint():
-    # from_pretrained keeps config.max_position_embeddings at max(requested, native)
-    # and attaches the requested limit, so reading the config alone would serve a
-    # --max-seq-length 1024 load the whole 32768.
+    # from_pretrained keeps config.max_position_embeddings at max(requested, native), so the
+    # config alone would serve a --max-seq-length 1024 load the whole 32768.
     model = SimpleNamespace(
         max_seq_length = 1024,
         config = SimpleNamespace(max_position_embeddings = 32768),
@@ -83,9 +82,7 @@ def test_a_zero_budget_is_a_value_not_an_absence():
     assert generation_budget_within_context(_model(), _PROMPT_LEN, 0) == 0
 
 
-# ── The call site ──────────────────────────────────────────────────────────────
-# Importing the backend pulls unsloth/unsloth_zoo, which the CPU CI job does not
-# install; these run wherever the full stack is present.
+# The call-site tests below import the backend, which pulls unsloth/unsloth_zoo: absent on CPU CI.
 
 
 class _FakeTensor:

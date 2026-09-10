@@ -3236,10 +3236,8 @@ class MLXInferenceBackend:
         if max_new_tokens is None:
             max_new_tokens = self._unset_generation_budget(prompt)
             if image is not None:
-                # An image expands past its one placeholder token, so the counted prompt is
-                # short of the real one and the free room it implies is not there. Take the
-                # default as a ceiling, but still under the served window: a load pinned
-                # narrower rotates its cache away from the image while generating.
+                # An image expands past its one placeholder token, so the counted prompt is short
+                # of the real one: cap at the default, but stay under the rotating cache window.
                 max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
