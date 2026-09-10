@@ -1248,6 +1248,7 @@ def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
 def test_a_busy_install_lock_is_not_a_verified_match(tmp_path, monkeypatch):
     """Another installer that held the lock for the whole wait may be replacing the tree
     this run verified; the pre-lock answer must not stand in for the locked re-check."""
+
     def busy(_path):
         raise M.BusyInstallConflict("held elsewhere")
 
