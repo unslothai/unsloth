@@ -2471,7 +2471,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
         _OPTIONAL_TOP_UP_ATTEMPTED.add(key)
         with _optional_top_up_lock(venv_dir) as held:
             if not held:
-                logger.warning("%s: another process held the top-up lock too long; left as is", venv_dir)
+                logger.warning(
+                    "%s: another process held the top-up lock too long; left as is", venv_dir
+                )
                 continue
             if not _optional_package_absent(venv_dir, pkg):
                 continue
@@ -2535,12 +2537,10 @@ def _optional_top_up_lock(venv_dir: str):
             try:
                 if sys.platform == "win32":
                     import msvcrt
-
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                 else:
                     import fcntl
-
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError:
