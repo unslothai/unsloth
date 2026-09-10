@@ -188,8 +188,11 @@ class RawTextDataLoader:
                     chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
 
-                # Append EOS on the last or a full chunk.
-                if end_idx == len(tokens) or len(chunk_tokens_list) == chunk_size:
+                # Append EOS only on the chunk that actually reaches the end of the text: a
+                # full-size chunk mid-stride still has real continuation tokens in the next
+                # chunk, so marking it as sequence-end would train a false stop signal into
+                # every overlap boundary.
+                if end_idx == len(tokens):
                     eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                     if eos_token_id is not None:
                         chunk_tokens_list.append(eos_token_id)
@@ -200,8 +203,9 @@ class RawTextDataLoader:
             else:
                 chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
 
-                # Append EOS on the last or a full chunk.
-                if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
+                # Append EOS only on the chunk that actually reaches the end of the text; see the
+                # tokenized branch above for why a full-size mid-stride chunk must not get one.
+                if end_idx == len(tokens):
                     eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                     chunk_text += eos_token
 

@@ -292,6 +292,66 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
     return True
 
 
+def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
+    """A full-size chunk produced mid-stride still has real continuation tokens in
+    the very next chunk (that is the point of the stride overlap), so it must not
+    get an EOS appended. Only the chunk that actually reaches the end of the text
+    may end with EOS, and every other chunk must stay exactly chunk_size long.
+    Covers both the tokenized and text output branches of the same loop."""
+
+    class WordTokenizer:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = -1
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = list(range(len(text.split())))
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    text = " ".join(f"w{i}" for i in range(37))  # 37 tokens: several full chunks + a short tail
+    loader = RawTextDataLoader(WordTokenizer(), chunk_size = 10, stride = 3)
+
+    tokenized_chunks = loader.chunk_text(text, return_tokenized = True)
+    assert len(tokenized_chunks) > 2, "test needs several chunks to cover the intermediate case"
+    for i, chunk in enumerate(tokenized_chunks):
+        ids = chunk["input_ids"]
+        is_last = i == len(tokenized_chunks) - 1
+        if is_last:
+            assert ids[-1] == -1, f"last chunk should end with eos_token_id, got {ids}"
+        else:
+            assert (
+                len(ids) == 10
+            ), f"chunk {i} should stay exactly chunk_size (10), got {len(ids)}: {ids}"
+            assert (
+                ids[-1] != -1
+            ), f"chunk {i} is not the last chunk but ends with eos_token_id: {ids}"
+
+    text_chunks = loader.chunk_text(text, return_tokenized = False)
+    assert len(text_chunks) > 2
+    for i, chunk in enumerate(text_chunks):
+        is_last = i == len(text_chunks) - 1
+        assert (
+            chunk.endswith("</s>") == is_last
+        ), f"chunk {i} (last={is_last}) eos suffix mismatch: {chunk!r}"
+
+    print("✅ test_smart_chunk_text_no_eos_on_intermediate_full_chunks passed!")
+    return True
+
+
 def test_load_from_file_skips_non_object_json_lines():
     """Non-object .jsonl lines (valid JSON, not dicts) are skipped, not fatal."""
     # "context" contains "text", ["text"] holds it, 42 isn't iterable -- each
@@ -670,6 +730,7 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
+    success = test_smart_chunk_text_no_eos_on_intermediate_full_chunks() and success
     success = test_load_from_file_skips_non_object_json_lines() and success
     success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
     success = test_load_from_files_all_empty_raises() and success
