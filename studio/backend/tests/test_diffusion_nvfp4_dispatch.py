@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the cached FlashInfer dispatch (``diffusion_nvfp4_dispatch.py``).
-
-This module reaches into FlashInfer's private internals, so the tests are mostly about the three
-fences rather than about the speed: an exact version allowlist, one try around every private import,
-and a runtime bit-identity check per device. The hermetic half installs a fake ``flashinfer``
-package tree and takes symbols away one at a time; the CUDA-gated half runs the cached path against
-the public one at the four host-cost shapes plus a Wan 2.2 TI2V-5B feed-forward shape and requires
-``torch.equal``.
-"""
+"""Tests for the cached FlashInfer dispatch (``diffusion_nvfp4_dispatch.py``): the version
+allowlist, the all-or-nothing private import, and the per-device bit-identity check."""
 
 from __future__ import annotations
 
@@ -64,7 +57,6 @@ def _fake_flashinfer(
     return root
 
 
-# ── the version fence ─────────────────────────────────────────────────────────────────────────
 
 
 def test_the_allowlisted_version_with_every_symbol_is_available(monkeypatch):
@@ -121,14 +113,12 @@ def test_an_unrecognised_env_value_reads_as_auto(monkeypatch, value):
     assert dispatch.fast_dispatch_env() == "auto"
 
 
-# ── the per-device fence ──────────────────────────────────────────────────────────────────────
 
 
 def test_nothing_is_enabled_until_verify_has_passed_on_that_device(monkeypatch):
     _fake_flashinfer(monkeypatch)
     monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
     assert dispatch.available()[0] is True
-    # available() is a statement about the LIBRARY; enabled() is a statement about the DEVICE.
     assert dispatch.enabled(0) is False
     assert dispatch.quant_fn(0) is None
 
@@ -161,7 +151,6 @@ def test_verify_does_not_run_the_gemm_when_the_library_is_wrong(monkeypatch):
     assert ok is False and "0.7.0" in reason
 
 
-# ── capture safety and the caches ─────────────────────────────────────────────────────────────
 
 
 class _Ptr:
@@ -197,8 +186,6 @@ def test_a_cold_plan_is_never_built_during_a_capture(monkeypatch):
     xq = types.SimpleNamespace(device = 0, shape = (512, 1536))
     assert dispatch.gemm_plan(xq, None, None, None, None, None, 3072, "cutlass") is None
 
-    # A WARM key is fine under capture: the plan is already built, nothing is profiled, and the
-    # prewarm is what makes every key warm before a capture is ever attempted.
     dispatch._GEMM_PLAN[(512, 1536, 3072, "cutlass", 0)] = ("runner", 7, "ws")
     assert dispatch.gemm_plan(xq, None, None, None, None, None, 3072, "cutlass") == (
         "runner",
@@ -227,8 +214,6 @@ def test_the_transpose_cache_is_bounded():
     for pointer in range(dispatch._TRANSPOSE_CACHE_MAX):
         dispatch.transposed(_Ptr(pointer))
     assert len(dispatch._TRANSPOSED) == dispatch._TRANSPOSE_CACHE_MAX
-    # Cleared wholesale rather than evicted one at a time: the population is a model's weight
-    # buffers, so a clear is a warm-up and not a stall.
     dispatch.transposed(_Ptr(10**9))
     assert len(dispatch._TRANSPOSED) == 1
 
@@ -262,10 +247,7 @@ def test_describe_reports_what_is_cached(monkeypatch):
     assert record["transposed"] == 1
 
 
-# ── T-CUDA-10: the cached path against the public one ─────────────────────────────────────────
 
-# The four shapes host cost was measured at, plus a Wan 2.2 TI2V-5B feed-forward: inner dim
-# 24 x 128 = 3072, ffn_dim 14336, and 27280 tokens for a 121-frame 704x1280 latent.
 CUDA_SHAPES = (
     (32, 2560, 3840),
     (1056, 3840, 3840),
@@ -325,7 +307,6 @@ def test_the_cached_dispatch_matches_the_public_api_exactly(m, k, n):
 
     assert torch.equal(want_q, got_q) and torch.equal(want_sf, got_sf)
     assert torch.equal(want, got), float((want.float() - got.float()).abs().max())
-    # It actually took the fast path: a plan for this exact key is now cached.
     assert (m, k // 2, n, ops.DEFAULT_MM_BACKEND, 0) in dispatch._GEMM_PLAN
 
 

@@ -165,10 +165,8 @@ def _is_guard(node: ast.AST) -> bool:
     return name.endswith("torch.cuda.device") or name.endswith("_device_guard")
 
 
-# FlashInfer's PRIVATE dispatch entry points, imported by name in diffusion_nvfp4_dispatch.py and
-# therefore invisible to a "flashinfer." prefix check. Each one either launches or allocates on the
-# current device: choose_one profiles every candidate tactic, _get_cache_buf allocates the
-# workspace, and fp4_quantize_sm100 is the quantiser itself.
+# FlashInfer's PRIVATE dispatch entry points: imported by name, so a "flashinfer." prefix check
+# cannot see them, and each one launches or allocates on the current device.
 _PRIVATE_LAUNCHES = frozenset(
     {
         "choose_one",
@@ -183,8 +181,7 @@ _PRIVATE_LAUNCHES = frozenset(
 
 def _is_launch(node: ast.Call) -> str:
     # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``) rather than on a name, and
-    # it needs the guard just as much: Triton takes its device and stream from the CURRENT context,
-    # not from the tensors it is handed.
+    # needs the guard just as much: Triton takes its device from the CURRENT context.
     if isinstance(node.func, ast.Subscript):
         name = _dotted(node.func.value)
         return name if name.endswith("_kernel") else ""
@@ -271,14 +268,8 @@ _STREAM_BANNED = ("set_stream", "set_device", "setDevice")
 
 
 def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
-    """Lines that switch the current device or stream behind the guard's back.
-
-    ``torch.cuda.set_stream`` silently sets the current DEVICE as well (it is documented as a
-    stream call and is not one), and ``set_device`` moves the very thing the guard restores. Both
-    are the exact mistake the device guard exists to prevent, and both cost cards on this host.
-    Matched on the ATTRIBUTE rather than by substring so that a local named ``reset_stream_cache``
-    does not read as an offence and so that an aliased ``cuda.set_stream`` still does.
-    """
+    """Lines that switch the current device or stream behind the guard's back: ``set_stream``
+    silently sets the current DEVICE as well, and ``set_device`` moves what the guard restores."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
@@ -291,8 +282,6 @@ def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
 def test_the_banned_call_detector_sees_an_aliased_set_stream():
     assert _banned_stream_calls("import torch\ncuda = torch.cuda\ncuda.set_stream(s)\n")
     assert _banned_stream_calls("from torch.cuda import set_device\nset_device(1)\n")
-    # A name that merely CONTAINS one of the tokens is not an offence, which is what the previous
-    # substring check could not tell apart.
     assert not _banned_stream_calls("def reset_stream_cache():\n    return None\n")
 
 

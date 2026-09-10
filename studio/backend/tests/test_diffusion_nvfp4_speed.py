@@ -3,18 +3,8 @@
 
 """Kernel-side tests for the NVFP4 flashinfer path: the device guard and the ordering barrier.
 
-The hermetic half runs against a stubbed ``torch`` and a stubbed ``flashinfer``, because the two
-properties under test are not observable from outside an opaque custom op on a single-GPU host:
-
-* **which device each launch sees.** ``torch.cuda.device`` is a push/pop of a process-wide value,
-  so a stub that records the value at every stubbed FlashInfer call answers "did this launch reach
-  the tensor's card" exactly, with the tensors on device 1 and the current device 0, on a machine
-  with one GPU and no FlashInfer at all. The real thing costs a card when it is wrong.
-* **the call ORDER inside the GEMM op.** The ordering barrier only works if a kernel fires between
-  the activation quantiser and the GEMM; a stub call log is what makes "before" a testable word.
-
-The CUDA-gated half is the same two claims against real hardware, and skips itself when the host
-cannot host them (one visible card, no FlashInfer, not a Blackwell).
+The hermetic half stubs ``torch`` and ``flashinfer``, because neither which device a launch sees nor
+the call ORDER inside the GEMM op is observable from outside an opaque custom op on one GPU.
 """
 
 from __future__ import annotations
@@ -30,7 +20,6 @@ from core.inference import diffusion_nvfp4_linear as nl
 from core.inference import diffusion_nvfp4_ops as ops
 
 
-# ── the stub: just enough torch and flashinfer to record devices and call order ────────────────
 
 
 class _FakeDevice:
@@ -56,11 +45,7 @@ class _FakeDevice:
 
 
 class _FakeTensor:
-    """A tensor-shaped object that answers every call the NVFP4 module bodies make of one.
-
-    Every arithmetic and reshaping method returns a tensor on the SAME device, which is the only
-    property any assertion here reads.
-    """
+    """A tensor-shaped object whose every method returns a tensor on the SAME device."""
 
     def __init__(
         self,
@@ -236,8 +221,7 @@ def _fake_flashinfer():
 def stub_kernels(monkeypatch):
     """Install the stubbed torch and flashinfer for the duration of one test."""
     _RECORDER.reset()
-    # The cached dispatch is off under the stub (nothing verified this fake device), but a verdict
-    # left behind by another file would send these calls down a path the stub does not model.
+    # A verdict left behind by another file would take a path the stub does not model.
     dispatch.reset()
     monkeypatch.setitem(sys.modules, "torch", _fake_torch())
     monkeypatch.setitem(sys.modules, "flashinfer", _fake_flashinfer())
@@ -254,7 +238,6 @@ def _launch_devices(recorder, *names) -> list[int]:
     return [device for name, device in recorder.launches if name in names]
 
 
-# ── T-GUARD-1: every launch sees the tensor's own device, never the current one ────────────────
 
 
 def test_the_stub_records_the_device_a_launch_actually_sees(stub_kernels):
@@ -336,16 +319,10 @@ def test_no_guard_is_left_open_when_a_launch_raises(stub_kernels, monkeypatch):
     assert stub_kernels.stack == []
 
 
-# ── T-CUDA-8: the same claim on real cards ────────────────────────────────────────────────────
 
 
 def test_a_layer_on_card_one_runs_correctly_while_the_current_device_is_card_zero():
-    """The bug this whole guard exists for, reproduced as an assertion.
-
-    Unguarded, FlashInfer's cutlass FP4 GEMM takes the stream from the tensor and launches it
-    against whatever context is current; on this host that left three cards in "GPU requires
-    reset". Guarded, the answer is bit-identical to running with the device already current.
-    """
+    """Unguarded, the cutlass FP4 GEMM launches against whatever context is current."""
     torch = pytest.importorskip("torch")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         pytest.skip("needs CUDA")
@@ -370,7 +347,6 @@ def test_a_layer_on_card_one_runs_correctly_while_the_current_device_is_card_zer
             want = converted(x)
         torch.cuda.synchronize(1)
 
-    # The hypothesis: current device 0, tensors on card 1. Only the layer's own guard saves this.
     assert torch.cuda.current_device() == 0
     with torch.inference_mode():
         got = converted(x)
@@ -379,7 +355,6 @@ def test_a_layer_on_card_one_runs_correctly_while_the_current_device_is_card_zer
     assert torch.equal(got, want)
 
 
-# ── T-BARRIER-1: the persistent PDL ordering barrier ──────────────────────────────────────────
 
 
 def _mm_once(
@@ -412,8 +387,6 @@ def test_the_barrier_is_allocated_once_per_device(stub_kernels):
         _mm_once(1)
     for _ in range(5):
         _mm_once(0)
-    # The whole point of the change: ten GEMMs, two allocations. ``empty`` for the M x N output is
-    # per call and stays per call; the 1-element barrier is not.
     barrier_allocs = [1 for name, _ in stub_kernels.launches if name == "empty"]
     assert len(barrier_allocs) == 12, stub_kernels.launches
     assert sorted(ops._BARRIERS) == [0, 1]
@@ -421,12 +394,8 @@ def test_the_barrier_is_allocated_once_per_device(stub_kernels):
 
 
 def test_the_barrier_fill_precedes_every_gemm(stub_kernels):
-    """The correctness invariant, and the reason the op bodies are callable as plain functions.
-
-    FlashInfer launches the cutlass FP4 GEMM with PDL while the griddepcontrol instructions that
-    make PDL safe are compiled out of its build, so a kernel MUST exist between the activation
-    quantiser and the GEMM. From outside an opaque custom op that ordering is invisible.
-    """
+    """A kernel MUST exist between the activation quantiser and the GEMM (PDL without
+    griddepcontrol)."""
     for _ in range(3):
         _mm_once(1)
     order = [name for name, _ in stub_kernels.launches if name in ("zero_", "mm_fp4")]
@@ -442,8 +411,6 @@ def test_the_barrier_is_not_cached_when_the_stream_is_capturing(stub_kernels, mo
     order = [name for name, _ in stub_kernels.launches if name in ("zero_", "mm_fp4")]
     assert order == ["zero_", "mm_fp4"]
 
-    # Once a barrier exists, capture reuses it rather than allocating: that is what makes the
-    # buffer's data_ptr stable across a capture, and the prewarm is what leaves it warm.
     monkeypatch.setattr(ops, "_is_capturing", lambda: False)
     _mm_once(1)
     warm = ops._BARRIERS[1]
@@ -465,17 +432,13 @@ def test_the_zero_buffer_env_restores_the_full_memset(stub_kernels, monkeypatch)
     monkeypatch.setenv(ops.NVFP4_ZERO_BUFFER_ENV, "1")
     _mm_once(1)
     names = [name for name, _ in stub_kernels.launches]
-    # The M x N zeros IS the barrier in this mode, so there is no separate fill and no buffer.
+    # The M x N zeros IS the barrier in this mode: no separate fill, no buffer.
     assert "zeros" in names and "zero_" not in names
     assert ops._BARRIERS == {}
 
 
 def test_the_barrier_is_not_an_op_argument():
-    """A mutable tensor input would go through ``auto_functionalized`` and be CLONED per call.
-
-    Which is the whole cost this change removes, so the buffer is reached from inside the op body
-    and never appears in the schema.
-    """
+    """A mutable tensor input would go through ``auto_functionalized`` and be CLONED per call."""
     schema = "(Tensor xq, Tensor wq, Tensor x_sf, Tensor w_sf, Tensor alpha, int n, str backend)"
     import inspect
 
@@ -484,7 +447,6 @@ def test_the_barrier_is_not_an_op_argument():
     assert params == ["xq", "wq", "x_sf", "w_sf", "alpha", "n", "backend"]
 
 
-# ── T-CUDA-9: the barrier on real hardware ────────────────────────────────────────────────────
 
 
 def _nvfp4_cuda_or_skip():
@@ -533,7 +495,6 @@ def test_the_persistent_barrier_is_bit_identical_to_the_per_call_one():
                 reference = out.clone()
             else:
                 assert torch.equal(out, reference)
-        # The barrier survives all 50 and the buffer never moves.
         pointer = ops._BARRIERS[0].data_ptr()
         for _ in range(10):
             ops._mm_impl(xq, wq, x_sf, w_sf, alpha, 12288, ops.DEFAULT_MM_BACKEND)
@@ -542,11 +503,7 @@ def test_the_persistent_barrier_is_bit_identical_to_the_per_call_one():
 
 
 def test_the_barrier_pointer_is_stable_across_a_capture_and_replay():
-    """A buffer allocated inside a capture comes from the graph pool and dies with the graph.
-
-    So the shipped shape is: warm the barrier OUTSIDE the capture (which the prewarm does), then
-    capture, and assert the captured GEMM is still firing the same buffer afterwards.
-    """
+    """The barrier is warmed OUTSIDE the capture and must be the one the replay fires."""
     torch = _nvfp4_cuda_or_skip()
     ops.reset_barriers()
     xq, wq, x_sf, w_sf, alpha = _real_operands(torch, 512, 3072, 3072, seed = 5)
@@ -566,7 +523,6 @@ def test_the_barrier_pointer_is_stable_across_a_capture_and_replay():
         torch.cuda.current_stream().wait_stream(stream)
         with torch.cuda.graph(graph, pool = pool):
             captured = ops._mm_impl(xq, wq, x_sf, w_sf, alpha, 3072, ops.DEFAULT_MM_BACKEND)
-        # Nothing was allocated for the barrier during the capture.
         assert ops._BARRIERS[0].data_ptr() == before
         for _ in range(5):
             graph.replay()
@@ -577,11 +533,7 @@ def test_the_barrier_pointer_is_stable_across_a_capture_and_replay():
     ops.reset_barriers()
 
 
-# ── T-BIAS-1: the eager bias fast path and every way it declines ──────────────────────────────
 
-# The seven shapes the Triton pass was verified bit-identical on, spanning the crossover: a tall
-# activation batch, a modulation projection at M = 1, and two odd token counts that do not divide
-# the block.
 BIAS_SHAPES = (
     (16384, 12288),
     (4096, 3072),
@@ -647,20 +599,15 @@ def test_the_kernel_declines_a_shape_or_dtype_it_does_not_cover():
 
     out, bias = _bias_pair(torch, 8, 16)
     assert fb._eligible(out, bias)
-    # fp32 is outside the fp32-accumulate-then-round contract.
     assert not fb._eligible(*_bias_pair(torch, 8, 16, dtype = torch.float32))
-    # A transposed output is not the contiguous buffer the flat indexing assumes.
     assert not fb._eligible(out.T.contiguous().T, bias)
-    # A CPU pair has no kernel at all.
     assert not fb._eligible(out.cpu(), bias.cpu())
-    # A bias that is not one row per output column.
     assert not fb._eligible(out, bias[:8])
     assert not fb._eligible(out, bias.reshape(1, 16))
 
 
 def test_the_kernel_declines_while_tracing(monkeypatch):
-    """Inductor fuses the bias into the next op (0.0156 ms against eager 0.1138 at M=4096); an
-    opaque launch here would prevent exactly that."""
+    """Under tracing it falls back to ``add_``, so inductor can keep fusing the bias."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
 

@@ -71,14 +71,7 @@ def reset_tuned_shapes() -> None:
 
 
 def reset_nvfp4_state() -> None:
-    """Drop every piece of process-wide NVFP4 state a loaded model left behind.
-
-    One entry point rather than three call sites, because the thing that goes wrong here is
-    forgetting one of them. Called from the unload paths next to the CUDA graph teardown, and for
-    the same reason: the PDL barrier is allocated outside any capture and must not be inherited by
-    the next model's graph pool. Everything reset here is cheap to rebuild, so a spurious reset
-    costs a warm-up and a missed one costs a pointer into a freed pool.
-    """
+    """Drop every piece of process-wide NVFP4 state a loaded model left behind."""
     from . import diffusion_nvfp4_dispatch as _dispatch
     from . import diffusion_nvfp4_ops as _ops
 
@@ -194,11 +187,8 @@ def nvfp4_linear_class():
                 )
                 out = F.linear(flat, weight)
             else:
-                # The guard stays under torch.compile. It is a live context manager inside a traced
-                # region, which is a plausible graph break, so it was measured: a two-layer NVFP4
-                # block compiles fullgraph to ONE graph with zero breaks on torch 2.12
-                # (test_a_two_layer_block_compiles_fullgraph). Free, and the alternative is a launch
-                # that can reach the card the process is not currently on.
+                # The guard stays under torch.compile (measured: zero graph breaks); without it a
+                # flashinfer launch can reach the card the process is not currently on.
                 with _device_guard(flat):
                     xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
                     out = torch.ops.unsloth_nvfp4.mm(
@@ -211,9 +201,6 @@ def nvfp4_linear_class():
             if self.bias is not None:
                 # mm_fp4 has no bias epilogue (no bias argument, no beta accumulate), so the add is
                 # a separate pass over the M x N output. In place, on the op's own fresh output.
-                # On the eager path that pass is a Triton kernel, bit-identical to add_ and up to
-                # 3.8x faster; under torch.compile it falls straight back to add_ so inductor can
-                # keep fusing it into the next op. See diffusion_nvfp4_bias.py.
                 fused_bias_add_(out, self.bias)
             return out.reshape(*shape[:-1], self.out_features)
 

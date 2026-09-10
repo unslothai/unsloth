@@ -78,17 +78,7 @@ _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
 _WARNED: set = set()
 
-# The PDL ordering barrier, one 1-element bf16 buffer per device index. See ``_fire_barrier``.
-#
-# DELETE THIS WHEN FLASHINFER SHIPS THE GRIDDEPCONTROL FIX. The barrier exists only because
-# FlashInfer launches its cutlass FP4 GEMM with PDL while the CUTLASS ``griddepcontrol``
-# instructions that make PDL safe are compiled out of its build, and because ``enable_pdl = False``
-# is plumbed to its cute-dsl runner alone and silently ignored for cutlass. Once a FlashInfer
-# release builds those instructions in (or honours ``enable_pdl`` for cutlass), the barrier, the
-# ``UNSLOTH_NVFP4_ZERO_BUFFER`` escape hatch, ``reset_barriers`` and its call sites in
-# ``reset_nvfp4_state`` all go, and the ordering test in ``test_diffusion_nvfp4_speed.py`` goes with
-# them. Nothing else in this module depends on it. Tracked as item 3 of section 15 of the NVFP4
-# investigation README (``temp/nvfp4_upload/README.md``).
+# The PDL ordering barrier (see ``_fire_barrier``), one bf16 element per device index.
 _BARRIER_LOCK = threading.Lock()
 _BARRIERS: dict[int, Any] = {}
 
@@ -112,26 +102,9 @@ def _device_guard(t: Any):
     See this module's docstring: FlashInfer installs no device guard of its own, and launching its
     cutlass kernels against a foreign current device bricks the card rather than raising.
 
-    The audited sites, which is the whole list and is what the AST test enforces:
-
-    1. ``_quantize_impl`` -- the activation quantiser.
-    2. ``_mm_impl`` -- spans the ordering barrier AND the GEMM, because the barrier has to fire on
-       the same device the GEMM will read from; two separate guards would be two chances to get it
-       wrong.
-    3. the dispatch plan builder (``diffusion_nvfp4_dispatch.gemm_plan``): ``_get_cache_buf``
-       allocates the workspace on the CURRENT device, ``get_cutlass_fp4_gemm_module`` and
-       ``AutoTuner.choose_one`` both launch, and ``choose_one`` in particular launches every
-       candidate tactic while profiling.
-    4. ``nvfp4_preflight`` -- the probe, which is the one call that exists to find a bad device.
-    5. ``nvfp4_prewarm`` in ``diffusion_nvfp4_linear`` -- the warm-up entry, whose whole job is to
-       run the GEMM outside the request path.
-
-    The traced layer ``forward`` keeps its guard too. A live context manager inside a traced region
-    is a plausible graph break, so this was measured rather than assumed: on torch 2.12 a two-layer
-    NVFP4 block with the guard in ``forward`` compiles ``fullgraph = True`` to one graph with zero
-    breaks (``test_a_two_layer_block_compiles_fullgraph``). Since it costs no graph, it stays --
-    inductor's own wrapper opens a device guard for the generated code, but the eager prologue that
-    reaches the custom op is not obviously inside it, and being wrong here costs a card.
+    Every flashinfer call site must sit inside one of these guards; the AST test enforces the list.
+    ``_mm_impl`` spans the barrier AND the GEMM, because the barrier has to fire on the device the
+    GEMM will read from.
     """
     import torch
     return torch.cuda.device(t.device)
@@ -150,7 +123,7 @@ def _device_index(device: Any) -> int:
 
 
 def _is_capturing() -> bool:
-    """Whether the current stream is capturing a CUDA graph. False on a torch that cannot say."""
+    """Whether the current stream is capturing a CUDA graph."""
     try:
         import torch
         return bool(torch.cuda.is_current_stream_capturing())
@@ -159,14 +132,8 @@ def _is_capturing() -> bool:
 
 
 def _barrier(device: Any):
-    """The process-wide 1-element bf16 buffer for ``device``, allocated at most once.
-
-    Returns an UNCACHED buffer while the current stream is capturing and none exists yet: an
-    allocation made inside a capture comes from the graph's private memory pool and dies with the
-    graph, so caching it would hand every later call a pointer into a freed pool. Capture is not
-    the steady state -- the three prewarm forwards run before any capture and leave every device
-    warm -- so this branch is a safety net, not a path with a cost that matters.
-    """
+    """The process-wide 1-element bf16 buffer for ``device``, UNCACHED while the stream is
+    capturing: an allocation made inside a capture dies with the graph."""
     import torch
 
     index = _device_index(device)
@@ -181,31 +148,16 @@ def _barrier(device: Any):
 
 
 def _fire_barrier(device: Any):
-    """Launch the ordering kernel that has to sit between the quantiser and the GEMM.
-
-    A ``zero_`` on one bf16 element. What protects the GEMM is a kernel EXISTING between the
-    producer and it, not that kernel writing M x N bytes (see ``_mm_impl`` for the 50-iteration
-    trigger table, where a bare allocation protects nothing and a one-element kernel is as good as
-    the full memset), so this is the cheapest launch that buys the whole guarantee.
-
-    The buffer is persistent and the FILL is what is per call, which is the distinction the earlier
-    per-call ``torch.zeros(1)`` blurred: that allocated a new buffer every GEMM purely to get the
-    kernel that came with it. The forward-33 objection does not apply. It was about caching the
-    GEMM's OUTPUT, where one transient bad write latches into every later render; nothing is ever
-    read out of this buffer, by this module or by the kernel, so its contents cannot reach a
-    result. It is written and never read, on purpose.
-    """
+    """Launch the ordering kernel that has to sit between the quantiser and the GEMM. What
+    protects the GEMM is a kernel EXISTING there, not that kernel writing M x N bytes."""
     buf = _barrier(device)
     buf.zero_()
     return buf
 
 
 def reset_barriers() -> None:
-    """Drop every cached barrier. Call on unload, with the CUDA graph pool.
-
-    A barrier allocated under one model's allocator state must not be handed to the next one's
-    graph pool, and the buffer is one element, so rebuilding it costs nothing worth keeping.
-    """
+    """Drop every cached barrier: one allocated under a model's allocator state must not be handed
+    to the next model's graph pool."""
     with _BARRIER_LOCK:
         _BARRIERS.clear()
 
@@ -229,8 +181,7 @@ def _quantize_impl(x: Any, global_sf: Any):
     from . import diffusion_nvfp4_dispatch as dispatch
 
     with _device_guard(x):
-        # Both branches inside the SAME guard: the fast one is the same pybind entry point the
-        # public one reaches, so it needs the guard for the same reason.
+        # Both branches inside the SAME guard: the fast one reaches the same pybind entry point.
         xq, sf = dispatch._fast_quantize(x, global_sf)
         if xq is not None:
             return xq, sf
@@ -265,10 +216,8 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
     a 1-element fill buys the whole guarantee and the memset was paying M x N to get it.
 
     The barrier buffer is PERSISTENT per device (``_fire_barrier``) and only the fill is per call.
-    The earlier form, ``torch.zeros(1)`` every GEMM, allocated a fresh buffer purely to obtain the
-    kernel that came with it. The forward-33 objection that argued for a fresh buffer was about
-    caching the GEMM's OUTPUT -- one transient NaN write latching into every later render with the
-    same token count -- and does not reach here, because nothing ever reads this buffer.
+    The forward-33 objection that argued for a fresh buffer was about caching the GEMM's OUTPUT and
+    does not reach here, because nothing ever reads this buffer.
 
     ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` restores the full memset. It is strictly slower and no safer
     against the mechanism established above, but the residual forward-33 misfire has no confirmed
@@ -287,10 +236,8 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             _fire_barrier(xq.device)
-        # The cached dispatch, when this flashinfer's private layout is the verified one. Same
-        # guard, same barrier, same tactic flashinfer's own AutoTuner would have chosen; what it
-        # skips is rebuilding the runner and re-hashing the shapes on every call. A cold key under
-        # capture, or anything unverified, returns None and the public entry point runs.
+        # The cached dispatch: same tactic the AutoTuner would choose, minus the per-call runner
+        # rebuild. Anything unverified returns None and the public entry point runs.
         if dispatch.enabled(xq.device):
             wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
             plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)
@@ -558,10 +505,7 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
         rec["ok"] = finite
         rec["reason"] = "ok" if finite else "mm_fp4 produced a non-finite result"
         if finite:
-            # The one-shot bit-identity check that unlocks the cached dispatch on this device.
-            # Here rather than on the request path because it quantises and GEMMs twice, and here
-            # rather than nowhere because a private symbol that still exists but means something
-            # else is invisible to a version allowlist.
+            # One-shot bit-identity check unlocking the cached dispatch, off the request path.
             from . import diffusion_nvfp4_dispatch as dispatch
 
             fast_ok, fast_reason = dispatch.verify(dev)

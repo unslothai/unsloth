@@ -3,44 +3,9 @@
 
 """FlashInfer's per-call dispatch work, hoisted into a cache. Every private import is HERE.
 
-Why this exists. On a clean B200, block-compiled z-image 512px at 100 percent 4-bit spends 0.618 s
-of wall clock on 0.125 s of GPU work: 20 percent busy, against 51 percent for the same model in
-fp8 with the same 0.126 s of GPU work. Identical device work, 2.5x the wall clock. The GEMM is not
-slow; the host cannot issue it. Per call ``flashinfer.mm_fp4`` costs 61 to 73 us of HOST time to
-launch a kernel that runs in 5 to 65 us, and a render makes 2151 of those calls.
-
-The cost is work that is CONSTANT for a given shape and is rebuilt every call:
-``mm_fp4`` constructs a four-entry dict of runner-factory lambdas, builds a fresh cutlass runner and
-re-hashes its inputs for an ``AutoTuner.choose_one`` cache probe; ``fp4_quantize`` re-runs
-``device_support_pdl`` and ``get_compute_capability`` and looks up its module by an f-string. So
-this caches ``(runner, tactic, workspace)`` per (M, K, N, backend, device) and the quantiser's bound
-pybind function per device, and calls straight through: 61.8 -> 18.1 us of host time per call,
-bit-identical, and 0.6309 -> 0.4074 s (1.55x) end to end at z-image 512, 0.6984 -> 0.4802 (1.45x) at
-1024, un-graphed.
-
-**This reaches into FlashInfer's private internals, so it is fenced three ways.**
-
-1. An EXACT version allowlist. Not a minimum: a private symbol that moves in 0.6.7 is not a bug in
-   0.6.7. ``UNSLOTH_NVFP4_FAST_DISPATCH=1`` skips the version check for someone deliberately
-   testing a new release; it does not skip anything else.
-2. Every private import in ONE try, in ONE file. A missing or moved symbol returns "unavailable"
-   with the exception in the reason, and the public API runs instead. There is no partial fast path.
-3. A runtime ``verify()``: quantise and GEMM both ways on this exact device and require
-   ``torch.equal``. It runs once per device from the preflight, off the request path, and no fast
-   call is made anywhere until it has passed. A symbol that still exists but means something else
-   is exactly the failure a version check cannot see.
-
-The fast path is off until all three pass, and every failure is silent to the render and readable
-in the preflight record.
-
-Capture safety: ``gemm_plan`` returns None for a cold key while the stream is capturing, because
-``choose_one`` may PROFILE, and profiling launches inside a capture bake candidate tactics into the
-graph. The prewarm makes every key warm before any capture, so this is a fallback rather than a
-path. Nothing here caches a result tensor -- only a runner, a tactic, a workspace and two transposed
-VIEWS of weight buffers that live for the model's lifetime.
-
-Retire this file when FlashInfer exposes a plan/run split of its own; the cache is worth upstreaming
-rather than keeping.
+Fenced three ways: an EXACT version allowlist (a symbol that moves in 0.6.7 is not a bug in 0.6.7),
+every private import in ONE try so there is no partial fast path, and a runtime per-device
+``verify()``, because a symbol that still exists but means something else passes a version check.
 """
 
 from __future__ import annotations
@@ -54,10 +19,7 @@ _SUPPORTED = ("0.6.6",)
 
 NVFP4_FAST_DISPATCH_ENV = "UNSLOTH_NVFP4_FAST_DISPATCH"
 
-# ``.T`` is a fresh view object every time it is evaluated, and the two of them measured about 12 us
-# of the public path's host cost. Weight buffers are built once and live for the model's lifetime,
-# so their transposes can simply be kept. Keyed on data_ptr AND shape, so a reallocated buffer
-# cannot silently return a stale view. Weights only: an activation view would be unbounded.
+# Weights only: an activation view would be unbounded.
 _TRANSPOSE_CACHE_MAX = 4096
 
 _LOCK = threading.Lock()
@@ -88,7 +50,6 @@ def _probe() -> tuple:
                 f"flashinfer {version} is not in the verified set "
                 f"{', '.join(_SUPPORTED)}; using the public API"
             )
-        # One try for the whole private surface. A partial fast path is not a thing that exists.
         from flashinfer.autotuner import AutoTuner  # noqa: F401
         from flashinfer.fp4_quantization import get_fp4_quantization_module  # noqa: F401
         from flashinfer.gemm.gemm_base import (  # noqa: F401
@@ -116,10 +77,7 @@ def available() -> tuple:
 
 
 def enabled(device: Any) -> bool:
-    """Whether the fast path may be used on ``device``. A dict lookup, on the request path.
-
-    False until ``verify(device)`` has passed there, which the preflight does once per device.
-    """
+    """Whether the fast path may be used on ``device``: false until ``verify(device)`` passed."""
     from .diffusion_nvfp4_ops import _device_index
 
     record = _VERIFIED.get(_device_index(device))
@@ -127,12 +85,7 @@ def enabled(device: Any) -> bool:
 
 
 def verify(device: Any) -> tuple:
-    """Run both paths on ``device`` and require bit identity. ``(ok, reason)``, once per device.
-
-    Off the request path (the preflight calls it), because it quantises, GEMMs twice and compares.
-    A version allowlist answers "is this the layout I read"; only this answers "does it still mean
-    what it meant".
-    """
+    """Run both paths on ``device`` and require bit identity. ``(ok, reason)``, once per device."""
     from .diffusion_nvfp4_ops import _device_index
 
     index = _device_index(device)
@@ -208,16 +161,8 @@ def _global_scale(t: Any):
     return (6.0 * 448.0 / t.float().abs().amax().clamp(min = 1e-8)).reshape(1).to(t.device)
 
 
-# ── the cached pieces ─────────────────────────────────────────────────────────────────────────
-
-
 def quant_fn(device: Any, *, force: bool = False):
-    """The bound pybind quantiser plus its ``enable_pdl`` flag for ``device``, or None.
-
-    What is cached is what ``fp4_quantize`` recomputes per call: the compute capability, the PDL
-    support query and the module lookup keyed by an f-string. ``force`` is for ``verify`` alone,
-    which has to run the fast path BEFORE the fast path is allowed to be used.
-    """
+    """The bound pybind quantiser and its ``enable_pdl`` flag for ``device``, or None."""
     from .diffusion_nvfp4_ops import _device_index
 
     index = _device_index(device)
@@ -254,31 +199,20 @@ def _fast_quantize(
     *,
     force: bool = False,
 ):
-    """``flashinfer.nvfp4_quantize(do_shuffle = False)`` without the per-call device queries.
-
-    Returns ``(None, None)`` when the fast path does not apply, so the caller runs the public one.
-    A column-major input is refused rather than transposed: ``fp4_quantize`` handles that case with
-    a transpose dance this deliberately does not reimplement.
-    """
+    """``nvfp4_quantize(do_shuffle = False)`` minus the per-call device queries."""
     if not x.is_contiguous():
         return None, None
     got = quant_fn(x.device, force = force)
     if got is None:
         return None, None
     fn, pdl = got
-    # Exactly the arguments nvfp4_quantize(do_shuffle = False, sfLayout = 128x4) passes through:
-    # sf_vec_size 16, sf_use_ue8m0 False, is_sf_swizzled_layout True, is_sf_8x4_layout False.
+    # Exactly the arguments nvfp4_quantize(do_shuffle = False, sfLayout = 128x4) passes through.
     xq, sf = fn(x, global_sf, 16, False, True, False, pdl)
     return xq, sf.reshape((-1, x.shape[-1] // 16))
 
 
 def transposed(t: Any):
-    """A kept ``.T`` of a weight buffer, keyed on ``(data_ptr, shape)``.
-
-    Bounded and cleared wholesale rather than evicted one at a time: the population is the model's
-    weight buffers, so it is a few hundred entries and a clear is a warm-up, not a stall. Holding
-    the view holds a reference to the base tensor, which is a weight that is alive anyway.
-    """
+    """A kept ``.T`` of a weight buffer, keyed on ``(data_ptr, shape)`` against a stale view."""
     key = (t.data_ptr(), tuple(t.shape))
     view = _TRANSPOSED.get(key)
     if view is not None:
@@ -301,12 +235,8 @@ def gemm_plan(
     *,
     force: bool = False,
 ):
-    """``(runner, tactic, workspace)`` for this shape, or None to use the public ``mm_fp4``.
-
-    None when the fast path is off, when the plan cannot be built, and -- the one that matters --
-    when the key is COLD and the stream is capturing: ``choose_one`` may profile, and a profiling
-    launch inside a capture is baked into the graph forever.
-    """
+    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``) including for a COLD key under
+    capture, where ``choose_one`` may profile and bake tactics into the graph."""
     from .diffusion_nvfp4_ops import _device_index, _is_capturing
 
     device = xq.device
@@ -334,16 +264,14 @@ def _build_plan(key: tuple, device: Any, operands: list):
     )
     from flashinfer.utils import get_compute_capability
 
-    # The guard spans the whole builder, not just the probe: _get_cache_buf allocates the workspace
-    # on the CURRENT device, and choose_one launches every candidate tactic while profiling.
+    # The guard spans the whole builder: both allocation and profiling hit the CURRENT device.
     with torch.cuda.device(device):
         workspace = _get_cache_buf("mm_fp4_workspace", DEFAULT_WORKSPACE_SIZE, device)
         major, minor = get_compute_capability(device)
         runner = get_cutlass_fp4_gemm_module(major, minor).cutlass_fp4_gemm_runner()
         xq, wq_t, x_sf, w_sf_t, alpha, out = operands
         inputs = [xq, wq_t, x_sf, w_sf_t, alpha, torch.bfloat16, out, 16, True, workspace]
-        # One probe of FlashInfer's OWN tactic cache, so the fast path runs exactly the tactic the
-        # public path would have chosen for this shape rather than a guess.
+        # Probe FlashInfer's OWN tactic cache, so this runs the tactic the public path would.
         _, tactic = AutoTuner.get().choose_one(
             "fp4_gemm", [runner], _MM_FP4_TUNING_CONFIG_128x4, inputs
         )
@@ -353,11 +281,7 @@ def _build_plan(key: tuple, device: Any, operands: list):
 
 
 def reset() -> None:
-    """Forget everything: the availability probe, the per-device verdicts and the three caches.
-
-    Called on unload with the CUDA graph pool and the barriers. The transposed views hold weight
-    buffers, so keeping them past an unload would pin a freed model's memory.
-    """
+    """Forget everything. Called on unload: the transposed views would pin a freed model."""
     global _AVAILABLE
     with _LOCK:
         _AVAILABLE = None
