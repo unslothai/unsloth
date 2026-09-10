@@ -21,8 +21,6 @@ from utils.paths.path_utils import drop_appledouble_metadata
 
 ExportFormat = Literal["jsonl", "parquet"]
 
-# A DuckDB vector is 2048 rows, so this fetches ~8k rows at a time.
-_JSONL_EXPORT_VECTORS_PER_CHUNK = 4
 _JSONL_EXPORT_BATCH_ROWS = 8192
 # file_row_number, not row_number() OVER (PARTITION BY filename): a window with no ORDER BY is
 # undefined in DuckDB, and its parallel scan renumbered every query.
@@ -98,15 +96,12 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
             _PARQUET_EXPORT_SQL,
             [[str(path.resolve()) for path in _parquet_files(parquet_dir)]],
         )
+        # Arrow rather than a DataFrame, so this reads the same values the fallback below does: a
+        # pandas round trip turns an int column holding nulls into floats and a DATE into midnight.
+        reader = conn.to_arrow_reader(_JSONL_EXPORT_BATCH_ROWS)
         with destination.open("w", encoding = "utf-8") as handle:
-            while True:
-                dataframe = conn.fetch_df_chunk(_JSONL_EXPORT_VECTORS_PER_CHUNK)
-                if dataframe.empty:
-                    break
-                _write_jsonl_rows(
-                    handle,
-                    [to_preview_jsonable(row) for row in dataframe.to_dict(orient = "records")],
-                )
+            for batch in reader:
+                _write_jsonl_rows(handle, [to_preview_jsonable(row) for row in batch.to_pylist()])
     except Exception:
         return False
     finally:

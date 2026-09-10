@@ -340,14 +340,18 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
         artifact_path = None,
         filename = "big-run",
     )
-    assert response.filename == "big-run.jsonl"
-    assert fake_manager.calls == [
-        (jobs_route._IN_MEMORY_DOWNLOAD_PAGE_SIZE, 0),
-        (jobs_route._IN_MEMORY_DOWNLOAD_PAGE_SIZE, 10_000),
-    ]
-    lines = Path(response.path).read_text(encoding = "utf-8").strip().splitlines()
-    assert len(lines) == 12_500
-    assert json.loads(lines[-1]) == {"index": 12_499}
+    # Called directly, so the response's background unlink never runs: take the file away here.
+    try:
+        assert response.filename == "big-run.jsonl"
+        assert fake_manager.calls == [
+            (jobs_route._IN_MEMORY_DOWNLOAD_PAGE_SIZE, 0),
+            (jobs_route._IN_MEMORY_DOWNLOAD_PAGE_SIZE, 10_000),
+        ]
+        lines = Path(response.path).read_text(encoding = "utf-8").strip().splitlines()
+        assert len(lines) == 12_500
+        assert json.loads(lines[-1]) == {"index": 12_499}
+    finally:
+        Path(response.path).unlink(missing_ok = True)
 
 
 def _download_app(monkeypatch, tmp_path: Path, jobs_route):
@@ -792,3 +796,48 @@ def test_pyarrow_fallback_streams_a_merged_shard_by_row_group(tmp_path: Path):
     assert _write_jsonl_with_pyarrow(parquet_dir, destination)
     exported = [json.loads(line)["i"] for line in destination.read_text().splitlines()]
     assert exported == list(range(rows))
+
+
+def test_both_readers_produce_the_same_bytes_for_the_same_artifact(tmp_path: Path):
+    """DuckDB and the fallback must not disagree about an artifact, whichever one happens to run.
+    Reading DuckDB through a DataFrame made them: an int column holding nulls came back as floats
+    and a DATE as midnight."""
+    pytest.importorskip("duckdb")
+    pyarrow = pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pyarrow_parquet
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    from core.data_recipe.export import (
+        _stream_jsonl_from_parquet_with_duckdb,
+        _write_jsonl_with_pyarrow,
+    )
+
+    parquet_dir = tmp_path / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    pyarrow_parquet.write_table(
+        pyarrow.table(
+            {
+                "i64": pyarrow.array([1, None], pyarrow.int64()),
+                "day": pyarrow.array([date(2020, 1, 1), None], pyarrow.date32()),
+                "at": pyarrow.array([datetime(2020, 1, 1, 12, 30), None], pyarrow.timestamp("us")),
+                "price": pyarrow.array([Decimal("1.20"), None], pyarrow.decimal128(10, 2)),
+                "tags": pyarrow.array([[1, 2], None], pyarrow.list_(pyarrow.int64())),
+            }
+        ),
+        parquet_dir / "batch_00000.parquet",
+    )
+
+    from_duckdb = tmp_path / "duckdb.jsonl"
+    from_pyarrow = tmp_path / "pyarrow.jsonl"
+    assert _stream_jsonl_from_parquet_with_duckdb(
+        parquet_dir = parquet_dir,
+        destination = from_duckdb,
+    )
+    assert _write_jsonl_with_pyarrow(parquet_dir, from_pyarrow)
+
+    assert from_duckdb.read_bytes() == from_pyarrow.read_bytes()
+    first = json.loads(from_duckdb.read_text().splitlines()[0])
+    assert first["i64"] == 1
+    assert first["day"] == "2020-01-01"
+    assert first["price"] == 1.2

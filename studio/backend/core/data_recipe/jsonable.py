@@ -60,14 +60,26 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
     return None
 
 
+# Resolved once: to_jsonable runs per value, and importing pandas per value cost 30% of it. The
+# placeholder is a private object rather than None, which a real value can be.
+_NO_SENTINEL = object()
+_PANDAS_NA: Any = _NO_SENTINEL
+_PANDAS_NAT: Any = _NO_SENTINEL
+_PANDAS_SENTINELS_READY = False
+
+
 def _is_pandas_missing(value: Any) -> bool:
     """pandas' own missing sentinels. Identity rather than ``pd.isna``, which answers element-wise
     for a list or an array; these two are singletons."""
-    try:
-        import pandas as pd  # type: ignore
-    except ImportError:  # pragma: no cover
-        return False
-    return value is pd.NA or value is pd.NaT
+    global _PANDAS_NA, _PANDAS_NAT, _PANDAS_SENTINELS_READY
+    if not _PANDAS_SENTINELS_READY:
+        try:
+            import pandas as pd  # type: ignore
+            _PANDAS_NA, _PANDAS_NAT = pd.NA, pd.NaT
+        except ImportError:  # pragma: no cover
+            _PANDAS_NA = _PANDAS_NAT = _NO_SENTINEL
+        _PANDAS_SENTINELS_READY = True
+    return value is _PANDAS_NA or value is _PANDAS_NAT
 
 
 def to_jsonable(value: Any) -> Any:
