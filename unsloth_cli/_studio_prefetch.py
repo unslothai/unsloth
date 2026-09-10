@@ -590,6 +590,25 @@ def prefetched_core_pins(marker: Optional[dict]) -> list:
     return pins
 
 
+def planned_core_names(marker: Optional[dict]) -> list:
+    """The canonical names of every package a marker's plan pins, in plan order.
+
+    The offline retry installs each of them with --no-deps, so a caller deciding whether
+    the plan is still safe to hand over has to look at every one of them, not only at
+    the two the plan was made for.
+    """
+    plan = (marker or {}).get("core_plan") if isinstance(marker, dict) else None
+    if not isinstance(plan, dict):
+        return []
+    names = []
+    for name in plan:
+        if isinstance(name, str) and name.strip():
+            canonical = _canonical_name(name.strip())
+            if canonical not in names:
+                names.append(canonical)
+    return names
+
+
 def marker_is_current(
     marker: Optional[dict],
     *,
@@ -738,7 +757,7 @@ def uv_no_cache_requested() -> bool:
     return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
 
 
-def _free_bytes(path: Path) -> Optional[int]:
+def _nearest_existing(path: Path) -> Path:
     probe = path
     for _ in range(8):
         if probe.exists():
@@ -747,10 +766,38 @@ def _free_bytes(path: Path) -> Optional[int]:
         if parent == probe:
             break
         probe = parent
+    return probe
+
+
+def _free_bytes(path: Path) -> Optional[int]:
     try:
-        return shutil.disk_usage(str(probe)).free
+        return shutil.disk_usage(str(_nearest_existing(path))).free
     except OSError:
         return None
+
+
+def _filesystem_id(path: Path) -> Optional[object]:
+    """Something equal for two paths on the same filesystem, or None when unknown."""
+    try:
+        return os.stat(_nearest_existing(path)).st_dev
+    except OSError:
+        return None
+
+
+def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
+    """The prefetch root, plus the uv cache when it lives on another filesystem.
+
+    uv writes every wheel it fetches into the cache as well as into the throwaway
+    target, so a cache on a nearly full second volume has to meet the floor too. The
+    same volume is checked once.
+    """
+    volumes = [root]
+    if cache_dir:
+        cache = Path(cache_dir)
+        root_id, cache_id = _filesystem_id(root), _filesystem_id(cache)
+        if root_id is None or cache_id is None or root_id != cache_id:
+            volumes.append(cache)
+    return volumes
 
 
 # ── Runner ──
@@ -1029,14 +1076,14 @@ def _run_unguarded(
         raise PrefetchSkipped(f"uv is not available (looked on PATH and in {where})")
 
     root = prefetch_root(studio_home)
-    free = _free_bytes(root)
-    if free is not None and free < MIN_FREE_BYTES:
-        raise PrefetchError(
-            f"not enough free space to prepare an update ({free} bytes free, "
-            f"{MIN_FREE_BYTES} needed)"
-        )
-
     cache_dir = child_env.get("UV_CACHE_DIR")
+    for volume in _volumes_to_check(root, cache_dir):
+        free = _free_bytes(volume)
+        if free is not None and free < MIN_FREE_BYTES:
+            raise PrefetchError(
+                f"not enough free space to prepare an update ({free} bytes free at "
+                f"{volume}, {MIN_FREE_BYTES} needed)"
+            )
 
     if root.exists() and not _is_owned(root):
         raise PrefetchError(f"{root} exists and was not created by Unsloth")

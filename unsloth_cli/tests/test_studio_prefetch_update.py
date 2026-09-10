@@ -766,6 +766,47 @@ def test_a_full_disk_stops_the_prefetch_before_it_writes_anything(managed, monke
     assert not _studio_prefetch.prefetch_root(managed).exists()
 
 
+def test_a_full_uv_cache_volume_stops_the_prefetch_too(managed, monkeypatch, tmp_path):
+    cache = tmp_path / "other-volume" / "uv-cache"
+    root = _studio_prefetch.prefetch_root(managed)
+    monkeypatch.setattr(_studio_prefetch, "_filesystem_id", lambda path: 2 if path == cache else 1)
+    monkeypatch.setattr(
+        _studio_prefetch,
+        "_free_bytes",
+        lambda path: 512 * 1024 * 1024 if path == cache else 50 * 1024 * 1024 * 1024,
+    )
+    monkeypatch.setattr(
+        _studio_prefetch,
+        "_run",
+        lambda cmd, env: pytest.fail("the cache volume floor must be checked before uv runs"),
+    )
+
+    with pytest.raises(_studio_prefetch.PrefetchError) as failure:
+        _studio_prefetch.run(
+            studio_home = managed, echo = lambda line: None, env = {"UV_CACHE_DIR": str(cache)}
+        )
+
+    assert "free space" in str(failure.value) and str(cache) in str(failure.value)
+    assert not root.exists()
+
+
+def test_the_same_volume_is_checked_once(monkeypatch):
+    root = Path("/studio/.update-prefetch")
+    monkeypatch.setattr(_studio_prefetch, "_filesystem_id", lambda path: 7)
+    assert _studio_prefetch._volumes_to_check(root, "/studio/cache/uv") == [root]
+    monkeypatch.setattr(_studio_prefetch, "_filesystem_id", lambda path: None)
+    assert _studio_prefetch._volumes_to_check(root, "/elsewhere/uv") == [root, Path("/elsewhere/uv")]
+    assert _studio_prefetch._volumes_to_check(root, None) == [root]
+
+
+def test_planned_core_names_cover_every_pin_in_the_plan():
+    marker = {"core_plan": {"unsloth": "2026.9.9", "unsloth_zoo": "2026.9.9", "numpy": "2.3.1", "": "x"}}
+    assert _studio_prefetch.planned_core_names(marker) == ["unsloth", "unsloth-zoo", "numpy"]
+    assert _studio_prefetch.planned_core_names({"state": "noop"}) == []
+    # A dependency moved past its planned version holds the plan back like the core does.
+    assert not _studio_prefetch.plan_is_not_behind(marker, {"numpy": "2.4.0", "unsloth": "2026.9.9"})
+
+
 def test_a_directory_unsloth_did_not_create_is_refused_not_deleted(managed, monkeypatch):
     root = _studio_prefetch.prefetch_root(managed)
     root.mkdir(parents = True)

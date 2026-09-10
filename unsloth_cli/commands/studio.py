@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 import typer
 
 from unsloth_cli import _studio_deps, _studio_prefetch, _studio_runtime_gate, _studio_stage
@@ -3261,7 +3261,11 @@ def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
     # And not behind what is installed: `unsloth studio setup` or a manual upgrade can
     # move the core packages past a plan left behind, and the offline retry given the
     # old exact pins would downgrade them and call the update done.
-    installed = {name: _installed_version_in(python, name) for name in ("unsloth", "unsloth-zoo")}
+    # Every planned pin, not only the two the plan was made for: the offline retry
+    # installs each of them with --no-deps, so a dependency moved past its planned
+    # version since the prefetch would be downgraded the same way.
+    names = _studio_prefetch.planned_core_names(marker) or ["unsloth", "unsloth-zoo"]
+    installed = _installed_versions_in(python, names)
     if not _studio_prefetch.plan_is_not_behind(marker, installed):
         return env
     pins = _studio_prefetch.prefetched_core_pins(marker)
@@ -3272,24 +3276,48 @@ def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
 
 def _installed_version_in(python: Path, name: str) -> Optional[str]:
     """The version of *name* in the managed venv, read without importing it here."""
+    return _installed_versions_in(python, [name]).get(name)
+
+
+def _installed_versions_in(python: Path, names) -> Dict[str, Optional[str]]:
+    """The installed version of each of *names* in the managed venv, in one probe.
+
+    A name that is not installed, or a probe that cannot run, answers None; the caller
+    treats unknown as "no opinion", never as "current".
+    """
+    names = [name for name in names if isinstance(name, str) and name]
+    answers: Dict[str, Optional[str]] = {name: None for name in names}
+    if not names:
+        return answers
+    code = (
+        "import importlib.metadata as m, json, sys\n"
+        "out = {}\n"
+        "for name in sys.argv[1:]:\n"
+        "    try:\n"
+        "        out[name] = m.version(name)\n"
+        "    except m.PackageNotFoundError:\n"
+        "        out[name] = None\n"
+        "print(json.dumps(out))\n"
+    )
     try:
         result = subprocess.run(
-            [
-                str(python),
-                "-I",
-                "-c",
-                "import importlib.metadata as m, sys; print(m.version(sys.argv[1]))",
-                name,
-            ],
+            [str(python), "-I", "-c", code, *names],
             capture_output = True,
             text = True,
             timeout = 60,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return answers
     if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
+        return answers
+    try:
+        found = json.loads(result.stdout.strip() or "{}")
+    except ValueError:
+        return answers
+    for name in names:
+        value = found.get(name) if isinstance(found, dict) else None
+        answers[name] = value.strip() if isinstance(value, str) and value.strip() else None
+    return answers
 
 
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
