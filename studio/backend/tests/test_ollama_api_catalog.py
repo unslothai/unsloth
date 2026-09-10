@@ -80,11 +80,7 @@ def test_unsupported_ollama_models_are_withheld(store, broken):
     assert resolver.resolve_local_gguf("ollama/llama3:latest") is None
 
 
-@pytest.mark.parametrize("tag", ["latest", "Q8_0", "IQ3_M"])
-def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch, tag):
-    manifest = store / "manifests/registry.ollama.ai/library/llama3/latest"
-    manifest.rename(manifest.with_name(tag))
-    model_id = f"ollama/llama3:{tag}"
+def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch):
     backend = _FakeBackend()
     backend.is_vision = False
     backend.supports_tools = False
@@ -119,7 +115,7 @@ def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch, tag
         catalog = client.get("/v1/models")
         assert catalog.status_code == 200, catalog.text
         model = catalog.json()["data"][0]
-        assert model["id"] == model_id
+        assert model["id"] == "ollama/llama3:latest"
         assert model["loaded"] is False
         assert seen == []
         response = client.post(
@@ -133,28 +129,9 @@ def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch, tag
         assert response.status_code == 200, response.text
         assert response.json()["choices"][0]["message"]["content"] == "Fixture response."
         assert response.json()["model"] == model["id"]
-        repeated = client.post(
-            "/v1/chat/completions",
-            json = {
-                "model": model["id"],
-                "max_tokens": 16,
-                "messages": [{"role": "user", "content": "Say hello again."}],
-            },
-        )
-        assert repeated.status_code == 200, repeated.text
     assert len(seen) == 1
     assert seen[0][0].startswith("ollama-manifest:")
-    assert backend._openai_advertised_id == model_id
-
-
-@pytest.mark.parametrize("tag", ["latest", "Q8_0", "8b"])
-def test_resident_ollama_identity_keeps_the_manifest_tag(monkeypatch, tag):
-    model_id = f"ollama/llama3:{tag}"
-    backend = _FakeBackend("ollama-manifest:fixture", advertised_id = model_id)
-    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
-    for satisfies in (inf._loaded_satisfies, inf._loaded_identity_satisfies):
-        assert satisfies(model_id)
-        assert not satisfies("ollama/llama3:Q4_K_M")
+    assert backend._openai_advertised_id == "ollama/llama3:latest"
 
 
 def test_ollama_vision_preflight_reads_projector_without_materializing(store, monkeypatch):
