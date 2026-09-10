@@ -100,7 +100,9 @@ def test_layernorm_gradient_reaches_a_live_strided_source(source_layout):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("layout", ["columns", "rows", "transposed", "expanded"])
-@pytest.mark.parametrize("no_grad", [torch.no_grad, torch.inference_mode], ids = ["no_grad", "inference_mode"])
+@pytest.mark.parametrize(
+    "no_grad", [torch.no_grad, torch.inference_mode], ids = ["no_grad", "inference_mode"]
+)
 def test_layernorm_forward_layout_without_autograd(layout, no_grad):
     # Inference never enters backward, so the forward's own layout handling needs
     # its own guard rather than riding along on the gradient assertions.
