@@ -1428,6 +1428,47 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
     )
 
 
+def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
+    """The plan decides the seed while the PREVIOUS pipeline is still resident, so it reads less
+    free memory than the load will once teardown has run. Handing the load a bare None lets it
+    re-take the question on the roomier card, seed anyway, and fetch the artifact inline on top of
+    the dense shards the plan just paid to keep; the decline travels as its own value instead."""
+    from core.inference import video as vid
+    from core.inference.video_families import detect_video_family
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and not wan.modular_workflow
+    backend = vid.VideoBackend()
+    backend._load_token = 1
+    backend._loading = vid._VideoLoadingState(repo_id = wan.base_repo, base_repo = wan.base_repo)
+    monkeypatch.setattr(vid, "_detect_load_family", lambda *a, **k: wan)
+    monkeypatch.setattr(vid, "_assert_pick_is_not_speech", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_h3_planned_auto_denoiser_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(
+        backend,
+        "_video_planned_auto_denoiser_scheme",
+        lambda *a, **k: vid.DENOISER_SEED_DECLINED,
+    )
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: None)
+    probed: list = []
+
+    def _verified(_fam, transformer_quant, *a, **k):
+        probed.append(transformer_quant)
+        return False
+
+    monkeypatch.setattr(backend, "_denoiser_prequant_verified", _verified)
+    loaded: list = []
+    monkeypatch.setattr(backend, "load_pipeline", lambda **kwargs: loaded.append(kwargs))
+    backend._run_load(
+        repo_id = wan.base_repo,
+        local_files_only = True,
+        _load_token = 1,
+        transformer_quant = "nvfp4",
+    )
+    assert probed == [None], "a declined seed drops no dense shard from the pull"
+    assert loaded and loaded[0]["_video_auto_denoiser_planned"] == vid.DENOISER_SEED_DECLINED
+
+
 def test_the_seeded_denoiser_repo_is_claimed_against_a_concurrent_delete(monkeypatch):
     """The plan that verifies a hosted denoiser also drops the dense DiT shards from the pull, so
     the repo the checkpoint comes from has to join the in-flight claim: it is neither repo_id nor

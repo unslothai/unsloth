@@ -606,6 +606,58 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
     assert not any(os.sep in str(block[field]) for field in ("source", "meta_path", "score_path"))
 
 
+def test_a_calibrated_build_is_refused_against_another_campaigns_base(
+    monkeypatch, tmp_path, capsys
+):
+    """Corrections belong to the model they were solved on. The separately trained HunyuanVideo-1.5
+    480p and 720p transformers share every fqn and shape, so the meta's own base is the only thing
+    that can tell one campaign's corrections from the other's."""
+    build = _script()
+    _stub_build_stack(monkeypatch, _fake_state_dict())
+    import json as _json
+
+    gptq = tmp_path / "gptq"
+    (gptq / "weights").mkdir(parents = True)
+    (gptq / "gptq_meta.json").write_text(
+        _json.dumps(
+            {
+                "base_model_id": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+                "layers": {},
+            }
+        )
+    )
+    (gptq / "gptq_check.json").write_text(_json.dumps({"layers": {}}))
+    out = tmp_path / "wan5b.pt"
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "--family",
+            "wan2.2-ti2v-5b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(out),
+            "--gptq-dir",
+            str(gptq),
+        ]
+    )
+    assert code == 2
+    assert not out.exists()
+    assert "calibrated on" in capsys.readouterr().out
+    assert build.gptq_meta_base({"base": " org/model "}) == "org/model"
+    assert build.gptq_meta_base({"layers": {}}) is None
+    # The campaign that names this base, and one that names no base at all (it predates the stamp).
+    assert (
+        build.gptq_base_refusal(
+            "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+            {"base_model_id": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v"},
+        )
+        is None
+    )
+    assert build.gptq_base_refusal("Wan-AI/Wan2.2-TI2V-5B-Diffusers", {"layers": {}}) is None
+
+
 def test_a_calibrated_build_is_refused_under_another_quantiser(monkeypatch, tmp_path, capsys):
     """The corrections lie on the NVFP4 grid and were scored there, so a build that would
     re-quantise them as fp8 is refused rather than published as a measured artifact whose scores

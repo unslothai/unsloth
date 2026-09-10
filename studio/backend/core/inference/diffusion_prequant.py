@@ -521,10 +521,14 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
     """Feed one weight's packed payload into ``digest``. False when its class is not covered.
 
     The attribute NAME goes into the hash beside its bytes, so two payloads holding the same bytes
-    in different slots do not collide."""
+    in different slots do not collide.
+
+    A covered class none of whose payload attributes are present reads as uncovered: hashing an
+    empty stream would give every such weight the same digest and a gate that passes any bytes."""
     names = _FINGERPRINT_PAYLOAD.get(type(tensor).__name__)
     if names is None:
         return False
+    hashed = False
     for name in names:
         value = getattr(tensor, name, None)
         if value is None:
@@ -533,12 +537,14 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
         if type(value).__name__ in _FINGERPRINT_PAYLOAD:
             if not _hash_packed_payload(value, digest, torch):
                 return False
+            hashed = True
             continue
         digest.update(_packed_bytes(value, torch))
-    return True
+        hashed = True
+    return hashed
 
 
-def packed_weight_fingerprint(state_dict: Any) -> dict:
+def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
     """md5 of every quantized weight's packed payload, keyed by fqn.
 
     Written by the builder into ``metadata["fingerprint"]`` and recomputed by the loader, so a
@@ -546,6 +552,9 @@ def packed_weight_fingerprint(state_dict: Any) -> dict:
     bytes the tensor subclass carries, not the pickle, so it is stable across a re-save. Only
     ``.weight`` entries count, and a ``.weight`` that is not a recognised quantized subclass is
     recorded under ``skipped`` rather than raising.
+
+    ``select`` narrows WHICH fqns are hashed, so a partial verification pays for the weights it
+    actually compares instead of scanning every packed payload first.
     """
     import hashlib
 
@@ -556,6 +565,8 @@ def packed_weight_fingerprint(state_dict: Any) -> dict:
     items = state_dict.items() if hasattr(state_dict, "items") else ()
     for key, tensor in items:
         if key != "weight" and not str(key).endswith(".weight"):
+            continue
+        if select is not None and not select(str(key)):
             continue
         digest = hashlib.md5()
         try:
@@ -623,7 +634,14 @@ def _verify_packed_fingerprint(
             )
         return True
     try:
-        actual = packed_weight_fingerprint(state_dict).get("modules") or {}
+        # Sample mode hashes only the fqns it compares; that is what makes it cheap.
+        actual = (
+            packed_weight_fingerprint(
+                state_dict,
+                select = _fingerprint_sampled if mode == "sample" else None,
+            ).get("modules")
+            or {}
+        )
     except Exception as exc:  # noqa: BLE001 -- an uncomputable fingerprint checks nothing
         _warn(logger, "fingerprint", exc)
         return True

@@ -9117,6 +9117,31 @@ def test_the_planned_scheme_is_what_the_load_seeds(fake_runtime, monkeypatch):
     assert status["transformer_quant"] == "nvfp4"
 
 
+def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monkeypatch):
+    """The load honours the plan's decline, as it honours the plan's pick: the dense shards are in
+    the pull because of that decision, and re-deciding here fetches the artifact inline."""
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
+    calls, _modules = _stub_denoiser_seed(monkeypatch, plan_scheme = None)
+    # The load's own probe knows nothing of the offload decision the plan took, and this test card
+    # is roomy enough for it to answer yes.
+    monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        _video_auto_denoiser_planned = video_mod.DENOISER_SEED_DECLINED,
+    )
+    assert calls == [], "a seed the plan declined may not be fetched inline by the load"
+    # The dense shards the plan kept are what this load quantises.
+    assert status["transformer_quant"] == "nvfp4"
+    assert "unsloth/" not in status["resolved"]["transformer_quant"]["reason"]
+
+
 _A14B_SIBLINGS = [
     _sibling("model_index.json", 10),
     _sibling("transformer/config.json", 1),
