@@ -342,6 +342,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # through the chat template, 400ing on strict-alternation templates
         # (Gemma 3). The chat-completions path takes messages verbatim.
         "notes": "Self-hosted vLLM server. Always routed to /v1/chat/completions.",
+        # Opt-in to chat_template_kwargs, the only route to a template's enable_thinking variable on a server that
+        # renders the template itself. It is a vLLM/SGLang extension, not OpenAI, so it is declared per entry rather
+        # than assumed of a family: a strict gateway answers the unknown key with 400 (see "custom" below).
+        "supports_chat_template_kwargs": True,
         # Surfaced via the frontend's CUSTOM_PROVIDER_PRESETS, not the dropdown.
         "hidden": True,
     },
@@ -360,7 +364,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "User-supplied OpenAI-compatible server. Routed to "
             "/v1/chat/completions; /models is optional."
         ),
-        # A strict gateway 400s on an unknown key, and a pre-upgrade tab still spreads top_k.
+        # A strict gateway 400s on an unknown key, and a pre-upgrade tab still spreads top_k. Same reason there is no
+        # supports_chat_template_kwargs here: a base_url is not evidence of what is behind it, and Deep Research sends
+        # enable_thinking=False on every planner call, so the key would break runs nobody asked to change. A llama.cpp
+        # or vLLM server opts in by being added with its preset.
         "body_omit": ("top_k", "min_p", "repetition_penalty"),
         # Surfaced by the frontend's generic Custom option, not the dropdown.
         "hidden": True,
@@ -398,6 +405,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "Local llama.cpp server (llama-server). OpenAI-compatible "
             "/v1/chat/completions. Surfaced via CUSTOM_PROVIDER_PRESETS."
         ),
+        # llama-server reads chat_template_kwargs when started with --jinja, and ignores it otherwise.
+        "supports_chat_template_kwargs": True,
         "hidden": True,
     },
     "openrouter": {

@@ -6,8 +6,8 @@
 "llama_cpp" had no branch in ``ExternalProviderClient.stream_chat_completion``, so the toggle
 survived only as a top-level field llama-server does not read: the Deep Research planner, asked
 for ``enable_thinking=False``, spent its whole 4096-token budget reasoning and returned no plan.
-Widening the branch to "custom" instead is what ``_TEMPLATE_KWARGS_PROVIDERS`` refuses; a
-llama.cpp or vLLM server reaches it by being added with its preset.
+The branch is opt-in per registry entry (``supports_chat_template_kwargs``) rather than widened
+to "custom", which is any base_url; a llama.cpp or vLLM server opts in via its preset.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from core.inference import external_provider as ep_mod
+from core.inference import providers as providers_mod
 from core.inference.external_provider import ExternalProviderClient
 
 
@@ -83,6 +84,15 @@ def test_a_custom_base_url_is_never_given_template_kwargs(enable_thinking):
     # "custom" connection would 400 on requests the user never asked to change.
     body = _capture_body("custom", "some-local-model", enable_thinking = enable_thinking)
     assert "chat_template_kwargs" not in body
+
+
+def test_the_registry_flag_alone_opts_a_provider_in(monkeypatch):
+    # Nothing in the client keys on the provider name, so a new self-hosted preset needs only
+    # the registry key -- and one that is not declared compatible stays out however it is named.
+    entry = dict(providers_mod.PROVIDER_REGISTRY["custom"], supports_chat_template_kwargs = True)
+    monkeypatch.setitem(providers_mod.PROVIDER_REGISTRY, "custom", entry)
+    body = _capture_body("custom", "some-local-model", enable_thinking = False)
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_a_hosted_provider_is_not_given_template_kwargs():
