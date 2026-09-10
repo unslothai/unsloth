@@ -28,6 +28,13 @@ on:
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
+      # setup.sh and setup.ps1 run npm against these two trees on every update, and the
+      # harness holds the frontend bundle to be current afterwards; a dependency change
+      # there used to reach these jobs only through the push to main.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
       # The harness below and the proxy it measures with.
       - 'tests/studio/install/test_update_idempotency.py'
       - 'tests/studio/install/idempotency_proxy.py'
