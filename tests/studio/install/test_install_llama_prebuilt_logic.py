@@ -2737,6 +2737,35 @@ def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
     assert marker["llama_backend"] == "auto"
 
 
+def test_a_reused_bundle_records_whether_it_is_this_runs_fallback(tmp_path: Path):
+    """Attempt ordering moves with the recorded torch runtime preference. A reuse of a
+    later candidate after the preferred one failed is a fallback, and a marker still
+    saying False would let the no-network pre-check keep it on every update with the
+    preferred bundle never retried; a preferred bundle reused clears an old True."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "b10360", "prebuilt_fallback_used": False}) + "\n",
+        encoding = "utf-8",
+    )
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir, choice = _rocm_choice(), backend_request = None, prebuilt_fallback_used = True
+    )
+    assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is True
+    # Not asked: left alone.
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice = _rocm_choice(), backend_request = None)
+    assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is True
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir, choice = _rocm_choice(), backend_request = None, prebuilt_fallback_used = False
+    )
+    assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is False
+    # And the kept-install pre-check refuses a marker that says True.
+    source = open(INSTALL_LLAMA_PREBUILT.__file__, encoding = "utf-8").read()
+    assert 'marker.get("prebuilt_fallback_used") is True' in source
+    assert "_record_reused_selection(plan, satisfied.choice, satisfied.used_fallback)" in source
+
+
 def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
     """A manifest that corrects mapped_targets for an unchanged asset must reach the
     marker. Stale coverage is worse than none: too narrow forces a supported GPU to

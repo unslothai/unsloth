@@ -6847,6 +6847,7 @@ def _marker_selection_patch(
     rocm_gfx: str | None,
     install_dir: Path | None = None,
     host: HostInfo | None = None,
+    prebuilt_fallback_used: bool | None = None,
 ) -> dict:
     """The fields a reused install must still take from this run.
 
@@ -6909,6 +6910,15 @@ def _marker_selection_patch(
     # ADDED only, never corrected: a key already present was written by a run that knew
     # what it meant, and overwriting it from a reused bundle would re-bless bytes this
     # run did not hash.
+    # Whether what was kept is this run's preferred bundle. Attempt ordering moves with
+    # the recorded torch runtime preference; a reuse of a later candidate after the
+    # preferred one failed is a fallback, and a marker still saying False would let the
+    # no-network pre-check keep it on every update with the preferred bundle never
+    # retried. The other way round, a preferred bundle reused clears an old True.
+    if prebuilt_fallback_used is not None and marker.get("prebuilt_fallback_used") is not (
+        prebuilt_fallback_used
+    ):
+        patch["prebuilt_fallback_used"] = prebuilt_fallback_used
     if "runtime_sha256" not in marker:
         # None is the honest value for a bundle with no paired runtime archive, and it
         # is what expected_install_fingerprint hashed, so it must be recorded as null
@@ -6957,6 +6967,7 @@ def sync_marker_selection(
     ggml_tree: str | None = None,
     rocm_gfx: str | None = None,
     host: HostInfo | None = None,
+    prebuilt_fallback_used: bool | None = None,
 ) -> None:
     """Record this run's selection on a marker whose bundle was reused unchanged.
 
@@ -6983,6 +6994,7 @@ def sync_marker_selection(
         rocm_gfx = rocm_gfx,
         install_dir = install_dir,
         host = host,
+        prebuilt_fallback_used = prebuilt_fallback_used,
     )
     if not patch:
         return
@@ -9762,11 +9774,18 @@ def install_prebuilt(
             persist_rocm_gfx = selection.persist_rocm_gfx
             persist_backend_request = backend
 
-            def _record_reused_selection(plan: InstallReleasePlan, reused: AssetChoice) -> None:
+            def _record_reused_selection(
+                plan: InstallReleasePlan, reused: AssetChoice, used_fallback: bool
+            ) -> None:
                 """Update selection fields when the existing bundle is reused."""
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
+                    # Whether the bundle kept is the preferred one for THIS run's ordering:
+                    # a reuse of a later candidate after the preferred one failed is a
+                    # fallback, and the no-network pre-check has to keep retrying the
+                    # preferred bundle until one lands.
+                    prebuilt_fallback_used = used_fallback,
                     backend_request = persist_backend_request,
                     persist_force_cpu = persist_force_cpu,
                     persist_llama_backend = persisted_llama_backend(persist_llama_backend, reused),
@@ -9791,7 +9810,7 @@ def install_prebuilt(
                         f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
                     )
                     # Record a changed choice even when the bundle already matches.
-                    _record_reused_selection(current, current.attempts[0])
+                    _record_reused_selection(current, current.attempts[0], False)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe = lazy_validation_model(
@@ -9825,7 +9844,10 @@ def install_prebuilt(
                                 "existing llama.cpp install already matches fallback release "
                                 f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
                             )
-                            _record_reused_selection(plan, choice)
+                            # The same flag a fresh install of this plan would record
+                            # (initial_fallback_used below): an older release kept
+                            # after the newest failed is a fallback.
+                            _record_reused_selection(plan, choice, release_index > 0)
                             return
                     log(
                         "selected "
@@ -9855,7 +9877,7 @@ def install_prebuilt(
                     except ExistingInstallSatisfied as satisfied:
                         # Third reuse path: the reinstall was skipped, so
                         # write_prebuilt_metadata does not run here either.
-                        _record_reused_selection(plan, satisfied.choice)
+                        _record_reused_selection(plan, satisfied.choice, satisfied.used_fallback)
                         return
                     except PrebuiltFallback as exc:
                         if _environment_fatal_reason(exc):
