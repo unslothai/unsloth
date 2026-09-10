@@ -1116,3 +1116,40 @@ def test_the_nkvo_host_side_is_the_cache_size_the_caller_measured():
         opts = gated(**base),
     )
     assert refused.declined_by_gate and "host RAM" in refused.reason, refused.reason
+
+
+def test_the_moved_prefix_carries_the_recurrent_state_of_the_rows_it_spans():
+    """The state lives on the cache-free rows and the fitter moves a LEADING prefix, so an
+    interleaved hybrid's prefix carries the share of those rows it spans. Divided uniformly,
+    a prefix of attention rows was charged state it never held and a prefix of recurrent
+    rows was credited only a fraction of what it frees, on both sides of the gate."""
+    import dataclasses
+
+    hybrid = dataclasses.replace(dense_layout(), recurrent_bytes = 4 * GIB)
+    n = hybrid.n_layers
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False, n_seq = 1)
+
+    def state_and_layers(vector):
+        p = _fit_fallback_placement(
+            hybrid, gated(), 12 * GIB, 32768, kv_layer_weights = vector, **args
+        )
+        assert p is not None
+        state = sum(g.bytes_total for g in p.host_groups if g.name.startswith("recurrent"))
+        layers = next(g for g in p.host_groups if g.name == "layers").bytes_total
+        return state, round(layers / hybrid.blocks[0].resident_bytes)
+
+    uniform_state, uniform_moved = state_and_layers(())
+    # Every recurrent row in the leading quarter: the prefix takes the WHOLE state early.
+    leading = [0 if i < n // 4 else 1 for i in range(n)]
+    lead_state, lead_moved = state_and_layers(leading)
+    assert lead_moved >= n // 4
+    assert lead_state == 4 * GIB, lead_state
+    # Every recurrent row in the trailing quarter: a prefix that stops short of it carries none.
+    trailing = [0 if i >= 3 * n // 4 else 1 for i in range(n)]
+    trail_state, trail_moved = state_and_layers(trailing)
+    assert trail_moved < 3 * n // 4
+    assert trail_state == 0, trail_state
+    # And the uniform split, the only reading with no vector, sits between the two: a prefix
+    # that frees the whole state early has fewer layers left to move, one that frees none has more.
+    assert trail_state < uniform_state < lead_state
+    assert lead_moved <= uniform_moved <= trail_moved

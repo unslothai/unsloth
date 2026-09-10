@@ -673,6 +673,29 @@ def _fit_fallback_placement(
     weights = [max(0, int(w)) for w in kv_layer_weights]
     if len(weights) != layout.n_layers or not any(weights):
         weights = []
+    # The recurrent state sits on the rows that hold no cache, and the fitter moves a LEADING
+    # prefix, so an interleaved hybrid's prefix carries whatever share of those rows it
+    # spans, not ``moved / n_layers`` of the state. Uniform only when no vector says which
+    # rows they are.
+    state_total = 0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq)
+    recurrent_rows = {b.index for b in blocks if weights and weights[b.index] == 0}
+    if state_total > 0 and recurrent_rows:
+        recurrent_prefix: list[int] = []
+        seen_rows = 0
+        for block in blocks:
+            seen_rows += 1 if block.index in recurrent_rows else 0
+            recurrent_prefix.append(state_total * seen_rows // len(recurrent_rows))
+    else:
+        recurrent_prefix = [
+            int(state_total * moved / len(blocks)) for moved in range(1, len(blocks) + 1)
+        ]
+
+    def recurrent_moved(moved: int) -> int:
+        """State bytes the first ``moved`` blocks carry to the host."""
+        if moved <= 0:
+            return 0
+        return recurrent_prefix[min(moved, len(recurrent_prefix)) - 1]
+
     # Running weight over the blocks the fitter walks, so a cache total can be
     # apportioned over any PREFIX of them. Uniform when the caller cannot say.
     shares: list[int] = []
@@ -728,13 +751,10 @@ def _fit_fallback_placement(
             host_experts += block.spillable_bytes
         # Every expert on the host and still short. common/fit.cpp does not fail here: it
         # lowers n_gpu_layers and moves whole LEADING layers with their cache share.
-        recurrent_per_layer = (
-            0.0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq) / len(blocks)
-        )
         host_layers = 0
         for moved, block in enumerate(blocks, start = 1):
             host_layers += block.resident_bytes
-            host_recurrent = int(recurrent_per_layer * moved)
+            host_recurrent = recurrent_moved(moved)
             freed = host_experts + host_layers + kv_freed(kv_total, moved) + host_recurrent
             if resident - freed <= budget:
                 groups = [_ffn_group(layout, host_experts)]
@@ -750,10 +770,6 @@ def _fit_fallback_placement(
     # Dense, where the whole-layer model IS what happens: the fitter only lowers
     # n_gpu_layers (common/fit.cpp:551-559) and ``i_gpu_start`` sends every row BELOW it
     # to the CPU (llama-model.cpp:1479-1484), so the host takes the LEADING blocks.
-    recurrent_per_layer = (
-        0.0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq) / len(blocks)
-    )
-
     def dense_placement(moved: int, spilled_ffn: int, attention: int) -> Placement:
         """``moved`` whole layers off the device, plus ``spilled_ffn`` FFN bytes."""
         groups: list[TensorGroup] = []
@@ -761,7 +777,7 @@ def _fit_fallback_placement(
             groups.append(_ffn_group(layout, spilled_ffn))
         if attention:
             groups.append(TensorGroup("layers", attention, Access.CONTIGUOUS))
-        host_recurrent = int(recurrent_per_layer * moved)
+        host_recurrent = recurrent_moved(moved)
         if host_recurrent:
             # CONTIGUOUS, not the cache rate: this is a small fixed-size conv and SSM state read
             # straight through by the scan, not attention over a growing prefix.
@@ -781,7 +797,7 @@ def _fit_fallback_placement(
         # fit.cpp's step 4 first: rather than lower ngl again it keeps this layer on the
         # device and overrides part of its FFN, so its cache and state stay resident.
         short = resident - (
-            host_weights + kv_freed(kv_total, moved - 1) + int(recurrent_per_layer * (moved - 1))
+            host_weights + kv_freed(kv_total, moved - 1) + recurrent_moved(moved - 1)
         )
         overflow = _fit_boundary_overflow(block, short - budget)
         if overflow is not None:
@@ -792,7 +808,7 @@ def _fit_fallback_placement(
         host_spillable += block.spillable_bytes
         # lm_head is NOT in here: the output row stays on the device for any n_gpu_layers
         # >= 1, so charging it both freed and billed bytes llama.cpp never moves.
-        freed = host_weights + kv_freed(kv_total, moved) + int(recurrent_per_layer * moved)
+        freed = host_weights + kv_freed(kv_total, moved) + recurrent_moved(moved)
         if resident - freed <= budget:
             return dense_placement(moved, host_spillable, host_weights - host_spillable)
     return None
