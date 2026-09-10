@@ -126,8 +126,15 @@ def write_files_manifest(files: Sequence[str]) -> str:
     handle = tempfile.NamedTemporaryFile(
         mode = "w", suffix = ".json", prefix = "unsloth-dl-files-", delete = False, encoding = "utf-8"
     )
-    with handle:
-        json.dump(list(files), handle)
+    try:
+        with handle:
+            json.dump(list(files), handle)
+    except BaseException:
+        try:
+            Path(handle.name).unlink(missing_ok = True)
+        except OSError:
+            pass
+        raise
     return handle.name
 
 
@@ -139,6 +146,7 @@ def spawn_worker(
     protected_blob_hashes: Optional[frozenset[str]] = None,
     cache_env: Optional[Mapping[str, str]] = None,
     allow_ambient_token: bool = True,
+    files: Optional[Sequence[str]] = None,
 ) -> subprocess.Popen:
     """Spawn the download worker. XET and ``hf_transfer`` write chunks out of order, so their partials can't resume under a sequential writer; the HTTP path stays sequential so SIGKILL -> resume is byte-identical. ``protected_blob_hashes`` are blobs a concurrent same-repo peer is writing, excluded from the cache-prep purge so a shared ``.incomplete`` (e.g. bundled mmproj) is never deleted."""
     cwd = backend_dir()
@@ -188,7 +196,11 @@ def spawn_worker(
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
     proc = None
+    files_manifest = None
     try:
+        if files:
+            files_manifest = write_files_manifest(files)
+            args = [*args, "--files-json", files_manifest]
         proc = subprocess.Popen(
             [
                 sys.executable,
@@ -208,6 +220,11 @@ def spawn_worker(
         )
         return proc
     finally:
+        if proc is None and files_manifest is not None:
+            try:
+                Path(files_manifest).unlink(missing_ok = True)
+            except OSError:
+                logger.warning("Could not remove the unconsumed download files manifest")
         if use_xet:
             # Tie the sizing's RAM reservation to the worker so it frees when the worker exits and a sibling sizes against the remainder; a spawn that raised passes None, dropping the reservation.
             from utils import hf_xet_fallback
@@ -564,10 +581,6 @@ def _try_transport_retry(
         args.append("--dataset")
     elif variant:
         args.extend(["--variant", variant])
-    # A scoped job must retry as the SAME scoped download; without its file list the recovery worker would fall through to a full snapshot.
-    if original_metadata.scoped_files:
-        args.extend(["--files-json", write_files_manifest(original_metadata.scoped_files)])
-
     peer_hashes = registry.peer_blob_hashes(key) if variant else frozenset()
 
     if retry_over_xet:
@@ -600,6 +613,8 @@ def _try_transport_retry(
         }
         if cache_env is not None:
             spawn_kwargs["cache_env"] = cache_env
+        if original_metadata.scoped_files:
+            spawn_kwargs["files"] = original_metadata.scoped_files
         proc = spawn_worker(
             args,
             hf_token,
@@ -1064,11 +1079,22 @@ def launch_worker(
         proc = spawn()
     except Exception as e:
         scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        state = _set_retry_failure_state(
+            registry,
+            key,
+            scrubbed,
+            repo_type = repo_type,
+            repo_id = repo_id,
+            fallback_variant = download_registry.variant_from_key(key),
+            fallback_transport = transport,
+            logger = logger,
+        )
+        if state == "cancelled":
+            return state
         logger.error(
             f"Failed to spawn {log_prefix.lower()} worker for {label}: {scrubbed}",
             exc_info = True,
         )
-        registry.set_job(key, "error", scrubbed)
         raise HTTPException(
             status_code = 500,
             detail = f"Failed to start {log_prefix.lower()}: {scrubbed}",

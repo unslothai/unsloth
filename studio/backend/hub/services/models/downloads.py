@@ -151,9 +151,6 @@ def _spawn_download_worker(
     args = ["--repo-id", repo_id]
     if variant:
         args.extend(["--variant", variant])
-    if files:
-        # Via a temp file, not argv: a pipeline repo's list runs to hundreds of names.
-        args.extend(["--files-json", download_lifecycle.write_files_manifest(files)])
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
@@ -161,6 +158,7 @@ def _spawn_download_worker(
         protected_blob_hashes = protected_blob_hashes,
         cache_env = cache_env,
         allow_ambient_token = allow_ambient_token,
+        files = files,
     )
 
 

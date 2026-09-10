@@ -191,3 +191,125 @@ def test_cancel_stops_worker_registered_after_initial_lookup(monkeypatch, downlo
         == "cancelling"
     )
     assert killed == [True]
+
+
+@pytest.mark.parametrize("cancel_download", [False, True])
+def test_token_failure_preserves_download_cancellation(monkeypatch, download, cancel_download):
+    from fastapi import HTTPException
+    from hub.schemas.downloads import CancelDownloadRequest, CancelDatasetDownloadRequest
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def resolve(token):
+        entered.set()
+        assert release.wait(10), "test did not release token resolution"
+        raise RuntimeError("fixture token exchange failed")
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", resolve)
+
+    async def run():
+        task = asyncio.create_task(download.handler(download.body, None))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            if cancel_download:
+                model = download.repo_type == "model"
+                handler = (
+                    models.cancel_download_model_response
+                    if model
+                    else datasets.cancel_dataset_download_response
+                )
+                request_cls = CancelDownloadRequest if model else CancelDatasetDownloadRequest
+                result = await handler(
+                    request_cls(
+                        repo_id = "fixture/public",
+                        generation = download.registry.current_generation(download.key),
+                    )
+                )
+                assert result["state"] == "cancelling"
+            release.set()
+            if cancel_download:
+                assert (await task)["state"] == "cancelled"
+            else:
+                with pytest.raises(HTTPException) as exc:
+                    await task
+                assert exc.value.status_code == 500
+                assert "fixture token exchange failed" in exc.value.detail
+        finally:
+            release.set()
+            if not task.done():
+                await asyncio.gather(task, return_exceptions = True)
+
+    asyncio.run(run())
+    state = download.registry.get_job(download.key)
+    assert state.state == ("cancelled" if cancel_download else "error")
+    assert state.error == (None if cancel_download else "fixture token exchange failed")
+    assert download.spawned == []
+    assert download.registry.get_process(download.key) is None
+
+
+@pytest.mark.parametrize("failure_at", ["token", "manifest", "popen", None])
+def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failure_at):
+    import json
+    from pathlib import Path
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(
+        hf_cache_settings, "get_hf_cache_paths", lambda: SimpleNamespace(child_env = lambda: {})
+    )
+    error = (
+        RuntimeError("fixture token exchange failed")
+        if failure_at == "token"
+        else OSError("fixture spawn failure")
+    )
+    created = []
+    write = download_lifecycle.write_files_manifest
+    proc = object()
+    files = ["model_index.json", "weights.safetensors"]
+    commands = []
+
+    def resolve(token):
+        if failure_at == "token":
+            raise error
+        return None
+
+    def manifest(names):
+        path = write(names)
+        created.append(Path(path))
+        return path
+
+    def dump(*args, **kwargs):
+        raise error
+
+    def popen(args, **kwargs):
+        commands.append(args)
+        path = Path(args[args.index("--files-json") + 1])
+        assert json.loads(path.read_text(encoding = "utf-8")) == files
+        if failure_at == "popen":
+            raise error
+        return proc
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", resolve)
+    monkeypatch.setattr(download_lifecycle, "write_files_manifest", manifest)
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", popen)
+    if failure_at == "manifest":
+        monkeypatch.setattr(json, "dump", dump)
+
+    def spawn():
+        return models._spawn_download_worker(
+            "fixture/public", "@diffusion", None, use_xet = False, files = files
+        )
+
+    if failure_at is None:
+        assert spawn() is proc
+        assert len(created) == 1
+        assert created[0].exists(), "a started worker must retain its manifest"
+    else:
+        with pytest.raises(type(error)) as exc:
+            spawn()
+        assert exc.value is error
+        assert list(tmp_path.glob("unsloth-dl-files-*.json")) == []
+    if failure_at == "token":
+        assert created == []
+    assert len(commands) == (1 if failure_at in (None, "popen") else 0)
