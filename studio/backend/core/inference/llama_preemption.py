@@ -598,6 +598,7 @@ class PreemptionController:
         "_batch_tokens",
         "_resident",
         "_resident_seq",
+        "_last_sample_seq",
         "_resume_tickets",
         "_reclaimable",
         "_residency_probe",
@@ -630,6 +631,9 @@ class PreemptionController:
         # Bumped per successful reading AND per `note_measured`, so a mark can be ordered
         # against a probe that was already in flight when it was made.
         self._resident_seq = 0
+        # The clock as it stood when the last reading was recorded: a probe that started
+        # before that is older than what is already here.
+        self._last_sample_seq = 0
         # Resume order, taken BEFORE the room test: gen_id -> tokens it is coming back for,
         # in the order the waits started. Without it a later, smaller resume books the space
         # an older one is waiting for and the older one waits out its deadline. The
@@ -1000,8 +1004,13 @@ class PreemptionController:
 
         ``started_at_seq`` is `residency_epoch()` read before the probe was sent. Without it
         this reading is treated as taken now, which is what it was before the epoch existed.
+        A reading whose probe started before the last one was recorded is dropped: an arming
+        probe past its join window can finish after a newer sample, and putting its older
+        count back would plan resumes against cells that are no longer free.
         """
         with self._lock:
+            if started_at_seq is not None and started_at_seq < self._last_sample_seq:
+                return
             if resident is None:
                 self._resident = None
                 self._reclaimable = 0
@@ -1012,6 +1021,7 @@ class PreemptionController:
             self._resident = max(0, min(int(resident), ceiling))
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
             self._resident_seq += 1
+            self._last_sample_seq = self._resident_seq
             for participant in self._participants.values():
                 if participant.measured_at_seq is None:
                     continue
