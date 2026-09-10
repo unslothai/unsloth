@@ -3316,13 +3316,17 @@ def _openai_llama_admission_retry_max_tokens(
     payload = None,
     first_messages = None,
     preemptable: bool = True,
+    first_output_tokens: Optional[int] = None,
 ) -> Optional[int]:
     """The cap for a passthrough retry whose prompt grew. Gated on the first attempt's
     bound, so a client with its own cap does not start being bounded here.
 
     One lease covers both attempts with no re-cost between, so pricing the retry afresh
     would hand a grown prompt the flat allowance on top of the charge. With
-    ``first_messages`` it writes at most ``allowance - growth``, floored at one.
+    ``first_messages`` it writes at most ``allowance - growth``, floored at one; zero once the
+    growth alone has passed the allowance and the reserve, which means "do not retry".
+    ``first_output_tokens`` is the first answer's reported completion count, the real cost of
+    the replay it carries.
     """
     if admission_output_allowance is None:
         return None
@@ -3356,6 +3360,27 @@ def _openai_llama_admission_retry_max_tokens(
             markup = _openai_llama_admission_markup(llama_backend),
         )
         growth = max(0, prompt_tokens - first_prompt_tokens)
+        # What the retry adds beyond the first prompt is the answer it replays, which the
+        # first attempt generated inside the allowance and so costs at most the allowance
+        # whatever the estimator makes of it, plus the nudge itself. Past the allowance and
+        # the reserve together, the retry's prompt alone overruns a lease a raw holder cannot
+        # be paused off: zero, which the callers read as "keep the first answer".
+        tail = (retry_body.get("messages") or [])[len(first_messages) :]
+        replayed = _openai_llama_admission_wire_prompt_tokens(
+            [m for m in tail if isinstance(m, dict) and m.get("role") == "assistant"],
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            markup = _openai_llama_admission_markup(llama_backend),
+        )
+        nudge = max(0, growth - replayed)
+        replay_cost = min(replayed, admission_output_allowance)
+        reported = _positive_int_or_none(first_output_tokens)
+        if reported is not None:
+            replay_cost = min(replay_cost, reported)
+        if (
+            replay_cost + nudge
+            >= admission_output_allowance + _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS
+        ):
+            return 0
         bound = max(1, min(bound, admission_output_allowance - growth))
     current = _positive_int_or_none(retry_body.get("max_tokens"))
     return bound if current is None else min(current, bound)
@@ -34737,12 +34762,17 @@ async def _anthropic_passthrough_non_streaming(
                 preemptable = False,
                 # One lease covers both attempts: the retry writes what is left.
                 first_messages = body.get("messages") or [],
+                first_output_tokens = (first_data.get("usage") or {}).get("completion_tokens"),
             )
-            if _retry_bound is not None:
+            if _retry_bound == 0:
+                # The nudge's prompt has spent the lease's allowance: the first answer stands.
+                logger.info("tool-call nudge skipped: the retry prompt has spent the admission allowance")
+                retry_body = None
+            elif _retry_bound is not None:
                 retry_body["max_tokens"] = _retry_bound
             try:
-                retry_resp = await _post(retry_body)
-                if retry_resp.status_code == 200:
+                retry_resp = await _post(retry_body) if retry_body is not None else None
+                if retry_resp is not None and retry_resp.status_code == 200:
                     retry_data = retry_resp.json()
                     if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
                         data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
@@ -36842,12 +36872,17 @@ async def _openai_passthrough_non_streaming_upstream(
             preemptable = False,
             # One lease covers both attempts: the retry writes what is left, not a fresh one.
             first_messages = body.get("messages") or [],
+            first_output_tokens = (first_data.get("usage") or {}).get("completion_tokens"),
         )
-        if _retry_bound is not None:
+        if _retry_bound == 0:
+            # The nudge's prompt has spent the lease's allowance: the first answer stands.
+            logger.info("tool-call nudge skipped: the retry prompt has spent the admission allowance")
+            retry_body = None
+        elif _retry_bound is not None:
             retry_body["max_tokens"] = _retry_bound
         try:
-            retry_resp = await _post(retry_body)
-            if retry_resp.status_code == 200:
+            retry_resp = await _post(retry_body) if retry_body is not None else None
+            if retry_resp is not None and retry_resp.status_code == 200:
                 retry_data = retry_resp.json()
                 if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
                     resp = retry_resp

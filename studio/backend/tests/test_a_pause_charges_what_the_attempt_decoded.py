@@ -328,6 +328,32 @@ class TestOnlyOutputCountsTowardsTheSweep:
         )
         assert reports == [_TOKEN_REPORT_EVERY]
 
+    def test_the_servers_own_count_outranks_the_frame_count(self, monkeypatch):
+        # A structured tool-call frame can carry several tokens' worth of arguments: the
+        # per-frame count under-reports the cache. `timings_per_token` puts the server's
+        # count on every frame, and the request asks for it whenever a watermark listens.
+        from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
+
+        signal = preemption.PreemptSignal()
+        reports: list[int] = []
+        counted = (
+            "data: "
+            + json.dumps(
+                {
+                    "choices": [{"index": 0, "delta": {"content": "x"}}],
+                    "timings": {"predicted_n": _TOKEN_REPORT_EVERY + 5},
+                }
+            )
+            + "\n"
+        )
+        stream = [_opener(), _delta("x"), counted, _delta("x"), _finish(), _done()]
+        recorder = _Recorder(monkeypatch, [stream], signal = signal, pause_after = 10**6)
+        self._run(
+            recorder.backend, signal = signal, policy = _RecordingPolicy(), on_tokens = reports.append
+        )
+        assert reports == [_TOKEN_REPORT_EVERY + 5]
+        assert recorder.payloads[0].get("timings_per_token") is True
+
     def test_the_tool_round_counts_only_output_too(self, monkeypatch):
         from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
 

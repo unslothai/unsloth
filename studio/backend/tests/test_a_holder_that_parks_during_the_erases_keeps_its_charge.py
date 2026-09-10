@@ -33,6 +33,18 @@ class _Lease:
         return 1000
 
 
+class _SeqLease:
+    """A lease that numbers its charges, as the real one does."""
+
+    def __init__(self):
+        self.charge_seq = 7
+        self.charged_at: list = []
+
+    def yield_parked_commitment(self, charged_at = None):
+        self.charged_at.append(charged_at)
+        return 1000
+
+
 class _Backend:
     base_url = BASE
     _kv_cache_unified = True
@@ -68,6 +80,20 @@ class TestTheLedger:
         ), "no erase touched its slot; its cells are resident and its charge must stand"
         assert late_lease.yielded == 0
         assert c.participant("late").holds_kv is True
+
+    def test_a_round_recosted_during_the_erases_names_the_commitment_that_parked(self):
+        # The tool came back and the next round re-costed while the erases were in flight,
+        # the participant still TOOLS_RUNNING. The release must name the commitment that was
+        # parked, which the lease then refuses as superseded, not the one filling now.
+        c = _controller()
+        lease = _SeqLease()
+        c.register("chat", lease = lease, tokens = 2000)
+        c.note_state("chat", ParticipantState.TOOLS_RUNNING)
+        seen = c.parked_holders()
+        parked_at = lease.charge_seq
+        lease.charge_seq += 1
+        assert c.note_cells_reclaimed(seen) == 1
+        assert lease.charged_at == [parked_at]
 
     def test_a_holder_that_parked_again_inside_the_window_keeps_its_charge(self):
         c = _controller()

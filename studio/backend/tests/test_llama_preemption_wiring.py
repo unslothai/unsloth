@@ -965,9 +965,13 @@ class TestTheStreamActuallyReportsGrowth:
         return Path(llama_cpp.__file__).read_text()
 
     def test_the_chunk_loop_counts_tokens(self):
+        # One per output frame, or llama-server's own count when the frame carries it: a
+        # structured tool-call frame can hold several tokens' worth of arguments.
+        source = self._source()
         assert (
-            "_tokens_this_stream += 1" in self._source()
+            "_tokens_this_stream + 1, _llama_predicted_n(" in source
         ), "nothing increments the live token count, so the sweep sees a frozen n_i"
+        assert "_final_tokens_this_stream + 1," in source
 
     def test_the_count_is_reported_to_the_preemptor(self):
         source = self._source()
@@ -976,9 +980,11 @@ class TestTheStreamActuallyReportsGrowth:
         ), "the count is kept but never handed to the watermark sweep"
 
     def test_the_report_is_batched_not_per_token(self):
-        """A lock per token would put the preemptor on the hot path."""
+        """A lock per token would put the preemptor on the hot path. Measured from the last
+        report rather than by modulo, since the server's count can step past a multiple."""
         source = self._source()
-        assert "_tokens_this_stream % _TOKEN_REPORT_EVERY == 0" in source
+        assert "_tokens_this_stream - _tokens_reported >= _TOKEN_REPORT_EVERY" in source
+        assert "_tokens_reported = _tokens_this_stream" in source
 
     def test_the_batch_is_small_enough_to_be_caught_by_the_buffer(self):
         """Overshoot between reports must fit inside the headroom, or the sweep learns about the
