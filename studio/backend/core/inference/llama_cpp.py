@@ -23122,6 +23122,11 @@ class LlamaCppBackend:
                         )
                     except (TypeError, ValueError):
                         _cache_ram_unbounded = False
+                    _link_indices = list(
+                        gpu_indices
+                        if gpu_indices is not None
+                        else [_idx for _idx, _free in (gpus or ())]
+                    )
                     _spill_inputs = {
                         "model_size": model_size,
                         "kv_cache_bytes": (
@@ -23294,15 +23299,14 @@ class LlamaCppBackend:
                         "shared_gpu_ids": set(_shared_gpu_ids or ()),
                         # The PCIe rate a spill's prefill stream will run at, over the devices
                         # this plan may credit. None on a Vulkan or ROCm host, where the cost
-                        # model's PCIe 5 default stands: nvidia-smi has no answer there.
+                        # model's PCIe 5 default stands: nvidia-smi has no answer there. Probed
+                        # only for a load the planner may own and only when a device is credited:
+                        # a flag-off load, and a CPU-only one that masks every card away, must
+                        # spawn nothing the launch itself would not.
                         "link_gib_s": (
                             None
-                            if is_vulkan_backend
-                            else self._nvidia_link_gib_s(
-                                gpu_indices
-                                if gpu_indices is not None
-                                else [_idx for _idx, _free in (gpus or ())]
-                            )
+                            if is_vulkan_backend or not _planner_owns_fit or not _link_indices
+                            else self._nvidia_link_gib_s(_link_indices)
                         ),
                     }
                     mmproj_note = (

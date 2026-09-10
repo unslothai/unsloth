@@ -294,6 +294,22 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         _cmd, env = launches[0]
         assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
 
+    def test_a_cpu_only_load_runs_no_link_probe(self, tmp_path, monkeypatch):
+        # The spill snapshot's PCIe probe is an nvidia-smi child of its own. A load the
+        # planner cannot own, or one that credits no device, must not spawn it: the
+        # launches above count every child, and a masked-away card has no link to read.
+        probes = []
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_nvidia_link_query",
+            staticmethod(lambda: probes.append(1) or "0, 5, 16\n"),
+        )
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        launches, error = _drive_load(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)
+        assert error is None, f"the SM gate refused a CPU-only load: {error}"
+        assert len(launches) == 1
+        assert probes == []
+
     def test_a_gpu_offload_request_is_still_refused(self, tmp_path, monkeypatch):
         backend, gguf = _gated_backend(tmp_path, monkeypatch)
         launches, error = _drive_load(backend, gguf, gpu_memory_mode = "auto")

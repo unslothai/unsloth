@@ -3109,13 +3109,34 @@ def test_the_launch_path_snapshots_the_link_over_the_credited_devices():
     """The planner can only price what the launch path measures for it, and only the
     devices the plan may credit bound the transfer."""
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    assert '"link_gib_s":(Noneifis_vulkan_backendelseself._nvidia_link_gib_s(' in compact
+    assert (
+        '"link_gib_s":(Noneifis_vulkan_backendornot_planner_owns_fitornot_link_indices'
+        "elseself._nvidia_link_gib_s(_link_indices)" in compact
+    )
     assert "gpu_indicesifgpu_indicesisnotNoneelse[_idxfor_idx,_freein(gpusor())]" in compact
 
 
-def test_a_slower_link_can_turn_a_planned_spill_into_a_decline():
+def test_a_slower_link_can_turn_a_planned_spill_into_a_decline(monkeypatch):
     """A spill worth taking over a PCIe 5 x16 link is not worth taking over a desktop x4 slot,
-    because prefill streams the same bytes eight times slower."""
+    because prefill streams the same bytes eight times slower.
+
+    The six decode threads are priced against a pinned eight-core host: on a four-core CI
+    runner they read as oversubscribed and the seam declines before the link is weighed."""
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    monkeypatch.setattr(llama_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        llama_mod.os,
+        "uname",
+        lambda: SimpleNamespace(machine = "x86_64"),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
+    )
+    import psutil
+
+    # The affinity mask must cover every logical CPU, or the seam reads a pinned process.
+    monkeypatch.setattr(psutil, "cpu_count", lambda logical = True: 16 if logical else 8)
     fast = _plan(_Stub(), free_mib = 12800, n_threads = 6, link_gib_s = 55.0)
     slow = _plan(_Stub(), free_mib = 12800, n_threads = 6, link_gib_s = 6.0)
     assert fast is not None and slow is not None
