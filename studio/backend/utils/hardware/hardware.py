@@ -5200,13 +5200,21 @@ def _reconcile_cuda_integrated_memory(
             continue
         total_gb = td["total_gb"]
         dev["vram_total_gb"] = total_gb
-        if used_gb is None or dev.get("vram_used_gb") is not None:
-            continue
-        pool_used_gb = min(used_gb, total_gb)
-        dev["vram_used_gb"] = pool_used_gb
-        dev["vram_utilization_pct"] = (
-            round((pool_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
-        )
+        # The CLI's own used figure wins where it has one: memory.used can be readable
+        # on a row whose memory.total is [N/A], and filling the total is exactly what
+        # makes the percentage computable. Host counters stand in only where it is not.
+        pool_used_gb = dev.get("vram_used_gb")
+        if pool_used_gb is None:
+            if used_gb is None:
+                continue
+            pool_used_gb = min(used_gb, total_gb)
+            dev["vram_used_gb"] = pool_used_gb
+        if dev.get("vram_utilization_pct") is None:
+            dev["vram_utilization_pct"] = (
+                round((min(pool_used_gb, total_gb) / total_gb) * 100, 1)
+                if total_gb > 0
+                else None
+            )
 
 
 def _reconcile_primary_rocm_unified_memory(

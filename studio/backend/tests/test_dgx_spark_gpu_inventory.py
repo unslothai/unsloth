@@ -485,3 +485,32 @@ def test_a_discrete_card_is_never_marked_shared(monkeypatch):
 
     assert device.get("shared_memory") is not True
     assert device.get("unified_memory") is not True
+
+
+def test_a_known_usage_still_gets_its_percentage(monkeypatch):
+    """memory.used can be readable on a row whose memory.total is [N/A].
+
+    Filling the total is what makes the percentage computable, so a device that already
+    carries a usage must not be skipped: it was the one case where both operands existed
+    and the monitor still showed an unknown.
+    """
+    _cuda_host(monkeypatch, _SparkProps())
+    utilization = {
+        "devices": [
+            {
+                "index": 0,
+                "visible_ordinal": 0,
+                "vram_total_gb": None,
+                "vram_used_gb": 30.0,
+                "vram_utilization_pct": None,
+            }
+        ]
+    }
+
+    hw._reconcile_cuda_integrated_memory(utilization, [0])
+    device = utilization["devices"][0]
+
+    assert device["vram_total_gb"] == SPARK_TOTAL_GB
+    # The CLI's own figure, not the host counter that stands in when it is absent.
+    assert device["vram_used_gb"] == 30.0
+    assert device["vram_utilization_pct"] == round((30.0 / SPARK_TOTAL_GB) * 100, 1)
