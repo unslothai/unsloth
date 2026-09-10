@@ -59,10 +59,9 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
   // the flag travels on its own rather than being read off the path.
   const preferLocalCache = Boolean(modelKnownCached);
   const localPath = (preferLocalCache && modelLocalPath) || null;
-  // The cache is the state; this counter only re-renders once an answer lands in it,
-  // keeping setState out of the effect body. Reading the map during render already
-  // answers for a model asked about before, and switching models needs no reset because
-  // the key changes with it.
+  // The cache is the state; this counter only re-renders once an answer lands in it, keeping
+  // setState out of the effect body. Reading the map during render already answers for a model
+  // asked about before, and switching models needs no reset because the key changes with it.
   const [, markAnswered] = useState(0);
   const key = selectedModel
     ? upgradeNoticeCacheKey(

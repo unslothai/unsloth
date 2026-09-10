@@ -16,7 +16,7 @@ import {
   createReasoningDurationTracker,
   lastReasoningGroupTextLength,
 } from "./reasoning-duration";
-import { preferFullToolOutput } from "./tool-output-preference";
+import { preferFullToolOutput } from "../tool-output-result";
 // The frame -> part shaping the live stream applies to a tool result, applied HERE too. A replay that copies
 // `event.result` verbatim renders the wire's marker (`__IMAGES__:...`) as content; shaped, a reopened chart card is
 // the same object a watched one was.

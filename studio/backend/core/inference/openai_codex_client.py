@@ -232,9 +232,8 @@ _MODELS_CACHE_MAX_ENTRIES = 32
 _models_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Outlives the cache TTL: a slug listed for this plan stays saveable afterwards.
 _offered_models: dict[str, dict[str, dict[str, Any]]] = {}
-# a reauthorization can rebind a connection to a different account whose plan lists different slugs
-# Which ChatGPT account each cached catalog belongs to; a reauthorization can rebind a connection to a different account
-# whose plan lists different slugs.
+# Which ChatGPT account each cached catalog belongs to; a reauthorization can rebind a connection to a different
+# account whose plan lists different slugs.
 _catalog_accounts: dict[str, str] = {}
 
 
@@ -247,11 +246,9 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
     display_name = item.get("display_name")
     context_window = item.get("context_window")
     modalities = item.get("input_modalities")
-    # `or []` only covers a falsy value, so a scalar raised TypeError out of the whole call and cost the catalog every
-    # other entry too
-    # Every other field here tolerates whatever upstream sends, and this one has to as well: `or []` only covers a falsy
-    # value, so a scalar raised TypeError out of the whole call and cost the catalog every other entry too, not just
-    # this one.
+    # Every other field here tolerates whatever upstream sends, and this one has to as well: `or []` only covers a
+    # falsy value, so a scalar raised TypeError out of the whole call and cost the catalog every other entry too, not
+    # just this one.
     levels = item.get("supported_reasoning_levels")
     efforts = [
         level["effort"]
@@ -270,10 +267,9 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
         ),
         "vision": "image" in modalities if isinstance(modalities, list) else None,
         "reasoning_efforts": efforts,
-        # "hide" is a presentation flag, not a revocation
         # "hide" marks a slug no picker should offer (codex-auto-review, and models that age out of the list). It is a
-        # presentation flag, not a revocation: the account can still call one it already saved, so the entry is kept and
-        # marked instead of dropped, which is what lets callers tell "not offered" from "not on this plan".
+        # presentation flag, not a revocation: the account can still call one it already saved, so the entry is kept
+        # and marked instead of dropped, which is what lets callers tell "not offered" from "not on this plan".
         "listed": item.get("visibility") == "list",
     }
 
@@ -299,21 +295,18 @@ def offered_subscription_model_ids(provider_id: str) -> set[str]:
     }
 
 
-# the absence is deliberate, so it must not read as "nothing fetched yet" and license the previous account's saved slugs
 # Connections whose catalog was dropped because the account behind them changed. The absence is deliberate, so it must
 # not read as "nothing fetched yet" and license the previous account's saved slugs.
 _stale_catalogs: set[str] = set()
 
 
-# the ticket the newest catalog read holds
 # The ticket the newest catalog read for each connection is holding, so a read that was overtaken (by a rebind, a
 # disconnect, or a newer read) cannot commit its result over the one that replaced it.
 _catalog_requests: dict[str, int] = {}
-# one shared counter, not per connection: nothing reads the number, only whether it still matches
 # Tickets are drawn from one counter shared by every connection rather than counting up per connection. Nothing reads
 # the number itself, only whether it still matches, and a value that is never reissued is what lets
-# forget_subscription_models drop the entry instead of leaving a larger one behind: a read still in flight then finds no
-# ticket at all, and the next read draws a number no earlier read can be holding.
+# forget_subscription_models drop the entry instead of leaving a larger one behind: a read still in flight then finds
+# no ticket at all, and the next read draws a number no earlier read can be holding.
 _catalog_request_serial = 0
 
 
@@ -435,10 +428,9 @@ async def list_subscription_models(
                     status = 401,
                 ) from exc
             except Exception as exc:
-                # the refresh got no answer, which is retryable
                 # The refresh did not get an answer, which is retryable. Calling it a reauthorization would send the
-                # user to reconnect a connection whose credentials are probably fine, and the responses transport treats
-                # the same failure as transient.
+                # user to reconnect a connection whose credentials are probably fine, and the responses transport
+                # treats the same failure as transient.
                 raise CodexTransportError("Could not refresh ChatGPT authorization.") from exc
             response = await client.get(
                 url,
@@ -860,10 +852,8 @@ class OpenAICodexClient:
                     "schema": schema["schema"],
                     "strict": bool(schema.get("strict", True)),
                 }
-        # ChatGPT's Codex Responses endpoint rejects max_output_tokens even though the public Responses API accepts it;
-        # Pi intentionally does not forward a token cap here. ChatGPT's Codex Responses endpoint rejects
-        # max_output_tokens even though the public Responses API accepts it; the subscription service applies its own
-        # cap.
+        # ChatGPT's Codex Responses endpoint rejects max_output_tokens even though the public Responses API accepts
+        # it; the subscription service applies its own cap, and Pi intentionally does not forward a token cap here.
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
         if tools:

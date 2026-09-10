@@ -23,6 +23,7 @@ import {
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import {
+  isServedByLlamaCpp,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
@@ -34,6 +35,7 @@ import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/ll
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
+  IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
   isSandboxFileList,
   isSandboxToolResult,
@@ -52,12 +54,7 @@ import {
 // The frame -> part shaping a tool result gets, shared with the recovery replay so a reopened card is the same
 // object a watched one was.
 export { isMcpImageToolResult, type McpImageToolResult } from "../utils/tool-result-shape";
-import {
-  documentCitationToSource,
-  isMcpImageToolResult,
-  parseSourcesFromResult,
-  shapeToolResult,
-} from "../utils/tool-result-shape";
+import { isMcpImageToolResult, shapeToolResult } from "../utils/tool-result-shape";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
@@ -302,6 +299,12 @@ import {
   useResearchRunStore,
   watchResearchRun,
 } from "../stores/research-run-store";
+import {
+  documentCitationToSource,
+  isSafeNavigableSourceUrl,
+  parseSourcesFromResult,
+} from "../utils/document-citation-source";
+import { mergeGoogleNativeParts } from "../utils/google-native-parts";
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
@@ -2043,6 +2046,7 @@ type QueuedResolvedModelRuntime = {
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   loadedContextLength: number | null;
+  loadedIsGguf: boolean | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2190,6 +2194,7 @@ function queuedResolvedModelFromStore(
     supportsPreserveThinking: state.supportsPreserveThinking,
     preserveThinking: state.preserveThinking,
     loadedContextLength: state.loadedContextLength,
+    loadedIsGguf: state.loadedIsGguf,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -3774,6 +3779,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
+            loadedIsGguf: loadedContextFields(status).loadedIsGguf,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4005,6 +4011,7 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
                 loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
+                loadedIsGguf: queuedEmptyModelRuntime.loadedIsGguf,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4399,6 +4406,10 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.loadedContextLength
                   : liveRuntime.loadedContextLength,
+              loadedIsGguf:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.loadedIsGguf
+                  : liveRuntime.loadedIsGguf,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -4865,6 +4876,16 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
+      // The same owner the settings panel asks, so the body and the panel cannot disagree
+      // about the model they both describe. A catalog row would: /api/models/list can
+      // replace the row a load minted, and the variant / native path token still classify
+      // a GGUF the backend has not answered for yet.
+      const isGgufForCompaction = isServedByLlamaCpp({
+        loadedIsGguf: runtime.loadedIsGguf,
+        activeGgufVariant: runtime.activeGgufVariant,
+        activeNativePathToken: runtime.activeNativePathToken,
+        checkpoint: params.checkpoint,
+      });
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -5125,6 +5146,9 @@ export function createOpenAIStreamAdapter(
         [key: string]: unknown;
       };
       type PositionedToolCallPart = ToolCallMessagePart & {
+        backendToolCallId?: string;
+        generationToolCallId?: string;
+        toolApprovalId?: string;
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
@@ -5993,7 +6017,7 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context bar and tok/s populate (backend gates it).
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
-              isGguf: activeModel?.isGguf === true,
+              isGguf: isGgufForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,
@@ -6569,6 +6593,15 @@ export function createOpenAIStreamAdapter(
                     toolEvent.arguments_text,
                     toolArgs,
                   );
+                  const toolIdentity = {
+                    backendToolCallId,
+                    ...(generationRunId
+                      ? {
+                          generationToolCallId: `${generationRunId}:${generationSeq}`,
+                        }
+                      : {}),
+                    ...(approvalId ? { toolApprovalId: approvalId } : {}),
+                  };
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6578,6 +6611,7 @@ export function createOpenAIStreamAdapter(
                     ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
                       ...existing,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
@@ -6590,6 +6624,7 @@ export function createOpenAIStreamAdapter(
                     toolCallParts.push({
                       type: "tool-call" as const,
                       toolCallId: id,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
@@ -6654,86 +6689,12 @@ export function createOpenAIStreamAdapter(
                       typeof toolEvent.arguments === "object"
                         ? (toolEvent.arguments as ToolCallMessagePart["args"])
                         : undefined;
-                    const mergedArgs: ToolCallMessagePart["args"] = {
-                      ...(toolCallParts[idx].args ?? {}),
-                      ...(nextArgs ?? {}),
-                    } as ToolCallMessagePart["args"];
+                    const mergedArgs = mergeGoogleNativeParts(
+                      { ...(toolCallParts[idx].args ?? {}), ...(nextArgs ?? {}) },
+                      toolEvent.google,
+                    ) as ToolCallMessagePart["args"];
                     const overwrittenArgumentKeys =
                       nextArgs !== undefined ? Object.keys(nextArgs) : [];
-                    // Merge tool_end native_part into args.google so the
-                    // outbound translator replays both start (executableCode)
-                    // and end (result / inlineData) on the same turn.
-                    // Concatenate so each part keeps its own thoughtSignature.
-                    const endGoogle = (
-                      toolEvent as { google?: { native_part?: unknown } }
-                    ).google;
-                    if (
-                      endGoogle &&
-                      typeof endGoogle === "object" &&
-                      endGoogle.native_part &&
-                      typeof endGoogle.native_part === "object"
-                    ) {
-                      const argsObj = mergedArgs as Record<string, unknown>;
-                      const existingGoogle = (argsObj.google ?? {}) as Record<
-                        string,
-                        unknown
-                      >;
-                      const existingNative =
-                        (existingGoogle.native_part as Record<
-                          string,
-                          unknown
-                        >) ?? {};
-                      const endNative = endGoogle.native_part as Record<
-                        string,
-                        unknown
-                      >;
-                      // Extract part entries from parts:[...] or a legacy single-object native_part; a legacy
-                      // thoughtSignature always belongs on executableCode.
-                      const collectParts = (
-                        native: Record<string, unknown>,
-                      ): Record<string, unknown>[] => {
-                        if (Array.isArray(native.parts)) {
-                          return (native.parts as unknown[]).filter(
-                            (entry): entry is Record<string, unknown> =>
-                              Boolean(entry) &&
-                              typeof entry === "object" &&
-                              !Array.isArray(entry),
-                          );
-                        }
-                        const out: Record<string, unknown>[] = [];
-                        const legacySig =
-                          typeof native.thoughtSignature === "string"
-                            ? native.thoughtSignature
-                            : typeof native.thought_signature === "string"
-                              ? (native.thought_signature as string)
-                              : null;
-                        for (const key of [
-                          "executableCode",
-                          "codeExecutionResult",
-                          "inlineData",
-                        ] as const) {
-                          const sub = native[key];
-                          if (sub && typeof sub === "object") {
-                            const entry: Record<string, unknown> = {
-                              [key]: sub,
-                            };
-                            if (key === "executableCode" && legacySig) {
-                              entry.thoughtSignature = legacySig;
-                            }
-                            out.push(entry);
-                          }
-                        }
-                        return out;
-                      };
-                      const mergedParts = [
-                        ...collectParts(existingNative),
-                        ...collectParts(endNative),
-                      ];
-                      argsObj.google = {
-                        ...existingGoogle,
-                        native_part: { parts: mergedParts },
-                      };
-                    }
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;

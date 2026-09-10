@@ -65,11 +65,10 @@ export function toolOutputKey(paneScope: string, toolCallId: string): string {
   return `${paneScope}\u0000${toolCallId}`;
 }
 
-// The output-preference rules moved to a dependency-free module so the recovery replay can fold
-// persisted tool frames into parts without importing this module's React-bound scope helpers.
-// Re-exported here unchanged: writer and reader keep reading one source through this path too.
+// Kept React-free so node tests can import it without the runner hanging.
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
   shouldPreserveFullOutput,
-} from "./utils/tool-output-preference";
+  toolResultText,
+} from "./tool-output-result";
