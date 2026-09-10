@@ -1077,7 +1077,9 @@ def test_a_managed_matplotlibrc_is_not_displaced_by_a_later_legacy_one(tmp_path)
 def test_a_managed_style_library_is_not_displaced_either(tmp_path):
     managed = tmp_path / "studio" / "cache" / "matplotlib"
     (managed / "stylelib").mkdir(parents = True)
-    (managed / "stylelib" / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+    (managed / "stylelib" / "house.mplstyle").write_text(
+        "axes.facecolor: black\n", encoding = "utf-8"
+    )
     config = _matplotlib_config_dir(tmp_path / "home")
     config.mkdir(parents = True)
     (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
