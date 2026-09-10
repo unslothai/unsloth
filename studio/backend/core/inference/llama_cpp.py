@@ -2394,6 +2394,20 @@ _MAX_PARALLEL_TOOL_CALLS_PER_ROUND = _MAX_TOOL_CALLS_PER_TURN
 _MAX_LENGTH_CONTINUATIONS = 2
 # Per token would take a lock per token; per round is far too late at thousands of tokens.
 _TOKEN_REPORT_EVERY = 32
+
+
+def _llama_predicted_n(chunk) -> Optional[int]:
+    """llama-server's own count of the tokens this request has decoded, on every frame under
+    ``timings_per_token``; None on a frame without it. A structured tool-call frame can carry
+    several tokens' worth of arguments at once, so counting frames undercounts the cache."""
+    timings = chunk.get("timings") if isinstance(chunk, dict) else None
+    if not isinstance(timings, dict):
+        return None
+    try:
+        value = int(timings.get("predicted_n") or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 # Below this, a tool result carries no content: what comes back is the notice saying it was
@@ -31158,7 +31172,7 @@ class LlamaCppBackend:
         retry_preflight_context_length = None
         # Progress events let advancing prefills renew the first-token deadline.
         payload["return_progress"] = True
-        if perf_callback is not None:
+        if perf_callback is not None or on_tokens is not None:
             payload["timings_per_token"] = True
         if logit_bias:
             payload["logit_bias"] = logit_bias
@@ -31309,6 +31323,7 @@ class LlamaCppBackend:
         # Per ATTEMPT, not per turn: a resumed attempt restarts at zero and the controller
         # re-baselines on note_replayed, so a running total would count the partial twice.
         _tokens_this_stream = 0
+        _tokens_reported = 0
         # Bound out here because the preempt handler reads it and the pause can arrive before the
         # stream is open, where the inner `reasoning_text = ""` has not run. That one stays.
         reasoning_text = ""
@@ -31428,11 +31443,15 @@ class LlamaCppBackend:
                                     or delta.get("reasoning_content")
                                     or delta.get("tool_calls")
                                 ):
-                                    _tokens_this_stream += 1
+                                    _tokens_this_stream = max(
+                                        _tokens_this_stream + 1, _llama_predicted_n(data) or 0
+                                    )
                                     if (
                                         on_tokens is not None
-                                        and _tokens_this_stream % _TOKEN_REPORT_EVERY == 0
+                                        and _tokens_this_stream - _tokens_reported
+                                        >= _TOKEN_REPORT_EVERY
                                     ):
+                                        _tokens_reported = _tokens_this_stream
                                         try:
                                             on_tokens(_tokens_this_stream)
                                         except Exception:
@@ -32744,7 +32763,7 @@ class LlamaCppBackend:
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
-            if perf_callback is not None:
+            if perf_callback is not None or on_tokens is not None:
                 payload["timings_per_token"] = True
             if logit_bias:
                 payload["logit_bias"] = logit_bias
@@ -32890,6 +32909,7 @@ class LlamaCppBackend:
                 # Bound here, not at the chunk loop: a pause can be raised before the first chunk
                 # and its handler charges what this attempt decoded, so an unreached name raises.
                 _tokens_this_stream = 0
+                _tokens_reported = 0
                 _prov_entry = None
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
@@ -33012,6 +33032,7 @@ class LlamaCppBackend:
                     _respawn_truncations = []
                     raw_buf = ""
                     _tokens_this_stream = 0
+                    _tokens_reported = 0
                     for raw_chunk in self._iter_text_cancellable(
                         response,
                         cancel_event,
@@ -33103,12 +33124,16 @@ class LlamaCppBackend:
                                     or delta.get("tool_calls")
                                 )
                                 if _output_frame:
-                                    _tokens_this_stream += 1
+                                    _tokens_this_stream = max(
+                                        _tokens_this_stream + 1,
+                                        _llama_predicted_n(chunk_data) or 0,
+                                    )
                                 if (
                                     _output_frame
                                     and on_tokens is not None
-                                    and _tokens_this_stream % _TOKEN_REPORT_EVERY == 0
+                                    and _tokens_this_stream - _tokens_reported >= _TOKEN_REPORT_EVERY
                                 ):
+                                    _tokens_reported = _tokens_this_stream
                                     try:
                                         on_tokens(_tokens_this_stream)
                                     except Exception:
@@ -35907,7 +35932,7 @@ class LlamaCppBackend:
 
         # Progress events feed the first-token deadline; timings stay opt-in.
         stream_payload["return_progress"] = True
-        if perf_callback is not None:
+        if perf_callback is not None or on_tokens is not None:
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []
@@ -36074,6 +36099,7 @@ class LlamaCppBackend:
         # Per ATTEMPT of the final pass, as the in-loop stream reports its own: `on_tokens` is the
         # only caller of `observe()`, so a long forced final answer grew invisibly.
         _final_tokens_this_stream = 0
+        _final_tokens_reported = 0
         if _declined_continues and _declined_display is not None:
             # The declined partial is in the prompt and on screen, so this pass's snapshots
             # carry it: started empty, the non-streaming drain returned the suffix alone.
@@ -36308,12 +36334,17 @@ class LlamaCppBackend:
                                         or delta.get("tool_calls")
                                     )
                                     if _final_output_frame:
-                                        _final_tokens_this_stream += 1
+                                        _final_tokens_this_stream = max(
+                                            _final_tokens_this_stream + 1,
+                                            _llama_predicted_n(chunk_data) or 0,
+                                        )
                                     if (
                                         _final_output_frame
                                         and on_tokens is not None
-                                        and _final_tokens_this_stream % _TOKEN_REPORT_EVERY == 0
+                                        and _final_tokens_this_stream - _final_tokens_reported
+                                        >= _TOKEN_REPORT_EVERY
                                     ):
+                                        _final_tokens_reported = _final_tokens_this_stream
                                         try:
                                             on_tokens(_final_tokens_this_stream)
                                         except Exception:
@@ -36862,6 +36893,7 @@ class LlamaCppBackend:
                 # `note_replayed` and `observe` adds the reported count, so carried across the resume
                 # the sweep saw the chat as twice its size. The length continuation does NOT reset.
                 _final_tokens_this_stream = 0
+                _final_tokens_reported = 0
                 # No blank status and no cleared display: this pass keeps `cumulative` across
                 # attempts, and a client whose cursor was reset is sent the partial twice.
                 continue

@@ -17,6 +17,7 @@ import { dismissCarveoutAdviceForModel, showCarveoutAdvice } from "@/features/ig
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { isPreemptGaveUp } from "../utils/continuation";
 import {
   type ModelRuntime,
   withModelLoadNotice,
@@ -1569,11 +1570,15 @@ export async function* streamChatCompletions(
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
   let sawReasoningContent = false;
+  // A turn the backend gave up on ends on `length` because that is the shape a continuation
+  // resumes from; thrown as a length error, the adapter never reached its `paused` verdict.
+  let sawPreemptGaveUp = false;
   // Reported by the server on the final chunk. Needed to tell the two walls apart: a finite Max
   // Tokens below the context length does not mean Max Tokens stopped the generation.
   let promptTokens: number | null = null;
 
   const throwIfReasoningOnlyLength = () => {
+    if (sawPreemptGaveUp) return;
     if (
       terminalFinishReason === "length" &&
       sawReasoningContent &&
@@ -1715,6 +1720,9 @@ export async function* streamChatCompletions(
         const finishReason = parsedChoices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
+        }
+        if (isPreemptGaveUp((parsed as OpenAIChatChunk).context_truncated)) {
+          sawPreemptGaveUp = true;
         }
         yield parsed as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);

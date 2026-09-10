@@ -540,6 +540,9 @@ class Participant:
     # reading saw parked from one that parked (or parked again) while the erases were in
     # flight, whose cells no erase touched.
     park_seq: int = 0
+    # The lease's `charge_seq` when this holder parked: the commitment a reclaim hands back.
+    # Read at reclaim time instead, a round re-costed while the erases ran was handed back.
+    park_charge_seq: Optional[int] = None
     # The ONLY thing that puts the batch term in the buffer, so it must be set before the
     # request carrying the prompt is sent. `measured` asks whether the charge is resident.
     pending_prefill: int = 0
@@ -1144,6 +1147,7 @@ class PreemptionController:
             participant.state = state
             if state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING):
                 participant.park_seq += 1
+                participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
             if state == ParticipantState.DECODING:
                 # Back at the model: the prompt is prefilled in again, so the cells are real.
                 if participant.cells_reclaimed:
@@ -1195,13 +1199,7 @@ class PreemptionController:
                 # Whatever it was about to prefill went with the cells. It re-announces in
                 # `note_state` when it decodes again.
                 participant.prefill_done()
-                released.append(
-                    (
-                        participant,
-                        participant.park_seq,
-                        getattr(participant.lease, "charge_seq", None),
-                    )
-                )
+                released.append((participant, participant.park_seq, participant.park_charge_seq))
         for participant, park_seq, charge_seq in released:
             # The lease call runs outside the lock, after erases that took seconds: a holder
             # whose tool came back in between has restated its prompt and re-charged, and
@@ -1270,6 +1268,7 @@ class PreemptionController:
                 ParticipantState.TOOLS_RUNNING,
             ):
                 participant.park_seq += 1
+                participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
             participant.state = state
             if state not in _HOLDS_KV:
                 # Nothing is submitted until it asks again, and asking is where it re-announces.
