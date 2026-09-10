@@ -19,6 +19,14 @@ from types import SimpleNamespace
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -138,10 +146,7 @@ def test_files_manifest_round_trips():
 def test_a_different_file_set_is_not_adopted(monkeypatch):
     # Two quants of one repo are two downloads sharing the "@diffusion" slot. Adopting the running one made the UI wait on the
     # wrong file set and load a file that was never fetched, so the second request is refused while the first runs.
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
-    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
-    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
-    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+    _shared_setup_1(monkeypatch)
 
     key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     try:
@@ -170,10 +175,7 @@ def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
     # A second client starting the same download is accepted and gets the live job's
     # transport, which reads exactly like a fresh Xet start. Only this flag separates
     # them, and the Unsloth download notice keys off it.
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
-    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
-    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
-    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+    _shared_setup_1(monkeypatch)
 
     repo = "unsloth/attach-flag-probe"
     key = dl._download_job_key(repo, dl._scope_variant("diffusion"))
@@ -203,10 +205,7 @@ def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
 def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
     # The retry reclaims the slot with replace_active, which OVERWRITES the stored metadata. Dropping the file list there left
     # the record claiming an empty scope, so the next identical scoped start compared [] against the real list and 409'd.
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
-    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
-    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
-    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+    _shared_setup_1(monkeypatch)
 
     class _Proc:
         pid = 4242
@@ -307,10 +306,7 @@ def test_active_downloads_publish_the_scoped_file_list(monkeypatch):
     write) has no local record of what a live job is fetching. Every file set of one repo shares
     the "@scope" slot, so without this list it cannot tell its own transfer from a sibling
     checkpoint's and would report a never-fetched file as already downloading."""
-    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
-    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
-    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
-    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+    _shared_setup_1(monkeypatch)
 
     key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     try:

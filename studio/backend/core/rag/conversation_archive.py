@@ -273,8 +273,75 @@ def _without_retrieval(group: list[dict]) -> list[dict]:
         if str(message.get("role") or "") == "tool":
             if str(message.get("tool_call_id") or "") in dropped_ids:
                 continue
+        message = _without_folded_retrieval(message, dropped_ids)
+        if message is None:
+            continue
         out.append(message)
     return out
+
+
+def _without_folded_retrieval(message: dict, dropped_ids: set):
+    """The message with any folded retrieval result cut out of its text, or None if that was all
+    it was. Matched on the shape the fold emits, since it rewrote the role the id match needs.
+
+    Keyed on ``tool_call_id`` against the calls just dropped, exactly as the role="tool" branch
+    is, and not on the tool name: the fold's output is only a JSON blob in user text, so a user
+    who pastes that shape while discussing the API would otherwise have their own words silently
+    dropped from the archive. An id-less block stays, which is what the role="tool" branch does
+    with an id-less result.
+
+    Cut, not dropped: the coalesce usually merges the passage with the question asked after it.
+    Both content shapes, because that merge yields a string for a plain question and a part list
+    for an image-bearing one. Split on "\\n\\n": ``json.dumps(indent = 2)`` emits no blank line,
+    so one folded block can never contain it.
+    """
+    if str(message.get("role") or "") != "user":
+        return message
+    content = message.get("content")
+    if isinstance(content, str):
+        kept = _text_without_folded_retrieval(content, dropped_ids)
+        if kept is None:
+            return None
+        return {**message, "content": kept}
+    if not isinstance(content, list):
+        return message
+    parts = []
+    for part in content:
+        text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
+        if not isinstance(text, str):
+            parts.append(part)
+            continue
+        kept = _text_without_folded_retrieval(text, dropped_ids)
+        if kept is None:
+            continue
+        parts.append({**part, "text": kept})
+    if not parts:
+        return None
+    return {**message, "content": parts}
+
+
+def _text_without_folded_retrieval(text: str, dropped_ids: set):
+    """``text`` with folded retrieval blocks removed, or None if that was all of it."""
+    if '"tool_response"' not in text:
+        return text
+    kept = []
+    for segment in text.split("\n\n"):
+        try:
+            payload = json.loads(segment)
+        except (ValueError, TypeError):
+            kept.append(segment)
+            continue
+        response = payload.get("tool_response") if isinstance(payload, dict) else None
+        if not isinstance(response, dict):
+            kept.append(segment)
+            continue
+        call_id = str(response.get("tool_call_id") or "")
+        if call_id and call_id in dropped_ids:
+            continue
+        kept.append(segment)
+    if not kept:
+        return None
+    return "\n\n".join(kept)
 
 
 def enabled() -> bool:
