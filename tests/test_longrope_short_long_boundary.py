@@ -18,8 +18,8 @@ which every attention path here calls, returns `(None, None)`.
 `unsloth/models/llama.py` cannot be imported without an accelerator and the training
 stack, so the class is pulled out with `ast` and executed with a small prelude, the same
 shape as `tests/test_callback_signature_drift.py` reading the tree statically.
-`torch.device(<int>)` is pinned to CPU in that prelude so the result does not depend on
-which accelerator the runner exposes.
+`torch.device(<int>)` and the current device are pinned to CPU in that prelude so the
+result does not depend on which accelerator the runner exposes.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _load_longrope():
         "math": __import__("math"),
         "DEVICE_COUNT": 1,
         "DEVICE_TYPE_TORCH": "cpu",
-        "get_current_device": lambda: 0,
+        "get_current_device": lambda: torch.device("cpu"),
         "is_bfloat16_supported": lambda: False,
     }
     exec(compile(ast.Module(body = [cls], type_ignores = []), str(LLAMA), "exec"), ns)
