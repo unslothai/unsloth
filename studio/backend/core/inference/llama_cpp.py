@@ -34680,6 +34680,16 @@ class LlamaCppBackend:
                 # runs here, so without it the line was never shown at all. Yielded AFTER
                 # on_preempted, so the signal cannot precede the lease going back.
                 yield {"type": "preempt", "state": "paused"}
+                # Spent, as the plain path checks before waiting: a resume would replay the
+                # whole prompt to decode the one floored token that goes past the cap.
+                if _loop_budget_left(0) == 0:
+                    logger.info("Paused with the caller's output cap spent; ending the turn")
+                    _spent_meta = _build_metadata_event(
+                        *_folded_attempt(_iter_usage, _iter_timings), "length"
+                    )
+                    if _spent_meta is not None:
+                        yield _spent_meta
+                    return
                 try:
                     _resumed = yield from _await_resume(preempt_policy, cancel_event)
                     # Cleared BEFORE `on_resumed`. The clear stays because the policy
@@ -35749,16 +35759,18 @@ class LlamaCppBackend:
                     reason = getattr(preempt_event, "reason", None),
                 )
 
-                def _final_pause_gave_up(folded: bool = False):
+                def _final_pause_gave_up(folded: bool = False, notice: bool = True):
                     """End the turn the way a client can read, not by falling silent.
 
                     The notice saying why the answer stopped, then a terminal metadata
                     carrying `length`, which is the shape the client already resumes from.
                     Nothing follows this pass, so the two events are all the user gets.
                     ``folded`` once the attempt's decode is in the accumulators, so only
-                    its prompt side is read again.
+                    its prompt side is read again. ``notice`` False is a turn the caller's
+                    own cap ended, which is not a give-up.
                     """
-                    yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
+                    if notice:
+                        yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
                     _gave_up_meta = _build_metadata_event(
                         *(
                             _folded_attempt(_metadata_usage, _metadata_timings)
@@ -35800,6 +35812,14 @@ class LlamaCppBackend:
                 # Yielded AFTER on_preempted, so the signal cannot reach the client before
                 # the lease it describes has gone back.
                 yield {"type": "preempt", "state": "paused"}
+                # Spent, as the plain path checks before waiting: a resume would replay the
+                # whole prompt to decode the one floored token that goes past the cap.
+                if _remaining_output_budget(0) == 0:
+                    logger.info(
+                        "Final answer paused with the caller's output cap spent; ending the turn"
+                    )
+                    yield from _final_pause_gave_up(folded = True, notice = False)
+                    return
                 try:
                     _resumed_f = yield from _await_resume(preempt_policy, cancel_event)
                     # Cleared BEFORE `on_resumed`, as in the round loop: afterwards it races
