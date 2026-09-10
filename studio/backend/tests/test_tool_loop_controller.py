@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -142,9 +143,10 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
     assert decision.tool_start_event()["type"] == "tool_start"
     assert decision.as_assistant_tool_call()["function"]["arguments"] == '{"query":"gpu prices"}'
 
-    completion = controller.record_result(decision, "Search result\n__IMAGES__:{...}")
+    envelope = 'Search result\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
+    completion = controller.record_result(decision, envelope)
 
-    assert completion.tool_end_payload()["result"] == "Search result\n__IMAGES__:{...}"
+    assert completion.tool_end_payload()["result"] == envelope
     assert completion.tool_end_event()["type"] == "tool_end"
     assert completion.tool_message() == {
         "role": "tool",
@@ -276,9 +278,132 @@ def test_render_html_success_filters_active_tools_and_repeat_is_internal():
 
 
 def test_strip_result_for_model_removes_frontend_image_sentinel():
-    assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == "text"
-    assert strip_result_for_model("text __IMAGES__:payload") == "text"
+    assert strip_result_for_model('text\n__IMAGES__:["a.png"]') == "text"
     assert strip_result_for_model("plain text") == "plain text"
+
+
+def test_a_result_that_only_quotes_the_image_or_source_marker_is_kept_whole():
+    """Only a structurally valid trailing envelope is stripped, the way
+    `_strip_files_sentinel` and `_strip_mcp_image_suffix` beside it already are."""
+    quoted = 'tools.py:16134:        out += f"\\n__IMAGES__:{_json.dumps(images)}"\nsecond hit\nthird hit'
+    for name in (None, "terminal", "mcp__fs__read"):
+        assert strip_result_for_model(quoted, name) == quoted
+
+    # What `_defuse_sentinels` leaves behind when a program prints the marker itself.
+    defused = "line one\n __IMAGES__:printed by the program\nline three"
+    assert strip_result_for_model(defused, "python") == defused
+
+    sources = 'line one\nRAG_SOURCES_SENTINEL = "\\n__RAG_SOURCES__:"\nline three'
+    assert strip_result_for_model(sources, "search_knowledge_base") == sources
+
+    assert (
+        strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == 'text\n__IMAGES__:{"paths":[]}'
+    )
+    assert strip_result_for_model('output\n__IMAGES__:["a.png"]', "python") == "output"
+    assert (
+        strip_result_for_model(
+            'answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]', "search_knowledge_base"
+        )
+        == "answer"
+    )
+
+
+def test_two_plots_in_one_code_execution_turn_replay_no_base64():
+    """A Gemini `code_execution` turn that draws two figures stacks one envelope per
+    `inlineData` part (external_provider re-appends to the result it just emitted), so
+    peeling once would hand the model the earlier plot's whole data URI."""
+    first = "data:image/png;base64," + "A" * 64
+    second = "data:image/png;base64," + "B" * 64
+    stacked = (
+        "Figures saved."
+        + f"\n__IMAGES__:{json.dumps([first])}"
+        + f"\n__IMAGES__:{json.dumps([second])}"
+    )
+
+    assert strip_result_for_model(stacked, "code_execution") == "Figures saved."
+
+
+def test_a_flood_of_stacked_image_markers_stays_linear():
+    """A hosted result's length is the provider's to choose and this runs on the request
+    thread, so the cost has to follow it. Re-partitioning the shortened string once per
+    marker copies it again every time: quadruple the markers and the work grows about
+    sixteenfold instead of fourfold.
+
+    Measured as CPU time, and as the best of several runs. A shared runner can deschedule
+    the process mid-call, which adds wall clock but no CPU, and taking the minimum drops
+    the samples where it happened -- interference can only ever make a run look slower.
+    """
+
+    def cost(markers: int) -> float:
+        flood = '\n__IMAGES__:["x"]' * markers
+        best = float("inf")
+        for _ in range(5):
+            started = time.process_time()
+            assert strip_result_for_model(flood, "code_execution") == ""
+            best = min(best, time.process_time() - started)
+        return max(best, 1e-4)
+
+    small = cost(20_000)
+    large = cost(80_000)
+
+    assert large / small < 10.0, f"4x the markers cost {large / small:.1f}x the work"
+
+
+def test_a_large_source_map_is_still_taken_off_the_result():
+    """No length bound here either. Every source record repeats its whole chunk and
+    `search_knowledge_base` honours the model's `top_k` without a ceiling, so a real map
+    can be megabytes; one refused for being big would be left for `_fit_result_to_room`
+    to cut into malformed JSON in front of the model."""
+    import json as _json
+
+    chunk = "retrieved text. " * 400
+    sources = [
+        {
+            "citationId": i,
+            "chunkId": f"c{i}",
+            "filename": "handbook.pdf",
+            "page": i,
+            "text": chunk,
+            "score": 0.5,
+        }
+        for i in range(200)
+    ]
+    result = "answer\n__RAG_SOURCES__:" + _json.dumps(sources, ensure_ascii = False)
+    assert len(result) > 1 << 20
+
+    assert strip_result_for_model(result, "search_knowledge_base") == "answer"
+
+
+def test_a_large_plot_is_still_taken_off_the_result():
+    """The image payload has no length bound on purpose: a figure Gemini renders at high
+    DPI is a data URI of whatever size it chose, and leaving it in for being large is the
+    base64 leak this stripper exists to prevent."""
+    big = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * (12 << 20) + '"]'
+    assert len(big) > 8 << 20
+    assert strip_result_for_model(big, "code_execution") == "output"
+
+
+def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
+    """`_strip_files_sentinel` is already scoped this way. A document an MCP tool read,
+    or a page that was fetched, can end in a well-formed line of either kind, and it is
+    content: the card keeps it, so cutting it leaves the model with less than the user
+    is looking at."""
+    manifest = 'icons/\n__IMAGES__:["icon.png"]'
+    citation = 'notes\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
+
+    for reader in ("mcp__fs__read_file", "web_search", "fetch_url"):
+        assert strip_result_for_model(manifest, reader) == manifest
+        assert strip_result_for_model(citation, reader) == citation
+
+    # The tools that do emit them are unaffected.
+    for emitter in ("python", "terminal", "code_execution"):
+        assert strip_result_for_model(manifest, emitter) == "icons/"
+    for emitter in ("search_knowledge_base", "search_conversation"):
+        assert strip_result_for_model(citation, emitter) == "notes"
+
+    # An unnamed caller still gets everything stripped, as it did before.
+    assert strip_result_for_model(manifest) == "icons/"
+    assert strip_result_for_model(citation) == "notes"
 
 
 def test_the_card_text_keeps_digits_the_browser_would_round():
