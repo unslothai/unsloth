@@ -350,6 +350,66 @@ def test_a_build_refuses_to_publish_before_it_verifies(monkeypatch, tmp_path):
     assert not out.exists()
 
 
+def test_a_remote_base_may_not_be_published_under_another_repos_identity(monkeypatch, tmp_path):
+    build = _script()
+    saved = _stub_build_stack(monkeypatch, _fake_state_dict())
+    out = tmp_path / "build.pt"
+    # 480p weights, 720p identity: same shapes, same prequant repo, and the 720p family declares
+    # its own filename, so nothing after this point can tell the two apart.
+    code = build.main(
+        [
+            "--base",
+            "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+            "--base-id",
+            "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+            "--family",
+            "hunyuanvideo-1.5-720p",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 2
+    assert not out.exists()
+    assert "ckpt" not in saved
+    refusal = build.base_id_refusal(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+    )
+    assert refusal is not None and "--base-id" in refusal
+    # What --base-id is for: a local mirror declaring the repo it mirrors.
+    local = tmp_path / "mirror"
+    local.mkdir()
+    assert build.base_id_refusal(str(local), "Wan-AI/Wan2.2-T2V-A14B-Diffusers") is None
+    code = build.main(
+        [
+            "--base",
+            str(local),
+            "--base-id",
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            "--family",
+            "wan2.2-t2v-a14b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 0
+    assert saved["ckpt"]["metadata"]["base_model_id"] == "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+    assert saved["from_pretrained"]["base"] == str(local)
+    # A remote --base the loader would call the same model keeps working, and no --base-id at all
+    # is untouched.
+    assert (
+        build.base_id_refusal(
+            "unsloth/Wan2.2-T2V-A14B-Diffusers", "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+        )
+        is None
+    )
+    assert build.base_id_refusal("Wan-AI/Wan2.2-T2V-A14B-Diffusers", None) is None
+
+
 def test_a_build_whose_second_run_differs_exits_3_without_uploading(monkeypatch, tmp_path):
     build = _script()
     _stub_build_stack(monkeypatch, _fake_state_dict())
