@@ -161,6 +161,20 @@ export function createRecoveryReplay(
       register?(id: string, approvalId: string): void;
       resolve?(id: string): void;
     };
+    // A call STILL RUNNING when this tab attached has stdout no part can hold yet: live appends every
+    // `tool_output` frame to this tab's transient store and the running card renders THAT, clearing the entry
+    // at its `tool_end` once the result lands on the part. This replay's own buffer is invisible to the card,
+    // so a reopened call showed no output until its end frame -- not even for output produced while the
+    // reader watched. `append`/`clear` are what live calls, keyed by the PART id (what the card renders, and
+    // what the reader resolves) rather than the backend's `call_0`; the wiring composes the scoped store key
+    // with the same helper the card reads through, so writer and reader cannot drift. What live ALSO does at
+    // `tool_end` -- promoting the raw stream into the full-output map -- this replay deliberately does NOT:
+    // its part already carries the fuller of stream-vs-result (see `preferFullToolOutput` below), so a second
+    // copy of the same body would only let an unshaped stream beat the envelope-split text on the card.
+    toolOutputs?: {
+      append?(partId: string, text: string): void;
+      clear?(partId: string): void;
+    };
   },
 ): RecoveryReplay {
   // Read lazily, at the frame that needs it: a follower builds its accumulator before the stored run is fetched,
@@ -364,6 +378,10 @@ export function createRecoveryReplay(
       const text = typeof event.text === "string" ? event.text : "";
       if (!text) return false;
       liveOutput.set(id, (liveOutput.get(id) ?? "") + text);
+      // And publish what this fold added, under the key the running card renders. The buffer above is only
+      // what the NEXT frame's `preferFullToolOutput` compares against; without this line the output stays
+      // invisible until `tool_end` writes the part.
+      options?.toolOutputs?.append?.(id, text);
       return true;
     }
     if (type === "tool_args") {
@@ -426,7 +444,12 @@ export function createRecoveryReplay(
     // is the live path's rule too, so a reopened card shows what actually ran rather than its tail.
     if (existingIndex === -1) return false;
     const part = parts[existingIndex];
-    const streamed = liveOutput.get(String(part.toolCallId ?? id));
+    const partId = String(part.toolCallId ?? id);
+    // The live pane closes exactly where live closes it: from here the card reads the PART, which now
+    // carries the fuller of stream-vs-result. A stale live entry would keep a finished call's stdout
+    // pinned open under the result.
+    options?.toolOutputs?.clear?.(partId);
+    const streamed = liveOutput.get(partId);
     const result = event.result;
     const fuller =
       streamed !== undefined && typeof result === "string"

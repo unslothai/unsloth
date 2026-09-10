@@ -98,7 +98,12 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "./stores/research-run-store";
-import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import {
+  ToolPaneScopeContext,
+  toolOutputKey,
+  toolPaneScope,
+  toolThreadScope,
+} from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
@@ -844,10 +849,15 @@ type GenerationRecovery = {
 
 const generationRecoveries = new Map<string, GenerationRecovery>();
 
+// What a follower folds for a call still RUNNING: the pane scope live keyed its tool-output map by --
+// exactly what `useToolPaneScope` hands the card (pane scope + thread), so the replay's frames and the
+// reader's read resolve to ONE key. Passed in rather than derived here because a follower has the run's
+// thread but not the pane rendering it: modelType/pairId are props of the runtime hook that owns it.
 function scheduleGenerationRecovery(
   threadId: string,
   storedMessage: MessageRecord,
   aui: ReturnType<typeof useAui>,
+  toolOutputScope: string,
 ): void {
   const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
   const runId = metadata.generationRunId;
@@ -887,6 +897,12 @@ function scheduleGenerationRecovery(
         register(id: string, approvalId: string): void;
         resolve(id: string): void;
       };
+      // A call still RUNNING when this tab attached has stdout in no part yet. Unlike the approvals above, the
+      // key needs no lazy fill: the pane scope is `toolOutputScope`, known before the first frame lands.
+      toolOutputs?: {
+        append(partId: string, text: string): void;
+        clear(partId: string): void;
+      };
     } = {};
     replayOptions.toolConfirmations = {
       register: (id, approvalId) =>
@@ -898,6 +914,22 @@ function scheduleGenerationRecovery(
         ),
       resolve: (id) =>
         useChatRuntimeStore.getState().clearToolConfirmation(id),
+    };
+    // A call still RUNNING when this tab attached has stdout in no part yet, and this tab's live-output map is
+    // what the running card renders: folding frames into parts alone showed the reader nothing until tool_end.
+    // The SAME two store actions live calls, under the SAME key the card reads through (`toolOutputKey`), keyed
+    // by the PART id -- what the card renders, never the backend's `call_0`. No full-output promotion: the
+    // replay's part already carries the fuller of stream-vs-result, so a second copy of the body would only let
+    // raw stdout beat the shaped result on the finished card.
+    replayOptions.toolOutputs = {
+      append: (partId, text) =>
+        useChatRuntimeStore
+          .getState()
+          .appendToolLiveOutput(toolOutputKey(toolOutputScope, partId), text),
+      clear: (partId) =>
+        useChatRuntimeStore
+          .getState()
+          .clearToolLiveOutput(toolOutputKey(toolOutputScope, partId)),
     };
     let replay = createRecoveryReplay(
       storedMessage.content,
@@ -1720,7 +1752,13 @@ function useStudioRuntimeAdapters(
               typeof (message.metadata as Record<string, unknown> | undefined)
                 ?.generationRunId === "string"
             ) {
-              scheduleGenerationRecovery(remoteId, message, aui);
+              scheduleGenerationRecovery(
+                remoteId,
+                message,
+                aui,
+                // The scope the card this reply renders IN resolves its tool-output key against.
+                toolThreadScope(toolPaneScope(modelType, pairId), remoteId),
+              );
             }
           }
         })
@@ -2074,6 +2112,7 @@ function useStudioRuntimeAdapters(
                 metadata: { ...(message.metadata ?? {}) },
               },
               aui,
+              toolThreadScope(toolPaneScope(modelType, pairId), remoteId),
             );
           }
         }

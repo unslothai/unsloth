@@ -662,3 +662,125 @@ test("an exit-prefixed result keeps its envelope when the stream replaces its bo
   assert.equal(result.text.includes("Hint: rerun with X"), true);
   assert.deepEqual(result.files, [{ name: "out.log", size: 2 }]);
 });
+
+// ---- stdout a reader never watched, published while the call is STILL running ---------------------
+// Live appends every `tool_output` frame to this tab's live-output map and the RUNNING card renders that
+// map (ToolLiveOutput); the part stays empty until `tool_end`. Folding frames into parts alone showed a
+// reopened card nothing at all while its call ran -- not even output produced while the reader watched. The
+// sink is handed the PART id, what the card renders and the reader resolves, never the backend's
+// `call_0`, which restarts every response and names another tab's call just as easily as this one's.
+test("a call still running when the tab reattaches publishes its stdout under the key the card reads", () => {
+  // The map stands in for `toolLiveOutput`; `keyOf` is how the writer AND the reader build the key: pane
+  // scope + thread, then the part id -- the same composition `useToolOutputFor` resolves.
+  const scope = "base\u0000\u0000thread-1";
+  const keyOf = (partId: string) => `${scope}\u0000${partId}`;
+  const liveOutput = new Map<string, string>();
+  const appended: Array<[string, string]> = [];
+  const cleared: string[] = [];
+  const replay = createRecoveryReplay(
+    [text("running"), tool("call_0:uuid-9", "terminal", { argsText: '{"cmd":"ls"}' })],
+    undefined,
+    {
+      toolOutputs: {
+        append: (partId, chunk) => {
+          appended.push([partId, chunk]);
+          const key = keyOf(partId);
+          liveOutput.set(key, (liveOutput.get(key) ?? "") + chunk);
+        },
+        clear: (partId) => {
+          cleared.push(partId);
+          liveOutput.delete(keyOf(partId));
+        },
+      },
+    },
+  );
+  replay.applyChunk({
+    _toolEvent: { type: "tool_output", tool_call_id: "call_0", text: "chunk one " },
+  });
+  replay.applyChunk({
+    _toolEvent: { type: "tool_output", tool_call_id: "call_0", text: "and chunk two" },
+  });
+  const card = (replay.content() as Array<Record<string, unknown>>).find(
+    (part) => part.type === "tool-call",
+  )!;
+  assert.equal(card.result, undefined, "the call is still running: the result has not landed yet");
+  assert.equal(
+    liveOutput.get(keyOf(String(card.toolCallId))),
+    "chunk one and chunk two",
+    "what the frames carried is readable off the store key the running card renders, before any tool_end",
+  );
+  assert.deepEqual(
+    appended.map(([partId]) => partId),
+    [String(card.toolCallId), String(card.toolCallId)],
+    "both frames publish under the PART id the card renders -- not the backend's `call_0`, which is what the frame spells",
+  );
+});
+
+test("a stream that arrived while nobody watched ends with the part holding the whole body", () => {
+  // The live pane closes exactly where live closes it: `tool_end` clears the live key, and what the finished
+  // card reads is the PART -- which is why the replay needs no full-output promotion of its own. Its result
+  // already went through `preferFullToolOutput`, so the fuller stream survives the clear instead of being
+  // handed to the card as a second, unshaped copy of the same body.
+  const scope = "base\u0000\u0000thread-1";
+  const keyOf = (partId: string) => `${scope}\u0000${partId}`;
+  const liveOutput = new Map<string, string>();
+  const cleared: string[] = [];
+  const replay = createRecoveryReplay(
+    [tool("call_0:uuid-9", "terminal", { argsText: "{}" })],
+    undefined,
+    {
+      toolOutputs: {
+        append: (partId, chunk) => {
+          const key = keyOf(partId);
+          liveOutput.set(key, (liveOutput.get(key) ?? "") + chunk);
+        },
+        clear: (partId) => {
+          cleared.push(partId);
+          liveOutput.delete(keyOf(partId));
+        },
+      },
+    },
+  );
+  replay.applyChunk({
+    _toolEvent: { type: "tool_output", tool_call_id: "call_0", text: "the whole stdout, which is longer than its tail\n" },
+  });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_end",
+      tool_call_id: "call_0",
+      result: "the whole stdout, which is longer than its tail\n\n... (truncated for the model)",
+    },
+  });
+  const part = (replay.content() as Array<Record<string, unknown>>).find(
+    (part) => part.type === "tool-call",
+  )!;
+  assert.deepEqual(cleared, ["call_0:uuid-9"], "the live pane closes at tool_end, under the same key");
+  assert.equal(liveOutput.size, 0, "nothing is left pinned open under a finished call");
+  const result = part.result as { text: string };
+  assert.equal(result.text.includes("longer than its tail"), true);
+  assert.equal(
+    result.text.includes("(truncated for the model)"),
+    false,
+    "the fuller stream is what the part carries once the live entry is gone",
+  );
+});
+
+test("the follower publishes through the same scoped store keys the card reads through", () => {
+  // The writer and the reader have to build ONE key. The replay hands over the part id; the wiring composes
+  // it with `toolOutputKey` under the pane scope + thread -- the exact scope `useToolPaneScope` resolves --
+  // and writes the SAME two store actions live calls. It does NOT mirror `setToolFullOutput`: the replay's
+  // own part already carries the fuller of stream-vs-result, so promoting raw stdout again would let an
+  // unshaped stream beat the envelope-split result on the card.
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  assert.ok(
+    provider.includes("replayOptions.toolOutputs = {") &&
+      provider.includes(".appendToolLiveOutput(toolOutputKey(toolOutputScope, partId), text)") &&
+      provider.includes(".clearToolLiveOutput(toolOutputKey(toolOutputScope, partId))"),
+    "the follower writes live stdout through the reader's own key builder",
+  );
+  assert.ok(
+    !provider.includes("setToolFullOutput") &&
+      provider.includes("toolThreadScope(toolPaneScope(modelType, pairId), remoteId)"),
+    "no full-output promotion, and the scope is built exactly as the card reads it",
+  );
+});
