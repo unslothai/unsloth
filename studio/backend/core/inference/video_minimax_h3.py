@@ -23,9 +23,8 @@ H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
 # using them through h3_component_source below, because the HF cache is keyed by repo id and repointing alone
 # re-downloads ~6 GB.
 H3_COMPONENT_REPO = "unsloth/MiniMax-H3-GGUF"
-# only for reusing an existing cache entry; the pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES
-# Where the component files came from originally. Only for reusing an existing cache entry: a fresh install never reads
-# it. The pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES, which owns this decision for every
+# Where the component files came from originally. Only for reusing an existing cache entry: a fresh install never
+# reads it. The pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES, which owns this decision for every
 # mirrored asset; this name is what the delete-cached claims read, and a test pins the two together.
 H3_LEGACY_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
 H3_VIDEO_VAE = "vae/minimax_h3_video_vae_fp16.safetensors"
@@ -40,19 +39,16 @@ H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
 
 # The terms H3_DIFFUSERS_VRAM_BASE_GB is built from, so a load that shrinks one of the big components can rebuild the
-# floor from what it holds instead of the released sizes. With everything under enable_auto_cpu_offload the base is the
-# LARGEST SINGLE RESIDENT COMPONENT plus runtime overhead, not the sum: at any instant one component is on the device
-# and the rest are parked on the host. That is exactly why seeding a 20 GB pre-quantized denoiser moved this number by
-# nothing -- the 66.7 GB conditioner was already the larger of the two and took over as the maximum. Both have to shrink
-# before the floor does. ONE case breaks the max, and it is the case a pre-quantized denoiser creates. A torchao module
-# does not survive being moved mid-block, so _load_h3_modular_pipeline PINS it to the device and takes it out of the
-# offload rotation (see pin_prequantized_module). It is then resident for the whole generation and the floor becomes
-# additive: denoiser + whichever offloaded component is largest. Measured at 960x544x124 with the int8 denoiser pinned,
-# torch.cuda.max_memory_allocated: bfloat16 conditioner 94.62 GB = 20.3 + 66.7 + 5.18 activations + 2.44 int8
-# conditioner 55.20 GB = 20.3 + 27.1 + 5.18 activations + 2.58 so 2.6 covers the pinned overhead on the conservative
-# side of both. Note what the first row says about the shipped constant: a pinned denoiser and a dense conditioner need
-# ~95 GB, and the flat 68.5 under-states that by 26 GB. Rebuilding the floor from the resident components fixes that
-# under-estimate in the same stroke as crediting the saving.
+# floor from what it holds instead of the released sizes. With everything under enable_auto_cpu_offload the base is
+# the LARGEST SINGLE RESIDENT COMPONENT plus runtime overhead, not the sum: at any instant one component is on the
+# device and the rest are parked on the host. That is why seeding a 20 GB pre-quantized denoiser moved this number by
+# nothing -- the 66.7 GB conditioner was already the larger of the two. ONE case breaks the max, and it is the case a
+# pre-quantized denoiser creates: a torchao module does not survive being moved mid-block, so
+# _load_h3_modular_pipeline PINS it to the device and takes it out of the offload rotation, after which the floor
+# becomes additive (denoiser + whichever offloaded component is largest). Measured at 960x544x124 with the int8
+# denoiser pinned: bf16 conditioner 94.62 GB, int8 conditioner 55.20 GB, so 2.6 covers the pinned overhead on the
+# conservative side of both. Note what the first figure says about the shipped constant: a pinned denoiser and a dense
+# conditioner need ~95 GB, and the flat 68.5 under-states that by 26 GB.
 H3_DIFFUSERS_VRAM_OVERHEAD_GB = 1.8
 H3_DIFFUSERS_VRAM_PINNED_OVERHEAD_GB = 2.6
 H3_TEXT_ENCODER_BF16_GB = 66.7
@@ -119,7 +115,6 @@ def estimate_h3_diffusers_vram_gb(
     return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
 
 
-# both are the shipped values, unchanged: that tier is only reachable on a >= 132 GB device
 # The VRAM at which the offload tier changes, and the host floor of the tier above it. Both are the shipped values,
 # unchanged: that tier is only reachable on a >= 132 GB device, where the component sizes below are not what stands
 # between a load and a generation, and there is no measurement here to justify moving it.
@@ -158,9 +153,8 @@ def estimate_h3_diffusers_host_ram_gb(
     return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
 
 
-# torch.autocast casts these module types' weight and bias to the autocast dtype on entry
-# torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on autocast's
-# float32 promote list and bare parameters are read directly, so both must keep their source precision.
+# torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on
+# autocast's float32 promote list and bare parameters are read directly, so both must keep their source precision.
 _AUTOCAST_WEIGHT_MODULE_NAMES = ("Linear", "Conv1d", "Conv2d", "Conv3d")
 
 
@@ -178,24 +172,24 @@ def _module_bytes(module: Any) -> int:
 def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
     """Drop what the H3 video VAE cannot use and pre-cast what autocast casts anyway.
 
-    Two thirds of an H3 render's peak is not activations. Measured at 640x384 across 124
-    frames, a 20.25 GB int8 denoiser peaks at 36.96 GB, and the gap is almost all weights:
-    the video VAE alone is 10.42 GB because diffusers pins it to float32, and a further
-    4.91 GB is autocast's own float16 copy of those weights.
+    Two thirds of an H3 render's peak is not activations. Measured at 640x384 across 124 frames, a
+    20.25 GB int8 denoiser peaks at 36.96 GB, and the gap is almost all weights: the video VAE alone
+    is 10.42 GB because diffusers pins it to float32, and a further 4.91 GB is autocast's own
+    float16 copy of those weights.
 
-    ``MiniMaxH3VideoDecodeStep`` wraps ``vae.decode`` in ``torch.autocast(float16)``. Autocast
-    casts every Linear and Conv weight it meets and caches the copy for the lifetime of the
-    region, so the float32 original and its float16 twin are both resident through the whole
-    decode. Storing those weights as float16 up front makes the cast a no-op and removes both:
-    ``x.to(float16).to(float16)`` is ``x.to(float16)``, so the arithmetic is unchanged rather
-    than merely close. The audio VAE decode is NOT under autocast, so it is left alone.
+    ``MiniMaxH3VideoDecodeStep`` wraps ``vae.decode`` in ``torch.autocast(float16)``. Autocast casts
+    every Linear and Conv weight it meets and caches the copy for the lifetime of the region, so the
+    float32 original and its float16 twin are both resident through the whole decode. Storing those
+    weights as float16 up front makes the cast a no-op and removes both:
+    ``x.to(float16).to(float16)`` is ``x.to(float16)``, so the arithmetic is unchanged rather than
+    merely close. The audio VAE decode is NOT under autocast, so it is left alone.
 
-    The encoder half goes only for a workflow that never encodes. ``t2va`` starts from noise,
-    so ``vae.encoder`` and ``vae.quant_conv`` are dead weight; a future image-conditioned
-    workflow needs them, hence the explicit check rather than an unconditional drop.
+    The encoder half goes only for a workflow that never encodes: ``t2va`` starts from noise, so
+    ``vae.encoder`` and ``vae.quant_conv`` are dead weight, while a future image-conditioned
+    workflow needs them.
 
-    Returns a byte report for the caller to log. Never raises: a diffusers release that
-    renames these attributes should cost the saving, not the render.
+    Returns a byte report for the caller to log. Never raises: a diffusers release that renames
+    these attributes should cost the saving, not the render.
     """
     import torch
 
@@ -232,9 +226,7 @@ def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
     return report
 
 
-# ── canvas geometry ──────────────────────────────────────────────────────────  MiniMax-H3's upstream canvas rule,
-# shared by both engines.
-# ── canvas geometry ──────────────────────────────────────────────────────────
+# MiniMax-H3's upstream canvas rule, shared by both engines.
 H3_CANVAS_SHORT_EDGE = 768
 H3_CANVAS_MAX_PIXELS = 768 * 1344
 H3_CANVAS_MULTIPLE = 32
@@ -294,9 +286,7 @@ def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:
     return image.resize(target, Image.LANCZOS, box = (left, top, left + crop_w, top + crop_h))
 
 
-# ── omni references (Ref2VA) ─────────────────────────────────────────────────  Ref2VA uses a separate transformer
-# partition selected at load time.
-# ── omni references (Ref2VA) ─────────────────────────────────────────────────
+# Ref2VA uses a separate transformer partition selected at load time.
 H3_TASK_KEYFRAMES = "fl2va"
 H3_TASK_REFERENCES = "ref2va"
 
@@ -307,11 +297,9 @@ H3_MAX_REFERENCES = 12
 # A reference video's trained window, in seconds.
 H3_REF_VIDEO_MIN_SECONDS = 2.0
 H3_REF_VIDEO_MAX_SECONDS = 15.0
-# a container reports its longest track, so a file whose audio outruns its video reads as longer than it can show
 # How far a trim may reach past the video track before it is refused. A container reports its longest track, so a file
 # whose audio outruns its video reads as longer than it can show, and a client picking an interval from that duration
-# (HTMLMediaElement.duration, in Unsloth's case) asks for slightly more video than exists. Within this margin the last
-# frame is held instead.
+# asks for slightly more video than exists. Within this margin the last frame is held instead.
 H3_REF_TRIM_COVERAGE_SLACK_SECONDS = 0.5
 H3_FPS = 24
 
@@ -1054,28 +1042,26 @@ def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
 
 
 def h3_component_source(*files: str) -> str:
-    """The repo to fetch the shared VAEs from: our mirror, or the repack it was mirrored from
-    when an existing install already holds those exact bytes under the old id.
+    """The repo to fetch the shared VAEs from: our mirror, or the repack it was mirrored from when an
+    existing install already holds those exact bytes under the old id.
 
     The HF cache is keyed by repo id, so moving the id alone would re-download ~5.8 GB on upgrade
-    and fail outright offline. The mirror is byte identical (same sha256), so reusing the old
-    entry loads the same weights. Fresh installs never take this branch.
+    and fail outright offline. The mirror is byte identical (same sha256), so reusing the old entry
+    loads the same weights. Fresh installs never take this branch.
 
     ``prefer_cached_legacy_source`` rather than a probe of our own: it already owns this exact
-    mirror-to-repack decision for every other sd.cpp asset, and it counts BOTH cache roots.
-    That second part is the reason it has to be this one. The native fetch below passes
-    ``reuse_other_cache_root``, so a repack left behind by a cache-folder change is still
-    perfectly usable -- but only the OLD repo id can reach it, and a live-root-only probe would
-    call it absent and re-pull ~5.8 GB (offline, fail).
+    mirror-to-repack decision for every other sd.cpp asset, and it counts BOTH cache roots. That
+    second part is why it has to be this one -- the native fetch below passes
+    ``reuse_other_cache_root``, so a repack left behind by a cache-folder change is still usable,
+    but only the OLD repo id can reach it and a live-root-only probe would call it absent and
+    re-pull ~5.8 GB.
 
     Answered for the files GIVEN, and the native loop asks one at a time because that is how it
-    downloads them. A pre-move pull interrupted between the two VAEs leaves only one under the old
-    id; asking for the pair calls the old id useless and re-pulls the 5.2 GB already on disk,
-    while asking per file reuses it and takes only the other from the mirror. With no argument it
-    answers for the pair, for callers describing the pair rather than fetching it.
+    downloads them: a pre-move pull interrupted between the two VAEs leaves only one under the old
+    id, and asking per file reuses it. With no argument it answers for the pair.
 
-    PURE: table lookup plus a local stat, no network, so a download plan and the fetch that
-    follows it agree on the source.
+    PURE: table lookup plus a local stat, no network, so a download plan and the fetch that follows
+    it agree on the source.
     """
     wanted = files or (H3_VIDEO_VAE, H3_AUDIO_VAE)
     try:

@@ -4,22 +4,11 @@
 
 """Lockfile supply-chain audit for the Unsloth frontend and Tauri shell.
 
-Runs BEFORE `npm ci` / `cargo fetch` in CI. Refuses to proceed when a
-lockfile contains patterns indicating supply-chain injection (npm
-Shai-Hulud waves, cargo crates.io brand-squats).
+Runs BEFORE `npm ci` / `cargo fetch` in CI and refuses to proceed when a lockfile carries patterns indicating supply-chain injection (npm Shai-Hulud waves, cargo crates.io brand-squats). package-lock.json (lockfileVersion 2/3): `resolved` must be the npm registry (direct git/github/file refs are the injection vector), `integrity` SHA must be present, known IOC substrings grepped from the body. Cargo.lock: `source` must be the crates.io registry index, plus known cargo IOC substrings.
 
-Checks package-lock.json (lockfileVersion 2/3): `resolved` URL must be
-the npm registry (direct git/github/file refs are the injection vector);
-`integrity` SHA must be present; known IOC substrings grepped from the
-body. Checks Cargo.lock: `source` must be the crates.io registry index;
-known cargo IOC substrings.
+Exit codes: 0 clean (or skip env var set to a justification >=5 chars, not '1'/'true'), 1 findings, 2 internal error.
 
-Exit codes: 0 = clean (or skip env var set to a justification >=5 chars,
-not '1'/'true'); 1 = findings; 2 = internal error.
-
-Only PARSES the lockfiles, never executes or networks. Complements (not
-replaces) `npm audit` / OSV-Scanner / the advisory-DB pipeline. Fires
-before any third-party install script runs on the runner.
+Only PARSES the lockfiles, never executes or networks, and fires before any third-party install script runs on the runner. Complements rather than replaces `npm audit` / OSV-Scanner / the advisory-DB pipeline.
 """
 
 from __future__ import annotations
@@ -281,9 +270,7 @@ NPM_REGISTRY_PREFIXES_ALLOWED: tuple[str, ...] = (NPM_REGISTRY_PREFIX,)
 CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 
-# Cargo non-registry source allowlist: `(crate_name, exact_source_string)`.
-# Both must match verbatim; bumping the pinned SHA forces a re-review. Unsloth's Tauri shell pulls `fix-path-env`
-# from git because it is not published to crates.io; commit c4c45d5 was reviewed when it landed.
+# Cargo non-registry source allowlist of `(crate_name, exact_source_string)`, both matched verbatim so bumping the pinned SHA forces a re-review. Unsloth's Tauri shell pulls `fix-path-env` from git because it is not published to crates.io; commit c4c45d5 was reviewed when it landed.
 CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     (
         "fix-path-env",
@@ -311,12 +298,7 @@ class Finding:
 
 
 def _gha_escape(text: str) -> str:
-    """Escape a string for a GH Actions `::warning::`/`::error::` message.
-
-    GH Actions truncates at the first newline unless `\\n`/`\\r` are
-    escaped as `%0A`/`%0D`. `%` must be replaced first to avoid
-    double-encoding the subsequent escapes.
-    """
+    """Escape a string for a GH Actions `::warning::`/`::error::` message: GH Actions truncates at the first newline unless newline and carriage return are escaped as `%0A`/`%0D`, and `%` must be replaced first to avoid double-encoding the rest."""
     return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
@@ -384,8 +366,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
             continue
 
         resolved = entry.get("resolved")
-        # Entries nested in another package's node_modules are bundled fold-ins covered by the parent's integrity; treat
-        # as transparent.
+        # Entries nested in another package's node_modules are bundled fold-ins covered by the parent's integrity; treat as transparent.
         nested = key.count("/node_modules/") >= 1
 
         if resolved is None:
@@ -447,8 +428,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 )
             )
 
-    # Known IOC strings: scan the raw body to catch fields the structural pass doesn't enumerate
-    # (scripts, optional deps, etc.).
+    # Known IOC strings: scan the raw body to catch fields the structural pass does not enumerate (scripts, optional deps, and so on).
     for ioc in NPM_IOC_STRINGS:
         if ioc in raw:
             line_no = _first_line_containing(raw, ioc)
@@ -614,13 +594,7 @@ BLOCKING_KINDS: frozenset[str] = frozenset(
         "missing-lockfile",
         "unreadable-lockfile",
         "missing-toml-parser",
-        # An unsupported lockfileVersion means the audit could not walk
-        # the dependency tree at all (the structural rules below only
-        # apply to npm v2/v3). Treating it as advisory would let a v1
-        # downgrade -- a known supply-chain attack shape -- silently
-        # pass CI: the scanner reports the kind, exits 0, and no
-        # blocking finding is raised. Keep this blocking so a checked-in
-        # lockfile cannot be downgraded out of audit coverage.
+        # An unsupported lockfileVersion means the audit could not walk the dependency tree at all (the structural rules below only apply to npm v2/v3). Advisory would let a v1 downgrade, a known supply-chain attack shape, pass CI silently, so keep it blocking.
         "unsupported-lockfile-version",
     }
 )
@@ -680,9 +654,7 @@ def main(argv: list[str] | None = None) -> int:
     if _skip_raw is not None:
         _skip = _skip_raw.strip()
         _invalid_tokens = {"", "1", "0", "true", "false", "yes", "no", "on", "off"}
-        # Both branches echo the user-supplied env var inside a ``::warning::`` GH Actions workflow command. The raw
-        # value can contain ``%``, ``\r``, ``\n`` or even another ``::error::`` line (workflow-command injection);
-        # _gha_escape collapses each message onto a single annotation line per the GH workflow-commands spec.
+        # Both branches echo the user-supplied env var inside a ``::warning::`` GH Actions workflow command, and the raw value can contain ``%``, CR, LF or even another ``::error::`` line (workflow-command injection); _gha_escape collapses each message onto a single annotation line per the GH workflow-commands spec.
         if _skip.lower() in _invalid_tokens or len(_skip) < 5:
             print(
                 "::warning::"
@@ -743,8 +715,7 @@ def main(argv: list[str] | None = None) -> int:
             file = sys.stderr,
         )
         for f in advisory:
-            # GH Actions warning annotation; _gha_escape collapses the multi-line Finding onto one
-            # line so it renders fully in the UI.
+            # GH Actions warning annotation; _gha_escape collapses the multi-line Finding onto one line so it renders fully in the UI.
             print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
             print(file = sys.stderr)
 

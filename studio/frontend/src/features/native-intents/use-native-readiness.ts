@@ -26,10 +26,9 @@ export function useNativePathLeasesSupported(): boolean {
               check(5000);
               return;
             }
-            // The health bit says the backend holds a key, not that it holds
-            // OURS. A survivor adopted from a dead previous app has one of its
-            // own, so the grant would fail on the signature instead. Only the
-            // app knows which backend it spawned.
+            // The health bit says the backend holds a key, not that it holds OURS. A survivor
+            // adopted from a dead previous app has one of its own, so the grant would fail on the
+            // signature instead. Only the app knows which backend it spawned.
             const { invoke } = await import("@tauri-apps/api/core");
             const usable = await invoke<boolean>("native_path_leases_usable");
             if (disposed) return;
