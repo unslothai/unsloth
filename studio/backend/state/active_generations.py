@@ -29,6 +29,8 @@ from utils.account_context import current_account_id
 # unregisters, and one key would drop the other.
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
+# Accounts disabled or retired: a generation registering late for one starts cancelled.
+_FENCED: set[str] = set()
 
 
 class ActiveGeneration:
@@ -98,6 +100,8 @@ class ActiveGeneration:
                 "started_at": time.time(),
                 "event": self.cancel_event,
             }
+            if self.account_id in _FENCED:
+                self.cancel_event.set()
         return self
 
     def __exit__(self, *exc) -> bool:
@@ -212,7 +216,19 @@ def cancel_run(run_id: str, account_id: Optional[str] = None) -> int:
     return len(events)
 
 
+def fence(account_id: str) -> None:
+    """Deactivation or retirement: work registering after ``cancel_all`` is cancelled on entry."""
+    with _LOCK:
+        _FENCED.add(account_id)
+
+
+def lift_fence(account_id: str) -> None:
+    with _LOCK:
+        _FENCED.discard(account_id)
+
+
 def reset_for_tests() -> None:
     """Drop every entry. Test-only; never called from request paths."""
     with _LOCK:
         _ACTIVE.clear()
+        _FENCED.clear()

@@ -867,12 +867,15 @@ def delete_account(account_id: str, retire) -> None:
                 )
                 conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
         except Exception:
-            # The identity survives the rollback, so the roots must come back too.
-            if restore_roots is not None:
-                restore_roots()
-            # An owner may reactivate between revocation and this lock; stay disabled anyway.
-            with contextlib.suppress(sqlite3.Error):
-                set_account_active(account_id, False)
+            # The identity survives the rollback, so the roots must come back too; a restore
+            # that fails is the error to report, the account staying disabled either way.
+            try:
+                if restore_roots is not None:
+                    restore_roots()
+            finally:
+                # An owner may reactivate between revocation and this lock; stay disabled anyway.
+                with contextlib.suppress(sqlite3.Error):
+                    set_account_active(account_id, False)
             raise
         finally:
             conn.close()

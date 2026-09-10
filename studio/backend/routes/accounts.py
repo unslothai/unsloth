@@ -45,6 +45,7 @@ def retire_account_roots(account: AccountContext):
     may nest). Returns a callable that renames them back for a caller whose later step fails."""
     if account.is_owner or account.account_id == "owner":
         raise ValueError("The installation owner cannot be retired")
+    active_generations.fence(account.account_id)
     active_generations.cancel_all(account.account_id)
     account_access.retire_resident_shares(account.account_id)
     from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
@@ -79,13 +80,20 @@ def retire_account_roots(account: AccountContext):
     moved: list[tuple[Path, Path]] = []
 
     def restore() -> None:
+        # A root that will not come back stays listed, and the caller hears where its data is.
+        stranded: list[tuple[Path, Path, OSError]] = []
         with storage_roots.root_retirement_lock:
             for root, destination in reversed(moved):
                 try:
                     Path.rename(destination, root)
-                except OSError:
-                    pass
-            moved.clear()
+                except OSError as exc:
+                    stranded.append((root, destination, exc))
+            moved[:] = [(root, destination) for root, destination, _ in stranded]
+        if stranded:
+            raise AccountRetirementError(
+                "Could not restore retired directories; the data remains at "
+                + ", ".join(str(destination) for _, destination, _ in stranded)
+            ) from stranded[0][2]
 
     # Same lock as ensure_account_dir: the rename never lands between its check and mkdir.
     with storage_roots.root_retirement_lock:
@@ -134,7 +142,10 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             # A delete that failed after retiring the jobs left the id tombstoned in-process.
             from core.training.account_jobs import restore_account_jobs
             restore_account_jobs(account_id)
+            active_generations.lift_fence(account_id)
         else:
+            # Fence first: a request past authentication that registers after the sweep is cancelled too.
+            active_generations.fence(account_id)
             active_generations.cancel_all(account_id)
             account_access.retire_resident_shares(account_id)
         return result
@@ -146,9 +157,9 @@ def delete_account(account_id: str):
     with _account_errors():
         try:
             storage.delete_account(account_id, retire_account_roots)
-        except (OSError, AccountRetirementError):
-            raise HTTPException(
-                status_code = 409,
-                detail = "Could not retire account files. The account is disabled; retry deletion.",
-            )
+        except (OSError, AccountRetirementError) as exc:
+            detail = "Could not retire account files. The account is disabled; retry deletion."
+            if isinstance(exc, AccountRetirementError):
+                detail = f"{detail} {exc}"
+            raise HTTPException(status_code = 409, detail = detail)
     return Response(status_code = status.HTTP_204_NO_CONTENT)

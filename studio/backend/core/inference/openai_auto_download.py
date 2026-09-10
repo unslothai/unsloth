@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from loggers import get_logger
+from utils.account_context import current_account_id
 
 logger = get_logger(__name__)
 
@@ -83,6 +84,8 @@ class _Active:
     # the client would restart the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
+    # Who asked: another account's busy answer names no repo or quant of this one.
+    account_id: Optional[str] = None
 
 
 _lock = threading.Lock()
@@ -560,7 +563,9 @@ async def maybe_auto_download(
             busy = current
         else:
             adopted = None
-            provisional = _Active(repo_id = repo_id, started_at = time.time())
+            provisional = _Active(
+                repo_id = repo_id, started_at = time.time(), account_id = current_account_id()
+            )
             _active = provisional
 
     if busy is not None:
@@ -569,13 +574,14 @@ async def maybe_auto_download(
         # a 2nd download.
         if not await _is_downloadable_model(repo_id, hf_token):
             return None
+        if busy.account_id == current_account_id():
+            what = f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'."
+        else:
+            what = "Another download is in progress."
         return AutoDownloadRefusal(
             status = 503,
             code = "model_download_busy",
-            message = (
-                f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'. "
-                f"Retry '{requested_model}' once it finishes."
-            ),
+            message = f"{what} Retry '{requested_model}' once it finishes.",
             retry_after = _RETRY_AFTER_S,
         )
 
@@ -985,7 +991,14 @@ async def _dispatch(
             tracked = active
         else:
             # Released underneath us: track the job we started, but never stomp a newer owner.
-            tracked = _Active(repo_id, variant, expected_bytes, monitor_id, time.time())
+            tracked = _Active(
+                repo_id,
+                variant,
+                expected_bytes,
+                monitor_id,
+                time.time(),
+                account_id = active.account_id,
+            )
             if _active is None:
                 _active = tracked
 
