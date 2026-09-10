@@ -328,6 +328,41 @@ export async function getRecipeJobDataset(
   );
 }
 
+export type RecipeJobDownloadFormat = "jsonl" | "parquet";
+
+export async function downloadRecipeJobDataset(
+  jobId: string,
+  options?: {
+    format?: RecipeJobDownloadFormat;
+    artifactPath?: string | null;
+    filename?: string | null;
+  },
+): Promise<{ blob: Blob; filename: string }> {
+  const params = new URLSearchParams();
+  params.set("format", options?.format ?? "jsonl");
+  if (options?.artifactPath) {
+    params.set("artifact_path", options.artifactPath);
+  }
+  if (options?.filename) {
+    params.set("filename", options.filename);
+  }
+  const response = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/jobs/${jobId}/download?${params.toString()}`,
+  );
+  if (!response.ok) {
+    throw new Error(await parseErrorResponse(response));
+  }
+  const blob = await response.blob();
+  const header = response.headers.get("content-disposition") ?? "";
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  const asciiMatch = /filename="([^"]+)"/i.exec(header);
+  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? null;
+  const filename = rawName
+    ? decodeURIComponent(rawName)
+    : `${options?.filename ?? jobId}.${options?.format === "parquet" ? "parquet.zip" : "jsonl"}`;
+  return { blob, filename };
+}
+
 export async function cancelRecipeJob(
   jobId: string,
 ): Promise<JobStatusResponse> {

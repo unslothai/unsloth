@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from auth.authentication import (
     allow_ambient_hf_token,
@@ -20,9 +20,15 @@ from auth.authentication import (
     require_ui_session_for_local_commands,
 )
 from auth.storage import CredentialRotated
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
+from core.data_recipe.export import (
+    ExportFormat,
+    RecipeDatasetExportError,
+    build_dataset_download,
+    build_in_memory_dataset_download,
+)
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
     publish_recipe_dataset,
@@ -539,6 +545,110 @@ def job_dataset(
         "limit": limit,
         "offset": offset,
     }
+
+
+def _content_disposition_attachment(filename: str) -> str:
+    ascii_name = "".join(ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\"} else "_" for ch in filename)
+    if not ascii_name.strip("_"):
+        ascii_name = "dataset.jsonl"
+    from urllib.parse import quote
+
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
+
+
+def _resolve_download_artifact_path(
+    *,
+    job_id: str,
+    artifact_path: str | None,
+) -> str | None:
+    resolved = artifact_path.strip() if isinstance(artifact_path, str) and artifact_path.strip() else None
+    mgr = get_job_manager()
+    status = mgr.get_status(job_id)
+    if status is not None:
+        if status.get("status") != "completed":
+            raise HTTPException(
+                status_code = 409,
+                detail = "Only completed runs can be downloaded.",
+            )
+        status_artifact = status.get("artifact_path")
+        if isinstance(status_artifact, str) and status_artifact.strip():
+            resolved = status_artifact.strip()
+    return resolved
+
+
+@router.get("/jobs/{job_id}/download")
+def download_job_dataset(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+):
+    resolved_artifact = _resolve_download_artifact_path(
+        job_id = job_id,
+        artifact_path = artifact_path,
+    )
+    filename_stem = filename.strip() if isinstance(filename, str) and filename.strip() else job_id
+
+    try:
+        if resolved_artifact:
+            if export_format == "parquet":
+                file_path, media_type, download_name = build_dataset_download(
+                    artifact_path = resolved_artifact,
+                    export_format = "parquet",
+                    filename_stem = filename_stem,
+                )
+            else:
+                file_path, media_type, download_name = build_dataset_download(
+                    artifact_path = resolved_artifact,
+                    export_format = "jsonl",
+                    filename_stem = filename_stem,
+                )
+        else:
+            if export_format == "parquet":
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Parquet download requires persisted recipe artifacts.",
+                )
+            mgr = get_job_manager()
+            result = mgr.get_dataset(job_id, limit = 1_000_000, offset = 0)
+            if result is None:
+                raise HTTPException(status_code = 404, detail = "dataset not ready")
+            if "error" in result:
+                raise HTTPException(status_code = 422, detail = result["error"])
+            rows = result.get("dataset")
+            if not isinstance(rows, list) or not rows:
+                raise HTTPException(status_code = 404, detail = "dataset not ready")
+            file_path, media_type, download_name = build_in_memory_dataset_download(
+                rows,
+                filename_stem = filename_stem,
+            )
+    except RecipeDatasetExportError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.download_failed",
+            log = logger,
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc),
+            event = "data_recipe.jobs.download_error",
+            log = logger,
+        ) from exc
+
+    background_tasks.add_task(file_path.unlink, missing_ok = True)
+    return FileResponse(
+        file_path,
+        media_type = media_type,
+        filename = download_name,
+        headers = {"Content-Disposition": _content_disposition_attachment(download_name)},
+    )
 
 
 @router.post(
