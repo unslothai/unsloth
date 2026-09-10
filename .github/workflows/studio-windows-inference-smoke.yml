@@ -24,10 +24,22 @@ name: Windows Unsloth GGUF CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # What the phases exercise: the backend's OpenAI and Anthropic surfaces
+      # over the Windows llama.cpp prebuilt, the installer chain that lays them
+      # down and the CLI. studio/frontend/** stays because install.ps1 builds the
+      # bundle and the dist cache key hashes it. unsloth/** and studio/src-tauri
+      # are gone: the install is --no-torch and never builds the Tauri shell, so
+      # edits there bought a 90-minute Windows runner for nothing.
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.ps1'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.ps1'
+      # The pre-install gate parses it and runs its uninstall unit test.
+      - 'scripts/uninstall.ps1'
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
@@ -37,12 +49,18 @@ on:
       # runs them. Scoped to *.ps1 so python-only changes under tests/studio do
       # not pull in the GGUF smoke jobs.
       - 'tests/studio/*.ps1'
+      # The Pester phase runs this guard by name.
+      - 'tests/studio/test_pester_bootstrap_hardening.py'
       - '.github/workflows/studio-windows-inference-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # Every model download in every phase goes through it.
+      - '.github/scripts/hf-download-with-retry.sh'
+      # Phase 1 drives both SDKs through this script.
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
   push:
     branches: [main]
   workflow_dispatch:

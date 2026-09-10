@@ -47,33 +47,22 @@ on:
   push:
     branches: [main]
     paths:
-      - 'unsloth_cli/**'
-      - 'studio/backend/routes/**'
-      - 'studio/backend/main.py'
-      - 'studio/backend/core/inference/llama_cpp.py'
-      - 'studio/backend/models/**'
-      - 'install.sh'
-      - '.github/workflows/local-agent-guides-ci.yml'
-      - '.github/scripts/retry-with-apt-lock.sh'
-      # The install step in this workflow is `uses:` on that composite action,
-      # so an edit to the action changes what this workflow actually runs.
-      - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
-      - '.github/actions/frontend-dist-restore/action.yml'
-      - '.github/actions/frontend-dist-save/action.yml'
-      - '.github/scripts/serve-unsloth-run.sh'
-      - '.github/scripts/assert-prompt-cache.sh'
-      - '.github/scripts/agent-guides-install.sh'
-      - '.github/scripts/agent-guides-drive.sh'
-      - '.github/scripts/ci-connect-prompt.txt'
-      - '.github/scripts/ci-min-system-prompt.txt'
-  pull_request:
-    paths:
-      - 'unsloth_cli/**'
-      - 'studio/backend/routes/**'
-      # Contracts this workflow asserts that live outside routes/**: the
+      # The source-of-truth files this workflow guards, named rather than the
+      # whole CLI package: the connection cells run `unsloth run` (studio.py) and
+      # `unsloth start <agent> --no-launch` (start.py), registered in __init__.py.
+      # unsloth_cli/** fired all nine agent cells, up to 16 minutes each, for an
+      # edit to the training or export subcommands they never invoke.
+      - 'unsloth_cli/__init__.py'
+      - 'unsloth_cli/commands/start.py'
+      - 'unsloth_cli/commands/studio.py'
+      # The route module that serves every endpoint the preflight curls:
+      # /v1/models, /v1/chat/completions, /v1/messages and /v1/responses are all
+      # declared in inference.py and mounted under /v1 by main.py. The other
+      # twenty route modules (training, export, datasets, RAG, ...) are never
+      # requested here, and routes/** made every one of their edits pay the full
+      # matrix.
+      - 'studio/backend/routes/inference.py'
+      # Contracts this workflow asserts that live outside routes/: the
       # /api/health endpoint, the llama-server KV-cache log behavior, and the
       # request/response schemas the agent dialects depend on.
       - 'studio/backend/main.py'
@@ -82,16 +71,54 @@ on:
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      # The frontend-dist actions are not listed: this workflow never uses them.
       - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
-      - '.github/actions/frontend-dist-restore/action.yml'
-      - '.github/actions/frontend-dist-save/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
       - '.github/scripts/agent-guides-drive.sh'
+      # Every GGUF download in every job goes through it.
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/ci-connect-prompt.txt'
+      - '.github/scripts/ci-min-system-prompt.txt'
+  pull_request:
+    paths:
+      # The source-of-truth files this workflow guards, named rather than the
+      # whole CLI package: the connection cells run `unsloth run` (studio.py) and
+      # `unsloth start <agent> --no-launch` (start.py), registered in __init__.py.
+      # unsloth_cli/** fired all nine agent cells, up to 16 minutes each, for an
+      # edit to the training or export subcommands they never invoke.
+      - 'unsloth_cli/__init__.py'
+      - 'unsloth_cli/commands/start.py'
+      - 'unsloth_cli/commands/studio.py'
+      # The route module that serves every endpoint the preflight curls:
+      # /v1/models, /v1/chat/completions, /v1/messages and /v1/responses are all
+      # declared in inference.py and mounted under /v1 by main.py. The other
+      # twenty route modules (training, export, datasets, RAG, ...) are never
+      # requested here, and routes/** made every one of their edits pay the full
+      # matrix.
+      - 'studio/backend/routes/inference.py'
+      # Contracts this workflow asserts that live outside routes/: the
+      # /api/health endpoint, the llama-server KV-cache log behavior, and the
+      # request/response schemas the agent dialects depend on.
+      - 'studio/backend/main.py'
+      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'studio/backend/models/**'
+      - 'install.sh'
+      - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      # The frontend-dist actions are not listed: this workflow never uses them.
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/scripts/serve-unsloth-run.sh'
+      - '.github/scripts/assert-prompt-cache.sh'
+      - '.github/scripts/agent-guides-install.sh'
+      - '.github/scripts/agent-guides-drive.sh'
+      # Every GGUF download in every job goes through it.
+      - '.github/scripts/hf-download-with-retry.sh'
       - '.github/scripts/ci-connect-prompt.txt'
       - '.github/scripts/ci-min-system-prompt.txt'
 
