@@ -670,12 +670,16 @@ def test_the_pip_fallback_stays_out_offline(tmp_path, monkeypatch):
         stdout = "no cached wheel"
 
     def fake_run(cmd, **kwargs):
+        # The guard asks pip for its configuration first; only installs are counted.
+        if list(cmd[-2:]) == ["config", "list"]:
+            return _Result()
         calls.append(list(cmd))
         return _Result()
 
     monkeypatch.setattr(tv.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(tv.subprocess, "run", fake_run)
     monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.delenv("PIP_NO_INDEX", raising = False)
     assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
     assert len(calls) == 1 and calls[0][0] == "uv"
     # Without uv there is no cache to answer from, and pip is still not asked.
@@ -873,6 +877,8 @@ def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
         returncode = 0
 
     monkeypatch.setattr(tv.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _Done())
+    # Without a pip to ask, the environment is what there is.
+    monkeypatch.setattr(tv, "_pip_effective_settings", lambda: None)
     monkeypatch.delenv("PIP_NO_INDEX", raising = False)
     monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
     assert tv._pip_is_configured_offline() is False
@@ -892,6 +898,57 @@ def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
     monkeypatch.setenv("PIP_FIND_LINKS", f"{tmp_path} https://wheels.example/simple")
     assert tv._pip_is_configured_offline() is False
     monkeypatch.setenv("PIP_FIND_LINKS", str(tmp_path / "missing"))
+    assert tv._pip_is_configured_offline() is False
+    # A FILE is parsed for links, and those may be URLs: only a directory is local.
+    index = tmp_path / "index.html"
+    index.write_text('<a href="https://wheels.example/tiktoken.whl">x</a>', encoding = "utf-8")
+    monkeypatch.setenv("PIP_FIND_LINKS", str(index))
+    assert tv._pip_is_configured_offline() is False
+    monkeypatch.setenv("PIP_FIND_LINKS", f"file://{index}")
+    assert tv._pip_is_configured_offline() is False
+
+
+def test_the_wheelhouse_is_read_from_pip_config_files_too(tmp_path, monkeypatch):
+    """An air-gapped host sets no-index and find-links in pip.conf as often as in the
+    environment; the guard asks pip for its effective configuration, with pip's own
+    precedence (environment over [install] over [global])."""
+    monkeypatch.delenv("PIP_NO_INDEX", raising = False)
+    monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+    settings = {"global.no-index": "true", "global.find-links": f"\n{tmp_path}"}
+    monkeypatch.setattr(tv, "_pip_effective_settings", lambda: dict(settings))
+    assert tv._pip_is_configured_offline() is True
+    # [install] overrides [global] ...
+    settings["install.no-index"] = "false"
+    assert tv._pip_is_configured_offline() is False
+    # ... and the environment overrides both.
+    settings[":env:.no-index"] = "1"
+    assert tv._pip_is_configured_offline() is True
+    settings[":env:.find-links"] = "https://wheels.example/simple"
+    assert tv._pip_is_configured_offline() is False
+    del settings[":env:.find-links"]
+    settings["global.find-links"] = f"{tmp_path} {tmp_path / 'index.html'}"
+    (tmp_path / "index.html").write_text("<a href='https://x/y.whl'>y</a>", encoding = "utf-8")
+    assert tv._pip_is_configured_offline() is False
+
+
+def test_pip_config_list_is_parsed_as_pip_prints_it(tmp_path, monkeypatch):
+    """`pip config list` prints repr'd values (a multi-line find-links comes out with
+    literal \\n escapes); the parser gives back what pip will read."""
+    monkeypatch.delenv("PIP_NO_INDEX", raising = False)
+    monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+    conf = tmp_path / "pip.conf"
+    conf.write_text(
+        f"[global]\nno-index = true\nfind-links =\n    {tmp_path}\n    {tmp_path}\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+    settings = tv._pip_effective_settings()
+    if settings is None:
+        pytest.skip("pip is not importable by this interpreter")
+    assert settings.get("global.no-index") == "true"
+    assert settings.get("global.find-links", "").split() == [str(tmp_path), str(tmp_path)]
+    assert tv._pip_is_configured_offline() is True
+    monkeypatch.setenv("PIP_NO_INDEX", "0")
     assert tv._pip_is_configured_offline() is False
     source = open(tv.__file__, encoding = "utf-8").read()
     assert "if _runtime_repair_is_offline() and not _pip_is_configured_offline():" in source

@@ -2832,28 +2832,91 @@ _UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
 
 _PIP_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 
+# pip's own precedence for one setting: the environment over the [install] section
+# over [global]; `pip config list` names the environment ":env:".
+_PIP_SETTING_SCOPES = (":env:", "install", "global")
+
+
+def _pip_effective_settings() -> dict[str, str] | None:
+    """pip's own view of its configuration: `pip config list`, which merges the user,
+    site and global files (or PIP_CONFIG_FILE) with the environment the way the pip
+    fallback in _install_to_dir will read them. None when pip cannot answer, which is
+    also when that fallback has nothing to run."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 60,
+            env = utf8_child_env(
+                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
+            ),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    settings: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, sep, raw = line.partition("=")
+        if not sep:
+            continue
+        raw = raw.strip()
+        try:
+            value = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            value = raw.strip("'\"")
+        settings[key.strip()] = str(value)
+    return settings
+
+
+def _pip_setting(settings: dict[str, str], name: str) -> str | None:
+    for scope in _PIP_SETTING_SCOPES:
+        value = settings.get(f"{scope}.{name}")
+        if value is not None:
+            return value
+    return None
+
+
+def _is_local_wheelhouse_dir(entry: str) -> bool:
+    """A --find-links entry that can only hand pip local files: a directory, as a path
+    or a file:// URL. A URL is the network; a FILE (an HTML index) is parsed for links
+    and those may point at the network as well."""
+    lowered = entry.lower()
+    if lowered.startswith("file://"):
+        from urllib.parse import urlparse
+        from urllib.request import url2pathname
+        entry = url2pathname(urlparse(entry).path)
+    elif "://" in lowered:
+        return False
+    return os.path.isdir(os.path.expanduser(entry))
+
 
 def _pip_is_configured_offline() -> bool:
     """pip told to ignore the index and read a LOCAL wheelhouse: `--no-index` with
-    `--find-links` naming only local directories or file:// URLs, through the
-    environment pip reads them from. --find-links takes URLs too, and one of those
-    would be fetched under UV_OFFLINE."""
+    `--find-links` naming only local directories (paths or file:// URLs), by pip's
+    effective configuration: its config files as well as the environment, since an
+    air-gapped host sets these in pip.conf as often as in PIP_* variables. Anything
+    else --find-links accepts could reach for the network under UV_OFFLINE: a URL is
+    fetched, and an HTML file is parsed for links that may be URLs."""
+    settings = _pip_effective_settings()
+    if settings is None:
+        settings = {}
+        for name, variable in (("no-index", "PIP_NO_INDEX"), ("find-links", "PIP_FIND_LINKS")):
+            if variable in os.environ:
+                settings[f":env:.{name}"] = os.environ[variable]
     # pip's own boolean spellings (strtobool): 1/true/t/yes/y/on.
-    no_index = os.environ.get("PIP_NO_INDEX", "").strip().lower() in _PIP_TRUE_VALUES
+    no_index = (_pip_setting(settings, "no-index") or "").strip().lower() in _PIP_TRUE_VALUES
     if not no_index:
         return False
-    entries = os.environ.get("PIP_FIND_LINKS", "").split()
+    entries = (_pip_setting(settings, "find-links") or "").split()
     if not entries:
         return False
-    for entry in entries:
-        lowered = entry.lower()
-        if lowered.startswith("file://"):
-            continue
-        if "://" in lowered:
-            return False
-        if not os.path.exists(entry):
-            return False
-    return True
+    return all(_is_local_wheelhouse_dir(entry) for entry in entries)
 
 
 def _runtime_repair_is_offline() -> bool:
