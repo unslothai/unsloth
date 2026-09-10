@@ -98,6 +98,10 @@ ICON_FETCH_CEILING = 64 * 1024
 # prebuilt installers log; setup.sh CONSUMES that and prints its own line, so the log a
 # user (and this harness) sees carries these instead.
 NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
+# What setup.sh / setup.ps1 print when the version check found a newer release, and when
+# it could not ask PyPI at all (the pass runs on purpose in both cases).
+UPGRADE_MARKER = "available, updating..."
+PYPI_UNREACHABLE_MARKER = "could not reach PyPI, updating to be safe..."
 # What --local installs from the checkout on every pass, so its RECORD moving is expected.
 LOCAL_CORE = frozenset({"unsloth", "unsloth-zoo", "unsloth_zoo"})
 
@@ -850,6 +854,13 @@ def test_the_install_is_left_working(install, settled):
     rebuilt sidecar -- so this asserts what has to be true anyway: the same packages are
     installed, and the install reports itself complete."""
     _directory, before = settled
+    _assert_install_working(install, before)
+
+
+def _assert_install_working(install: pathlib.Path, before: dict) -> None:
+    """The same packages as *before* are installed, and the CLI reports the install
+    complete. Shared by the last ordered case and the desktop case's restore, which is
+    the last product operation of the run and is otherwise judged by exit code alone."""
     after = snapshot(install)
     assert after["distributions"] == before["distributions"]
     assert after["manifest"] is not None
@@ -987,15 +998,26 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     took_fast_path = NO_WORK_MARKERS[0] in run.log
     if not took_fast_path:
         # The checkout goes back first either way: the workflow steps after this harness
-        # run the CLI and expect the code under test.
+        # run the CLI and expect the code under test. It is the last product operation
+        # of the run, so it is held to the same bar as the ordered cases, not to its
+        # exit code alone.
         restore = run_update(directory, "run5-restore", local = True)
         assert restore.rc == 0, restore.log[-8000:]
-        if installed and latest and installed != latest:
+        _assert_install_working(install, before)
+        # Why the pass ran, read off the measured run's own log: the separate PyPI
+        # lookup above can fail or see another release than the one the update saw.
+        if UPGRADE_MARKER in run.log:
             # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp
             # and whisper.cpp pins can legitimately differ from the checkout's: it may
             # rebuild or download any of them, so nothing below can be asserted of it.
             pytest.skip("installed version is not PyPI's latest; the desktop no-op path was not taken")
-        # Equal versions (or none to compare) and the pass still ran: that is the
+        if PYPI_UNREACHABLE_MARKER in run.log or not latest:
+            # The product runs the pass on purpose when it cannot ask PyPI: correct
+            # behaviour, and nothing this case can judge.
+            pytest.skip("PyPI was unreachable; the desktop no-op path could not be judged")
+        if installed and latest and installed != latest:
+            pytest.skip("installed version is not PyPI's latest; the desktop no-op path was not taken")
+        # Equal versions and a reachable index, and the pass still ran: that is the
         # regression this case exists to catch, not a reason to look away.
         pytest.fail(
             f"the desktop update ran the dependency pass with unsloth {installed!r} installed "
