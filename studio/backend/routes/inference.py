@@ -3433,7 +3433,6 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
     Routed through ``credentials_for_token`` so a scope that covers this path serves it
     without a key, the way the routes behind ``security`` already do."""
     from auth.authentication import subject_for_header_or_query_token
-
     return await subject_for_header_or_query_token(request, token)
 
 
