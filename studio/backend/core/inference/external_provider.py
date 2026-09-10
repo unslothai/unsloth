@@ -1229,8 +1229,8 @@ class ExternalProviderClient:
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif provider_info.get("supports_chat_template_kwargs") and enable_thinking is not None:
-            # The servers that render the chat template themselves gate thinking through it; none of them reads a
-            # top-level enable_thinking. Opt-in per registry entry, never by provider family: see the flag's comment.
+            # chat_template_kwargs is the only route to a template's enable_thinking variable, and a strict gateway
+            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family.
             tpl_kw = body.get("chat_template_kwargs")
             if not isinstance(tpl_kw, dict):
                 tpl_kw = {}

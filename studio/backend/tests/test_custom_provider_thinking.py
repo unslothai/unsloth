@@ -3,11 +3,10 @@
 
 """Who gets ``chat_template_kwargs.enable_thinking``, and who must never get it.
 
-"llama_cpp" had no branch in ``ExternalProviderClient.stream_chat_completion``, so the toggle
-survived only as a top-level field llama-server does not read: the Deep Research planner, asked
-for ``enable_thinking=False``, spent its whole 4096-token budget reasoning and returned no plan.
-The branch is opt-in per registry entry (``supports_chat_template_kwargs``) rather than widened
-to "custom", which is any base_url; a llama.cpp or vLLM server opts in via its preset.
+"llama_cpp" had no branch, so the toggle survived only as a top-level field llama-server does not
+read: the Deep Research planner, asked for ``enable_thinking=False``, spent its whole 4096-token
+budget reasoning and returned no plan. Widening the branch to "custom" is the wrong fix, because
+"custom" is any base_url; a server opts in through its registry entry instead.
 """
 
 from __future__ import annotations
