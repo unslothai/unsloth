@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-install the SSM/Mamba kernels a hybrid model needs before it loads.
-
-Mamba/SSM hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, GraniteMoEHybrid, ...)
-lazy-``import mamba_ssm`` / ``causal_conv1d`` in their ``modeling_*.py`` during
-``from_pretrained``; absent, the load dies with "mamba-ssm is required ... cannot be
-imported". The training worker installs them wheel-first before a fine-tune; this is the
-shared, callback-based version the inference load path calls so chat behaves the same.
-Detection/versions mirror the training worker (``tests/test_ssm_runtime.py`` guards drift).
-"""
+"""Auto-install the SSM/Mamba kernels a hybrid model needs before it loads. Mamba/SSM hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, GraniteMoEHybrid, ...) lazy-``import mamba_ssm`` / ``causal_conv1d`` in their ``modeling_*.py`` during ``from_pretrained``; absent, the load dies with "mamba-ssm is required ... cannot be imported". The training worker installs them wheel-first before a fine-tune; this is the shared, callback-based version the inference load path calls so chat behaves the same. Detection and versions mirror the training worker (``tests/test_ssm_runtime.py`` guards drift)."""
 
 from __future__ import annotations
 
@@ -45,8 +37,7 @@ MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
-# Lowercased-id substring matches, mirroring the training worker. mamba-ssm models are a
-# subset of the causal-conv1d set.
+# Lowercased-id substring matches, mirroring the training worker. mamba-ssm models are a subset of the causal-conv1d set.
 SSM_MODEL_SUBSTRINGS = (
     "nemotron_h",
     "nemotron-h",
@@ -86,8 +77,7 @@ def model_is_ssm(model_name: str) -> bool:
 
 
 def model_wants_causal_conv1d(model_name: str) -> bool:
-    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention
-    hybrids like Qwen3-Next / LFM2 whose modeling files lazy-import it)."""
+    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like Qwen3-Next / LFM2 whose modeling files lazy-import it)."""
     name = (model_name or "").lower()
     return any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
@@ -192,12 +182,7 @@ def resolved_model_wants_causal_conv1d(
 
 
 def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
-    """The identifier whose architecture decides the SSM kernels.
-
-    The substring match needs a real model id: a LoRA adapter id or a local checkpoint's
-    parent folders are unrelated to its architecture (a Llama LoRA at ``user/falcon-h1-lora``
-    is not SSM). Prefer *base*; for a bare local checkpoint use its basename.
-    """
+    """The identifier whose architecture decides the SSM kernels. The substring match needs a real model id: a LoRA adapter id or a local checkpoint's parent folders are unrelated to its architecture (a Llama LoRA at ``user/falcon-h1-lora`` is not SSM). Prefer *base*; for a bare local checkpoint use its basename."""
     probe = base or model_name
     if probe == model_name:
         try:
@@ -216,9 +201,7 @@ def _is_importable(import_name: str) -> bool:
         __import__(import_name)
         return True
     except Exception as exc:
-        # An ABI-incompatible kernel (undefined symbol after a torch/CUDA upgrade) raises
-        # OSError/RuntimeError, not ImportError; treat any failure as "not importable" so the
-        # caller reinstalls/source-builds instead of hard-failing on a merely broken kernel.
+        # An ABI-incompatible kernel (undefined symbol after a torch/CUDA upgrade) raises OSError/RuntimeError, not ImportError; treat any failure as "not importable" so the caller reinstalls or source-builds instead of hard-failing on a merely broken kernel.
         logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
         return False
 
@@ -234,8 +217,7 @@ def _emit(status_cb: StatusCb, message: str) -> None:
 
 
 def _hipcc_gcc_install_dir() -> Optional[str]:
-    """Highest gcc dir with both runtime and C++ headers, for ROCm clang's
-    ``--gcc-install-dir`` (Ubuntu 24.04 ships gcc-14 runtime without its headers)."""
+    """Highest gcc dir with both runtime and C++ headers, for ROCm clang's ``--gcc-install-dir`` (Ubuntu 24.04 ships gcc-14 runtime without its headers)."""
     if not sys.platform.startswith("linux") or platform.machine().lower() != "x86_64":
         return None
     for ver in (14, 13, 12, 11):
@@ -252,13 +234,7 @@ _HEARTBEAT_SECONDS = 60.0
 
 @contextmanager
 def _heartbeat(status_cb: StatusCb, message: str) -> Iterator[None]:
-    """Emit *message* on a timer while the wrapped work runs.
-
-    The inference orchestrator treats silence as a dead load: status messages
-    reset its inactivity deadline. Prebuilt wheel installs and source builds
-    can both stay quiet for minutes on aarch64 / slow links, so both paths use
-    this.
-    """
+    """Emit *message* on a timer while the wrapped work runs. The inference orchestrator treats silence as a dead load, and status messages reset its inactivity deadline; prebuilt wheel installs and source builds can both stay quiet for minutes on aarch64 or slow links, so both paths use this."""
     done = threading.Event()
 
     def _beat() -> None:
@@ -276,8 +252,7 @@ def _heartbeat(status_cb: StatusCb, message: str) -> Iterator[None]:
 
 
 def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
-    """Run *cmd* via *run*, emitting a status every 60s so the parent's inactivity
-    timeout isn't tripped by a long (e.g. ROCm) source build."""
+    """Run *cmd* via *run*, emitting a status every 60s so the parent's inactivity timeout is not tripped by a long (e.g. ROCm) source build."""
     with _heartbeat(
         status_cb,
         f"Still building {display_name} (this can take several minutes)...",
@@ -296,8 +271,7 @@ def _install_kernel(
     status_cb: StatusCb,
     run: Callable[..., Any],
 ) -> bool:
-    """Install one kernel wheel-first, then a HIP-aware PyPI source build. Returns True iff
-    importable afterwards; idempotent (no-op when already installed)."""
+    """Install one kernel wheel-first, then a HIP-aware PyPI source build. Returns True iff importable afterwards; idempotent (no-op when already installed)."""
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
         return True
@@ -331,8 +305,7 @@ def _install_kernel(
                 run = run,
             ):
                 if getattr(result, "returncode", 1) == 0:
-                    # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
-                    # trusting it, else source-build to match the local ABI.
+                    # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before trusting it, else source-build to match the local ABI.
                     if _is_importable(import_name):
                         logger.info("Installed prebuilt %s wheel", display_name)
                         return True
@@ -364,8 +337,7 @@ def _install_kernel(
         status_cb,
         f"Building {display_name} from source for this model (this can take several minutes)...",
     )
-    # Reinstall so the source build replaces a broken wheel instead of no-opping as
-    # "already satisfied"; --no-cache avoids stale partial HIP build artifacts.
+    # Reinstall so the source build replaces a broken wheel instead of no-opping as "already satisfied"; --no-cache avoids stale partial HIP build artifacts.
     if shutil.which("uv"):
         cmd = [
             "uv",
@@ -397,8 +369,7 @@ def _install_kernel(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
-        # pip and the compilers it drives write UTF-8 down this pipe; the Windows
-        # ANSI codepage would mojibake or raise over a fine install.
+        # pip and the compilers it drives write UTF-8 down this pipe; the Windows ANSI codepage would mojibake or raise over a fine install.
         "encoding": "utf-8",
         "errors": "replace",
         # Make the Python child emit the UTF-8 we decode above.
@@ -433,25 +404,20 @@ def ensure_ssm_runtime(
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
 ) -> None:
-    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for
-    non-SSM models and idempotent. Only a true SSM hybrid's ``mamba_ssm`` is fatal (raises
-    ``RuntimeError`` instead of a cryptic mid-load failure); ``causal_conv1d`` is best-effort
-    (Qwen3-Next/LFM2 fall back to torch).
-    """
+    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Only a true SSM hybrid's ``mamba_ssm`` is fatal (raises ``RuntimeError`` instead of a cryptic mid-load failure); ``causal_conv1d`` is best-effort, with Qwen3-Next/LFM2 falling back to torch."""
     wants_causal_conv1d = model_wants_causal_conv1d(model_name)
     is_ssm = model_is_ssm(model_name)
     if not (wants_causal_conv1d or is_ssm):
         return
 
-    # No prebuilt Windows wheel: skip causal-conv1d on win32 (mirrors training) rather than
-    # dropping a chat load into a multi-minute source build for an optional fast path.
+    # No prebuilt Windows wheel: skip causal-conv1d on win32 (mirrors training) rather than dropping a chat load into a multi-minute source build for an optional fast path.
     if wants_causal_conv1d and sys.platform == "win32":
         logger.info(
             "Skipping causal-conv1d on Windows (no prebuilt wheel); using the torch fallback"
         )
         wants_causal_conv1d = False
 
-    # causal-conv1d first (SSM modeling files lazy-import it; mamba-ssm's fast path uses it).
+    # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install_kernel(
         import_name = "causal_conv1d",
         display_name = "causal-conv1d",

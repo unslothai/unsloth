@@ -3967,6 +3967,51 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     return _response_format_constrains_decoding(payload)
 
 
+def _folds_studio_tool_history(payload, llama_backend) -> bool:
+    """True when Unsloth's own replayed tool turns must be rewritten as user text.
+
+    The client replays that history forever, so refusing it 400s every later turn of the
+    thread. Same ownership test and first guard as ``_takes_tool_passthrough``.
+    """
+    supports_tools = getattr(llama_backend, "supports_tools", False)
+    if supports_tools and _explicit_studio_tool_loop_requested(payload):
+        return False
+    if getattr(llama_backend, "supports_tool_passthrough", supports_tools):
+        return False
+    return _has_openai_tool_history(payload.messages) and _only_studio_tool_history(payload)
+
+
+def _folded_studio_tool_messages(messages) -> list:
+    # _sanitize_anthropic_openai_messages' chain, in its order, and both halves earn their place:
+    #   strip first (it ends in _drop_empty_assistant_sentinels, so this drops those too).
+    #     A stopped turn left between the result and the next question would block the coalesce,
+    #     and the passthrough drops it later without coalescing, so Gemma 400s on role parity.
+    #     Downstream a synthetic pair is matched through its role="tool" reply, which folding
+    #     destroys, so a Gemini code_execution card would ride on as user prose.
+    #   fold before coalesce: what merges a folded result with the note after it.
+    return [
+        ChatMessage.model_validate(_revalidatable(message))
+        for message in _coalesce_consecutive_user_turns(
+            fold_tool_results_into_user(
+                _strip_provider_synthetic_tool_history(
+                    [m.model_dump(exclude_none = True) for m in messages]
+                )
+            )
+        )
+    ]
+
+
+def _revalidatable(message: dict) -> dict:
+    """``content = []`` is the placeholder ``_normalise_chat_content_parts`` leaves behind when it
+    lifts an ``input_audio`` part onto ``payload.audio_base64``. ChatMessage rejects it, and until
+    this fold nothing re-validated a message after that lift. ``""`` is the same placeholder in a
+    shape it accepts, and ``_inject_audio_part`` already reads it that way (``content or ""``).
+    """
+    if message.get("content") == [] and message.get("role") != "assistant":
+        return {**message, "content": ""}
+    return message
+
+
 def _passthrough_client_tools(payload):
     """The caller's own tool catalog exactly as the passthrough puts it on the wire.
 
@@ -22345,7 +22390,10 @@ async def produce_openai_chat_completions(
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
-    _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
+    # Read the same way `_takes_tool_passthrough` reads it: history Unsloth's own loop
+    # produced is not a client contract.
+    _has_client_tool_history = _has_tool_messages and not _only_studio_tool_history(payload)
+    _has_client_tool_contract = _has_active_tool_catalog or _has_client_tool_history
     # The Unsloth tool loop needs a tool-capable backend, so a request that asks
     # for it on a backend that can't run it (DiffusionGemma forces supports_tools
     # off) must not steal client tools from the passthrough (#6851).
@@ -22380,6 +22428,10 @@ async def produce_openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
+    # Before the passthrough dispatch and the parse, so every later reader sees the fold.
+    if using_gguf and _folds_studio_tool_history(payload, llama_backend):
+        payload.messages = _folded_studio_tool_messages(payload.messages)
+        _pre_parsed = None
     if (
         using_gguf
         and not _studio_tool_loop_requested
@@ -28350,6 +28402,11 @@ def _build_chat_request(
         # turn opens a fresh one and restarts the answer.
         if isinstance(_extra.get("continue_final_message"), bool):
             chat_kwargs["continue_final_message"] = _extra["continue_final_message"]
+        # And for the ownership marker, or every fold below reads a Studio thread as a client's:
+        # only the legacy search_conversation arm could claim one, so a thread that ran terminal
+        # or search_knowledge_base was refused non-streaming and forwarded raw when streamed.
+        if isinstance(_extra.get("studio_tool_history"), bool):
+            chat_kwargs["studio_tool_history"] = _extra["studio_tool_history"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
@@ -28641,6 +28698,13 @@ async def _responses_stream(
             status_code = 400,
             detail = "Image provided but current GGUF model does not support vision.",
         )
+
+    # Same bypass, same reason as the image gate: without this the non-streaming half of this
+    # very route folds a Studio tool thread and answers while the streaming half still ships
+    # role="tool" to a template that cannot render it, so one thread's replies depend on which
+    # half the client called.
+    if _folds_studio_tool_history(chat_req, llama_backend):
+        chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
 
     # Streaming /v1/responses builds the passthrough body directly (bypassing
     # openai_chat_completions), so apply recommended sampling here too.
@@ -30432,8 +30496,11 @@ async def chat_count_tokens(
     # does not merge adjacent user turns, so coalescing here would price a prompt it never sends
     # (two user turns split by an empty assistant sentinel, after a stopped response).
     _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
+    _count_messages = payload.messages
+    if _folds_studio_tool_history(payload, llama_backend):
+        _count_messages = _folded_studio_tool_messages(_count_messages)
     openai_messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
+        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in _count_messages])
     )
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
