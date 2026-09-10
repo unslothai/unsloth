@@ -16,6 +16,12 @@ from storage import studio_db
 
 FIRST_DRAFT = "## Findings\n\n" + ("The evidence says a great deal. " * 120).strip()
 SHORTER_DRAFT = "## Findings\n\nToo little."
+# One gathered source: a run that gathers nothing fails before synthesis, which is not what
+# these tests are about.
+SEARCH_RESULT = (
+    "Title: What happened\nURL: https://example.test/what-happened\n"
+    "Snippet: It happened on a Tuesday."
+)
 
 
 @pytest.fixture
@@ -40,6 +46,9 @@ def research_home(tmp_path, monkeypatch):
             "createdAt": 2,
         }
     )
+    from core import research_runs as worker
+
+    monkeypatch.setattr(worker, "execute_tool", lambda *args, **kwargs: SEARCH_RESULT)
     return tmp_path
 
 
@@ -74,7 +83,9 @@ def _claimed_run(supervisor, external: bool = False) -> dict:
             },
         },
     )
-    planned = research_db.set_plan("run-1", {"title": "Plan", "steps": []})
+    planned = research_db.set_plan(
+        "run-1", {"title": "Plan", "steps": [{"title": "Look it up", "query": "what happened"}]}
+    )
     research_db.approve("run-1", planned["planRevision"], planned["planHash"])
     return research_db.claim_next(supervisor.worker_id)
 
@@ -93,7 +104,7 @@ def _run_synthesis(monkeypatch, *, synthesis, recovery) -> dict:
             return synthesis
         if phase == "synthesis_recovery":
             return recovery
-        # Unparseable, and an empty plan has no seed action, so the step loop breaks.
+        # Unparseable, so the step falls back to the plan's one seed action.
         return "not json", "", "stop", None
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)

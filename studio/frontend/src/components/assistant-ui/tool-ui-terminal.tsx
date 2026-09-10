@@ -21,9 +21,9 @@ import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   preferSanitizedFullToolOutput,
+  toolResultText,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
@@ -51,10 +51,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   const sessionId = structured?.sessionId ?? "";
   const output =
     structured !== null
-      ? stringifyToolResult(structured.text)
+      ? toolResultText(structured.text)
       : result == null
         ? ""
-        : stringifyToolResult(result);
+        : toolResultText(result);
 
   // Show the fuller live stream over a truncated result, keeping its exit
   // status. Session-transient: after a reload only the result remains.
