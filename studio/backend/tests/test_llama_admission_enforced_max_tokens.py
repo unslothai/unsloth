@@ -113,23 +113,26 @@ class TestThePoolIsNeverFilledToTheLastCell:
             _openai_llama_admission_output_allowance as allowance,
             _openai_llama_admission_wire_output_bound as wire_bound,
         )
+
         window, slots = 16384, 4
         share = window // slots
         for prompt in range(share - _RESERVE, share + 2):
             charged_allowance = allowance(
-                None, budget = window, prompt_tokens = prompt,
-                context_window = window, share = share,
+                None,
+                budget = window,
+                prompt_tokens = prompt,
+                context_window = window,
+                share = share,
             )
             charged = max(1, min(window, max(share, prompt + charged_allowance)))
-            sent = wire_bound(
-                share = share, prompt_tokens = prompt, window = window, budget = window
-            )
+            sent = wire_bound(share = share, prompt_tokens = prompt, window = window, budget = window)
             assert prompt + sent <= charged, (prompt, sent, charged)
             assert prompt + sent != share, f"{prompt}: fills the pool to exactly its share"
 
     def test_a_prompt_just_clear_of_the_reserve_still_takes_its_share(self):
         """The band is only the reserve wide; below it nothing changes."""
         from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+
         window, slots = 16384, 4
         share = window // slots
         prompt = share - _RESERVE - 1
