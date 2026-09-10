@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { downloadFile } from "@/lib/native-files";
+import { downloadFile, downloadUrlStreaming } from "@/lib/native-files";
 import { downloadRecipeJobDataset } from "../../api";
 import type { RecipeExecutionRecord } from "../../execution-types";
 
@@ -36,11 +36,11 @@ export async function downloadExecutionDataset(
   const filenameStem = buildDownloadFilename(execution);
 
   if (execution.kind === "full" && execution.jobId) {
-    const { blob, filename } = await downloadRecipeJobDataset(execution.jobId, {
+    const { url, filename } = await downloadRecipeJobDataset(execution.jobId, {
       artifactPath: execution.artifact_path,
       filename: filenameStem,
     });
-    await downloadFile(blob, filename, blob.type || "application/x-ndjson");
+    await downloadUrlStreaming(url, filename);
     return;
   }
 

@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
 
@@ -26,8 +28,9 @@ from pydantic import ValidationError
 from core.data_recipe.export import (
     ExportFormat,
     RecipeDatasetExportError,
+    _safe_filename_stem,
+    _write_jsonl_rows,
     build_dataset_download,
-    build_in_memory_dataset_download,
 )
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
@@ -558,6 +561,49 @@ def _content_disposition_attachment(filename: str) -> str:
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
+_IN_MEMORY_DOWNLOAD_PAGE_SIZE = 10_000
+
+
+def _build_in_memory_job_dataset_download(
+    mgr,
+    job_id: str,
+    *,
+    filename_stem: str,
+) -> tuple[Path, str, str]:
+    tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".jsonl")
+    tmp.close()
+    jsonl_path = Path(tmp.name)
+    offset = 0
+    total: int | None = None
+    with jsonl_path.open("w", encoding = "utf-8") as handle:
+        while True:
+            result = mgr.get_dataset(
+                job_id,
+                limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
+                offset = offset,
+            )
+            if result is None:
+                raise HTTPException(status_code = 404, detail = "dataset not ready")
+            if "error" in result:
+                raise HTTPException(status_code = 422, detail = result["error"])
+            rows = result.get("dataset")
+            if not isinstance(rows, list):
+                raise HTTPException(status_code = 404, detail = "dataset not ready")
+            if total is None:
+                total_value = result.get("total")
+                total = int(total_value) if isinstance(total_value, int) else len(rows)
+            if not rows:
+                break
+            _write_jsonl_rows(handle, rows)
+            offset += len(rows)
+            if offset >= total:
+                break
+    if offset == 0:
+        raise HTTPException(status_code = 404, detail = "dataset not ready")
+    stem = _safe_filename_stem(filename_stem.strip() or job_id)
+    return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
+
+
 def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -> str | None:
     resolved = (
         artifact_path.strip() if isinstance(artifact_path, str) and artifact_path.strip() else None
@@ -611,16 +657,9 @@ def download_job_dataset(
                     detail = "Parquet download requires persisted recipe artifacts.",
                 )
             mgr = get_job_manager()
-            result = mgr.get_dataset(job_id, limit = 1_000_000, offset = 0)
-            if result is None:
-                raise HTTPException(status_code = 404, detail = "dataset not ready")
-            if "error" in result:
-                raise HTTPException(status_code = 422, detail = result["error"])
-            rows = result.get("dataset")
-            if not isinstance(rows, list) or not rows:
-                raise HTTPException(status_code = 404, detail = "dataset not ready")
-            file_path, media_type, download_name = build_in_memory_dataset_download(
-                rows,
+            file_path, media_type, download_name = _build_in_memory_job_dataset_download(
+                mgr,
+                job_id,
                 filename_stem = filename_stem,
             )
     except RecipeDatasetExportError as exc:

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import {
   formatFastApiDetail,
   readFastApiError,
@@ -330,6 +331,19 @@ export async function getRecipeJobDataset(
 
 export type RecipeJobDownloadFormat = "jsonl" | "parquet";
 
+function buildRecipeJobDownloadFilename(
+  jobId: string,
+  options?: {
+    format?: RecipeJobDownloadFormat;
+    filename?: string | null;
+  },
+): string {
+  const stem = options?.filename?.trim() || jobId;
+  const extension =
+    options?.format === "parquet" ? "parquet.zip" : "jsonl";
+  return `${stem}.${extension}`;
+}
+
 export async function downloadRecipeJobDataset(
   jobId: string,
   options?: {
@@ -337,7 +351,7 @@ export async function downloadRecipeJobDataset(
     artifactPath?: string | null;
     filename?: string | null;
   },
-): Promise<{ blob: Blob; filename: string }> {
+): Promise<{ url: string; filename: string }> {
   const params = new URLSearchParams();
   params.set("format", options?.format ?? "jsonl");
   if (options?.artifactPath) {
@@ -346,21 +360,17 @@ export async function downloadRecipeJobDataset(
   if (options?.filename) {
     params.set("filename", options.filename);
   }
-  const response = await authFetch(
+  const token = getAuthToken();
+  if (token) {
+    params.set("token", token);
+  }
+  const url = apiUrl(
     `${DATA_DESIGNER_API_BASE}/jobs/${jobId}/download?${params.toString()}`,
   );
-  if (!response.ok) {
-    throw new Error(await parseErrorResponse(response));
-  }
-  const blob = await response.blob();
-  const header = response.headers.get("content-disposition") ?? "";
-  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(header);
-  const asciiMatch = /filename="([^"]+)"/i.exec(header);
-  const rawName = utf8Match?.[1] ?? asciiMatch?.[1] ?? null;
-  const filename = rawName
-    ? decodeURIComponent(rawName)
-    : `${options?.filename ?? jobId}.${options?.format === "parquet" ? "parquet.zip" : "jsonl"}`;
-  return { blob, filename };
+  return {
+    url,
+    filename: buildRecipeJobDownloadFilename(jobId, options),
+  };
 }
 
 export async function cancelRecipeJob(
