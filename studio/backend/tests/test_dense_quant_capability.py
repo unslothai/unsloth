@@ -17,9 +17,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 def _src(name: str) -> str:
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     node = next(
-        n
-        for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.FunctionDef) and n.name == name
+        n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == name
     )
     return ast.get_source_segment(src, node)
 
@@ -197,9 +195,7 @@ def test_a_mixed_host_publishes_only_what_every_card_runs(monkeypatch):
     assert schemes == AMPERE
     assert scoped == [0, 1]
     # Order of the cards must not change the answer.
-    schemes, _ = _run_schemes(
-        monkeypatch, device_count = 2, capable_by_ordinal = {0: AMPERE, 1: ADA}
-    )
+    schemes, _ = _run_schemes(monkeypatch, device_count = 2, capable_by_ordinal = {0: AMPERE, 1: ADA})
     assert schemes == AMPERE
 
 
@@ -227,9 +223,7 @@ def test_the_scheme_floors_are_nested_so_the_intersection_is_never_a_surprise():
     from core.inference import diffusion_transformer_quant as tq
 
     caps = sorted(set(tq._SCHEME_MIN_CAPABILITY.values()))
-    sets = [
-        {s for s, floor in tq._SCHEME_MIN_CAPABILITY.items() if cap >= floor} for cap in caps
-    ]
+    sets = [{s for s, floor in tq._SCHEME_MIN_CAPABILITY.items() if cap >= floor} for cap in caps]
     for smaller, larger in zip(sets, sets[1:]):
         assert smaller <= larger, (smaller, larger)
     assert all(sets), "every arch tier must run at least one scheme"
