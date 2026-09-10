@@ -109,7 +109,9 @@ def _normalise(path: str) -> str:
 
 # A helper script reaching a sibling: `$SCRIPT_DIR/x.sh`, `"$(dirname "$0")/x.txt"`, or
 # the repo-relative `.github/scripts/x.sh` form.
-SIBLING = re.compile(r"(?:\$SCRIPT_DIR|\$\{SCRIPT_DIR\}|\$\(dirname \"?\$0\"?\)|\.github/scripts)/([A-Za-z0-9_.-]+)")
+SIBLING = re.compile(
+    r"(?:\$SCRIPT_DIR|\$\{SCRIPT_DIR\}|\$\(dirname \"?\$0\"?\)|\.github/scripts)/([A-Za-z0-9_.-]+)"
+)
 
 
 def _executed_github_paths(doc) -> set[str]:
@@ -138,7 +140,9 @@ def _executed_github_paths(doc) -> set[str]:
 
 
 def _listed_github_paths(paths: list[str]) -> set[str]:
-    return {p for p in paths if p.startswith(".github/scripts/") or p.startswith(".github/actions/")}
+    return {
+        p for p in paths if p.startswith(".github/scripts/") or p.startswith(".github/actions/")
+    }
 
 
 @pytest.mark.parametrize("name", STUDIO_SMOKES)
@@ -152,9 +156,9 @@ def test_no_studio_smoke_triggers_on_the_training_library_or_all_of_studio(name)
             "Tauri shell and docs the smoke never touches. Name the directories the job "
             "observes instead."
         )
-    assert "studio/backend/**" in _paths(doc, "pull_request") or name.endswith("update-smoke.yml"), (
-        f"{name} must still trigger on the backend it boots"
-    )
+    assert "studio/backend/**" in _paths(doc, "pull_request") or name.endswith(
+        "update-smoke.yml"
+    ), f"{name} must still trigger on the backend it boots"
 
 
 @pytest.mark.parametrize("name", STUDIO_SMOKES)
@@ -164,9 +168,9 @@ def test_every_smoke_still_names_the_workflow_file_and_the_apt_helper_it_runs(na
     assert f".github/workflows/{name}" in paths, f"{name} must re-run when it is edited"
     text = _step_text(doc)
     if "retry-with-apt-lock.sh" in text:
-        assert ".github/scripts/retry-with-apt-lock.sh" in paths, (
-            f"{name} calls retry-with-apt-lock.sh but would not re-run when it changes"
-        )
+        assert (
+            ".github/scripts/retry-with-apt-lock.sh" in paths
+        ), f"{name} calls retry-with-apt-lock.sh but would not re-run when it changes"
 
 
 @pytest.mark.parametrize("name", DERIVED_FILTERS)
@@ -246,9 +250,13 @@ def test_agent_guides_lists_the_route_modules_that_serve_what_it_curls():
             f"requests {sorted(curled - serving)}; add the module that serves it"
         )
         # The contracts outside routes/ the docstring names must stay.
-        for required in ("studio/backend/main.py", "studio/backend/core/inference/llama_cpp.py",
-                         "studio/backend/models/**", "unsloth_cli/commands/start.py",
-                         "unsloth_cli/commands/studio.py"):
+        for required in (
+            "studio/backend/main.py",
+            "studio/backend/core/inference/llama_cpp.py",
+            "studio/backend/models/**",
+            "unsloth_cli/commands/start.py",
+            "unsloth_cli/commands/studio.py",
+        ):
             assert required in paths, f"{AGENT_GUIDES} {event}.paths lost {required}"
         assert "unsloth_cli/**" not in paths, (
             f"{AGENT_GUIDES} {event}.paths matches the whole CLI package; the cells only run "

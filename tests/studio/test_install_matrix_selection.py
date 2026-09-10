@@ -75,7 +75,10 @@ def _select(matrix_file: str, event: str) -> dict[str, str]:
     """Run the selector the way the `select` job does and return its output lines."""
     out = subprocess.run(
         [sys.executable, str(SELECTOR), "--file", matrix_file, "--event", event],
-        cwd = REPO, capture_output = True, text = True, check = True,
+        cwd = REPO,
+        capture_output = True,
+        text = True,
+        check = True,
     ).stdout
     return dict(line.split("=", 1) for line in out.splitlines() if line)
 
@@ -136,7 +139,9 @@ def test_every_leg_has_the_keys_its_job_reads(name):
         common = set.intersection(*declared)
         required = {k for k in read if k in common}
         for leg in legs[_key(jid)]:
-            assert "pr" in leg and isinstance(leg["pr"], bool), f"{matrix_file}:{jid}: {leg} has no bool `pr`"
+            assert "pr" in leg and isinstance(
+                leg["pr"], bool
+            ), f"{matrix_file}:{jid}: {leg} has no bool `pr`"
             missing = required - set(leg)
             assert not missing, f"{matrix_file}:{jid}: {leg} lacks {sorted(missing)}"
         unknown = read - common - {k for leg in declared for k in leg}
@@ -172,7 +177,9 @@ def test_a_job_whose_pr_subset_is_empty_gates_on_the_count(name):
         job = doc["jobs"][jid]
         gate = f"needs.select.outputs.{_key(jid)}_count != '0'"
         assert gate in str(job.get("if", "")), f"{name}:{jid} has no PR legs and no `if: {gate}`"
-        assert f"{_key(jid)}_count" in outputs, f"{name}: the select job does not expose {_key(jid)}_count"
+        assert (
+            f"{_key(jid)}_count" in outputs
+        ), f"{name}: the select job does not expose {_key(jid)}_count"
     # The container probe exists only to gate the container install rows.
     if name == "clean-machine-install-ci.yml":
         probe = doc["jobs"]["windows_container_probe"]
@@ -186,9 +193,13 @@ def test_the_selector_emits_the_legs_without_the_pr_flag(name, event):
     out = _select(matrix_file, event)
     for jid, (total, on_pr) in jobs.items():
         matrix = json.loads(out[_key(jid)])
-        assert list(matrix) == ["include"], f"{jid}: the matrix must be a mapping with only `include`"
+        assert list(matrix) == [
+            "include"
+        ], f"{jid}: the matrix must be a mapping with only `include`"
         expected = on_pr if event == "pull_request" else total
-        assert len(matrix["include"]) == expected, f"{jid} on {event}: {len(matrix['include'])} legs"
+        assert (
+            len(matrix["include"]) == expected
+        ), f"{jid} on {event}: {len(matrix['include'])} legs"
         assert out[f"{_key(jid)}_count"] == str(expected)
         for leg in matrix["include"]:
             assert "pr" not in leg, f"{jid}: the `pr` flag leaked into the matrix: {leg}"
