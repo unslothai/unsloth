@@ -1,11 +1,8 @@
 # Copyright 2025 electroglyph. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -54,12 +51,7 @@ _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 
 
 def _normalize_save_method(save_method):
-    """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit".
-
-    unsloth_save_model (save.py) normalizes case and spaces before validating,
-    so the same spelling has to mean the same thing here, else a keyword call
-    that worked before starts raising.
-    """
+    """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
         return save_method.lower().replace(" ", "_")
     return save_method
@@ -171,10 +163,7 @@ def _save_pretrained_gguf(
     gguf_shard_size = None,
     **kwargs,
 ):
-    """
-    Saves the SentenceTransformer model to GGUF format by saving the inner transformer model,
-    converting it, and placing the resulting GGUF files in the save directory.
-    """
+    """Saves the SentenceTransformer model to GGUF format by saving the inner transformer model, converting it, and placing the resulting GGUF files in the save directory."""
     self.save_pretrained(save_directory)
 
     # Extract the inner transformer model; PEFT merge is handled by the gguf saver.
@@ -182,7 +171,6 @@ def _save_pretrained_gguf(
     if hasattr(inner_model, "_orig_mod"):
         inner_model = inner_model._orig_mod
 
-    # 3. Identify where the transformer weights are stored
     transformer_path = "0_Transformer"
     modules_path = os.path.join(save_directory, "modules.json")
     if os.path.exists(modules_path):
@@ -203,8 +191,7 @@ def _save_pretrained_gguf(
     if tokenizer is None:
         tokenizer = self.tokenizer
 
-    # No rmtree guard here: the merge cleanup that deletes save_directory is gated on push_to_hub, which
-    # is forced False below.
+    # No rmtree guard here: the merge cleanup that deletes save_directory is gated on push_to_hub, which is forced False below.
     result = unsloth_save_pretrained_gguf(
         inner_model,
         save_directory = transformer_dir,
@@ -216,14 +203,12 @@ def _save_pretrained_gguf(
         max_shard_size = max_shard_size,
         temporary_location = temporary_location,
         maximum_memory_usage = maximum_memory_usage,
-        # transformer_dir is the ST's own 0_Transformer module, not a throwaway: reclaiming it would hand
-        # back a folder that no longer loads as a SentenceTransformer, so a short disk fails loudly.
+        # transformer_dir is the ST's own 0_Transformer module, not a throwaway: reclaiming it would hand back a folder that no longer loads as a SentenceTransformer, so a short disk fails loudly.
         merge_is_disposable = False,
         imatrix_file = imatrix_file,
         gguf_shard_size = gguf_shard_size,
     )
 
-    # Move GGUF files from the 0_Transformer subdirectory to the root save_directory.
     gguf_files = result.get("gguf_files", [])
 
     new_gguf_locations = []
@@ -514,10 +499,7 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
 class FastSentenceTransformer(FastModel):
     @staticmethod
     def _save_base_config_for_processor_resume(config, output_path):
-        """sentence-transformers >= 5.4 reloads Transformer modules via
-        AutoProcessor, which falls back to AutoConfig for tokenizer-only
-        roots -- so PEFT adapter checkpoints still need base config.json
-        next to adapter_config.json."""
+        """sentence-transformers >= 5.4 reloads Transformer modules via AutoProcessor, which falls back to AutoConfig for tokenizer-only roots, so PEFT adapter checkpoints still need base config.json next to adapter_config.json."""
         if config is None or not getattr(config, "model_type", None):
             return
         if hasattr(config, "save_pretrained"):
@@ -617,7 +599,6 @@ class FastSentenceTransformer(FastModel):
             )
             return "mean"
 
-    # Should probably be done upstream instead of here.
     @staticmethod
     def _patch_mpnet_v4():
         """Patch MPNetModel for gradient checkpointing (transformers 4)."""
@@ -637,10 +618,7 @@ class FastSentenceTransformer(FastModel):
 
         modeling_mpnet.MPNetModel._set_gradient_checkpointing = _set_gradient_checkpointing
 
-        # Patch MPNetEncoder.forward for checkpointing; based on transformers v4.57.3
-        # models/mpnet/modeling_mpnet.py#L321
-        # based on: https://github.com/huggingface/transformers/blob/v4.57.3/src/transformers/models/distilbert/
-        # modeling_distilbert.py#L666
+        # Patch MPNetEncoder.forward for checkpointing; based on transformers v4.57.3 models/mpnet/modeling_mpnet.py#L321 and models/distilbert/modeling_distilbert.py#L666.
         def forward(
             self,
             hidden_states: torch.Tensor,
@@ -724,8 +702,7 @@ class FastSentenceTransformer(FastModel):
 
         modeling_mpnet.MPNetModel._set_gradient_checkpointing = _set_gradient_checkpointing
 
-        # Patch MPNetEncoder.forward for checkpointing; based on transformers v5.0.0rc1
-        # models/mpnet/modeling_mpnet.py#L284
+        # Patch MPNetEncoder.forward for checkpointing; based on transformers v5.0.0rc1 models/mpnet/modeling_mpnet.py#L284.
         def forward(
             self,
             hidden_states: torch.Tensor,
@@ -789,8 +766,7 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _patch_distilbert_v4():
-        # Change kwargs to positional args to be compatible with peft_utils; based on transformers v4.57.3
-        # models/distilbert/modeling_distilbert.py#L666
+        # Change kwargs to positional args to be compatible with peft_utils; based on transformers v4.57.3 models/distilbert/modeling_distilbert.py#L666.
         """Patch DistilBertModel.forward to use positional args (transformers 4)."""
 
         def forward(
@@ -1007,8 +983,7 @@ class FastSentenceTransformer(FastModel):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
-        # Prevents loading the model a second time and redirects AutoProcessor/AutoTokenizer so
-        # Transformer.__init__ picks up our pre-fixed tokenizer.
+        # Prevents loading the model a second time and redirects AutoProcessor/AutoTokenizer so Transformer.__init__ picks up our pre-fixed tokenizer.
         from transformers import AutoProcessor, AutoTokenizer
 
         def is_requested_model_name(args, kwargs):
@@ -1065,7 +1040,6 @@ class FastSentenceTransformer(FastModel):
                 return original_processor_from_pretrained(*args, **kwargs)
 
             try:
-                # Temporarily redirect Auto* loading to return our pre-loaded objects.
                 AutoModel.from_pretrained = return_existing_model
                 AutoProcessor.from_pretrained = return_existing_processor
                 AutoTokenizer.from_pretrained = return_existing_tokenizer
@@ -1087,9 +1061,7 @@ class FastSentenceTransformer(FastModel):
                 elif "tokenizer_args" in transformer_init_params:
                     transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
-                # Build via Transformer.load so the saved modality_config is honored: a plain Transformer(...)
-                # makes ST 5.x infer a "message" modality for chat-template models, chat-wrapping inputs and
-                # degrading embeddings (#6881). Only use .load for a Hub id; ST 3.x/4.x load() is local-only.
+                # Build via Transformer.load so the saved modality_config is honored: a plain Transformer(...) makes ST 5.x infer a "message" modality for chat-template models, chat-wrapping inputs and degrading embeddings (#6881). Only use .load for a Hub id; ST 3.x/4.x load() is local-only.
                 transformer_module = None
                 transformer_load = getattr(Transformer, "load", None)
                 has_modules_json = (
@@ -1114,9 +1086,7 @@ class FastSentenceTransformer(FastModel):
                             "trust_remote_code": trust_remote_code,
                             **transformer_kwargs,
                         }
-                        # Resolve config/tokenizer from the module's saved subfolder (modules.json "path"),
-                        # like stock ST;
-                        # "" (root) is a no-op.
+                        # Resolve config/tokenizer from the module's saved subfolder (modules.json "path"), like stock ST; "" (root) is a no-op.
                         if module_subfolder:
                             load_kwargs["subfolder"] = module_subfolder
                         if not accepts_var_kw:
@@ -1125,13 +1095,11 @@ class FastSentenceTransformer(FastModel):
                 if transformer_module is None:
                     transformer_module = Transformer(model_name, **transformer_kwargs)
             finally:
-                # Restore original Auto* loading immediately
                 AutoModel.from_pretrained = original_model_from_pretrained
                 AutoProcessor.from_pretrained = original_processor_from_pretrained
                 AutoTokenizer.from_pretrained = original_tokenizer_from_pretrained
 
-        # On sentence-transformers >= 5.4 `tokenizer` is a read-only property backed by self.processor;
-        # on older versions it is a regular attribute and this assignment is required.
+        # On sentence-transformers >= 5.4 `tokenizer` is a read-only property backed by self.processor; on older versions it is a regular attribute and this assignment is required.
         if not isinstance(getattr(type(transformer_module), "tokenizer", None), property):
             transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
@@ -1211,11 +1179,7 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
     ) -> tuple[OrderedDict, bool]:
-        """Load modules from modules.json, else fall back to hard-coded modules.
-
-        Returns:
-            tuple[OrderedDict, bool]: (modules, no_modules_json)
-        """
+        """Load modules from modules.json, else fall back to hard-coded modules. Returns (modules, no_modules_json)."""
         from sentence_transformers.util import import_from_string, load_dir_path
         from sentence_transformers.models import Pooling, Normalize
 
@@ -1271,7 +1235,6 @@ class FastSentenceTransformer(FastModel):
 
             return modules, False
 
-        # Fallback if there is no modules.json (non sentence-transformers models).
         print(
             "Unsloth: No modules.json found, falling back to [Transformer, Pooling, Normalize]. This may or may not work."
         )
@@ -1319,12 +1282,7 @@ class FastSentenceTransformer(FastModel):
         grad_accum = None,
         max_seq_length = None,
     ):
-        """Estimate the minimum training steps for torch.compile to pay off
-        (with a 1.2x safety margin), from empirical benchmarks.
-
-        Optional batch_size / grad_accum / max_seq_length give a coarse,
-        conservative pre-run adjustment with no runtime measurements.
-        """
+        """Estimate the minimum training steps for torch.compile to pay off (with a 1.2x safety margin), from empirical benchmarks. Optional batch_size / grad_accum / max_seq_length give a coarse, conservative pre-run adjustment with no runtime measurements."""
         if hasattr(model, "__getitem__"):
             try:
                 inner = model[0].auto_model
@@ -1345,8 +1303,7 @@ class FastSentenceTransformer(FastModel):
 
         params_m = params / 1e6
 
-        # Empirical formula from benchmarks with batch_size=2, grad_accum=4: small models carry high fixed
-        # overhead and a lower speedup, large models scale warmup but gain significantly.
+        # Empirical formula from benchmarks with batch_size=2, grad_accum=4: small models carry high fixed overhead and a lower speedup, large models scale warmup but gain significantly.
         if params_m < 50:
             estimated_warmup = 35 + params_m * 0.3
             base_speedup = 1.35
@@ -1368,8 +1325,7 @@ class FastSentenceTransformer(FastModel):
 
         threshold = breakeven * 1.2
 
-        # Optional adjustment based on expected work per step, using only pre-run information (batch size,
-        # grad accum, seq length).
+        # Optional adjustment based on expected work per step, using only pre-run information (batch size, grad accum, seq length).
         generic_scale = 1.0
         fast_scale = 1.0
         if batch_size is not None or grad_accum is not None or max_seq_length is not None:
@@ -1387,19 +1343,16 @@ class FastSentenceTransformer(FastModel):
 
             ref_bs, ref_ga, ref_seq = 2, 4, 512
 
-            # Generic path: lighter scaling, less conservative than params-only.
             ga_scale = (ref_ga / ga) ** 1.0
             bs_seq_scale = ((ref_bs * ref_seq) / (bs * seq)) ** 0.15
             generic_scale = 0.35 * ga_scale * bs_seq_scale
             generic_scale = max(0.05, min(generic_scale, 5.0))
 
-            # Fast encoder path: stronger scaling based on observed behavior.
             fast_ga_scale = (ref_ga / ga) ** 1.5
             fast_bs_seq_scale = ((ref_bs * ref_seq) / (bs * seq)) ** 0.25
             fast_scale = 0.2 * fast_ga_scale * fast_bs_seq_scale
             fast_scale = max(0.05, min(fast_scale, 5.0))
 
-        # Conservative safety factors: generic is less conservative than fast.
         generic_threshold = threshold * generic_scale * 1.25
 
         is_fast_type = (
@@ -1408,7 +1361,6 @@ class FastSentenceTransformer(FastModel):
         )
         if is_fast_type:
             fast_threshold = threshold * fast_scale * 1.5
-            # Prefer the smaller (less conservative) of the two estimates.
             final_threshold = min(generic_threshold, fast_threshold)
         else:
             final_threshold = generic_threshold
@@ -1422,8 +1374,7 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _apply_torch_compile(model, mode = "default"):
-        """Apply torch.compile to a SentenceTransformer model (with an
-        accelerate unwrap_model bug workaround)."""
+        """Apply torch.compile to a SentenceTransformer model (with an accelerate unwrap_model bug workaround)."""
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
@@ -1431,8 +1382,7 @@ class FastSentenceTransformer(FastModel):
                 model[0].model = compiled
             else:
                 model[0].auto_model = compiled
-            # Works around an accelerate unwrap_model bug: with a compiled inner model accelerate sees
-            # has_compiled_regions() True and then fails on model.__dict__["_orig_mod"], so set it.
+            # Works around an accelerate unwrap_model bug: with a compiled inner model accelerate sees has_compiled_regions() True and then fails on model.__dict__["_orig_mod"], so set it.
             model.__dict__["_orig_mod"] = model
         else:
             model = torch.compile(model, mode = mode)
@@ -1475,15 +1425,9 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one declines. st_device
-        # below hands device_map to SentenceTransformer(device=), which ends in self.to(device): the
-        # sentinel raises there, and that same .to() would pull a split model back onto one card. The
-        # env-var opt-in is resolved too, or UNSLOTH_AUTO_DEVICE_MAP=1 asks for a plan without naming the
-        # sentinel.
+        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one declines. st_device below hands device_map to SentenceTransformer(device=), which ends in self.to(device): the sentinel raises there, and that same .to() would pull a split model back onto one card. The env-var opt-in is resolved too, or UNSLOTH_AUTO_DEVICE_MAP=1 asks for a plan without naming the sentinel.
         device_map = requested_device_map(device_map)
-        # Always "sequential", never the asked-for name's own declined value: the st_device blocks
-        # normalise only dicts, "auto" and "sequential", so "balanced" would reach .to("balanced").
-        # isinstance first, since a caller's explicit dict is unhashable and `in` alone raises.
+        # Always "sequential", never the asked-for name's own declined value: the st_device blocks normalise only dicts, "auto" and "sequential", so "balanced" would reach .to("balanced"). isinstance first, since a caller's explicit dict is unhashable and `in` alone raises.
         if isinstance(device_map, str) and device_map in _PLANNED_DEVICE_MAPS:
             print(
                 "Unsloth: Not planning a device map; SentenceTransformer moves the assembled "
@@ -1491,8 +1435,7 @@ class FastSentenceTransformer(FastModel):
             )
             device_map = "sequential"
 
-        # Validate the load modes BEFORE the prefetch so a bad config fails without downloading weights;
-        # guarded on not for_inference, since that branch never used these flags.
+        # Validate the load modes BEFORE the prefetch so a bad config fails without downloading weights; guarded on not for_inference, since that branch never used these flags.
         if not for_inference:
             # sanity check, thanks Etherl:
             if full_finetuning and (load_in_4bit or load_in_8bit):
@@ -1512,8 +1455,7 @@ class FastSentenceTransformer(FastModel):
                     "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
                 )
 
-        # Prefetch so the ST load below is a cache hit. weights_at_root stays False, since ST component
-        # weights live in per-module subfolders.
+        # Prefetch so the ST load below is a cache hit. weights_at_root stays False, since ST component weights live in per-module subfolders.
         _st_prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -1522,8 +1464,7 @@ class FastSentenceTransformer(FastModel):
             or kwargs.get("cache_folder")
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             local_files_only = kwargs.get("local_files_only", False),
-            # Forward force_download so the refresh happens in the killable child, then clear it so the in-
-            # process ST load reuses the warm cache instead of re-downloading over unguarded Xet.
+            # Forward force_download so the refresh happens in the killable child, then clear it so the in-process ST load reuses the warm cache instead of re-downloading over unguarded Xet.
             force_download = kwargs.get("force_download", False),
         )
         if _st_prefetched and kwargs.get("force_download", False):
@@ -1559,8 +1500,7 @@ class FastSentenceTransformer(FastModel):
                 if k in kwargs:
                     st_kwargs[k] = kwargs[k]
 
-            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm (None lets
-            # ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
+            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm cache (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
             _st_cache = kwargs.get("cache_dir") or kwargs.get("cache_folder")
             if _st_cache is not None:
                 st_kwargs["cache_folder"] = _st_cache
@@ -1568,7 +1508,6 @@ class FastSentenceTransformer(FastModel):
             st_model = SentenceTransformer(model_name, **st_kwargs)
             return st_model
 
-        # Load-mode validation already ran before the prefetch above.
         if "auto_model" not in kwargs:
             kwargs["auto_model"] = AutoModel
 
@@ -1583,14 +1522,11 @@ class FastSentenceTransformer(FastModel):
         except:
             pass
 
-        # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's
-        # auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+.
-        # Set UNSLOTH_COMPILE_DISABLE=1 for the old path.
+        # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. Set UNSLOTH_COMPILE_DISABLE=1 for the old path.
         is_encoder_model = model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
         use_fast_encoder = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
         if use_fast_encoder and is_encoder_model:
-            # torch.compile mode "default" is safest for PEFT/LoRA training; "reduce-overhead" uses CUDA Graphs,
-            # which are incompatible with PEFT.
+            # torch.compile mode "default" is safest for PEFT/LoRA training; "reduce-overhead" uses CUDA Graphs, which are incompatible with PEFT.
             compile_mode = "default"
 
             if dtype is None:
@@ -1641,7 +1577,6 @@ class FastSentenceTransformer(FastModel):
                     bnb_4bit_use_double_quant = True,
                 )
                 model_kwargs["quantization_config"] = bnb_config
-                # When using quantization, device must be handled by accelerate
                 st_device = None
 
             # Gradient checkpointing conflicts with torch.compile, so warn the user.
@@ -1658,8 +1593,7 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm (None lets
-            # ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
+            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm cache (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -1686,13 +1620,10 @@ class FastSentenceTransformer(FastModel):
                 save_method = "merged_16bit",
                 **save_kwargs,
             ):
-                # tokenizer and save_method are positional to match
-                # FastLanguageModel.save_pretrained_merged(dir, tokenizer, save_method = ...), which is how the
-                # docs and notebooks call it; keyword callers are unaffected.
+                # tokenizer and save_method are positional to match FastLanguageModel.save_pretrained_merged(dir, tokenizer, save_method = ...), which is how the docs and notebooks call it; keyword callers are unaffected.
                 save_method = _normalize_save_method(save_method)
                 if save_method not in ("merged_16bit", None):
-                    # Refused before anything is written: this path merges and unloads unconditionally, so accepting
-                    # "lora" would write full weights for a request to write adapters.
+                    # Refused before anything is written: this path merges and unloads unconditionally, so accepting "lora" would write full weights for a request to write adapters.
                     raise NotImplementedError(
                         f"Unsloth: save_method = {save_method!r} is not "
                         f"supported for this SentenceTransformer; only "
@@ -1757,7 +1688,6 @@ class FastSentenceTransformer(FastModel):
             print("Unsloth Warning: 4-bit quantization adds ~2.3x overhead for encoder models.")
             print("Consider using load_in_16bit=True for better performance.")
 
-        # check if the model supports add_pooling_layer
         if "add_pooling_layer" not in kwargs:
             supported = FastSentenceTransformer._has_add_pooling_layer(
                 config, kwargs.get("auto_model", AutoModel)
@@ -1771,8 +1701,7 @@ class FastSentenceTransformer(FastModel):
             logging.info("Unsloth: Disabling fp8 for model")
         load_in_fp8 = False
 
-        # Fix for Snowflake/snowflake-arctic-embed-l-v2.0: it has pooler weights irrelevant to training, but
-        # unsloth throws when UNSLOTH_WARN_UNINITIALIZED == 1 and it sees unused weights.
+        # Fix for Snowflake/snowflake-arctic-embed-l-v2.0: it has pooler weights irrelevant to training, but unsloth throws when UNSLOTH_WARN_UNINITIALIZED == 1 and it sees unused weights.
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
 
@@ -1788,9 +1717,7 @@ class FastSentenceTransformer(FastModel):
         elif is_mpnet:
             FastSentenceTransformer._patch_mpnet_v5()
 
-        # No modules.json means forcing 16-bit: saving is custom for these models and 4-bit would need
-        # dequant in save_pretrained_merged. Resolve the warmed cache: hf_hub_download ignores
-        # SENTENCE_TRANSFORMERS_HOME, so pass it as cache_dir.
+        # No modules.json means forcing 16-bit: saving is custom for these models and 4-bit would need dequant in save_pretrained_merged. Resolve the warmed cache: hf_hub_download ignores SENTENCE_TRANSFORMERS_HOME, so pass it as cache_dir.
         has_modules_json = (
             FastSentenceTransformer._module_path(
                 model_name,
@@ -1812,15 +1739,12 @@ class FastSentenceTransformer(FastModel):
             load_in_4bit = False
             load_in_16bit = True
 
-        # The fallback FastModel load reads HF cache_dir, not ST's cache_folder/SENTENCE_TRANSFORMERS_HOME,
-        # so point it at the warmed cache, but only when no explicit cache_dir was passed.
+        # The fallback FastModel load reads HF cache_dir, not ST's cache_folder/SENTENCE_TRANSFORMERS_HOME, so point it at the warmed cache, but only when no explicit cache_dir was passed.
         _st_cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
 
-        # The decline above only spends the sentinel on our copy: strip the marker before the nested load,
-        # or FastModel reads it as "nobody chose this" and re-upgrades it under UNSLOTH_AUTO_DEVICE_MAP.
-        # A plain value rather than pinning the env var, since os.environ is process-wide.
+        # The decline above only spends the sentinel on our copy: strip the marker before the nested load, or FastModel reads it as "nobody chose this" and re-upgrades it under UNSLOTH_AUTO_DEVICE_MAP. A plain value rather than pinning the env var, since os.environ is process-wide.
         device_map = unmarked_device_map(device_map)
         try:
             model, tokenizer = FastModel.from_pretrained(
@@ -1863,8 +1787,7 @@ class FastSentenceTransformer(FastModel):
             max_seq_length,
             pooling_mode,
             trust_remote_code = trust_remote_code,
-            # Same resolved cache as above so the fallback module loads hit the warm, not Xet, and the same
-            # revision as the weight load (None = default branch).
+            # Same resolved cache as above so the fallback module loads hit the warm cache, not Xet, and the same revision as the weight load (None = default branch).
             cache_dir = kwargs.get("cache_dir")
             or kwargs.get("cache_folder")
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
@@ -1887,12 +1810,10 @@ class FastSentenceTransformer(FastModel):
             save_method = "merged_16bit",
             **kwargs,
         ):
-            # Positional to match FastLanguageModel.save_pretrained_merged; see the note on the other definition
-            # above. This path forwards to that merge, which understands every save_method.
+            # Positional to match FastLanguageModel.save_pretrained_merged; see the note on the other definition above. This path forwards to that merge, which understands every save_method.
             save_method = _normalize_save_method(save_method)
             if self.no_modules and save_method not in ("merged_16bit", None):
-                # The no_modules branch below merges and unloads unconditionally and drops save_method, so accepting
-                # "lora" here would return full weights for a request to write adapters.
+                # The no_modules branch below merges and unloads unconditionally and drops save_method, so accepting "lora" here would return full weights for a request to write adapters.
                 raise NotImplementedError(
                     f"Unsloth: save_method = {save_method!r} is not supported "
                     f"for this SentenceTransformer: no modules.json was found, "
@@ -1907,7 +1828,6 @@ class FastSentenceTransformer(FastModel):
             }
 
             # sentence-transformers config and modules are only saved if save_pretrained is called.
-            # sentence-transformers config and modules only get saved if we call save_pretrained
             self.save_pretrained(save_directory)
 
             # Remove LoRA adapters only if they were created by save_pretrained, not pre-existing.
@@ -1923,10 +1843,8 @@ class FastSentenceTransformer(FastModel):
             else:
                 kwargs.pop("tokenizer", None)
             if self.no_modules:
-                # Fallback for non-sentence-transformers models.
                 print("Unsloth: No modules detected. Using standard merge_and_unload for saving...")
                 safe_kwargs = kwargs.copy()
-                # Filter out Unsloth-specific args that are not in huggingface's save_pretrained.
                 unsloth_args = [
                     "save_method",
                     "temporary_location",
@@ -1979,7 +1897,6 @@ class FastSentenceTransformer(FastModel):
             except:
                 pass
 
-            # order doesn't seem to matter for this after repo creation...
             FastSentenceTransformer._add_unsloth_tags(repo_id, token)
 
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -2027,11 +1944,9 @@ class FastSentenceTransformer(FastModel):
             print("Setting task_type to FEATURE_EXTRACTION")
 
         if isinstance(model, SentenceTransformer):
-            # Check whether this is a fast encoder model, which uses torch.compile instead of Unsloth patching.
             is_fast_encoder = getattr(model, "_unsloth_fast_encoder", False)
 
             if is_fast_encoder:
-                # Fast encoder path: Use native PEFT + torch.compile (6x speedup)
                 transformer_module = model[0]
                 inner_model = transformer_module.auto_model
 
@@ -2083,8 +1998,7 @@ class FastSentenceTransformer(FastModel):
                         else:
                             raise
 
-                # Enable gradient checkpointing if requested, only for non-quantized models, since prepare_model
-                # handles the rest.
+                # Enable gradient checkpointing if requested, only for non-quantized models, since prepare_model handles the rest.
                 elif use_gradient_checkpointing and use_gradient_checkpointing != False:
                     if hasattr(inner_model, "gradient_checkpointing_enable"):
                         try:
@@ -2114,18 +2028,15 @@ class FastSentenceTransformer(FastModel):
                     from ._utils import _prepare_model_for_qat
                     peft_model = _prepare_model_for_qat(peft_model, qat_scheme)
 
-                # Determine the compile mode, only if not using gradient checkpointing, and re-enable torch.compile
-                # when gradient checkpointing was requested but could not be enabled.
+                # Determine the compile mode, only if not using gradient checkpointing, and re-enable torch.compile when gradient checkpointing was requested but could not be enabled.
                 compile_mode = getattr(model, "_compile_mode", "default")
-                # Re-enable torch.compile if gradient checkpointing was requested but couldn't be enabled
                 if compile_mode is None and not gc_enabled:
                     compile_mode = "default"
                     print(
                         "Unsloth: Re-enabling torch.compile since gradient checkpointing is not supported"
                     )
 
-                # Re-assign the peft model back to the transformer module; on sentence-transformers >= 5.4
-                # auto_model is a read-only property backed by self.model, so write to the backing attribute there.
+                # Re-assign the peft model back to the transformer module; on sentence-transformers >= 5.4 auto_model is a read-only property backed by self.model, so write to the backing attribute there.
                 if isinstance(getattr(type(transformer_module), "auto_model", None), property):
                     transformer_module.model = peft_model
                 else:
@@ -2174,8 +2085,7 @@ class FastSentenceTransformer(FastModel):
                 **kwargs,
             )
 
-            # Re-assign the peft model back to the transformer module; on sentence-transformers >= 5.4
-            # auto_model is a read-only property backed by self.model, so write to the backing attribute there.
+            # Re-assign the peft model back to the transformer module; on sentence-transformers >= 5.4 auto_model is a read-only property backed by self.model, so write to the backing attribute there.
             if isinstance(getattr(type(transformer_module), "auto_model", None), property):
                 transformer_module.model = peft_model
             else:
@@ -2207,12 +2117,7 @@ class FastSentenceTransformer(FastModel):
 
 
 def _patch_sentence_transformer_trainer():
-    """
-    Patch SentenceTransformerTrainer to automatically apply torch.compile
-    when training steps exceed the breakeven threshold.
-
-    This is called automatically when this module is imported.
-    """
+    """Patch SentenceTransformerTrainer to automatically apply torch.compile when training steps exceed the breakeven threshold. Called automatically when this module is imported."""
     try:
         from sentence_transformers import SentenceTransformerTrainer
     except ImportError:
@@ -2230,7 +2135,6 @@ def _patch_sentence_transformer_trainer():
         model = kwargs.get("model") or (args[0] if args else None)
         training_args = kwargs.get("args") or (args[1] if len(args) > 1 else None)
 
-        # Check if model has pending compile
         if (
             model is not None
             and training_args is not None
@@ -2239,7 +2143,6 @@ def _patch_sentence_transformer_trainer():
             max_steps = getattr(training_args, "max_steps", -1)
             compile_mode = getattr(model, "_compile_mode", "default")
 
-            # Re-estimate the threshold now that training args are available.
             batch_size = getattr(training_args, "per_device_train_batch_size", None)
             grad_accum = getattr(training_args, "gradient_accumulation_steps", None)
             max_seq_length = getattr(model, "max_seq_length", None)
@@ -2293,8 +2196,7 @@ def _patch_sentence_transformer_trainer():
 
 
 def _patch_st_trainer_load_from_checkpoint():
-    # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration; route
-    # through the SentenceTransformer's device property instead.
+    # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration; route through the SentenceTransformer's device property instead.
     try:
         from sentence_transformers import SentenceTransformerTrainer
     except ImportError:
@@ -2395,8 +2297,7 @@ def _patch_st_trainer_load_from_checkpoint():
             fresh = module_cls.load(module_dir)
             if not isinstance(fresh, module_cls):
                 raise RuntimeError(f"Unsloth: Module {idx} reload returned wrong type.")
-            # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration, so
-            # route through the SentenceTransformer's device property instead.
+            # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration, so route through the SentenceTransformer's device property instead.
             try:
                 fresh.to(self.model.device)
             except AttributeError:

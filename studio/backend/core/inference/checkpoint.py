@@ -40,14 +40,12 @@ from core.inference.context_window import (
 )
 from core.inference.instruction_pin import is_substantive
 
-# "rolling" is the pre-existing window, byte for byte
 # "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is both the A/B arm and the
 # escape hatch for a template family that misbehaves.
 CONTEXT_POLICY = os.environ.get("UNSLOTH_CONTEXT_POLICY", "checkpoint").strip().lower()
 
-# an oversized instruction is excluded whole, never truncated
-# Cap on X. An oversized instruction is excluded whole, never truncated: half an instruction is worse than none, because
-# it reads as complete.
+# Cap on X. An oversized instruction is excluded whole, never truncated: half an instruction is worse than none,
+# because it reads as complete.
 MAX_TOKENS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_TOKENS", "1024"))
 MAX_FRACTION = float(os.environ.get("UNSLOTH_CHECKPOINT_MAX_FRACTION", "0.10"))
 # bounded so an epoch that dropped 200 turns cannot yield 40 long-superseded instructions
@@ -120,38 +118,28 @@ def _pick(
 ) -> list[str]:
     """The selection itself, over positions that are either (text, cost) or not an item.
 
-    Shared by the two paths that select, so the pair rule cannot hold on one and not the
-    other: the fresh walk over evicted TURNS (`_select_items`) and the re-cap of a merged
-    list of already-rendered STRINGS (`_recap`). It was written against turns only, and
-    the merged path then re-capped with a plain newest-first walk that could take the
-    opening and drop the successor the fresh walk had paired it with -- the abandoned
-    request carried with its correction dropped, reached through the second compaction
-    instead of the first.
+    Shared by the two paths that select, so the pair rule cannot hold on one and not the other: the
+    fresh walk over evicted TURNS (`_select_items`) and the re-cap of a merged list of
+    already-rendered STRINGS (`_recap`). It was written against turns only, and the merged path then
+    re-capped with a plain newest-first walk that could take the opening and drop the successor the
+    fresh walk had paired it with.
 
-    `reserve_oldest` takes the opening item before the newest-first walk. It is for the
-    thread of short prompts, where the FIRST turn is the one that says what is being
-    built: newest-first alone would spend all eight slots on the increments nearest the
-    end ("add music", "now the score", "fix the pipes") and evict the statement of the
-    task itself, which is the loss this pass exists to stop. The walk still runs
-    newest-first afterwards, so a later change of direction is kept too, and rendering is
-    oldest-first either way.
-
-    It reserves the opening item TOGETHER WITH the next one, both or neither, because the
-    turn right after the opening is the one that can contradict it without any newer turn
-    showing that it did. See `_reserved_order` for why.
+    `reserve_oldest` takes the opening item before the newest-first walk. It is for the thread of
+    short prompts, where the FIRST turn is the one that says what is being built: newest-first alone
+    would spend all eight slots on the increments nearest the end and evict the statement of the
+    task itself. The walk still runs newest-first afterwards, and rendering is oldest-first either
+    way. It reserves the opening item TOGETHER WITH the next one, both or neither, because the turn
+    right after the opening is the one that can contradict it without any newer turn showing that it
+    did (see `_reserved_order`).
 
     `reserve_leading` is the same rule for a list whose first N entries arrived as one
-    already-rendered block, where WHICH of them is the successor cannot be recovered. The
-    block is oldest-first by the position of each item's NEWEST copy, so a successor the
-    user restated later renders after the turns that came between: a perfectly valid block
-    reads [opening, intervening rule, successor, newest], and reserving its first two
-    entries pairs the opening with the intervening rule and lets the walk drop the actual
-    correction ("Build Tetris", "Dark theme", "Add music!" carried at a 60-token cap while
-    "Actually scrap that and build a Flappy Bird clone instead" was dropped). So the whole
-    block is reserved as ONE unit instead of guessing: the successor is somewhere in it,
-    whichever entry it is, and an abandoned opening is always the FIRST entry, since an
-    opening the user restated is not abandoned and renders at the restatement. Keep the
-    unit whole or drop its first entry -- no bullet has to be identified.
+    already-rendered block, where WHICH of them is the successor cannot be recovered: the block is
+    oldest-first by the position of each item's NEWEST copy, so a successor the user restated later
+    renders after the turns that came between, and reserving only its first two entries let the walk
+    drop the actual correction. So the whole block is reserved as ONE unit instead of guessing: the
+    successor is somewhere in it, and an abandoned opening is always the FIRST entry, since an
+    opening the user restated is not abandoned and renders at the restatement. Keep the unit whole
+    or drop its first entry -- no bullet has to be identified.
     """
 
     def _item(index: int) -> Optional[tuple[str, int]]:
@@ -225,36 +213,24 @@ def _pick(
     def _reserved_order() -> list[int]:
         """The walk order with the opening PAIR slotted in behind the newest usable turn.
 
-        The opening turn is reserved because it is where the task is stated, but on its
-        own that reservation states the task WRONG whenever the user changed direction
-        early: the reserved turn was carried and the turn immediately after it was the
-        one the slot cap dropped, so "Build Flappy Bird", "Actually build Tetris instead",
-        "Add music" carried Flappy Bird and the music at max_items 2, and the same three
-        with seven increments carried Flappy Bird and all seven at max_items 8. Both
-        blocks tell the model to build the game the user abandoned and then apply every
-        later increment to it.
+        The opening turn is reserved because it is where the task is stated, but on its own that
+        reservation states the task WRONG whenever the user changed direction early: the reserved
+        turn was carried and the turn immediately after it was the one the slot cap dropped, so
+        "Build Flappy Bird", "Actually build Tetris instead", "Add music" carried Flappy Bird and
+        the music. Reserving the opening turn together with its successor is the fix that needs no
+        reading of the English: whatever the user said next about the opening request is carried
+        alongside it, at the cost of one more slot.
 
-        Reserving the opening turn together with its successor is the fix that needs no
-        reading of the English: whatever the user said next about the opening request is
-        carried alongside it. The pair costs one more slot than the single reservation,
-        paid by the oldest turn the newest-first walk would have taken.
+        It moves the hole rather than closing it, and only the TOKEN cap is really fixed. Against
+        the SLOT cap, reserving the opening leaves a contiguous run of n - max_items turns dropped
+        whatever the order: the single reservation drops [1, n-k] and the pair drops [2, n-k+1], so
+        the pair wins at index 1 and loses at index n-k+1. Fuzzed over 40,000 threads it is a net
+        18% fewer blocks that state the abandoned task. Closing the class outright means not
+        carrying the opening at all once it does not fit, which is the loss #9379 landed to stop.
 
-        It moves the hole rather than closing it, and only the TOKEN cap is really fixed.
-        Against the SLOT cap, reserving the opening leaves a contiguous run of n -
-        max_items turns dropped whatever the order, so a change of direction inside that
-        run is lost either way: the single reservation drops [1, n-k] and the pair drops
-        [2, n-k+1]. The pair therefore wins at index 1, which is the case above, and loses
-        at index n-k+1. Fuzzed over 40,000 threads it is a net 18% fewer blocks that state
-        the abandoned task, fixing about 2.5 for every one it breaks. Closing the class
-        outright means not carrying the opening at all once it does not fit, which is the
-        loss #9379 landed to stop.
-
-        Placed behind the newest turn that CAN BE TAKEN, not merely the newest one that
-        qualifies, exactly as the single reservation was. A turn costing more than the
-        whole cap is skipped by the walk without spending anything, so reserving behind it
-        puts the opening pair ahead of every usable recent turn: "Build Flappy Bird",
-        "Actually build Tetris", then an oversized pasted request carried only Flappy Bird
-        at a 153-token cap.
+        Placed behind the newest turn that CAN BE TAKEN, not merely the newest one that qualifies: a
+        turn costing more than the whole cap is skipped by the walk without spending anything, so
+        reserving behind it would put the opening pair ahead of every usable recent turn.
         """
         held = set(unit)
         rest = [index for index in plain if index not in held]
@@ -278,13 +254,11 @@ def _pick(
         # nothing here: it is usually the ONLY turn that fits, so the block would go out empty, which is the failure
         # this pass exists to stop (a 43-token instruction then eight 160-token sections under 100 tokens).
         return chosen
-    # Whole or nothing: half a unit is the bug itself, the abandoned request carried with its correction dropped Whole
-    # or nothing: something affordable was left behind and the unit still did not fit, and half a unit is the bug itself
-    # -- the abandoned request carried with its correction dropped. So the reservation is abandoned and the newest-first
-    # walk decides. The opening is excluded from that walk, or the fallback picks it up again whenever it is the cheaper
-    # of the two (a 10-token "Build Tetris", a 30-token correction and a 25-token newest turn under 40 tokens dropped
-    # the correction). By position, not by text: a user who RESTATES the opening has not abandoned it, and that newer
-    # copy stays selectable. Kept only if it says something, since `chosen` already refused to be empty.
+    # Whole or nothing: something affordable was left behind and the unit still did not fit, and half a unit is the
+    # bug itself -- the abandoned request carried with its correction dropped. So the reservation is abandoned and the
+    # newest-first walk decides. The opening is excluded from that walk, or the fallback picks it up again whenever it
+    # is the cheaper of the two. By position, not by text: a user who RESTATES the opening has not abandoned it, and
+    # that newer copy stays selectable. Kept only if it says something, since `chosen` already refused to be empty.
     return _walk([index for index in plain if index != unit[0]]) or chosen
 
 
@@ -334,31 +308,23 @@ def carried_forward_items(
 ) -> list[str]:
     """The user's standing instructions from the evicted turns, oldest first.
 
-    Selected NEWEST-first so the budget is spent on the most recent instructions, then
-    reversed for rendering, because reading order decides which of two conflicting
-    instructions the model treats as current. Instructions older than the budget are
-    silently dropped, which is why `max_items` is small and the header says "lossy".
+    Selected NEWEST-first so the budget is spent on the most recent instructions, then reversed for
+    rendering, because reading order decides which of two conflicting instructions the model treats
+    as current. Instructions older than the budget are silently dropped, which is why `max_items` is
+    small and the header says "lossy". Repeats collapse to their newest copy, on the same key
+    `_recap` uses.
 
-    Repeats collapse to their newest copy, on the same key `_recap` uses.
-
-    ONE walk, with no length floor. The floor was 80 characters, and a real chat does not
-    clear it: measured on a live session, "Create a Flappy Bird game in HTML" (33), "Add
-    music to the game" (21) and "Continue work" (13) all failed it, so three resets each
-    carried an EMPTY block and the statement of what the user was building was evicted
-    with the rest. The budget was never the constraint there -- 473 tokens free and
-    nothing to spend it on.
-
-    It was first kept as a fallback, taken only when the floored pass found nothing. That
-    was worse than useless in the case that matters most: a long "Build a Flappy Bird
-    game ..." followed by a short "Actually make it Tetris" clears the floor on the first
-    turn alone, so the fallback never ran and the block carried only the abandoned
-    request. The user's latest direction was dropped precisely because an earlier turn
-    happened to be wordy.
+    ONE walk, with no length floor. The floor was 80 characters, and a real chat does not clear it:
+    measured on a live session, "Create a Flappy Bird game in HTML", "Add music to the game" and
+    "Continue work" all failed it, so three resets each carried an EMPTY block. Keeping it as a
+    fallback taken only when the floored pass found nothing was worse than useless in the case that
+    matters most: a long opening request followed by a short "Actually make it Tetris" clears the
+    floor on the first turn alone, so the fallback never ran and the block carried only the
+    abandoned request.
 
     `is_substantive` still applies `_CONTINUATIONS`, which is what actually keeps "ok" and
-    "continue" out of the system turn; the floor was only ever a second guess at the same
-    question, and an empty block is not the safer answer -- it is the one where the model
-    is told the conversation was compacted and given nothing of it.
+    "continue" out of the system turn; the floor was only ever a second guess at the same question,
+    and an empty block is not the safer answer.
     """
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
@@ -435,21 +401,16 @@ def _recap(
 ) -> list[str]:
     """Re-apply the caps to a merged list. Newest-first selection, oldest-first render.
 
-    Repeats collapse to their newest copy: an instruction can be carried, evicted and
-    re-selected, and newest wins, which is the order the walk already runs in.
+    Repeats collapse to their newest copy: an instruction can be carried, evicted and re-selected,
+    and newest wins, which is the order the walk already runs in.
 
-    `carried` is how many of the leading entries arrived as one already-rendered block, so
-    this walk owes them the same rule the fresh walk owes the opening pair. Without it the
-    merge re-created the exact output the pair exists to prevent, one compaction later: a
-    block holding "Build Flappy Bird" and its "actually build Tetris" correction, merged
-    with the increments evicted since, spends the budget newest-first, skips the long
-    correction and then still affords the short opening, so the block tells the model to
-    build the game the user cancelled and to apply every later increment to it.
-
-    A COUNT rather than a pair, because which two bullets were the pair does not survive
-    the render: the block is ordered by each item's newest copy, so the successor of a
-    restated correction sits behind the turns that came between. The block is held whole
-    or its first bullet is dropped, which needs no bullet to be identified. See `_pick`.
+    `carried` is how many of the leading entries arrived as one already-rendered block, so this walk
+    owes them the same rule the fresh walk owes the opening pair. Without it the merge re-created
+    the exact output the pair exists to prevent, one compaction later. A COUNT rather than a pair,
+    because which two bullets were the pair does not survive the render: the block is ordered by
+    each item's newest copy, so the successor of a restated correction sits behind the turns that
+    came between. The block is held whole or its first bullet is dropped, which needs no bullet to
+    be identified. See `_pick`.
     """
     return _pick(
         [(item, estimate_message({"role": "user", "content": item})) for item in items],
@@ -627,7 +588,6 @@ def fit_checkpoint_context(
     if dropped == 0 and current_tokens <= prompt_target:
         return messages, None
     if dropped == 0:
-        # nothing evictable and still too big: must fall through to the refusal below
         # Nothing evictable and still too big (one huge message, or a system prompt that leaves no room). Must fall
         # through to the refusal below, since every consumer reads None as "no truncation happened, carry on".
         projected = list(messages)

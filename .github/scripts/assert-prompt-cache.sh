@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Prompt-cache (KV-cache prefix reuse) detection, two strategies in one helper:
-#
 #   mode=api     A 2-turn /v1/chat/completions probe. Turn 2 prepends turn 1 +
 #                its reply, so the shared prefix must be served from llama.cpp's
 #                KV cache. Asserts usage.prompt_tokens_details.cached_tokens > 0
@@ -12,7 +10,6 @@
 #                llama-server's real cached_tokens through
 #                studio/backend/routes/inference.py:482-489 (_prompt_tokens_details)
 #                into prompt_tokens_details (inference.py:519).
-#
 #   mode=log     Read the llama-server log and decide HIT vs MISS from the
 #                prompt-reprocessing trace. WHY the log (not the API field):
 #                the Anthropic /v1/messages path builds AnthropicUsage(
@@ -24,17 +21,14 @@
 #                Code is the canonical Anthropic agent) can get a real KV-cache
 #                hit that the API usage field reports as 0. The only ground
 #                truth for the Anthropic path is the llama-server log.
-#
 # Log location (verified): studio/backend/core/inference/llama_cpp.py:4363-4365
 #   _swa_cache_path().parent/"logs"/"llama-server"/llama-<ts>[label]-port-<P>[-try<N>].log
 #   _swa_cache_path() => $UNSLOTH_STUDIO_HOME|$STUDIO_HOME or ~/.unsloth/studio
 #   (llama_cpp.py:337-340). So default: ~/.unsloth/studio/logs/llama-server/.
-#
 #   <P> is the INTERNAL llama-server port (self._find_free_port(),
 #   llama_cpp.py:3489 / :4641) -- a RANDOM port, NOT the Unsloth port. So we must
 #   NOT filter the log glob by STUDIO_PORT (the brief's `port-<STUDIO_PORT>`
 #   glob would never match). We pick the newest llama-*.log instead.
-#
 # Usage:
 #   assert-prompt-cache.sh api  BASE_URL API_KEY
 #   assert-prompt-cache.sh log  EXPECT          # EXPECT = HIT | MISS
@@ -42,21 +36,17 @@
 #                                               # byte offsets from env (see below)
 #   assert-prompt-cache.sh mark                 # print current log size to stdout
 #                                               # (use to bracket a turn)
-#
 # Env for mode=log:
 #   LLAMA_LOG_DIR    override the log dir (default ~/.unsloth/studio/logs/llama-server)
 #   CACHE_LOG_FROM   byte offset to start scanning the newest log from (so we
 #                    only look at the trace produced by THIS turn). Default 0.
-#
 # Exit codes: 0 = assertion held; 1 = assertion failed (::error:: emitted).
 
 set -uo pipefail
 
 MODE="${1:?usage: assert-prompt-cache.sh api|log|mark ...}"
 
-# ---------------------------------------------------------------------------
 # Locate the newest llama-server log. Shared by mark + log modes.
-# ---------------------------------------------------------------------------
 _default_log_dir() {
   local home="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
   if [ -n "$home" ]; then
@@ -77,10 +67,8 @@ _newest_log() {
 }
 
 case "$MODE" in
-  # -------------------------------------------------------------------------
   # mark: emit the current byte size of the newest llama log so a caller can
   # scan only the slice a single turn produced (set CACHE_LOG_FROM to it).
-  # -------------------------------------------------------------------------
   mark)
     log="$(_newest_log || true)"
     if [ -n "$log" ] && [ -f "$log" ]; then
@@ -91,9 +79,7 @@ case "$MODE" in
     exit 0
     ;;
 
-  # -------------------------------------------------------------------------
   # api: 2-turn /v1/chat/completions, assert turn-2 cached_tokens > 0.
-  # -------------------------------------------------------------------------
   api)
     BASE_URL="${2:?usage: assert-prompt-cache.sh api BASE_URL API_KEY}"
     API_KEY="${3:?usage: assert-prompt-cache.sh api BASE_URL API_KEY}"
@@ -160,10 +146,8 @@ case "$MODE" in
     exit 0
     ;;
 
-  # -------------------------------------------------------------------------
   # log: classify the newest llama-server log (from CACHE_LOG_FROM bytes on)
   # as HIT or MISS and compare to EXPECT.
-  # -------------------------------------------------------------------------
   log)
     EXPECT="${2:?usage: assert-prompt-cache.sh log HIT|MISS}"
     FROM="${CACHE_LOG_FROM:-0}"
@@ -178,7 +162,6 @@ case "$MODE" in
     # Scan only the slice produced after FROM.
     slice="$(tail -c "+$((FROM + 1))" "$log" 2>/dev/null || cat "$log")"
 
-    # ---- HIT detectors (most-specific first) -----------------------------
     # 1. Modern + legacy "re-used N tokens" / "reused N" (N>0). Primary signal
     #    per the design brief.
     reused_n="$(printf '%s\n' "$slice" \
@@ -197,7 +180,6 @@ case "$MODE" in
       | grep -aoiE 'tokens_cached[^0-9]*([0-9]+)' \
       | grep -aoE '[0-9]+' | sort -rn | head -1 || true)"
 
-    # ---- MISS detectors --------------------------------------------------
     # Explicit forced full re-processing (SWA / recurrent) or kv cache rm [0,.
     forced_full=0
     if printf '%s\n' "$slice" | grep -aqiE 'forcing full prompt re-?processing|kv cache rm \[0,'; then
