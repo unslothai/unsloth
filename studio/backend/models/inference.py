@@ -1706,6 +1706,19 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrl
 
 
+class VideoUrl(BaseModel):
+    """Video URL object — a data URI, or a remote URL llama-server fetches itself."""
+
+    url: str = Field(..., description = "data:video/mp4;base64,... or https://...")
+
+
+class VideoContentPart(BaseModel):
+    """Video content part; served only through llama-server's ``input_video``."""
+
+    type: Literal["video_url"]
+    video_url: VideoUrl
+
+
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
@@ -1808,6 +1821,7 @@ _KNOWN_CONTENT_PART_TAGS = frozenset(
     {
         "text",
         "image_url",
+        "video_url",
         "input_audio",
         "input_document",
         "reasoning",
@@ -1830,6 +1844,7 @@ ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[VideoContentPart, Tag("video_url")],
         Annotated[InputAudioContentPart, Tag("input_audio")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
         Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
@@ -1903,6 +1918,14 @@ class ChatMessage(BaseModel):
             raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
         if self.name is not None and self.role != "tool":
             raise ValueError('"name" is only valid on role="tool" messages.')
+        # OpenAI places media on user turns only. llama-server renders the marker into
+        # whatever turn carried it, so anywhere else the result is template-dependent.
+        if (
+            self.role != "user"
+            and isinstance(self.content, list)
+            and any(isinstance(part, VideoContentPart) for part in self.content)
+        ):
+            raise ValueError(f'"video_url" parts are not valid on role="{self.role}" messages.')
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.

@@ -31,7 +31,7 @@ _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
@@ -393,6 +393,45 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
 
     chunks = asyncio.run(_run())
     assert any(b"[DONE]" in c for c in chunks)
+    assert not preview._preview_lock.locked()
+
+
+def test_a_video_clip_is_refused_before_the_checkpoint_loads(tmp_path, monkeypatch, captured):
+    """A preview target cannot read a clip, and the load it would precede evicts the resident model."""
+    outputs = tmp_path / "outputs"
+    _make_run(outputs)
+    from utils.paths import storage_roots as _sr
+
+    monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
+
+    loaded = []
+
+    async def _fake_load_model(load_req, request, subject):
+        loaded.append(load_req)
+        return None
+
+    async def _fake_chat(payload, request, subject):
+        return {"ok": True}
+
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load_model)
+    monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
+
+    payload = ChatCompletionRequest(
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,QUJD"}},
+                    {"type": "text", "text": "what happens here?"},
+                ],
+            }
+        ]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(preview._serve_chat("demorun", None, payload, request = None))
+    assert excinfo.value.status_code == 400
+    assert "Video input" in excinfo.value.detail
+    assert loaded == []
     assert not preview._preview_lock.locked()
 
 
