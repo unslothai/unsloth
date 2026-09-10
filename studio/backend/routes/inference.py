@@ -1997,20 +1997,16 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                     continue
 
                 part_type = part.get("type")
-                # An Anthropic tool that returns a screenshot nests its image blocks in
-                # this block's own content list, which is the usual way an image reaches
-                # /v1/messages from an agent. Those bytes are not sent to llama-server at
-                # all -- anthropic_messages_to_openai joins only the text blocks -- so
-                # they get no image allowance, but left in place they are still priced as
-                # prompt text and still clamp the reservation to the whole cache.
+                # The same filter anthropic_messages_to_openai applies, so the estimate
+                # charges what that sends. The content list is untyped, so a screenshot an
+                # agent's tool returned, a document and a future block type all arrive
+                # here, and none of them reach the wire to earn an allowance.
                 if part_type == "tool_result" and isinstance(part.get("content"), list):
                     part = dict(part)
                     part["content"] = [
-                        _openai_llama_admission_compact_image_part(block)
-                        if isinstance(block, dict)
-                        and block.get("type") in _ADMISSION_IMAGE_PART_TYPES
-                        else block
+                        block
                         for block in part["content"]
+                        if isinstance(block, dict) and block.get("type") == "text"
                     ]
                     estimate_content.append(part)
                     continue

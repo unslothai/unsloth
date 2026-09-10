@@ -516,6 +516,140 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
         )
 
 
+class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
+    """`tool_result` content is an untyped list, so an image is only one of the block types
+    that reach it. A document, a search result and a nested `tool_result` are dropped by
+    the same translation filter, and each was charged its base64 as prompt text -- the
+    whole of a 32768-token cache for a request that sends a couple of hundred characters.
+    """
+
+    def _blocks(self, data: str):
+        return {
+            "document": {
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": data},
+            },
+            "search_result": {"type": "search_result", "source": {"data": data}},
+            "nested tool_result": {
+                "type": "tool_result",
+                "tool_use_id": "toolu_02",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": data},
+                    }
+                ],
+            },
+        }
+
+    def _request(self, block, *, text_first: bool):
+        text = {"type": "text", "text": "the tool answered"}
+        content = [text, block] if text_first else [block, text]
+        return AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": "use the tool"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_01", "name": "lookup", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_01", "content": content}
+                    ],
+                },
+            ],
+        )
+
+    def test_none_of_them_reserve_the_whole_cache(self):
+        budget = 32768
+        data = _image_b64(150)
+        # Both orders: a filter that stops at the first block would pass one of them.
+        for text_first in (True, False):
+            for name, block in self._blocks(data).items():
+                payload = self._request(block, text_first = text_first)
+                cost = _openai_llama_admission_tokens(payload, budget = budget, capacity = 4)
+                assert cost < budget, (
+                    f"a 150 KiB {name} block (text_first={text_first}) was charged {cost} "
+                    f"against a {budget}-token cache, so that agent runs alone"
+                )
+
+    def test_the_charge_matches_what_the_translation_actually_sends(self):
+        """Tied to the translation, not to a number, so it fails on whichever side moves.
+
+        The text beside these blocks IS sent, which is what stops a filter that simply
+        drops the whole `tool_result` from passing.
+        """
+        data = _image_b64(64)
+        for text_first in (True, False):
+            for name, block in self._blocks(data).items():
+                where = f"{name} (text_first={text_first})"
+                payload = self._request(block, text_first = text_first)
+                estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+                    payload.messages
+                )
+                sent = anthropic_messages_to_openai(
+                    [message.model_dump() for message in payload.messages], None
+                )
+                assert data not in str(sent), f"{where}: the translation now forwards this block"
+                assert data not in str(
+                    estimate_messages
+                ), f"{where}: the transport is being priced as prompt text"
+                assert (
+                    image_parts == 0
+                ), f"{where}: charged {image_parts} image allowances for a dropped block"
+                assert "the tool answered" in str(
+                    estimate_messages
+                ), f"{where}: the text beside it IS sent, so dropping it under-reserves"
+
+    def test_a_tool_result_the_translation_does_forward_is_still_charged(self):
+        """The other side of the boundary: string `tool_result` content is forwarded
+        verbatim, base64-looking text included, so it keeps costing what its length costs
+        and the filter cannot pay for itself by dropping what IS sent.
+        """
+        data = _image_b64(150)
+        payload = AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": "use the tool"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_01", "name": "lookup", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_01", "content": data}
+                    ],
+                },
+            ],
+        )
+        sent = anthropic_messages_to_openai(
+            [message.model_dump() for message in payload.messages], None
+        )
+        assert data in str(sent), "the translation stopped forwarding string tool_result content"
+
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+            payload.messages
+        )
+        assert data in str(
+            estimate_messages
+        ), "content that IS sent was dropped from the estimate, which under-reserves"
+        assert image_parts == 0, "a string tool result is prompt text, not an image"
+
+        cost = _openai_llama_admission_tokens(payload, budget = 1_000_000, capacity = 4)
+        assert (
+            cost > len(data) // 8
+        ), f"a {len(data)}-char forwarded tool result was charged only {cost}"
+
+
 class TestTheToolLoopOpensAtAnEqualShare:
     """#9392 reserved the WHOLE cache for any tool loop, making every tool chat run alone
     (any lit pill sets enable_tools). The loop now opens at an equal share and re-costs
