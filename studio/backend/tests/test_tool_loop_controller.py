@@ -352,16 +352,29 @@ def test_a_flood_of_stacked_image_markers_stays_linear():
     assert large / small < 10.0, f"4x the markers cost {large / small:.1f}x the work"
 
 
-def test_an_oversized_source_map_is_left_unparsed():
-    """`json.loads` on a big payload is the allocation, not the marker count: a few
-    megabytes of tiny items decode into hundreds of megabytes of objects. The source map
-    is ours and never near a megabyte, so past that it is not one of ours."""
-    sources = "answer\n__RAG_SOURCES__:[" + "{}," * 400_000 + "{}]"
-    assert len(sources) > 1 << 20
-    assert strip_result_for_model(sources, "search_knowledge_base") == sources
+def test_a_large_source_map_is_still_taken_off_the_result():
+    """No length bound here either. Every source record repeats its whole chunk and
+    `search_knowledge_base` honours the model's `top_k` without a ceiling, so a real map
+    can be megabytes; one refused for being big would be left for `_fit_result_to_room`
+    to cut into malformed JSON in front of the model."""
+    import json as _json
 
-    small_enough = 'answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
-    assert strip_result_for_model(small_enough, "search_knowledge_base") == "answer"
+    chunk = "retrieved text. " * 400
+    sources = [
+        {
+            "citationId": i,
+            "chunkId": f"c{i}",
+            "filename": "handbook.pdf",
+            "page": i,
+            "text": chunk,
+            "score": 0.5,
+        }
+        for i in range(200)
+    ]
+    result = "answer\n__RAG_SOURCES__:" + _json.dumps(sources, ensure_ascii = False)
+    assert len(result) > 1 << 20
+
+    assert strip_result_for_model(result, "search_knowledge_base") == "answer"
 
 
 def test_a_large_plot_is_still_taken_off_the_result():

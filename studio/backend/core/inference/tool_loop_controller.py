@@ -869,16 +869,6 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
-# The source map is ours: every producer builds it from a handful of retrieved chunks, so
-# a megabyte is already far past anything real and refusing to decode past it costs
-# nothing. There is deliberately no such bound on the image envelope. Its payload is one
-# plot's data URI, whose size is the provider's to choose, and refusing a big one for
-# being big would put the whole base64 back in the model's context -- the leak the walk
-# above exists to prevent. What keeps unbounded MCP text out of both is the gate on the
-# emitting tools, not a length.
-_MAX_SOURCE_MAP_CHARS = 1 << 20
-
-
 def _strip_images_sentinel(result: str) -> str:
     """Drop the trailing ``__IMAGES__`` envelopes, and only those.
 
@@ -921,9 +911,16 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 
     The retrieval tools append ``RAG_SOURCES_SENTINEL`` plus a JSON list; a
     result that merely mentions the marker is text.
+
+    Deliberately unbounded, like the walk above. Each source record repeats its whole
+    chunk, and ``search_knowledge_base`` takes the model's ``top_k`` without a ceiling,
+    so a real map has no size worth calling suspicious -- and one refused for being big
+    is a frontend-only blob left in the model's context, which ``_fit_result_to_room``
+    would then truncate into malformed JSON. What keeps unbounded MCP text away from
+    this decode is the gate on the emitting tools, not a length.
     """
     head, sep, payload = result.rpartition("\n__RAG_SOURCES__:")
-    if not sep or len(payload) > _MAX_SOURCE_MAP_CHARS:
+    if not sep:
         return result
     try:
         sources = json.loads(payload)
