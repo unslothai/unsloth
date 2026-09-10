@@ -30475,9 +30475,7 @@ class LlamaCppBackend:
             # Round 0 keeps #9979's cold cache for a fixed seed. Later rounds (and any
             # re-prompt after the first request) extend a prefix already in the slot, so
             # disabling reuse would re-prefill the entire context after every tool call.
-            _apply_seeded_llama_request(
-                payload, seed, reuse_prompt_cache = iteration > 0
-            )
+            _apply_seeded_llama_request(payload, seed, reuse_prompt_cache = iteration > 0)
 
             _respawn_truncations: list[dict] = []
 
