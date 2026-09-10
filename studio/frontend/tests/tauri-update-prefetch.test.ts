@@ -9,6 +9,7 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 type PrefetchOutcome = "ready" | "unsupported" | "busy" | "failed";
 
 interface HarnessOptions {
+  pypiVersion?: string;
   /** What `startPrefetch` settles on. */
   outcome?: PrefetchOutcome;
   /** The bundle is already on disk before anything is prepared. */
@@ -98,6 +99,7 @@ function harness(
   t: TestContext,
   {
     outcome = "ready",
+    pypiVersion,
     bundleReady = false,
     holdUpdate,
     failUpdateOnce = false,
@@ -105,13 +107,19 @@ function harness(
 ) {
   const host = createHookReact();
   const calls: string[] = [];
+  const prefetchStarts: { shellVersion: string; backendFloor: string | null }[] = [];
+  let adopted = false;
   let downloaded = bundleReady;
   let failedOnce = false;
   const listeners = new Map<string, (event: { payload: unknown }) => void>();
 
   const updater = {
     checkDesktopUpdate: () =>
-      Promise.resolve({ version: "2.0.0", currentVersion: "1.0.0", rawJson: {} }),
+      Promise.resolve({
+        version: "2.0.0",
+        currentVersion: "1.0.0",
+        rawJson: pypiVersion ? { pypi_version: pypiVersion } : {},
+      }),
     desktopUpdateBundleStatus: () =>
       Promise.resolve({
         version: "2.0.0",
@@ -132,21 +140,31 @@ function harness(
       Boolean(left) && left === right,
     prefetchStatus: () => {
       calls.push("prefetch_status");
+      // Once a winning run was adopted, its marker names this offer.
       return Promise.resolve({
-        state: "none",
-        backendVersion: null,
-        shellVersion: null,
+        state: adopted ? "ready" : "none",
+        backendVersion: adopted ? "2026.9.9" : null,
+        shellVersion: adopted ? "2.0.0" : null,
         cacheDir: null,
-        createdAt: null,
+        createdAt: adopted ? 1 : null,
         running: false,
         runningShellVersion: null,
       });
     },
-    startPrefetch: () => {
+    startPrefetch: (
+      shellVersion: string,
+      _onLog: (line: string) => void,
+      backendFloor?: string,
+    ) => {
       calls.push("start_prefetch_update");
+      prefetchStarts.push({ shellVersion, backendFloor: backendFloor ?? null });
       return Promise.resolve(outcome);
     },
-    adoptPrefetch: () => Promise.resolve({ state: "ready" }),
+    adoptPrefetch: () => {
+      calls.push("adopt_prefetch");
+      adopted = true;
+      return Promise.resolve({ state: "ready" });
+    },
     cancelPrefetch: () => {
       calls.push("cancel_prefetch_update");
       return Promise.resolve();
@@ -225,7 +243,7 @@ function harness(
     host.unmount();
     restore();
   });
-  return { calls, controller, statusUpdates: host.statusUpdates };
+  return { calls, controller, prefetchStarts, statusUpdates: host.statusUpdates };
 }
 
 function settle(): Promise<void> {
@@ -252,6 +270,46 @@ test("a prepared offer reaches ready without installing anything", async (t) => 
   // Preparation downloads; it must not start the update or touch the app bundle.
   assert.ok(!hook.calls.includes("start_backend_update"));
   assert.ok(!hook.calls.includes("install_desktop_update"));
+});
+
+test("the prefetch carries the offered backend floor, not the running shell's", async (t) => {
+  const hook = harness(t, { pypiVersion: "2026.9.9" });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  assert.deepEqual(hook.prefetchStarts, [
+    { shellVersion: "2.0.0", backendFloor: "2026.9.9" },
+  ]);
+});
+
+test("an offer whose manifest names no backend release starts the prefetch without a floor", async (t) => {
+  const hook = harness(t);
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  assert.deepEqual(hook.prefetchStarts, [{ shellVersion: "2.0.0", backendFloor: null }]);
+});
+
+test("a prefetch that loses the start race joins the winner instead of settling skipped", async (t) => {
+  const hook = harness(t, { outcome: "busy" });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settleUntil(() => hook.statusUpdates.at(-1) === "ready");
+
+  assert.ok(hook.calls.includes("adopt_prefetch"));
+  // The slot was taken once; the second look found the winner's marker for this offer.
+  assert.equal(hook.calls.filter((c) => c === "start_prefetch_update").length, 1);
+  assert.equal(hook.statusUpdates.at(-1), "ready");
 });
 
 test("a backend without the command still gets the offer to ready", async (t) => {

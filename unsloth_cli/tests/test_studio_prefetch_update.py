@@ -1398,6 +1398,32 @@ def test_a_marker_older_than_the_shell_accepts_is_not_current():
     )
 
 
+def test_a_preflight_skip_still_retires_another_offers_marker(managed, monkeypatch):
+    """The install turned editable (or set UV_NO_CACHE) after an earlier offer was
+    prepared: the skip exits before uv is looked for, and used to leave the old offer's
+    marker where the update's offline retry would take its pins for the new shell."""
+    root = _studio_prefetch.prefetch_root(managed)
+    for skip in ("editable", "no-cache"):
+        root.mkdir(parents = True, exist_ok = True)
+        (root / _studio_prefetch.OWNED_MARKER).write_text("", encoding = "utf-8")
+        (root / _studio_prefetch.MARKER_NAME).write_text(
+            json.dumps(
+                {"schema": _studio_prefetch.MARKER_SCHEMA, "state": "ready", "shell_version": "1.0.1"}
+            ),
+            encoding = "utf-8",
+        )
+        monkeypatch.delenv("UV_NO_CACHE", raising = False)
+        if skip == "editable":
+            monkeypatch.setattr(_studio_prefetch, "_is_editable_install", lambda name = "unsloth": True)
+        else:
+            monkeypatch.setattr(_studio_prefetch, "_is_editable_install", lambda name = "unsloth": False)
+            monkeypatch.setenv("UV_NO_CACHE", "1")
+        with pytest.raises(_studio_prefetch.PrefetchSkipped):
+            _studio_prefetch.run(studio_home = managed, shell_version = "1.0.2", echo = lambda line: None)
+        assert not (root / _studio_prefetch.MARKER_NAME).exists(), skip
+    monkeypatch.delenv("UV_NO_CACHE", raising = False)
+
+
 def test_a_prefetch_that_prepares_nothing_still_retires_another_offers_marker(managed, monkeypatch):
     """uv missing on the second offer's prefetch: without this the first offer's marker
     stayed on disk, the shell read the skipped command as settled, and the offline retry

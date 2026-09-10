@@ -180,6 +180,7 @@ pub fn new_update_state() -> UpdateState {
 const UPDATE_ARGS: &[&str] = &["studio", "update"];
 const PREFETCH_ARGS: &[&str] = &["studio", "prefetch-update"];
 const SHELL_VERSION_ENV: &str = "UNSLOTH_TAURI_SHELL_VERSION";
+const BACKEND_VERSION_ENV: &str = "UNSLOTH_DESKTOP_BACKEND_VERSION";
 
 /// typer answers an unknown subcommand with click's usage exit, so a backend that
 /// predates PR C fails the prefetch this way and only this way. Paired with the
@@ -204,6 +205,8 @@ pub(crate) enum UpdateKind {
     /// carries none of the protections the two above need.
     Prefetch {
         shell_version: Option<String>,
+        /// The backend release the offered shell pins, when its manifest names one.
+        backend_floor: Option<String>,
     },
 }
 
@@ -265,7 +268,7 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
     cmd.env("SKIP_STUDIO_FRONTEND", "1");
     cmd.env(
-        "UNSLOTH_DESKTOP_BACKEND_VERSION",
+        BACKEND_VERSION_ENV,
         crate::preflight::expected_backend_version(),
     );
 }
@@ -396,10 +399,20 @@ fn build_child_command(bin: &std::path::Path, kind: &UpdateKind) -> Result<Comma
     // The version the prefetch records in its marker, so a later reader can tell
     // whether the cache was warmed for the offer it is looking at.
     if let UpdateKind::Prefetch {
-        shell_version: Some(version),
+        shell_version,
+        backend_floor,
     } = kind
     {
-        cmd.env(SHELL_VERSION_ENV, version);
+        if let Some(version) = shell_version {
+            cmd.env(SHELL_VERSION_ENV, version);
+        }
+        // The floor the offered shell will hold the backend to, over the one compiled
+        // into this shell: while a mirror lags, a prefetch resolved against the older
+        // floor could settle for the installed backend (a noop marker) and present a
+        // Restart whose new shell then rejects that backend at preflight.
+        if let Some(floor) = backend_floor {
+            cmd.env(BACKEND_VERSION_ENV, floor);
+        }
     }
     Ok(cmd)
 }
@@ -861,9 +874,11 @@ pub(crate) fn run_prefetch_update(
     app: AppHandle,
     state: PrefetchState,
     shell_version: Option<String>,
+    backend_floor: Option<String>,
 ) -> Result<(), String> {
     let kind = UpdateKind::Prefetch {
         shell_version: shell_version.clone(),
+        backend_floor,
     };
     let bin = match crate::process::find_unsloth_binary() {
         Some(bin) => bin,
@@ -1327,6 +1342,7 @@ mod tests {
     fn the_prefetch_is_a_separate_command_with_its_own_events() {
         let kind = UpdateKind::Prefetch {
             shell_version: Some("0.1.900-beta".to_string()),
+            backend_floor: None,
         };
 
         assert_eq!(kind.args(), &["studio", "prefetch-update"]);
@@ -1354,6 +1370,7 @@ mod tests {
             &bin,
             &UpdateKind::Prefetch {
                 shell_version: Some("0.1.900-beta".to_string()),
+                backend_floor: None,
             },
         )
         .unwrap();
@@ -1379,6 +1396,40 @@ mod tests {
         std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
     }
 
+    /// The prefetch resolves against the floor of the shell being offered, not the one
+    /// this shell was built with; without an offered floor the compiled one stands.
+    #[test]
+    fn the_prefetch_child_resolves_against_the_offered_backend_floor() {
+        use std::ffi::OsStr;
+
+        let bin = managed_binary_for_test("prefetch-floor");
+        let offered = build_child_command(
+            &bin,
+            &UpdateKind::Prefetch {
+                shell_version: Some("0.1.900-beta".to_string()),
+                backend_floor: Some("2026.9.9".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(offered.get_envs().any(|(key, value)| {
+            key == OsStr::new(BACKEND_VERSION_ENV) && value == Some(OsStr::new("2026.9.9"))
+        }));
+
+        let unknown = build_child_command(
+            &bin,
+            &UpdateKind::Prefetch {
+                shell_version: Some("0.1.900-beta".to_string()),
+                backend_floor: None,
+            },
+        )
+        .unwrap();
+        let compiled = crate::preflight::expected_backend_version().to_string();
+        assert!(unknown.get_envs().any(|(key, value)| {
+            key == OsStr::new(BACKEND_VERSION_ENV) && value == Some(OsStr::new(compiled.as_str()))
+        }));
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn a_prefetch_without_an_offered_version_sets_no_shell_version() {
         use std::ffi::OsStr;
@@ -1388,6 +1439,7 @@ mod tests {
             &bin,
             &UpdateKind::Prefetch {
                 shell_version: None,
+                backend_floor: None,
             },
         )
         .unwrap();

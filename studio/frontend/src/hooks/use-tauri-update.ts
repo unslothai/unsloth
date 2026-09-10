@@ -220,7 +220,7 @@ export function useTauriUpdate(isExternalServer = false) {
     }
     if (isNewOffer && preparingVersionRef.current !== null) {
       // Whatever was being prepared is for a version nobody is offering any more.
-      void restartPreparationFor(nextInfo.version);
+      void restartPreparationFor(nextInfo.version, nextInfo.pypiVersion);
       return;
     }
     // An hourly re-offer of the version already on show must not reopen a dismissed banner.
@@ -251,7 +251,7 @@ export function useTauriUpdate(isExternalServer = false) {
   }
 
   /** A newer offer arrived mid-preparation: drop the old work and start again. */
-  async function restartPreparationFor(version: string) {
+  async function restartPreparationFor(version: string, backendFloor?: string) {
     if (installingRef.current) return;
     preparingVersionRef.current = null;
     resetPreparation();
@@ -263,7 +263,7 @@ export function useTauriUpdate(isExternalServer = false) {
     }
     // The user already asked for an update; the version changing underneath is
     // not a reason to make them ask again.
-    void prepareUpdate(version);
+    void prepareUpdate(version, backendFloor);
   }
 
   function replaceLogs(nextLogs: string[]) {
@@ -467,7 +467,10 @@ export function useTauriUpdate(isExternalServer = false) {
    * ordinary Update button, and a failed prefetch just means the restart
    * downloads its own wheels.
    */
-  async function prepareUpdate(version: string): Promise<void> {
+  async function prepareUpdate(
+    version: string,
+    backendFloor?: string,
+  ): Promise<void> {
     if (!isTauri || isExternalServer) return;
     // The install owns the environment and the bundle from the moment it starts.
     if (installingRef.current) return;
@@ -482,7 +485,10 @@ export function useTauriUpdate(isExternalServer = false) {
     resetPreparation();
     patchPreparation({});
 
-    await Promise.allSettled([prepareShell(version), prepareBackend(version)]);
+    await Promise.allSettled([
+      prepareShell(version),
+      prepareBackend(version, backendFloor),
+    ]);
   }
 
   async function prepareShell(version: string): Promise<void> {
@@ -544,7 +550,11 @@ export function useTauriUpdate(isExternalServer = false) {
     }
   }
 
-  async function prepareBackend(version: string): Promise<void> {
+  async function prepareBackend(
+    version: string,
+    backendFloor?: string,
+    attempt = 0,
+  ): Promise<void> {
     try {
       const decision = prefetchDecision({
         inApp: true,
@@ -584,13 +594,23 @@ export function useTauriUpdate(isExternalServer = false) {
         // otherwise land in the log the install clears and diagnostics ship.
         if (preparingVersionRef.current !== version) return;
         appendLog(line);
-      });
+      }, backendFloor);
       if (preparingVersionRef.current !== version) return;
+      if (outcome === "busy" && attempt < 2) {
+        // Another renderer claimed the slot between the status read above and this
+        // start. Settled as "skipped", the offer would read ready while that
+        // download is still running, and Restart would cancel it. Wait for the
+        // winner, then look again: its marker is adopted when it prepared this
+        // offer, and a fresh prefetch starts when it prepared another.
+        await adoptPrefetch(() => preparingVersionRef.current !== version);
+        if (preparingVersionRef.current !== version) return;
+        return prepareBackend(version, backendFloor, attempt + 1);
+      }
       patchPreparation({
         backend:
           outcome === "ready"
             ? "ready"
-            : // A backend without the command, or a run somebody else owns:
+            : // A backend without the command, or a slot that stayed taken:
               // neither is a fault, and both leave the restart able to proceed.
               outcome === "failed"
               ? "failed"
@@ -671,7 +691,7 @@ export function useTauriUpdate(isExternalServer = false) {
         // failure's "Retry update" is not a first press: the banner keeps showing
         // the retry while a failure is retained, so preparing here would make that
         // click do nothing visible and demand a second one after the preparation.
-        void prepareUpdate(update.version);
+        void prepareUpdate(update.version, rawPypiVersion(update.rawJson));
         return;
       }
 

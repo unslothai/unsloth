@@ -839,6 +839,7 @@ pub async fn start_prefetch_update(
     update_state: tauri::State<'_, update::UpdateState>,
     install_state: tauri::State<'_, install::InstallState>,
     shell_version: Option<String>,
+    backend_floor: Option<String>,
 ) -> Result<(), String> {
     info!("start_prefetch_update command called");
 
@@ -860,7 +861,7 @@ pub async fn start_prefetch_update(
     let state = prefetch_state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let _held = reservation;
-        update::run_prefetch_update(app, state, shell_version)
+        update::run_prefetch_update(app, state, shell_version, backend_floor)
     })
     .await
     .map_err(|e| format!("Prefetch task panicked: {e}"))?

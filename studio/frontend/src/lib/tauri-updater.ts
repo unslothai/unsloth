@@ -123,6 +123,7 @@ export async function prefetchStatus(): Promise<PrefetchStatus> {
 export async function startPrefetch(
   shellVersion: string,
   onLog: (line: string) => void,
+  backendFloor?: string,
 ): Promise<PrefetchOutcome> {
   const [{ invoke }, { listen }] = await Promise.all([
     import("@tauri-apps/api/core"),
@@ -132,7 +133,12 @@ export async function startPrefetch(
     onLog(event.payload);
   });
   try {
-    await invoke("start_prefetch_update", { shellVersion });
+    // The offered manifest's backend release, so the child resolves against the
+    // floor the new shell will enforce rather than the one this shell was built with.
+    await invoke("start_prefetch_update", {
+      shellVersion,
+      backendFloor: backendFloor ?? null,
+    });
     return "ready";
   } catch (e) {
     const reason = String(e);

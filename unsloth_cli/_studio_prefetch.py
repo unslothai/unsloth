@@ -1147,6 +1147,16 @@ def _run_unguarded(
     def step(text: str) -> None:
         echo(f"[TAURI:STEP] {text}")
 
+    # A marker another offer left. Every exit from here that does not end in a new
+    # marker (a preflight skip, uv missing, a full volume, a root that is not ours)
+    # would otherwise leave the old offer's pins on disk for a shell that asked about
+    # this one, and the offline retry does not compare the shell version before it
+    # takes them. Before the skips too: an install that turned editable or set
+    # UV_NO_CACHE exits as "nothing to prepare", which the desktop settles as done.
+    existing = read_marker(studio_home)
+    if isinstance(existing, dict) and existing.get("shell_version") != shell_version:
+        discard(studio_home)
+
     # 1. Preflight. Every branch here is "this install prepares nothing", not a
     #    failure: the classic update still works on all of them.
     if not (venv / "pyvenv.cfg").is_file():
@@ -1167,13 +1177,6 @@ def _run_unguarded(
     # Built here rather than after the disk check: the uv search reads the same
     # environment the child will run under, so it has to exist by now.
     child_env = dict(env) if env is not None else dict(os.environ)
-    # A marker another offer left. Every exit from here that does not end in a new
-    # marker (uv missing, a full volume, a root that is not ours) would otherwise leave
-    # the old offer's pins on disk for a shell that asked about this one, and the
-    # offline retry does not compare the shell version before it takes them.
-    existing = read_marker(studio_home)
-    if isinstance(existing, dict) and existing.get("shell_version") != shell_version:
-        discard(studio_home)
     # The budget starts here, before uv is looked for: a fallback candidate that hangs on
     # --version is a uv call like any other, and it used to get the full subprocess
     # timeout per candidate before the deadline existed.
