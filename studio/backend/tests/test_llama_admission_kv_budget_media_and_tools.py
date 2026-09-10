@@ -16,10 +16,13 @@ estimate for a lease that runs up to 25 growing rounds.
 
 import base64
 
+from models.inference import AnthropicMessagesRequest
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    _openai_llama_admission_messages_for_estimate,
     _openai_llama_admission_tokens,
 )
+from core.inference.anthropic_compat import anthropic_messages_to_openai
 from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 from routes.inference import _openai_llama_admission_budget
 import asyncio
@@ -360,6 +363,291 @@ class TestMediaIsCharged:
             )
             cost = _openai_llama_admission_tokens(payload, budget = 65536, capacity = 4)
             assert cost > 2000, f"{field} was charged {cost}, i.e. nothing for the media"
+
+
+class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
+    """/v1/messages reserves from the RAW Anthropic request, so its own image block has to
+    be compacted too. #9842 fixed this for /v1/chat/completions and left this surface
+    pricing a screenshot at its base64 length, which clamps the reservation to the whole
+    cache and makes the shared queue serve that one request alone.
+    """
+
+    def _request(self, data: str):
+        return AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": data,
+                            },
+                        },
+                    ],
+                }
+            ],
+        )
+
+    def test_a_big_anthropic_image_costs_what_a_tiny_one_costs(self):
+        # Clear of the clamp, as the image_url cases above are, so the estimator is what
+        # is being compared rather than `min(budget, ...)`.
+        big = _openai_llama_admission_tokens(
+            self._request(_image_b64(1024)), budget = 1_000_000, capacity = 4
+        )
+        tiny = _openai_llama_admission_tokens(self._request("AAAA"), budget = 1_000_000, capacity = 4)
+        assert abs(big - tiny) <= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            f"a 1 MiB Anthropic image was charged {big} against {tiny} for a 4-char one: "
+            "the base64 transport is being priced as prompt text"
+        )
+        assert (
+            big >= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        ), "image bytes must be bounded but still charged"
+
+    def test_a_screenshot_does_not_reserve_the_whole_cache(self):
+        budget = 32768
+        cost = _openai_llama_admission_tokens(
+            self._request(_image_b64(150)), budget = budget, capacity = 4
+        )
+        assert cost < budget, (
+            f"a 150 KiB screenshot was charged {cost} against a {budget}-token cache, so "
+            "the queue admits it alone and every other chat waits"
+        )
+
+    def test_the_estimate_does_not_carry_the_base64(self):
+        data = _image_b64(64)
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+            self._request(data).messages
+        )
+        assert image_parts == 1, "the bounded per-image allowance is keyed on this count"
+        assert data not in str(estimate_messages)
+
+
+class TestAToolResultScreenshotIsNotPricedByItsBase64:
+    """The shape an agent actually sends: the image arrives nested in a `tool_result`,
+    not as a top-level block. A 150 KiB screenshot returned by a tool was charged 51,433
+    tokens against a 32768-token cache -- the whole of it -- so the chat that took the
+    screenshot then ran alone.
+    """
+
+    def _request(self, data: str):
+        return AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": "take a screenshot"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_01", "name": "screenshot", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_01",
+                            "content": [
+                                {"type": "text", "text": "screenshot taken"},
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": data,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        )
+
+    def test_a_screenshot_a_tool_returned_does_not_reserve_the_whole_cache(self):
+        budget = 32768
+        cost = _openai_llama_admission_tokens(
+            self._request(_image_b64(150)), budget = budget, capacity = 4
+        )
+        assert cost < budget, (
+            f"a 150 KiB tool-result screenshot was charged {cost} against a {budget}-token "
+            "cache, so the agent that took it runs alone"
+        )
+
+    def test_a_big_tool_result_screenshot_costs_what_a_tiny_one_costs(self):
+        big = _openai_llama_admission_tokens(
+            self._request(_image_b64(1024)), budget = 1_000_000, capacity = 4
+        )
+        tiny = _openai_llama_admission_tokens(self._request("AAAA"), budget = 1_000_000, capacity = 4)
+        assert abs(big - tiny) <= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            f"a 1 MiB tool-result image was charged {big} against {tiny} for a 4-char one: "
+            "the base64 transport is being priced as prompt text"
+        )
+
+    def test_the_charge_matches_what_the_translation_actually_sends(self):
+        """The two halves have to agree, so this fails on whichever side moves first.
+
+        `anthropic_messages_to_openai` keeps only the text blocks of a list
+        `tool_result`, so the nested image never reaches llama-server and earns no mtmd
+        allowance. Start forwarding it and this fails, which is the reminder that
+        admission has to start charging for it.
+        """
+        data = _image_b64(64)
+        payload = self._request(data)
+
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+            payload.messages
+        )
+        assert data not in str(estimate_messages), "the base64 must not be priced as text"
+
+        sent = anthropic_messages_to_openai(
+            [message.model_dump() for message in payload.messages], None
+        )
+        forwarded = data in str(sent)
+        assert image_parts == (1 if forwarded else 0), (
+            "admission charges a bounded image allowance exactly when the translation "
+            f"sends the image (forwarded={forwarded}, image_parts={image_parts})"
+        )
+
+
+class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
+    """`tool_result` content is an untyped list, so an image is only one of the block types
+    that reach it. A document, a search result and a nested `tool_result` are dropped by
+    the same translation filter, and each was charged its base64 as prompt text -- the
+    whole of a 32768-token cache for a request that sends a couple of hundred characters.
+    """
+
+    def _blocks(self, data: str):
+        return {
+            "document": {
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": data},
+            },
+            "search_result": {"type": "search_result", "source": {"data": data}},
+            "nested tool_result": {
+                "type": "tool_result",
+                "tool_use_id": "toolu_02",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": data},
+                    }
+                ],
+            },
+        }
+
+    def _request(self, block, *, text_first: bool):
+        text = {"type": "text", "text": "the tool answered"}
+        content = [text, block] if text_first else [block, text]
+        return AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": "use the tool"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_01", "name": "lookup", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_01", "content": content}
+                    ],
+                },
+            ],
+        )
+
+    def test_none_of_them_reserve_the_whole_cache(self):
+        budget = 32768
+        data = _image_b64(150)
+        # Both orders: a filter that stops at the first block would pass one of them.
+        for text_first in (True, False):
+            for name, block in self._blocks(data).items():
+                payload = self._request(block, text_first = text_first)
+                cost = _openai_llama_admission_tokens(payload, budget = budget, capacity = 4)
+                assert cost < budget, (
+                    f"a 150 KiB {name} block (text_first={text_first}) was charged {cost} "
+                    f"against a {budget}-token cache, so that agent runs alone"
+                )
+
+    def test_the_charge_matches_what_the_translation_actually_sends(self):
+        """Tied to the translation, not to a number, so it fails on whichever side moves.
+
+        The text beside these blocks IS sent, which is what stops a filter that simply
+        drops the whole `tool_result` from passing.
+        """
+        data = _image_b64(64)
+        for text_first in (True, False):
+            for name, block in self._blocks(data).items():
+                where = f"{name} (text_first={text_first})"
+                payload = self._request(block, text_first = text_first)
+                estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+                    payload.messages
+                )
+                sent = anthropic_messages_to_openai(
+                    [message.model_dump() for message in payload.messages], None
+                )
+                assert data not in str(sent), f"{where}: the translation now forwards this block"
+                assert data not in str(
+                    estimate_messages
+                ), f"{where}: the transport is being priced as prompt text"
+                assert (
+                    image_parts == 0
+                ), f"{where}: charged {image_parts} image allowances for a dropped block"
+                assert "the tool answered" in str(
+                    estimate_messages
+                ), f"{where}: the text beside it IS sent, so dropping it under-reserves"
+
+    def test_a_tool_result_the_translation_does_forward_is_still_charged(self):
+        """The other side of the boundary: string `tool_result` content is forwarded
+        verbatim, base64-looking text included, so it keeps costing what its length costs
+        and the filter cannot pay for itself by dropping what IS sent.
+        """
+        data = _image_b64(150)
+        payload = AnthropicMessagesRequest(
+            model = "default",
+            max_tokens = 128,
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": "use the tool"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_01", "name": "lookup", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_01", "content": data}
+                    ],
+                },
+            ],
+        )
+        sent = anthropic_messages_to_openai(
+            [message.model_dump() for message in payload.messages], None
+        )
+        assert data in str(sent), "the translation stopped forwarding string tool_result content"
+
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+            payload.messages
+        )
+        assert data in str(
+            estimate_messages
+        ), "content that IS sent was dropped from the estimate, which under-reserves"
+        assert image_parts == 0, "a string tool result is prompt text, not an image"
+
+        cost = _openai_llama_admission_tokens(payload, budget = 1_000_000, capacity = 4)
+        assert (
+            cost > len(data) // 8
+        ), f"a {len(data)}-char forwarded tool result was charged only {cost}"
 
 
 class TestTheToolLoopOpensAtAnEqualShare:

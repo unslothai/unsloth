@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Training API
-"""
+"""Pydantic schemas for Training API"""
 
 import math
 import re
@@ -942,7 +940,6 @@ class DiffusionTrainingStartRequest(BaseModel):
             "(auto for qwen-image, 1.0 otherwise)."
         ),
     )
-    # ── resume ────────────────────────────────────────────────────────────────
     save_steps: int = Field(
         0,
         ge = 0,
@@ -1103,11 +1100,8 @@ class DiffusionDatasetSummary(BaseModel):
     name: str
     path: str
     image_count: int
-    # Defaults to 0 so an older backend's payload, and every image-only caller, stays valid.
-    # Clips, for the families that train from video. Defaults to 0 so an older backend's payload (and every
-    # image-only caller) stays valid.
-    # Clips, for the families that train from video. Defaults to 0 so an older backend's payload (and every
-    # image-only caller) stays valid.
+    # Clips, for the families that train from video. Defaults to 0 so an older backend's payload, and every
+    # image-only caller, stays valid.
     clip_count: int = 0
     caption_count: int
 
@@ -1126,15 +1120,14 @@ class DiffusionTrainableFamily(BaseModel):
     qlora_vram_gb: Optional[int] = None
     gated: bool = False
     note: str = ""
-    # base_precision modes this machine supports for the family (empty = no selector, e.g. SDXL), the
-    # recommended pick, and whether regional torch.compile applies. Defaults keep older backends'
-    # payloads valid.
+    # base_precision modes this machine supports for the family (empty = no selector, e.g. SDXL), the recommended
+    # pick, and whether regional torch.compile applies. Defaults keep older backends' payloads valid.
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
-    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the "Checkpoint
-    # every" control: save_steps is refused, not ignored, for a checkpointless family, so offering the
-    # control means offering a value that rejects Start; defaults True so an older backend's payload keeps it.
+    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the "Checkpoint every"
+    # control: save_steps is refused, not ignored, for a checkpointless family, so offering the control means
+    # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
     supports_checkpoints: bool = True
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
