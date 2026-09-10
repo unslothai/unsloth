@@ -35,12 +35,11 @@ name: Unsloth GGUF CI
 on:
   pull_request:
     paths:
-      # What the three phases exercise: the backend's OpenAI and Anthropic
-      # surfaces over a llama.cpp prebuilt, the installer that lays them down
-      # and the CLI that boots them. Previously studio/** plus unsloth/**: the
-      # install is --no-torch so the training library is not importable here,
-      # the frontend is never served (UNSLOTH_API_ONLY), and src-tauri is never
-      # touched, so those edits bought a 60-minute runner for nothing.
+      # What the three phases exercise: the backend's OpenAI and Anthropic surfaces over
+      # a llama.cpp prebuilt, the installer that lays them down and the CLI that boots
+      # them. Not studio/** plus unsloth/**: the install is --no-torch so the training
+      # library is not importable here, the frontend is never served (UNSLOTH_API_ONLY),
+      # and src-tauri is never touched.
       - 'studio/backend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
@@ -62,7 +61,6 @@ on:
       - '.github/scripts/studio_smoke/multi_turn_chat.py'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
-      # The frontend-dist actions are not listed: this workflow never uses them.
       - '.github/actions/install-unsloth-local/action.yml'
       # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'

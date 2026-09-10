@@ -207,16 +207,11 @@ def test_the_action_is_actually_used() -> None:
     assert len(users) >= 5, f"only {len(users)} workflows use the action: {users}"
 
 
-# --- The key has one definition, and every warm installer job restores it ------------
-#
 # The Windows jobs run install.ps1 from a hand-written pwsh step and never come through
-# install-unsloth-local, so for a year they paid the full download on every run: 2.5 to
-# 4.3 min per install against 0.6 to 0.7 min on Linux with the cache, 10 to 12
-# windows-latest minutes per backend push. The fix is the same shape as the frontend
-# dist: the restore and the save are their own composite actions, the composite above
-# delegates to them, and the Windows jobs call them directly. These tests hold that
-# shape: one key, every warm installer job restoring it, every restore paired with a
-# save that reads the restore's outputs, and the cold lanes still untouched.
+# install-unsloth-local, so the restore and the save are their own composite actions,
+# which that composite delegates to and the Windows jobs call directly. What follows
+# holds that shape: one key, every warm installer job restoring it, every restore paired
+# with a save that reads its outputs, and the cold lanes untouched.
 
 ACTIONS = REPO_ROOT / ".github" / "actions"
 UV_RESTORE = ACTIONS / "uv-cache-restore" / "action.yml"
@@ -226,9 +221,8 @@ UV_SAVE = ACTIONS / "uv-cache-save" / "action.yml"
 # same list tests/studio/test_frontend_dist_cache.py keeps for the dist.
 COLD_INSTALL_JOBS = (("studio-windows-inference-smoke.yml", "no-vs-cpu"),)
 
-# An INVOCATION of the installer: a non-comment line running install.sh or install.ps1
-# with --local. mlx-ci.yml mentions `install.sh --local` in a comment explaining why it
-# does NOT run it, and a bare substring match reported that as an uncached install.
+# An INVOCATION, not a mention: mlx-ci.yml explains in a comment why it does NOT run
+# `install.sh --local`, and a bare substring match called that an uncached install.
 _INSTALLER = re.compile(r"(?m)^\s*[^#\n]*?(?:^|[\s/&'\"])install\.(?:ps1|sh) --local")
 _HELPER = re.compile(r"\.github/scripts/([A-Za-z0-9_.-]+\.sh)")
 

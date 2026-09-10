@@ -1,35 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The uv download cache, restore half. One definition of the key, for the same
-# reason frontend-dist-restore has one: the Windows jobs run install.ps1 from a
-# hand-written pwsh step and never go through install-unsloth-local, so a copy of
-# these steps pasted into each of them would agree today and drift silently.
-#
-# Why this is worth having: `Install Unsloth (--local, --no-torch)` was the single
-# largest cost in CI, and all of it uv resolving and DOWNLOADING the same wheels in
-# every job, because uv's cache is per-runner. With the cache the Linux install
-# takes 0.6 to 0.7 min; the Windows jobs, which had no cache, spent 2.5 to 4.3 min
-# on the same install (api 2.7, ui 2.5, gguf 2.8, update, startup profile 2.1),
-# 10 to 12 windows-latest minutes on every backend push.
-#
-# A download cache is the safest kind there is. uv's is content-addressed by URL
-# and hash, so a stale entry cannot serve wrong content; the worst it can do is
-# miss. Nothing about which packages get installed changes; they just are not
-# fetched twice. That is the difference between this and caching the venv, which
-# would have to reason about an editable overlay, a moving `unsloth-zoo @ git+main`
-# and absolute paths baked into console scripts. tests/studio/test_uv_cache_discipline.py
-# pins that distinction and the cold-install lanes that must never adopt this.
-#
-# UV_CACHE_DIR is set explicitly rather than relying on the platform default, so the
-# path is the same on Linux, macOS and Windows and one cache config covers all
-# three. It is exported into the environment so install.sh, install.ps1,
-# studio/setup.* and every uv call underneath inherit it; install.ps1 preserves a
-# custom UV_CACHE_DIR rather than picking its own.
-#
-# ROOT-CHECKOUT ONLY, like frontend-dist-restore: `uses: ./...` resolves from
-# GITHUB_WORKSPACE and the path below is workspace-relative. A job that checks the
-# repo out into a subdirectory hashes nothing here and must not call this.
+# The uv download cache, restore half. One definition of the key, for the same reason
+# frontend-dist-restore has one: the Windows jobs run install.ps1 from a hand-written pwsh
+# step and never go through install-unsloth-local, so a pasted copy would drift silently.
+# A download cache is the safest kind: uv's is content-addressed by URL and hash, so a
+# stale entry cannot serve wrong content, only miss. Caching the VENV instead would have to
+# reason about an editable overlay, a moving `unsloth-zoo @ git+main` and absolute paths
+# baked into console scripts; tests/studio/test_uv_cache_discipline.py pins that
+# distinction and the cold-install lanes that must never adopt this.
+# UV_CACHE_DIR is set explicitly so one config covers Linux, macOS and Windows, and
+# exported so install.sh, install.ps1 and studio/setup.* inherit it; install.ps1 preserves
+# a custom value. ROOT-CHECKOUT ONLY: the path below is workspace-relative.
 
 name: Restore the uv download cache
 description: >-
@@ -54,10 +36,9 @@ runs:
         echo "UV_CACHE_DIR=${{ github.workspace }}/.uv-cache" >> "$GITHUB_ENV"
         mkdir -p "${{ github.workspace }}/.uv-cache"
 
-    # Keyed on what decides the resolution, with a prefix fallback: a near-miss
-    # still supplies almost every wheel, which is most of the win. A download cache
-    # wants restore-keys for exactly this reason, where a venv cache must not have
-    # them. runner.os is in the key because the wheels differ per platform.
+    # Keyed on what decides the resolution, with a prefix fallback: a near-miss still
+    # supplies almost every wheel. A download cache wants restore-keys for exactly that
+    # reason, where a venv cache must not have them. runner.os: wheels differ per platform.
     - name: Restore the uv download cache
       id: restore
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

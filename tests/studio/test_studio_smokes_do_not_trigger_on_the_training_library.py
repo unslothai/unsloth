@@ -63,8 +63,7 @@ DERIVED_FILTERS = STUDIO_SMOKES + (AGENT_GUIDES,)
 FORBIDDEN = {"unsloth/**", "studio/**"}
 
 # A path under .github/scripts or .github/actions that a step runs, sources or `uses:`.
-# `./.github/actions/x` (a `uses:` target) and `.github/actions/x/action.yml` (the filter
-# entry) are the same thing; both are normalised to the action.yml form.
+# `./.github/actions/x` and `.github/actions/x/action.yml` normalise to the same thing.
 EXECUTED = re.compile(r"(?:\./)?(\.github/(?:scripts|actions)/[A-Za-z0-9_./-]+)")
 
 

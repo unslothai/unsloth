@@ -24,12 +24,10 @@ name: Windows Unsloth GGUF CI
 on:
   pull_request:
     paths:
-      # What the phases exercise: the backend's OpenAI and Anthropic surfaces
-      # over the Windows llama.cpp prebuilt, the installer chain that lays them
-      # down and the CLI. studio/frontend/** stays because install.ps1 builds the
-      # bundle and the dist cache key hashes it. unsloth/** and studio/src-tauri
-      # are gone: the install is --no-torch and never builds the Tauri shell, so
-      # edits there bought a 90-minute Windows runner for nothing.
+      # What the phases exercise: the backend's OpenAI and Anthropic surfaces over the
+      # Windows llama.cpp prebuilt, the installer chain and the CLI. studio/frontend/**
+      # stays because install.ps1 builds the bundle and the dist cache key hashes it. Not
+      # unsloth/** or studio/src-tauri: --no-torch, and the Tauri shell is never built.
       - 'studio/backend/**'
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
@@ -227,12 +225,9 @@ jobs:
       # inputs are byte-identical; the action's own reasoning, and the assertion that
       # a hit was actually REUSED rather than rebuilt, live in
       # .github/actions/frontend-dist-restore and -save.
-      # The uv download cache, the other half of what install-unsloth-local restores
-      # for the Linux and macOS jobs and the half this job never had: the same
-      # install took 2.5 to 4.3 min here against 0.6 to 0.7 min on Linux, all of it
-      # uv downloading wheels a cache would have supplied. install.ps1 preserves the
-      # UV_CACHE_DIR the action exports. Key and reasoning live in
-      # .github/actions/uv-cache-restore.
+      # The uv download cache, which install-unsloth-local restores for the Linux and
+      # macOS jobs and this hand-written pwsh install never had. install.ps1 preserves the
+      # UV_CACHE_DIR the action exports; the key lives in .github/actions/uv-cache-restore.
       - name: Restore the uv download cache
         id: uv-cache
         uses: ./.github/actions/uv-cache-restore

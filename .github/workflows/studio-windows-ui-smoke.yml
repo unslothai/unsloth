@@ -13,10 +13,9 @@ name: Windows Unsloth UI CI
 on:
   pull_request:
     paths:
-      # The two halves the lanes drive, the backend and the React bundle, plus
-      # the Windows installer chain and the CLI. unsloth/** and studio/src-tauri
-      # are gone: the install is --no-torch and never builds the Tauri shell, so
-      # edits there cannot change what Playwright sees.
+      # The two halves the lanes drive, the backend and the React bundle, plus the
+      # Windows installer chain and the CLI. Not unsloth/** or studio/src-tauri: the
+      # install is --no-torch and never builds the Tauri shell.
       - 'studio/backend/**'
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
@@ -204,12 +203,9 @@ jobs:
       # inputs are byte-identical; the action's own reasoning, and the assertion that
       # a hit was actually REUSED rather than rebuilt, live in
       # .github/actions/frontend-dist-restore and -save.
-      # The uv download cache, the other half of what install-unsloth-local restores
-      # for the Linux and macOS jobs and the half this job never had: the same
-      # install took 2.5 to 4.3 min here against 0.6 to 0.7 min on Linux, all of it
-      # uv downloading wheels a cache would have supplied. install.ps1 preserves the
-      # UV_CACHE_DIR the action exports. Key and reasoning live in
-      # .github/actions/uv-cache-restore.
+      # The uv download cache, which install-unsloth-local restores for the Linux and
+      # macOS jobs and this hand-written pwsh install never had. install.ps1 preserves the
+      # UV_CACHE_DIR the action exports; the key lives in .github/actions/uv-cache-restore.
       - name: Restore the uv download cache
         id: uv-cache
         uses: ./.github/actions/uv-cache-restore

@@ -20,14 +20,11 @@ name: Unsloth API CI
 on:
   pull_request:
     paths:
-      # What the test boots: the FastAPI backend, the installer that lays it
-      # down and the CLI that launches it. This used to be studio/** plus
-      # unsloth/**, which fired the job for edits it cannot observe: the install
-      # is --no-torch, so nothing under unsloth/** is importable in the venv
-      # under test; the frontend is built but never served (UNSLOTH_API_ONLY);
-      # src-tauri never enters the picture. A training-only PR paid this runner
-      # for nothing, and on a queue measured in hours that was the cost that
-      # mattered.
+      # What the test boots: the FastAPI backend, the installer that lays it down and
+      # the CLI that launches it. Not studio/** plus unsloth/**, which fired the job for
+      # edits it cannot observe: the install is --no-torch, so nothing under unsloth/**
+      # is importable here, the frontend is built but never served (UNSLOTH_API_ONLY),
+      # and src-tauri never enters the picture.
       - 'studio/backend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
@@ -36,8 +33,8 @@ on:
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      # The test itself, named rather than globbed: the rest of tests/studio is
-      # Playwright drivers this workflow never runs.
+      # Named, not globbed: the rest of tests/studio is Playwright drivers this
+      # workflow never runs.
       - 'tests/studio/studio_api_smoke.py'
       - '.github/workflows/studio-api-smoke.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
@@ -50,7 +47,6 @@ on:
       - '.github/scripts/hf-download-with-retry.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
-      # The frontend-dist actions are not listed: this workflow never uses them.
       - '.github/actions/install-unsloth-local/action.yml'
       # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'

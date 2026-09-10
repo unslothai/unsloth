@@ -55,8 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     for job, matrix in select(legs_by_job, args.event).items():
         # One line per output: a newline inside the JSON would end the value early.
         print(f"{job}={json.dumps(matrix, separators = (',', ':'))}")
-        # A matrix with no legs is a workflow error, not an empty job, so a job whose
-        # every leg is nightly-only gates on this count and is skipped on a PR.
+        # An empty matrix is a workflow error, so an all-nightly job gates on this count.
         print(f"{job}_count={len(matrix['include'])}")
     return 0
 

@@ -16,21 +16,13 @@
 
 name: Interrupted install recovery
 
-# ── Which legs run when ──────────────────────────────────────────────────────
-# The legs live in .github/ci/interrupted-install-matrix.yml, each with a `pr` flag. A
-# pull_request runs the `pr: true` subset (2 of 10, one per verdict family, one per
-# process-semantics family); a push to main, the nightly schedule and workflow_dispatch
-# run all 10. The
-# `select` job below does the picking and both matrix jobs take their `include` list
-# from it. 6 of the 10 legs are macOS on an account capped at five concurrent macOS
-# jobs, and on every PR audited before the split the full set was cancelled by the
-# next push before its macOS legs had started.
-#
-# Installers only: the trigger names the scripts the legs kill, the harness that kills
-# and probes them, and the manifest whose absence one verdict is built on. pyproject.toml
-# and the Tauri preflight sources used to be here (the console script's core deps and
-# the ManagedReady decision the probe stands in for), but neither is an installer and
-# both change far more often than the kill path does; the nightly covers them.
+# The legs live in .github/ci/interrupted-install-matrix.yml, each with a `pr` flag: a
+# pull_request runs the `pr: true` subset (2 of 10), while a push to main, the nightly
+# schedule and workflow_dispatch run all 10, picked by the `select` job below. 6 of the 10
+# are macOS on an account capped at five concurrent macOS jobs, and on every PR audited
+# before the split the full set was cancelled by the next push before its macOS legs had
+# started. Installers only: pyproject.toml and the Tauri preflight sources were dropped
+# because neither is an installer and both change far more often than the kill path does.
 
 on:
   pull_request:
@@ -67,12 +59,7 @@ on:
       - 'studio/install_python_stack.py'
       - 'unsloth_cli/commands/studio.py'
       - 'studio/install_manifest.py'
-      # The requirement files are the phases: studio.txt declares structlog, whose absence
-      # IS the reported false-ready bug, so moving a package between them changes every
-      # interrupted state.
       - 'studio/backend/requirements/**'
-      # `interrupt*-install*` would match the .sh / .ps1 but NOT the underscored probe
-      # (`*` never matches `/`, and a literal `-install` follows), so list all three.
       - '.github/scripts/interrupt-install.sh'
       - '.github/scripts/interrupt-install.ps1'
       - '.github/scripts/interrupted_install_probe.py'
@@ -81,17 +68,16 @@ on:
       - '.github/workflows/interrupted-install-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
   schedule:
-    # Nightly, all 10 legs. Off the hour so it does not land with every other nightly
-    # in the org, and offset from clean-machine-install-ci.yml's 09:23 so the two do
-    # not race for the five macOS slots.
+    # Nightly, all 10 legs. Offset from clean-machine-install-ci.yml's 09:23 so the two
+    # do not race for the five macOS slots.
     - cron: '41 10 * * *'
   workflow_dispatch:
 
 concurrency:
-  # The event is part of the group so a scheduled run and a push to main cannot cancel
-  # each other: both resolve to refs/heads/main. Unique per commit on main, so a merge
-  # burst cannot cancel a pending run (see studio-backend-ci.yml). On a PR branch the
-  # group is the ref, so a new push cancels the run for the previous one.
+  # The event is in the group so a scheduled run and a push to main, which share a ref,
+  # cannot cancel each other; the sha makes it unique per commit on main so a merge burst
+  # cannot cancel a pending run (see studio-backend-ci.yml). On a PR branch the group is
+  # the ref, so a new push cancels the run for the previous one.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -102,19 +88,17 @@ env:
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
 
 jobs:
-  # ── Which legs: the PR subset or all of them ───────────────────────────────
   select:
     name: select legs
-    # arm64, not ubuntu-latest: this job stands in front of every leg, so its queue
-    # wait is added to all of them. Over the last 20 PRs ubuntu-latest jobs waited
-    # p50 128 min for a runner while ubuntu-24.04-arm started in about 2 min.
+    # arm64, not ubuntu-latest: this job fronts every leg, so its queue wait is added to
+    # all of them, and the arm pool starts in minutes where ubuntu-latest queues for hours.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     outputs:
       interrupt: ${{ steps.pick.outputs.interrupt }}
       interrupt_windows: ${{ steps.pick.outputs.interrupt_windows }}
-      # Both Windows legs are nightly-only, and an empty matrix is a workflow error
-      # rather than an empty job, so the Windows job gates on this count.
+      # Both Windows legs are nightly-only, and an empty matrix is a workflow error rather
+      # than an empty job, so the Windows job gates on this count.
       interrupt_windows_count: ${{ steps.pick.outputs.interrupt_windows_count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -125,8 +109,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Pinned to the PyYAML the workflow guards run under, so the file parses the same
-      # way here as in tests/studio/test_install_matrix_selection.py.
+      # Pinned to the PyYAML the workflow guards run under, so the file parses the same way
+      # here as in tests/studio/test_install_matrix_selection.py.
       - name: Install PyYAML
         run: pip install pyyaml==6.0.2
 
@@ -150,10 +134,7 @@ jobs:
     # --help checks, two 300s deep checks, a 300s backend wait) around a repair
     # install. Legs land in 6-10 min in practice; this is the ceiling, not the target.
     timeout-minutes: 90
-    # The legs, with what each kill point proves and why the others are absent, are in
-    # .github/ci/interrupted-install-matrix.yml. Every leg is a hard gate, with no
-    # continue-on-error cell: a leg allowed to fail is a warning wearing a red icon, and
-    # this workflow's whole claim is that a killed install cannot report itself healthy.
+    # The legs are in .github/ci/interrupted-install-matrix.yml; every one is a hard gate.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.interrupt) }}
@@ -338,7 +319,6 @@ jobs:
     if: needs.select.outputs.interrupt_windows_count != '0'
     runs-on: windows-latest
     timeout-minutes: 90
-    # The legs are in .github/ci/interrupted-install-matrix.yml.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.interrupt_windows) }}

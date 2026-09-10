@@ -1,21 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The uv download cache, save half. Paired with uv-cache-restore, which owns the
-# key; this action only ever writes under the key that restore handed back.
-#
-# Saved on the default branch only. A PR-scoped entry can only be restored by
-# re-runs of that same PR, while every PR can restore from main, and saving on PRs
-# spends a budget that has been measured at 99.3% full and evicts main's copy, the
-# one everyone reads. A hit is not re-uploaded either: the key is already present
-# and the upload is pure cost.
-#
-# `uv cache prune --ci` first: uv keeps built wheels AND unpacked source artifacts,
-# and only the former are worth carrying between runners. Without it the entry grows
-# without bound across the jobs that share it and re-opens the eviction thrash the
-# GGUF caches were fixed for. Best effort, since an older uv without `--ci` must not
-# fail an install that has already succeeded, and on Windows install.ps1 may have
-# put uv somewhere not on this step's PATH.
+# The uv download cache, save half. Paired with uv-cache-restore, which owns the key.
+# Default branch only: a PR-scoped entry is restorable only by re-runs of that same PR,
+# while every PR can restore from main, so saving on PRs spends a near-full budget to evict
+# main's copy, the one everyone reads. A hit is not re-uploaded either.
+# `uv cache prune --ci` first: uv keeps built wheels AND unpacked source artifacts, only the
+# former worth carrying, so without it the entry grows without bound and re-opens the
+# eviction thrash the GGUF caches were fixed for. Best effort: an older uv without `--ci`,
+# or a uv off this step's PATH, must not fail an install that already succeeded.
 
 name: Save the uv download cache
 description: >-

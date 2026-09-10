@@ -58,13 +58,11 @@ runs:
   using: composite
   steps:
     # The uv download cache. Delegated, like the frontend dist below, so the key has
-    # exactly one definition: the Windows jobs run install.ps1 from a hand-written
-    # pwsh step and never come through here, and a second copy of the key would
-    # agree today and drift silently. The reasoning (why a download cache is safe
-    # where a venv cache is not, why restore-keys, why UV_CACHE_DIR is set
-    # explicitly) lives in .github/actions/uv-cache-restore. This action sees the
-    # setter and the restore as one step; tests/studio/test_uv_cache_discipline.py
-    # inlines them and still checks their order against the install.
+    # exactly one definition: the Windows jobs run install.ps1 from a hand-written pwsh
+    # step and never come through here, and a second copy would drift silently. The
+    # reasoning lives in .github/actions/uv-cache-restore, which folds the UV_CACHE_DIR
+    # setter and the restore into this one step; tests/studio/test_uv_cache_discipline.py
+    # inlines them again and still checks their order against the install.
     - name: Restore the uv download cache
       id: uv-cache
       uses: ./.github/actions/uv-cache-restore
@@ -146,8 +144,7 @@ runs:
     # `building frontend` line fails the job) for free, in the same place the eight
     # five Windows job-legs get it.
     #
-    # The uv save is delegated the same way; `uv cache prune --ci` runs inside
-    # uv-cache-save, which is where the reasoning for it lives.
+    # The uv save is delegated the same way, `uv cache prune --ci` included.
     - name: Save the built frontend
       uses: ./.github/actions/frontend-dist-save
       with:

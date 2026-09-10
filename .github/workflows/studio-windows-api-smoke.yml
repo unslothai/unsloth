@@ -15,11 +15,10 @@ name: Windows Unsloth API CI
 on:
   pull_request:
     paths:
-      # What the test boots: the backend, the Windows installer chain and the
-      # CLI. studio/frontend/** stays because install.ps1 builds the bundle and
-      # the dist cache key hashes it; unsloth/** and studio/src-tauri/** are gone
-      # because the install is --no-torch and never touches the Tauri shell, so
-      # edits there could not change what this job observes.
+      # What the test boots: the backend, the Windows installer chain and the CLI.
+      # studio/frontend/** stays because install.ps1 builds the bundle and the dist cache
+      # key hashes it. Not unsloth/** or studio/src-tauri/**: the install is --no-torch
+      # and never touches the Tauri shell.
       - 'studio/backend/**'
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
@@ -33,8 +32,8 @@ on:
       - '.github/actions/uv-cache-restore/action.yml'
       - '.github/actions/uv-cache-save/action.yml'
       - 'pyproject.toml'
-      # The test itself, named rather than globbed: the rest of tests/studio is
-      # Playwright drivers and PowerShell units this workflow never runs.
+      # Named, not globbed: the rest of tests/studio is Playwright drivers and
+      # PowerShell units this workflow never runs.
       - 'tests/studio/studio_api_smoke.py'
       - '.github/workflows/studio-windows-api-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
@@ -173,12 +172,9 @@ jobs:
       # inputs are byte-identical; the action's own reasoning, and the assertion that
       # a hit was actually REUSED rather than rebuilt, live in
       # .github/actions/frontend-dist-restore and -save.
-      # The uv download cache, the other half of what install-unsloth-local restores
-      # for the Linux and macOS jobs and the half this job never had: the same
-      # install took 2.5 to 4.3 min here against 0.6 to 0.7 min on Linux, all of it
-      # uv downloading wheels a cache would have supplied. install.ps1 preserves the
-      # UV_CACHE_DIR the action exports. Key and reasoning live in
-      # .github/actions/uv-cache-restore.
+      # The uv download cache, which install-unsloth-local restores for the Linux and
+      # macOS jobs and this hand-written pwsh install never had. install.ps1 preserves the
+      # UV_CACHE_DIR the action exports; the key lives in .github/actions/uv-cache-restore.
       - name: Restore the uv download cache
         id: uv-cache
         uses: ./.github/actions/uv-cache-restore

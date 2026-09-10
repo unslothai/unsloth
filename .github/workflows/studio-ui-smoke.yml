@@ -19,11 +19,10 @@ name: Unsloth UI CI
 on:
   pull_request:
     paths:
-      # The two halves Playwright actually drives, the backend and the React
-      # bundle, plus the installer and CLI that put them on the box. This used
-      # to be studio/** and unsloth/**. The install is --no-torch, so an edit
-      # under unsloth/** cannot reach the venv under test, and studio/src-tauri
-      # is never built here; both fired five Linux slots per push for nothing.
+      # The two halves Playwright drives, the backend and the React bundle, plus the
+      # installer and CLI that put them on the box. Not studio/** and unsloth/**: the
+      # install is --no-torch, so unsloth/** cannot reach the venv under test, and
+      # studio/src-tauri is never built here.
       - 'studio/backend/**'
       - 'studio/frontend/**'
       - 'studio/setup.sh'
@@ -34,8 +33,8 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       # The Playwright test files themselves -- a PR that ONLY edits
-      # the test must still trigger UI CI. Kept as the directory glob:
-      # tests/studio/test_stt_model_search_locator_contract.py asserts it.
+      # the test must still trigger UI CI. Kept as a directory glob, which
+      # test_stt_model_search_locator_contract.py asserts.
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
@@ -52,7 +51,6 @@ on:
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
-      # The frontend-dist actions are not listed: this workflow never uses them.
       - '.github/actions/install-unsloth-local/action.yml'
       # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
@@ -86,7 +84,7 @@ jobs:
   ui-smoke:
     name: Chat UI Tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # Left at 30 even though each shard carries about half of the work (about 12 minutes).
+    # Left at 30 even though each shard carries about half of the work.
     #
     # It was briefly cut to 20 on the reasoning that a quarter of the job needs a quarter
     # of the budget. Staging then cancelled three shards at 20m0s inside "Linux deps", an
@@ -102,21 +100,16 @@ jobs:
       # one after another, and at 22.1 minutes on average it was the largest job in the
       # repo. The setup every shard has to repeat is small -- checkout, Linux deps,
       # Install Unsloth, Playwright browsers, about 2.6 minutes -- so splitting it was
-      # nearly all profit in wall-clock. It went to four shards first. That was measured
-      # again over the last 20 PRs: the shards ran 5.3, 8.9, 6.5 and 2.8 minutes, and each
-      # waited a median of 128 minutes for an ubuntu-latest runner, because the account
-      # runs about 30 to 35 jobs at once and a push to a Studio PR asks for 50 to 90. Four
-      # slots that each spend two hours queued to run six minutes is the wrong trade, so
-      # this is two shards of about 12 minutes: `banner` folded into `chat` (both already
-      # installed the three engines) and `picker` into `extra` (both chromium only). The
-      # engine sets, the cache keys and every step name are unchanged.
+      # nearly all profit in wall-clock. Four shards went too far: the queue wait for an
+      # ubuntu-latest runner dwarfs a six-minute shard, so `banner` is folded into `chat`
+      # (both install the three engines) and `picker` into `extra` (both chromium only).
       #
       # The boundaries are the Unsloth instances, not an even division of scripts: a
       # Unsloth boot, its health wait, its bootstrap password and the scripts that drive
       # it have to stay on one machine. So `chat` takes 18892 and the cross-browser
       # permission pass, then boots 18894 for the two banner passes once 18892 is down;
-      # `extra` boots its own 18894, then 18898 and 18896 for the picker suites, which are
-      # small and adjacent. One Unsloth at a time on each runner, on its own port.
+      # `extra` boots its own 18894, then 18898 and 18896 for the picker suites. One
+      # Unsloth at a time on each runner, on its own port.
       #
       # In-machine parallelism is deliberately NOT used here. These are separate runners,
       # so each still boots one Unsloth at a time and nothing competes for RAM.
@@ -130,9 +123,9 @@ jobs:
         # than creating new jobs, which is how each shard gets the engines it drives
         # without changing the shard set.
         #
-        # `extra` (which now carries the former `picker` suites) names no engine but
-        # chromium anywhere in its steps. Installing webkit's system libraries for it is
-        # 181 packages and 102 MB of apt, which is what timed this job out on 2026-08-19:
+        # `extra` names no engine but chromium anywhere in its steps. Installing webkit's
+        # system libraries for it is 181 packages and 102 MB of apt, which is what timed
+        # this job out on 2026-08-19:
         #
         #   0 upgraded, 181 newly installed
         #   Need to get 102 MB/114 MB of archives
@@ -142,8 +135,8 @@ jobs:
         # webkit could fail to fetch them. test_ui_shard_engines.py keeps this honest
         # against the steps rather than against this comment.
         include:
-          - shard: chat      # Cross-browser permission controls and the banner "other
-            engines: chromium firefox webkit   # engines" pass drive all three
+          - shard: chat      # permission controls + banner "other engines" drive all three
+            engines: chromium firefox webkit
             engine_key: cfw
           - shard: extra
             engines: chromium

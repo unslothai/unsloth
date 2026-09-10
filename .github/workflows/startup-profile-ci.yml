@@ -130,9 +130,8 @@ jobs:
       # tests/studio/test_frontend_dist_cache.py derives this from the `on:` block rather
       # than allowlisting the filename, so adding `push:` here without adding the save --
       # or adding the save without the trigger -- goes red.
-      # The uv download cache the producers fill on main. This workflow has no push
-      # and no schedule, so it only ever consumes (see the dist restore below for the
-      # same argument); the install still gets every wheel the last main run cached.
+      # The uv download cache the producers fill on main. No push and no schedule here,
+      # so this workflow only ever consumes it (as the dist restore below argues).
       - name: Restore the uv download cache
         id: uv-cache
         uses: ./.github/actions/uv-cache-restore

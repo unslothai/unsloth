@@ -37,20 +37,13 @@
 
 name: Clean machine install
 
-# ── Which legs run when ──────────────────────────────────────────────────────
-# The legs live in .github/ci/clean-machine-matrix.yml, each with a `pr` flag. A
-# pull_request runs the `pr: true` subset (8 of 20); the nightly schedule, a push to
-# main and workflow_dispatch run all 20. The `select` job below does the picking and
-# every matrix job takes its `include` list from it, so a leg's keys are the same on
-# both paths and the steps do not know which path they are on.
-#
-# Installers only: the trigger lists the scripts a clean machine actually runs and the
-# harness that asserts on them. pyproject.toml and studio/backend/requirements/** used
-# to be here for the overlay's sake (a dependency change is only exercised on a clean
-# machine through the overlay), but they are the two highest-churn files in the repo
-# and every push touching them queued 20 jobs, 7 of them on the five-slot macOS pool.
-# The nightly keeps that coverage; a PR that changes dependencies is covered by the
-# Update, Backend and Core workflows, which install this ref on hosted images.
+# The legs live in .github/ci/clean-machine-matrix.yml, each with a `pr` flag: a
+# pull_request runs the `pr: true` subset (8 of 20), while the nightly schedule, a push to
+# main and workflow_dispatch run all 20, picked by the `select` job below, so a leg's keys
+# are the same on both paths. Installers only: pyproject.toml and requirements/** were
+# dropped from the trigger because they are the two highest-churn files in the repo and
+# every push touching them queued 20 jobs, 7 on the five-slot macOS pool. The nightly keeps
+# that coverage, and the Update, Backend and Core workflows install this ref anyway.
 
 on:
   pull_request:
@@ -106,9 +99,8 @@ on:
       - '.github/ci/clean-machine-matrix.yml'
       - '.github/workflows/clean-machine-install-ci.yml'
   schedule:
-    # Nightly, all 20 legs, on this ref's installers (`inputs.installer_source` is
-    # empty on schedule exactly as on pull_request and push, so the tree is under
-    # test). Off the hour so it does not land with every other nightly in the org.
+    # Nightly, all 20 legs, on this ref's installers: `inputs.installer_source` is empty
+    # on schedule exactly as on pull_request and push, so the tree is under test.
     - cron: '23 9 * * *'
   workflow_dispatch:
     inputs:
@@ -119,10 +111,9 @@ on:
         default: tree
 
 concurrency:
-  # The event is part of the group so a scheduled run and a push to main cannot
-  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
-  # only one pending run, so without this a merge burst silently drops the nightly:
-  # cancel-in-progress protects the running run, never the pending one.
+  # The event is in the group so a scheduled run and a push to main, which share a ref,
+  # cannot coalesce: only one run stays pending per group, and cancel-in-progress protects
+  # the running run, never the pending one, so a merge burst would drop the nightly.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   # Latest-only on a PR branch. On main this does less than it reads like: it stops
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
@@ -143,12 +134,10 @@ env:
   UNSLOTH_VERBOSE: '1'
 
 jobs:
-  # ── Which legs: the PR subset or all of them ───────────────────────────────
   select:
     name: select legs
-    # arm64, not ubuntu-latest: this job stands in front of every leg, so its queue
-    # wait is added to all of them. Over the last 20 PRs ubuntu-latest jobs waited
-    # p50 128 min for a runner while ubuntu-24.04-arm started in about 2 min.
+    # arm64, not ubuntu-latest: this job fronts every leg, so its queue wait is added to
+    # all of them, and the arm pool starts in minutes where ubuntu-latest queues for hours.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     outputs:
@@ -157,7 +146,7 @@ jobs:
       windows: ${{ steps.pick.outputs.windows }}
       windows_container_install: ${{ steps.pick.outputs.windows_container_install }}
       # The consumer container leg is nightly-only, and an empty matrix is a workflow error
-      # rather than an empty job, so the probe and the install gate on this count.
+      # rather than an empty job, so the probe and the install both gate on this count.
       windows_container_install_count: ${{ steps.pick.outputs.windows_container_install_count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -196,8 +185,8 @@ jobs:
       UV_CACHE_DIR: ${{ github.workspace }}/.clean-machine/uv-cache
       UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.clean-machine/uv-python
     # Explicit legs, not a full cross-product: the interesting dimensions are (does
-    # the toolchain exist) x (how the script is delivered), not every pairing. The
-    # legs themselves are in .github/ci/clean-machine-matrix.yml.
+    # the toolchain exist) x (how the script is delivered), not every pairing. The legs
+    # themselves are in .github/ci/clean-machine-matrix.yml.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.macos) }}
@@ -486,7 +475,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    # The legs, with what each one proves, are in .github/ci/clean-machine-matrix.yml.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.linux) }}
@@ -916,9 +904,8 @@ jobs:
   # can catch a piped install being truncated (WSL shells out to Windows interop mid-script
   # and interop relays the stdin it inherited). #7548 is in main, so nothing to absorb.
   #
-  # Nightly, push to main and dispatch only: a 50-minute windows-latest slot per PR push
-  # for a branch that changes rarely. Not a matrix job, so it gates on the event here
-  # rather than through the matrix file.
+  # Off pull_request: a 50-minute windows-latest slot per push is too much for a branch
+  # that changes rarely. Not a matrix job, so it gates here, not in the matrix file.
   wsl:
     name: wsl ubuntu-24.04
     if: github.event_name != 'pull_request'
@@ -1050,7 +1037,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     continue-on-error: ${{ matrix.experimental }}
-    # The legs, with what each one proves, are in .github/ci/clean-machine-matrix.yml.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.windows) }}
@@ -1507,7 +1493,6 @@ jobs:
     timeout-minutes: 90
     env:
       IMAGE: mcr.microsoft.com/windows/servercore:ltsc2022
-    # The legs, with what each one proves, are in .github/ci/clean-machine-matrix.yml.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.windows_container_install) }}
