@@ -393,8 +393,9 @@ export function createGenerationToolRecovery(
     else lastIdless = entry;
   };
   // Recovery never reaches the live path's end-of-stream source yield, so rebuild those entries.
+  // Per occurrence, not per url, because the live path flat-maps the cards: two rounds finding
+  // the same page carry their own title and snippet, and the Sources panel lists both.
   const withSources = <TPart>(parts: TPart[]): TPart[] => {
-    const seen = new Set(sourceIds);
     const out: TPart[] = [...parts];
     for (const { part } of carried) {
       const card = record(part);
@@ -408,8 +409,6 @@ export function createGenerationToolRecovery(
       for (const source of parseSourcesFromResult(
         searchResultText(card.result),
       )) {
-        if (seen.has(source.id)) continue;
-        seen.add(source.id);
         out.push(source as TPart);
       }
     }

@@ -1208,3 +1208,22 @@ test("a source an earlier recovery saved stays behind text replayed after it", a
     "the text either side of the card, not cut again by the source",
   );
 });
+
+test("two rounds finding the same page keep a source each, with their own titles", async () => {
+  const first = "Title: Docs v1\nURL: https://docs.unsloth.ai/\nSnippet: first";
+  const second = "Title: Docs v2\nURL: https://docs.unsloth.ai/\nSnippet: second";
+  const { content } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" },
+      { type: "tool_end", tool_call_id: "ws_0", result: first },
+      { type: "tool_start", tool_call_id: "ws_1", tool_name: "web_search" },
+      { type: "tool_end", tool_call_id: "ws_1", result: second },
+    ],
+  );
+  // The live path flat-maps the cards, so the panel lists the page once per round.
+  assert.deepEqual(
+    content.filter((part) => part.type === "source").map((part) => part.title),
+    ["Docs v1", "Docs v2"],
+  );
+});
