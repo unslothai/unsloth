@@ -41,7 +41,22 @@ export const BUDGET = {
   // Raised for the audio placement control: same build both sides, merge base
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  transferBytes: 1_620_000,
+  //
+  // Raised again at d4ef69f84, which measures 1,585.6 KB transfer (1,623,641 bytes)
+  // and 5,306.4 KB raw. Nothing became eager that should not be: across the whole
+  // window the eager chunk set gained no member, and main crossed the old 1,620,000
+  // ceiling at 7b9bb0395 -- whose only frontend change is one English sentence in a
+  // settings panel, rewritten shorter -- by ONE byte, its parent sitting 14 bytes
+  // inside. What ran out was headroom, against a measured 3.7 KB of transfer a day
+  // since 17363f8a2.
+  //
+  // 1,690,000 puts the ceiling 64.8 KB (4.1%) above that build. That is the margin
+  // this file shipped with in #8964 -- 67.9 KB, 4.4% -- which absorbed 17 days of
+  // ordinary work; the 19.4 KB the audio raise left absorbed six. So this expires in
+  // roughly 17 days at the measured rate, and rawBytes is deliberately left alone at
+  // 64.7 KB spare, about 16 days, so the two come up for one re-measure together
+  // instead of each dragging main red on its own.
+  transferBytes: 1_690_000,
   rawBytes: 5_500_000,
 };
 
