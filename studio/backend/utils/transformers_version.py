@@ -2452,6 +2452,15 @@ def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
     )
 
 
+def _remove_recordless_dist_infos(venv_dir: str, pkg_spec: str) -> None:
+    """Drop every `<pkg>-*.dist-info` with no RECORD: metadata uv cannot uninstall."""
+    name = pkg_spec.split("==")[0]
+    root = Path(venv_dir)
+    for entry in _dist_info_entries(venv_dir, name):
+        if not (root / entry / "RECORD").is_file():
+            shutil.rmtree(root / entry, ignore_errors = True)
+
+
 def _dist_info_entries(venv_dir: str, name: str) -> list[str]:
     wanted = name.lower().replace("-", "_")
     try:
@@ -2542,7 +2551,13 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
     if _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES:
         return
     for pkg in packages:
-        if not _sidecar_package_is_optional(pkg) or not _optional_package_absent(venv_dir, pkg):
+        if not _sidecar_package_is_optional(pkg):
+            continue
+        # A recordless dist-info beside a complete install (a retry that succeeded after
+        # an interrupted one) is never reached by the staging path's cleanup, since the
+        # package reads as present; importlib.metadata could keep answering its version.
+        _remove_recordless_dist_infos(venv_dir, pkg)
+        if not _optional_package_absent(venv_dir, pkg):
             continue
         key = (os.path.normcase(os.path.abspath(venv_dir)), pkg)
         if key in _OPTIONAL_TOP_UP_ATTEMPTED:
