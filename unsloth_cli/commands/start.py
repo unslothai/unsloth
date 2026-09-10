@@ -1570,13 +1570,30 @@ def _remember_key(cache: Path, base: str, key: str, source: str) -> None:
         pass  # worst case the next launch mints another key
 
 
+def _resident_models_response(
+    base: str,
+    key: str,
+    timeout = 30,
+) -> dict:
+    # Startup and key checks only need the resident inference backends. /v1/models
+    # waits for disk/media discovery even when a model is already loaded.
+    try:
+        return _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    # Older Studio servers do not expose the lightweight route. Preserve their
+    # existing listing behavior; never treat auth/server errors as missing support.
+    return _http_json("GET", f"{base}/v1/models", key, timeout = timeout)
+
+
 def _key_accepted(base: str, key: str) -> bool:
     # Only a genuine auth rejection (401/403) means "this key is bad -- skip it and try
     # the next cached key or mint a fresh one". A 5xx or a network blip is a server-side
     # outage, not a bad key: fail with a clean message (never a traceback) instead of
     # silently discarding a working key and minting extras against a struggling server.
     try:
-        _http_json("GET", f"{base}/v1/models", key)
+        _resident_models_response(base, key)
         return True
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -1661,12 +1678,17 @@ def _agent_api_key(
 
 
 def _loaded_models(base: str, key: str) -> list:
-    return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
+    try:
+        return _resident_models_response(base, key).get("data", [])
+    except urllib.error.HTTPError as exc:
+        _fail(f"Couldn't list models: {_http_error_detail(exc)}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        _fail(f"Couldn't list models: {getattr(exc, 'reason', None) or exc}")
 
 
 def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
     try:
-        models = _http_json("GET", f"{base}/v1/models", key, timeout = 5).get("data", [])
+        models = _resident_models_response(base, key, timeout = 5).get("data", [])
     except Exception:
         return False
     return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
