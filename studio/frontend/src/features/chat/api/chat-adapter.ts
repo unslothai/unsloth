@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
   type SandboxFile,
   extractCreatedFiles,
@@ -6804,7 +6805,14 @@ export function createOpenAIStreamAdapter(
                         ? extractSearchImages(rawResult)
                         : { text: rawResult, images: [] as SearchImageEntry[] };
                     const imgMarker = "\n__IMAGES__:";
-                    const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    // Same rule again. The backend keeps this line for the model when the tool is not one that
+                    // emits the envelope, so the card keeps it too, rather than hiding it and fetching a
+                    // sandbox file that was never written.
+                    const imgIdx = IMAGE_SENTINEL_TOOLS.has(
+                      toolCallParts[idx].toolName ?? "",
+                    )
+                      ? rawResult.lastIndexOf(imgMarker)
+                      : -1;
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
                     const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
