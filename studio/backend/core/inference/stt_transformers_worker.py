@@ -40,7 +40,6 @@ _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 # both bounds only break a hang: a cold-disk large-v3 load and a 30 minute transcription are legitimately slow
 _LOAD_TIMEOUT_SECONDS = 600.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
-# generation stops within a token, but a load inside from_pretrained never sees the cancel
 # How long a cancelled command gets before the child is killed. Generation stops within a token, but a load inside
 # from_pretrained never sees the cancel, and training is waiting for that memory.
 _CANCEL_GRACE_SECONDS = 10.0
@@ -68,9 +67,6 @@ class SttWorkerSpawnError(SttWorkerError):
     Distinct because it says nothing about the model or the device, so the
     caller answers it by loading in process rather than by giving up.
     """
-
-
-# ---------------------------------------------------------------------------
 
 
 def _ensure_backend_on_path() -> None:
@@ -286,9 +282,6 @@ def run_stt_worker(
                 return
 
 
-# ---------------------------------------------------------------------------
-
-
 def _raise_worker_error(response: dict) -> None:
     from core.inference import stt_sidecar
 
@@ -316,7 +309,6 @@ class WhisperWorker:
         # that failed at something
         self._ready_event = None
         self._answered = False
-        # a child that answered neither terminate nor kill answers no later command either
         # Set once close() found a child that outlived terminate and kill. The handle is kept so its memory stays
         # accounted, but a child that answered neither signal answers no later command either, and its terminate left
         # the queues liable to corruption, so it must never be handed to a later dictation.
@@ -339,8 +331,13 @@ class WhisperWorker:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
-        from utils.process_lifetime import adopt_pid
+        from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
+        # One flag at every spawn: no _graceful_shutdown step unloads this sidecar and
+        # cancel_pending_loads only reaches the chat /load attempts, so without this a
+        # quit during an STT load starts a worker the step-7 sweep has already passed.
+        if is_process_shutting_down():
+            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
         cache_env = get_hf_cache_paths().child_env({})
         try:
             with (
@@ -365,16 +362,37 @@ class WhisperWorker:
                     },
                     daemon = True,
                 )
-                self._process.start()
+                # Local handle, and started through it: a concurrent teardown can clear
+                # self._process while start() is still returning, and re-reading the
+                # attribute afterwards would lose the only reference to a live child.
+                _spawned_proc = self._process
+                _spawned_proc.start()
         except Exception as exc:  # noqa: BLE001 - any refusal to spawn reads the same
             self._process = None
             self._close_queues()
             raise SttWorkerSpawnError(
                 f"Could not start the dictation worker process: {exc}"
             ) from exc
-        adopt_pid(self._process.pid)  # terminate_all backstop for graceful exits
+        adopt_pid(_spawned_proc.pid)  # terminate_all backstop for graceful exits
+        # Recheck once the pid is recorded: the latch can be set between the gate above
+        # and this record. Adoption runs first, so a child reaped here is still in the
+        # sweep record.
+        if is_process_shutting_down():
+            logger.info("shutdown began during the spawn; reaping the new dictation worker")
+            try:
+                if _spawned_proc.is_alive():
+                    _spawned_proc.terminate()
+                    _spawned_proc.join(5)
+                if _spawned_proc.is_alive():
+                    _spawned_proc.kill()
+                    _spawned_proc.join(5)
+            except Exception:  # noqa: BLE001 - the reap is best-effort
+                pass
+            self._process = None
+            self._close_queues()
+            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
         logger.info(
-            "STT worker started (pid=%s) for %s on %s", self._process.pid, snapshot_path, device
+            "STT worker started (pid=%s) for %s on %s", _spawned_proc.pid, snapshot_path, device
         )
         try:
             self._send(
@@ -404,7 +422,6 @@ class WhisperWorker:
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
-        """Transcribe one decoded window and return its text."""
         if self._cancel_event is not None:
             self._cancel_event.clear()
         self._send(

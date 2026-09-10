@@ -28,9 +28,8 @@ export const XET_NOTICE_TITLE = "Download is running";
 export const XET_NOTICE_DESCRIPTION =
   "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck.";
 export const XET_NOTICE_DESCRIPTION_CLASS = "!text-muted-foreground";
-// A restart is also a start disclosure. Keeping its copy here lets poll-loop
-// combine it with the Xet explanation instead of creating an unrelated toast
-// that can outlive its download.
+// A restart is also a start disclosure. Keeping its copy here lets poll-loop combine it with the
+// Xet explanation instead of creating an unrelated toast that can outlive its download.
 export const RESTART_NOTICE_TITLE = "Restarting this download";
 export const RESTART_NOTICE_DESCRIPTION =
   "The earlier partial can't be resumed, so this download is starting over.";

@@ -39,9 +39,8 @@ export function SettingsRow({
     <div
       data-settings-label={label}
       className={cn(
-        // Controls are fixed-width and shrink-0, so an unwrapped row starves the
-        // label. justify-end right-aligns a wrapped control without breaking
-        // items-stretch for flex-col callers.
+        // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
+        // right-aligns a wrapped control without breaking items-stretch for flex-col callers.
         "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
         alignTop ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",

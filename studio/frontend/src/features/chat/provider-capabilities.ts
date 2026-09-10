@@ -42,8 +42,29 @@ export type ExternalReasoningCapabilities = {
   )[];
 };
 
+/** Weakest -> strongest. Must stay in sync with _REASONING_EFFORT_SCALE in
+ *  backend core/inference/llama_cpp.py. */
+const REASONING_EFFORT_SCALE = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies ExternalReasoningCapabilities["reasoningEffortLevels"];
+
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
- *  when only the latter is exposed (Claude 4.6). */
+ *  when only the latter is exposed (Claude 4.6).
+ *
+ *  An unavailable level searches DOWNWARD to the nearest offered level, so the clamp never
+ *  spends more compute than was asked for; only a level under everything on offer falls up to
+ *  the weakest rung.
+ *
+ *  "none" is the off switch, not a rung, so it is skipped unless it is what was asked for:
+ *  otherwise a thinking request clamps onto thinking disabled (Mistral's none | high turned a
+ *  stored Medium into none). llama_cpp.py strips "none" from an enable_thinking_effort ladder
+ *  for the same reason; a reasoning_effort ladder keeps it, and an explicit ask still gets it. */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
@@ -59,6 +80,25 @@ export function clampReasoningEffortToLevels(
   if (effortLevels.includes(candidate)) {
     return candidate;
   }
+  const rank = REASONING_EFFORT_SCALE.indexOf(
+    candidate as (typeof REASONING_EFFORT_SCALE)[number],
+  );
+  if (rank !== -1) {
+    // Scale order, not the order the provider table happens to list.
+    const offered = REASONING_EFFORT_SCALE.filter((level) =>
+      effortLevels.includes(level),
+    );
+    const rungs =
+      candidate === "none" ? offered : offered.filter((level) => level !== "none");
+    const searchable = rungs.length > 0 ? rungs : offered;
+    const below = searchable.filter(
+      (level) => REASONING_EFFORT_SCALE.indexOf(level) < rank,
+    );
+    const nearest = below.length > 0 ? below[below.length - 1] : searchable[0];
+    if (nearest !== undefined) {
+      return nearest;
+    }
+  }
   return effortLevels[0] ?? "low";
 }
 
@@ -71,12 +111,10 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather
-  // than clamping it, so an overstated cap is a failed request and an
-  // understated one only a shorter answer. First match wins: a bare family
-  // prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
-  // `-chat-latest` aliases go first because they cap at 16,384 whatever their
-  // family does.
+  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather than clamping it, so
+  // an overstated cap is a failed request and an understated one only a shorter answer. First match
+  // wins: a bare family prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
+  // `-chat-latest` aliases go first because they cap at 16,384 whatever their family does.
   {
     providerType: "openai",
     prefixes: [
@@ -106,7 +144,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     cap: 4096,
   },
   { providerType: "openai", prefixes: ["gpt-4"], cap: 8192 },
-  // Anthropic
   {
     providerType: "anthropic",
     prefixes: [
@@ -138,7 +175,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     prefixes: ["claude-opus-4-1", "claude-opus-4-20250514"],
     cap: 32000,
   },
-  // Gemini
   {
     providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
@@ -861,10 +897,9 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
-  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked
-  // BEFORE the broader `gemini-2.5-flash` prefix.
-  // The backend maps "minimal" to that 512 floor in _stream_gemini.
-  // https://ai.google.dev/gemini-api/docs/thinking
+  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked BEFORE the
+  // broader `gemini-2.5-flash` prefix. The backend maps "minimal" to that 512 floor in
+  // _stream_gemini. https://ai.google.dev/gemini-api/docs/thinking
   if (m.startsWith("gemini-2.5-flash-lite")) {
     return withReasoningEffortStyle({
       supportsReasoning: true,

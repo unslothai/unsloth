@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-# a registry keyed by opaque ids plus a thumbnail proxy
 
 # web_search image results: a registry keyed by opaque ids plus a thumbnail proxy, so neither the model nor the browser
 # sees an image URL.
@@ -41,25 +40,22 @@ _MAX_CONCURRENT_FETCHES = 4
 
 _registry: dict[str, dict[str, Any]] = {}
 _registry_lock = threading.Lock()
-# a fetch that started before a clear must not publish its thumbnail after it
 # Bumped by clear_cache. A fetch that started before the clear must not publish its thumbnail after it: the write is
 # done under _registry_lock and skipped if this moved.
 _cache_generation = 0
-# The generation of the last CLEAR-EVERYTHING, plus the generation each individually reaped id was taken at. The
-# generation at which a CLEAR-EVERYTHING last ran, and the generation at which each individually reaped id was taken. A
-# selective clear must not abort an in-flight fetch for an id it spared: thumbnail_bytes would answer None, the endpoint
-# 404s, and SearchImageThumb renders nothing and never retries -- its effect depends only on (id, nearViewport), so
-# "re-fetches on the next request" is not true, there is no next request. Bounded; on overflow the per-id record is
-# dropped and the full-clear generation is moved instead, which over-aborts rather than republishing a thumbnail a clear
-# removed.
+# The generation at which a CLEAR-EVERYTHING last ran, plus the generation at which each individually reaped id was
+# taken. A selective clear must not abort an in-flight fetch for an id it spared: thumbnail_bytes would answer None,
+# the endpoint 404s, and SearchImageThumb renders nothing and never retries -- its effect depends only on (id,
+# nearViewport), so "re-fetches on the next request" is not true, there is no next request. Bounded; on overflow the
+# per-id record is dropped and the full-clear generation is moved instead, which over-aborts rather than republishing
+# a thumbnail a clear removed.
 _full_clear_generation = 0
 _reaped_at: dict[str, int] = {}
 _REAPED_AT_MAX = 4096
-# a fetch started at or after this is still answered exactly
-# The newest generation whose per-id records have been dropped to stay under that cap. A fetch that started at or after
-# this is still answered exactly, because nothing covering it was dropped; only one older than every record we still
-# hold has to be given up on. Fetches are bounded by THUMBNAIL_FETCH_TIMEOUT_S, so outliving 4096 reaped images is not a
-# real case.
+# The newest generation whose per-id records have been dropped to stay under that cap. A fetch that started at or
+# after this is still answered exactly, because nothing covering it was dropped; only one older than every record we
+# still hold has to be given up on. Fetches are bounded by THUMBNAIL_FETCH_TIMEOUT_S, so outliving 4096 reaped images
+# is not a real case.
 _reaped_floor_generation = 0
 # Ids whose files a clear could not unlink -- on Windows another process holding the JPEG open is enough. The
 # cache-first read and the sidecar read both go around the registry, so without this they would go on serving a picture
@@ -157,7 +153,6 @@ def register_images(
                 "thumbnail": thumbnail,
                 "source": source,
                 "created": now,
-                # the proxy fetch happens on a later request
                 # Kept with the entry: the proxy fetch happens on a later request, and without it every redirect hop
                 # would be re-checked against no policy.
                 "policy": website_policy,

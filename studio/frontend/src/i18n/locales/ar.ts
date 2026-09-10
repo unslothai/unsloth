@@ -1259,6 +1259,7 @@ export const ar = {
       copy: "نسخ",
       copied: "تم النسخ",
       commandBuilder: "منشئ الأوامر",
+      commandShell: "الصدفة لجميع الأوامر",
       agent: "وكيل البرمجة",
       model: "النموذج",
       searchModels: "ابحث عن نماذج GGUF...",
@@ -1276,9 +1277,8 @@ export const ar = {
       docs: "التوثيق",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1710,7 +1710,7 @@ export const ar = {
         desktopCheckingDescription: "يستغرق ذلك عادةً بضع ثوانٍ.",
         desktopAvailable: "يتوفر إصدار جديد من تطبيق سطح المكتب: {version}",
         desktopAvailableDescription:
-          "حدّث الآن ليُجهَّز التحديث في الخلفية. يمكنك متابعة عملك وإعادة التشغيل عندما يصبح جاهزًا.",
+          "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
           "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
         desktopManualInstall:
@@ -1719,20 +1719,11 @@ export const ar = {
         desktopCheckFailedDescription: "تحقق من اتصالك ثم حاول مرة أخرى.",
         desktopCurrent: "تطبيق سطح المكتب محدّث",
         desktopCurrentDescription: "سيواصل Unsloth التحقق تلقائيًا.",
-        desktopPreparingDescription:
-          "يجري تجهيز التحديث في الخلفية. يمكنك متابعة عملك.",
-        desktopReadyToRestartDescription:
-          "كل شيء جاهز. أعد التشغيل لإكمال تثبيت التحديث.",
-        desktopReadyToInstallDescription:
-          "تم تنزيل تحديث التطبيق. أكمل تحديث الواجهة الخلفية لتثبيته.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
         checking: "جارٍ التحقق...",
-        preparing: "جارٍ التجهيز...",
         updateNow: "التحديث الآن",
-        restartToUpdate: "إعادة التشغيل للتحديث",
-        finishUpdate: "إكمال التحديث",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
           "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",

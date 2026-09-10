@@ -22,6 +22,32 @@ import utils.third_party_source as source
 import utils.utils as utils
 
 
+def _shared_setup_1(installed):
+    pinned_module = source.import_sparktts_module(
+        "sparktts.models.audio_tokenizer",
+        installed,
+    )
+
+    assert pinned_module.VALUE == "pinned"
+    return pinned_module
+
+
+def _shared_setup_2(monkeypatch, tmp_path):
+    repository, pinned = _repository(tmp_path)
+    _configure(monkeypatch, tmp_path, repository, pinned)
+    installed = source.ensure_spark_tts_source()
+    checkout = installed.parent / "source"
+    return checkout, installed, pinned
+
+
+def _shared_setup_3(monkeypatch, payload, tmp_path):
+    legacy = tmp_path / "legacy" / source._DAC_FILENAME
+    legacy.parent.mkdir()
+    legacy.write_bytes(payload)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    return legacy
+
+
 def _run_git(repository: Path, *arguments: str) -> str:
     if shutil.which("git") is None:
         pytest.skip("git is required for this test")
@@ -296,10 +322,7 @@ def test_valid_cached_revision_stays_offline(monkeypatch, tmp_path):
 
 
 def test_sealed_checkout_reconstructs_runtime_offline_without_git(monkeypatch, tmp_path):
-    repository, pinned = _repository(tmp_path)
-    _configure(monkeypatch, tmp_path, repository, pinned)
-    installed = source.ensure_spark_tts_source()
-    checkout = installed.parent / "source"
+    checkout, installed, pinned = _shared_setup_2(monkeypatch, tmp_path)
     monkeypatch.setattr(
         source,
         "SPARK_TTS_SOURCE",
@@ -382,10 +405,7 @@ def test_failed_repair_keeps_existing_cache_untouched(monkeypatch, tmp_path):
 
 
 def test_ignored_checkout_files_are_rejected_and_never_enter_runtime(monkeypatch, tmp_path):
-    repository, pinned = _repository(tmp_path)
-    _configure(monkeypatch, tmp_path, repository, pinned)
-    installed = source.ensure_spark_tts_source()
-    checkout = installed.parent / "source"
+    checkout, installed, pinned = _shared_setup_2(monkeypatch, tmp_path)
     ignored = checkout / "sparktts" / "payload.evil.py"
     ignored.write_text("VALUE = 'untrusted'\n", encoding = "utf-8")
 
@@ -405,10 +425,7 @@ def test_ignored_checkout_files_are_rejected_and_never_enter_runtime(monkeypatch
 
 @pytest.mark.parametrize("index_flag", ("--assume-unchanged", "--skip-worktree"))
 def test_index_flags_cannot_hide_modified_tracked_source(monkeypatch, tmp_path, index_flag):
-    repository, pinned = _repository(tmp_path)
-    _configure(monkeypatch, tmp_path, repository, pinned)
-    installed = source.ensure_spark_tts_source()
-    checkout = installed.parent / "source"
+    checkout, installed, pinned = _shared_setup_2(monkeypatch, tmp_path)
     relative = "sparktts/models/audio_tokenizer.py"
     tokenizer = checkout / relative
     _run_git(checkout, "update-index", index_flag, relative)
@@ -490,12 +507,7 @@ def test_import_replaces_a_module_from_outside_the_pinned_source(monkeypatch, tm
         untrusted_module = importlib.import_module("sparktts.models.audio_tokenizer")
         assert untrusted_module.VALUE == "untrusted"
 
-        pinned_module = source.import_sparktts_module(
-            "sparktts.models.audio_tokenizer",
-            installed,
-        )
-
-        assert pinned_module.VALUE == "pinned"
+        pinned_module = _shared_setup_1(installed)
         assert Path(pinned_module.__file__).resolve().is_relative_to(installed)
     finally:
         while str(untrusted) in sys.path:
@@ -527,12 +539,7 @@ def test_generated_init_prevents_a_later_regular_package_from_taking_over(monkey
     sys.path.insert(0, str(untrusted))
     importlib.invalidate_caches()
     try:
-        pinned_module = source.import_sparktts_module(
-            "sparktts.models.audio_tokenizer",
-            installed,
-        )
-
-        assert pinned_module.VALUE == "pinned"
+        pinned_module = _shared_setup_1(installed)
         assert not marker.exists()
     finally:
         while str(untrusted) in sys.path:
@@ -565,12 +572,7 @@ def test_import_purges_unchecked_bytecode_before_loading(monkeypatch, tmp_path):
 
     assert source.ensure_spark_tts_source() == installed
     try:
-        pinned_module = source.import_sparktts_module(
-            "sparktts.models.audio_tokenizer",
-            installed,
-        )
-
-        assert pinned_module.VALUE == "pinned"
+        pinned_module = _shared_setup_1(installed)
         assert not marker.exists()
     finally:
         source.deactivate_pinned_package("sparktts", installed)
@@ -681,10 +683,7 @@ def test_dac_weights_use_immutable_revision_and_active_cache(monkeypatch, tmp_pa
 def test_exact_legacy_dac_weights_migrate_to_active_cache_offline(monkeypatch, tmp_path):
     payload = b"legacy pinned DAC weights"
     hub_cache = _configure_dac_artifact(monkeypatch, tmp_path, payload)
-    legacy = tmp_path / "legacy" / source._DAC_FILENAME
-    legacy.parent.mkdir()
-    legacy.write_bytes(payload)
-    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    legacy = _shared_setup_3(monkeypatch, payload, tmp_path)
     calls = []
     monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda **kwargs: calls.append(kwargs))
 
@@ -702,10 +701,7 @@ def test_full_disk_falls_back_to_the_verified_legacy_dac_weights(monkeypatch, tm
     second copy must not reject weights that already passed the size and sha256 check."""
     payload = b"legacy pinned DAC weights"
     _configure_dac_artifact(monkeypatch, tmp_path, payload)
-    legacy = tmp_path / "legacy" / source._DAC_FILENAME
-    legacy.parent.mkdir()
-    legacy.write_bytes(payload)
-    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    legacy = _shared_setup_3(monkeypatch, payload, tmp_path)
 
     def no_space(*args, **kwargs):
         raise OSError(errno.ENOSPC, "No space left on device")
@@ -834,10 +830,7 @@ def test_unwritable_hub_cache_still_uses_verified_legacy_dac_weights(monkeypatch
     directory and lock are only needed to populate the cache, which is an optimisation."""
     payload = b"legacy pinned DAC weights"
     _configure_dac_artifact(monkeypatch, tmp_path, payload)
-    legacy = tmp_path / "legacy" / source._DAC_FILENAME
-    legacy.parent.mkdir()
-    legacy.write_bytes(payload)
-    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    legacy = _shared_setup_3(monkeypatch, payload, tmp_path)
 
     def refuse(*args, **kwargs):
         raise OSError(errno.EACCES, "read-only file system")
