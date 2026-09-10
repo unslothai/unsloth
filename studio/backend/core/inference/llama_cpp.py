@@ -5796,23 +5796,41 @@ def _extra_args_n_ubatch(
     return effective
 
 
+def _mmproj_opens_images(mmproj_path: Optional[str]) -> bool:
+    """Whether the projector at *mmproj_path* can turn an image into tokens.
+
+    ``is_vision`` cannot answer it: ModelConfig sets that flag for ANY discovered
+    mmproj, so an audio-only encoder (ultravox, Voxtral, Qwen3-ASR) reads as vision.
+    Unreadable, or a URL nothing has fetched yet, stays image-capable, which is both
+    llama.cpp's own reading and the safe direction for a reserve.
+    """
+    if not mmproj_path:
+        return False
+    try:
+        from utils.models.gguf_metadata import mmproj_accepts_image
+        return bool(mmproj_accepts_image(mmproj_path))
+    except Exception as e:
+        logger.debug(f"mmproj capability read failed: {e}")
+        return True
+
+
 def _batch_ubatch_for_mmproj(
-    launch_vision_mmproj: Optional[str],
+    opens_vision_mmproj: bool,
     n_batch: Optional[int],
     n_ubatch: Optional[int],
     extra_args: Optional[Iterable[str]],
 ) -> tuple[Optional[int], Optional[int]]:
-    """Raise the default batch/ubatch for a launch that opens a vision projector.
+    """Raise the default batch/ubatch for a launch that opens an image projector.
 
-    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the pair has to be equal. Takes the
-    projector the child will really open, not the one the request named: a suppressed,
-    missing or family-mismatched file launches a text-only server, which must not pay
-    the bigger compute buffer, while an inherited one launches a vision server nothing
-    in the request mentions. Only when the caller named neither size and nothing else
-    already sets one: an env var or an extra_arg is the user sizing the child, and this
-    must not undo it.
+    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the pair has to be equal. Keyed on
+    the projector the child will really open, not the one the request named: a
+    suppressed, missing or family-mismatched file launches a text-only server, which
+    must not pay the bigger compute buffer, while an inherited one launches a vision
+    server nothing in the request mentions. Only when the caller named neither size and
+    nothing else already sets one: an env var or an extra_arg is the user sizing the
+    child, and this must not undo it.
     """
-    if not launch_vision_mmproj:
+    if not opens_vision_mmproj:
         return n_batch, n_ubatch
     if n_batch is not None or n_ubatch is not None:
         return n_batch, n_ubatch
@@ -19976,7 +19994,7 @@ class LlamaCppBackend:
                         or (_env_mmproj if os.path.isfile(_env_mmproj) else "")
                     ) or None
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-                _fit_vision_mmproj,
+                _mmproj_opens_images(_fit_vision_mmproj),
                 n_batch,
                 n_ubatch,
                 extra_args,

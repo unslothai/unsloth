@@ -12,48 +12,101 @@ import pytest
 from studio.backend.core.inference.llama_cpp import (
     LlamaCppBackend,
     _batch_ubatch_for_mmproj,
+    _mmproj_opens_images,
     _MMPROJ_DEFAULT_N_BATCH_UBATCH,
 )
-from studio.backend.routes.inference import _launch_vision_mmproj
+from studio.backend.routes.inference import _launch_vision_mmproj, _remote_opens_vision_mmproj
 
 
 class TestBatchUbatchForMmproj:
     """Tests for _batch_ubatch_for_mmproj."""
 
     def test_vision_mmproj_without_override_gets_default(self):
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj("mmproj-F16.gguf", None, None, None)
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(True, None, None, None)
         assert n_batch == _MMPROJ_DEFAULT_N_BATCH_UBATCH
         assert n_ubatch == _MMPROJ_DEFAULT_N_BATCH_UBATCH
 
     def test_no_projector_is_unchanged(self):
-        # Text-only, vision off, a suppressed projector and a missing or
-        # family-mismatched file all reach here as None.
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj(None, None, None, None)
+        # Text-only, vision off, an audio-only encoder, a suppressed projector and a
+        # missing or family-mismatched file all reach here as False.
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(False, None, None, None)
         assert n_batch is None
         assert n_ubatch is None
 
     def test_explicit_n_batch_is_preserved(self):
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj("mmproj-F16.gguf", 1024, None, None)
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(True, 1024, None, None)
         assert n_batch == 1024
         assert n_ubatch is None
 
     def test_explicit_n_ubatch_is_preserved(self):
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj("mmproj-F16.gguf", None, 1024, None)
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(True, None, 1024, None)
         assert n_batch is None
         assert n_ubatch == 1024
 
     @pytest.mark.parametrize("flag", ["--batch-size", "--ubatch-size", "-b", "-ub"])
     def test_extra_arg_override_is_respected(self, flag):
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj("mmproj-F16.gguf", None, None, [flag, "1024"])
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(True, None, None, [flag, "1024"])
         assert n_batch is None
         assert n_ubatch is None
 
     @pytest.mark.parametrize("var", ["LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH"])
     def test_env_override_is_respected(self, var, monkeypatch):
         monkeypatch.setenv(var, "1024")
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj("mmproj-F16.gguf", None, None, None)
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(True, None, None, None)
         assert n_batch is None
         assert n_ubatch is None
+
+
+class TestMmprojOpensImages:
+    """ModelConfig calls every discovered projector vision, so ask the file."""
+
+    @staticmethod
+    def _answer(monkeypatch, value):
+        import utils.models.gguf_metadata as meta
+        monkeypatch.setattr(meta, "mmproj_accepts_image", lambda path: value)
+
+    def test_no_projector(self):
+        assert _mmproj_opens_images(None) is False
+        assert _mmproj_opens_images("") is False
+
+    def test_image_projector(self, monkeypatch):
+        self._answer(monkeypatch, True)
+        assert _mmproj_opens_images("/m/mmproj-F16.gguf") is True
+
+    def test_audio_only_projector(self, monkeypatch):
+        # ultravox, Voxtral, Qwen3-ASR: no image chunk can reach the assertion, so the
+        # bigger micro-batch would be reserved against nothing.
+        self._answer(monkeypatch, False)
+        assert _mmproj_opens_images("/m/mmproj-F16.gguf") is False
+
+    def test_unreadable_stays_image_capable(self, monkeypatch):
+        import utils.models.gguf_metadata as meta
+
+        def _boom(path):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(meta, "mmproj_accepts_image", _boom)
+        assert _mmproj_opens_images("/m/mmproj-F16.gguf") is True
+
+
+class TestRemoteOpensVisionMmproj:
+    """Nothing is downloaded yet, so charge a vision repo as image-capable."""
+
+    @staticmethod
+    def _config(**kwargs):
+        return SimpleNamespace(**{"is_vision": True, **kwargs})
+
+    def test_vision_repo(self):
+        assert _remote_opens_vision_mmproj(self._config(), None, False) is True
+
+    def test_text_only_repo(self):
+        assert _remote_opens_vision_mmproj(self._config(is_vision = False), None, False) is False
+
+    def test_vision_switched_off(self):
+        assert _remote_opens_vision_mmproj(self._config(), None, True) is False
+
+    def test_no_mmproj(self):
+        assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is False
 
 
 class TestLaunchVisionMmproj:
@@ -122,3 +175,19 @@ def test_default_is_decided_from_the_resolved_projector_before_the_fit():
     decide = source.index("_batch_ubatch_for_mmproj(")
     price = source.index("_ubatch_for_slots(n_parallel)")
     assert download < resolve < decide < price
+
+
+def test_resident_files_subtract_the_term_they_were_priced_with():
+    """``_gguf_resident_file_gb`` is exact only while both arms stay paired.
+
+    It reports files as ``_estimate_gguf_required_gb`` minus the context term that
+    function added, so a term added at the raised micro-batch and taken away at 512
+    would move the weights figure by the difference.
+    """
+    from studio.backend.routes import inference as routes
+
+    required = inspect.getsource(routes._estimate_gguf_required_gb)
+    resident = inspect.getsource(routes._gguf_resident_file_gb)
+    for arm in ("_launch_vision_mmproj(", "_remote_opens_vision_mmproj("):
+        assert arm in required
+        assert arm in resident
