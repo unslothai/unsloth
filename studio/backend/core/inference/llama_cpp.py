@@ -9489,6 +9489,38 @@ class LlamaCppBackend:
             return None
 
     @classmethod
+    def _cuda_sm_uncovered_devices(
+        cls, binary: Optional[str] = None
+    ) -> "tuple[tuple[int, int], ...]":
+        """``(physical id, sm)`` for every visible CUDA device BELOW the oldest arch
+        the installed bundle was built for, sorted by id; empty when there is
+        nothing to say (unknown coverage, unknown caps, every card covered).
+
+        Per device, because coverage is per device: ggml dispatches on
+        ``info.devices[id].cc`` (ggml-cuda.cu:348), so on a mixed pair a build
+        narrowed to sm_89 runs the 4090 and aborts on the 3090 with "not compiled
+        with any CUDA arch <= 86". A whole-host ``any``/``all`` test cannot see
+        that (ggml-org/llama.cpp#27429). Fails open on unknown, like every other
+        probe here, and never raises.
+        """
+        try:
+            # Coverage first, and only then the caps probe: a marker read is a
+            # cached file read, while _cuda_compute_caps spawns nvidia-smi. Same
+            # ordering, and the same reason, as _arch_gate_survivors.
+            binary = binary or cls._find_llama_server_binary()
+            supported = cls._installed_llama_cuda_sms(binary)
+            if supported is None:
+                return ()
+            caps = cls._cuda_compute_caps()
+            if not caps:
+                return ()
+            oldest = min(supported)
+            return tuple((idx, sm) for idx, sm in sorted(caps.items()) if sm < oldest)
+        except Exception as e:
+            logger.debug(f"cuda sm coverage probe failed: {e}")
+            return ()
+
+    @classmethod
     def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
         installed CUDA bundle was built for, or None to proceed. Fails open on
@@ -9511,6 +9543,13 @@ class LlamaCppBackend:
             return None
         caps = cls._cuda_compute_caps()
         oldest = min(supported)
+        # Whole-host on purpose: this refusal writes CUDA_VISIBLE_DEVICES=-1 and
+        # takes the launch to the CPU, so it may only fire when there is no card
+        # here that can run at all. One covered card among several is still a
+        # working launch for llama.cpp's own placement, which is free to leave the
+        # uncovered one holding nothing. What it is NOT is a device set the spill
+        # planner may pin with --fit off; _cuda_sm_uncovered_devices is the
+        # per-device answer that gate reads.
         if not caps or any(sm >= oldest for sm in caps.values()):
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
@@ -28370,6 +28409,27 @@ class LlamaCppBackend:
         # not describe the child's device list.
         if _extra_args_split_mode(extra_args, {}) == "none" and kept:
             kept = kept[:1]
+        # A card the installed CUDA bundle has no kernels for is not a card this
+        # plan may budget: llama.cpp hands it its share of the rows anyway (the
+        # default split is free VRAM, which an uncovered card reports normally) and
+        # aborts there, and --fit off means nothing re-places the model afterwards.
+        # Masking it out of `kept` is not expressible from here -- the child's
+        # device list is pinned in load_model, well after this -- so budgeting
+        # without it would model a split llama.cpp is not going to perform. Decline
+        # and name the card, so the fallthrough to --fit on keeps today's behaviour.
+        # Whole-host coverage is the launch gate's business (_cuda_sm_gate_error);
+        # this is the mixed pair it deliberately lets through.
+        # Through the class, not self, like _planner_may_run above: the probe has
+        # no instance state, and the seam tests borrow this method onto a stub.
+        _uncovered = LlamaCppBackend._cuda_sm_uncovered_devices()
+        _kept_ids = {idx for idx, _free_mib in kept}
+        _blocked = [(idx, sm) for idx, sm in _uncovered if idx in _kept_ids]
+        if _blocked:
+            logger.info(
+                "Tensor spill: declined, the installed llama.cpp build has no GPU code for %s",
+                ", ".join(f"GPU {idx} (sm_{sm})" for idx, sm in _blocked),
+            )
+            return None
         vram_per_device = [
             int(usable_mib.get(idx, free_mib) * 1024 * 1024) for idx, free_mib in kept
         ]

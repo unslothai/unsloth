@@ -1314,6 +1314,74 @@ def test_an_integrated_cuda_device_declines_the_plan():
     assert _plan(discrete, free_mib = 14 * 1024) is not None, "not vacuous"
 
 
+# --------------------------------- cards the installed CUDA build cannot run
+
+
+def test_a_card_the_build_has_no_kernels_for_declines_the_plan(monkeypatch):
+    """The SM gate is whole-host, so a mixed pair reaches the planner.
+
+    `_cuda_sm_gate_error` proceeds as soon as ANY visible device meets the
+    build's oldest supported SM, which is right for it: its refusal takes the
+    whole launch to the CPU. On an sm_86 plus sm_89 pair under a bundle built for
+    sm_89 only, that leaves the 3090 in the child's device list, holding its
+    share of the rows by free VRAM and aborting there with "not compiled with any
+    CUDA arch <= 86" (ggml-org/llama.cpp#27429). Per-device coverage is what
+    decides, since ggml dispatches on info.devices[id].cc (ggml-cuda.cu:348).
+
+    The planner cannot mask the card out of its own device set -- the child's
+    visibility is pinned in load_model, long after this -- so budgeting without
+    it would model a split llama.cpp is not going to perform. Decline instead,
+    and fall through to --fit on.
+    """
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_cuda_sm_uncovered_devices",
+        classmethod(lambda cls, binary = None: ((1, 86),)),
+    )
+    pair = [(0, 24 * 1024), (1, 24 * 1024)]
+    assert _plan(_Stub(), gpus = pair) is None
+
+    # Not vacuous, and per DEVICE rather than per host: the same pair plans as
+    # soon as the uncovered card is not one of the cards being budgeted, whether
+    # because it is absent or because the load is pinned to the other one.
+    assert _plan(_Stub(), gpus = [(0, 24 * 1024), (2, 24 * 1024)]) is not None
+    assert _plan(_Stub(), gpus = pair, indices = [0]) is not None
+
+
+def test_the_sm_coverage_probe_answers_per_device(monkeypatch):
+    """The helper names the uncovered card while the launch gate stays open.
+
+    Both halves matter: the gate keeps failing open on a mixed pair (refusing
+    there would send a working 4090 to the CPU), and the per-device answer that
+    the planner reads is the one that sees the 3090.
+    """
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/x/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_llama_cuda_sms",
+        staticmethod(lambda binary = None: frozenset({89})),
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 86, 1: 89}))
+    assert LlamaCppBackend._cuda_sm_gate_error() is None
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ((0, 86),)
+
+    # A single card, covered or not, answers exactly as the gate does, so nothing
+    # about the one-device launch moves.
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 89}))
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ()
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 86}))
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ((0, 86),)
+    assert LlamaCppBackend._cuda_sm_gate_error() is not None
+
+    # Unknown coverage and unknown caps both fail open.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_installed_llama_cuda_sms", staticmethod(lambda binary = None: None)
+    )
+    assert LlamaCppBackend._cuda_sm_uncovered_devices() == ()
+
+
 def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_0():
     """An unpinned drafter is distributed, not a device-0 lump.
 
