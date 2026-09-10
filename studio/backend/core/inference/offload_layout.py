@@ -301,6 +301,14 @@ INDEXER_CACHE_ARCHS: frozenset[str] = frozenset({"qwen4exp"})
 _KDA_STATE_ARCHS: frozenset[str] = frozenset({"kimi-k3", "glm5next"})
 
 
+# llama.cpp refuses a file whose block_count is above this (LLAMA_MAX_LAYERS, src/llama-hparams.h;
+# GGML_ASSERT(hparams.n_layer_all <= LLAMA_MAX_LAYERS) in llama_model::load_hparams, src/llama-model.cpp).
+# The readers here allocate per-layer lists straight off the declared count, so a crafted GGUF
+# naming 2**40 layers would ask for gigabytes of lists for a file the child cannot load. Above the
+# cap the layout is not knowable and the split is not either.
+LLAMA_MAX_LAYERS = 512
+
+
 # Architectures whose zero-KV-head rows are recurrent only when their FFN width is 0 as well
 # (models/nemotron-h.cpp:17, inherited by nemotron_h_moe at models/models.h:1516).
 _RECURRENT_NEEDS_ZERO_FFN: frozenset[str] = frozenset({"nemotron_h", "nemotron_h_moe"})
@@ -329,7 +337,7 @@ def hybrid_layer_split(
     only when nothing above said anything, which is the caller's cue to abstain rather
     than call every row attention.
     """
-    if n_layers <= 0:
+    if n_layers <= 0 or n_layers > LLAMA_MAX_LAYERS:
         return 0, 0, False
     known = False
     n_recurrent = 0
@@ -395,6 +403,8 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not blocks_total:
         return ModelLayout()
     blocks_total = int(blocks_total)
+    if blocks_total > LLAMA_MAX_LAYERS:
+        return ModelLayout()
 
     # llama.cpp keeps embedded MTP blocks out of the target context and prices their cache separately, so the attention
     # count must not include them.

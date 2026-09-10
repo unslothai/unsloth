@@ -12624,9 +12624,13 @@ class LlamaCppBackend:
         checkpoints are HOST buffers (common/common.cpp:2282-2297), so no VRAM
         total this is scaled against contains them either.
         """
+        from core.inference.offload_layout import LLAMA_MAX_LAYERS
+
         pattern = self._sliding_window_pattern
         n_layers = self._n_layers or 0
-        if not pattern or n_layers <= 0:
+        # Above llama.cpp's own cap (LLAMA_MAX_LAYERS) the child refuses the file, and
+        # this loop would otherwise build a per-layer vector off a declared count first.
+        if not pattern or n_layers <= 0 or n_layers > LLAMA_MAX_LAYERS:
             return []
         # Mirror _estimate_kv_cache_bytes' branch order: anything it returns before
         # path 3 is a shape this vector cannot describe.

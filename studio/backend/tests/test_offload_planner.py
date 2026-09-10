@@ -21,7 +21,9 @@ from core.inference.offload_layout import (
     LM_HEAD_PATTERN,
     BlockLayout,
     ModelLayout,
+    LLAMA_MAX_LAYERS,
     _layout_from_reader,
+    hybrid_layer_split,
     _layout_from_readers,
     layout_from_gguf,
     split_shard_paths,
@@ -1027,6 +1029,38 @@ def test_a_single_file_gguf_is_still_read():
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     assert layout.complete
     assert len(layout.blocks) == 64
+
+
+def test_a_block_count_above_llama_cpp_s_layer_cap_abstains(monkeypatch):
+    """llama.cpp asserts n_layer_all <= LLAMA_MAX_LAYERS (512) in load_hparams, so a file
+    declaring more is one the child will refuse. The readers used to allocate per-layer lists
+    off the declared count first: a public GGUF naming 2**40 blocks beside a two-entry
+    head_count_kv list would have had the backend building a 2**40-element list before
+    llama.cpp saw the file. Both readers abstain above the cap instead."""
+    # A plain dense file one block over the cap, every block present, so the ONLY thing
+    # stopping a complete layout is the cap itself.
+    over = LLAMA_MAX_LAYERS + 1
+    fields = _shard_fields(**{"llama.block_count": over})
+    layout = _layout_from_reader(_StubReader(fields, _shard_tensors(range(over))))
+    assert not layout.complete
+    fields = _shard_fields(**{"llama.block_count": LLAMA_MAX_LAYERS})
+    layout = _layout_from_reader(_StubReader(fields, _shard_tensors(range(LLAMA_MAX_LAYERS))))
+    assert layout.complete and len(layout.blocks) == LLAMA_MAX_LAYERS
+    # The hybrid split, which the KV estimator also calls, abstains on its own.
+    assert hybrid_layer_split("qwen35", 100_000, n_kv_head = [8, 0]) == (0, 0, False)
+    # And the reader refuses BEFORE asking the split: the per-layer padding after the
+    # split call is sized off the declared count too, so the reader's own cap is the
+    # only thing keeping a 2**40 file from being expanded there.
+    import core.inference.offload_layout as _layout_mod
+
+    def _never(*a, **k):
+        raise AssertionError("the layout asked the split about a file above the cap")
+
+    monkeypatch.setattr(_layout_mod, "hybrid_layer_split", _never)
+    fields = _shard_fields(**{"llama.block_count": over})
+    assert not _layout_from_reader(_StubReader(fields, _shard_tensors(range(64)))).complete
+    # The cap itself is still readable: one layer under it is a normal file.
+    assert hybrid_layer_split("qwen35", LLAMA_MAX_LAYERS, n_kv_head = [8, 0])[2] is True
 
 
 def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():

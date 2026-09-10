@@ -1416,6 +1416,11 @@ def test_the_seam_computes_a_per_layer_kv_vector():
     b._sliding_window_pattern = [False, True, True, True, True, True]
     b._sliding_window = 0
     assert b._kv_layer_weights(131072) == []
+    # A declared layer count llama.cpp itself refuses (LLAMA_MAX_LAYERS) gets no vector
+    # either: the loop would size it off the count before the child rejects the file.
+    b._sliding_window = 1024
+    b._n_layers = 100_000
+    assert b._kv_layer_weights(131072) == []
 
 
 def _swa_backend(n_layers = 6, shared = None):
