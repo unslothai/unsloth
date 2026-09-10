@@ -327,9 +327,13 @@ def _kv_floor_at(
 ) -> Optional[int]:
     """The caller's cache floor re-priced for ``(n_ctx, n_parallel)``; ``None`` when it cannot be."""
     at = max(1, opts.n_parallel)
-    # One unified cache serves every slot: only the recurrent state (charged per
-    # slot by the resident sizes) follows the count, the attention cache does not.
-    want = at if opts.kv_unified else max(1, n_parallel)
+    asked = max(1, n_parallel)
+    # A unified cache is not slot-flat: the estimator prices ``swa * slots + ubatch`` window
+    # cells per stream, so the windowed half DOES shrink with the count. Ask whatever priced
+    # this geometry; only the linear fallback below cannot tell the two halves apart, and it
+    # keeps the count the caller priced.
+    exact = opts.kv_bytes_at is not None or asked in opts.kv_bytes_floor_by_parallel
+    want = asked if (exact or not opts.kv_unified) else at
     if opts.kv_bytes_at is not None:
         return _measured_cache_at(layout, opts, n_ctx, want)
     base = max(0, kv_bytes_floor)

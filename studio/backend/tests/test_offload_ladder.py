@@ -1052,20 +1052,23 @@ def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monk
 
 def test_the_slot_rung_keeps_the_slots_it_cannot_buy_anything_with():
     """A slot the cache does not shrink for is concurrency given up for nothing: a flat floor
-    map, and --kv-unified with no recurrent state, both hold the cache at the caller's count
-    whatever the map says."""
+    map, and --kv-unified with no recurrent state, both hold the cache at the caller's count.
+
+    Re-anchored: the unified case now carries the FLAT map. A unified cache is not slot-flat
+    (the window cells are priced per slot), so a map that falls with the count is a
+    measurement rung 1 may act on, and asking it at fewer slots is the point of this rung.
+    """
     from core.inference.offload_planner import all_resident_bytes
 
     layout = graded_moe()
     ctx, floor = 4096, GIB
     flat = {4: floor, 3: floor, 2: floor, 1: floor}
-    falls = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
     needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
     card = needed + GIB - 3 * layout.blocks[0].ffn_down_bytes
     base = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0, n_parallel = 4)
     for extra in (
         dict(kv_bytes_floor_by_parallel = flat),
-        dict(kv_bytes_floor_by_parallel = falls, kv_unified = True),
+        dict(kv_bytes_floor_by_parallel = flat, kv_unified = True),
     ):
         pinned = plan_placement(
             layout,
@@ -1114,7 +1117,11 @@ def test_the_slot_rung_still_fires_where_a_slot_really_is_a_cache():
 def test_a_unified_cache_still_gives_up_slots_for_a_hybrids_recurrent_state():
     """--kv-unified makes the attention cache flat in the slot count; the recurrent state is
     still one copy per sequence. Skipping rung 1 outright under the flag spilled FFN on a
-    hybrid where one slot fewer fitted resident."""
+    hybrid where one slot fewer fitted resident.
+
+    Re-anchored: the no-state control now carries a FLAT map, since a map that falls with the
+    count says the unified cache does shrink and rung 1 is right to take it.
+    """
     from dataclasses import replace
 
     from core.inference.offload_planner import all_resident_bytes
@@ -1134,5 +1141,43 @@ def test_a_unified_cache_still_gives_up_slots_for_a_hybrids_recurrent_state():
     assert plan.n_parallel == 3 and not plan.spills_anything, plan.reason
     plain = graded_moe()
     short = all_resident_bytes(plain, ctx, kv_bytes_floor = floor, n_seq = 4) + GIB - GIB // 2
-    flat = plan_placement(plain, [short], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    flat_map = dict(base, kv_bytes_floor_by_parallel = {_p: floor for _p in (1, 2, 3, 4)})
+    flat = plan_placement(
+        plain, [short], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**flat_map)
+    )
     assert flat.n_parallel in (0, 4) and flat.spills_anything, flat.reason
+
+
+def test_a_unified_windowed_cache_still_shrinks_with_the_slot_count():
+    """--kv-unified does not make the cache slot-flat: the estimator prices ``swa * slots +
+    ubatch`` window cells per stream, so on a gemma-class model a unified cache really does
+    shrink by roughly 300 MiB per slot. Asking the callable at the caller's count instead of
+    the rung's threw that away and spilled weights rung 1 had already covered."""
+    from dataclasses import replace
+
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = replace(graded_moe(), arch = "gemma3", has_swa = True)
+    ctx, floor, step = 4096, GIB, GIB // 8
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - step
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 4,
+        kv_unified = True,
+    )
+    measured = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = opts(**base, kv_bytes_at = lambda _c, slots: floor - (4 - max(1, slots)) * step),
+    )
+    assert measured.n_parallel == 3 and not measured.spills_anything, measured.reason
+
+    # Nothing measured the smaller count, so only the linear rule is left and it cannot tell
+    # the window cells from the full-context ones: the rung is skipped, as before.
+    blind = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert blind.n_parallel == 0 and blind.spills_anything, blind.reason
