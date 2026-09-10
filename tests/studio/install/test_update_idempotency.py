@@ -627,8 +627,7 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
         "the pip bootstrap reinstalled pip on a venv that already had one:\n" + run.log[-8000:]
     )
     assert FRONTEND_CURRENT_MARKER.search(run.log), (
-        "the frontend was rebuilt on a checkout whose dist was already current:\n"
-        + run.log[-8000:]
+        "the frontend was rebuilt on a checkout whose dist was already current:\n" + run.log[-8000:]
     )
     assert run.log.count("sidecar current") == 3, (
         "a settled transformers sidecar was rebuilt:\n" + run.log[-8000:]
@@ -725,9 +724,7 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
     # prebuilt markers and the binaries stay as they were. The manifest may move, as it
     # records the sidecar evidence the repair renewed.
     unexpected = sorted(set(changed) - {target.name, "manifest"})
-    assert (
-        unexpected == []
-    ), f"the sidecar repair changed more than the damaged sidecar: {changed}"
+    assert unexpected == [], f"the sidecar repair changed more than the damaged sidecar: {changed}"
 
 
 def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settled):
@@ -870,7 +867,10 @@ def test_the_install_is_left_working(install, settled):
 
 
 def _assert_install_working(
-    install: pathlib.Path, before: dict, *, same_distributions: bool = True
+    install: pathlib.Path,
+    before: dict,
+    *,
+    same_distributions: bool = True,
 ) -> None:
     """The same packages as *before* are installed, and the CLI reports the install
     complete. Shared by the last ordered case and the desktop case's restore, which is
@@ -1027,9 +1027,7 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
         # exit code alone.
         restore = run_update(directory, "run5-restore", local = True)
         assert restore.rc == 0, restore.log[-8000:]
-        _assert_install_working(
-            install, before, same_distributions = UPGRADE_MARKER not in run.log
-        )
+        _assert_install_working(install, before, same_distributions = UPGRADE_MARKER not in run.log)
         # Why the pass ran, read off the measured run's own log: the separate PyPI
         # lookup above can fail or see another release than the one the update saw.
         if UPGRADE_MARKER in run.log:
