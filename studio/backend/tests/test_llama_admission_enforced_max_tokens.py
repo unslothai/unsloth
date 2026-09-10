@@ -209,6 +209,17 @@ class TestWhatIsLeftAlone:
         assert _enforced(_chat(max_tokens = 512), backend) is None
         assert _enforced(_chat(max_completion_tokens = 2048), backend) is None
 
+    def test_a_stated_but_unusable_cap_is_not_read_as_unstated(self):
+        """`/v1/messages` takes `max_tokens: 0` past its required-field check, and
+        `_positive_int_or_none` cannot tell that from an omitted field. Reading it as
+        unstated replaced the caller's zero with an allowance and generated a full answer
+        where none was asked for. It reaches llama-server as it did before the bound."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 0), backend) is None
+        assert _enforced(_chat(max_completion_tokens = 0), backend) is None
+        # An omitted cap is still the unstated case the bound exists for.
+        assert _enforced(_chat(), backend) is not None
+
     def test_a_single_slot_is_unrestricted(self):
         """One slot owns the whole cache, so there is nothing to divide."""
         backend = _backend(window = 16384, total = 16384, slots = 1)

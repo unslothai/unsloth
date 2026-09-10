@@ -2377,7 +2377,14 @@ def _openai_llama_admission_enforced_max_tokens(
         return None
     if _openai_llama_admission_unpriceable_media(payload, conversation):
         return None
-    cap = _positive_int_or_none(_effective_openai_max_tokens(payload))
+    stated = _effective_openai_max_tokens(payload)
+    cap = _positive_int_or_none(stated)
+    # Stated but unusable, which `_positive_int_or_none` cannot tell from absent: /v1/messages
+    # takes `max_tokens: 0` past its required-field check, and reading that as unstated would
+    # replace the caller's zero with an allowance and generate where nothing was asked for.
+    # Not ours to rewrite; it reaches llama-server as it did before the bound existed.
+    if cap is None and stated is not None:
+        return None
     window = _openai_llama_admission_context_window(
         llama_backend
     ) or _openai_llama_admission_budget(llama_backend)
