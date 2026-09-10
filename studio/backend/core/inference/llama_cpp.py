@@ -4291,10 +4291,12 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
-# Multimodal encoders (e.g. Gemma 4 vision) process image tokens with non-causal
-# attention, which requires n_ubatch >= one image's token count. The llama.cpp
-# default of 512 is too small for a single Gemma 4 image, so default to 2048
-# when launching with a vision mmproj and the user did not override the sizes.
+# mtmd splits an image into chunks of n_batch and decodes each under non-causal
+# attention, which asserts n_ubatch >= the chunk (llama-context.cpp). At the defaults
+# above that is 2048 > 512, so any image big enough to reach a second ubatch aborts the
+# server: Gemma 4's projector caps one image at 1120 tokens (set_limit_image_tokens(70,
+# 1120) in clip.cpp), which 512 cannot hold. Equal sizes make the chunk exactly one
+# ubatch, and 2048 keeps every Gemma 4 image whole in it.
 _MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
@@ -5801,17 +5803,19 @@ def _batch_ubatch_for_mmproj(
     extra_args: Optional[Iterable[str]],
     *,
     is_vision: bool = False,
+    disable_vision: bool = False,
 ) -> tuple[Optional[int], Optional[int]]:
-    """Raise the default batch/ubatch for vision-mmproj loads when unspecified.
+    """Raise the default batch/ubatch for a load that will launch a vision projector.
 
-    Vision encoders like Gemma 4 attend over all image tokens at once, so
-    llama-server's default 512-token micro-batch aborts with
-    ``GGML_ASSERT(n_ubatch >= n_tokens_all)``. When the caller left both sizes
-    unset and no env var or extra_arg overrides them, default to a larger size.
+    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the pair has to be equal. Only
+    when the caller named neither size and nothing else already sets one: an env
+    var or an extra_arg is the user sizing the child, and this must not undo it.
     """
-    if not mmproj_path or not is_vision:
+    if not mmproj_path or not is_vision or disable_vision:
         return n_batch, n_ubatch
     if n_batch is not None or n_ubatch is not None:
+        return n_batch, n_ubatch
+    if extra_args_disable_mmproj(extra_args):
         return n_batch, n_ubatch
     if _extra_args_n_ubatch(extra_args) is not None:
         return n_batch, n_ubatch
@@ -19321,18 +19325,11 @@ class LlamaCppBackend:
         n_parallel = intent.n_parallel
         n_batch = intent.n_batch
         n_ubatch = intent.n_ubatch
-        extra_args = list(intent.extra_args) if intent.extra_args is not None else None
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-            mmproj_path,
-            n_batch,
-            n_ubatch,
-            extra_args,
-            is_vision = is_vision,
-        )
         load_mode = intent.load_mode
         spec_draft_cache_type = intent.spec_draft_cache_type
         ctx_checkpoints = intent.ctx_checkpoints
         cache_ram = intent.cache_ram
+        extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Before the serial scope: a queued load still belongs to the lifecycle it
         # was requested in.
@@ -19953,6 +19950,18 @@ class LlamaCppBackend:
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
+
+            # Here, not at the intent unpack: a Hub load carries no mmproj_path of its
+            # own, the companion download above is what assigns it, and the fit below
+            # must price the micro-batch the child will actually launch with.
+            n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+                mmproj_path,
+                n_batch,
+                n_ubatch,
+                extra_args,
+                is_vision = is_vision,
+                disable_vision = disable_vision,
+            )
 
             # Backstop for everything the pre-teardown probes fail open on: refuse from the
             # header rather than watching llama-server die as "failed to start".
