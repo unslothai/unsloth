@@ -49,3 +49,9 @@ boundary injection. Task execution masks the root `.git` marker with a read-only
 empty mount and retains the same supervised process lease, mutation slot and
 monitor-held project flock through cleanup or quarantine. Ordinary project
 commands keep their existing behavior.
+
+Shutdown retries quarantined processes before and after the generic process sweep.
+The recovery breadcrumb is retained until both sweeps prove cleanup. These
+supervisor-specific retries live here; #10641 contains only the independently
+useful survivor check on the existing generic sweep. Native CI includes both
+shutdown recovery and process-lifetime tests.

@@ -1591,6 +1591,20 @@ def _install_windows_console_handler(shutdown) -> bool:
         return False
 
 
+def _retry_project_process_quarantine():
+    """No work when the optional supervisor is absent; broken imports still fail."""
+    import importlib
+
+    module_name = "core.agent_workspace.supervisor"
+    try:
+        supervisor = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name not in {module_name, "core.agent_workspace"}:
+            raise
+        return 0
+    return supervisor.retry_quarantined_project_processes()
+
+
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server.
 
@@ -1598,6 +1612,17 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
+
+    # 0a. Latch "quitting" before any subsystem is torn down. Each step below refuses to
+    # respawn its OWN child once it has run, but a load still in flight can reach a
+    # different spawner afterwards: the orchestrator is stopped at step 2 and swept at
+    # step 7, and a helper load owns a backend no step touches at all. One flag, read at
+    # every spawn, covers the gaps between the steps.
+    try:
+        from utils.process_lifetime import mark_process_shutting_down
+        mark_process_shutting_down()
+    except Exception as e:
+        logger.warning("Could not latch the process shutdown flag: %s", e)
 
     # 0. Drop the LAN listener first: it shares the loop uvicorn is about to stop.
     try:
@@ -1636,9 +1661,21 @@ def _graceful_shutdown(server = None):
 
     # 5. Kill llama-server subprocess (if loaded).
     try:
-        from routes.inference import _llama_cpp_backend
+        from routes.inference import _llama_cpp_backend, cancel_pending_loads
+
+        # Before the kill: a load still in the lifecycle gate or in preflight is not yet
+        # holding anything the backend's own flag can see, and would spawn llama-server
+        # after this step had already run.
+        try:
+            cancelled = cancel_pending_loads()
+            if cancelled:
+                logger.info("Cancelled %d in-flight model load(s) for shutdown", cancelled)
+        except Exception as e:
+            logger.warning("Could not cancel in-flight loads: %s", e)
         if _llama_cpp_backend is not None:
-            _llama_cpp_backend._kill_process()
+            # teardown = True: an app-level stop, not the retry ladder reaping a child it
+            # is about to replace. Only the former may end an in-flight health wait.
+            _llama_cpp_backend._kill_process(teardown = True)
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
@@ -1649,13 +1686,51 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
-    # 7. Backstop sweep for any adopted child the steps above missed.
+    # 7. Retry fail-closed cleanup for project processes whose exact namespace
+    # lifecycle could not be proven earlier. Their workspace lease and mutation
+    # slot stay held unless this pidfd-backed retry succeeds.
+    try:
+        retained = _retry_project_process_quarantine()
+        if retained:
+            logger.warning(
+                "%s supervised project process(es) remain quarantined; "
+                "workspace locks will stay held until process exit",
+                retained,
+            )
+    except Exception as e:
+        logger.warning("Error retrying quarantined project processes: %s", e)
+
+    # 8. Backstop sweep for any adopted child the steps above missed.
+    survivors = None
     try:
         from utils.process_lifetime import clear_breadcrumb, terminate_all
-        terminate_all()
-        clear_breadcrumb()  # nothing left for the next startup to sweep
+        survivors = terminate_all()
     except Exception as e:
         logger.warning("Error in process-lifetime sweep: %s", e)
+
+    # 9. The generic sweep may have made an earlier pidfd cleanup provable.
+    retained_after_sweep = None
+    try:
+        retained_after_sweep = _retry_project_process_quarantine()
+        if retained_after_sweep:
+            logger.warning(
+                "%s supervised project process(es) remain quarantined after the "
+                "generic process sweep",
+                retained_after_sweep,
+            )
+    except Exception as e:
+        logger.warning("Error retrying project quarantine after process sweep: %s", e)
+
+    if survivors is not None and retained_after_sweep is not None:
+        if not survivors and not retained_after_sweep:
+            clear_breadcrumb()
+        else:
+            logger.warning(
+                "Keeping the child-process recovery record for %s survivor(s) and "
+                "%s quarantined project process(es)",
+                len(survivors),
+                retained_after_sweep,
+            )
 
     # Last: while cleanup runs the server is still alive, and dropping the record
     # early leaves a retried `stop` or a new launch unable to find it.
@@ -3005,6 +3080,23 @@ def run_server(
 
             _close_lan_listener()
 
+    # An embedded host (studio/backend/colab.py) can call run_server again in the same
+    # interpreter, and the shutdown flags are process- and module-wide, so a second
+    # session would otherwise refuse every spawn and every load it admitted. Cleared
+    # here, after `from main import app` above (reaching for the route module earlier
+    # would build the backend singleton ahead of the startup steps that must come
+    # first) and before uvicorn serves anything below.
+    try:
+        from routes.inference import _llama_cpp_backend, begin_load_lifecycle
+        from utils.process_lifetime import begin_process_lifecycle
+
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._begin_server_lifecycle()
+        begin_process_lifecycle()
+        begin_load_lifecycle()
+    except Exception as e:
+        logger.warning("Could not reset llama-server shutdown state: %s", e)
+
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread
     thread.start()
@@ -3041,9 +3133,17 @@ def run_server(
     import atexit
 
     atexit.register(_remove_pid_file)
-    from utils.process_lifetime import terminate_all
+    from utils.process_lifetime import mark_process_shutting_down, terminate_all
 
     atexit.register(terminate_all)
+    # LAST, so it runs FIRST: atexit is LIFO. Without it the sweep above takes its
+    # snapshot with the latch never set, because the only thing that sets it on this
+    # path is the backend's own _cleanup hook, registered when the routes singleton was
+    # built and therefore run AFTER this one. An embedded caller that lets the
+    # interpreter exit without _graceful_shutdown would otherwise get the unguarded
+    # behaviour this change exists to remove: a load still in flight passes its latch
+    # check and adopts a child the sweep has already gone past.
+    atexit.register(mark_process_shutting_down)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.
     # The headless `run --api-only` path opts out so it does not leak this line.

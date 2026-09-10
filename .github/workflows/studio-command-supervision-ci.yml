@@ -13,6 +13,9 @@ on:
       - 'studio/backend/core/inference/tools.py'
       - 'studio/backend/storage/studio_db.py'
       - 'studio/backend/utils/process_lifetime.py'
+      - 'studio/backend/run.py'
+      - 'studio/backend/tests/test_studio_pid_files.py'
+      - 'studio/backend/tests/test_process_lifetime.py'
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_secure_process_supervisor.py'
       - 'studio/backend/tests/test_project_command_boundaries.py'
@@ -28,6 +31,9 @@ on:
       - 'studio/backend/core/inference/tools.py'
       - 'studio/backend/storage/studio_db.py'
       - 'studio/backend/utils/process_lifetime.py'
+      - 'studio/backend/run.py'
+      - 'studio/backend/tests/test_studio_pid_files.py'
+      - 'studio/backend/tests/test_process_lifetime.py'
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_secure_process_supervisor.py'
       - 'studio/backend/tests/test_project_command_boundaries.py'
@@ -78,9 +84,11 @@ jobs:
       - name: Compose confined edit support
         shell: bash
         env:
-          EDIT_REVISION: a5d144019bb585e246d0752c11d325807d0bfb19
+          EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
         run: |
-          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$EDIT_REVISION"
+          if ! git cat-file -e "$EDIT_REVISION^{commit}" 2>/dev/null; then
+            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$EDIT_REVISION"
+          fi
           git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$EDIT_REVISION"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -121,4 +129,5 @@ jobs:
           tests/test_project_command_boundaries.py
           tests/test_edit_file_tool.py
           tests/test_secure_process_supervisor.py
+          tests/test_studio_pid_files.py tests/test_process_lifetime.py
           -q --tb=short --timeout=60 --maxfail=5
