@@ -46,15 +46,25 @@ function hasExplicitFormatHint(
   return Boolean(formatHint && formatHint !== "unknown");
 }
 
+function isRunnableCachedRow(row: CachedInventoryRow): boolean {
+  return !row.partial && row.companionPrefetch !== true;
+}
+
 function bestCompleteCached(
   rows: CachedInventoryRow[],
 ): CachedInventoryRow | null {
   return (
-    rows.find((row) => !row.partial && row.modelFormat === "safetensors") ??
-    rows.find((row) => !row.partial && row.modelFormat === "checkpoint") ??
-    rows.find((row) => !row.partial && row.modelFormat === "gguf") ??
-    rows.find((row) => !row.partial && row.modelFormat === "adapter") ??
-    rows.find((row) => !row.partial) ??
+    rows.find(
+      (row) => isRunnableCachedRow(row) && row.modelFormat === "safetensors",
+    ) ??
+    rows.find(
+      (row) => isRunnableCachedRow(row) && row.modelFormat === "checkpoint",
+    ) ??
+    rows.find((row) => isRunnableCachedRow(row) && row.modelFormat === "gguf") ??
+    rows.find(
+      (row) => isRunnableCachedRow(row) && row.modelFormat === "adapter",
+    ) ??
+    rows.find((row) => isRunnableCachedRow(row)) ??
     null
   );
 }
@@ -99,6 +109,10 @@ export function resolveInventoryResource({
   const partialCached =
     compatibleCachedRows.find((row) => row.partial) ?? null;
   if (partialCached) return { cachedRow: partialCached, localRow: null };
+
+  const prefetchCached =
+    compatibleCachedRows.find((row) => row.companionPrefetch === true) ?? null;
+  if (prefetchCached) return { cachedRow: prefetchCached, localRow: null };
 
   const compatibleLocal = compatibleLocalRows[0] ?? null;
   if (compatibleLocal) return { cachedRow: null, localRow: compatibleLocal };

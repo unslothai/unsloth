@@ -34,6 +34,8 @@ export interface DiscoverRow {
   result: HfModelResult;
   isAvailableOnDevice: boolean;
   isPartialOnDevice: boolean;
+  companionPrefetch?: boolean;
+  cachedComponents?: string[];
   summary: string;
   capabilities: Capability[];
 }

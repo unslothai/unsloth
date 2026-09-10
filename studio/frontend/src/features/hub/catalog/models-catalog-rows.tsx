@@ -461,15 +461,20 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
+  const companionPrefetchRepoId = row.companionPrefetch
+    ? row.result.id
+    : undefined;
   const partialRepoId =
-    row.isAvailableOnDevice && row.isPartialOnDevice
+    row.isAvailableOnDevice && row.isPartialOnDevice && !row.companionPrefetch
       ? row.result.id
       : undefined;
   const tooltip = buildRowStatusTooltip({
     isGguf: row.result.isGguf,
     isAdapter: false,
-    isAvailableOnDevice: row.isAvailableOnDevice,
+    isAvailableOnDevice: row.isAvailableOnDevice && !row.companionPrefetch,
     partialRepoId,
+    companionPrefetchRepoId,
+    cachedComponentsSummary: formatCachedComponentsSummary(row.cachedComponents),
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -509,8 +514,11 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               {unsupported && (
                 <StatusDot tone="danger" label="May not be supported yet" />
               )}
-              {row.isAvailableOnDevice && row.isPartialOnDevice && (
+              {partialRepoId && (
                 <StatusDot tone="warning" label="Partial download" />
+              )}
+              {companionPrefetchRepoId && (
+                <StatusDot tone="info" label="Cached assets" />
               )}
               {row.isAvailableOnDevice && !row.isPartialOnDevice && (
                 <StatusDot tone="success" label="On device" />

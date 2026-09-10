@@ -295,14 +295,20 @@ def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
         return True
     candidate_partial = bool(candidate.get("partial"))
     existing_partial = bool(existing.get("partial"))
-    if candidate_partial != existing_partial:
-        return not candidate_partial
     candidate_prefetch = bool(candidate.get("companion_prefetch"))
     existing_prefetch = bool(existing.get("companion_prefetch"))
-    if candidate_prefetch != existing_prefetch:
-        return not candidate_prefetch
     candidate_active = bool(candidate.get("active_cache"))
     existing_active = bool(existing.get("active_cache"))
+    candidate_live = candidate_active and candidate_partial
+    existing_live = existing_active and existing_partial
+    if candidate_live and existing_prefetch and not existing_partial:
+        return True
+    if existing_live and candidate_prefetch and not candidate_partial:
+        return False
+    if candidate_partial != existing_partial:
+        return not candidate_partial
+    if candidate_prefetch != existing_prefetch:
+        return not candidate_prefetch
     if candidate_active != existing_active:
         return candidate_active
     return int(candidate.get("size_bytes") or 0) > int(existing.get("size_bytes") or 0)
@@ -1136,11 +1142,13 @@ def _scan_cached_models(
                 )
                 # A companion-only prefetch passes the download check yet cannot from_pretrained.
                 companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
-                companion_prefetch = companion_only and not download_partial
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory serves the row and it
                 # would reach for the Hub.
                 missing_payload = not payload.payload_snapshots
                 snapshot_partial = download_partial or missing_payload
+                companion_prefetch = (
+                    companion_only and not download_partial and not missing_payload
+                )
                 cached_components = (
                     list(hf_cache_scan.snapshot_cached_pipeline_components(load_snapshot))
                     if companion_prefetch
