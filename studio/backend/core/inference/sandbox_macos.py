@@ -235,6 +235,15 @@ def available() -> tuple[bool, str]:
     return True, "the system Seatbelt launcher is present and executable"
 
 
+def _sbpl_string(value: str) -> str:
+    r"""An SBPL string literal, non-ASCII left RAW: SBPL is TinyScheme, which knows
+    \", \n, \r, \t and \xDD and no \u, so json's default turned /Users/José into a
+    rule matching nothing and every macOS home with an accent lost isolation
+    silently. The profile is an argv string, so the raw character arrives as the
+    same UTF-8 bytes the path has."""
+    return json.dumps(value, ensure_ascii = False)
+
+
 def _validated(path: str) -> str:
     if not path or not posixpath.isabs(path) or any(c in path for c in "\0\n\r"):
         raise SandboxUnavailableError(
@@ -293,7 +302,7 @@ def _path_filters(paths: tuple[str, ...]) -> list[str]:
             continue
         kinds = ("literal", "subpath") if os.path.isdir(path) else ("literal",)
         for spelling in _sbpl_spellings(path):
-            encoded = json.dumps(spelling)
+            encoded = _sbpl_string(spelling)
             for kind in kinds:
                 if (kind, encoded) not in seen:
                     seen.add((kind, encoded))
@@ -307,7 +316,7 @@ def _literal_filters(paths: tuple[str, ...], *, resolve: bool = True) -> list[st
     seen: set[str] = set()
     for path in paths:
         for spelling in _sbpl_spellings(path, resolve = resolve):
-            encoded = json.dumps(spelling)
+            encoded = _sbpl_string(spelling)
             if encoded not in seen:
                 seen.add(encoded)
                 filters.append(f"(literal {encoded})")
@@ -325,7 +334,7 @@ def _ancestor_filters(spellings: tuple[str, ...]) -> list[str]:
     for spelling in spellings:
         current = posixpath.dirname(_validated(spelling))
         while current:
-            encoded = json.dumps(current)
+            encoded = _sbpl_string(current)
             if encoded not in seen:
                 seen.add(encoded)
                 filters.append(f"(literal {encoded})")
@@ -557,7 +566,7 @@ def build_profile(
     # The workdir too, since TMPDIR points into it and an AF_UNIX bind is
     # network-bind, not a file operation.
     tmp_subpaths = " ".join(
-        f"(subpath {json.dumps(spelling)})"
+        f"(subpath {_sbpl_string(spelling)})"
         for path in (private_tmp, workdir)
         for spelling in _sbpl_spellings(path)
     )
@@ -571,8 +580,8 @@ def build_profile(
         _OPTIONAL_READ_LITERALS + editable_import_roots(), resolve = False
     )
     sysctl_filters = [
-        *(f"(sysctl-name {json.dumps(name)})" for name in _SYSCTL_NAMES),
-        *(f"(sysctl-name-prefix {json.dumps(name)})" for name in _SYSCTL_PREFIXES),
+        *(f"(sysctl-name {_sbpl_string(name)})" for name in _SYSCTL_NAMES),
+        *(f"(sysctl-name-prefix {_sbpl_string(name)})" for name in _SYSCTL_PREFIXES),
     ]
     lines = [
         "(version 1)",
@@ -638,7 +647,7 @@ def build_profile(
         _rule("allow sysctl-read", sysctl_filters),
         '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
         "(allow mach-lookup\n"
-        + "\n".join(f"  (global-name {json.dumps(name)})" for name in _MACH_SERVICES)
+        + "\n".join(f"  (global-name {_sbpl_string(name)})" for name in _MACH_SERVICES)
         + ")",
     ]
     return "\n".join(lines) + "\n"

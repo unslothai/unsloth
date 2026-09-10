@@ -129,6 +129,22 @@ def test_both_private_spellings_are_emitted_for_the_workdir(profile):
             assert f'(subpath "{path}")' in rule
 
 
+def test_a_non_ascii_workdir_reaches_the_profile_unescaped(monkeypatch):
+    """SBPL is TinyScheme and has no \\u escape, so json's default spelling of an
+    accented path is a rule that matches nothing: the workdir would be unwritable
+    and the live probe would report the whole backend unavailable."""
+    workdir = "/tmp/unsloth-session-caf\u00e9"
+    private_tmp = "/tmp/us-seatbelt-\u00fcber"
+    real_exists, real_isdir = os.path.exists, os.path.isdir
+    named = {workdir, private_tmp}
+    monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
+    monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
+    text = backend.build_profile(workdir = workdir, private_tmp = private_tmp, runtime_paths = ())
+    assert "\\u00" not in text
+    for path in (workdir, private_tmp):
+        assert f'(subpath "{path}")' in _rule(text, _WRITE_PREFIX)
+
+
 def test_optional_literals_are_allowed_even_though_they_do_not_exist(profile):
     literals = _literals(_rule(profile, _OPTIONAL_PREFIX))
     for path in backend._OPTIONAL_READ_LITERALS:
