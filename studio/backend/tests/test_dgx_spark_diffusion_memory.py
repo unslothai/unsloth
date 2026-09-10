@@ -65,6 +65,7 @@ def test_unified_free_credits_reclaimable_page_cache(
 ):
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: available_mib)
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
 
     assert (
         diffusion_memory._unified_reclaimable_memory_mib(driver_free_mib, 121 * 1024)[0]
@@ -75,6 +76,7 @@ def test_unified_free_credits_reclaimable_page_cache(
 def test_unified_free_is_unchanged_when_system_memory_is_unreadable(monkeypatch):
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: None)
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
 
     assert diffusion_memory._unified_reclaimable_memory_mib(3 * 1024, 121 * 1024) == (
         3 * 1024,
@@ -97,6 +99,7 @@ def test_spark_snapshot_is_unified_and_credits_the_cache(monkeypatch):
     # capped below 115 GiB lowers the snapshot and this case asserts the machine it
     # happens to run on rather than the change.
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
     hardware_stub = types.ModuleType("utils.hardware")
     hardware_stub.trusted_mem_get_info = lambda: (3 * 1024 * MIB, 121 * 1024 * MIB)
     monkeypatch.setitem(__import__("sys").modules, "utils.hardware", hardware_stub)
@@ -135,6 +138,7 @@ def test_a_rocm_apu_snapshot_is_not_credited(monkeypatch):
     monkeypatch.setitem(_sys.modules, "torch", torch_stub)
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 115 * 1024)
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
     hardware_stub = types.ModuleType("utils.hardware")
     hardware_stub.trusted_mem_get_info = lambda: (90 * 1024 * MIB, 96 * 1024 * MIB)
     monkeypatch.setitem(_sys.modules, "utils.hardware", hardware_stub)
@@ -271,3 +275,57 @@ def test_the_two_cgroup_readings_are_not_the_same_number(monkeypatch):
 
     assert LlamaCppBackend._cgroup_available_memory_mib() == 34 * 1024
     assert LlamaCppBackend._cgroup_memory_limit_mib() == 64 * 1024
+
+
+def test_a_finite_limit_caps_capacity_even_when_the_remainder_is_slack():
+    """A tighter host reading does not make a 64 GiB container a 121 GiB device.
+
+    With 44 GiB of cgroup remainder but only 16 GiB of host availability, the remainder
+    is not what caps the free reading, yet the limit still bounds the pool. Leaving the
+    device total in place there reserved 24 GiB against a pool that cannot exceed 64 and
+    produced a zero budget for a model that fits.
+    """
+    from core.inference import diffusion_memory as dm
+
+    saved = (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
+             dm._cgroup_memory_limit_mib)
+    dm._available_system_memory_mib = lambda: 16 * 1024
+    dm._cgroup_available_memory_mib = lambda: 44 * 1024
+    dm._cgroup_memory_limit_mib = lambda: 64 * 1024
+    try:
+        free_mib, total_mib = dm._unified_reclaimable_memory_mib(10 * 1024, 124609)
+    finally:
+        (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
+         dm._cgroup_memory_limit_mib) = saved
+
+    assert (free_mib, total_mib) == (16 * 1024, 64 * 1024)
+    budget = diffusion_memory._safe_device_budget_mib(
+        diffusion_memory.DeviceMemory(
+            backend = "cuda",
+            device = "cuda",
+            memory_kind = "unified_memory",
+            free_mib = free_mib,
+            total_mib = total_mib,
+        )
+    )
+    # 20% of 64 GiB, not of 121 GiB, so there is a budget at all.
+    assert budget == 16 * 1024 - int(64 * 1024 * 0.20)
+    assert budget > 0
+
+
+def test_free_memory_above_a_finite_limit_is_not_free():
+    """The driver's host-wide MemFree can exceed what the container may charge."""
+    from core.inference import diffusion_memory as dm
+
+    saved = (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
+             dm._cgroup_memory_limit_mib)
+    dm._available_system_memory_mib = lambda: 100 * 1024
+    dm._cgroup_available_memory_mib = lambda: 90 * 1024
+    dm._cgroup_memory_limit_mib = lambda: 32 * 1024
+    try:
+        answer = dm._unified_reclaimable_memory_mib(80 * 1024, 124609)
+    finally:
+        (dm._available_system_memory_mib, dm._cgroup_available_memory_mib,
+         dm._cgroup_memory_limit_mib) = saved
+
+    assert answer == (32 * 1024, 32 * 1024)

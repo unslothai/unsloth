@@ -439,24 +439,26 @@ def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int,
         credited = free_mib
     else:
         credited = max(free_mib, min(int(available_mib), total_mib))
-    capacity = total_mib
     if cgroup_mib is not None and int(cgroup_mib) <= credited:
-        # Bound by the container, so its LIMIT is the pool. `<=`, not `<`: the host
-        # reading is itself cgroup-capped, so `credited == cgroup_mib` is the ordinary
-        # result whenever MemAvailable exceeds the remainder and the driver's MemFree
-        # does not, and treating that as unbound left the reserve priced against the
-        # host total. Only when it binds, though: a remainder above the credited
-        # reading says nothing about capacity.
+        # Bound by the container. `<=`, not `<`: the host reading is itself
+        # cgroup-capped, so `credited == cgroup_mib` is the ordinary result whenever
+        # MemAvailable exceeds the remainder and the driver's MemFree does not, and
+        # treating that as unbound left the reserve priced against the host total.
         credited = int(cgroup_mib)
-        # The LIMIT, never the remainder. The remainder shrinks as the container fills,
-        # so reporting it as capacity would shrink the reserve, and the fits-at-all
-        # verdict with it, as memory is used, and would refuse a replacement model that
-        # only has to fit once the resident one is evicted.
-        limit_mib = _cgroup_memory_limit_mib()
-        capacity = min(total_mib, int(limit_mib)) if limit_mib is not None else total_mib
-        # A capacity below what is free right now cannot describe the pool that free
-        # reading came out of, and would take the budget below it negative.
-        capacity = max(capacity, credited)
+    # The capacity question is separate from the free-memory one, and a finite limit
+    # answers it whether or not the remainder happens to be what caps the free reading.
+    # A tighter host reading does not make a 64 GiB container a 121 GiB device: the
+    # reserve is 20% of capacity, so leaving the host total in place there prices a
+    # 24 GiB reserve against a pool that cannot exceed 64 and can zero the budget.
+    # The LIMIT, never the remainder, which shrinks as the container fills and would
+    # refuse a replacement model that only has to fit once the resident one is evicted.
+    limit_mib = _cgroup_memory_limit_mib()
+    if limit_mib is None:
+        capacity = total_mib
+    else:
+        capacity = min(total_mib, int(limit_mib))
+        # Memory above the limit cannot be charged, so it is not free either.
+        credited = min(credited, capacity)
     return credited, capacity
 
 
