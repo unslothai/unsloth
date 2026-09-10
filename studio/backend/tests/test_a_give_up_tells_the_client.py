@@ -44,6 +44,8 @@ from test_llama_tool_loop_preempt_resume import (  # noqa: E402
 )
 from test_llama_tool_loop_preempt_resume import _run as _run_tools  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _nothing_yet() -> str:
     """A chunk that opens the stream and carries no text."""

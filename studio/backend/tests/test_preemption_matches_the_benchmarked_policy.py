@@ -20,6 +20,8 @@ from core.inference.llama_preemption import (  # noqa: E402
     reset_preemption_controllers,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 preempt_sim = pytest.importorskip(
     "preempt_sim", reason = "the simulator lives beside the repo, not inside it"
 )

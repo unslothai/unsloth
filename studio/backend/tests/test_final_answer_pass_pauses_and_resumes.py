@@ -14,6 +14,9 @@ import threading
 
 from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import LlamaCppBackend
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 LLAMA_CPP = pathlib.Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"

@@ -10,6 +10,8 @@ import pytest
 from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import LlamaCppBackend, _interrupt_event
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 class _FakeResponse:
     """Enough of httpx.Response for _iter_text_cancellable."""

@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 from core.inference.chat_generation_runs import _admission_status_chunks
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def test_the_two_comments_become_status_chunks():

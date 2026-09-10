@@ -53,16 +53,25 @@ class TestTheCasesThatMustNotChange:
         assert _charged(50, 200, active = True) == 50
         assert _charged(50, 200, active = False) == 50
 
-    def test_an_unstated_request_is_untouched(self):
+    def test_an_unstated_request_is_never_charged_more_for_the_optimism(self):
+        """Off, an unstated request is charged its WHOLE share, which is what it cost
+        before any of this existed: nothing can hand the difference back, and the wire is
+        permitted the share either way. The optimism only ever lowers that, and only where
+        a pause can reclaim what it did not reserve.
+        """
         for prompt in (1, 200, 1000, 3000):
-            assert _charged(None, prompt, active = True) == _charged(None, prompt, active = False)
+            assert _charged(None, prompt, active = False) == min(SHARE - prompt, BUDGET - prompt)
+            assert _charged(None, prompt, active = True) <= _charged(None, prompt, active = False)
 
     def test_a_cap_at_or_above_the_window_was_already_unstated(self):
         """`_build_passthrough_payload` sends max_tokens = backend_ctx and "Max" sends the context
         length, so both already meant unstated and neither may change.
         """
         for cap in (BUDGET, BUDGET + 1):
-            assert _charged(cap, 3000, active = True) == _charged(None, 3000, active = False)
+            for active in (False, True):
+                assert _charged(cap, 3000, active = active) == _charged(
+                    None, 3000, active = active
+                )
 
     def test_the_charge_is_never_zero(self):
         """A zero charge reads as "this request occupies nothing", which would let an unbounded

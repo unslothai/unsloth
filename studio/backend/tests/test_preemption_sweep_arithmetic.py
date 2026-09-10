@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from core.inference import llama_preemption as preemption
 from core.inference.llama_preemption import ParticipantState, reclaim_idle_slots
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def _controller(key: str) -> preemption.PreemptionController:

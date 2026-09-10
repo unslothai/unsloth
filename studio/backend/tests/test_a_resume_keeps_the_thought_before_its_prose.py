@@ -23,6 +23,9 @@ from .test_llama_plain_chat_preempt_resume import (
     _finish,
     _run,
 )
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def _thought_then_prose(thought: str, prose: str) -> str:

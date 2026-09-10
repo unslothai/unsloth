@@ -13,6 +13,8 @@ from core.inference.llama_preemption import (
 )
 import routes.inference as inference_route
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _controller() -> PreemptionController:
     made = PreemptionController("test://toolcall")

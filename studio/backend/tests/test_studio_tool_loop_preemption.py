@@ -19,6 +19,8 @@ from core.inference.studio_tool_loop import (
     stream_with_studio_tools,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _sse(
     delta = None,

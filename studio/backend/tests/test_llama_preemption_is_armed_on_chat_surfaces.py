@@ -5,6 +5,9 @@
 
 import ast
 import pathlib
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 ROUTES = pathlib.Path(__file__).resolve().parent.parent / "routes" / "inference.py"
 PREEMPTION = (

@@ -1903,13 +1903,19 @@ def _openai_llama_admission_context_window(llama_backend) -> Optional[int]:
 def _openai_llama_preemption_will_apply(llama_backend, budget: Optional[int]) -> bool:
     """Can a request that outgrows its charge actually be paused?
 
-    The same three conditions PreemptionController.configure uses -- the rollout switch,
+    The same three conditions PreemptionController.configure uses -- the opt-in switch,
     kv_unified (try_clear_idle_slots is gated on exactly this), and a budget -- asked
     before admission, because admission is about to decide how optimistic to be.
 
     Charging less than a request may generate is safe ONLY when something will reclaim the
     difference; where nothing will, admission charges the full stated cap and serialises.
+    That is the default: without UNSLOTH_LLAMA_ADMISSION_PREEMPT=1 this is False for every
+    request, so the pricing below is the plain fair share and no optimism is taken.
     """
+    # The switch first: it is one environment read, while the three checks below walk the
+    # backend and re-read the admission config. Off, none of that is worth doing.
+    if not preemption_enabled():
+        return False
     if not budget:
         return False
     if not bool(getattr(llama_backend, "_kv_cache_unified", False)):
@@ -1918,9 +1924,7 @@ def _openai_llama_preemption_will_apply(llama_backend, budget: Optional[int]) ->
     # admission or its KV accounting off every lease is free, so the controller learns no
     # prompt cost and no prefill reserve: optimism needs the ledger as much as the eviction.
     config = llama_admission_config_from_env()
-    if not (config.enabled and config.kv_budget):
-        return False
-    return preemption_enabled()
+    return bool(config.enabled and config.kv_budget)
 
 
 def _openai_llama_admission_output_allowance(
@@ -1944,6 +1948,11 @@ def _openai_llama_admission_output_allowance(
     where 1024 is most of a share on its own. A prompt already past its share keeps the
     flat allowance, since it does not fit either way.
 
+    Only ``preemption_active`` charges LESS than that share. Without it the charge is the
+    whole share, as it was before this module could pause anybody: charging less than is
+    permitted let a small prompt undercharge beside a large one and overrun the cache, and
+    there is no preemptor to take the difference back.
+
     "Fits its share" means with the wire reserve still in it. A prompt inside that of its
     share does not fit either, and pricing it as if it did left the bound's floor of one to
     hand the room back: at ``share - 1`` the allowance is 1, the reserve takes it below zero,
@@ -1964,14 +1973,23 @@ def _openai_llama_admission_output_allowance(
     # `preemption_active`.
     # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
     allowance = min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
-    # The SMALLEST of the three. A share NARROWER than the flat allowance still has to
-    # win, since on a small cache 1024 is most of a share on its own. A share WIDER must
-    # not: the clamp now permits the whole WINDOW, so charging the share is a reservation
-    # for text nobody has generated, and these charges are the `pending` term preemption
-    # decides on. The gap has to clear the wire reserve too: inside it the bound's floor of
-    # one hands the room straight back, so such a prompt takes the flat allowance instead.
+    # The gap has to clear the wire reserve: inside it the bound's floor of one hands the
+    # room straight back, so such a prompt takes the flat allowance instead.
     if share is not None and share - prompt_tokens > _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS:
-        allowance = min(allowance, share - prompt_tokens, max(0, window - prompt_tokens))
+        if preemption_active:
+            # The SMALLEST of the three. A share NARROWER than the flat allowance still has
+            # to win, since on a small cache 1024 is most of a share on its own. A share
+            # WIDER must not: the clamp now permits the whole WINDOW, so charging the share
+            # is a reservation for text nobody has generated, and these charges are the
+            # `pending` term preemption decides on.
+            allowance = min(allowance, share - prompt_tokens, max(0, window - prompt_tokens))
+        else:
+            # Nothing will reclaim the difference, so the charge is the WHOLE share, which
+            # is what this priced before preemption existed. Undercharging here while
+            # `_openai_llama_admission_wire_output_bound` still PERMITS `share - prompt`
+            # would hand a request tens of thousands of tokens it never reserved: the two
+            # are the same decision and have to move together.
+            allowance = min(share - prompt_tokens, max(0, window - prompt_tokens))
     if stated is not None:
         # Never charge more than a request is allowed to produce: `max_tokens: 50` is
         # charged 50, not the flat allowance.
@@ -2585,6 +2603,25 @@ def _preempt_key(llama_backend) -> str:
     return str(getattr(llama_backend, "base_url", "llama-server"))
 
 
+def _openai_llama_inert_residency_observer():
+    """The same triple, for an install that never opted in.
+
+    ``on_tokens`` is None rather than a no-op closure on purpose: llama.cpp checks
+    ``on_tokens is not None`` before it counts a stream's tokens, so None is the difference
+    between skipping the callback and calling into it every 32 tokens for nothing. The
+    other two stay callable because four tool-loop drains report through them
+    unconditionally, and a None there would mean a guard at each of those call sites.
+    """
+
+    def _refresh(controller, *, force: bool = False) -> None:
+        return None
+
+    def _note_state(state: Optional[str]) -> str:
+        return state or ParticipantState.DECODING
+
+    return _refresh, None, _note_state
+
+
 def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     """The watermark sweep, as one implementation both chat surfaces call.
 
@@ -2596,6 +2633,11 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     Everything here swallows every exception: it runs on the token path and must never fail
     a generation that is otherwise fine.
     """
+    # Opt-in, asked once per generation rather than per chunk. Off, nothing below is built:
+    # no closure holds the backend, no controller is looked up on the token path, and the
+    # `/slots` round trip further down is unreachable.
+    if not preemption_enabled():
+        return _openai_llama_inert_residency_observer()
     # GET /slots is an HTTP round trip and the token callback fires every 32 tokens, so it
     # is read on a TTL: far shorter than filling a cache, far longer than a report.
     _gguf_slots_seen = {"at": 0.0}
@@ -2817,7 +2859,13 @@ def _openai_llama_publish_round_charge(
     refuse a resume against room that is really there. The lease keeps charging the whole
     catalogue, which is deliberate and separate: a charge may cover what a request does not
     send, a residency figure may not.
+
+    Nothing to publish to when the switch is off: there is no participant, and
+    ``observe_tokens`` is None on that path for the reason
+    ``_openai_llama_inert_residency_observer`` gives.
     """
+    if not preemption_enabled():
+        return
     try:
         lease = reservation.lease_nowait() if reservation is not None else None
         if lease is None:
@@ -2876,7 +2924,11 @@ def _openai_llama_note_raw_measured(*, llama_backend, gen_id: str) -> None:
     """The raw holder's upstream has produced: its prompt is prefilled and resident.
 
     Counted holders never report tokens, so they were charged twice once `/slots` saw them.
+
+    Nothing is counted when the switch is off, so there is nothing to mark.
     """
+    if not preemption_enabled():
+        return
     try:
         get_preemption_controller(_preempt_key(llama_backend)).note_measured(gen_id)
     except Exception:
@@ -2936,6 +2988,11 @@ def _openai_llama_preemption_arm(
     Returns the policy the stream side calls back on, or None when preemption cannot apply,
     which is the pre-preemption behaviour: the wire clamp still bounds every request.
     """
+    # The opt-in switch before anything else, so a default install pays one environment
+    # read here and nothing more: no controller is looked up or created, nothing is
+    # configured, and no participant is registered.
+    if not preemption_enabled():
+        return None
     if reservation is None or signal is None:
         return None
     lease = reservation.lease_nowait()
@@ -2959,17 +3016,16 @@ def _openai_llama_preemption_arm(
         batch_tokens = _openai_llama_effective_batch_tokens(llama_backend),
     )
     if not controller.active:
-        # No shared cache, no budget, or the rollout switch; all three fall back to the
-        # wire clamp. Debug, not info: all three are static properties of the load, so at
-        # info an install without --kv-unified logs one per chat forever.
+        # No shared cache or no budget; both fall back to the wire clamp. The switch is not
+        # a reason here any more -- it was asked at the top of this function. Debug, not
+        # info: both are static properties of the load, so at info an install without
+        # --kv-unified logs one per chat forever.
         _llama_preemption_log(
             "not-armed",
             reason = (
                 "no-kv-unified"
                 if not getattr(llama_backend, "_kv_cache_unified", False)
                 else "no-budget"
-                if not _openai_llama_admission_budget(llama_backend)
-                else "switched-off"
             ),
             gen_id = gen_id,
             level = "debug",
@@ -3025,7 +3081,13 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
     dropping neither: llama-server keeps a finished slot's prompt cache, so unregistering
     alone tells the next request there is room the cache is still holding, and admission
     overcommits against space that does not exist.
+
+    Nothing to drop when the switch is off, and the release below must not run either: it
+    reads `/slots` and erases idle slots the moment anyone is QUEUED, and a default install
+    queues at admission without preemption having put anything in the cache to give back.
     """
+    if not preemption_enabled():
+        return
     try:
         key = _preempt_key(llama_backend)
         get_preemption_controller(key).unregister(gen_id)
@@ -3374,10 +3436,16 @@ def _openai_llama_admission_recost(
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
         # The preemptor's signature moves with every token anybody decodes, while the
         # ledger only moves at round boundaries: a round waiting behind a busy leader is
-        # queued, not stuck.
+        # queued, not stuck. None with the switch off, which is what the wait had before
+        # this existed: nothing reports tokens then, so the signature would be a constant,
+        # and a constant one never resets the stall clock anyway. Left as None rather than
+        # a constant so a default install does not instantiate a controller at all.
         _progress = None
         try:
-            _progress = get_preemption_controller(_preempt_key(llama_backend)).progress_signature
+            if preemption_enabled():
+                _progress = get_preemption_controller(
+                    _preempt_key(llama_backend)
+                ).progress_signature
         except Exception:
             _progress = None
         if not lease.recost_waiting(
@@ -23816,7 +23884,10 @@ async def produce_openai_chat_completions(
             # Created before the generator is BUILT because it is passed into it, while the
             # policy resolves lazily: the controller does not know this generation until
             # admission returns, and nothing can pause before the generator is iterated.
-            _gguf_preempt_signal = PreemptSignal()
+            # None unless the operator opted in: llama.cpp combines a non-None
+            # preempt_event with the cancel event into a polled composite, so handing it one
+            # here would change how every default install reads its stream.
+            _gguf_preempt_signal = PreemptSignal() if preemption_enabled() else None
 
             # One implementation, shared with the plain chat surfaces.
             _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state = (
@@ -24776,7 +24847,8 @@ async def produce_openai_chat_completions(
         # Preemption for a PLAIN chat, not just a tool loop. Created before the generator
         # is built because it is passed into it, with the policy bound once admission has
         # returned, exactly as the tool path does.
-        _plain_preempt_signal = PreemptSignal()
+        # None unless the operator opted in; see the tool-loop surface above.
+        _plain_preempt_signal = PreemptSignal() if preemption_enabled() else None
         _plain_preempt_policy = DeferredPreemptionPolicy()
         # The sweep. Arming alone changes nothing: `observe()` is the only thing that plans
         # an eviction and `on_tokens` is the only thing that calls it.
@@ -32484,7 +32556,8 @@ async def anthropic_messages(
     # the raw passthrough it has a Studio-side generator holding the conversation and CAN be
     # paused. Created here because the stream wrapper and `_run_plain_gen` both close over
     # it; the policy is bound later, once the lease is in hand.
-    _anthropic_preempt_signal = PreemptSignal()
+    # None unless the operator opted in; see the chat tool-loop surface.
+    _anthropic_preempt_signal = PreemptSignal() if preemption_enabled() else None
     _anthropic_preempt_policy = DeferredPreemptionPolicy()
     try:
         _anthropic_preempt_loop = asyncio.get_running_loop()

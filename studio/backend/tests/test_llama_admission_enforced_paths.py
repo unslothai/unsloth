@@ -1324,10 +1324,11 @@ class TestARetryThatGrewItsPrompt:
         first_prompt = _openai_llama_admission_wire_prompt_tokens(
             first_messages, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        # The first attempt's wire occupancy is its share less the reserve it never sends,
-        # and the ledger never charged it more than the wire may write.
-        assert first_prompt + allowance == budget // slots - _RESERVE
-        assert charge <= first_prompt + allowance
+        # The charge IS the first attempt's wire occupancy plus the reserve it never sends.
+        # With preemption unset -- the default here -- nothing reclaims the difference, so
+        # the ledger holds the whole share and the reserve comes out of the allowance.
+        assert charge == budget // slots
+        assert first_prompt + allowance == charge - _RESERVE
 
         grown = first_messages + [
             # The whole allowance came back as an unparseable call.

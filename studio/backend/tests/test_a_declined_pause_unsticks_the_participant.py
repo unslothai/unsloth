@@ -17,6 +17,9 @@ from core.inference.llama_preemption import (
     ParticipantState,
     PreemptionController,
 )
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 _TOOL = {

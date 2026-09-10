@@ -56,6 +56,11 @@ def _enforced(payload, backend):
 class TestTheInvariant:
     """No single request may be permitted more than the window its own slot holds."""
 
+    # Opted in per class, not per module: the two classes below assert the SHARE-based
+    # bound a default install gets, and the whole-window bound asserted here exists only
+    # where a pause can reclaim it.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
     def test_no_request_may_exceed_its_own_window(self):
         for total in (2048, 4096, 8192, 16384, 65536, 262144):
             backend = _backend(window = total, total = total, slots = 4)
@@ -297,6 +302,9 @@ class TestWhereAStatedCapStopsBeingStated:
 
 
 class TestTheEdges:
+    # The window-sized bound this class measures against is the opted-in one.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
     def test_a_prompt_that_fills_the_window_still_gets_a_token(self):
         """Zero would be refused upstream, so the floor is one."""
         backend = _backend(window = 16384, total = 16384, slots = 4)

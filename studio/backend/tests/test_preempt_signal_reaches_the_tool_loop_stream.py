@@ -12,6 +12,9 @@ from auth.authentication import get_current_subject
 import routes.inference as inference_route
 
 from .llama_backend_double import FakeLlamaCppBackend
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 class _PausingToolBackend(FakeLlamaCppBackend):

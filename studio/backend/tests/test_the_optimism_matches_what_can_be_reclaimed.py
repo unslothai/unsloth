@@ -28,6 +28,8 @@ from core.inference.llama_preemption import (
 )
 import routes.inference as inference_route
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 ROUTES = pathlib.Path(inference_route.__file__)
 LLAMA_CPP = ROUTES.parent.parent / "core" / "inference" / "llama_cpp.py"

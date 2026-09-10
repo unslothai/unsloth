@@ -152,10 +152,23 @@ class TestTheCheckpoint:
         assert not preemption.StreamCheckpoint(reasoning_text = "hmm").has_resume_point()
 
 
-class TestTheRolloutSwitch:
-    def test_on_by_default(self, monkeypatch):
+class TestTheOptInSwitch:
+    """Preemption is off unless an operator asks for it, and asking is one variable."""
+
+    def test_off_by_default(self, monkeypatch):
+        """The whole point: an install that sets nothing pauses nobody."""
         monkeypatch.delenv(preemption.PREEMPT_ENV, raising = False)
+        assert preemption.preemption_enabled() is False
+
+    def test_one_is_how_it_is_turned_on(self, monkeypatch):
+        """The documented spelling, and the one every preemption test module opts in with."""
+        monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
         assert preemption.preemption_enabled() is True
+
+    def test_the_other_truthy_spellings_work_too(self, monkeypatch):
+        for value in ("true", "yes", "on", "ON"):
+            monkeypatch.setenv(preemption.PREEMPT_ENV, value)
+            assert preemption.preemption_enabled() is True
 
     def test_it_can_be_turned_off(self, monkeypatch):
         for value in ("0", "false", "no", "off", "OFF"):
@@ -163,8 +176,13 @@ class TestTheRolloutSwitch:
             assert preemption.preemption_enabled() is False
 
     def test_nonsense_keeps_the_default(self, monkeypatch):
+        """Which is now OFF, so a typo cannot switch preemption on by accident."""
         monkeypatch.setenv(preemption.PREEMPT_ENV, "maybe")
-        assert preemption.preemption_enabled() is True
+        assert preemption.preemption_enabled() is False
+
+    def test_an_empty_value_is_not_an_opt_in(self, monkeypatch):
+        monkeypatch.setenv(preemption.PREEMPT_ENV, "   ")
+        assert preemption.preemption_enabled() is False
 
 
 class TestTheDefaultPolicy:

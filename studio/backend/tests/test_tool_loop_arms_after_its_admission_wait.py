@@ -18,6 +18,8 @@ import routes.inference as inference_route
 from .asgi_stream_helpers import wait_for_frame
 from .llama_backend_double import FakeLlamaCppBackend
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 @pytest.fixture(autouse = True)
 def _fresh_queues():

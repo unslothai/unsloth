@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from core.inference import llama_preemption as preemption
 from core.inference.llama_preemption import ParticipantState
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 _PROMPT = 100

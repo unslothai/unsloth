@@ -16,6 +16,8 @@ from core.inference.llama_preemption import (
     preemption_buffer_tokens,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 # The shipped shape, and the one every figure in the docstring above is quoted at.
 BUDGET = 8192
 SLOTS = 4

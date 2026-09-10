@@ -12,6 +12,9 @@ import threading
 
 from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import LlamaCppBackend
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def _reasoning(content: str) -> str:

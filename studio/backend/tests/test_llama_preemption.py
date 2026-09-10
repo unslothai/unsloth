@@ -22,6 +22,8 @@ from core.inference.llama_preemption import (
     reset_preemption_controllers,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 @pytest.fixture(autouse = True)
 def _clean_registries():

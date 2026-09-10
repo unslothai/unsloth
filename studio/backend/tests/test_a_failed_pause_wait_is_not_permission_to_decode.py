@@ -34,6 +34,8 @@ from .test_llama_tool_loop_preempt_resume import (
     _run,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 class _WaitRaises(_RecordingPolicy):
     """Released the lease, then failed in the wait."""

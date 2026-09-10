@@ -11,6 +11,9 @@ import json
 import threading
 
 from core.inference.llama_cpp import LlamaCppBackend
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 _TOOL = {

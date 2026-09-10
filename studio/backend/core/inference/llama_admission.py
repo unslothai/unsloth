@@ -36,6 +36,10 @@ ADMISSION_QUEUE_PER_SLOT_ENV = "UNSLOTH_LLAMA_ADMISSION_QUEUE_PER_SLOT"
 # off restores slot-only admission: the escape hatch for a backend whose reported context length does not match the
 # cache llama-server allocated
 ADMISSION_KV_BUDGET_ENV = "UNSLOTH_LLAMA_ADMISSION_KV_BUDGET"
+# The one switch here that is OFF unless it is asked for: UNSLOTH_LLAMA_ADMISSION_PREEMPT=1 lets a chat that outgrows
+# its charge be paused and resumed instead of serialising the queue. Unset, admission prices every request against its
+# fair share and nothing is ever paused. Named in core/inference/llama_preemption.py as PREEMPT_ENV, which owns it;
+# listed beside its siblings here because this is where the admission environment is documented.
 
 # The UNSLOTH_OPENAI_COMPAT_* spellings predate this queue being shared with the Anthropic /v1/messages route (same
 # llama-server slots). Still honored; the neutral name above wins when both are set.

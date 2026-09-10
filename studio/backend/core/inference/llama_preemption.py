@@ -9,6 +9,13 @@ own are all admitted and then collide; ``server-context.cpp`` then calls ``send_
 EVERY processing slot. Admission (``llama_admission``) decides who gets in; this module
 decides who has to stop once they are in. Policy and state only: aborting the upstream
 stream and resuming it belong to the caller, per ``LlamaAdmissionLease.preempt``.
+
+OPT-IN. Everything here is off unless ``UNSLOTH_LLAMA_ADMISSION_PREEMPT=1`` is set, and an
+install that does not set it behaves exactly as it did before this module existed: no
+``/slots`` reads on the token path, no participants registered, no ``preempt_event`` handed
+to a generation, no ``: preempt-*`` SSE comments, and admission prices every request against
+its fair share rather than against what a pause could reclaim. ``preemption_enabled()`` is
+that switch, and every entry point below asks it first.
 """
 
 from __future__ import annotations
@@ -33,9 +40,11 @@ from loggers import get_logger
 _log = get_logger(__name__)
 
 
-# Off falls back to step 1's wire clamp alone.
+# Opt-in: `UNSLOTH_LLAMA_ADMISSION_PREEMPT=1` turns the whole controller on. Left unset it
+# is off, and admission falls back to step 1's wire clamp alone, which is what every
+# install ran before preemption existed.
 PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
-DEFAULT_PREEMPT_ENABLED = True
+DEFAULT_PREEMPT_ENABLED = False
 
 
 def _int_env(name: str, default: int) -> int:
@@ -296,7 +305,8 @@ class DeferredPreemptionPolicy:
 
 
 class NullPreemptionPolicy:
-    """Never pauses. The default, so every existing call site is unchanged."""
+    """Never pauses. The default POLICY OBJECT (not the env default, which is off too), so
+    every existing call site is unchanged."""
 
     def should_preempt(self) -> bool:
         return False
@@ -382,6 +392,12 @@ _DECODES_WHEN_TOKENS_ARRIVE = frozenset(
 
 
 def preemption_enabled() -> bool:
+    """Whether the operator opted in with ``UNSLOTH_LLAMA_ADMISSION_PREEMPT=1``.
+
+    A plain environment read, so it is cheap enough to be the FIRST thing every gate asks:
+    off, the caller must be able to bail out before it builds a signal, registers a
+    participant or opens a ``/slots`` round trip.
+    """
     return _bool_env(PREEMPT_ENV, DEFAULT_PREEMPT_ENABLED)
 
 
@@ -900,7 +916,13 @@ class PreemptionController:
         between rounds is too late, since one round can generate thousands of tokens.
 
         Returns whoever must stop, already signalled.
+
+        Gated first: with the switch off the surfaces hand out ``on_tokens = None`` and this
+        is unreachable from a chat, but the tool loops publish a round's charge through
+        ``note_tokens`` too, and that re-baseline sweeps.
         """
+        if not preemption_enabled():
+            return []
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
@@ -932,7 +954,15 @@ class PreemptionController:
         The ledger adds up prompt ESTIMATES and the per-slot totals are exact. It matters
         most when granting a resume, where a chat comes back carrying its whole replayed
         partial and a reading a second old can be a thousand tokens stale.
+
+        Refused while the switch is off, which is the cheapest place to refuse it: five call
+        sites register one unconditionally, every one of them a per-request closure kept on a
+        controller that lives as long as the process, and nothing would ever call it, since
+        every caller of ``refresh_residency`` is gated. Clearing (``probe = None``) is always
+        allowed, so flipping the switch off never strands a probe from an earlier request.
         """
+        if probe is not None and not preemption_enabled():
+            return
         self._residency_probe = probe
 
     def refresh_residency(self) -> None:

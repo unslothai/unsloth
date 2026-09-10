@@ -28,6 +28,9 @@ from test_llama_tool_loop_preempt_resume import (  # noqa: E402
     _Recorder as _ToolRecorder,
     _run as _run_tools,
 )
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def _empty_delta() -> str:
