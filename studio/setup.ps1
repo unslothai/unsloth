@@ -5995,6 +5995,20 @@ function Fast-Install-Sidecar {
     }
 }
 
+function Remove-SidecarTiktoken {
+    # What a failed tiktoken install leaves must go: the sidecar sits ahead of
+    # site-packages, so a partial tiktoken\ or tiktoken_ext\ shadows a working ambient
+    # copy, and tiktoken is unpinned, so nothing else would ever clear it. Every entry
+    # the wheel owns, as the runtime's _remove_optional_remnants removes them.
+    param([Parameter(Mandatory = $true)][string]$TargetDir)
+    foreach ($name in @("tiktoken", "tiktoken_ext", "tiktoken.libs")) {
+        $entry = Join-Path $TargetDir $name
+        if (Test-Path -LiteralPath $entry) { Remove-Item -LiteralPath $entry -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 function Repair-SidecarTiktoken {
     param(
         [Parameter(Mandatory = $true)][string]$TargetDir,
@@ -6032,6 +6046,7 @@ function Repair-SidecarTiktoken {
     # metadata and read as present on the next run.
     $output = Fast-Install-Sidecar --target $TargetDir --no-deps --upgrade tiktoken 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
+        Remove-SidecarTiktoken -TargetDir $TargetDir
         substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
     }
 }
@@ -6132,6 +6147,7 @@ function Install-T5Sidecar {
         $tiktokenInstallExit = $LASTEXITCODE
     }
     if ($tiktokenInstallExit -ne 0) {
+        Remove-SidecarTiktoken -TargetDir $TargetDir
         substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
     }
     step "transformers" "$Version pre-installed"
