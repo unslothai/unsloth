@@ -2249,6 +2249,7 @@ def _openai_llama_admission_tokens(
     context_window: Optional[int] = None,
     preemption_active: bool = False,
     conversation = None,
+    markup = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -2264,11 +2265,14 @@ def _openai_llama_admission_tokens(
         return None
     # What is actually sent when a conversation is given: the GGUF builders splice a date
     # prompt, a nudge and media in later. Transport still counts, since the ledger wants it.
+    # Priced on the same neutralised list the bound is, so a profiled marker the generic
+    # sweep leaves alone cannot leave the charge below what the wire carries.
     prompt_tokens = _openai_llama_admission_charged_prompt_tokens(
         payload,
         conversation = conversation,
         image_tokens = image_tokens,
         injected_tools = injected_tools,
+        markup = markup,
     )
     if prompt_tokens is None:
         return max(1, budget // max(1, capacity))
@@ -2429,15 +2433,20 @@ def _openai_llama_admission_charged_prompt_tokens(
     conversation = None,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
+    markup = None,
 ) -> Optional[int]:
     """The prompt term of the admission charge: the part of it that becomes resident.
 
     The preemptor needs it apart from the output allowance, or a chat that spends its
-    allowance is charged for the same cells twice.
+    allowance is charged for the same cells twice. ``markup`` is the loaded model's profile,
+    the list the builders and the wire bound price.
     """
     if conversation is not None:
         return _openai_llama_admission_wire_prompt_tokens(
-            conversation, image_tokens = image_tokens, injected_tools = injected_tools
+            conversation,
+            image_tokens = image_tokens,
+            injected_tools = injected_tools,
+            markup = markup,
         ) + _openai_llama_admission_transport_tokens(payload)
     return _openai_llama_admission_prompt_tokens(
         payload, image_tokens = image_tokens, injected_tools = injected_tools
@@ -2912,6 +2921,7 @@ def _openai_llama_publish_round_charge(
                 conversation = conversation,
                 image_tokens = _openai_llama_admission_image_tokens(llama_backend),
                 injected_tools = rendered_tools,
+                markup = _openai_llama_admission_markup(llama_backend),
             ),
         )
         observe_tokens(0)
@@ -3073,6 +3083,7 @@ def _openai_llama_preemption_arm(
             conversation = conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
+            markup = _openai_llama_admission_markup(llama_backend),
         )
     except Exception:
         prompt_tokens = None
@@ -3391,6 +3402,7 @@ def _openai_llama_admission_reserve(
                 preemptable and _openai_llama_preemption_will_apply(llama_backend, budget)
             ),
             conversation = conversation,
+            markup = _openai_llama_admission_markup(llama_backend),
         )
         if payload is not None
         else None,
