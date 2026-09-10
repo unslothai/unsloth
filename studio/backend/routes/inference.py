@@ -1947,6 +1947,29 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
     return cap + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 
 
+_ADMISSION_IMAGE_PART_TYPES = ("image_url", "image")
+
+
+def _openai_llama_admission_compact_image_part(part: dict) -> dict:
+    """One image part with its transport bytes replaced by a marker.
+
+    Keeps the wrapper the part really has, since that little JSON is prompt text the
+    request does send; only the base64 goes.
+    """
+    if part.get("type") == "image":
+        source = part.get("source")
+        compact_source = {"type": "base64", "data": "[image]"}
+        if isinstance(source, dict) and source.get("media_type") is not None:
+            compact_source["media_type"] = source["media_type"]
+        return {"type": "image", "source": compact_source}
+
+    image_url = part.get("image_url")
+    compact_image_url = {"url": "[image]"}
+    if isinstance(image_url, dict) and image_url.get("detail") is not None:
+        compact_image_url["detail"] = image_url["detail"]
+    return {"type": "image_url", "image_url": compact_image_url}
+
+
 def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
     """Remove image bytes before estimating the textual part of a prompt.
 
@@ -1969,21 +1992,31 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
         if isinstance(content, list):
             estimate_content = []
             for part in content:
-                if not isinstance(part, dict) or part.get("type") != "image_url":
+                if not isinstance(part, dict):
+                    estimate_content.append(part)
+                    continue
+
+                part_type = part.get("type")
+                # The same filter anthropic_messages_to_openai applies, so the estimate
+                # charges what that sends. The content list is untyped, so a screenshot an
+                # agent's tool returned, a document and a future block type all arrive
+                # here, and none of them reach the wire to earn an allowance.
+                if part_type == "tool_result" and isinstance(part.get("content"), list):
+                    part = dict(part)
+                    part["content"] = [
+                        block
+                        for block in part["content"]
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    estimate_content.append(part)
+                    continue
+
+                if part_type not in _ADMISSION_IMAGE_PART_TYPES:
                     estimate_content.append(part)
                     continue
 
                 image_parts += 1
-                image_url = part.get("image_url")
-                compact_image_url = {"url": "[image]"}
-                if isinstance(image_url, dict) and image_url.get("detail") is not None:
-                    compact_image_url["detail"] = image_url["detail"]
-                estimate_content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": compact_image_url,
-                    }
-                )
+                estimate_content.append(_openai_llama_admission_compact_image_part(part))
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
     return estimate_messages, image_parts
@@ -5461,21 +5494,24 @@ def _strip_tool_xml_for_display(
     so literal markup inside a value is data), then the ``_TOOL_XML_RE`` arms cover the
     DeepSeek / Kimi / orphan forms. ``<think>`` blocks are preserved verbatim and the
     ``\\Z``-anchored tail arms run only on the last segment (prose ``foo[ARGS]`` before a
-    block survives). ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
-    ``NAME[ARGS]{...}`` and wrapper-less Gemma ``call:NAME{...}`` strips on the active tool
-    list; an inactive NAME is prose and is kept. The ``[TOOL_CALLS]`` control-token arms strip
-    unconditionally regardless of NAME."""
+    block survives). The ambiguous bare-rehearsal ``NAME[ARGS]{...}`` and wrapper-less Gemma
+    ``call:NAME{...}`` strips run only on a markerless-promotable NAME, so a name outside
+    ``enabled_tool_names`` or an execution-class one is kept as prose. The ``[TOOL_CALLS]``
+    control-token arms strip unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+    from core.tool_healing import (
+        _markerless_promotable,
+        _strip_bracket_tag_calls,
+        strip_outside_think,
+    )
 
     def _keep_inactive_rehearsal(m) -> str:
-        # Only the bare-rehearsal arm captures ``reh``; with a tool list an inactive
-        # NAME[ARGS]{...} is prose -- keep it.
-        if enabled_tool_names is not None:
-            name = m.groupdict().get("reh")
-            if name is not None and name not in enabled_tool_names:
-                return m.group(0)
+        # Only the bare-rehearsal arm captures ``reh``. Deleting one the parser will not
+        # promote leaves the turn with no call AND no text.
+        name = m.groupdict().get("reh")
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            return m.group(0)
         return ""
 
     def _strip_segment(seg: str, is_last: bool) -> str:
@@ -5492,7 +5528,17 @@ def _strip_tool_xml_for_display(
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
-    return strip_outside_think(text, _strip_segment)
+    # Same masking the parser-side strip uses: these passes would otherwise edit the body of
+    # a blocked call, which is prose, so the displayed text and stored history stopped
+    # matching what the model actually said.
+    from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
+
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    result = strip_outside_think(masked, _strip_segment)
+    if not bodies:
+        return result
+    restored = _unmask_blocked_bodies(result, bodies)
+    return restored if restored is not None else strip_outside_think(text, _strip_segment)
 
 
 class _ReasoningSpanGuard:
