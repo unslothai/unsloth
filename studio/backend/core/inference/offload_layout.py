@@ -140,7 +140,7 @@ class ModelLayout:
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
     kv_bytes_per_token_f16: int = 0
-    # Mamba conv/SSM state; context independent, and follows the layer, which -ot never moves
+    # Mamba conv/SSM or KDA conv/recurrent state; context independent, and follows the layer, which -ot never moves
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
@@ -282,6 +282,13 @@ _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
 }
 
 
+# Architectures whose recurrent rows hold a Kimi-Delta-Attention state rather than a Mamba one, so llama.cpp sizes
+# them from kda.head_dim and the head count (llama-hparams.cpp:n_embd_r, n_embd_s). Named rather than derived from the
+# key's presence: an unlisted KDA family (kimi-linear, bailingmoe3) has no measured figure to check the shape against,
+# and abstaining is the safe answer for it.
+_KDA_STATE_ARCHS: frozenset[str] = frozenset({"kimi-k3", "glm5next"})
+
+
 # Architectures whose zero-KV-head rows are recurrent only when their FFN width is 0 as well
 # (models/nemotron-h.cpp:17, inherited by nemotron_h_moe at models/models.h:1516).
 _RECURRENT_NEEDS_ZERO_FFN: frozenset[str] = frozenset({"nemotron_h", "nemotron_h_moe"})
@@ -392,15 +399,27 @@ def _layout_from_readers(readers) -> ModelLayout:
     d_state = int(_field(reader, f"{arch}.ssm.state_size") or 0)
     n_group = int(_field(reader, f"{arch}.ssm.group_count") or 0)
     d_conv = int(_field(reader, f"{arch}.ssm.conv_kernel") or 0)
+    kda_head_dim = int(_field(reader, f"{arch}.kda.head_dim") or 0)
+    if arch not in _KDA_STATE_ARCHS:
+        kda_head_dim = 0
     recurrent = 0
     if n_recurrent and d_inner and d_state and d_conv:
         n_embd_r = max(0, d_conv - 1) * (d_inner + 2 * n_group * d_state)
         n_embd_s = d_state * d_inner
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
+    elif n_recurrent and kda_head_dim and n_head:
+        # A KDA row carries no ssm.inner_size, so the branch above sizes it at zero and every per-slot term the
+        # planner adds separately from the cache (resident_floor_bytes, max_context_for's fixed term, the
+        # multi-device recurrent guard) silently drops 443 MiB/slot on Kimi-K3. llama-hparams.cpp:n_embd_r/n_embd_s
+        # size it from the head count and kda.head_dim instead; the conv kernel defaults to 4 there as well.
+        d_inner_kda = int(n_head) * kda_head_dim
+        n_embd_r = 3 * max(0, (d_conv or 4) - 1) * d_inner_kda
+        n_embd_s = kda_head_dim * kda_head_dim * int(n_head)
+        recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
 
-    # ssm.* keys say the model HAS recurrent layers; nothing above could say which.
-    if not recurrent_known and d_inner and d_state and d_conv:
-        logger.debug("offload layout: %s has ssm keys but no recurrent-layer map", arch)
+    # ssm.*/kda.* keys say the model HAS recurrent layers; nothing above could say which.
+    if not recurrent_known and ((d_inner and d_state and d_conv) or kda_head_dim):
+        logger.debug("offload layout: %s has recurrent keys but no recurrent-layer map", arch)
         return ModelLayout()
 
     n_expert = int(_field(reader, f"{arch}.expert_count") or 0)

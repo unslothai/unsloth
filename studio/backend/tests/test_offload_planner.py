@@ -3168,3 +3168,74 @@ def test_the_lora_rank_alone_is_not_the_latent_cache():
         )
     )
     assert half.has_mla is False
+
+
+def _kimi_k3_fields(**extra):
+    """unsloth/Kimi-K3-GGUF's header: MLA attention on 24 rows, KDA on the other 69."""
+    heads = [1 if (i % 4) == 3 else 0 for i in range(93)]
+    heads[92] = 1
+    base = {
+        "general.architecture": "kimi-k3",
+        "kimi-k3.block_count": 93,
+        "kimi-k3.attention.head_count_kv": heads,
+        "kimi-k3.attention.head_count": 96,
+        "kimi-k3.embedding_length": 7168,
+        "kimi-k3.attention.key_length": 576,
+        "kimi-k3.attention.value_length": 74,
+        "kimi-k3.attention.kv_lora_rank": 512,
+        "kimi-k3.attention.key_length_mla": 192,
+        "kimi-k3.attention.value_length_mla": 128,
+        "kimi-k3.ssm.conv_kernel": 4,
+        "kimi-k3.kda.head_dim": 128,
+        "kimi-k3.context_length": 1048576,
+    }
+    base.update(extra)
+    return base
+
+
+def test_a_kda_hybrid_is_charged_its_recurrent_state():
+    """A Kimi-Delta-Attention row carries kda.head_dim and no ssm.inner_size, so the
+    Mamba branch sized it at zero while llama.cpp allocates 443 MiB per slot
+    (llama-hparams.cpp:n_embd_r / n_embd_s: 3*(d_conv-1)*n_head*head_dim conv rows
+    plus head_dim^2*n_head state, f32). recurrent_bytes is added per slot by
+    resident_floor_bytes, max_context_for's fixed term and the multi-device guard,
+    separately from the cache, so a zero there is an allocation no context shrink
+    can recover."""
+    layout = _layout_from_reader(_StubReader(_kimi_k3_fields(), _shard_tensors(range(93))))
+    assert layout.complete
+    assert layout.n_attention_layers == 24
+    # 69 KDA rows x (3*3*96*128 + 128*128*96) x 4 B.
+    assert layout.recurrent_bytes == 69 * (110592 + 1572864) * 4
+    assert round(layout.recurrent_bytes / MIB) == 443
+
+    # GLM-5.3-Flash: 46 blocks, one of them nextn, 11 of the remaining 45 attention.
+    glm_heads = [1 if (i % 4) == 3 else 0 for i in range(46)]
+    glm_heads[45] = 1
+    glm = _layout_from_reader(
+        _StubReader(
+            {
+                "general.architecture": "glm5next",
+                "glm5next.block_count": 46,
+                "glm5next.nextn_predict_layers": 1,
+                "glm5next.attention.head_count_kv": glm_heads,
+                "glm5next.attention.head_count": 64,
+                "glm5next.embedding_length": 4096,
+                "glm5next.attention.key_length": 512,
+                "glm5next.attention.value_length": 512,
+                "glm5next.attention.key_length_mla": 256,
+                "glm5next.attention.value_length_mla": 256,
+                "glm5next.ssm.conv_kernel": 4,
+                "glm5next.kda.head_dim": 128,
+                "glm5next.context_length": 1048576,
+            },
+            _shard_tensors(range(46)),
+        )
+    )
+    assert round(glm.recurrent_bytes / MIB) == 146
+
+
+def test_a_kda_header_with_no_recurrent_map_abstains():
+    """Same rule the ssm.* branch follows: kda.head_dim says the model HAS recurrent
+    rows, and calling every row attention would charge a cache none of them hold."""
+    fields = _kimi_k3_fields(**{"kimi-k3.attention.head_count_kv": 1})
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(93)))).complete is False
