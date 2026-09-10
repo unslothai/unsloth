@@ -2112,6 +2112,17 @@ _target_has_pkg_version() {
 # retries it alone instead.
 _SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
 
+# What a failed tiktoken install leaves must go: the sidecar sits ahead of site-packages,
+# so a partial tiktoken/ or tiktoken_ext/ shadows a working ambient copy, and tiktoken is
+# unpinned, so nothing else would ever clear it. Every entry the wheel owns, as the
+# runtime's _remove_optional_remnants removes them.
+_sidecar_drop_tiktoken() {
+    for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
+        [ -e "$_sdt_entry" ] && rm -rf "$_sdt_entry"
+    done
+    unset _sdt_entry
+}
+
 _sidecar_top_up_tiktoken() {
     _stt_dir="$1"
     _stt_label="$2"
@@ -2151,6 +2162,7 @@ _sidecar_top_up_tiktoken() {
     # damaged tiktoken/ directory an interrupted install left would be kept under fresh
     # metadata and read as present on the next run.
     if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
+        _sidecar_drop_tiktoken "$_stt_dir"
         substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
     fi
     return 0
@@ -2243,6 +2255,7 @@ _install_sidecar() {
     # Optional, as in setup.ps1: a missing tiktoken wheel must not fail the whole setup,
     # and it is retried by _sidecar_top_up_tiktoken on later updates.
     if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
+        _sidecar_drop_tiktoken "$_is_dir"
         substep "could not install tiktoken into the $_is_label sidecar -- Qwen tokenizers may fail"
     fi
     step "transformers" "$_is_ver pre-installed"
