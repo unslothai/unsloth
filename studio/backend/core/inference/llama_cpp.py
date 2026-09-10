@@ -3540,11 +3540,20 @@ def _with_gguf_load_marker(load: Callable):
         load_cancel_event: Optional[threading.Event] = None,
     ):
         hf_repo = intent.hf_repo
-        # The Vulkan probe memo lives exactly as long as this call: several placement
-        # decisions inside want the same rows and each probe is a subprocess behind a
-        # 15s timeout, while system-info polling outside a load needs LIVE free/used
-        # VRAM and must never be served that snapshot.
-        with _vulkan_probe_memo_scope(), gguf_load_in_flight(hf_repo):
+        # Two things this call owns and must not leak, however it exits.
+        #
+        # The Vulkan probe memo: several placement decisions inside want the same rows
+        # and each probe is a subprocess behind a 15s timeout, while system-info
+        # polling outside a load needs LIVE free/used VRAM and must never be served
+        # that snapshot. (Arming is narrower still; see _arm_vulkan_probe_memo.)
+        #
+        # And the pre-spawn placement marker: it is set as soon as the memory snapshot
+        # is taken so a save cannot fall through the window before Popen, which means
+        # every early return between the two would otherwise leave it stuck on and the
+        # route reporting a reload for a child that never started.
+        with _vulkan_probe_memo_scope(), _pending_placement_cleared(self), gguf_load_in_flight(
+            hf_repo
+        ):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
@@ -6131,28 +6140,67 @@ def _prepend_loader_dir(existing: str, lib_dir: str) -> str:
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
 # GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
-# Vulkan probe rows for the load in progress, keyed by binary. See _run_vulkan_probe.
-_VULKAN_PROBE_MEMO: dict = {}
-# Armed only for the duration of a load. `vulkan_device_inventory` reaches the probe
-# from system-info polling as well, and that caller wants LIVE free/used VRAM: served
-# from a memo taken before llama-server allocated, it reports stale numbers until the
-# next load, and a transient empty result would stick indefinitely.
-_VULKAN_PROBE_MEMO_ACTIVE = False
+# Vulkan probe rows for the placement decision in progress. THREAD-LOCAL: the probe
+# is also reached from system-info polling through `vulkan_device_inventory`, on other
+# threads and at any time, and those callers want live free/used VRAM. A shared dict
+# let such a poll seed the load's memo with rows that were minutes old by the time the
+# fitter read them.
+_VULKAN_PROBE_STATE = threading.local()
+
+
+def _vulkan_probe_memo_armed() -> bool:
+    return getattr(_VULKAN_PROBE_STATE, "armed", False)
+
+
+def _vulkan_probe_memo_get(binary):
+    rows = getattr(_VULKAN_PROBE_STATE, "rows", None)
+    return rows.get(binary) if rows else None
+
+
+def _vulkan_probe_memo_put(binary, rows) -> None:
+    if not _vulkan_probe_memo_armed():
+        return
+    store = getattr(_VULKAN_PROBE_STATE, "rows", None)
+    if store is None:
+        store = _VULKAN_PROBE_STATE.rows = {}
+    store[binary] = rows
+
+
+def _arm_vulkan_probe_memo() -> None:
+    """Start memoising the probe for the placement decision, on this thread only.
+
+    Called at the placement work rather than at the load call, which also covers the
+    Hub download: rows captured before a multi-minute download would price the fit
+    against VRAM that has since been allocated. `_vulkan_probe_memo_scope` on the
+    load call owns the lifetime, so this never has to be unwound by hand.
+    """
+    _VULKAN_PROBE_STATE.armed = True
+    _VULKAN_PROBE_STATE.rows = {}
+
+
+@contextlib.contextmanager
+def _pending_placement_cleared(backend):
+    """Drop the pre-spawn placement marker when the load call ends.
+
+    A successful spawn clears it earlier, where `is_active` takes over; this only
+    guarantees that a failure, a cancel or a raise between the memory snapshot and
+    Popen cannot leave it set with no child to answer for.
+    """
+    try:
+        yield
+    finally:
+        backend._memory_launch_pending = False
 
 
 @contextlib.contextmanager
 def _vulkan_probe_memo_scope():
-    """Memoise the probe for one load. Several decisions in a launch want the same
-    rows and each probe is a subprocess behind a 15s timeout, but nothing outside
-    the launch should be answered from that snapshot."""
-    global _VULKAN_PROBE_MEMO_ACTIVE
-    _VULKAN_PROBE_MEMO.clear()
-    _VULKAN_PROBE_MEMO_ACTIVE = True
+    """Guarantee the memo cannot outlive a load however it exits. Arming is the
+    narrower `_arm_vulkan_probe_memo`, taken around the placement decision."""
     try:
         yield
     finally:
-        _VULKAN_PROBE_MEMO_ACTIVE = False
-        _VULKAN_PROBE_MEMO.clear()
+        _VULKAN_PROBE_STATE.armed = False
+        _VULKAN_PROBE_STATE.rows = None
 
 
 _GGML_GPU_BACKEND_RE = re.compile(
@@ -10743,12 +10791,12 @@ class LlamaCppBackend:
         # and again per rung that narrows the device set. Cleared by
         # _vulkan_probe_memo_scope for the duration of one load, so a driver or
         # device change between loads is never answered from cache.
-        if _VULKAN_PROBE_MEMO_ACTIVE and binary in _VULKAN_PROBE_MEMO:
-            return _VULKAN_PROBE_MEMO[binary]
+        _memo = _vulkan_probe_memo_get(binary)
+        if _memo is not None:
+            return _memo
         binary_dir = _llama_lib_dir(binary)
         if not _lib_dir_has_ggml_backend(binary_dir, "vulkan"):
-            if _VULKAN_PROBE_MEMO_ACTIVE:
-                _VULKAN_PROBE_MEMO[binary] = []
+            _vulkan_probe_memo_put(binary, [])
             return []
 
         env = child_env_without_native_path_secret()
@@ -10779,8 +10827,7 @@ class LlamaCppBackend:
                 logger.debug(
                     f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
                 )
-                if _VULKAN_PROBE_MEMO_ACTIVE:
-                    _VULKAN_PROBE_MEMO[binary] = []
+                _vulkan_probe_memo_put(binary, [])
                 return []
         except Exception as e:
             logger.debug(f"vulkan GPU probe failed: {e}")
@@ -10788,8 +10835,7 @@ class LlamaCppBackend:
             # "not an iGPU" upstream, which sends the DirectIO confirmation
             # straight back here, so an uncached timeout is paid twice over
             # and again per device-set rung.
-            if _VULKAN_PROBE_MEMO_ACTIVE:
-                _VULKAN_PROBE_MEMO[binary] = []
+            _vulkan_probe_memo_put(binary, [])
             return []
 
         rows: list[dict] = []
@@ -10811,8 +10857,7 @@ class LlamaCppBackend:
             except ValueError:
                 continue
         rows.sort(key = lambda r: r["index"])
-        if _VULKAN_PROBE_MEMO_ACTIVE:
-            _VULKAN_PROBE_MEMO[binary] = rows
+        _vulkan_probe_memo_put(binary, rows)
         return rows
 
     @staticmethod
@@ -23961,6 +24006,18 @@ class LlamaCppBackend:
                 _mem_should_mlock = _mem_keep_resident and not _mem_no_reserve
                 # Asked BEFORE the placement, because whether this platform and build
                 # could owe a managed DirectIO decides if the placement must be probed.
+                # The memory snapshot below is what the child will launch with, so the
+                # window a save must not fall through starts HERE, not at the spawn:
+                # between the two sit the Vulkan probe and the placement work, and a
+                # save landing in there saw neither an active nor a pending child and
+                # answered reload_required=false about a child already committed to the
+                # older settings. _with_gguf_load_marker clears it however this exits.
+                self._memory_launch_pending = True
+                # Armed HERE, not at the load call: that also covers the Hub download,
+                # and rows captured before it would price the fit against VRAM that has
+                # since been allocated. The scope on the load call only guarantees the
+                # memo cannot outlive the load.
+                _arm_vulkan_probe_memo()
                 _mem_dio_possible = no_reserve_requires_dio(
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     gpu_offload_confirmed = True,

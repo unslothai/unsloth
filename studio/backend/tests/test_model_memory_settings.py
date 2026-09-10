@@ -2892,19 +2892,16 @@ class TestEveryDeviceSetChangeReAsks:
             assert f"{marker} or self._memory_policy_active" in src, marker
 
 
-class TestTheVulkanProbeMemoIsScopedToALoad:
+class TestTheVulkanProbeMemoIsScopedToThePlacement:
     """Several placement decisions in one launch want the same rows and each probe
-    is a subprocess behind a 15s timeout, so a load memoises. Nothing outside a
-    load may be served that snapshot: system-info polling reaches the same probe
-    through vulkan_device_inventory and needs LIVE free/used VRAM."""
+    is a subprocess behind a 15s timeout. The memo is armed only around that work
+    and is THREAD-LOCAL: system-info polling reaches the same probe from other
+    threads at any time and needs live free/used VRAM, and the load call also spans
+    the Hub download, so rows taken before it would price a fit against VRAM that
+    has since been allocated."""
 
     @staticmethod
-    def _count_probes(
-        monkeypatch,
-        m,
-        *,
-        raising = False,
-    ):
+    def _count_probes(monkeypatch, m, *, raising = False):
         calls = []
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
         monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
@@ -2918,11 +2915,12 @@ class TestTheVulkanProbeMemoIsScopedToALoad:
         monkeypatch.setattr(m.subprocess, "run", run)
         return calls
 
-    def test_inside_a_load_repeated_asks_spawn_one_probe(self, monkeypatch):
+    def test_while_armed_repeated_asks_spawn_one_probe(self, monkeypatch):
         import core.inference.llama_cpp as m
 
         calls = self._count_probes(monkeypatch, m)
         with m._vulkan_probe_memo_scope():
+            m._arm_vulkan_probe_memo()
             for _ in range(3):
                 m.LlamaCppBackend._run_vulkan_probe("llama-server")
         assert len(calls) == 1
@@ -2935,9 +2933,21 @@ class TestTheVulkanProbeMemoIsScopedToALoad:
 
         calls = self._count_probes(monkeypatch, m, raising = True)
         with m._vulkan_probe_memo_scope():
+            m._arm_vulkan_probe_memo()
             for _ in range(3):
                 assert m.LlamaCppBackend._run_vulkan_probe("llama-server") == []
         assert len(calls) == 1
+
+    def test_before_arming_every_ask_is_live(self, monkeypatch):
+        """The load call is entered long before the placement work, and the Hub
+        download sits in between."""
+        import core.inference.llama_cpp as m
+
+        calls = self._count_probes(monkeypatch, m)
+        with m._vulkan_probe_memo_scope():
+            for _ in range(3):
+                m.LlamaCppBackend._run_vulkan_probe("llama-server")
+        assert len(calls) == 3
 
     def test_outside_a_load_every_ask_is_live(self, monkeypatch):
         """Stale rows here would report free/used VRAM captured before llama-server
@@ -2948,27 +2958,78 @@ class TestTheVulkanProbeMemoIsScopedToALoad:
         for _ in range(3):
             m.LlamaCppBackend._run_vulkan_probe("llama-server")
         assert len(calls) == 3
-        assert not m._VULKAN_PROBE_MEMO
 
-    def test_the_scope_clears_at_both_ends(self, monkeypatch):
+    def test_another_thread_cannot_seed_it(self, monkeypatch):
+        """A concurrent system-info poll during a load must not hand the fitter its
+        rows, which is what a shared dict allowed."""
+        import threading
+        import core.inference.llama_cpp as m
+
+        calls = self._count_probes(monkeypatch, m)
+        with m._vulkan_probe_memo_scope():
+            m._arm_vulkan_probe_memo()
+            m.LlamaCppBackend._run_vulkan_probe("llama-server")
+            seen = []
+            t = threading.Thread(
+                target = lambda: seen.append(m._vulkan_probe_memo_get("llama-server"))
+            )
+            t.start()
+            t.join()
+        assert seen == [None]
+        assert len(calls) == 1
+
+    def test_the_scope_clears_at_the_end(self, monkeypatch):
         import core.inference.llama_cpp as m
 
         self._count_probes(monkeypatch, m)
         with m._vulkan_probe_memo_scope():
+            m._arm_vulkan_probe_memo()
             m.LlamaCppBackend._run_vulkan_probe("llama-server")
-            assert m._VULKAN_PROBE_MEMO
-        assert not m._VULKAN_PROBE_MEMO
-        assert m._VULKAN_PROBE_MEMO_ACTIVE is False
+            assert m._vulkan_probe_memo_get("llama-server") is not None
+        assert m._vulkan_probe_memo_armed() is False
+        assert m._vulkan_probe_memo_get("llama-server") is None
 
-    def test_the_load_call_owns_the_scope(self):
+    def test_the_load_owns_the_scope_and_the_placement_arms_it(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect, core.inference.llama_cpp as m
 
-        # on the decorator that brackets the whole synchronous load call
-        assert "_vulkan_probe_memo_scope(), gguf_load_in_flight(" in inspect.getsource(
+        assert "_vulkan_probe_memo_scope(), _pending_placement_cleared(" in inspect.getsource(
             m._with_gguf_load_marker
         )
-        assert "_reset_vulkan_probe_memo" not in inspect.getsource(LlamaCppBackend.load_model)
+        assert "_arm_vulkan_probe_memo()" in inspect.getsource(LlamaCppBackend.load_model)
+
+
+class TestThePlacementWindowIsPublished:
+    """A save landing between the memory snapshot and Popen saw neither an active
+    nor a pending child and answered reload_required=false, while the child was
+    already committed to the older settings. The probe and the placement work sit
+    in that window."""
+
+    def test_the_marker_is_set_with_the_snapshot(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        set_at = src.index("self._memory_launch_pending = True")
+        assert set_at < src.index("_arm_vulkan_probe_memo()")
+        assert set_at < src.index("_mem_gpu_offload_confirmed = bool(")
+
+    def test_it_cannot_stick_when_no_child_starts(self):
+        """Every early return between the snapshot and Popen would otherwise leave
+        the route reporting a reload for a child that never started."""
+        import core.inference.llama_cpp as m
+
+        backend = type("_B", (), {"_memory_launch_pending": True})()
+        with m._pending_placement_cleared(backend):
+            pass
+        assert backend._memory_launch_pending is False
+        backend._memory_launch_pending = True
+        try:
+            with m._pending_placement_cleared(backend):
+                raise RuntimeError("spawn failed")
+        except RuntimeError:
+            pass
+        assert backend._memory_launch_pending is False
 
 
 class TestALoadableGpuPluginIsRequired:
