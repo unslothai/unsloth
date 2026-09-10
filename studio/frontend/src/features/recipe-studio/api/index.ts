@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthToken } from "@/features/auth";
+import { authFetch, getAuthTokenForUrl } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import {
   formatFastApiDetail,
@@ -360,7 +360,9 @@ export async function downloadRecipeJobDataset(
   if (options?.filename) {
     params.set("filename", options.filename);
   }
-  const token = getAuthToken();
+  // The bearer rides in the URL, and neither the anchor nor the native downloader retries a 401,
+  // so it is refreshed before it goes in.
+  const token = await getAuthTokenForUrl();
   if (token) {
     params.set("token", token);
   }

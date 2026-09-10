@@ -500,3 +500,74 @@ def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Pat
         file_path.unlink(missing_ok = True)
     assert rows[0]["seen_at"].startswith("2020-01-01")
     assert rows[1] == {"seen_at": None, "score": None}
+
+
+def _write_appledouble_companion(path: Path) -> None:
+    from utils.paths.path_utils import _MAGIC
+    path.write_bytes(_MAGIC + b"\x00" * 60)
+
+
+def test_build_dataset_download_ignores_appledouble_companions(tmp_path: Path, monkeypatch):
+    """A macOS volume writes extended attributes to ._batch.parquet. DuckDB cannot parse one, so
+    keeping it in the shard list took the whole streaming path down to the slowest fallback, and
+    put a file no reader accepts inside the archive."""
+    pytest.importorskip("duckdb")
+    dataset_path = tmp_path / "recipe-datasets" / "job-macos"
+    parquet_dir = dataset_path / "parquet-files"
+    _write_parquet_rows(parquet_dir, [{"i": 0}, {"i": 1}])
+    _write_appledouble_companion(parquet_dir / "._batch_00000.parquet")
+    images_dir = dataset_path / "images"
+    images_dir.mkdir(parents = True)
+    (images_dir / "pic.png").write_bytes(b"png-bytes")
+    _write_appledouble_companion(images_dir / "._pic.png")
+
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    from core.data_recipe.export import _stream_jsonl_from_parquet_with_duckdb
+
+    streamed = tmp_path / "streamed.jsonl"
+    assert _stream_jsonl_from_parquet_with_duckdb(
+        parquet_dir = parquet_dir,
+        destination = streamed,
+    )
+    assert [json.loads(line)["i"] for line in streamed.read_text().splitlines()] == [0, 1]
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "parquet",
+        filename_stem = "macos",
+    )
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            names = archive.namelist()
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["batch_00000.parquet", "images/pic.png"]
+
+
+def test_build_dataset_download_keeps_a_real_file_named_like_a_companion(
+    tmp_path: Path, monkeypatch
+):
+    """The name alone does not decide it: a genuine shard called ._batch.parquet is still a shard."""
+    dataset_path = tmp_path / "recipe-datasets" / "job-dotunder"
+    parquet_dir = dataset_path / "parquet-files"
+    _write_parquet_rows(parquet_dir, [{"i": 0}])
+    (parquet_dir / "batch_00000.parquet").rename(parquet_dir / "._batch_00000.parquet")
+
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "dotunder",
+    )
+    try:
+        assert [json.loads(line)["i"] for line in file_path.read_text().splitlines()] == [0]
+    finally:
+        file_path.unlink(missing_ok = True)

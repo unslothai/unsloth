@@ -17,6 +17,7 @@ from core.data_recipe.huggingface import (
     _resolve_recipe_artifact_path,
 )
 from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
+from utils.paths.path_utils import drop_appledouble_metadata
 
 ExportFormat = Literal["jsonl", "parquet"]
 
@@ -41,10 +42,16 @@ def _parquet_dir(dataset_path: Path) -> Path:
     parquet_dir = dataset_path / "parquet-files"
     if not parquet_dir.exists():
         raise RecipeDatasetExportError(f"Dataset parquet files missing: {parquet_dir}")
-    parquet_files = sorted(parquet_dir.glob("*.parquet"))
-    if not parquet_files:
+    if not _parquet_files(parquet_dir):
         raise RecipeDatasetExportError(f"No parquet files found in {parquet_dir}")
     return parquet_dir
+
+
+def _parquet_files(parquet_dir: Path) -> list[Path]:
+    """The real shards. A macOS volume stores extended attributes in a ``._batch.parquet``
+    companion that the glob matches but no reader can parse, so it is dropped here the way the
+    worker that writes this directory drops it."""
+    return drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
 
 
 def _sanitize_json_value(value: Any) -> Any:
@@ -76,10 +83,6 @@ def _write_jsonl_rows(handle, rows: list[dict[str, Any]]) -> None:
         handle.write("\n")
 
 
-def _parquet_glob(parquet_dir: Path) -> str:
-    return str((parquet_dir / "*.parquet").resolve())
-
-
 def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Path) -> bool:
     try:
         import duckdb  # type: ignore
@@ -93,8 +96,12 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
     try:
         # One cursor for the whole export: the chunked fetches keep memory bounded, and the single
         # ORDER BY is what keeps every row present exactly once. Re-running the query per page
-        # instead re-derives the order each time, so the pages overlap and gap.
-        conn.execute(_PARQUET_EXPORT_SQL, [_parquet_glob(parquet_dir)])
+        # instead re-derives the order each time, so the pages overlap and gap. The shard list
+        # rather than a "*.parquet" glob, which DuckDB would expand back over the companions.
+        conn.execute(
+            _PARQUET_EXPORT_SQL,
+            [[str(path.resolve()) for path in _parquet_files(parquet_dir)]],
+        )
         with destination.open("w", encoding = "utf-8") as handle:
             while True:
                 dataframe = conn.fetch_df_chunk(_JSONL_EXPORT_VECTORS_PER_CHUNK)
@@ -117,7 +124,7 @@ def _read_all_rows_with_pandas(parquet_dir: Path) -> list[dict[str, Any]] | None
     except Exception:
         return None
 
-    parquet_files = sorted(parquet_dir.glob("*.parquet"))
+    parquet_files = _parquet_files(parquet_dir)
     if not parquet_files:
         return None
 
@@ -165,7 +172,7 @@ def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None
     images_dir = dataset_path / "images"
     if not images_dir.is_dir():
         return
-    for image_file in sorted(images_dir.rglob("*")):
+    for image_file in drop_appledouble_metadata(sorted(images_dir.rglob("*"))):
         if not image_file.is_file():
             continue
         relative_path = image_file.relative_to(images_dir)
@@ -195,7 +202,7 @@ def build_dataset_download(
         # has to take its own away.
         try:
             with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
-                for parquet_file in sorted(parquet_dir.glob("*.parquet")):
+                for parquet_file in _parquet_files(parquet_dir):
                     archive.write(parquet_file, arcname = parquet_file.name)
                 _add_images_to_archive(archive, dataset_path)
         except BaseException:
