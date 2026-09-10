@@ -4753,6 +4753,50 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
     ]
 
 
+def test_chat_count_tokens_folds_a_stopped_studio_tool_thread(monkeypatch):
+    """The counter skips its own coalesce on the passthrough, so only the fold helper keeps a
+    Stop-sentinel thread alternating; without it the bar prices a prompt the completion 400s on.
+    Unlike ``..._keeps_adjacent_user_turns_on_the_passthrough`` above, this thread IS folded.
+    """
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99)
+    thread = [
+        {"role": "user", "content": "what did we say about seeds?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search_conversation", "arguments": '{"query": "s"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "search_conversation",
+            "content": "we said 3407",
+        },
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "and now?"},
+    ]
+
+    _counted_body(
+        _count_request(
+            thread,
+            studio_tool_history = True,
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {"name": "answer", "schema": {"type": "object", "properties": {}}},
+            },
+        )
+    )
+    roles = [message.get("role") for message in counted.get("messages") or []]
+    assert "tool" not in roles, roles
+    assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+
+
 def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     """The bar has to price what generation sends, and only the passthrough is sent undated."""
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)

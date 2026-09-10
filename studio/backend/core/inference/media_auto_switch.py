@@ -345,8 +345,7 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
                 hf_token = hf_token,
             )
-            # capped, in its own task: a first-run native install runs for minutes before begin_load
-            # given its own task and waited on with a cap: a first-run native install runs for minutes before
+            # Given its own task and waited on with a cap: a first-run native install runs for minutes before
             # begin_load, and holding both media gates and chat's that long blocks every unrelated request. On expiry
             # the load keeps going without them.
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))

@@ -24,7 +24,6 @@ from typing import Any, Optional
 from utils.paths.storage_roots import studio_root
 from utils.paths.path_utils import is_appledouble_metadata
 
-# "passthrough": the supplied image IS the control map; "canny": derive an edge map here
 # Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
 

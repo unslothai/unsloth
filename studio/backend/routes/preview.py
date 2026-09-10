@@ -157,9 +157,8 @@ async def _serve_chat(
         if serializer_waiting:
             await resume_preview_after_serializer(scope)
             serializer_waiting = False
-        # The in-process coroutine, not the /load route: the route's padding returns a
-        # StreamingResponse while the checkpoint is still loading, so the chat below
-        # would run against the previous model (or none).
+        # The in-process coroutine, not the /load route: the route's padding returns a StreamingResponse while the
+        # checkpoint is still loading, so the chat below would run against the previous model (or none).
         await load_model_for_preview(
             LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME
         )

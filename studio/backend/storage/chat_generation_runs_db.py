@@ -167,12 +167,10 @@ def _append_events_locked(
 
 
 def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
-    """Whether `exc` is this database still waiting on the progress-lease migration.
-
-    _connect lets a call through when contention blocks the ALTER, so every statement
-    naming progress_at or progress_tokens can meet a table that predates them. Degrading
-    to the pre-migration behaviour keeps that window harmless: without it a blocked
-    migration would abort a generation with `no such column` the moment the writer let go.
+    """Whether `exc` is this database still waiting on the progress-lease migration. _connect lets a call through
+    when contention blocks the ALTER, so every statement naming progress_at or progress_tokens can meet a table
+    that predates them. Degrading to the pre-migration behaviour keeps that window harmless: without it a
+    blocked migration would abort a generation with `no such column` the moment the writer let go.
     """
     message = str(exc).lower()
     return "no such column" in message and (
@@ -181,20 +179,15 @@ def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
 
 
 def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -> None:
-    """Stamp the progress lease for one flush of streamed output.
-
-    Monotonic in both fields, the same rule studio_db._safe_generation_assistant_update
-    applies to the assistant row this run owns: the token counter only ever accumulates,
-    and progress_at takes MAX(stored, now) so a wall-clock step backwards (NTP, suspend)
-    cannot age a live run into the sweep below. One chunk carries at most one token
-    delta, so the count of chunk events is the token count.
-
-    updated_at moves with it, as it already does on every event append. That is what the
-    follower's snapshot poll compares, so a client watching a run through a long model
-    preparation or an admission wait, neither of which emits events, sees the server is
-    alive and rearms its own no-progress deadline instead of reporting an interruption
-    over healthy work.
-    """
+    """Stamp the progress lease for one flush of streamed output. Monotonic in both fields, the same
+    rule studio_db._safe_generation_assistant_update applies to the assistant row this run owns: the
+    token counter only ever accumulates, and progress_at takes MAX(stored, now) so a wall-clock step
+    backwards (NTP, suspend) cannot age a live run into the sweep below. One chunk carries at most
+    one token delta, so the count of chunk events is the token count. updated_at moves with it, as
+    it already does on every event append. That is what the follower's snapshot poll compares, so a
+    client watching a run through a long model preparation or an admission wait, neither of which
+    emits events, sees the server is alive and rearms its own no-progress deadline instead of
+    reporting an interruption over healthy work."""
     now = now_ms()
     try:
         conn.execute(
@@ -469,13 +462,10 @@ def get_worker_run(
 
 
 def touch_progress(run_id: str) -> None:
-    """Renew one run's progress lease without recording any streamed output.
-
-    For work the lease cannot see. Automatic model loading, idle reload and auto-download
-    all happen between mark_running and the first token, and the engine's own first-token
-    budget does not start until after them, so ageing a run from mark_running could reap a
-    legitimate load followed by a legitimate prefill.
-    """
+    """Renew one run's progress lease without recording any streamed output. For work the lease cannot
+    see: automatic model loading, idle reload and auto-download all happen between mark_running and
+    the first token, and the engine's own first-token budget does not start until after them, so
+    ageing a run from mark_running could reap a legitimate load followed by a legitimate prefill."""
     conn = _connect()
     try:
         _touch_progress_locked(conn, run_id, 0)
@@ -748,16 +738,12 @@ def wait_for_events(
 def reconcile_runs(
     *, error: str = "Studio restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
-    """Settle active runs, returning the ids settled.
-
-    ``stale_after_ms`` is what makes this safe to run while Studio is serving: with it,
-    only runs whose progress lease has not moved for that long are settled, so a slow
-    but advancing generation is never touched. Without it (process boot) every active
-    run is orphaned by definition and all of them are settled.
-
-    Partial output survives either way: only the run row and the assistant message's
-    status metadata are rewritten, never the streamed content or the event log.
-    """
+    """Settle active runs, returning the ids settled. ``stale_after_ms`` is what makes this safe to run
+    while Studio is serving: with it, only runs whose progress lease has not moved for that long are
+    settled, so a slow but advancing generation is never touched. Without it (process boot) every
+    active run is orphaned by definition and all of them are settled. Partial output survives either
+    way: only the run row and the assistant message's status metadata are rewritten, never the
+    streamed content or the event log."""
     conn = _connect()
     settled: list[str] = []
     try:
@@ -777,8 +763,8 @@ def reconcile_runs(
             if not _missing_lease_columns(exc):
                 raise
             # Contention blocked the migration, so falling back to started_at/created_at is the opposite of
-            # conservative: those stamps are older by the whole life of the run, so one that streamed moments
-            # ago is reaped once its total AGE passes the timeout. Boot reconcile passes no stale_after_ms.
+            # conservative: those stamps are older by the whole life of the run, so one that streamed moments ago is
+            # reaped once its total AGE passes the timeout. Boot reconcile passes no stale_after_ms.
             if stale_after_ms is not None:
                 conn.rollback()
                 return []

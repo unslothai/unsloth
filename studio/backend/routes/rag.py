@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTTP API for the RAG engine: KB CRUD, uploads, SSE ingestion, search.
+"""HTTP API for the RAG engine: KB CRUD, uploads, SSE ingestion, search. Single-tenant: the subject gates
+access, not data.
 
-Single-tenant: the subject gates access, not data.
-
-Without a working sqlite-vec the router still mounts, and one contract covers every
-endpoint. The KB list is polled, so it answers 200 with an empty list carrying an
-availability marker, which is what lets a client tell an empty store from a machine
-where RAG cannot run. Every other endpoint answers 503 stating the same reason.
-Nothing logs a traceback for it: the condition is fixed for the session and rag_db
-warns about it exactly once.
+Without a working sqlite-vec the router still mounts, and one contract covers every endpoint. The KB list is
+polled, so it answers 200 with an empty list carrying an availability marker, which is what lets a client tell
+an empty store from a machine where RAG cannot run. Every other endpoint answers 503 stating the same reason.
+Nothing logs a traceback for it: the condition is fixed for the session and rag_db warns about it exactly once.
 """
 
 from __future__ import annotations
@@ -47,27 +44,21 @@ _UNAVAILABLE_DETAIL = "RAG is unavailable: the sqlite-vec extension could not be
 
 
 def _require_rag() -> None:
-    """Gate an endpoint on RAG being runnable here.
-
-    Covers both halves of unavailable: sqlite-vec never imported, and it imported but
-    its native library will not load. 503 with a stated reason rather than the 500 plus
-    traceback a raising connection would produce, and rag_db's warn-once keeps the log
-    quiet however often this fires.
-    """
+    """Gate an endpoint on RAG being runnable here. Covers both halves of unavailable: sqlite-vec never
+    imported, and it imported but its native library will not load. 503 with a stated reason rather
+    than the 500 plus traceback a raising connection would produce, and rag_db's warn-once keeps the
+    log quiet however often this fires."""
     if not rag_db.rag_available():
         raise HTTPException(status_code = 503, detail = _UNAVAILABLE_DETAIL)
 
 
 @contextmanager
 def _rag_unavailable_as_503(cleanup_path: str | None = None) -> Iterator[None]:
-    """Report RagExtensionUnavailable as the same 503, wherever it is raised.
-
-    _require_rag() has normally answered for the session already; this closes the window
-    where the very first request is the one that discovers the missing library, and it
-    reaches the connections ingestion opens for itself. ``cleanup_path`` removes an
-    upload that was saved before the failure, so nothing is orphaned in the uploads
-    root. Real database errors are left alone.
-    """
+    """Report RagExtensionUnavailable as the same 503, wherever it is raised. _require_rag() has
+    normally answered for the session already; this closes the window where the very first request
+    is the one that discovers the missing library, and it reaches the connections ingestion opens
+    for itself. ``cleanup_path`` removes an upload that was saved before the failure, so nothing is
+    orphaned in the uploads root. Real database errors are left alone."""
     try:
         yield
     except rag_db.RagExtensionUnavailable as exc:
@@ -82,12 +73,9 @@ def _rag_connection() -> sqlite3.Connection:
 
 
 def _availability(available: bool) -> dict:
-    """Availability marker carried by the KB list, the one response that degrades
-    rather than erroring.
-
-    Additive: a client that only reads the list is unaffected, one that reads this can
-    say "RAG cannot run here" instead of showing an empty page that looks ready to use
-    and offering a Create that can only 503.
+    """Availability marker carried by the KB list, the one response that degrades rather than erroring.
+    Additive: a client that only reads the list is unaffected, one that reads this can say "RAG cannot run here"
+    instead of showing an empty page that looks ready to use and offering a Create that can only 503.
     """
     return {
         "ragAvailable": available,
@@ -358,10 +346,8 @@ def _require_scope_owner(
     scope_id: str,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """404 unless the scope's owner still exists.
-
-    ``conn`` reuses a connection the caller already holds: sqlite-vec loads per
-    connection, so opening a second one to read a single row pays that twice.
+    """404 unless the scope's owner still exists. ``conn`` reuses a connection the caller already holds:
+    sqlite-vec loads per connection, so opening a second one to read a single row pays that twice.
     """
     if scope_type == "knowledge_base":
         if conn is not None:
@@ -414,10 +400,10 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     try:
         conn = rag_db.get_connection()
     except rag_db.RagExtensionUnavailable:
-        # RAG_AVAILABLE only covers the import; the native library can still fail to load per connection (a missing vec0
-        # binary in the venv). The UI polls this list, so 500ing costs a traceback every few seconds for a condition
-        # that never changes in a session, and rag_db has warned once. The marker is the difference between "no
-        # knowledge bases yet" and "RAG cannot run here". Only the unavailable case degrades: a locked or corrupt
+        # RAG_AVAILABLE only covers the import; the native library can still fail to load per connection (a missing
+        # vec0 binary in the venv). The UI polls this list, so 500ing costs a traceback every few seconds for a
+        # condition that never changes in a session, and rag_db has warned once. The marker is the difference between
+        # "no knowledge bases yet" and "RAG cannot run here". Only the unavailable case degrades: a locked or corrupt
         # database still raises.
         return {"knowledgeBases": [], **_availability(False)}
     try:
@@ -612,9 +598,9 @@ def _discard_document(document_id: str) -> None:
         store.delete_document(conn, document_id)
     finally:
         conn.close()
-    # Same uploads-root confinement as every other cleanup path, and best-effort for the same
-    # reason: on Windows commonpath raises across drives and os.remove raises while the ingestion
-    # worker still holds the file, neither of which should turn this into a 500.
+    # Same uploads-root confinement as every other cleanup path, and best-effort for the same reason: on Windows
+    # commonpath raises across drives and os.remove raises while the ingestion worker still holds the file, neither
+    # of which should turn this into a 500.
     _remove_stored_upload(document.get("stored_path"))
 
 

@@ -3,24 +3,23 @@
 
 """Metadata-only compatibility preflight for a diffusion pick.
 
-A FLUX.2 GGUF only carries the transformer; its size (``inner_dim``) has to agree with the
-companion diffusers base repo the loader assembles around it. ``assert_flux2_gguf_matches_base``
-already catches a mismatch, but it opens the downloaded checkpoint, so it fires from inside
-``load_pipeline`` -- after the prefetch pulled ~19 GB of base shards and after the resident
-pipeline was torn down to make room. The user paid for both to be told the pick was never valid.
+A FLUX.2 GGUF only carries the transformer; its size (``inner_dim``) has to agree with the companion
+diffusers base repo the loader assembles around it. ``assert_flux2_gguf_matches_base`` already
+catches a mismatch, but it opens the downloaded checkpoint, so it fires from inside
+``load_pipeline`` -- after the prefetch pulled ~19 GB of base shards and after the resident pipeline
+was torn down to make room.
 
-This module answers the same question from metadata alone: one HTTP range request for the first
-few hundred KiB of the GGUF, which is where its tensor table lives. That is cheap enough to run
-at SELECTION time (``/images/download-plan``) and again on the pre-eviction path, so the refusal
-lands before a byte moves and before anything is unloaded.
+This module answers the same question from metadata alone: one HTTP range request for the first few
+hundred KiB of the GGUF, where its tensor table lives. That is cheap enough to run at SELECTION time
+(``/images/download-plan``) and again on the pre-eviction path, so the refusal lands before a byte
+moves and before anything is unloaded.
 
-Fail-open throughout, deliberately: an unreadable or truncated header, a base repo outside the
-size table, an offline host, a server that ignores Range -- all yield "no opinion", and the load
-proceeds exactly as it does today with the loader's own guard as the backstop. A false positive
-here would refuse a pick that works, which is strictly worse than the download this saves.
-
-(A known ungated MIRROR of a base is not an exception to that: it is byte-identical to what it
-copies, ``canonical_base`` maps it back, and it is checked like its upstream.)
+Fail-open throughout, deliberately: an unreadable or truncated header, a base repo outside the size
+table, an offline host, a server that ignores Range all yield "no opinion", and the load proceeds
+with the loader's own guard as the backstop. A false positive here would refuse a pick that works,
+which is strictly worse than the download this saves. (A known ungated MIRROR of a base is not an
+exception: it is byte-identical to what it copies, ``canonical_base`` maps it back, and it is
+checked like its upstream.)
 """
 
 from __future__ import annotations
@@ -57,19 +56,14 @@ _HEADER_TIMEOUT_SECONDS = 15
 # How long to wait for an interrupted read to notice before leaving it to the GC.
 _ABANDON_GRACE_SECONDS = 0.5
 
-# (repo_id, gguf_filename, token fingerprint, local file identity) -> inner_dim or None. Bounded
-# and process-local. It memoises the MISS too -- the three checks on one pick would otherwise
-# re-probe an unreachable Hub three times, and a sticky None is the degradation this module
-# promises anyway. Which is exactly why the last two key parts exist: a sticky None must not
-# outlive its cause.
-#
-#   * the TOKEN, fingerprinted rather than stored. Keying on mere presence made every non-empty
-#     token one key, so a first probe with an expired credential poisoned the valid one that
-#     replaced it for the rest of the process.
-#   * the local file's IDENTITY (path, size, mtime). A checkpoint swapped in place keeps its path,
-#     so keying on the name alone answers the new file with the old file's dim -- refusing a valid
-#     9B pairing, or handing sd.cpp the 4B text encoders. It also makes the file ARRIVING a new
-#     key, so a miss taken before a download finished re-probes off disk for free.
+# (repo_id, gguf_filename, token fingerprint, local file identity) -> inner_dim or None. Bounded and process-local. It
+# memoises the MISS too, since the three checks on one pick would otherwise re-probe an unreachable Hub three times,
+# which is exactly why the last two key parts exist: a sticky None must not outlive its cause. The TOKEN is
+# fingerprinted rather than stored, because keying on mere presence made every non-empty token one key, so a first
+# probe with an expired credential poisoned the valid one that replaced it. The local file's IDENTITY (path, size,
+# mtime) is keyed because a checkpoint swapped in place keeps its path, so keying on the name alone answers the new
+# file with the old file's dim; it also makes the file ARRIVING a new key, so a miss taken before a download finished
+# re-probes off disk for free.
 _INNER_DIM_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[int]] = {}
 _INNER_DIM_CACHE_MAX = 256
 _CACHE_LOCK = threading.Lock()
@@ -452,16 +446,11 @@ _SPEECH_ARCH_CACHE_MAX = 256
 # variant listing's own freshness window for moved revisions.
 _SPEECH_REMOTE_TTL_SECONDS = 60.0
 
-# (repo_id, gguf_filename, token fingerprint, local file identity) -> the header prefix.
-#
-# The inner-dim probe and the speech probe read the SAME first _GGUF_HEADER_BYTES of the SAME
-# file, and a flux.2 pick that is not a size mismatch runs both: two range requests, each with its
-# own _HEADER_TIMEOUT_SECONDS, so a picker the user waits on could wear twice its documented
-# bound. They share the read now, keyed and aged exactly like the speech memo beside it, so this
-# adds no staleness the module did not already accept.
-#
-# Deliberately NOT consulted by the revalidation paths: their whole job is to re-read a file the
-# Hub has republished, and answering those from a memo would defeat them.
+# (repo_id, gguf_filename, token fingerprint, local file identity) -> the header prefix. The inner-dim probe and the
+# speech probe read the SAME first _GGUF_HEADER_BYTES of the SAME file, and a flux.2 pick that is not a size mismatch
+# runs both: two range requests, each with its own _HEADER_TIMEOUT_SECONDS, so a picker the user waits on could wear
+# twice its documented bound. They share the read now, keyed and aged exactly like the speech memo beside it.
+# Deliberately NOT consulted by the revalidation paths: their whole job is to re-read a file the Hub has republished.
 _HEADER_PREFIX_CACHE: dict[tuple[str, str, str, Optional[tuple]], tuple[bytes, float]] = {}
 _HEADER_PREFIX_CACHE_MAX = 32
 

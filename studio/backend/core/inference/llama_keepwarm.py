@@ -34,9 +34,8 @@ _pending = 0
 # Subset of _pending that is /p/ preview traffic, so the busy guard can tell a queued Unsloth request from a queued
 # preview.
 _preview_pending = 0
-# non-preview requests past FastAPI auth: the preview busy guard counts these
 # Non-preview requests past FastAPI auth at the local-inference choke point. The preview busy guard counts these, not
-# raw _inflight, so a pre-auth/unauthenticated tracked request that never touches the model can't starve public
+# raw _inflight, so a pre-auth/unauthenticated tracked request that never touches the model cannot starve public
 # previews.
 _admitted_inference = 0
 # Bumped when a preview swap loads a new checkpoint. A non-preview request captures it before the lifecycle gate; if it
@@ -100,22 +99,19 @@ _INFERENCE_SUFFIXES = (
     "/video/generate",
 )
 
-# matched WHOLE, not by suffix: a bare "/videos" entry would class an unrouted /v1/anything/videos as inference
 # Matched WHOLE, not by suffix. The suffix tuple above is an endswith test, so a bare "/videos" entry would also class
-# an unrouted /v1/anything/videos as inference: that 404s before any auth dependency, and this middleware only excludes
-# 401/403, so each such probe would refresh the chat model's idle timer and keep it resident for free.
+# an unrouted /v1/anything/videos as inference: that 404s before any auth dependency, and this middleware only
+# excludes 401/403, so each such probe would refresh the chat model's idle timer and keep it resident for free.
 _INFERENCE_EXACT_PATHS = frozenset({"/v1/videos", "/api/inference/videos"})
 
-# tracked above (they hold the GPU) but served by the diffusion/video engines, never the llama slot
 # Tracked above (they hold the GPU, so the in-flight count must see them) but served by the diffusion/video engines,
-# never the llama slot. A successful one therefore did NOT run against the resident chat model and must not adopt it for
-# Unsloth: clearing the marker on an image or video generation would leave a still-preview-owned checkpoint looking
-# Unsloth-owned, and the next preview for a different checkpoint would 503 on the slot guard.
+# never the llama slot. A successful one therefore did NOT run against the resident chat model and must not adopt it
+# for Unsloth: clearing the marker on an image or video generation would leave a still-preview-owned checkpoint
+# looking Unsloth-owned, and the next preview for a different checkpoint would 503 on the slot guard.
 _NON_LLM_SLOT_SUFFIXES = (
     "/images/generate",
     "/images/generations",
     "/video/generate",
-    # the OpenAI videos route runs the video backend only, exactly like /video/generate
     # The OpenAI videos route (/v1/videos + /api/inference/videos) runs the video backend only, exactly like
     # /video/generate. It is tracked as an inference path, so without this it would claim the slot and clear preview
     # ownership.
@@ -349,32 +345,27 @@ def _claim_non_preview_slot() -> None:
         logger.debug("preview-slot claim on completion failed: %s", exc)
 
 
-# set by a route that proved this request will not touch llama.cpp
-# Set on the scope by a route that proved this request won't touch llama.cpp (e.g. it proxied to an external provider),
-# so the keep-warm count excludes it and the middleware skips its end-decrement.
+# Set on the scope by a route that proved this request will not touch llama.cpp (e.g. it proxied to an external
+# provider), so the keep-warm count excludes it and the middleware skips its end-decrement.
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
 # Set after middleware admission so the preview route can distinguish a real tracked request from direct unit/helper
 # calls that have no counters to move.
 _TRACKED_SCOPE_KEY = "_unsloth_keepwarm_tracked"
 
-# while queued on its own serializer a preview must be pending
 # A preview route waits on its own serializer after middleware admission. While queued it must be pending, not active:
 # an Unsloth swap holds the lifecycle gate while draining active requests, and the queued preview needs that same gate
 # after it gets the serializer.
 _PREVIEW_SERIALIZER_WAIT_SCOPE_KEY = "_unsloth_keepwarm_preview_serializer_wait"
 
-# set by the middleware when a preview swap advanced the counter while a non-preview request waited on the gate;
 # Set by the middleware on a non-preview scope when a preview swap advanced the counter while it waited on the gate;
 # _maybe_auto_switch_model then rejects it rather than serve the swapped-in checkpoint. Deferred to the route (not a
-# middleware 503) so an external- provider request that untracks and returns before that check is never rejected.
+# middleware 503) so an external-provider request that untracks and returns before that check is never rejected.
 _PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
 
-# the swap generation at middleware entry, so local-inference admission can also reject a request that passed the gate
-# BEFORE a swap
-# The swap generation snapshot at middleware entry, on the scope so local-inference admission can also reject a request
-# that passed the gate BEFORE a swap (never got the gate-wait reject flag) but is still pre-auth when a preview swaps
-# in.
+# The swap generation snapshot at middleware entry, on the scope so local-inference admission can also reject a
+# request that passed the gate BEFORE a swap (never got the gate-wait reject flag) but is still pre-auth when a
+# preview swaps in.
 _SWAP_GEN_AT_ENTRY_KEY = "_unsloth_keepwarm_swap_gen_at_entry"
 
 # Set on the scope by a streaming route that failed after its 200 headers (an SSE error chunk, a passthrough relaying a
@@ -391,8 +382,6 @@ def mark_response_failed(scope) -> None:
         scope[_RESPONSE_FAILED_SCOPE_KEY] = True
 
 
-# the current request's ASGI scope, so deep streaming error helpers can flag a failure without threading the scope
-# through every yield site
 # The current request's ASGI scope, set by the middleware so deep streaming error helpers can flag a failure without
 # threading the scope through every yield site. The middleware shares the streaming body's task, so the contextvar
 # reaches those generators.
@@ -625,16 +614,15 @@ def _as_bytes(value) -> bytes:
 def _carries_bearer_credentials(scope, path: str = "") -> bool:
     """Whether this request carries the credentials its route demands.
 
-    Every tracked media route depends on ``get_current_subject`` (HTTPBearer), so a request
-    without one is refused before any handler runs. Counting it anyway would still pin the
-    pipeline: the count is taken here, ahead of FastAPI parsing the body, and a client that
-    opens the POST and then withholds its body produces no response status either, so the
-    401/403 exclusion below never gets to run. One such connection, replaced as it times
-    out, would keep a multi-GB pipeline resident for good. Real clients always send the
-    header, so requiring it costs a legitimate generation nothing. Keyless API access is
-    the one case where a route demands no bearer at all. Its outer admission middleware
-    records that decision before keep-warm runs, so reuse the snapshot instead of
-    repeating settings, listener, and DNS work on this loop.
+    Every tracked media route depends on ``get_current_subject`` (HTTPBearer), so a request without
+    one is refused before any handler runs. Counting it anyway would still pin the pipeline: the
+    count is taken here, ahead of FastAPI parsing the body, and a client that opens the POST and
+    then withholds its body produces no response status either, so the 401/403 exclusion below never
+    gets to run -- one such connection, replaced as it times out, would keep a multi-GB pipeline
+    resident for good. Real clients always send the header. Keyless API access is the one case where
+    a route demands no bearer at all; its outer admission middleware records that decision before
+    keep-warm runs, so reuse the snapshot instead of repeating settings, listener and DNS work on
+    this loop.
     """
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
 
@@ -661,9 +649,8 @@ class LlamaKeepWarmMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        # inference endpoints are all POST, so skipping non-POST avoids counting CORS preflight
-        # Inference endpoints are all POST; skipping non-POST avoids counting CORS preflight (OPTIONS). ``or ""`` guards
-        # an explicit None path.
+        # Inference endpoints are all POST; skipping non-POST avoids counting CORS preflight (OPTIONS). ``or ""``
+        # guards an explicit None path.
         path = scope.get("path") or ""
         if scope.get("type") != "http" or scope.get("method") != "POST":
             await self.app(scope, receive, send)
@@ -720,11 +707,10 @@ class LlamaKeepWarmMiddleware:
                 raise
         ended = {"done": False}
         status = {"code": None}
-        # set once the terminal body frame is sent: only a cleanly completed response adopts the model for Unsloth.
-        # Set once the terminal body frame (more_body False) is sent: only a response that completed cleanly adopts the
-        # model for Unsloth. A client disconnect after the 200 headers raises before that frame (an OSError that
-        # _SameTaskStreamingResponse turns into a CancelledError for the body generator, which finishes the monitor and
-        # re-raises without flagging the scope), so a cancelled stream never claims the slot.
+        # Set once the terminal body frame (more_body False) is sent: only a response that completed cleanly adopts
+        # the model for Unsloth. A client disconnect after the 200 headers raises before that frame (an OSError that
+        # _SameTaskStreamingResponse turns into a CancelledError for the body generator, which finishes the monitor
+        # and re-raises without flagging the scope), so a cancelled stream never claims the slot.
         completed = {"done": False}
 
         def _finish() -> None:
@@ -757,9 +743,8 @@ class LlamaKeepWarmMiddleware:
                 and not scope.get(_UNTRACKED_SCOPE_KEY)
             ):
                 _claim_non_preview_slot()
-            # balance note_admitted_inference here (in the finally, so it cannot leak on any exit path), after the claim
-            # Balance note_admitted_inference here (runs in the finally, so it can't leak on any exit path), after the
-            # claim above and before the untracked / 401 early returns.
+            # Balance note_admitted_inference here (runs in the finally, so it cannot leak on any exit path), after
+            # the claim above and before the untracked / 401 early returns.
             if scope.get(_ADMITTED_SCOPE_KEY):
                 _note_admitted_end()
             if scope.get(_UNTRACKED_SCOPE_KEY):
@@ -786,7 +771,6 @@ class LlamaKeepWarmMiddleware:
                 "more_body", False
             )
             await send(message)
-            # claim only after the terminal frame is delivered
             # Claim only after the terminal frame is actually delivered: a client that disconnects on the final write
             # makes send() above raise, so completed stays False and the cut-off stream is not mistaken for a clean
             # completion.

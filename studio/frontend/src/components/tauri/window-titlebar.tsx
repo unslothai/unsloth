@@ -351,10 +351,9 @@ export function WindowTitlebar({
       {showSidebarSurface && (
         <div
           data-slot="window-titlebar-decoration"
-          // Marks a consumer of --studio-sidebar-live-width. Only this and the
-          // header below read it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes
-          // the live width here instead of on the document element, where it
-          // would restyle the whole document once per drag frame.
+          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
+          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
+          // document element, where it would restyle the whole document once per drag frame.
           data-titlebar-live-width-scope=""
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"

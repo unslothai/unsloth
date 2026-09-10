@@ -138,11 +138,9 @@ def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
 
 
 def record_api_usage(receipt: ApiUsageReceipt) -> bool:
-    """Insert one external request receipt, returning whether a row was added.
-
-    The monitor id is the idempotency key, so repeated completion notification
-    cannot inflate profile totals. Invalid or zero-usage receipts are ignored.
-    """
+    """Insert one external request receipt, returning whether a row was added. The monitor id is the
+    idempotency key, so repeated completion notification cannot inflate profile totals. Invalid or
+    zero-usage receipts are ignored."""
     if receipt.kind != "request" or receipt.via_api_key is not True:
         return False
     counts = (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens)
@@ -201,12 +199,9 @@ class ApiUsageWriter:
             return True
 
     def stop(self, timeout: float = _WORKER_DRAIN_TIMEOUT_SECONDS) -> bool:
-        """Stop accepting receipts and wait boundedly for the queue to drain.
-
-        Returns ``True`` once the daemon consumed the stop sentinel. On timeout,
-        the daemon keeps retrying the already accepted head receipt and exits
-        after it succeeds and drains the remaining queue.
-        """
+        """Stop accepting receipts and wait boundedly for the queue to drain. Returns ``True`` once the
+        daemon consumed the stop sentinel. On timeout, the daemon keeps retrying the already
+        accepted head receipt and exits after it succeeds and drains the remaining queue."""
         with self._state_lock:
             if not self._stopped:
                 self._stopped = True
@@ -239,10 +234,9 @@ class ApiUsageWriter:
                         if not _is_busy_error(exc):
                             logger.warning("api usage receipt persistence failed", exc_info = True)
                             break
-                        # record_api_usage already made its bounded fast retries: retain this accepted item at
-                        # the head of
-                        # the single writer until a long transaction releases SQLite, with the stop sentinel behind it
-                        # so final shutdown drains rather than silently dropping usage.
+                        # record_api_usage already made its bounded fast retries: retain this accepted item at the head of
+                        # the single writer until a long transaction releases SQLite, with the stop sentinel behind it so
+                        # final shutdown drains rather than silently dropping usage.
                         busy_failures += 1
                         if busy_failures == 1 or busy_failures % 20 == 0:
                             logger.warning(
@@ -283,10 +277,8 @@ def enqueue_api_usage(receipt: ApiUsageReceipt) -> None:
 
 
 def release_api_usage_writer(lease: str) -> None:
-    """Release one lifespan and boundedly drain after the last owner exits.
-
-    A timed-out daemon retains its accepted queue, but the global gate is always
-    cleared so a successor lifespan can start a fresh writer.
+    """Release one lifespan and boundedly drain after the last owner exits. A timed-out daemon retains its
+    accepted queue, but the global gate is always cleared so a successor lifespan can start a fresh writer.
     """
     global _writer, _writer_stopping
     writer = None

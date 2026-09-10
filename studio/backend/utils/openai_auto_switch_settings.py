@@ -1,41 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted opt-in controls for OpenAI-compatible model auto-switching.
-
-All off by default so existing API behavior is unchanged:
-- ``openai_api_auto_switch_model``: when on, a ``/v1`` request whose ``model``
-  names a downloaded local model different from the loaded one transparently
-  loads it before serving (llama-swap-style). Covers GGUF through llama.cpp and
-  non-GGUF weights (safetensors, MLX) through the inference orchestrator.
-  Unknown names pass through.
-- ``openai_api_auto_download_model``: when on, a ``/v1`` request naming an
-  undownloaded GGUF repo starts a background download instead of failing.
-  Gated on auto-switch, which is what serves the model once it lands.
-- ``openai_api_auto_unload_idle_seconds``: when > 0, the loaded GGUF is
-  unloaded after this many idle seconds to free VRAM. Enabled values have a
-  60s floor (0 stays "off"): a tiny TTL tears the model down between turns of
-  an active chat, forcing a full weight reload + prompt re-prefill per turn.
-- ``media_api_auto_switch_model``: the image/video twin of the first setting.
-  A media request naming a downloaded image or video model loads it before
-  generating, unloading the resident one once the work in flight has drained.
-  Its own setting for the same reason the media TTL is: the chat toggle says
-  nothing about pipelines the user loaded on the Image or Video page.
-- ``media_auto_unload_idle_seconds``: the same for the image and video
-  pipelines. Its own setting, not a share of the chat one: this section is
-  about the OpenAI API and nothing here says it frees a model the user loaded
-  on the Image or Video page, so turning that one on must not start evicting
-  these.
-
-Either idle TTL can also be set at startup via ``UNSLOTH_MODEL_IDLE_TTL`` /
-``UNSLOTH_MEDIA_IDLE_TTL``. Unlike the stored setting (which stays gated on
-auto-switch), the env value is a standalone default that enables idle-unload
-even with auto-switch off, for headless/container deploys; an explicit UI/API
-value still overrides it.
-
-Reads are cached for a short window because these are consulted on the
-per-request hot path; writes invalidate the cache.
-"""
+"""Persisted opt-in controls for OpenAI-compatible model auto-switching, all off by default so existing API behavior is unchanged. ``openai_api_auto_switch_model``: a ``/v1`` request whose ``model`` names a downloaded local model different from the loaded one transparently loads it first (llama-swap-style), GGUF through llama.cpp and non-GGUF weights through the inference orchestrator; unknown names pass through. ``openai_api_auto_download_model``: a ``/v1`` request naming an undownloaded GGUF repo starts a background download instead of failing, gated on auto-switch which is what serves it once it lands. ``openai_api_auto_unload_idle_seconds``: unload the loaded GGUF after this many idle seconds; enabled values have a 60s floor (0 stays "off") because a tiny TTL tears the model down between turns of an active chat, forcing a full weight reload plus prompt re-prefill per turn. ``media_api_auto_switch_model`` is the image/video twin of the first, and ``media_auto_unload_idle_seconds`` of the third: their own settings rather than a share of the chat ones, since this section is about the OpenAI API and nothing here says it frees a model the user loaded on the Image or Video page. Either idle TTL can also be set at startup via ``UNSLOTH_MODEL_IDLE_TTL`` / ``UNSLOTH_MEDIA_IDLE_TTL``; unlike the stored setting (which stays gated on auto-switch), the env value is a standalone default that enables idle-unload even with auto-switch off, for headless/container deploys, and an explicit UI/API value still overrides it. Reads are cached for a short window because these are on the per-request hot path; writes invalidate the cache."""
 
 from __future__ import annotations
 
@@ -128,18 +94,13 @@ def get_media_auto_switch_enabled() -> bool:
 
 
 def get_stored_openai_auto_download_enabled() -> bool:
-    """The persisted auto-download flag, independent of auto-switch, so the UI
-    round-trips the saved value across an auto-switch toggle instead of erasing it."""
+    """The persisted auto-download flag, independent of auto-switch, so the UI round-trips the saved value across an auto-switch toggle instead of erasing it."""
     parsed = _coerce_bool(_cached_setting(OPENAI_AUTO_DOWNLOAD_SETTING_KEY, None))
     return parsed if parsed is not None else DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
 
 
 def get_openai_auto_download_enabled() -> bool:
-    """Whether a /v1 request may download a GGUF repo it names but doesn't have.
-
-    Gated on auto-switch: that is what loads the model once it lands, so without
-    it we would fetch gigabytes nothing can serve.
-    """
+    """Whether a /v1 request may download a GGUF repo it names but doesn't have. Gated on auto-switch: that is what loads the model once it lands, so without it we would fetch gigabytes nothing can serve."""
     return get_stored_openai_auto_download_enabled() and get_openai_auto_switch_enabled()
 
 
@@ -157,10 +118,7 @@ _env_floor_warned: set[str] = set()
 
 
 def _env_ttl(var: str) -> Optional[int]:
-    """``var`` as a non-negative seconds value, or None if unset/invalid.
-
-    Floored to MIN_AUTO_UNLOAD_IDLE_SECONDS here (with a one-time warning) since
-    headless/container deploys have no UI to surface a validation error."""
+    """``var`` as a non-negative seconds value, or None if unset/invalid. Floored to MIN_AUTO_UNLOAD_IDLE_SECONDS here (with a one-time warning) since headless/container deploys have no UI to surface a validation error."""
     raw = os.environ.get(var)
     if raw is None or not raw.strip():
         return None
@@ -190,28 +148,17 @@ def _env_media_idle_seconds() -> Optional[int]:
 
 
 def get_stored_auto_unload_idle_seconds() -> int:
-    """The persisted idle-unload TTL, independent of whether auto-switch is on.
-
-    The settings UI reads this so it can display and round-trip the saved value;
-    toggling auto-switch off must not erase it. Falls back to the env override so
-    the UI shows the startup default. The idle loop uses the gated reader below.
-    """
+    """The persisted idle-unload TTL, independent of whether auto-switch is on. The settings UI reads this so it can display and round-trip the saved value; toggling auto-switch off must not erase it. Falls back to the env override so the UI shows the startup default. The idle loop uses the gated reader below."""
     stored = _stored_idle_seconds()
     if stored is not None:
-        # Floor legacy values persisted before the minimum existed, so the UI
-        # displays the effective TTL and round-trips it cleanly.
+        # Floor legacy values persisted before the minimum existed, so the UI displays the effective TTL and round-trips it cleanly.
         return _apply_idle_floor(stored)
     env = _env_idle_seconds()
     return env if env is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
 
 
 def get_stored_media_auto_unload_idle_seconds() -> int:
-    """The persisted image/video idle TTL, before any veto.
-
-    The settings UI reads this so it can display and round-trip the saved value.
-    Falls back to the env override so the UI shows the startup default. The idle
-    loop uses the gated reader below.
-    """
+    """The persisted image/video idle TTL, before any veto. The settings UI reads this so it can display and round-trip the saved value, and it falls back to the env override so the UI shows the startup default. The idle loop uses the gated reader below."""
     stored = _stored_media_idle_seconds()
     if stored is not None:
         return _apply_idle_floor(stored)
@@ -230,49 +177,27 @@ def _residency_vetoes_unload() -> bool:
 
 def get_auto_unload_idle_seconds() -> int:
     """Effective idle TTL the idle loop runs on (0 = never unload)."""
-    # Model Memory residency vetoes the TTL. Effective reader only, so the stored
-    # reader keeps the number the user typed and it returns when they turn it off.
+    # Model Memory residency vetoes the TTL. Effective reader only, so the stored reader keeps the number the user typed and it returns when they turn it off.
     if _residency_vetoes_unload():
         return 0
     stored = _stored_idle_seconds()
     if stored is not None:
-        # An explicit UI/API value stays gated on auto-switch: off reports 0 so the
-        # off state is identical to pre-feature. Floored to cover values persisted
-        # before the minimum existed.
+        # An explicit UI/API value stays gated on auto-switch: off reports 0 so the off state is identical to pre-feature. Floored to cover values persisted before the minimum existed.
         return _apply_idle_floor(stored) if get_openai_auto_switch_enabled() else 0
-    # No stored value: UNSLOTH_MODEL_IDLE_TTL is a standalone startup default that
-    # enables idle-unload even with auto-switch off (headless/container deploys).
+    # No stored value: UNSLOTH_MODEL_IDLE_TTL is a standalone startup default that enables idle-unload even with auto-switch off (headless/container deploys).
     env = _env_idle_seconds()
     return env if env is not None else 0
 
 
 def get_media_auto_unload_idle_seconds() -> int:
-    """Effective idle TTL for the image and video backends (0 = never unload).
-
-    Its own setting, off by default: the chat TTL lives under "Model auto-switch
-    (OpenAI API)" and says nothing about image or video, so inheriting it would
-    start evicting pipelines on upgrade for everyone who had turned that on.
-    UNSLOTH_MEDIA_IDLE_TTL is the startup default when nothing is stored, exactly
-    as UNSLOTH_MODEL_IDLE_TTL is for chat.
-
-    Residency vetoes it like the chat reader. "Only unload models loaded by the
-    API" does not veto it here: media auto-switch gives a request its own way to
-    load a pipeline, so the two origins now have to be told apart per model, which
-    media_keepwarm does with the provenance the load routes record. With
-    auto-switch off nothing but the user ever loads one, so that per-model rule
-    spares every resident model and the outcome is unchanged.
-    """
+    """Effective idle TTL for the image and video backends (0 = never unload). Its own setting, off by default: the chat TTL lives under "Model auto-switch (OpenAI API)" and says nothing about image or video, so inheriting it would start evicting pipelines on upgrade for everyone who had turned that on. UNSLOTH_MEDIA_IDLE_TTL is the startup default when nothing is stored, as UNSLOTH_MODEL_IDLE_TTL is for chat. Residency vetoes it like the chat reader. "Only unload models loaded by the API" does not veto it here: media auto-switch gives a request its own way to load a pipeline, so the two origins are told apart per model, which media_keepwarm does with the provenance the load routes record; with auto-switch off nothing but the user ever loads one, so that rule spares every resident model and the outcome is unchanged."""
     if _residency_vetoes_unload():
         return 0
     return get_stored_media_auto_unload_idle_seconds()
 
 
 def idle_unload_is_configured() -> bool:
-    """The user's idle-unload setting, ignoring the residency veto.
-
-    Residency zeroes the effective TTL without them turning idle unload off, so
-    anything deciding whether to DISCARD saved state reads this, not the gated one.
-    """
+    """The user's idle-unload setting, ignoring the residency veto. Residency zeroes the effective TTL without them turning idle unload off, so anything deciding whether to DISCARD saved state reads this, not the gated one."""
     stored = _stored_idle_seconds()
     if stored is not None:
         return _apply_idle_floor(stored) > 0 and get_openai_auto_switch_enabled()
@@ -397,17 +322,10 @@ def set_openai_auto_switch(
     )
 
 
-# An override is the server-side twin of the UI's per-model config, mirrored on every save so an API
-# load applies the same launch settings the picker would; every field is optional and absent means
-# "app default". Mirrors _valid_cache_types in core/inference/llama_cpp.py.
-# Legacy entries hold just {llama_extra_args, max_seq_length}, and a write replaces the fields it expresses, so the
-# route carries `llama_extra_args` over. Known gap: the picker's global fallbacks for GPU memory mode and speculative
-# decoding live in browser localStorage, so an API load following the global gets the default.
-# --- Per-model launch config -------------------------------------------------
+# An override is the server-side twin of the UI's per-model config, mirrored on every save so an API load applies the same launch settings the picker would; every field is optional and absent means "app default". Mirrors _valid_cache_types in core/inference/llama_cpp.py. Legacy entries hold just {llama_extra_args, max_seq_length}, and a write replaces the fields it expresses, so the route carries `llama_extra_args` over. Known gap: the picker's global fallbacks for GPU memory mode and speculative decoding live in browser localStorage, so an API load following the global gets the default.
 VALID_KV_CACHE_DTYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
-# Canonical values plus the legacy spellings LoadRequest still accepts.
 VALID_SPECULATIVE_TYPES = frozenset(
     {
         "auto",
@@ -423,8 +341,7 @@ VALID_SPECULATIVE_TYPES = frozenset(
         "draft-dflash",
         "ngram-mod",
         "ngram-simple",
-        # /load canonicalizes these three to "off"; without them here _clean_str
-        # drops the field, so a saved disable became no override at all.
+        # /load canonicalizes these three to "off"; without them here _clean_str drops the field, so a saved disable became no override at all.
         "none",
         "disable",
         "disabled",
@@ -434,11 +351,9 @@ VALID_SPECULATIVE_TYPES = frozenset(
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
 )
-# Only these load a separate draft model, and so a draft context for the dtype to apply to.
-# Mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI.
+# Only these load a separate draft model, and so a draft context for the dtype to apply to. Mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI.
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
-# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not
-# stored: an entry holding it would pin what a build may redefine.
+# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not stored: an entry holding it would pin what a build may redefine.
 VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
 # Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
 CTX_CHECKPOINTS_MAX = 256
@@ -461,10 +376,7 @@ MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
 # Highest device index a gpu_ids entry may name; also bounds how many ids one entry holds.
 MAX_GPU_ID = 1024
 
-# Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals
-# under a Vulkan build and physical device ids elsewhere, so the namespace travels with the
-# ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts,
-# legacy rule included: an absent kind is "physical".
+# Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals under a Vulkan build and physical device ids elsewhere, so the namespace travels with the ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts, legacy rule included: an absent kind is "physical".
 VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
 LEGACY_GPU_INDEX_KIND = "physical"
 
@@ -477,16 +389,13 @@ def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
 
 
 def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
-    # bool subclasses int, so `gpu_ids: [true, false]` would pin GPUs 1 and 0.
     if isinstance(value, bool):
         return None
-    # int(1.5) is 1, which would silently mangle a fractional context.
     if isinstance(value, float) and not value.is_integer():
         return None
     try:
         parsed = int(value)
     except (TypeError, ValueError, OverflowError):
-        # OverflowError is float("inf"), which json.loads accepts as `Infinity`.
         return None
     if parsed < minimum or parsed > maximum:
         return None
@@ -496,21 +405,7 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
 def normalize_model_override(
     payload: dict[str, Any], *, keep_empty_extra_args: bool = False
 ) -> dict[str, Any]:
-    """Validate one per-model launch config, dropping anything unusable.
-
-    Silently drops rather than raising: an override is a convenience mirror of the
-    UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id
-    from another host) must not block persisting the rest or fail the API load that
-    reads it. ``validate_extra_args`` is the caller's job -- it lives in the
-    llama_server_args allow-list module, which this one must not import.
-
-    ``keep_empty_extra_args`` keeps an explicit empty list, which is the difference
-    between "this model has no launch flags" and "nothing is stored for this model".
-    They are the same thing everywhere except under a fallback: a quant whose row is
-    gone reads the bare repository row instead, so a cleared box would come back
-    holding whatever that legacy row carries. Off by default, since a row saying only
-    that is worth storing in exactly one case.
-    """
+    """Validate one per-model launch config, dropping anything unusable. Silently drops rather than raising: an override is a convenience mirror of the UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id from another host) must not block persisting the rest or fail the API load that reads it. ``validate_extra_args`` is the caller's job, since it lives in the llama_server_args allow-list module this one must not import. ``keep_empty_extra_args`` keeps an explicit empty list, the difference between "this model has no launch flags" and "nothing is stored for this model": the same thing everywhere except under a fallback, where a quant whose row is gone reads the bare repository row instead and a cleared box would come back holding whatever that legacy row carries."""
     entry: dict[str, Any] = {}
 
     extra_args = payload.get("llama_extra_args")
@@ -519,7 +414,6 @@ def normalize_model_override(
     elif keep_empty_extra_args and isinstance(extra_args, (list, tuple)):
         entry["llama_extra_args"] = []
 
-    # 0 / negative means "unset"; the loader reads absence as the app default.
     for key in ("max_seq_length", "custom_context_length"):
         parsed = _bounded_int(payload.get(key), minimum = 1, maximum = MAX_SEQ_LENGTH_CEILING)
         if parsed:
@@ -537,14 +431,12 @@ def normalize_model_override(
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
         entry["speculative_type"] = speculative_type
-        # Only the modes that launch a drafter with a configurable depth
-        # Those modes are MTP, DSpark and DFlash; storing it otherwise shows an edit the loader ignores.
+        # Only the modes that launch a drafter with a configurable depth (MTP, DSpark, DFlash); storing it otherwise shows an edit the loader ignores.
         if speculative_type in DRAFT_N_MAX_SPEC_TYPES:
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
-        # Same rule, narrower set: the dtype needs a separate draft model, and only
-        # the sidecar modes always load one.
+        # Same rule, narrower set: the dtype needs a separate draft model, and only the sidecar modes always load one.
         if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
             spec_draft_cache_type = _clean_str(
                 payload.get("spec_draft_cache_type"), VALID_KV_CACHE_DTYPES
@@ -552,14 +444,12 @@ def normalize_model_override(
             if spec_draft_cache_type:
                 entry["spec_draft_cache_type"] = spec_draft_cache_type
 
-    # Blank or out of range means "follow the server-wide --parallel default".
     n_parallel = _bounded_int(
         payload.get("n_parallel"), minimum = PARALLEL_SLOTS_MIN, maximum = PARALLEL_SLOTS_MAX
     )
     if n_parallel:
         entry["n_parallel"] = n_parallel
 
-    # blank or out of range means "follow the llama.cpp defaults (2048 / 512)"
     for key in ("n_batch", "n_ubatch"):
         parsed = _bounded_int(payload.get(key), minimum = BATCH_SIZE_MIN, maximum = BATCH_SIZE_MAX)
         if parsed:
@@ -569,8 +459,7 @@ def normalize_model_override(
     if load_mode:
         entry["load_mode"] = load_mode
 
-    # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on
-    # "is not None" rather than on truth, unlike the batch sizes above.
+    # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on "is not None" rather than on truth, unlike the batch sizes above.
     ctx_checkpoints = _bounded_int(
         payload.get("ctx_checkpoints"), minimum = 0, maximum = CTX_CHECKPOINTS_MAX
     )
@@ -586,15 +475,12 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
-    # Stored only when set.
-    # Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off
-    # for a later load.
+    # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
 
     template = payload.get("chat_template_override")
     if isinstance(template, str) and template.strip():
-        # A lone surrogate from JSON breaks encode() and can never render, so drop it.
         try:
             template_bytes = len(template.encode("utf-8"))
         except UnicodeEncodeError:
@@ -602,11 +488,9 @@ def normalize_model_override(
         if template_bytes <= MAX_CHAT_TEMPLATE_OVERRIDE_BYTES:
             entry["chat_template_override"] = template
 
-    # Only "manual" is a real override: "auto" would stop the model following the global.
     if _clean_str(payload.get("gpu_memory_mode"), VALID_GPU_MEMORY_MODES) == "manual":
         entry["gpu_memory_mode"] = "manual"
 
-    # -1 is Auto (llama.cpp --fit), which is the default, so only >= 0 is stored.
     gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 1024)
     if gpu_layers is not None:
         entry["gpu_layers"] = gpu_layers
@@ -617,8 +501,7 @@ def normalize_model_override(
 
     gpu_ids = payload.get("gpu_ids")
     if isinstance(gpu_ids, (list, tuple)) and gpu_ids:
-        # De-duplicate, preserving order: resolve_requested_gpu_ids rejects a repeat, so
-        # [0, 0] would 400 every later load. A set, not a scan, keeps a long array linear.
+        # De-duplicate, preserving order: resolve_requested_gpu_ids rejects a repeat, so [0, 0] would 400 every later load. A set, not a scan, keeps a long array linear.
         cleaned_ids: list[int] = []
         seen_ids: set[int] = set()
         for gid in gpu_ids:
@@ -629,8 +512,7 @@ def normalize_model_override(
         if cleaned_ids:
             entry["gpu_ids"] = cleaned_ids
             index_kind = _clean_str(payload.get("gpu_index_kind"), VALID_GPU_INDEX_KINDS)
-            # Stored only when it is not the legacy default, so existing rows stay
-            # byte-identical.
+            # Stored only when it is not the legacy default, so existing rows stay byte-identical.
             if index_kind and index_kind != LEGACY_GPU_INDEX_KIND:
                 entry["gpu_index_kind"] = index_kind
 
@@ -638,25 +520,13 @@ def normalize_model_override(
 
 
 def stored_gpu_index_kind(override: Mapping[str, Any]) -> str:
-    """The index space ``override["gpu_ids"]`` was written in.
-
-    Absent means physical, which is the only thing any writer before the field could
-    have meant. Anything unrecognised means the same: a row this build cannot read is
-    not evidence of a Vulkan pin.
-    """
+    """The index space ``override["gpu_ids"]`` was written in. Absent means physical, the only thing any writer before the field could have meant; anything unrecognised means the same, since a row this build cannot read is not evidence of a Vulkan pin."""
     kind = override.get("gpu_index_kind")
     return kind if kind in VALID_GPU_INDEX_KINDS else LEGACY_GPU_INDEX_KIND
 
 
 def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Optional[int]:
-    """The ``max_seq_length`` an API load should send for this override.
-
-    Mirrors resolveFitMaxSeqLength in the UI (features/chat/presets/preset-policy.ts):
-    under Manual GPU memory with Auto layers, llama.cpp's ``--fit`` owns context
-    sizing, so the load sends the explicit context pin (or 0 to hand sizing over)
-    rather than the stored max sequence length. Returns None to leave the field
-    at the loader's default.
-    """
+    """The ``max_seq_length`` an API load should send for this override. Mirrors resolveFitMaxSeqLength in the UI (features/chat/presets/preset-policy.ts): under Manual GPU memory with Auto layers, llama.cpp's ``--fit`` owns context sizing, so the load sends the explicit context pin (or 0 to hand sizing over) rather than the stored max sequence length. None leaves the field at the loader's default."""
     manual_auto_layers = (
         is_gguf
         and override.get("gpu_memory_mode") == "manual"
@@ -664,19 +534,11 @@ def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Op
     )
     if manual_auto_layers:
         return override.get("custom_context_length") or 0
-    # max_seq_length wins where both are set; they only collide in a legacy or hand-written entry.
     return override.get("max_seq_length") or override.get("custom_context_length")
 
 
 def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> dict[str, Any]:
-    """Map a stored per-model config onto ``LoadRequest`` keyword arguments.
-
-    Mirrors the UI's load payload (features/chat/api/chat-adapter.ts) so an API
-    auto-switch load and a picker load of the same model produce the same command
-    line. GPU placement is GGUF-only there, so it is gated the same way here: a
-    safetensors model loads through HF auto-placement and must not inherit a
-    hidden GGUF GPU pin.
-    """
+    """Map a stored per-model config onto ``LoadRequest`` keyword arguments. Mirrors the UI's load payload (features/chat/api/chat-adapter.ts) so an API auto-switch load and a picker load of the same model produce the same command line. GPU placement is GGUF-only there, so it is gated the same way here: a safetensors model loads through HF auto-placement and must not inherit a hidden GGUF GPU pin."""
     if not override:
         return {}
     kwargs: dict[str, Any] = {}
@@ -686,7 +548,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         kwargs["max_seq_length"] = max_seq_length
     stored_extra_args = override.get("llama_extra_args")
     if stored_extra_args:
-        # Sanitized here because this is where stored data becomes a request
         from core.inference.llama_server_args import drop_managed_flags
 
         kept, dropped = drop_managed_flags(stored_extra_args)
@@ -700,7 +561,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
-        # Ungated like the UI's own load payload: non-MLX backends ignore it.
         ("mlx_kv_bits", "mlx_kv_bits"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
@@ -712,15 +572,12 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs[target] = override[source]
 
     if is_gguf:
-        # Slots are a llama-server flag, and the picker sends them for GGUF only.
         if override.get("n_parallel") is not None:
             kwargs["n_parallel"] = override["n_parallel"]
-        # batch sizes are llama-server flags too (--batch-size / --ubatch-size)
         if override.get("n_batch") is not None:
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
             kwargs["n_ubatch"] = override["n_ubatch"]
-        # llama-server flags too, so GGUF-only like the rest of this block
         for key in ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram"):
             if override.get(key) is not None:
                 kwargs[key] = override[key]
@@ -734,34 +591,25 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["gpu_ids"] = override["gpu_ids"]
 
     if kwargs.get("llama_extra_args"):
-        # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand
-        # the load the stale flag, so the /load stripper is imported, not mirrored.
-        # The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the
-        # imported stripper is _resolve_inherited_extra_args, and the allow-list this module stays out of is
-        # validate_extra_args.
+        # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
         from core.inference.llama_server_args import (
             matches_explicit_ctx_override,
             strip_shadowing_flags,
         )
 
-        # Context's load-time value is a VRAM-fit target.
-        # A MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold and survives, while stale and
-        # malformed flags are still stripped; /props then publishes what was really allocated.
+        # Context's load-time value is a VRAM-fit target. A MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold and survives, while stale and malformed flags are still stripped; /props then publishes what was really allocated.
         matching_explicit_ctx = matches_explicit_ctx_override(
             kwargs["llama_extra_args"], kwargs.get("max_seq_length")
         )
 
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],
-            # Only the groups this override actually supplies, as the route gates on its
-            # request's set fields: a flag with no first-class field behind it is the user's
-            # only way to set that knob and still passes through.
+            # Only the groups this override actually supplies, as the route gates on its request's set fields: a flag with no first-class field behind it is the user's only way to set that knob and still passes through.
             strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
-            # Sent only when on, so it is always the Tensor Parallelism toggle overriding the
-            # flag; an override that leaves the toggle off keeps a row/none/layer split mode.
+            # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,
             strip_ubatch = "n_ubatch" in kwargs,
@@ -776,7 +624,6 @@ def _looks_like_filesystem_path(model_id: str) -> bool:
     """True for an absolute path id, as the ./models and LM Studio scanners emit."""
     if model_id.startswith(("/", "\\")):
         return True
-    # Windows drive letter, e.g. "C:\models\x.gguf".
     return len(model_id) >= 3 and model_id[1] == ":" and model_id[2] in ("\\", "/")
 
 
@@ -786,13 +633,7 @@ _WSL_DRIVE_PATH = re.compile(r"^/mnt/[A-Za-z](?:/|$)")
 
 
 def _fold_case_insensitive_path(model_id: str) -> Optional[str]:
-    """``model_id`` folded for comparison, or None when the path is case-sensitive.
-
-    A Windows drive path, a UNC share and a WSL drive path all name one file
-    whatever the casing, and the separator is interchangeable on Windows. A
-    POSIX path is not: folding "/models/Foo.gguf" onto "/models/foo.gguf" would
-    replay another model's context and GPU pin.
-    """
+    """``model_id`` folded for comparison, or None when the path is case-sensitive. A Windows drive path, a UNC share and a WSL drive path all name one file whatever the casing, and the separator is interchangeable on Windows; a POSIX path is not, and folding "/models/Foo.gguf" onto "/models/foo.gguf" would replay another model's context and GPU pin."""
     slashed = model_id.replace("\\", "/")
     if _WINDOWS_DRIVE_PATH.match(model_id):
         minimum = 3
@@ -814,12 +655,7 @@ _MAX_QUANT_SUFFIX_LEN = 64
 
 
 def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
-    """``(head, quant)`` for a ``head:QUANT`` key, or None when there is none.
-
-    The suffix has to be a real quant label, so an ordinary colon inside a POSIX
-    filename is left alone: "/models/foo:bar.gguf" is one valid filename, and
-    splitting it would graft /models/foo's launch flags onto a different model.
-    """
+    """``(head, quant)`` for a ``head:QUANT`` key, or None when there is none. The suffix has to be a real quant label, so an ordinary colon inside a POSIX filename is left alone: "/models/foo:bar.gguf" is one valid filename, and splitting it would graft /models/foo's launch flags onto a different model."""
     from core.inference.llama_cpp import _GGUF_KNOWN_QUANT_RE
     from hub.utils.gguf import extract_quant_label
 
@@ -832,8 +668,7 @@ def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
         _BPW_SUFFIX.sub("", tail)
     ):
         return head, tail
-    # A .gguf with no quant token is labelled by its stem, lowercased in storage while the
-    # scanner keeps filename casing. Requiring exactly that label keeps an ordinary colon out.
+    # A .gguf with no quant token is labelled by its stem, lowercased in storage while the scanner keeps filename casing. Requiring exactly that label keeps an ordinary colon out.
     if not head.lower().endswith(".gguf"):
         return None
     filename = head.replace("\\", "/").rsplit("/", 1)[-1]
@@ -841,12 +676,7 @@ def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
 
 
 def _fold_posix_path_variant(value: str) -> str:
-    """A POSIX path id with only its quant suffix folded.
-
-    The browser lowercases the variant but keeps the path casing, so a stored
-    "/models/Foo:q4_k_m" has to be reachable from "/models/Foo:Q4_K_M" without
-    also making "/models/Foo.gguf" reachable from "/models/foo.gguf".
-    """
+    """A POSIX path id with only its quant suffix folded. The browser lowercases the variant but keeps the path casing, so a stored "/models/Foo:q4_k_m" has to be reachable from "/models/Foo:Q4_K_M" without also making "/models/Foo.gguf" reachable from "/models/foo.gguf"."""
     split = split_quant_suffix(value)
     if split is None:
         return value
@@ -861,15 +691,7 @@ def get_model_overrides() -> dict[str, dict]:
 
 
 def get_model_override(model_id: str) -> dict:
-    """The launch override applied when auto-switch loads ``model_id`` (or empty).
-
-    Falls back to a case-insensitive match when nothing matches exactly. Repo ids
-    and quants are case-insensitive in practice ("Q4_K_M" and "q4_k_m" name one
-    file), and the browser normalizes them to lowercase before storing, so an
-    exact-only lookup misses entries written from that side. Exact still wins, and
-    an ambiguous fallback matches nothing, so two POSIX paths differing only in
-    case stay distinct.
-    """
+    """The launch override applied when auto-switch loads ``model_id`` (or empty). Falls back to a case-insensitive match when nothing matches exactly: repo ids and quants are case-insensitive in practice and the browser normalizes them to lowercase before storing, so an exact-only lookup misses entries written from that side. Exact still wins, and an ambiguous fallback matches nothing, so two POSIX paths differing only in case stay distinct."""
     key = resolve_model_override_key(model_id)
     if key is None:
         return {}
@@ -878,15 +700,10 @@ def get_model_override(model_id: str) -> dict:
 
 
 def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
-    """Stored keys naming the same model as ``model_id``, by the folding rules.
-
-    One rule, so a reader and a remover can never fold differently.
-    """
+    """Stored keys naming the same model as ``model_id``, by the folding rules. One rule, so a reader and a remover can never fold differently."""
     if not isinstance(model_id, str):
         return []
-    # POSIX paths are case-sensitive, so folding two casings would replay another model's
-    # settings. Windows drive, UNC and WSL paths do fold, and so does the browser before
-    # storing, so not folding them here strands them.
+    # POSIX paths are case-sensitive, so folding two casings would replay another model's settings. Windows drive, UNC and WSL paths do fold, and so does the browser before storing, so not folding them here strands them.
     if _looks_like_filesystem_path(model_id):
         folded = _fold_case_insensitive_path(model_id)
         if folded is not None:
@@ -894,13 +711,10 @@ def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
             def fold(key: str) -> Optional[str]:
                 return _fold_case_insensitive_path(key)
         else:
-            # POSIX: the path stays case-sensitive.
-            # The browser lowercases the quant, so "/models/Foo:q4_k_m" must be reachable from the scanner's
-            # "/models/Foo:Q4_K_M".
+            # POSIX: the path stays case-sensitive. The browser lowercases the quant, so "/models/Foo:q4_k_m" must be reachable from the scanner's "/models/Foo:Q4_K_M".
             folded = _fold_posix_path_variant(model_id)
 
             def fold(key: str) -> Optional[str]:
-                # A path only ever folds onto another path.
                 if not _looks_like_filesystem_path(key):
                     return None
                 return None if _fold_case_insensitive_path(key) else _fold_posix_path_variant(key)
@@ -908,7 +722,6 @@ def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
         folded = model_id.casefold()
 
         def fold(key: str) -> Optional[str]:
-            # A path never folds onto a repo id: the shapes cannot collide.
             return None if _looks_like_filesystem_path(key) else key.casefold()
 
     return [
@@ -923,17 +736,7 @@ def override_lookup_candidates(
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
 ) -> list[str]:
-    """The keys a load tries, in order, when looking for its stored override.
-
-    Variant-qualified before bare, and the LOAD PATH before the advertised alias: the
-    settings UI keys a local row by the path it loads from, while the alias is a
-    derived id, so reading the alias first lets an older entry shadow a fresh save.
-    An early build keyed a loose ``.gguf`` by its filename label, which is why the
-    ``<path>:LABEL`` spelling is tried too.
-
-    Shared so the auto-switch loader and anything showing the user what a load will
-    apply cannot drift apart.
-    """
+    """The keys a load tries, in order, when looking for its stored override. Variant-qualified before bare, and the LOAD PATH before the advertised alias: the settings UI keys a local row by the path it loads from while the alias is a derived id, so reading the alias first lets an older entry shadow a fresh save. An early build keyed a loose ``.gguf`` by its filename label, which is why the ``<path>:LABEL`` spelling is tried too. Shared so the auto-switch loader and anything showing the user what a load will apply cannot drift apart."""
     file_variant = None
     if not variant and load_id.lower().endswith(".gguf"):
         from hub.utils.gguf import extract_quant_label
@@ -957,11 +760,7 @@ def resolve_override_for_load(
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
 ) -> tuple[Optional[str], dict]:
-    """``(key, override)`` the load would apply, or ``(None, {})``.
-
-    Resolution belongs here rather than in a client: the folding rules are Python's
-    (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing.
-    """
+    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing."""
     for key in override_lookup_candidates(load_id, alias_id, variant):
         override = get_model_override(key)
         if override:
@@ -970,12 +769,7 @@ def resolve_override_for_load(
 
 
 def resolve_model_override_key(model_id: str) -> Optional[str]:
-    """The stored key an override lookup for ``model_id`` would actually hit.
-
-    Shared by read and remove so "what a load applies" and "what forgetting this
-    model clears" can never disagree. None when two keys fold together, since
-    guessing between them applies one model's settings to another.
-    """
+    """The stored key an override lookup for ``model_id`` would actually hit. Shared by read and remove so "what a load applies" and "what forgetting this model clears" can never disagree. None when two keys fold together, since guessing between them applies one model's settings to another."""
     overrides = get_model_overrides()
     if isinstance(overrides.get(model_id), dict):
         return model_id
@@ -984,14 +778,7 @@ def resolve_model_override_key(model_id: str) -> Optional[str]:
 
 
 def resolve_model_override_keys(model_id: str) -> list[str]:
-    """Every stored key naming the same model, for a caller clearing all of them.
-
-    A lookup stops at one key, but forgetting cannot: an install upgraded from a
-    build whose setter stored the literal id can hold two spellings of one model,
-    and clearing only the one named leaves the survivor as the sole fold match, so
-    the next load applies the settings that were just forgotten. POSIX paths still
-    stand alone, so two files never clear each other.
-    """
+    """Every stored key naming the same model, for a caller clearing all of them. A lookup stops at one key, but forgetting cannot: an install upgraded from a build whose setter stored the literal id can hold two spellings of one model, and clearing only the one named leaves the survivor as the sole fold match, so the next load applies the settings that were just forgotten. POSIX paths still stand alone, so two files never clear each other."""
     overrides = get_model_overrides()
     keys = [model_id] if isinstance(overrides.get(model_id), dict) else []
     keys.extend(key for key in _folded_override_matches(model_id, overrides) if key not in keys)
@@ -999,18 +786,7 @@ def resolve_model_override_keys(model_id: str) -> list[str]:
 
 
 def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
-    """``(repo id, quant)`` for a key naming one quant of an HF-cache repo, else None.
-
-    The two spellings of such a repo fold together here: the repo id the picker keys a
-    cached row by, and the ``models--org--name/snapshots/<rev>`` path the loader takes
-    (which an older release keyed the same row by). The repo id is recovered from the
-    path exactly as the scanner and the auto-switch index derive it, so the two sides
-    cannot disagree about which model a key names.
-
-    None for anything that names no quant (a bare entry backs every quant of the repo,
-    like the bare repo id, so it is nobody's duplicate) and for any other local path
-    (a ``./models`` folder or loose ``.gguf`` is keyed by its path and by nothing else).
-    """
+    """``(repo id, quant)`` for a key naming one quant of an HF-cache repo, else None. The two spellings of such a repo fold together here: the repo id the picker keys a cached row by, and the ``models--org--name/snapshots/<rev>`` path the loader takes (which an older release keyed the same row by). The repo id is recovered from the path exactly as the scanner and the auto-switch index derive it, so the two sides cannot disagree about which model a key names. None for anything that names no quant (a bare entry backs every quant of the repo, so it is nobody's duplicate) and for any other local path (a ``./models`` folder or loose ``.gguf`` is keyed by its path and by nothing else)."""
     split = split_quant_suffix(model_id)
     if split is None:
         return None
@@ -1026,18 +802,7 @@ def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
 
 
 def is_cache_load_path_key(model_id: str) -> bool:
-    """True when ``model_id`` spells a cached quant as the path a load actually opens.
-
-    The two spellings of one cached repo are not interchangeable in a lookup:
-    ``override_lookup_candidates`` tries the load path before the advertised repo id,
-    so of a pair only the path row is ever read and the repo-id row sits dormant. A
-    caller choosing between stored rows has to know which side it is holding, and
-    ``cached_repo_alias_keys`` deliberately does not say, since it answers "the other
-    spelling" in either direction.
-
-    Lives here for the reason the rest of the resolution does: the ordering rule is
-    this module's, and a second copy of it would drift.
-    """
+    """True when ``model_id`` spells a cached quant as the path a load actually opens. The two spellings of one cached repo are not interchangeable in a lookup: ``override_lookup_candidates`` tries the load path before the advertised repo id, so of a pair only the path row is ever read and the repo-id row sits dormant. A caller choosing between stored rows has to know which side it is holding, and ``cached_repo_alias_keys`` deliberately does not say, since it answers "the other spelling" in either direction. Lives here because the ordering rule is this module's and a second copy of it would drift."""
     from core.inference.model_ids import hf_cache_repo_id
 
     split = split_quant_suffix(model_id)
@@ -1046,16 +811,7 @@ def is_cache_load_path_key(model_id: str) -> bool:
 
 
 def cached_repo_alias_keys(model_id: str) -> list[str]:
-    """Stored keys that name the same cached quant as ``model_id`` under the other spelling.
-
-    The auto-switch loader reads the concrete load path before the advertised repo id,
-    so a snapshot-path entry left behind by an upgrade outranks the repo-id entry a
-    Settings save writes and keeps applying the pre-migration launch config. One entry
-    per model, as the casing folds already are: the writer clears what it supersedes.
-
-    Excludes every spelling of ``model_id`` itself, which the caller writes or clears
-    on its own.
-    """
+    """Stored keys that name the same cached quant as ``model_id`` under the other spelling. The auto-switch loader reads the concrete load path before the advertised repo id, so a snapshot-path entry left behind by an upgrade outranks the repo-id entry a Settings save writes and keeps applying the pre-migration launch config. One entry per model, as the casing folds already are: the writer clears what it supersedes. Excludes every spelling of ``model_id`` itself, which the caller writes or clears on its own."""
     identity = _cached_repo_override_identity(model_id)
     if identity is None:
         return []
@@ -1080,15 +836,7 @@ def set_model_override(
     keep_empty_extra_args: bool = False,
     **config: Any,
 ) -> dict:
-    """Upsert one model's launch config; a config with no usable fields removes it.
-
-    The two legacy parameters stay positional for existing callers; every other
-    per-model field is passed by keyword and normalized together.
-
-    ``fill_absent_fields`` writes only what is missing: an entry already stored
-    keeps every field it holds and gains only the ones it lacks. Returns the
-    normalized entry either way; read the map back to see what is actually stored.
-    """
+    """Upsert one model's launch config; a config with no usable fields removes it. The two legacy parameters stay positional for existing callers; every other per-model field is passed by keyword and normalized together. ``fill_absent_fields`` writes only what is missing: an entry already stored keeps every field it holds and gains only the ones it lacks. Returns the normalized entry either way; read the map back to see what is actually stored."""
     if not model_id or not model_id.strip():
         raise ValueError("model_id is required.")
     entry = normalize_model_override(
@@ -1102,14 +850,12 @@ def set_model_override(
 
     from storage.studio_db import upsert_app_setting_map_entry
 
-    # Atomic per-entry merge so two PUTs for different models can't drop each other.
     upsert_app_setting_map_entry(
         MODEL_OVERRIDES_SETTING_KEY,
         model_id.strip(),
         entry or None,
         fill_absent_fields = fill_absent_fields,
-        # The pin and its index space are one value: filling the qualifier onto ids this
-        # browser did not write relabels them.
+        # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
         coupled_fields = (("gpu_ids", "gpu_index_kind"),),
     )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)

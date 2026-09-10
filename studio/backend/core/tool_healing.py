@@ -477,25 +477,23 @@ def _iter_bracket_spans(
     start: int = 0,
     enabled_tool_names = None,
 ):
-    """Yield ``(span_start, span_end, kind, match)`` for each balanced bracket-tag
-    call from ``start`` on, in document order; ``span_end`` exclusive. ``kind`` is
-    ``"array"`` ([TOOL_CALLS] [..]), ``"name"`` ([TOOL_CALLS]name{..}, incl. v11
-    [CALL_ID]/[ARGS]) or ``"rehearsal"`` (name[ARGS]{..}).
+    """Yield ``(span_start, span_end, kind, match)`` for each balanced bracket-tag call from ``start``
+    on, in document order; ``span_end`` exclusive. ``kind`` is ``"array"`` ([TOOL_CALLS] [..]),
+    ``"name"`` ([TOOL_CALLS]name{..}, incl. v11 [CALL_ID]/[ARGS]) or ``"rehearsal"``
+    (name[ARGS]{..}).
 
-    ``enabled_tool_names`` (set, or None = unrestricted) gates only the ambiguous
-    bare rehearsal form: name[ARGS]{..} is a call ONLY when ``name`` is markerless-promotable,
-    so a disabled ``foo[ARGS]{..}`` or an execution-class ``terminal[ARGS]{..}`` is neither
-    parsed nor stripped. Explicit [TOOL_CALLS] markers stay unconditional.
+    ``enabled_tool_names`` (set, or None = unrestricted) gates only the ambiguous bare rehearsal
+    form: name[ARGS]{..} is a call ONLY when ``name`` is markerless-promotable, so a disabled
+    ``foo[ARGS]{..}`` or an execution-class ``terminal[ARGS]{..}`` is neither parsed nor stripped.
+    Explicit [TOOL_CALLS] markers stay unconditional, keeping parse/strip/detection symmetric. A
+    rehearsal inside markdown code is documentation for the same reason -- the syntax has no
+    sentinel, so quoting it would otherwise BE a call -- and is likewise neither parsed nor
+    stripped; explicit markers stay unconditional there too.
 
-    A rehearsal inside markdown code (fenced block or inline span) is documentation
-    for the same reason -- the syntax has no sentinel, so quoting it would otherwise
-    BE a call -- and is likewise neither parsed nor stripped. Explicit markers stay
-    unconditional there too: a ```json block is still a real call for the templates
-    that emit one.
-
-    Balance-only (no JSON validation) so strip and parse share one scan. The cursor
-    jumps past each consumed span, so a marker inside consumed JSON is never
-    re-matched and each regex re-searches only once its match falls behind: linear."""
+    Balance-only (no JSON validation) so strip and parse share one scan. The cursor jumps past each
+    consumed span, so a marker inside consumed JSON is never re-matched and each regex re-searches
+    only once its match falls behind: linear.
+    """
     n = len(text)
     specs = (
         ("array", _MISTRAL_ARRAY_RE),
@@ -1117,9 +1115,8 @@ def parse_tool_calls_from_text(
                             "type": "function",
                             "function": {
                                 "name": item.get("name", ""),
-                                # A bare scalar string stays raw; json.dumps would double-encode it so the arg
-                                # healer wraps it with
-                                # literal quotes.
+                                # A bare scalar string stays raw; json.dumps would double-encode it so the arg healer
+                                # wraps it with literal quotes.
                                 "arguments": args if isinstance(args, str) else json.dumps(args),
                             },
                         }

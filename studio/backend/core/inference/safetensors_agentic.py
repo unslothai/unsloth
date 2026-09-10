@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Safetensors/transformers agentic tool loop.
+"""Safetensors/transformers agentic tool loop.
 
-Wraps a single-turn cumulative-text generator with the same tool-calling,
-thinking-block, status, and metadata event protocol the GGUF path uses, so
-the front-end SSE shape is identical across backends.
+Wraps a single-turn cumulative-text generator with the same tool-calling, thinking-block, status and
+metadata event protocol the GGUF path uses, so the front-end SSE shape is identical across backends.
 
-Unlike the GGUF path (``llama_cpp.py``), which uses llama-server's structured
-``delta.tool_calls``, native transformers has no such channel, so this loop
-parses tool calls from the cumulative text and dispatches via
-``core.inference.tools``.
+Unlike the GGUF path (``llama_cpp.py``), which uses llama-server's structured ``delta.tool_calls``,
+native transformers has no such channel, so this loop parses tool calls from the cumulative text and
+dispatches via ``core.inference.tools``.
 """
 
 import bisect
@@ -232,7 +229,6 @@ def _earliest_tool_signal(
                     candidate, p, active_tools, unrestricted = unrestricted
                 )
                 if name_start < p:
-                    # Genuine ``NAME[ARGS]``: the boundary is the start of NAME.
                     if name_start >= floor and (best < 0 or name_start < best):
                         best = name_start
                     break
@@ -421,7 +417,6 @@ def _first_detected_tool_name(content: str) -> Optional[str]:
         return i >= 0 and think_spans[i][0] <= pos < think_spans[i][1]
 
     def _first_outside(start: int, finder) -> int:
-        # First occurrence at/after ``start`` that is not inside a think span.
         pos = finder(start)
         while pos >= 0 and _in_think(pos):
             pos = finder(pos + 1)
@@ -554,23 +549,20 @@ def _spent_prompt_tokens(
 ) -> int:
     """Tokens the next prompt already owes, from the count the last turn reported.
 
-    The backend tokenises the turn's prompt to run it and ships that count on gen_done,
-    tool catalogue included, so the only part left to estimate is what the loop appended
-    afterwards: this turn's assistant text and the results of any tool already run in the
-    same batch. Estimating that tail alone is what stops a long English preamble being
-    charged several times what it costs.
+    The backend tokenises the turn's prompt to run it and ships that count on gen_done, tool
+    catalogue included, so the only part left to estimate is what the loop appended afterwards: this
+    turn's assistant text and the results of any tool already run in the same batch. Estimating that
+    tail alone is what stops a long English preamble being charged several times what it costs.
 
-    An exact recount here is not available. This loop runs in the PARENT process and
-    `InferenceOrchestrator.models` mirrors the worker's model_info, which carries no
-    tokenizer, so counting the conversation again would mean a round trip into the worker
-    between every tool call.
+    An exact recount is not available: this loop runs in the PARENT process and
+    `InferenceOrchestrator.models` mirrors the worker's model_info, which carries no tokenizer, so
+    counting again would mean a round trip into the worker between every tool call.
 
-    Without a report the estimate covers the whole thread, as it did before. Dense
-    because four characters per token undercounts CJK and emoji by about half: measured
-    on an 81-message CJK chat, 1295 estimated against 2737 real, reporting 1777 tokens of
-    room where 335 remained. Never floored to zero, which reaches the tool as "there is
-    no room left in this context to search earlier conversation" and switches recall off
-    on exactly the tight windows that need it.
+    Without a report the estimate covers the whole thread, as it did before. Dense because four
+    characters per token undercounts CJK and emoji by about half (measured on an 81-message CJK
+    chat: 1295 estimated against 2737 real, reporting 1777 tokens of room where 335 remained). Never
+    floored to zero, which reaches the tool as "there is no room left to search earlier
+    conversation" and switches recall off on exactly the tight windows that need it.
     """
     stats = (generation_stats_holder or {}).get("stats")
     usage = stats.get("usage") if isinstance(stats, dict) else None
@@ -608,24 +600,22 @@ def run_safetensors_tool_loop(
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
-    ``single_turn(messages)`` must yield cumulative assistant text (each
-    yield is a snapshot of all tokens so far). The loop:
-
-    * Buffers each turn's leading chars to decide whether a tool call is
-      coming. Plain content streams once the buffer rules it out.
-    * On ``<tool_call>`` or ``<function=`` in the cumulative text, drains
-      the rest of the turn silently and parses tool calls from the content.
-    * Executes each tool via ``execute_tool``, appends the assistant
-      tool-call message and tool result, and re-enters ``single_turn``.
-    * After ``max_tool_iterations`` turns without a final answer, asks once
-      more for a final answer with no tools.
+    ``single_turn(messages)`` must yield cumulative assistant text (each yield is a snapshot of all
+    tokens so far). The loop buffers each turn's leading chars to decide whether a tool call is
+    coming, drains the rest of the turn silently once a call marker appears, executes each tool via
+    ``execute_tool``, appends the assistant tool-call message and tool result, and re-enters
+    ``single_turn``. After ``max_tool_iterations`` turns without a final answer it asks once more
+    with no tools.
 
     Yields event dicts matching the GGUF path:
 
     * ``{"type": "status", "text": ...}`` -- empty string clears the badge.
-    * ``{"type": "content", "text": ...}`` -- cumulative cleaned text for
-      the current turn (consumer diffs against its own ``prev_text`` cursor).
+
+    * ``{"type": "content", "text": ...}`` -- cumulative cleaned text for the current turn (consumer
+    diffs against its own ``prev_text`` cursor).
+
     * ``{"type": "tool_start", "tool_name", "tool_call_id", "arguments"}``
+
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
@@ -792,14 +782,11 @@ def run_safetensors_tool_loop(
         # Live-args offset for the provisional render_html card: the drained call
         # text streams as tool_args so the canvas shows the HTML being written.
         _live_args_streamed_upto = -1
-        # When a human confirmation gate is active the real tool_start is keyed
-        # by an approval id and carries awaiting_confirmation, so an early
-        # provisional card (keyed by tool_call_id, no approval) would show the
-        # tool as "running" before the user has approved it. Suppress the early
-        # card in that case and let the gated tool_start be the first signal.
-        # In auto mode render_html is always safe and never prompts, so keep its
-        # early canvas card (the frontend sends confirm_tool_calls=true alongside
-        # auto); mirrors the GGUF path's _confirm_gated exemption.
+        # When a human confirmation gate is active the real tool_start is keyed by an approval id and carries
+        # awaiting_confirmation, so an early provisional card (keyed by tool_call_id, no approval) would show the tool
+        # as "running" before the user has approved it. Suppress the early card in that case. In auto mode render_html
+        # is always safe and never prompts, so keep its early canvas card; mirrors the GGUF path's _confirm_gated
+        # exemption.
         from core.inference.tools import is_always_safe_tool
 
         _provisional_confirm_gated = (
@@ -809,16 +796,12 @@ def run_safetensors_tool_loop(
         )
 
         def _should_start_provisional_render_html(content: str) -> bool:
-            # Every part of this is re-resolved per chunk, exactly as before. The gates
-            # are a dict lookup and a scan of a handful of tools, so hoisting them saves
-            # nothing measurable and would bake in an invariant nothing enforces:
-            # active_tools is handed to the injectable single_turn callback, which is
-            # free to append to it while generating.
-            #
-            # The name lookup is likewise not cached. The first call's name is not final
-            # until its marker completes: a truncated ``<function=rende`` ahead of a
-            # finished ``<function=get_weather>`` reads as get_weather until it closes,
-            # then as render_html, so caching the first answer would drop the panel.
+            # Every part of this is re-resolved per chunk. The gates are a dict lookup and a scan of a handful of
+            # tools, so hoisting them saves nothing measurable and would bake in an invariant nothing enforces:
+            # active_tools is handed to the injectable single_turn callback, which is free to append to it while
+            # generating. The name lookup is likewise not cached, because the first call's name is not final until its
+            # marker completes: a truncated ``<function=rende`` ahead of a finished ``<function=get_weather>`` reads
+            # as get_weather until it closes, then as render_html, so caching the first answer would drop the panel.
             if (
                 _tool_succeeded("render_html")
                 or _provisional_confirm_gated
@@ -887,7 +870,6 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
-                    # Backlog first: everything drained so far.
                     yield {
                         "type": "tool_args",
                         "tool_call_id": provisional_render_html_id,
@@ -966,7 +948,6 @@ def run_safetensors_tool_loop(
                     yield {"type": "content", "text": emit}
                 continue
 
-            # BUFFERING: hold until we know it is not a tool call.
             content_buffer += delta
             stripped = content_buffer.lstrip()
             if not stripped:
@@ -1034,7 +1015,6 @@ def run_safetensors_tool_loop(
                     allow_incomplete = auto_heal_tool_calls,
                     enabled_tool_names = _enabled_tool_names,
                 ):
-                    # Closed object that parses as a bare-JSON call -- drain silently.
                     detect_state = _state_draining
                     continue
                 elif blocked_bare_json_chain_may_continue(content_buffer, _enabled_tool_names):
@@ -1044,7 +1024,6 @@ def run_safetensors_tool_loop(
                     # content a later peer could make executable.
                     detect_state = _state_draining
                     continue
-                # Closed non-call object (or oversized non-call) -- stream as text.
 
             # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
             # buffer it here or it streams raw until the end-of-turn safety net.
@@ -1141,7 +1120,6 @@ def run_safetensors_tool_loop(
                     last_emitted = emit
                     yield {"type": "content", "text": emit}
 
-        # Stream finished -- resolve what we collected.
         if cancel_event is not None and cancel_event.is_set():
             emit = _cancelled_buffer_text()
             if emit:
@@ -1319,7 +1297,6 @@ def run_safetensors_tool_loop(
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
 
         if final_attempt_done:
-            # Final-answer turn re-called a tool -- stop the loop.
             if content_text:
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}
@@ -1440,7 +1417,6 @@ def run_safetensors_tool_loop(
                     else None
                 )
                 if _decision is not None and _decision != "deny":
-                    # Approved: now it really is running.
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
                     decision_slot = None
@@ -1499,15 +1475,11 @@ def run_safetensors_tool_loop(
                     ):
                         from core.inference.context_window import retrieval_budget
 
-                        # From the tokenizer count the last turn reported rather than
-                        # from characters alone: `conversation` already carries this
-                        # turn's assistant preamble and its tool call, and pricing the
-                        # whole thread by characters is what hands a retrieval room the
-                        # next prompt does not have.
-                        #
-                        # `reply_returns`, as the GGUF loop does: result and reply are
-                        # both protected on the next fit, so one retrieval cannot spend
-                        # the budget they share.
+                        # From the tokenizer count the last turn reported rather than from characters alone:
+                        # `conversation` already carries this turn's assistant preamble and its tool call, and pricing
+                        # the whole thread by characters is what hands a retrieval room the next prompt does not have.
+                        # `reply_returns`, as the GGUF loop does: result and reply are both protected on the next fit,
+                        # so one retrieval cannot spend the budget they share.
                         spent = _spent_prompt_tokens(
                             conversation,
                             tools,
@@ -1538,22 +1510,18 @@ def run_safetensors_tool_loop(
                         # against falls back to the window-independent constant.
                         if _accepts_kwarg(execute_tool, "context_tokens"):
                             kwargs["context_tokens"] = int(context_length)
-                        # Tool results are counted TWICE, which charges them two
-                        # characters per token instead of four. The estimator's rate is an
-                        # English one, and this budget exists because the results these
-                        # tools return are base64, minified JSON, hashes and command
-                        # output, which run nearer two. Under-pricing what is already in
-                        # the conversation hands the next call room that is occupied, and
-                        # this loop has no exact count and no rolling fit to catch it.
+                        # Tool results are counted TWICE, which charges them two characters per token instead of four.
+                        # The estimator's rate is an English one, and this budget exists because the results these
+                        # tools return are base64, minified JSON, hashes and command output, which run nearer two.
+                        # Under-pricing what is already in the conversation hands the next call room that is occupied,
+                        # and this loop has no exact count and no rolling fit to catch it.
                         results = [
                             message for message in conversation if message.get("role") == "tool"
                         ]
-                        # Removed from the thread below rather than added on top of it:
-                        # the conservative estimate already prices every message it is
-                        # given, so leaving the results in and adding them again charges
-                        # them twice, and a CJK result twice over at a token per character
-                        # each time. A thread with one sizable earlier result would then
-                        # report no room while it still had plenty.
+                        # Removed from the thread below rather than added on top of it: the conservative estimate
+                        # already prices every message it is given, so leaving the results in and adding them again
+                        # charges them twice, and a CJK result twice over. A thread with one sizable earlier result
+                        # would then report no room while it still had plenty.
                         rest = [
                             message for message in conversation if message.get("role") != "tool"
                         ]
@@ -1570,12 +1538,10 @@ def run_safetensors_tool_loop(
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,
-                            # Conservative for the thread as a whole, not only for the
-                            # tool turns doubled below: a user or assistant turn can hold
-                            # a pasted blob or a block of minified JSON, and priced at the
-                            # English rate it reports a third of what it costs. Nothing
-                            # here can measure exactly, and the room this produces is what
-                            # the next result is admitted against.
+                            # Conservative for the thread as a whole, not only for the tool turns doubled below: a
+                            # user or assistant turn can hold a pasted blob or a block of minified JSON, and priced at
+                            # the English rate it reports a third of what it costs. Nothing here can measure exactly,
+                            # and the room this produces is what the next result is admitted against.
                             _spent_tokens(rest)
                             + _spent_tokens(tools or [])
                             # Every ASCII character of a result at two per token, not only
@@ -1608,14 +1574,12 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            # A tool ran this turn, so it counts against the caller's budget.
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 
         append_deferred_nudges(conversation, deferred_noop_msgs)
 
-        # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
 
         if tool_controller.force_final_answer:
@@ -1629,7 +1593,6 @@ def run_safetensors_tool_loop(
         if _turn_executed_real_tool:
             _executed_tool_iters += 1
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
-            # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
             conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 

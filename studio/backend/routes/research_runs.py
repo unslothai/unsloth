@@ -235,9 +235,8 @@ def _sanitize_config(
         value is not None for value in (provider_type, provider_id, external_model)
     )
     if external_requested:
-        # A saved connection is still mandatory: the run is durable, so an
-        # inline key would have to be persisted, and _is_sensitive_key exists to
-        # stop exactly that. Only the provider-type allowlist is widened.
+        # A saved connection is still mandatory: the run is durable, so an inline key would have to be persisted, and
+        # _is_sensitive_key exists to stop exactly that. Only the provider-type allowlist is widened.
         if (
             not provider_runs_local_tools(provider_type)
             or not isinstance(provider_id, str)
@@ -252,10 +251,9 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        # The saved row is the source of truth for routing, so validate against it rather than the type the client sent:
-        # a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
-        # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path exists to
-        # serve.
+        # The saved row is the source of truth for routing, so validate against it rather than the type the client
+        # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
+        # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.
         saved_provider_type = provider["provider_type"]
         if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(
@@ -264,9 +262,9 @@ def _sanitize_config(
             )
         request["providerType"] = saved_provider_type
 
-    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is
-    # stringified, so {"auth": "sk-..."} would slip past the sensitive-key scan (inner key
-    # unlisted) into the durable config as the model id.
+    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is stringified, so
+    # {"auth": "sk-..."} would slip past the sensitive-key scan (inner key unlisted) into the durable config as the
+    # model id.
     if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
         raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
@@ -333,9 +331,9 @@ def _sanitize_config(
             "whole_doc",
         }
         unknown_rag = set(rag_scope) - allowed_rag
-        # Every ragScope field is a scalar. A nested container evades the sensitive-key scan when
-        # its inner keys are unlisted (e.g. {"kb_id": {"auth": "sk-..."}}) and would reach
-        # retrieval code expecting a scalar scope id, so reject non-scalars outright.
+        # Every ragScope field is a scalar. A nested container evades the sensitive-key scan when its inner keys
+        # are unlisted (e.g. {"kb_id": {"auth": "sk-..."}}) and would reach retrieval code expecting a scalar scope
+        # id, so reject non-scalars outright.
         non_scalar = any(isinstance(value, (dict, list, tuple)) for value in rag_scope.values())
         if unknown_rag or non_scalar or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
@@ -409,9 +407,9 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that reads
-    # an image and calls deep_research passes the question it wrote, and refusing on the message's own empty text ends a
-    # complete handoff in a toast.
+    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that
+    # reads an image and calls deep_research passes the question it wrote, and refusing on the message's own empty
+    # text ends a complete handoff in a toast.
     if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,

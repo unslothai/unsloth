@@ -3,16 +3,13 @@
 
 """API routes for local text-to-video inference.
 
-The video backend is a deliberate sibling of the diffusion (image) backend, so
-these routes mirror the /images/* routes one-for-one: the same validate-before-evict
-load ordering, the same GPU arbiter handoff (VIDEO owner in place of DIFFUSION),
-the same error boundary mapping backend exceptions to HTTP, and the same gallery
-CRUD shape. The backend runs in-process and is synchronous, so the blocking
-calls are offloaded with asyncio.to_thread to keep the event loop free; the slow
-operations (load AND generate) run as background jobs whose begin_* calls return
-at once, with progress + terminal outcome polled from their *-progress routes.
-This module is the single error boundary: backend methods raise, we map to HTTP
-here.
+The video backend is a deliberate sibling of the diffusion (image) backend, so these routes mirror the
+/images/* routes one-for-one: the same validate-before-evict load ordering, the same GPU arbiter handoff (VIDEO
+owner in place of DIFFUSION), the same error boundary mapping backend exceptions to HTTP, and the same gallery
+CRUD shape. The backend runs in-process and is synchronous, so the blocking calls are offloaded with
+asyncio.to_thread to keep the event loop free; the slow operations (load AND generate) run as background jobs
+whose begin_* calls return at once, with progress + terminal outcome polled from their *-progress routes. This
+module is the single error boundary: backend methods raise, we map to HTTP here.
 """
 
 from __future__ import annotations
@@ -98,11 +95,10 @@ def _derived_h3_task(gguf_filename: Optional[str], kind: str) -> Optional[str]:
 
 
 def _guard_video_load_against_training() -> None:
-    """Refuse loading a video model while a training run is active. Unlike chat,
-    a video pipeline's VRAM can't be cheaply estimated before the load, so the
-    load is refused outright rather than fit-checked. No-op when training is
-    inactive or its state can't be read. Raises HTTP 409. Mirrors the image
-    load's _guard_diffusion_load_against_training."""
+    """Refuse loading a video model while a training run is active. Unlike chat, a video pipeline's VRAM can't be
+    cheaply estimated before the load, so the load is refused outright rather than fit-checked. No-op when
+    training is inactive or its state can't be read. Raises HTTP 409. Mirrors the image load's
+    _guard_diffusion_load_against_training."""
     from core.training import get_training_backend
 
     try:
@@ -160,17 +156,16 @@ async def video_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
             transformer_quant = request.transformer_quant,
-            # And the partition, because one of those quant-keyed refusals is task-keyed
-            # Without it here the plan below staged the 66 GB dense transformer_ref/ AND the incompatible fl2va quant
-            # first: the hosted pre-quantized H3 checkpoints are fl2va denoisers, so a quantized ref2va is rejected.
+            # And the partition, because one of those quant-keyed refusals is task-keyed. Without it here the plan below
+            # staged the 66 GB dense transformer_ref/ AND the incompatible fl2va quant first: the hosted pre-quantized
+            # H3 checkpoints are fl2va denoisers, so a quantized ref2va is rejected.
             h3_task = request.h3_task,
         )
-        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this host cannot honour, but
-        # the UI plans and downloads first, so an explicit FP8 on an unsupported host paid for tens of GB of weights to
-        # be told afterwards. Network-free. Skipped while a trainer holds the GPU: an uncached scheme takes this into a
-        # quantise-and-matmul smoke probe that initialises CUDA. RANKING opens a CUDA context per candidate, so it waits
-        # until training is known idle, while validating and translating the ids happens either way. ONE resolution,
-        # reused by preflight and plan.
+        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this host cannot honour,
+        # but the UI plans and downloads first, so an explicit FP8 on an unsupported host paid for tens of GB of
+        # weights to be told afterwards. Network-free. Skipped while a trainer holds the GPU: an uncached scheme takes
+        # this into a quantise-and-matmul smoke probe that initialises CUDA. RANKING opens a CUDA context per
+        # candidate, so it waits until training is known idle. ONE resolution, reused by preflight and plan.
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
@@ -198,13 +193,11 @@ async def video_download_plan(
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so
             # staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
-            # And the denoiser policy.
-            # A scheme with a hosted pre-quantized checkpoint replaces the dense DiT, so without this the plan stages
-            # 66.3 GB of shards the load never opens.
+            # And the denoiser policy: a scheme with a hosted pre-quantized checkpoint replaces the dense DiT, so without
+            # this the plan stages 66.3 GB of shards the load never opens.
             transformer_quant = request.transformer_quant,
-            # And the MiniMax-H3 partition.
-            # The two denoisers live in separate 66.28 GB subfolders: a ref2va load opens transformer_ref/, which the
-            # plan would otherwise miss entirely while staging the fl2va transformer/ it never opens.
+            # And the MiniMax-H3 partition: the two denoisers live in separate 66.28 GB subfolders, so a ref2va load opens
+            # transformer_ref/, which the plan would otherwise miss while staging the fl2va transformer/.
             h3_task = request.h3_task,
         )
         return DiffusionDownloadPlanResponse(**plan)
@@ -229,10 +222,8 @@ async def load_video_model_gated(
     *,
     user_initiated: bool = False,
 ):
-    """Everything ``POST /video/load`` does, plus who asked for it.
-
-    Media auto-switch awaits this rather than the route so the idle unload can tell an
-    API-loaded pipeline from one the user picked on the Video page.
+    """Everything ``POST /video/load`` does, plus who asked for it. Media auto-switch awaits this rather than the
+    route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
@@ -292,10 +283,9 @@ async def load_video_model_gated(
             memory_mode = request.memory_mode,
             gpu_ordinal = gpu_ordinal,
         )
-        # Same bar again, for a speech GGUF picked out of a mixed video repo.
-        # The backend's own assertion runs on the load worker, INSIDE acquire_for, so a refusal there arrives having
-        # already evicted the chat model. Off-thread because the probe reads a header, and cache-only when the load is
-        # not user-initiated.
+        # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own assertion runs on the
+        # load worker, INSIDE acquire_for, so a refusal there arrives having already evicted the chat model.
+        # Off-thread because the probe reads a header, and cache-only when the load is not user-initiated.
         from core.inference.diffusion_compat import assert_pick_is_not_speech
 
         await asyncio.to_thread(
@@ -338,8 +328,8 @@ async def load_video_model_gated(
 
         if device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
-            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission
-            # wraps the same span.
+            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
+            # the same span.
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
                 with _diffusion_training_admission():
@@ -402,12 +392,10 @@ async def generate_video(
 
     def _refuse_unservable_request(pick) -> None:
         """Judge the request against the family being switched TO, before it evicts anything.
-
-        begin_generate judges it against the loaded family under the lock, which is what makes
-        the answer race-proof, but by then a request no model could have served has already cost
-        the resident pipeline and a multi-minute load. The same rules, applied to the target's
-        family and MiniMax-H3 partition, both of which the pick already determines.
-        """
+        begin_generate judges it against the loaded family under the lock, which is what makes the
+        answer race-proof, but by then a request no model could have served has already cost the
+        resident pipeline and a multi-minute load. The same rules, applied to the target's family
+        and MiniMax-H3 partition, both of which the pick already determines."""
         from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family, resolve_video_model_kind
         from core.inference.video_minimax_h3 import is_h3_native
@@ -459,10 +447,10 @@ async def generate_video(
         raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
-    # The real rule is the LOADED family's, applied by begin_generate under the same lock that reserves the state, so a
-    # concurrent load cannot leave the shape judged against one family and denoised by another.
-    # Unloaded still falls through to the not-loaded 409, and a family with no declared presets keeps the old SIZE
-    # snapping, though frame_step is declared regardless.
+    # The real rule is the LOADED family's, applied by begin_generate under the same lock that reserves the state,
+    # so a concurrent load cannot leave the shape judged against one family and denoised by another. Unloaded still
+    # falls through to the not-loaded 409, and a family with no declared presets keeps the old SIZE snapping, though
+    # frame_step is declared regardless.
     try:
         await asyncio.to_thread(
             backend.begin_generate,
@@ -597,9 +585,9 @@ async def get_gallery_video_file(
     )
 
 
-# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4,
-# defeats seeking and pins the bytes in the webview. The /file route streams ranges but is bearer-gated, so mint a
-# 12-hour HMAC link (<video> re-requests on seek).
+# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole
+# MP4, defeats seeking and pins the bytes in the webview. The /file route streams ranges but is bearer-gated, so
+# mint a 12-hour HMAC link (<video> re-requests on seek).
 _VIDEO_LINK_TTL = 12 * 3600
 _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
@@ -717,9 +705,9 @@ async def export_gallery_video(
 
 
 def _forget_terminal_video(video_id: Optional[str]) -> None:
-    """Clear the backend's completed-job record for a clip that just left the gallery, so a page
-    reload does not merge it back as a card whose file is gone. Best-effort: an unavailable backend
-    only means the stale record survives, which is what happened before this call existed."""
+    """Clear the backend's completed-job record for a clip that just left the gallery, so a page reload does not
+    merge it back as a card whose file is gone. Best-effort: an unavailable backend only means the stale record
+    survives, which is what happened before this call existed."""
     try:
         from core.inference.video import get_video_backend
         get_video_backend().forget_terminal_video(video_id)
@@ -788,8 +776,6 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
         raise HTTPException(status_code = 500, detail = "Could not delete every video job.")
     return {"removed": len(cleared)}
 
-
-# ── OpenAI-compatible videos API (/v1/videos) ──
 
 _VIDEO_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
 _VIDEO_SECONDS_MAX = 120.0
@@ -1120,13 +1106,10 @@ def _sync_jobs() -> None:
 
 
 def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEOUT_S) -> bool:
-    """Block until the run started for ``video_id`` is no longer in flight.
-
-    Bounded, so a wedged backend cannot hold the request open. Returns False when the
-    wait expired with the run still live: the caller must not report a deletion it
-    could not observe, or the worker commits its sidecar afterwards and the clip
-    reappears through retrieve/list.
-    """
+    """Block until the run started for ``video_id`` is no longer in flight. Bounded, so a wedged
+    backend cannot hold the request open. Returns False when the wait expired with the run still
+    live: the caller must not report a deletion it could not observe, or the worker commits its
+    sidecar afterwards and the clip reappears through retrieve/list."""
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
@@ -1356,9 +1339,9 @@ async def _create_openai_video(
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
-        # Judge the duration against the family being switched TO, using its own lattice.
-        # Passing None here accepted any seconds and only refused it in begin_generate --
-        # after the resident pipeline had been evicted and the target fully loaded.
+        # Judge the duration against the family being switched TO, using its own lattice. Passing None here accepted any
+        # seconds and only refused it in begin_generate, after the resident pipeline had been evicted and the target
+        # fully loaded.
         want_frames = (
             _frames_for_seconds(
                 seconds,
@@ -1464,9 +1447,9 @@ async def _create_openai_video(
         presets = defaults.get("resolution_presets") or []
         if size is None and presets:
             width, height = int(presets[0][0]), int(presets[0][1])
-    # Describe the job from what begin_generate reserved, falling back to the status() snapshot only
-    # where it said nothing: a load committing in between swaps the family, and the snapshot's fps
-    # would then date a frame count the new model never used.
+    # Describe the job from what begin_generate reserved, falling back to the status() snapshot only where it said
+    # nothing: a load committing in between swaps the family, and the snapshot's fps would then date a frame count
+    # the new model never used.
     reserved = resolved if isinstance(resolved, dict) else {}
     run_frames = reserved.get("num_frames") or num_frames
     fps = reserved.get("fps") or defaults.get("fps")

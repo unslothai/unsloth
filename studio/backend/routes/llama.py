@@ -7,15 +7,13 @@ GET  /api/llama/update-status  -> is a newer prebuilt available + job state
 GET  /api/llama/update-changelog -> new carried changes since the installed build
 POST /api/llama/update         -> download + atomically swap to the latest
 
-Detection reuses utils.llama_cpp_freshness; the swap reuses
-install_llama_prebuilt.py via utils.llama_cpp_update. Both fail open so the UI
-never blocks on a missing marker / offline GitHub.
+Detection reuses utils.llama_cpp_freshness; the swap reuses install_llama_prebuilt.py via
+utils.llama_cpp_update. Both fail open so the UI never blocks on a missing marker / offline GitHub.
 
-whisper.cpp updates piggyback here: the status payload carries a whisper
-sub-status (update_available is the llama OR whisper union) and the apply job
-chains a whisper phase after the llama phase when whisper is behind, with a
-per-phase breakdown in job.phases. All pre-existing top-level fields keep
-their shape, so older clients keep working unchanged.
+whisper.cpp updates piggyback here: the status payload carries a whisper sub-status (update_available is the
+llama OR whisper union) and the apply job chains a whisper phase after the llama phase when whisper is behind,
+with a per-phase breakdown in job.phases. All pre-existing top-level fields keep their shape, so older clients
+keep working unchanged.
 """
 
 from __future__ import annotations

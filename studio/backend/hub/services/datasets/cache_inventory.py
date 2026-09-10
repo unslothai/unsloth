@@ -86,12 +86,7 @@ def _directory_stats(path: Path) -> tuple[int, float]:
 
 
 def _usable_mtime(value) -> float:
-    """a timestamp we are willing to publish, else 0.0 meaning "unknown".
-
-    Finiteness is not paranoia about stat(): ``candidate`` is whatever
-    huggingface_hub put on the object, and Starlette encodes with
-    ``allow_nan = False``, so one inf 500s the whole response.
-    """
+    """a timestamp we are willing to publish, else 0.0 meaning "unknown". Finiteness is not paranoia about stat(): ``candidate`` is whatever huggingface_hub put on the object, and Starlette encodes with ``allow_nan = False``, so one inf 500s the whole response."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return 0.0
     value = float(value)
@@ -99,11 +94,7 @@ def _usable_mtime(value) -> float:
 
 
 def _safe_mtime(path: Path) -> float:
-    """directory mtime as POSIX seconds, or 0.0 when unreadable.
-
-    mtime only, so it is portable across Windows, macOS and Linux. A broken
-    symlink or a share with no clock lands on 0.0, which callers drop.
-    """
+    """directory mtime as POSIX seconds, or 0.0 when unreadable. mtime only, so it is portable across Windows, macOS and Linux; a broken symlink or a share with no clock lands on 0.0, which callers drop."""
     try:
         return _usable_mtime(path.stat().st_mtime)
     except OSError:
@@ -111,11 +102,7 @@ def _safe_mtime(path: Path) -> float:
 
 
 def _dataset_last_modified(candidate, *paths: Optional[Path]) -> float:
-    """newest change time for a cached dataset row, as POSIX seconds.
-
-    Prefers huggingface_hub's own value, else stat()s the cache dirs. Same unit
-    as the cached-model scan.
-    """
+    """newest change time for a cached dataset row, as POSIX seconds. Prefers huggingface_hub's own value, else stat()s the cache dirs. Same unit as the cached-model scan."""
     newest = _usable_mtime(candidate)
     for path in paths:
         if path is None:
@@ -135,12 +122,7 @@ def _merge_last_modified(existing: dict, row: dict) -> None:
 
 
 def _adopt_newer_last_modified(winner: dict, loser: Optional[dict]) -> None:
-    """carry a discarded row's timestamp onto the row that replaces it.
-
-    Winning is decided on completeness then size, neither of which is recency,
-    so a bigger-but-older copy would otherwise bury the newer date and sink the
-    dataset in Recent. The cached-model scan keeps the max the same way.
-    """
+    """carry a discarded row's timestamp onto the row that replaces it. Winning is decided on completeness then size, neither of which is recency, so a bigger-but-older copy would otherwise bury the newer date and sink the dataset in Recent. The cached-model scan keeps the max the same way."""
     if loser is None:
         return
     newest = max(
@@ -180,9 +162,7 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
         return 0
 
 
-# anything not named here counts as payload, so unknown formats are never read as an empty
-# snapshot. the windows names are spelled out because huggingface_hub only added them after 0.36;
-# the data-file names come from local_options so this and the resolver cannot drift apart.
+# anything not named here counts as payload, so unknown formats are never read as an empty snapshot. the windows names are spelled out because huggingface_hub only added them after 0.36; the data-file names come from local_options so this and the resolver cannot drift apart.
 _DATASET_NON_PAYLOAD_FILENAMES = (
     frozenset(
         {
@@ -201,21 +181,17 @@ _DATASET_NON_PAYLOAD_FILENAMES = (
 )
 
 
-# suffixes no loader can turn into rows; a script also needs trust_remote_code, which no load path
-# here passes and datasets>=4 dropped.
+# suffixes no loader can turn into rows; a script also needs trust_remote_code, which no load path here passes and datasets>=4 dropped.
 _DATASET_NON_PAYLOAD_SUFFIXES = frozenset({".cff", ".md", ".py", ".pyc"})
 
 
 def _is_payload_dir(name: str) -> bool:
-    # the only rule datasets applies to a directory, which also covers a Mac zip's __MACOSX. the
-    # metadata FILE names must not be applied here: license/train.parquet loads fine, and pruning that
-    # subtree hid the dataset from On Device.
+    # the only rule datasets applies to a directory, which also covers a Mac zip's __MACOSX. the metadata FILE names must not be applied here: license/train.parquet loads fine, and pruning that subtree hid the dataset from On Device.
     return not name.startswith(".") and not name.startswith("__")
 
 
 def _is_payload_name(name: str) -> bool:
-    # as above, plus the metadata names: AppleDouble sidecars, every dotfile the list does not
-    # enumerate, and the cards a cancelled download leaves behind.
+    # as above, plus the metadata names: AppleDouble sidecars, every dotfile the list does not enumerate, and the cards a cancelled download leaves behind.
     if not _is_payload_dir(name):
         return False
     return name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES
@@ -224,15 +200,13 @@ def _is_payload_name(name: str) -> bool:
 def _is_payload_file(name: str) -> bool:
     if not _is_payload_name(name):
         return False
-    # the resolver's suffix rule drops a trailing compression suffix: train.parquet.backup is still
-    # parquet, data.py.gz is still a script.
+    # the resolver's suffix rule drops a trailing compression suffix: train.parquet.backup is still parquet, data.py.gz is still a script.
     suffix = local_options._data_suffix(name)
     return suffix is None or suffix.lower() not in _DATASET_NON_PAYLOAD_SUFFIXES
 
 
 def _is_present_payload_file(path: Path) -> bool:
-    # existence is not enough: _empty_payload covers both shapes that look like payload and are not,
-    # a zero-byte file and a blobs/ link whose blob was pruned.
+    # existence is not enough: _empty_payload covers both shapes that look like payload and are not, a zero-byte file and a blobs/ link whose blob was pruned.
     if not _is_payload_file(path.name):
         return False
     if local_options._empty_payload(path):
@@ -243,19 +217,14 @@ def _is_present_payload_file(path: Path) -> bool:
 
 
 def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
-    """True/False for this snapshot, or None when a subtree could not be read.
-
-    None is not False: `os.walk` swallows `scandir` errors unless `onerror` is given, so a cache
-    on an unavailable mount would read as empty and hide a dataset that was merely uninspectable.
-    """
+    """True/False for this snapshot, or None when a subtree could not be read. None is not False: `os.walk` swallows `scandir` errors unless `onerror` is given, so a cache on an unavailable mount would read as empty and hide a dataset that was merely uninspectable."""
     unreadable = False
 
     def _note(_exc: OSError) -> None:
         nonlocal unreadable
         unreadable = True
 
-    # a junction pointing at its own ancestor resolves back inside the snapshot, so containment alone
-    # leaves data/loop/loop/... descending until the path length gives out.
+    # a junction pointing at its own ancestor resolves back inside the snapshot, so containment alone leaves data/loop/loop/... descending until the path length gives out.
     seen: set[Path] = set()
     pending: list[Path] = []
 
@@ -284,28 +253,24 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
                 base = Path(directory)
                 kept = []
                 for name in dirnames:
-                    # nothing under a hidden or __-prefixed dir can supply rows, so .hidden/notes.txt must not clear
-                    # partial.
+                    # nothing under a hidden or __-prefixed dir can supply rows, so .hidden/notes.txt must not clear partial.
                     if not _is_payload_dir(name):
                         continue
                     entry = base / name
-                    # containment, not a link-type test: is_symlink() is false for a Windows junction and is_junction()
-                    # postdates 3.12, so only comparing resolved paths catches every redirect.
+                    # containment, not a link-type test: is_symlink() is false for a Windows junction and is_junction() postdates 3.12, so only comparing resolved paths catches every redirect.
                     try:
                         redirected = not entry.resolve(strict = True).is_relative_to(root)
                         linked = entry.is_symlink()
                     except (OSError, RuntimeError, ValueError):
                         unreadable = True
                         continue
-                    # walked as a root of its own, not taken as proof: migrated caches keep their data behind a
-                    # redirect, and a stale one holds nothing.
+                    # walked as a root of its own, not taken as proof: migrated caches keep their data behind a redirect, and a stale one holds nothing.
                     if redirected:
                         target = _book(entry)
                         if target is not None:
                             pending.append(target)
                         continue
-                    # a symlink back inside this root is skipped, since booking its target would prune the real
-                    # directory whenever alias is listed before data; a junction reports False here.
+                    # a symlink back inside this root is skipped, since booking its target would prune the real directory whenever alias is listed before data; a junction reports False here.
                     if linked:
                         continue
                     if _book(entry) is None:
@@ -320,15 +285,7 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
 
 
 def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
-    """Whether the snapshot a load would actually open holds anything beyond metadata.
-
-    A cancelled download can leave just the card, which every structural check reads as complete,
-    so the repo was offered On Device and then failed in load_dataset().
-
-    Only the revision `dataset_snapshot_from_cache_path` selects counts, since that is what
-    `training_dataset_cache_pin` pins: a payload-bearing sibling revision would still not be the
-    one the run opens.
-    """
+    """Whether the snapshot a load would actually open holds anything beyond metadata. A cancelled download can leave just the card, which every structural check reads as complete, so the repo was offered On Device and then failed in load_dataset(). Only the revision `dataset_snapshot_from_cache_path` selects counts, since that is what `training_dataset_cache_pin` pins: a payload-bearing sibling revision would still not be the one the run opens."""
     snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
     if snapshot is None:
         return False
@@ -409,10 +366,7 @@ def _repo_id_from_datasets_cache_dir(name: str) -> str | None:
 
 
 def _is_processed_dataset_cache_path(repo_id: str, cache_path: str) -> bool:
-    """True when *cache_path* is this repo's processed Arrow cache dir
-    (``<owner>___<repo>`` directly under an HF_DATASETS_CACHE root). Such rows
-    have no Hub ``datasets--`` layout, so they are deleted via the processed
-    path and must not be rejected as an invalid cache_path."""
+    """True when *cache_path* is this repo's processed Arrow cache dir (``<owner>___<repo>`` directly under an HF_DATASETS_CACHE root). Such rows have no Hub ``datasets--`` layout, so they are deleted via the processed path and must not be rejected as an invalid cache_path."""
     try:
         resolved = Path(cache_path).expanduser().resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
@@ -696,8 +650,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             owners.setdefault(owner, []).append((hf_cache, repo_info))
 
     target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
-    # A processed-only dataset row sends its Arrow cache path, which is not a Hub datasets-- dir, so
-    # resolve_delete_target_root returns None.
+    # A processed-only dataset row sends its Arrow cache path, which is not a Hub datasets-- dir, so resolve_delete_target_root returns None.
     if target_root is None and not (
         cache_path
         and (_is_processed_dataset_cache_path(repo_id, cache_path) or app_entry is not None)
@@ -729,8 +682,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
                 exc_info = True,
             )
 
-    # A processed cache_path scopes to its own root, a Hub target to the datasets root sharing its cache
-    # home, and an unspecified one stays global.
+    # A processed cache_path scopes to its own root, a Hub target to the datasets root sharing its cache home, and an unspecified one stays global.
     processed_roots: Optional[set[Path]]
     if not cache_path:
         processed_roots = None
@@ -768,8 +720,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             ),
         )
 
-    # scan_cache_dir() skips blob-only or corrupt repos the revision delete cannot touch, yet the
-    # fallback scanner shows them, so purge the whole dir. Hub cache targets only.
+    # scan_cache_dir() skips blob-only or corrupt repos the revision delete cannot touch, yet the fallback scanner shows them, so purge the whole dir. Hub cache targets only.
     cache_purged = partial_purged = state_purged = False
     if target_root is not None:
         cache_purged = purge_repo_cache_dirs("dataset", repo_id, root = target_root)

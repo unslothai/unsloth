@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fail-closed admission policy for serving Unsloth without an API key.
-
-Off by default. When an admin turns it on, a request that sends no usable
-credential authenticates as the local admin, so ``curl`` and the OpenAI SDKs reach
-this server the way they reach LM Studio and Ollama.
-
-Two scopes, so opening up chat does not also open up training:
-
-``inference``
-    The OpenAI-compatible endpoints only, named one by one in
-    ``_INFERENCE_ROUTES``. Everything else keeps needing a key.
-``full``
-    Every route, but only for callers arriving and connecting over loopback.
-
-Server-side tools (python, terminal, web search) stay off for a keyless caller
-whatever the scope, until the admin ticks them on separately: ``/v1/chat/completions``
-runs that tool loop on this machine, so it is a bigger grant than chat itself.
-
-Public tunnels and Colab never receive keyless access. Private-LAN inference is
-accepted only through a live settings listener or the launch-managed bind that
-matches the ASGI accepting address and port. Signing in to Unsloth is unaffected.
-"""
+"""Fail-closed admission policy for serving Unsloth without an API key. Off by default; when an admin turns it on, a request that sends no usable credential authenticates as the local admin, so ``curl`` and the OpenAI SDKs reach this server the way they reach LM Studio and Ollama. Two scopes, so opening up chat does not also open up training: ``inference`` covers the OpenAI-compatible endpoints only, named one by one in ``_INFERENCE_ROUTES``, and everything else keeps needing a key; ``full`` covers every route, but only for callers arriving and connecting over loopback. Server-side tools (python, terminal, web search) stay off for a keyless caller whatever the scope, until the admin ticks them on separately: ``/v1/chat/completions`` runs that tool loop on this machine, so it is a bigger grant than chat itself. Public tunnels and Colab never receive keyless access, private-LAN inference is accepted only through a live settings listener or the launch-managed bind that matches the ASGI accepting address and port, and signing in to Unsloth is unaffected."""
 
 from __future__ import annotations
 
@@ -41,14 +20,12 @@ KEYLESS_SCOPE_FULL = "full"
 KEYLESS_SCOPES = (KEYLESS_SCOPE_OFF, KEYLESS_SCOPE_INFERENCE, KEYLESS_SCOPE_FULL)
 DEFAULT_KEYLESS_API_ACCESS_SCOPE = KEYLESS_SCOPE_OFF
 APPROVED_DUMMY_BEARERS = frozenset(
-    # ``no-key-required`` is what hermes-agent substitutes when no key is configured,
-    # because the OpenAI SDK refuses an empty one (hermes_cli/runtime_provider_backends.py).
+    # ``no-key-required`` is what hermes-agent substitutes when no key is configured, because the OpenAI SDK refuses an empty one (hermes_cli/runtime_provider_backends.py).
     {"not-needed", "lm-studio", "ollama", "no-key-required"}
 )
 KEYLESS_ADMISSION_STATE_KEY = "keyless_api_admitted"
 
-# Named by method and normalized path: /v1 also aliases model loading, media,
-# sandbox, validation, and streaming side-effect routes.
+# Named by method and normalized path: /v1 also aliases model loading, media, sandbox, validation, and streaming side-effect routes.
 _INFERENCE_ROUTES = frozenset(
     {
         ("POST", "/v1/chat/completions"),
@@ -59,9 +36,7 @@ _INFERENCE_ROUTES = frozenset(
         ("POST", "/v1/messages/count_tokens"),
         ("GET", "/v1/models"),
         ("POST", "/v1/responses"),
-        # Discovery probes, read-only. A keyless client that may list models and chat
-        # but gets 401 on /props reads that as an auth wall in front of the whole
-        # surface and stops, which is the opposite of what the scope grants.
+        # Discovery probes, read-only. A keyless client that may list models and chat but gets 401 on /props reads that as an auth wall in front of the whole surface and stops, which is the opposite of what the scope grants.
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
@@ -135,18 +110,7 @@ def _read_settings() -> tuple[str, bool]:
 
 
 def _settings_once() -> tuple[str, bool, bool, int]:
-    """Read the persisted scope and tool grant; anything unreadable counts as off.
-
-    Unlike a normal setting these remove an authentication requirement, so a damaged
-    settings DB must never resolve to an open scope, and neither may a refresh that
-    read the DB before a write closed it: sqlite reads block, so a request can be
-    holding the old answer when the setting is turned off, and publishing it would
-    keep the server open for the rest of the TTL. The generation counter dates each
-    read against the writes, so only a read that still describes the DB is published.
-
-    One caller refreshes SQLite; async followers retry without worker tokens; sync
-    followers fail closed.
-    """
+    """Read the persisted scope and tool grant; anything unreadable counts as off. Unlike a normal setting these remove an authentication requirement, so a damaged settings DB must never resolve to an open scope, and neither may a refresh that read the DB before a write closed it: sqlite reads block, so a request can be holding the old answer when the setting is turned off, and publishing it would keep the server open for the rest of the TTL. The generation counter dates each read against the writes, so only a read that still describes the DB is published. One caller refreshes SQLite; async followers retry without worker tokens; sync followers fail closed."""
     global _cached_settings, _settings_refresh_inflight
     owner_marker: Optional[object] = None
     try:
@@ -260,8 +224,7 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
                 allow_tools = _read_settings_from_db()[1] if tools is None else _coerce_bool(tools)
             if allow_tools is None:
                 raise ValueError("Keyless tool access must be true or false.")
-            # tools are meaningless without a scope, and leaving them ticked would surprise
-            # whoever turns keyless back on later
+            # tools are meaningless without a scope, and leaving them ticked would surprise whoever turns keyless back on later
             allow_tools = allow_tools and scope != KEYLESS_SCOPE_OFF
 
             from storage.studio_db import upsert_app_settings
@@ -292,11 +255,7 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
 
 
 def access_exposure(app_state: Any) -> Optional[str]:
-    """How far this server reaches beyond the machine, or None for localhost only.
-
-    Advisory: it decides how bluntly the UI words the warning, never whether the
-    setting may be used. An unknown bind host is reported as network-reachable.
-    """
+    """How far this server reaches beyond the machine, or None for localhost only. Advisory: it decides how bluntly the UI words the warning, never whether the setting may be used. An unknown bind host is reported as network-reachable."""
     from utils.host_policy import (
         is_external_host,
         lan_connector_active,
@@ -367,8 +326,7 @@ def scope_covers(
         return False
     if (normalized_method, normalized) in _INFERENCE_ROUTES:
         return True
-    # The router intentionally exposes one dynamic retrieval template. Its method
-    # is still explicit; an empty id and every non-GET alias remain denied.
+    # The router intentionally exposes one dynamic retrieval template. Its method is still explicit; an empty id and every non-GET alias remain denied.
     return normalized_method == "GET" and normalized.startswith("/v1/models/")
 
 
@@ -424,14 +382,7 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
 
 
 def _repeated_header(request: Any, name: bytes) -> bool:
-    """Whether the raw ASGI headers carry ``name`` more than once.
-
-    ``Headers.get()`` returns the first of a repeated header, so a predicate built on it may
-    decide on a different value than an intermediary acted on. An ambiguous request is
-    refused rather than resolved, as `asgi_request_is_keyless` already does for a repeated
-    `Authorization`. h11 rejects a repeated `Host`, httptools does not, and neither rejects a
-    repeated `Sec-Fetch-Site`, so this cannot be left to the parser.
-    """
+    """Whether the raw ASGI headers carry ``name`` more than once. ``Headers.get()`` returns the first of a repeated header, so a predicate built on it may decide on a different value than an intermediary acted on. An ambiguous request is refused rather than resolved, as `asgi_request_is_keyless` already does for a repeated `Authorization`. h11 rejects a repeated `Host`, httptools does not, and neither rejects a repeated `Sec-Fetch-Site`, so this cannot be left to the parser."""
     try:
         headers = request.scope.get("headers") or ()
         return sum(1 for key, _ in headers if key.lower() == name) > 1
@@ -440,25 +391,7 @@ def _repeated_header(request: Any, name: bytes) -> bool:
 
 
 def _browser_initiated_elsewhere(request: Any) -> bool:
-    """Whether a page on another site made this request, as the browser reports it.
-
-    ``Origin`` cannot say: no browser attaches it to a same-origin GET or to a cross-site
-    ``no-cors`` GET, and such a fetch at ``http://127.0.0.1:<port>`` does arrive. Only
-    Chromium's Local Network Access (141, enforced from 142, replacing Private Network
-    Access) holds it back; Firefox and Safari ship no equivalent. ``Sec-Fetch-Site`` is set
-    on every request to a URL the browser considers *potentially trustworthy*, and the
-    ``Sec-`` prefix makes it unforgeable. Absence stays admitted: curl, the OpenAI SDKs and
-    Safari before 16.4 send nothing, and serving them is the point of the setting.
-
-    Two limits, because the header is weaker than it first appears:
-
-    * Absence only *means* "not a browser" where the URL is potentially trustworthy, which
-      is what `_host_authority_is_direct` enforces. On the plain-HTTP private-LAN limb no
-      such URL exists, so this predicate is inert there and `Origin` is the only signal left.
-    * ``none`` is refused. It is computed before the redirect chain is walked, so an
-      attacker-controlled 302 from a user-initiated navigation still arrives saying ``none``
-      (measured: Firefox 153, WebKit 26.5). Nobody types an API route into an address bar.
-    """
+    """Whether a page on another site made this request, as the browser reports it. ``Origin`` cannot say: no browser attaches it to a same-origin GET or to a cross-site ``no-cors`` GET, and such a fetch at ``http://127.0.0.1:<port>`` does arrive; only Chromium's Local Network Access (141, enforced from 142, replacing Private Network Access) holds it back, and Firefox and Safari ship no equivalent. ``Sec-Fetch-Site`` is set on every request to a URL the browser considers *potentially trustworthy*, and the ``Sec-`` prefix makes it unforgeable. Absence stays admitted: curl, the OpenAI SDKs and Safari before 16.4 send nothing, and serving them is the point of the setting. Two limits, because the header is weaker than it first appears: absence only *means* "not a browser" where the URL is potentially trustworthy, which is what `_host_authority_is_direct` enforces, so on the plain-HTTP private-LAN limb no such URL exists, this predicate is inert there and `Origin` is the only signal left; and ``none`` is refused, because it is computed before the redirect chain is walked, so an attacker-controlled 302 from a user-initiated navigation still arrives saying ``none`` (measured: Firefox 153, WebKit 26.5), and nobody types an API route into an address bar."""
     if _repeated_header(request, b"sec-fetch-site"):
         return True
     try:
@@ -476,39 +409,7 @@ def _port_suffix_is_numeric(suffix: str) -> bool:
 
 
 def _host_authority_is_direct(request: Any, scope: str) -> bool:
-    """Whether the caller addressed this server directly rather than through a name.
-
-    Guards DNS rebinding, which the socket checks cannot see: a page on ``evil.example``
-    re-pointed at ``127.0.0.1`` keeps its own origin, so every signal above reads as a local
-    client and the response is readable by the page. ``Host`` still names the site the page
-    was served from. A direct client sends the literal address or ``localhost``; anything
-    else is a name, whether rebound or a legitimate mDNS / internal-DNS / reverse-proxy
-    alias -- keyless declines both, as `lan_access_settings` also never trusts a name.
-    Absent stays admitted: HTTP/1.0 callers send none and no browser omits it.
-
-    The literal is matched as written rather than canonicalised, because this predicate and
-    the browser must agree on how "loopback" is spelled. Two families are refused for that
-    reason, both measured reaching a ``127.0.0.1`` listener while the browser sent no
-    ``Sec-Fetch-*`` at all, neither being potentially trustworthy (``127.0.0.0/8``, ``::1/128``):
-
-    * IPv4-mapped IPv6 -- ``[::ffff:127.0.0.1]``, ``[::ffff:7f00:1]`` -- on Chromium 151,
-      Firefox 153 and WebKit 26.5.
-    * the unspecified ``0.0.0.0`` and ``[::]``, which connect to loopback on Linux.
-
-    Canonicalising them, as a general purpose normaliser would, is what turned
-    absence-means-not-a-browser into a bypass, so parsing happens here rather than through
-    `lan_access_settings._normalized_ip`, whose leniency suits the socket addresses it was
-    written for and not an authority off the wire.
-
-    The literal must also be one ``scope`` could legitimately be reached at. The socket
-    checks see only the hop that connected, so an SSH forward or a reverse proxy in front of
-    a loopback bind makes both ASGI endpoints loopback while ``Host`` is the public address
-    the page came from. ``full`` is loopback-only by construction
-    (`_full_scope_transport_allowed` demands a loopback bind and peer), so its authority must
-    be loopback too; ``inference`` may also be reached across the private LAN. This cannot be
-    spelled with `is_private`, which means "not globally reachable" and counts the
-    documentation ranges in as well.
-    """
+    """Whether the caller addressed this server directly rather than through a name. Guards DNS rebinding, which the socket checks cannot see: a page on ``evil.example`` re-pointed at ``127.0.0.1`` keeps its own origin, so every signal above reads as a local client and the response is readable by the page, while ``Host`` still names the site the page was served from. A direct client sends the literal address or ``localhost``; anything else is a name, whether rebound or a legitimate mDNS / internal-DNS / reverse-proxy alias, and keyless declines both, as `lan_access_settings` also never trusts a name. Absent stays admitted: HTTP/1.0 callers send none and no browser omits it. The literal is matched as written rather than canonicalised, because this predicate and the browser must agree on how "loopback" is spelled, and two families are refused for that reason, both measured reaching a ``127.0.0.1`` listener while the browser sent no ``Sec-Fetch-*`` at all, neither being potentially trustworthy (``127.0.0.0/8``, ``::1/128``): IPv4-mapped IPv6 (``[::ffff:127.0.0.1]``, ``[::ffff:7f00:1]``) on Chromium 151, Firefox 153 and WebKit 26.5, and the unspecified ``0.0.0.0`` and ``[::]``, which connect to loopback on Linux. Canonicalising them, as a general purpose normaliser would, is what turned absence-means-not-a-browser into a bypass, so parsing happens here rather than through `lan_access_settings._normalized_ip`, whose leniency suits the socket addresses it was written for and not an authority off the wire. The literal must also be one ``scope`` could legitimately be reached at: the socket checks see only the hop that connected, so an SSH forward or a reverse proxy in front of a loopback bind makes both ASGI endpoints loopback while ``Host`` is the public address the page came from. ``full`` is loopback-only by construction (`_full_scope_transport_allowed` demands a loopback bind and peer), so its authority must be loopback too; ``inference`` may also be reached across the private LAN. This cannot be spelled with `is_private`, which means "not globally reachable" and counts the documentation ranges in as well."""
     import ipaddress
 
     from utils.lan_access_settings import _private_non_loopback
@@ -538,9 +439,7 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
         if separator and not _port_suffix_is_numeric(":" + suffix):
             return False
         literal = literal.lower()
-        # Exactly `localhost`, no trailing root-label dot.
-        # Measured on WebKit 26.5, a page dialling `http://localhost.:<port>` sends no `Sec-Fetch-*` while Chromium 151
-        # and Firefox 153 send `cross-site`. No client spells it.
+        # Exactly `localhost`, no trailing root-label dot. Measured on WebKit 26.5, a page dialling `http://localhost.:<port>` sends no `Sec-Fetch-*` while Chromium 151 and Firefox 153 send `cross-site`. No client spells it.
         if literal == "localhost":
             return True
         try:
@@ -552,16 +451,7 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
 
 
 def keyless_authority_address_allowed(address: Any, scope: str) -> bool:
-    """Whether a parsed authority literal is one ``scope`` could be reached at.
-
-    The single place this is answered, so admission and anything that advertises an address
-    to the user cannot drift apart -- `lan_access_settings` reported a keyless-eligible LAN
-    URL for an IPv4-mapped literal admission refuses, having kept its own copy of the test.
-
-    Takes an already-parsed address, which must NOT have been canonicalised: the mapped form
-    is refused precisely because the browser does not treat it as loopback, so un-mapping it
-    erases the distinction being tested.
-    """
+    """Whether a parsed authority literal is one ``scope`` could be reached at. The single place this is answered, so admission and anything that advertises an address to the user cannot drift apart: `lan_access_settings` reported a keyless-eligible LAN URL for an IPv4-mapped literal admission refuses, having kept its own copy of the test. Takes an already-parsed address, which must NOT have been canonicalised: the mapped form is refused precisely because the browser does not treat it as loopback, so un-mapping it erases the distinction being tested."""
     from utils.lan_access_settings import _private_non_loopback
 
     if address is None:
@@ -639,13 +529,7 @@ def request_was_admitted_keyless(request: Any) -> Optional[bool]:
 
 
 class KeylessToolPolicyMiddleware:
-    """Hard-disable server-side tools for a keyless caller that was not granted them.
-
-    ``/v1/chat/completions`` runs python and terminal on this machine through the
-    tool loop, and ``unsloth studio run`` turns tools on by default, so serving that
-    route without a key would otherwise hand the loop to anyone who can reach it.
-    Mirrors what routes/preview.py does for the public ``/p`` surface.
-    """
+    """Hard-disable server-side tools for a keyless caller that was not granted them. ``/v1/chat/completions`` runs python and terminal on this machine through the tool loop, and ``unsloth studio run`` turns tools on by default, so serving that route without a key would otherwise hand the loop to anyone who can reach it. Mirrors what routes/preview.py does for the public ``/p`` surface."""
 
     def __init__(self, app):
         self.app = app
@@ -678,13 +562,7 @@ class KeylessToolPolicyMiddleware:
 
 
 def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = None) -> bool:
-    """Whether this ASGI request is admitted by the setting rather than by a credential.
-
-    Middleware-side twin of ``auth.authentication.admitted_without_credential``, reading
-    the raw scope because it runs before the request object exists. An Unsloth session and
-    a working API key both authenticate as themselves, so neither is keyless: applying
-    the tool restriction to an existing API client would take away tools it already had.
-    """
+    """Whether this ASGI request is admitted by the setting rather than by a credential. Middleware-side twin of ``auth.authentication.admitted_without_credential``, reading the raw scope because it runs before the request object exists. An Unsloth session and a working API key both authenticate as themselves, so neither is keyless: applying the tool restriction to an existing API client would take away tools it already had."""
     try:
         from starlette.requests import Request
         request = Request(asgi_scope)
@@ -706,8 +584,7 @@ def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = N
         return True
     if len(authorization) != 1:
         return False
-    # The same parser the dependency uses, not a second hand-rolled split: they disagreed on `bearer  not-needed`,
-    # making a shape keyless to every route but not-keyless to the middleware that clamps the tool grant.
+    # The same parser the dependency uses, not a second hand-rolled split: they disagreed on `bearer  not-needed`, making a shape keyless to every route but not-keyless to the middleware that clamps the tool grant.
     from fastapi.security.utils import get_authorization_scheme_param
 
     if is_empty_bearer(authorization[0]):

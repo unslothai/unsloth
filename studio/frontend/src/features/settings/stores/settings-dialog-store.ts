@@ -43,10 +43,9 @@ interface SettingsDialogState {
   open: boolean;
   activeTab: SettingsTab;
   scrollTarget: SettingsScrollTarget | null;
-  // Element focused when openDialog() ran. Radix's FocusScope normally tracks
-  // this, but the rAF-scheduled focus() in settings-dialog.tsx races its
-  // previous-focus capture, leaving focus on <body> after close. We restore
-  // explicitly via onCloseAutoFocus.
+  // Element focused when openDialog() ran. Radix's FocusScope normally tracks this, but the
+  // rAF-scheduled focus() in settings-dialog.tsx races its previous-focus capture, leaving focus on
+  // <body> after close. We restore explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   openerFallback: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive

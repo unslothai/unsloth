@@ -261,9 +261,8 @@ export function SettingsDialog() {
   const opener = useSettingsDialogStore((s) => s.opener);
   const openerFallback = useSettingsDialogStore((s) => s.openerFallback);
   const reduced = useReducedMotion();
-  // Mounting a heavy tab panel (System, Connections) in the same commit as
-  // the nav highlight makes the highlight lag the click. Render the panel
-  // from a deferred value so the nav updates first.
+  // Mounting a heavy tab panel (System, Connections) in the same commit as the nav highlight makes
+  // the highlight lag the click. Render the panel from a deferred value so the nav updates first.
   const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
 

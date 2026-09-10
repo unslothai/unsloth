@@ -40,10 +40,9 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
-  // A command that wrote files arrives as the python tool's structured shape;
-  // a plain string means it wrote none.
-  // The same test the adapter applies: a foreign result that merely has text
-  // would otherwise be rendered as that field alone.
+  // A command that wrote files arrives as the python tool's structured shape; a plain string means
+  // it wrote none. The same test the adapter applies: a foreign result that merely has text would
+  // otherwise be rendered as that field alone.
   const structured = isSandboxToolResult(result)
     ? (result as unknown as { text: string; sessionId?: string; files?: SandboxFile[] })
     : null;

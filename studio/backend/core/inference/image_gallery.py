@@ -70,7 +70,6 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     image_id = uuid.uuid4().hex
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
-    # dotted temp (skipped by the *.png glob) then atomic rename
     # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a
     # truncated {id}.png in the listing.
     tmp_path = directory / f".{image_id}.png.tmp"
@@ -121,9 +120,8 @@ def image_b64(image_id: str) -> Optional[str]:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-# a PNG missing any is skipped as foreign, so a hand-dropped or older-schema file cannot 500 the listing
-# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as foreign, so a hand-dropped or
-# older-schema file cannot 500 the listing.
+# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as foreign, so a hand-dropped
+# or older-schema file cannot 500 the listing.
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
@@ -190,13 +188,10 @@ def list_images(
     except OSError:
         return []
     flags = gallery_flags.read(gallery_dir())
-    # both run on file stems BEFORE any recipe is read
     # Both the shelf split and the pin sort run on file stems, BEFORE any recipe is read, so they cost one dict lookup
     # per file and leave the early break below intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
-    # page over READABLE records: filtering a foreign PNG out of an already-sliced window would drop valid images and
-    # make has_more wrong.
     # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop
     # valid images and make has_more wrong. Known limit: this re-reads headers from newest down to `offset+limit` per
     # page, so a deep scroll is O(offset) header-opens.
@@ -289,7 +284,6 @@ def clear(include_archived: bool = False) -> int:
                 cleared.append(path.stem)
             except OSError:
                 continue
-        # once every image we own is gone an unreadable store protects nothing
         # Nothing left for an unreadable store to protect once every image we own is gone, so this is where the escape
         # hatch escapes: replace it, or every later default clear still refuses.
         if include_archived and not gallery_flags.is_trusted(directory):

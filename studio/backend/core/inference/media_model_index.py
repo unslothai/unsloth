@@ -53,9 +53,6 @@ class MediaModelPick:
 _AMBIGUOUS = MediaModelPick("", "")
 
 
-# ── resolving a name to a downloaded model ──────────────────────────
-
-
 def _resolve_load_dir(p: Path) -> Path:
     """The directory holding the weights, unwrapping an HF cache repo to its snapshot.
 
@@ -366,9 +363,6 @@ def available_media_model_ids(task: str) -> list[str]:
     return sorted(
         {pick.model_id for pick in _cached_index(task).values() if pick is not _AMBIGUOUS}
     )
-
-
-# ── recognising the resident model ──────────────────────────────────
 
 
 def published_token(pick: MediaModelPick) -> str:

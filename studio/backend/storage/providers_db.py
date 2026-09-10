@@ -3,12 +3,10 @@
 
 """SQLite storage for external LLM provider configurations.
 
-Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL,
-per-function connections). API keys are NOT stored here: they live only in
-the browser (localStorage) and are sent encrypted per-request.
-
-Enabled model selections and discovered catalog IDs are stored server-side so
-remote Unsloth clients see the same connection state (#7281).
+Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL, per-function connections). API keys are
+NOT stored here: they live only in the browser (localStorage) and are sent encrypted per-request. Enabled model
+selections and discovered catalog IDs are stored server-side so remote Unsloth clients see the same connection
+state (#7281).
 """
 
 from __future__ import annotations
@@ -106,12 +104,9 @@ def get_connection() -> sqlite3.Connection:
 
 @contextmanager
 def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
-    """Atomically mutate a provider row and its saved credentials.
-
-    Provider metadata and encrypted credentials share ``studio.db``.  A single
-    SQLite write transaction therefore prevents other processes from observing
-    a new endpoint with the previous key (or the inverse) while a provider edit
-    is in progress.
+    """Atomically mutate a provider row and its saved credentials. Provider metadata and encrypted credentials
+    share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
+    endpoint with the previous key (or the inverse) while a provider edit is in progress.
     """
     # Ensure both tables exist before opening the transaction. The credential module commits schema
     # initialization on its own connection.

@@ -88,11 +88,7 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _unlink_snapshot_entry(snap: Path) -> int:
-    """Unlink one snapshot entry, plus any AppleDouble sidecar beside it.
-
-    Returns the entries removed, which never counts the sidecar: it is metadata about a file the
-    caller asked to remove, not a second file.
-    """
+    """Unlink one snapshot entry, plus any AppleDouble sidecar beside it. Returns the entries removed, which never counts the sidecar: it is metadata about a file the caller asked to remove, not a second file."""
     removed = 0
     if _path_exists_or_symlink(snap):
         snap.unlink()
@@ -102,15 +98,7 @@ def _unlink_snapshot_entry(snap: Path) -> int:
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
-    """Files whose snapshot-relative path satisfies *predicate*.
-
-    Relative, not the bare ``file_name``: huggingface_hub sets that to
-    ``file_path.name`` (and our own recovery scan to ``entry.name``), so a
-    companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a
-    root file. Every predicate below keys on the directory for at least one
-    supported layout, and the quant labels they extract are unchanged by the
-    prefix.
-    """
+    """Files whose snapshot-relative path satisfies *predicate*. Relative, not the bare ``file_name``: huggingface_hub sets that to ``file_path.name`` (and our own recovery scan to ``entry.name``), so a companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a root file. Every predicate below keys on the directory for at least one supported layout, and the quant labels they extract are unchanged by the prefix."""
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
         snapshot = getattr(rev, "snapshot_path", None)
@@ -126,8 +114,7 @@ def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path
                 continue
             if not file_path:
                 continue
-            # Every predicate here keys on the name, which a sidecar answers exactly as its neighbour does.
-            # Proven metadata only: anything else carrying this key is a file to delete.
+            # Every predicate here keys on the name, which a sidecar answers exactly as its neighbour does. Proven metadata only: anything else carrying this key is a file to delete.
             if is_appledouble_metadata(Path(file_path)):
                 continue
             blob_path = getattr(f, "blob_path", None)
@@ -152,12 +139,8 @@ def _has_remaining_main_gguf(target_repo) -> bool:
 
 
 def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, list[str]]:
-    """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
-    quant label names the folder); only empty dirs go, so siblings are safe.
-    Returns (count removed, removal failures other than a concurrent refill)."""
-    # A qualified key names its own folder and must not reach for a <quant>/ dir it does not own;
-    # qualified means a path (distilled/...-Q6_K), an H3 root stem, or a bpw modifier
-    # (IQ4_XS-3.53bpw, whose token-only IQ4_XS/ folder is a different build's).
+    """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the quant label names the folder); only empty dirs go, so siblings are safe. Returns (count removed, removal failures other than a concurrent refill)."""
+    # A qualified key names its own folder and must not reach for a <quant>/ dir it does not own; qualified means a path (distilled/...-Q6_K), an H3 root stem, or a bpw modifier (IQ4_XS-3.53bpw, whose token-only IQ4_XS/ folder is a different build's).
     qualified = (
         is_qualified_gguf_variant_key(variant)
         or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
@@ -199,8 +182,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
                     sub.rmdir()
                     removed += 1
                 except OSError as e:
-                    # A concurrent download refilling the dir (ENOTEMPTY) is not a failure; a read-only cache or locked
-                    # dir is, so surface it.
+                    # A concurrent download refilling the dir (ENOTEMPTY) is not a failure; a read-only cache or locked dir is, so surface it.
                     if e.errno != errno.ENOTEMPTY:
                         failures.append(f"{sub.name}: {e}")
     return removed, failures
@@ -231,19 +213,7 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
 
 
 def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
-    """The variant keys in *target_repo* that *variant* names, lowercased.
-
-    Its own key, always. Plus the unambiguous bare-quant alias the download side already admits
-    (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container
-    (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the
-    path and cannot know the directory disambiguates nothing, so every stored pin and every
-    explicit ``repo:Q4_K_M`` names it by quant alone. Admitting the alias for the download and not
-    for the delete answered "not found" and left the weights on disk.
-
-    Only when it is unambiguous, exactly as the download side decides it: a repo that really does
-    hold several checkpoints at one quant gets no fallback, because there the bare name genuinely
-    does not name one of them and deleting the wrong one is unrecoverable.
-    """
+    """The variant keys in *target_repo* that *variant* names, lowercased. Its own key, always, plus the unambiguous bare-quant alias the download side already admits (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the path and cannot know the directory disambiguates nothing, so every stored pin and every explicit ``repo:Q4_K_M`` names it by quant alone, and admitting the alias for the download and not for the delete answered "not found" and left the weights on disk. Only when it is unambiguous, exactly as the download side decides it: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them and deleting the wrong one is unrecoverable."""
     wanted = (variant or "").strip().lower()
     if not wanted or "/" in wanted:
         return {wanted}
@@ -253,8 +223,7 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     }
     if wanted in keys:
         return {wanted}
-    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names
-    # both partitions, so it must not delete either.
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, so it must not delete either.
     aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
     return aliased if len(aliased) == 1 else {wanted}
 
@@ -361,7 +330,6 @@ def _delete_gguf_variant_from_repos(
         )
 
     state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
-    # Reclaim the empty quant folder so it stops 404ing on delete.
     removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
     removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
     removed_dirs += removed_snap_dirs
@@ -403,13 +371,7 @@ def reclaim_replaced_gguf_variant(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> dict:
-    """Prune stale main-GGUF files for a variant after a replacement verified.
-
-    This is intentionally narrower than user-driven delete: it removes only
-    same-variant main files whose local blob hash is not in *keep_main_hashes*,
-    then unlinks their blobs only if no remaining snapshot references them.
-    Shared companions and sibling variants are left intact.
-    """
+    """Prune stale main-GGUF files for a variant after a replacement verified. Intentionally narrower than user-driven delete: it removes only same-variant main files whose local blob hash is not in *keep_main_hashes*, then unlinks their blobs only if no remaining snapshot references them. Shared companions and sibling variants are left intact."""
     if not keep_main_hashes:
         logger.info(
             "Skipping stale GGUF reclaim for %s [%s]: current main hashes unresolved",
@@ -504,8 +466,7 @@ def reclaim_replaced_gguf_variant(
             and gguf_variant_key(name).lower() == variant_key,
         )
         for snap, blob, name in matches:
-            # Prune only a file we can identify as a real, stale cache blob: a no-symlink snapshot file has no
-            # identifiable blob hash, so keep it.
+            # Prune only a file we can identify as a real, stale cache blob: a no-symlink snapshot file has no identifiable blob hash, so keep it.
             blob_hash = (
                 _blob_hash_from_path(blob)
                 if cache_inventory._is_real_cache_blob(blob, repo_dir)
@@ -656,8 +617,6 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference.orchestrator import peek_inference_backend
-
-        # Peek, never construct: building one just to learn nothing is loaded imports torch.
         backend = peek_inference_backend()
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
@@ -669,12 +628,7 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
 
 
 def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
-    """The 400 detail if the Images backend holds *repo_id*, else None.
-
-    Queries the ACTIVE engine: on a native selection the diffusers singleton reports
-    unloaded while sd-cli still generates from the cached GGUF. Same
-    fail-open-on-acquire contract as :func:`_llama_cpp_blocks_delete`.
-    """
+    """The 400 detail if the Images backend holds *repo_id*, else None. Queries the ACTIVE engine: on a native selection the diffusers singleton reports unloaded while sd-cli still generates from the cached GGUF. Same fail-open-on-acquire contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         engine = get_active_diffusion_engine()
@@ -685,8 +639,7 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     if status.get("loaded") and status.get("repo_id"):
         if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
             return "Unload the model before deleting"
-    # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers
-    # only the main GGUF, so refuse the companions too.
+    # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers only the main GGUF, so refuse the companions too.
     for lid in getattr(engine, "loaded_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
@@ -698,11 +651,7 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
 
 
 def _video_blocks_delete(repo_id: str) -> Optional[str]:
-    """The 400 detail if the Video backend holds or is fetching *repo_id*, else None.
-
-    Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan
-    pipeline could otherwise lose its snapshot. Mirrors :func:`_diffusion_blocks_delete`.
-    """
+    """The 400 detail if the Video backend holds or is fetching *repo_id*, else None. Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan pipeline could otherwise lose its snapshot. Mirrors :func:`_diffusion_blocks_delete`."""
     try:
         from core.inference.video import get_video_backend
         backend = get_video_backend()
@@ -711,14 +660,12 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
         return None
     status = backend.status()
     if status.get("loaded"):
-        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE
-        # and text encoders, so refuse it too.
+        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE and text encoders, so refuse it too.
         for key in ("repo_id", "base_repo"):
             held = status.get(key)
             if held and _loaded_id_matches_repo(str(held), repo_id):
                 return "Unload the model before deleting"
-    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
-    # neither of the two ids above, so refuse those as well.
+    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are neither of the two ids above, so refuse those as well.
     for lid in getattr(backend, "loaded_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
@@ -739,13 +686,7 @@ def _is_companion_base_repo(repo_id: str) -> bool:
 
 
 def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
-    """Whether *variant* names a file an installed checkpoint's native load actually opens.
-
-    Not "would this empty the repo": the asset is a FIXED filename, so a sibling quant left
-    behind substitutes for nothing. Fails CLOSED, and cheaply -- a True here only runs the
-    dependants check, which answers "nobody needs it" for every ordinary repo and lets the
-    delete through.
-    """
+    """Whether *variant* names a file an installed checkpoint's native load actually opens. Not "would this empty the repo": the asset is a FIXED filename, so a sibling quant left behind substitutes for nothing. Fails CLOSED, and cheaply: a True here only runs the dependants check, which answers "nobody needs it" for every ordinary repo and lets the delete through."""
     from hub.services.models import cache_inventory
     from hub.utils import companion_assets
     from hub.utils.gguf import extract_quant_label
@@ -785,15 +726,7 @@ async def delete_cached_model_response(
     cache_path: Optional[str] = None,
     only_if_orphan: bool = False,
 ):
-    """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
-
-    When *variant* is provided, only the GGUF files matching that quant label
-    are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
-    Refuses if the model is currently loaded for inference.
-
-    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
-    become an installed checkpoint since the list the caller is acting on was built.
-    """
+    """Delete a cached model repo (or a specific GGUF variant) from the HF cache. When *variant* is provided, only the GGUF files matching that quant label are removed (e.g. ``UD-Q4_K_XL``); otherwise the entire repo is deleted. Refuses if the model is currently loaded for inference. *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has become an installed checkpoint since the list the caller is acting on was built."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
@@ -809,7 +742,6 @@ async def delete_cached_model_response(
             _inference_backend_blocks_delete(repo_id)
         ):
             return "Unload the model before deleting"
-        # The guards above are chat-only; Images / Video hold their own pipelines.
         return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
 
     try:
@@ -835,9 +767,7 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer below: the
-        # first read ran before the reservation existed, so a load starting in between published its claim
-        # too late, and begin_delete misses it too.
+        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer below: the first read ran before the reservation existed, so a load starting in between published its claim too late, and begin_delete misses it too.
         try:
             blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
         except Exception as e:
@@ -872,8 +802,7 @@ def _delete_cached_model_blocking(
     *,
     only_if_orphan: bool = False,
 ) -> dict:
-    # Free up space's list can be minutes old, and a background download finishing turns that orphan
-    # into an installed checkpoint neither guard below catches.
+    # Free up space's list can be minutes old, and a background download finishing turns that orphan into an installed checkpoint neither guard below catches.
     if only_if_orphan:
         from hub.services.models import companion_cleanup
         from hub.utils import companion_assets
@@ -882,8 +811,7 @@ def _delete_cached_model_blocking(
             copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
                 repo_id.strip().lower(), []
             )
-            # Only the copy being removed: the orphan listing emits one row per cache root, so a full-pipeline
-            # copy in another remembered cache must not veto removing the companion-only copy listed.
+            # Only the copy being removed: the orphan listing emits one row per cache root, so a full-pipeline copy in another remembered cache must not veto removing the companion-only copy listed.
             if cache_path:
                 wanted = Path(cache_path)
                 copies = [
@@ -892,8 +820,7 @@ def _delete_cached_model_blocking(
                     if getattr(r, "repo_path", None) and Path(getattr(r, "repo_path")) == wanted
                 ]
                 if not copies:
-                    # An empty match means the target root is not in this scan, and concluding "orphan" from copies we
-                    # did not look at is the fail-open this precondition prevents; raising lands in the 503.
+                    # An empty match means the target root is not in this scan, and concluding "orphan" from copies we did not look at is the fail-open this precondition prevents; raising lands in the 503.
                     raise RuntimeError(f"cache root not present in the scan: {cache_path}")
             still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
         except Exception as e:
@@ -911,23 +838,10 @@ def _delete_cached_model_blocking(
                 ),
             )
 
-    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
-    # family, so removing it while one is installed leaves that quant unloadable with nothing on screen
-    # to say why. Derived from what is installed right now, never from a stored count, and only for a
-    # WHOLE-repo delete. Deleting the dependants first makes the base an orphan, which Free up space
-    # then offers.
-    # Here rather than in the async caller so it shares this function's cache walk and stubs: the check
-    # IS part of the destructive stage.
-    # The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens exactly
-    # Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF repo, so removing that one quant strands the
-    # image checkpoint however many siblings remain, and none of them is a substitute for a fixed
-    # filename. A FLAG, never a rewrite of `variant`: that name is the destructive scope, and widening
-    # it here would delete every revision and manifest the user did not ask for, and purge a sibling
-    # quant out from under an in-flight download.
+    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its family, so removing it while one is installed leaves that quant unloadable with nothing on screen to say why. Derived from what is installed right now, never from a stored count, and only for a WHOLE-repo delete; deleting the dependants first makes the base an orphan, which Free up space then offers. Here rather than in the async caller so it shares this function's cache walk and stubs: the check IS part of the destructive stage. The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens exactly Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF repo, so removing that one quant strands the image checkpoint however many siblings remain, and none of them is a substitute for a fixed filename. A FLAG, never a rewrite of `variant`: that name is the destructive scope, and widening it here would delete every revision and manifest the user did not ask for, and purge a sibling quant out from under an in-flight download.
     guard_this_delete = variant is None or _variant_is_a_required_companion_asset(repo_id, variant)
     if guard_this_delete and _is_companion_base_repo(repo_id):
-        # Fails CLOSED, and only here: the lookup above already established this repo IS a companion base,
-        # so an unreadable cache means the dependants cannot be enumerated, not that there are none.
+        # Fails CLOSED, and only here: the lookup above already established this repo IS a companion base, so an unreadable cache means the dependants cannot be enumerated, not that there are none.
         try:
             shared_detail = _companion_share_blocks_delete(repo_id)
         except Exception as e:
@@ -943,16 +857,14 @@ def _delete_cached_model_blocking(
             raise HTTPException(status_code = 400, detail = shared_detail)
 
     try:
-        # If a sibling quant is downloading concurrently, restrict this delete to the variant's own files
-        # and leave the shared mmproj companion for it.
+        # If a sibling quant is downloading concurrently, restrict this delete to the variant's own files and leave the shared mmproj companion for it.
         sibling_active = bool(
             variant and downloads.registry.has_active_peer_variant(repo_id, variant)
         )
 
         cache_scans = cache_inventory.all_hf_cache_scans()
 
-        # A repo can live in several remembered caches, so target exactly one or a delete removes copies in
-        # other, previously selected caches.
+        # A repo can live in several remembered caches, so target exactly one or a delete removes copies in other, previously selected caches.
         owners: dict = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:

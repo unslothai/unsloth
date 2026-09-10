@@ -149,8 +149,7 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind
-  // or clear it.
+  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it.
   useShortcut("toggleSidebar", toggleSidebar)
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
@@ -189,12 +188,11 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            // The drag handle writes this same property live while resizing.
-            // Under PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to
-            // [data-slot="sidebar"], which holds every consumer, and cannot
-            // also stay here: this wrapper is an ancestor of the chat thread,
-            // so a declaration left behind would keep restyling the thread on
-            // every render even once the drag-time write had moved.
+            // The drag handle writes this same property live while resizing. Under
+            // PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to [data-slot="sidebar"], which holds
+            // every consumer, and cannot also stay here: this wrapper is an ancestor of the chat
+            // thread, so a declaration left behind would keep restyling the thread on every render
+            // even once the drag-time write had moved.
             ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
               ? null
               : { "--sidebar-width": `${width}px` }),
@@ -204,14 +202,12 @@ function SidebarProvider({
         }
         className={cn(
           // `has-[>...]`, not `has-[...]`, and the combinator is the whole point.
-          //
           // This wrapper is an ancestor of the chat thread, as the note on
           // --sidebar-width above already says. A `:has()` whose argument is a
           // DESCENDANT selector has to be re-checked whenever anything is
           // inserted or removed anywhere in the subject's subtree, and
           // answering it means WALKING that subtree. On an ancestor of the
           // thread that walk is the whole thread, on every mutation.
-          //
           // It is a traversal, NOT a restyle, and the difference matters
           // because it is why containment does not help. Blink's own
           // `UpdateLayoutTree.elementCount` for one inserted span is 1 with
@@ -223,7 +219,6 @@ function SidebarProvider({
           // help. `content-visibility: auto` on the message roots does not
           // help either, measured at -7%: the argument re-check walks skipped
           // content too.
-          //
           // Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
           // thread: appending one EMPTY span inside a message cost 17.5 and
           // 18.6 ms in two concurrent arms with this rule in place, 8.7 ms with
@@ -231,7 +226,6 @@ function SidebarProvider({
           // chat-page.tsx deleted. Deleting the other eleven `:has()` rules
           // that survived the bisect changed nothing (17.2 / 19.2 ms), and the
           // same span appended to <body> costs 0.10 ms either way.
-          //
           // CHROMIUM ONLY. On a synthetic thread carrying this same ancestor
           // chain and the built Unsloth stylesheet, at 300,464 elements, one
           // inserted span costs 1.20 ms plain / 1.29 ms child / 5.63 ms one
@@ -240,7 +234,6 @@ function SidebarProvider({
           // Firefox: flat in both, within noise of each other. So this change
           // is free where it does not help and it does not regress the engine
           // Unsloth uses on Linux.
-          //
           // The child combinator is not a weakening. `data-variant` is rendered
           // on the root element of `Sidebar` below, and `Sidebar` is a direct
           // child of this wrapper (AppSidebar returns it inside a Fragment,

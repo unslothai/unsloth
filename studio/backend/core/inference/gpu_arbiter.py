@@ -40,7 +40,6 @@ def _evict_chat() -> None:
     from core.inference.llama_cpp import chat_load_active
 
     llama = get_llama_cpp_backend()
-    # is_active, not is_loaded: a model still starting holds VRAM
     # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
     # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
     # the cancel event the download loop polls, so it aborts.
@@ -56,7 +55,6 @@ def _evict_chat() -> None:
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
     orchestrator._shutdown_subprocess(timeout = 5.0)
-    # the driver reclaims killed VRAM asynchronously, else a warm handoff can transiently OOM
     # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
     # warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())

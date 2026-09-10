@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model management API routes."""
-
 import asyncio
 import hashlib
 import json
@@ -37,9 +35,9 @@ from hub.services.models.catalog_classification import (
     _repo_is_diffusers,
 )
 
-# Compatibility aliases: these moved to catalog_classification, but callers and tests still
-# resolve them from routes.models. Assigned through the module rather than re-imported, since
-# an import this module never loads reads as a botched hoist to verify_import_hoist.py.
+# Compatibility aliases: these moved to catalog_classification, but callers and tests still resolve them
+# from routes.models. Assigned through the module rather than re-imported, since an import this module never
+# loads reads as a botched hoist to verify_import_hoist.py.
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = _catalog_classification._AMBIGUOUS_DIFFUSION_GGUF_ARCHS
 _DIFFUSION_GGUF_ARCHS = _catalog_classification._DIFFUSION_GGUF_ARCHS
 _TASK_CLASSIFY_WALK_SECONDS = _catalog_classification._TASK_CLASSIFY_WALK_SECONDS
@@ -58,14 +56,12 @@ _local_family_needles = _catalog_classification._local_family_needles
 _local_is_diffusers = _catalog_classification._local_is_diffusers
 _local_model_can_chat = _catalog_classification._local_model_can_chat
 _task_classify_sort_key = _catalog_classification._task_classify_sort_key
-# core.inference.llama_cpp imports this one. Without the alias that import raises, and the
-# probe's `except Exception: return True` reads the raise as "the page can build it",
-# promising an MoE or familyless GGUF a load that dies in llama-server.
+# core.inference.llama_cpp imports this one. Without the alias that import raises, and the probe's
+# `except Exception: return True` reads the raise as "the page can build it", promising an MoE or familyless
+# GGUF a load that dies in llama-server.
 _video_family_buildable = _catalog_classification._video_family_buildable
-# The rest of what moved. Nothing in-repo reads these, which is why they went unnoticed --
-# the one name that did have a caller surfaced as a wrong message, never an ImportError.
-# All were importable from routes.models before and two are public, so a downstream fork or
-# an older script may hold one, which this repo cannot see.
+# The rest of what moved. Nothing in-repo reads these, but all were importable from routes.models
+# before and two are public, so a downstream fork or an older script may hold one.
 _H3_DENOISER_GGUF_PREFIXES = _catalog_classification._H3_DENOISER_GGUF_PREFIXES
 _LOADABLE_MEDIA_GGUF_TASKS = _catalog_classification._LOADABLE_MEDIA_GGUF_TASKS
 _MAX_TASK_CLASSIFY_GGUFS = _catalog_classification._MAX_TASK_CLASSIFY_GGUFS
@@ -94,17 +90,17 @@ class CachedModelRepo(BaseModel):
     # Diffusion-tagged repo with NO top-level model_index.json: needs from_single_file + a filename.
     single_file: Optional[bool] = None
     # True for an sd.cpp companion mirror (VAE / text encoders, no denoiser). Declared here or
-    # response_model drops it and the flag never reaches the picker that has to filter on it.
+    # response_model drops it before the picker that filters on it.
     companion: Optional[bool] = None
-    # Snapshot path for a copy its bare repo id cannot reach (legacy/default cache while
-    # another is active); undeclared, response_model drops it and the picker uses the active cache.
+    # Snapshot path for a copy its bare repo id cannot reach (legacy/default cache while another is
+    # active); undeclared, response_model drops it and the picker uses the active cache.
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
     # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
-    # True for an image/video diffusion repo. Not the same question as task, which says only
-    # whether this backend can load it as a pipeline; an untrusted or unrecognised one has none.
+    # True for an image/video diffusion repo. Not the same question as task, which says only whether this
+    # backend can load it as a pipeline.
     diffusers: Optional[bool] = None
 
 
@@ -124,13 +120,8 @@ def _normalize_hf_token(hf_token) -> Optional[str]:
 
 
 def _safe_is_dir(path) -> bool:
-    """``Path.is_dir()`` returning ``False`` instead of raising.
-
-    Python >= 3.12 propagates ``PermissionError`` from ``is_dir()``;
-    folder-scan endpoints probe system locations (e.g. root-owned
-    ``/usr/share/ollama``) and must treat un-stat-able paths as "not a
-    directory", never 500.
-    """
+    """``Path.is_dir()`` returning ``False`` instead of raising: Python >= 3.12 propagates
+    ``PermissionError``, and folder-scan endpoints probe root-owned system locations."""
     try:
         return Path(path).is_dir()
     except OSError:
@@ -155,13 +146,10 @@ from utils.hidden_models import (
 
 
 def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
-    """Substring needles, exact repo ids, and exact resolved paths identifying
-    infra models (the RAG embedder and the llama.cpp install validation probe)
-    that pickers hide. Served by the ``/api/hub/hidden-models`` endpoint. A
-    configured HF-repo embedder is published as its exact lowercased repo id
-    (mirroring ``utils.hidden_models.is_hidden_model``) and a local-path
-    embedder as its exact resolved path only: a generic basename like "model"
-    must not substring-hide unrelated chat models."""
+    """Substring needles, exact repo ids, and exact resolved paths identifying infra models (the RAG embedder
+    and the llama.cpp install validation probe) that pickers hide. A configured HF-repo embedder is
+    published as its exact lowercased repo id and a local-path embedder as its exact resolved path only: a
+    generic basename like "model" must not substring-hide unrelated chat models."""
     from core.rag import config as rag_config
 
     needles = [
@@ -261,7 +249,6 @@ try:
         resolve_export_dir,
     )
 except ImportError:
-    # Fallback: import from parent directory.
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
@@ -325,11 +312,9 @@ from utils.paths.path_utils import is_appledouble_metadata
 router = APIRouter()
 logger = get_logger(__name__)
 
-# The shortest context worth pricing, used to separate the part of a footprint
-# that shrinks with context from the part that does not. Not zero: zero means
-# "the model's native length" to the planner, which is the opposite of what this
-# asks. One llama.cpp KV stream pads to 256, so a smaller number would not make
-# the cache any smaller and only invites a divide-by-zero somewhere downstream.
+# The shortest context worth pricing, separating the part of a footprint that shrinks with context from the
+# part that does not. Not zero: zero means "the model's native length" to the planner. One llama.cpp KV
+# stream pads to 256, so a smaller number would not shrink the cache.
 _MIN_PRICED_CONTEXT = 256
 
 
@@ -338,7 +323,6 @@ def derive_model_type(
     audio_type: Optional[str],
     is_embedding: bool = False,
 ) -> ModelType:
-    """Collapse individual capability flags into a single model modality string."""
     if is_embedding:
         return "embeddings"
     if audio_type is not None:
@@ -349,19 +333,14 @@ def derive_model_type(
 
 
 def _resolve_hf_cache_dir() -> Path:
-    """Resolve local HF cache root used by hub downloads."""
     from utils.hf_cache_settings import get_hf_cache_paths
     return get_hf_cache_paths().hub_cache
 
 
 def _is_model_directory(d: Path) -> bool:
-    """Return ``True`` when *d* looks like a model directory.
-
-    Requires both a config (``config.json``/``adapter_config.json``) and
-    weight files. Excludes ``mmproj`` GGUFs (vision projectors), calibration
-    imatrices and non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid
-    false positives.
-    """
+    """True when *d* looks like a model directory: both a config (``config.json`` /
+    ``adapter_config.json``) and weight files, excluding ``mmproj`` GGUFs (vision projectors),
+    calibration imatrices and non-weight ``.bin`` files (``tokenizer.bin`` etc.)."""
 
     def _is_weight_file(f: Path) -> bool:
         if is_appledouble_metadata(f):
@@ -390,8 +369,8 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
-# Weight ``.bin`` files the local scanners accept, as opposed to companions like
-# ``tokenizer.bin``. Mirrors ``_is_weight_file`` so every weight check agrees.
+# Weight ``.bin`` files the local scanners accept, as opposed to companions like ``tokenizer.bin``.
+# Mirrors ``_is_weight_file`` so every weight check agrees.
 _WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
 
 
@@ -401,12 +380,12 @@ def _is_weight_bin(name: str) -> bool:
 
 
 def _has_non_gguf_weights(path: Path) -> bool:
-    """True if *path* holds non-GGUF weight files (``.safetensors`` or a weight
-    ``.bin``), ignoring companion ``.bin`` files such as ``tokenizer.bin`` so a
-    GGUF-only folder is not misread as a plain checkpoint."""
+    """True if *path* holds non-GGUF weight files (``.safetensors`` or a weight ``.bin``), ignoring
+    companion ``.bin`` files such as ``tokenizer.bin`` so a GGUF-only folder is not misread as a plain
+    checkpoint."""
     try:
-        # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name
-        # prefix, which a "._" already fails.
+        # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
+        # "._" already fails.
         if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
@@ -420,12 +399,9 @@ def _local_pipeline_index(d: Path) -> bool:
 
 
 def _servable_gguf_names(directory: Path) -> list[str]:
-    """The ``.gguf`` names in *directory* that count as a model being present there.
-
-    An imatrix is calibration data, not a model artifact, so it must not make an empty
-    folder look like one. mmproj and MTP drafters DO count: they are companions of a real
-    model, and presence is all they decide (format still asks _is_main_gguf_filename).
-    """
+    """The ``.gguf`` names in *directory* that count as a model being present there. An imatrix is
+    calibration data, not a model artifact; mmproj and MTP drafters DO count, since they are
+    companions of a real model and presence is all they decide."""
     return [
         p.name
         for p in directory.glob("*.gguf")
@@ -434,14 +410,10 @@ def _servable_gguf_names(directory: Path) -> list[str]:
 
 
 def _is_gguf_companion_only_dir(path: Path) -> bool:
-    """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
-    MTP drafter, or both -- with nothing servable beside them.
-
-    The scanners report ``model_format = None`` for such a folder, because neither companion is a
-    primary weight, and that is also what a plain checkpoint reports. The custom-folder scan below
-    validates GGUF rows through ``detect_gguf_model`` and waves the rest through, so without this
-    the folder is published as a model that no loader can start.
-    """
+    """True for a folder whose entire content is GGUF companions (a lone mmproj adapter, an MTP drafter, or
+    both) with nothing servable beside them. The scanners report ``model_format = None`` for such a folder,
+    which is also what a plain checkpoint reports, and the custom-folder scan waves non-GGUF rows through,
+    so without this the folder is published as a model no loader can start."""
     try:
         if not path.is_dir():
             return False
@@ -495,7 +467,6 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             has_pipeline_index = _local_pipeline_index(child)
             has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
         except OSError:
-            # Skip unreadable children rather than failing the scan.
             continue
         if not has_model_files:
             continue
@@ -629,22 +600,13 @@ def _scan_hf_cache(
 
 
 def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
-    """Return ``"gguf"`` for a directory whose only weights are ``.gguf`` files.
-
-    LM Studio and custom GGUF folders frequently lack a ``-GGUF`` name suffix,
-    so the UI relies on this hint to route them through the GGUF load path
-    rather than treating them as plain local checkpoints. A directory whose only
-    ``.gguf`` is an mmproj vision adapter is not one: the variant selector drops
-    mmproj, so that path would find nothing to serve.
-
-    ``recursive`` is for HF cache snapshots, which keep split quants in per-quant
-    subdirectories: a flat glob sees no ``.gguf`` there and would report the
-    snapshot as non-GGUF, hiding every sharded repo from the GGUF pickers. It looks
-    one level down rather than walking the tree, because that is where split quants
-    live and ``/api/models/local`` is async: an unbounded ``rglob`` per repo would
-    have to exhaust every non-GGUF snapshot before concluding there is no GGUF,
-    blocking the event loop on a large cache.
-    """
+    """Return ``"gguf"`` for a directory whose only weights are ``.gguf`` files. LM Studio and custom
+    GGUF folders frequently lack a ``-GGUF`` name suffix. A directory whose only ``.gguf`` is an
+    mmproj vision adapter is not one: the variant selector drops mmproj, so that path would find
+    nothing. ``recursive`` is for HF cache snapshots, which keep split quants in per-quant
+    subdirectories: a flat glob would report the snapshot as non-GGUF and hide every sharded repo.
+    One level down, not a walk: ``/api/models/local`` is async and an unbounded ``rglob`` per repo
+    would block the event loop."""
     try:
 
         def _servable(p: Path) -> bool:
@@ -661,11 +623,8 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
 
 
 def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
-    """Scan an LM Studio models directory for model files.
-
-    LM Studio uses a ``publisher/model-name`` folder structure with GGUF
-    files, or standalone GGUF files at the top level.
-    """
+    """Scan an LM Studio models directory: ``publisher/model-name`` folders of GGUF files, or
+    standalone GGUFs at the top level."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -729,7 +688,6 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 )
                 continue
 
-            # child is a publisher directory; scan its subdirectories.
             for model_dir in child.iterdir():
                 try:
                     if model_dir.is_dir():
@@ -787,12 +745,9 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
 
 
 def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
-    """Return a writable directory for Ollama ``.gguf`` symlinks.
-
-    Prefers ``<ollama_dir>/.studio_links/`` so links sit next to their
-    blobs; falls back to a per-ollama-dir namespace under Unsloth's cache
-    when the models dir is read-only (common for system installs).
-    """
+    """A writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` so
+    links sit next to their blobs; falls back to a per-ollama-dir namespace under Unsloth's cache when
+    the models dir is read-only (common for system installs)."""
     from utils.paths.storage_roots import cache_root
 
     primary = ollama_dir / ".studio_links"
@@ -825,22 +780,13 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
 
 
 def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
-    """Scan an Ollama models directory for downloaded models.
-
-    Ollama uses a content-addressable layout
-    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``);
-    we ``rglob`` all manifests so every layout depth is found. Each
-    manifest is JSON with a ``layers`` array: the
-    ``application/vnd.ollama.image.model`` layer holds the GGUF weights
-    and ``...image.projector`` is the vision adapter.
-
-    Ollama blobs lack the ``.gguf`` extension the loading pipeline
-    requires, so we create ``.gguf``-named links to them (one subdir per
-    model, keyed by a short hash of the manifest path, so
-    ``detect_mmproj_file`` only sees that model's projector). Links are
-    symlinks when possible, else hardlinks; the link dir is
-    ``.studio_links/`` when writable, else Unsloth's cache.
-    """
+    """Scan an Ollama models directory for downloaded models. Ollama uses a content-addressable layout
+    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``); ``rglob`` finds every
+    layout depth. The ``application/vnd.ollama.image.model`` layer holds the GGUF weights and
+    ``...image.projector`` is the vision adapter. Ollama blobs lack the ``.gguf`` extension the
+    loading pipeline requires, so create ``.gguf``-named links to them, one subdir per model keyed
+    by a short hash of the manifest path so ``detect_mmproj_file`` only sees that model's projector.
+    Symlinks when possible, else hardlinks."""
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
         return []
@@ -856,12 +802,8 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
         return []
 
     def _make_link(link_dir: Path, link_name: str, target: Path) -> Optional[str]:
-        """Create a .gguf-named link to an Ollama blob.
-
-        Tries symlink, then hardlink; skips the model if neither works
-        (a multi-GB copy in a sync request would block the backend).
-        Idempotent: skips recreation when a valid link already exists.
-        """
+        """Create a .gguf-named link to an Ollama blob. Symlink, then hardlink; skips the model if neither
+        works (a multi-GB copy in a sync request would block the backend). Idempotent."""
         link_dir.mkdir(parents = True, exist_ok = True)
         link_path = link_dir / link_name
         resolved = target.resolve()
@@ -939,12 +881,9 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                     e,
                 )
                 continue
-            # Parsed, but the shape is still whatever was on disk. rglob("*") hands us every
-            # file under manifests/, so a pruned pull, an editor backup, or any stray JSON can
-            # be a list or a string; .get() on one raises AttributeError, which neither this
-            # loop's `except OSError` nor the caller's catches, and one such file would 500
-            # the whole picker. Mirrors hub/services/models/ollama.py, which already validates
-            # each level of the same document.
+            # rglob("*") hands us every file under manifests/, so a pruned pull, an editor backup, or any stray JSON can
+            # be a list or a string; .get() on one raises AttributeError, which neither this loop's `except OSError`
+            # nor the caller's catches, and one such file would 500 the whole picker.
             if not isinstance(manifest, dict):
                 logger.debug("Skipping Ollama manifest %s: top level is not an object", tag_file)
                 continue
@@ -1021,9 +960,8 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                     model_id = f"ollama/{repo_name}:{tag}",
                     display_name = display + suffix,
                     path = gguf_link_path,
-                    # The frontend groups and labels these rows by this value
-                    # (local-model-options.ts, pickers.tsx); "custom" hid them
-                    # in the generic folder section (#9986).
+                    # The frontend groups and labels these rows by this value (local-model-options.ts, pickers.tsx);
+                    # "custom" hid them in the generic folder section (#9986).
                     source = "ollama",
                     updated_at = updated_at,
                 ),
@@ -1227,10 +1165,8 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
-        # Keep an already-attributed source: a registered ~/.ollama/models (or a
-        # folder shadowing the HF cache) must not re-stamp its rows as generic
-        # custom entries. Mirrors _promote_to_custom_source() in
-        # hub/services/models/local_inventory.py.
+        # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
+        # cache) must not re-stamp its rows as generic custom entries.
         local_models += [
             m
             if m.source in ("hf_cache", "ollama", "hermes")
@@ -1238,8 +1174,8 @@ def collect_local_models(
             for m in custom_models
         ]
 
-    # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show
-    # in the "Custom Folders" UI section even when the model is also in the HF cache.
+    # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show in the
+    # "Custom Folders" UI section even when the model is also in the HF cache.
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
         semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
@@ -1299,7 +1235,6 @@ class _CompatLocalCacheChanged(RuntimeError):
 
 
 def _compat_inventory_path_identity(path: object) -> str:
-    """Canonical source identity for compatibility inventory flights."""
     raw = str(path)
     try:
         return os.path.normcase(os.path.realpath(os.path.expanduser(raw)))
@@ -1316,9 +1251,8 @@ async def _shared_compat_local_inventory_scan(
     requested_sources = sources
 
     def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
-        # Tag each model with its task and native-audio type for the model pickers.
-        # Inside the shared flight so overlapping callers reuse one classified result
-        # instead of each repeating the GGUF header reads.
+        # Tag each model with its task and native-audio type for the pickers, inside the shared flight so
+        # overlapping callers reuse one classified result instead of each repeating the GGUF header reads.
         classified = []
         for model in models:
             task, audio_type = _catalog_classification._local_model_classification_for_task(
@@ -1354,10 +1288,9 @@ async def _shared_compat_local_inventory_scan(
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[List[LocalModelInfo]] = None
     for _attempt in range(_COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS):
-        # Epoch first: the sources and folders below are read after it, so any
-        # change to them lands in a later epoch and the post-scan check sees it.
-        # A caller-supplied ``sources`` stays pinned - the /local route validated
-        # its models_dir against exactly those roots.
+        # Epoch first: the sources and folders below are read after it, so any change to them lands in a later epoch
+        # and the post-scan check sees it. A caller-supplied ``sources`` stays pinned, since the /local route
+        # validated its models_dir against exactly those roots.
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         scan_sources = requested_sources or _compat_local_inventory_sources()
         try:
@@ -1384,25 +1317,19 @@ async def _shared_compat_local_inventory_scan(
         except _CompatLocalCacheChanged as changed:
             superseded = changed.models
             continue
-    # Invalidations are outpacing the walk, so no scan will ever confirm as
-    # current. Answer with the freshest one (the loop only reaches here through
-    # the retry path, so there is always one) instead of rescanning forever.
+    # Invalidations are outpacing the walk, so no scan will ever confirm as current. Answer with the
+    # freshest one instead of rescanning forever.
     logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
     return await asyncio.to_thread(classify, superseded)
 
 
 async def _invalidate_local_scans() -> None:
-    """Retire the cached local scans after something was deleted from disk.
-
-    Every successful deletion branch has to call this. The /v1/models servability scan is
-    cached against the resolver generation, so a branch that returns without bumping it
-    keeps advertising what was just removed until the catalog TTL expires.
-
-    Off the loop, like the other async invalidation sites in this file: invalidate_index
-    takes the resolver lock, and _index() holds that across a full multi-root filesystem
-    scan, so calling it inline from an async route would stall unrelated requests and
-    in-flight inference streams behind a rebuild.
-    """
+    """Retire the cached local scans after something was deleted from disk. Every successful deletion
+    branch has to call this: the /v1/models servability scan is cached against the resolver
+    generation, so a branch that returns without bumping it keeps advertising what was just removed.
+    Off the loop: invalidate_index takes the resolver lock, and _index() holds that across a full
+    multi-root filesystem scan, so calling it inline would stall unrelated requests behind a
+    rebuild."""
     from core.inference.local_model_resolver import invalidate_index
     await asyncio.to_thread(invalidate_index)
 
@@ -1489,7 +1416,6 @@ async def add_scan_folder_endpoint(
         folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
-        # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
@@ -1518,21 +1444,13 @@ async def remove_scan_folder_endpoint(
 
 
 def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
-    """True if *directory* actually holds a downloaded model.
-
-    Recommended-folder chips should only appear once the well-known dir
-    has real weights, not just an empty LM Studio/Ollama scaffold. Two
-    layouts: a GGUF/safetensors/PyTorch-bin weight file anywhere in the
-    tree (LM Studio, plain dirs) or the Ollama content-addressable store
-    (a non-empty ``manifests/`` beside ``blobs/``, whose blobs carry no
-    extension). Weight detection mirrors the local scanner so a folder the
-    chip leads to is one the scanner would actually surface a model from.
-    Bounded by *max_entries* so a huge tree can't stall the request.
-    """
-    # Ollama layout: each manifest is JSON referencing content-addressable blobs. A manifest
-    # alone is not enough -- a failed or pruned pull leaves it behind with the model blob
-    # missing, so resolve the ``application/vnd.ollama.image.model`` layer to an on-disk blob
-    # before counting it (mirrors _scan_ollama_dir), else the chip leads to an empty picker.
+    """True if *directory* actually holds a downloaded model, so a recommended-folder chip appears only once
+    the well-known dir has real weights rather than an empty LM Studio/Ollama scaffold. Two layouts: a
+    weight file anywhere in the tree, or the Ollama content-addressable store (a non-empty ``manifests/``
+    beside ``blobs/``). Weight detection mirrors the local scanner, and *max_entries* bounds the walk."""
+    # Ollama layout: a manifest alone is not enough, since a failed or pruned pull leaves it behind with the
+    # model blob missing, so resolve the ``application/vnd.ollama.image.model`` layer to an on-disk blob before
+    # counting it, else the chip leads to an empty picker.
     visited = 0
     manifests = directory / "manifests"
     blobs = directory / "blobs"
@@ -1548,9 +1466,8 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     manifest = json.loads(m.read_text(encoding = "utf-8-sig"))
                 except (json.JSONDecodeError, OSError, ValueError):
                     continue
-                # Same shape check as _scan_ollama_dir: a valid-JSON non-object under
-                # manifests/ must be skipped, not walked, or the chip probe raises
-                # AttributeError past the `except OSError` below.
+                # Same shape check as _scan_ollama_dir: a valid-JSON non-object under manifests/ must be skipped, not
+                # walked, or the chip probe raises AttributeError past the `except OSError` below.
                 if not isinstance(manifest, dict):
                     continue
                 layers = manifest.get("layers") or []
@@ -1570,9 +1487,8 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                         return True
     except OSError:
         pass
-    # Generic weights: any GGUF/safetensors in a bounded BFS that skips hidden directories.
-    # ``rglob`` walks in arbitrary order and counts every entry, so a large hidden subtree
-    # could exhaust the budget before reaching real weights and falsely report "no model".
+    # Bounded BFS that skips hidden directories: ``rglob`` walks in arbitrary order and counts every
+    # entry, so a large hidden subtree could exhaust the budget before reaching real weights.
     queue = [directory]
     visited = 0
     while queue:
@@ -1664,12 +1580,8 @@ _BROWSE_ENTRY_CAP = 2000
 
 
 def _count_model_files(directory: Path, cap: int = 200) -> int:
-    """Count GGUF/safetensors files immediately inside *directory*.
-
-    Surfaces a count-hint so the UI can mark a weights-only leaf dir as a
-    valid "Use this folder" target. Bounded by *visited entries* (stops
-    after ``cap``), so the hint never costs more than a bounded walk.
-    """
+    """Count GGUF/safetensors files immediately inside *directory* so the UI can mark a weights-only
+    leaf dir as a valid "Use this folder" target. Bounded by visited entries."""
     n = 0
     visited = 0
     try:
@@ -1694,9 +1606,8 @@ def _count_model_files(directory: Path, cap: int = 200) -> int:
 
 
 def _has_direct_model_signal(directory: Path) -> bool:
-    """Return True if an immediate child signals a model: a
-    GGUF/safetensors/config.json file or a ``models--*`` subdir (HF
-    cache). Bounded by ``_BROWSE_MODEL_HINT_PROBE``."""
+    """True if an immediate child signals a model: a GGUF/safetensors/config.json file or a
+    ``models--*`` subdir (HF cache). Bounded by ``_BROWSE_MODEL_HINT_PROBE``."""
     try:
         it = directory.iterdir()
     except OSError:
@@ -1725,19 +1636,13 @@ def _has_direct_model_signal(directory: Path) -> bool:
 
 
 def _looks_like_model_dir(directory: Path) -> bool:
-    """Bounded heuristic to flag dirs worth exploring in the browser.
-
-    False negatives are fine (the real scanner is authoritative). Three
-    signals, cheapest first: (1) name ``models--*`` (HF cache layout),
-    (2) an immediate child weight/config file, (3) a grandchild with a
-    direct signal (LM Studio / Ollama ``publisher/model`` layout, probing
-    the first ``_BROWSE_MODEL_HINT_PROBE`` child dirs).
-    """
+    """Bounded heuristic to flag dirs worth exploring in the browser; false negatives are fine, the real scanner
+    is authoritative. Three signals, cheapest first: name ``models--*`` (HF cache layout), an immediate child
+    weight/config file, then a grandchild with a direct signal (LM Studio / Ollama ``publisher/model``)."""
     if directory.name.startswith("models--"):
         return True
     if _has_direct_model_signal(directory):
         return True
-    # Grandchild probe: LM Studio / Ollama publisher/model layout.
     try:
         it = directory.iterdir()
     except OSError:
@@ -1763,18 +1668,11 @@ def _looks_like_model_dir(directory: Path) -> bool:
 def _build_browse_allowlist(
     media_roots: Optional[list[Path]] = None, drive_roots: Optional[list[Path]] = None
 ) -> list[Path]:
-    """Return the root directories the folder browser may walk.
-
-    The same list seeds the sidebar suggestion chips, so chip targets are
-    always reachable. Roots: HOME, resolved HF cache dirs, Unsloth's
-    outputs/exports/studio root, registered scan folders, and well-known
-    local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
-    it resolves to a real directory.
-
-    *media_roots* / *drive_roots* let the caller pass already-probed
-    removable-media and Windows drive roots so they aren't scanned again (a
-    disconnected mapped drive can make each probe slow); probed here when ``None``.
-    """
+    """The root directories the folder browser may walk, which also seed the sidebar suggestion chips so chip
+    targets are always reachable: HOME, resolved HF cache dirs, Unsloth's outputs/exports/studio root,
+    registered scan folders, and well-known local-LLM dirs, each only if it resolves to a real directory.
+    *media_roots* / *drive_roots* let the caller pass already-probed removable-media and Windows drive roots
+    so they are not scanned again (a disconnected mapped drive makes each probe slow)."""
     from utils.paths import (
         hf_default_cache_dir,
         legacy_hf_cache_dir,
@@ -1841,7 +1739,6 @@ def _build_browse_allowlist(
     except Exception as exc:  # noqa: BLE001 -- best-effort
         logger.debug("browse-folders: well-known dirs unavailable: %s", exc)
 
-    # Dedupe while preserving order.
     seen: set[str] = set()
     deduped: list[Path] = []
     for p in candidates:
@@ -1854,16 +1751,12 @@ def _build_browse_allowlist(
 
 
 def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
-    """True if *target* equals or descends from any allowed root.
-
-    Uses ``os.path.realpath`` (symlinks can't escape the sandbox) and
-    ``os.path.commonpath`` for a component-wise containment test, so a string
-    prefix like ``/home/u`` never matches a sibling ``/home/user2`` while a
-    drive root ``D:\\`` still contains ``D:\\models``. A Windows drive root
-    authorizes its descendants, but a bare POSIX root ``/`` must NOT, else one
-    ``/`` allowlist entry would authorize every absolute path. ``normcase`` keeps
-    the drive-letter comparison case-insensitive, matching the hub browser.
-    """
+    """True if *target* equals or descends from any allowed root. ``os.path.realpath`` (symlinks cannot
+    escape the sandbox) plus ``os.path.commonpath`` for a component-wise test, so a string prefix
+    like ``/home/u`` never matches a sibling ``/home/user2`` while a Windows drive root still
+    contains its own subdirectories. A drive root authorizes its descendants, but a bare POSIX root
+    ``/`` must NOT, else one entry would authorize every absolute path. ``normcase`` keeps the
+    drive-letter comparison case-insensitive."""
     try:
         target_real = os.path.normcase(os.path.realpath(str(target)))
     except OSError:
@@ -1895,7 +1788,6 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
 
 
 def _normalize_browse_request_path(path: Optional[str]) -> str:
-    """Normalize the browse request path lexically, without touching the FS."""
     if path is None or not path.strip():
         return os.path.normpath(str(Path.home()))
 
@@ -1906,7 +1798,6 @@ def _normalize_browse_request_path(path: Optional[str]) -> str:
 
 
 def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str]]:
-    """Return validated relative path components under ``root``."""
     root_text = os.path.normpath(str(root))
     try:
         rel_text = os.path.relpath(requested_path, root_text)
@@ -1927,7 +1818,6 @@ def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str
 
 
 def _match_browse_child(current: Path, name: str) -> Optional[Path]:
-    """Return the immediate child named ``name`` under ``current``."""
     try:
         for child in current.iterdir():
             if child.name == name:
@@ -1947,7 +1837,6 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
 
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
-    """Resolve a requested browse path by walking from trusted allowlist roots."""
     from storage.studio_db import (
         contains_sensitive_path_component,
         is_denied_system_path,
@@ -2043,9 +1932,8 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     )
 
 
-# Sync (def, not async) so FastAPI runs the blocking filesystem I/O in the threadpool: a
-# disconnected mapped drive can make the probe wait out its timeout, which on the event
-# loop would stall every other request. Matches the hub browse endpoint.
+# Sync (def, not async) so FastAPI runs the blocking filesystem I/O in the threadpool: a disconnected mapped
+# drive can make the probe wait out its timeout, which on the event loop would stall every other request.
 @router.get("/browse-folders", response_model = BrowseFoldersResponse)
 def browse_folders(
     path: Optional[str] = Query(
@@ -2089,7 +1977,6 @@ def browse_folders(
         *external_media.macos_volume_roots(),
     ]
     drive_roots = external_media.windows_drive_roots()
-    # Build once; the sandbox check and suggestion chips share it.
     allowed_roots = _build_browse_allowlist(media_roots, drive_roots)
 
     try:
@@ -2162,7 +2049,6 @@ def browse_folders(
             exc,
         )
     except OSError as exc:
-        # Rare: iterdir succeeded but reading an entry failed.
         logger.warning("browse-folders: partial enumeration of %s: %s", target, exc)
 
     # Model-bearing first, then plain, then hidden; case-insensitive within each bucket.
@@ -2180,7 +2066,6 @@ def browse_folders(
     else:
         parent = str(target.parent)
 
-    # Handy starting points for the quick-pick chips.
     suggestions: list[str] = []
     seen_sug: set[str] = set()
 
@@ -2201,26 +2086,20 @@ def browse_folders(
             seen_sug.add(resolved)
             suggestions.append(resolved)
 
-    # Home first -- the safe fallback when everything else is cold.
     _add_sug(Path.home())
-    # Reuse the roots probed for the allowlist above (no second drive scan).
     for p in media_roots:
         _add_sug(p)
-    # Windows drive roots so the user can hop between C:, D:, E: ...
     for p in drive_roots:
         _add_sug(p)
-    # The HF cache root the process is actually using.
     try:
         _add_sug(hf_default_cache_dir())
     except Exception:
         pass
-    # Already-registered scan folders (user-curated).
     try:
         for folder in list_scan_folders():
             _add_sug(Path(folder.get("path", "")))
     except Exception as exc:
         logger.debug("browse-folders: could not load scan folders: %s", exc)
-    # Dirs used by other local-LLM tools (LM Studio, Ollama, ~/models); existing paths only.
     try:
         for p in well_known_model_dirs():
             _add_sug(p)
@@ -2272,8 +2151,8 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             )
             loaded_models.append(model_info)
 
-        # Active GGUF model (llama-server), labelled from the display id
-        # /api/inference/status publishes; the id stays raw for agents-tab's path filter.
+        # Active GGUF model (llama-server), labelled from the display id /api/inference/status publishes; the
+        # id stays raw for agents-tab's path filter.
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
@@ -2290,7 +2169,6 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 )
             )
 
-        # Combine default and loaded; prefer loaded entries for duplicate ids so runtime flags survive.
         all_models = []
         seen_ids = set()
         loaded_by_id = {model_info.id: model_info for model_info in loaded_models}
@@ -2324,11 +2202,9 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
 
 
 def _get_max_position_embeddings(config) -> Optional[int]:
-    """The window this model was trained for, by the rule a load resolves it with.
-
-    Reading one field name showed a dash for a model spelling it another way -- Kimi
-    Linear carries model_max_length alone -- and a number as soon as it loaded.
-    """
+    """The window this model was trained for, by the rule a load resolves it with. Reading one field
+    name showed a dash for a model spelling it another way (Kimi Linear carries model_max_length
+    alone) and a number as soon as it loaded."""
     from types import SimpleNamespace
 
     from core.inference.mlx_inference import mlx_native_context_length
@@ -2340,7 +2216,6 @@ _MODEL_WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
 
 
 def _get_model_size_bytes(model_name: str, hf_token: HfTokenArg = None) -> Optional[int]:
-    """Total size of model weight files from HF Hub."""
     try:
         from huggingface_hub import HfApi
 
@@ -2458,9 +2333,8 @@ async def get_model_config(
     from utils.utils import pinned_hf_reachability
 
     def _resolve(model_name: str) -> ModelDetails:
-        # Each probe below can reach the hub, so the guard wraps the whole handler: offline they
-        # must all resolve from the HF cache. Local paths stay on disk and skip the probe.
-        # One repo document between the probes, one verdict for a request that outlives the memo.
+        # Each probe below can reach the hub, so the guard wraps the whole handler: offline they must all resolve
+        # from the HF cache. One repo document between the probes, one verdict for a request that outlives the memo.
         with (
             pinned_hf_reachability(),
             _hf_offline_if_unreachable_for(model_name),
@@ -2588,12 +2462,9 @@ def _consent_provider(
     scanned_targets: List[str],
     external_refs: Optional[List[str]] = None,
 ) -> Optional[str]:
-    """HF org for the consent dialog's `from "<provider>"` tag, or None.
-
-    Returns the owner only for a single, non-local, canonical ``owner/repo`` id; a LoRA's
-    extra base, a local path, or an external ``auto_map`` ref yields None so the dialog
-    never misattributes scanned code.
-    """
+    """HF org for the consent dialog's `from "<provider>"` tag, or None. Only a single, non-local,
+    canonical ``owner/repo`` id yields one; a LoRA's extra base, a local path, or an external
+    ``auto_map`` ref yields None so the dialog never misattributes scanned code."""
     if len(scanned_targets) != 1 or external_refs or is_local_path(model_name):
         return None
     parts = model_name.split("/")
@@ -2721,9 +2592,9 @@ async def scan_model_remote_code(
             from core.training.training import _resolve_model_snapshot
             local_path = normalize_path(model_local_path) if model_local_path else None
             scan_target = _resolve_model_snapshot(model_name, local_path) or model_name
-        # Scan the adapter AND the base together (a LoRA runs both repos' code), pinned by one
-        # combined fingerprint. Snapshot the primary's cache state BEFORE resolving the base: that
-        # resolve downloads adapter_config.json, which would hide the adapter from cleanup on decline.
+        # Scan the adapter AND the base together (a LoRA runs both repos' code), pinned by one combined fingerprint.
+        # Snapshot the primary's cache state BEFORE resolving the base: that resolve downloads adapter_config.json,
+        # which would hide the adapter from cleanup on decline.
         primary_cache_target, _ = load_scan_target(scan_target, ())
         try:
             _primary_preexisting = is_local_path(primary_cache_target) or _repo_in_any_hf_cache(
@@ -2773,9 +2644,9 @@ async def scan_model_remote_code(
                 consent_load_subdirs[_target] = ()
             _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
             consent_load_subdirs[_target] = _subdirs
-        # Record every repo OUR scan is first to pull into the cache (adapter, base, and external
-        # auto_map repos), so a decline purges exactly what was downloaded. Computed BEFORE the
-        # preflight downloads, against every cache the discard searches, so pre-existing repos stay.
+        # Record every repo OUR scan is first to pull into the cache (adapter, base, and external auto_map repos), so
+        # a decline purges exactly what was downloaded. Computed BEFORE the preflight downloads, against every
+        # cache the discard searches, so pre-existing repos stay.
         from utils.security.remote_code_scan import external_auto_map_repos
 
         scan_created_repos: list = []
@@ -2897,7 +2768,6 @@ async def discard_remote_code_download(
     if not _is_valid_repo_id(model_name):
         return {"deleted": False, "reason": "invalid"}
 
-    # Never delete a model that is loaded for inference.
     try:
         from hub.services.models.deletion import _loaded_id_matches_repo
         from routes.inference import get_llama_cpp_backend
@@ -2961,14 +2831,10 @@ async def discard_remote_code_download(
 
 
 def _audio_probe_target(inspection_target: str) -> str:
-    """Repo to ask about audio capability, resolving a registry alias first.
-
-    A curated entry like "Spark-TTS-0.5B/LLM" names a load subdirectory, not a repo, so
-    the probe fetched a repo that does not exist, got a 404 on every path, and read that
-    as "definitely not an audio model" rather than "not a repo id". Spark-TTS then looked
-    like a text model, and picking it with an audio dataset hit the modality gate. Same
-    resolution routes/training.py already uses for the trainer's own preflight.
-    """
+    """Repo to ask about audio capability, resolving a registry alias first. A curated entry like
+    "Spark-TTS-0.5B/LLM" names a load subdirectory, not a repo, so the probe fetched a repo that does not
+    exist, got a 404 on every path, and read that as "definitely not an audio model" rather than "not a
+    repo id"."""
     if is_local_path(inspection_target):
         return inspection_target
     try:
@@ -2984,25 +2850,19 @@ def _audio_type_of_checkpoint(
     base_model: Optional[str],
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
-    """Codec a trained checkpoint speaks, or None for a text one.
-
-    A scan row carries no modality, so without this every trained audio model reads
-    as text: the Audio page filters it out and chat routes it to the GGUF auto-switch,
-    which cannot resolve a local adapter directory. Detection reads the checkpoint
-    itself first (a merged export has its own tokenizer) and falls back to the base
-    repo an adapter names. Cached per model, so the scan stays one pass.
-    """
+    """Codec a trained checkpoint speaks, or None for a text one. A scan row carries no modality, so without
+    this every trained audio model reads as text: the Audio page filters it out and chat routes it to the
+    GGUF auto-switch, which cannot resolve a local adapter directory. Detection reads the checkpoint itself
+    first (a merged export has its own tokenizer) and falls back to the base repo an adapter names."""
     from utils.models.model_config import detect_audio_type
 
     for candidate in (model_path, base_model):
         if not candidate:
             continue
         try:
-            # local_files_only: this route was a filesystem scan. A trained checkpoint's
-            # base is already cached, and a non-definitive miss is deliberately not cached,
-            # so a gated or offline base would re-fetch on every poll.
-            # hf_token even under local_files_only: a gated base resolves through the same
-            # hub helpers, and the capability caches are keyed by token fingerprint, so a
+            # local_files_only: this route was a filesystem scan, a trained checkpoint's base is already cached, and a
+            # non-definitive miss is deliberately not cached, so a gated or offline base would re-fetch on every poll.
+            # hf_token even under local_files_only: the capability caches are keyed by token fingerprint, so a
             # token-less probe would both misclassify and poison the cache for the rest.
             audio_type = detect_audio_type(candidate, hf_token = hf_token, local_files_only = True)
         except Exception as exc:  # never let a scan row fail the whole listing
@@ -3032,9 +2892,8 @@ async def scan_loras(
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
-        # Off the event loop: this is a directory walk plus, per checkpoint, a tokenizer
-        # read. It was already blocking before the audio probe was added; the probe made
-        # the block long enough to delay unrelated requests, streamed tokens included.
+        # Off the event loop: this is a directory walk plus, per checkpoint, a tokenizer read, long enough to
+        # delay unrelated requests, streamed tokens included.
         lora_list = await asyncio.to_thread(
             _scan_loras_sync, resolved_outputs_dir, resolved_exports_dir, hf_token
         )
@@ -3054,7 +2913,6 @@ async def scan_loras(
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
-    """The filesystem half of scan_loras, so it can run in a worker thread."""
     lora_list: List[LoRAInfo] = []
 
     trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
@@ -3071,7 +2929,6 @@ def _scan_loras_sync(
             )
         )
 
-    # Scan exported models (merged, LoRA, base - skips GGUF)
     exported = scan_exported_models(exports_dir = resolved_exports_dir)
     for display_name, model_path, export_type, base_model in exported:
         lora_list.append(
@@ -3196,11 +3053,9 @@ def _loading_model_matches_deleted_path(loading_model: object, deleted_path: Pat
 
 
 def _active_diffusion_backend():
-    """The live Images engine, or None when this install has no diffusion stack.
-
-    Fails OPEN on import: a chat-only install (no diffusers) must still be able to delete
-    its fine-tuned models. Reading the returned backend's state is what fails closed.
-    """
+    """The live Images engine, or None when this install has no diffusion stack. Fails OPEN on import: a
+    chat-only install (no diffusers) must still be able to delete its fine-tuned models. Reading the
+    returned backend's state is what fails closed."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         return get_active_diffusion_engine()
@@ -3210,7 +3065,6 @@ def _active_diffusion_backend():
 
 
 def _active_video_backend():
-    """The live Video backend, or None when this install has no video stack."""
     try:
         from core.inference.video import get_video_backend
         return get_video_backend()
@@ -3220,11 +3074,8 @@ def _active_video_backend():
 
 
 def _prune_empty_parents(start: Path, stop_at: Path) -> None:
-    """Remove empty ancestors of ``start`` up to (not including) ``stop_at``.
-
-    Used after deleting a checkpoint so the enclosing run dir doesn't
-    linger as an empty entry in scan results.
-    """
+    """Remove empty ancestors of ``start`` up to (not including) ``stop_at``, so the enclosing run dir
+    does not linger as an empty entry in scan results."""
     try:
         stop_resolved = stop_at.resolve()
     except OSError:
@@ -3249,14 +3100,10 @@ def _prune_empty_parents(start: Path, stop_at: Path) -> None:
 
 
 def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
-    """Whether two variant spellings can name the SAME checkpoint, for the load-state guard.
-
-    Deletion accepts an unambiguous bare quant for a path-qualified key (the shared-container
-    layout, ``weights/model-Q4_K_M.gguf``), so a guard comparing the two spellings literally lets
-    a model loaded through a legacy bare pin be deleted through its advertised qualified row --
-    unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
-    refuses a delete, a false miss loses weights.
-    """
+    """Whether two variant spellings can name the SAME checkpoint, for the load-state guard. Deletion accepts
+    an unambiguous bare quant for a path-qualified key (``weights/model-Q4_K_M.gguf``), so a guard comparing
+    the two literally lets a model loaded through a legacy bare pin be deleted through its advertised
+    qualified row. Deliberately loose: a false match only refuses a delete, a false miss loses weights."""
     from hub.utils.gguf import bare_quant_alias, is_qualified_gguf_variant_key
 
     left = (a or "").strip().lower()
@@ -3283,9 +3130,8 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        # Counted as a model if left in, so the reported count would follow the walk order; it
-        # still goes below, as metadata of the file it belongs to. Proven metadata only: anything
-        # else carrying this variant's key is a file the user asked to delete.
+        # Counted as a model if left in, so the reported count would follow the walk order; it still goes
+        # below, as metadata of the file it belongs to. Proven metadata only.
         if is_appledouble_metadata(path):
             continue
         # Keyed on the path, not the basename: a repo holding several checkpoints at
@@ -3758,15 +3604,10 @@ def _settle_native_context(
 
 
 async def _read_native_context_length_bounded(model: str, is_local: bool) -> Optional[int]:
-    """``_read_native_context_length`` off the event loop, with a hard bound.
-
-    Reporting None costs a pre-filled context field; waiting costs the whole variant
-    listing, which is what left the picker on "Loading variants…". Runs on a daemon
-    thread, not a pool: a stranded read must not join at interpreter exit, which would
-    hang shutdown for as long as the mount stays hung. Waiting for a slot is awaited
-    rather than skipped, so ordinary concurrent reads queue instead of losing their
-    length; the wait and the read share one budget.
-    """
+    """``_read_native_context_length`` off the event loop, with a hard bound. Reporting None costs a pre-filled
+    context field; waiting costs the whole variant listing. Runs on a daemon thread, not a pool: a stranded
+    read must not join at interpreter exit and hang shutdown. The slot wait is awaited rather than skipped,
+    so ordinary concurrent reads queue instead of losing their length; wait and read share one budget."""
     slots = _native_context_slots()
     began = time.monotonic()
     try:
@@ -3806,16 +3647,11 @@ async def _read_native_context_length_bounded(model: str, is_local: bool) -> Opt
 
 
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
-    """Native max context from a downloaded GGUF for this repo, or None.
-
-    The value is identical across quants, so reading one non-mmproj shard's
-    header is enough. Only resolves once a file is on disk. Never raises.
-
-    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
-    context field on an already selectable row, so a dragging walk reports None
-    rather than holding the variant listing open. Checked between files, and
-    files already read stay cached, so a later request resumes.
-    """
+    """Native max context from a downloaded GGUF for this repo, or None. The value is identical across
+    quants, so one non-mmproj shard's header is enough. Never raises. Bounded by
+    ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a context field on an already
+    selectable row, so a dragging walk reports None rather than holding the variant listing open.
+    Checked between files, and files already read stay cached, so a later request resumes."""
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
         from utils.paths.path_utils import file_contents_available_locally
@@ -3851,24 +3687,16 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
 
 
 def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optional[str], int]:
-    """Primary shard path and total weight bytes for a downloaded quant, or
-    (None, 0). Metadata lives in shard 1, so the lexicographically first file of
-    the matching quant is returned. Scoped to one snapshot to avoid summing the
-    same quant across revisions; when several snapshots hold the quant the most
-    complete one (largest total) wins so a partial revision can't shadow it.
-    Mirrors list_local_gguf_variants: quant labels are read from the snapshot-
-    relative path (so layouts like ``BF16/model.gguf`` resolve) and MTP drafter
-    files are skipped (so a ``...-Q8_0-MTP.gguf`` drafter can't be picked as the
-    Q8_0 weights). Never raises.
-    """
+    """Primary shard path and total weight bytes for a downloaded quant, or (None, 0). Metadata lives in shard
+    1, so the lexicographically first file of the matching quant is returned. Scoped to one snapshot to
+    avoid summing the same quant across revisions; when several hold it the most complete one wins. Mirrors
+    list_local_gguf_variants: quant labels are read from the snapshot-relative path (so ``BF16/model.gguf``
+    resolves) and MTP drafter files are skipped. Never raises."""
     try:
         if is_local:
-            # A direct file selection names the weights outright: custom, LM
-            # Studio and other local inventory entries whose path ends in .gguf
-            # never go through variant selection, so there is no quant label to
-            # match and nothing to scan for. Answer with the file itself, and
-            # with the whole split family's size rather than this shard's, the
-            # same way the quant scan below totals its shards.
+            # A direct file selection names the weights outright: custom, LM Studio and other local inventory entries
+            # whose path ends in .gguf never go through variant selection, so there is no quant label to match.
+            # Answer with the file itself, and with the whole split family's size rather than this shard's.
             direct = Path(repo_id)
             if direct.is_file() and direct.suffix.lower() == ".gguf":
                 from core.inference.llama_cpp import LlamaCppBackend
@@ -3903,13 +3731,10 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                 except OSError:
                     continue
                 ranked[rank].append((rel, f, size))
-            # Exact keys alone when any exist: summing them with the label matches counts other
-            # checkpoints' bytes into this row's estimate and can reveal one of their files.
-            # ... and within those, ONE shard family, the same rule group_gguf_variant_files
-            # applies: a snapshot holding the same quant twice (QwQ-32B's two BF16 shard sets)
-            # would otherwise report double the weights the loader opens, which /kv-cache-estimate
-            # turns into a false exceeds-memory warning and which can make a snapshot look
-            # "more complete" purely for holding a redundant copy.
+            # Exact keys alone when any exist: summing them with the label counts other checkpoints' bytes into this row
+            # and can reveal one of their files. And within those, ONE shard family, the rule
+            # group_gguf_variant_files applies: a snapshot holding the same quant twice (QwQ-32B's two BF16 shard
+            # sets) would report double the weights the loader opens, a false exceeds-memory warning.
             chosen = _one_shard_family_of(ranked[0] or ranked[1])
             matches = [(rel, f) for rel, f, _size in chosen]
             total = sum(size for _rel, _f, size in chosen)
@@ -3928,26 +3753,15 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
 def _resolve_mtp_drafter(
     main_gguf_path: str, search_root: Optional[str] = None
 ) -> tuple[Optional[str], int]:
-    """Separate MTP drafter GGUF for a resolved main quant, or (None, 0).
-
-    Some repos ship the drafter as its own file beside the weights (Gemma 4's
-    ``mtp-*.gguf``). The main GGUF has no ``nextn_predict_layers`` in that case,
-    so the estimator's embedded-head path returns None and the reserve reads as
-    zero unless we hand it the drafter.
-
-    Delegates to the two resolvers the LOAD path already uses, rather than
-    scanning for a drafter itself: ``_companion_snapshot_sibling`` with the
-    loader's own ``_pick_mtp`` for an HF snapshot, and ``detect_mtp_file`` for a
-    local folder, which is what ``model_config`` calls when it builds the launch.
-    A bespoke scan here is how the estimate ends up pricing a different file from
-    the one llama-server opens: ``_pick_mtp`` is prefix-matched, so it cannot be
-    fooled by a directory that happens to be named ``mtp``, it finds
-    the snapshot-root companion when the weights sit in a quant subdirectory, it
-    sorts on relative strings rather than ``Path`` objects (whose ordering is
-    case-folded on Windows and not on POSIX, so two hosts really can disagree),
-    and it rejects an incomplete split set. Never raises: a drafter we cannot
-    find just costs a segment.
-    """
+    """Separate MTP drafter GGUF for a resolved main quant, or (None, 0). Some repos ship the drafter
+    as its own file beside the weights (Gemma 4's ``mtp-*.gguf``). The main GGUF has no
+    ``nextn_predict_layers`` then, so the estimator's embedded-head path returns None and the
+    reserve reads as zero unless we hand it the drafter. Delegates to the two resolvers the LOAD
+    path uses rather than scanning itself: a bespoke scan is how the estimate ends up pricing a
+    different file from the one llama-server opens. ``_pick_mtp`` is prefix-matched, finds the
+    snapshot-root companion when the weights sit in a quant subdirectory, sorts on relative strings
+    rather than ``Path`` objects (whose ordering is case-folded on Windows only), and rejects an
+    incomplete split set. Never raises."""
 
     try:
         from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
@@ -3963,10 +3777,8 @@ def _resolve_mtp_drafter(
         )
 
         if _snapshot_dir_of(main_gguf_path) is not None:
-            # An HF snapshot. ``_download_mtp`` takes the ``MTP/`` fallback only
-            # for qwen4exp with no head of its own, so the same gate applies here:
-            # pricing a nested copy for any other model reports a reserve for a
-            # drafter the load will not open.
+            # ``_download_mtp`` takes the ``MTP/`` fallback only for qwen4exp with no head of its own, so the same gate
+            # applies here: pricing a nested copy for any other model reports a reserve for a drafter never opened.
             pick = (
                 _pick_mtp
                 if LlamaCppBackend._gguf_path_wants_nested_mtp(main_gguf_path)
@@ -3974,19 +3786,16 @@ def _resolve_mtp_drafter(
             )
             drafter = _companion_snapshot_sibling(main_gguf_path, pick)
         else:
-            # A local folder, where the load path (model_config) pairs the drafter
-            # to the weight by name so a multi-model folder cannot attach a foreign
-            # one, and does accept the ``MTP/`` copy when no root drafter exists.
-            # No ``accept`` filter: the load path's one enforces a native-lease
-            # boundary, which a read-only estimate does not cross.
+            # A local folder, where the load path pairs the drafter to the weight by name so a multi-model folder cannot
+            # attach a foreign one, and does accept the ``MTP/`` copy when no root drafter exists. No ``accept``
+            # filter: the load path's one enforces a native-lease boundary a read-only estimate does not cross.
             from utils.models.model_config import detect_mtp_file
             drafter = detect_mtp_file(main_gguf_path, search_root = search_root)
         if not drafter:
             return None, 0
-        # The whole split family, not just the shard llama-server is handed:
-        # the load planner sizes the drafter with _get_gguf_size_bytes, and a
-        # split companion reserves every shard. Billing shard 1 alone reports a
-        # fit for a launch that allocates several times as much.
+        # The whole split family, not just the shard llama-server is handed: the load planner sizes the drafter with
+        # _get_gguf_size_bytes and a split companion reserves every shard, so billing shard 1 alone reports a fit
+        # for a launch that allocates several times as much.
         return drafter, LlamaCppBackend._get_gguf_size_bytes(drafter)
     except Exception:
         return None, 0
@@ -4066,13 +3875,9 @@ async def get_kv_cache_estimate(
     for models with no drafter -- the caller draws no segment either way.
     """
 
-    # The header read, the HF cache walk in _resolve_quant_gguf, the drafter
-    # lookup and the capability probe are all blocking disk work, and this
-    # route is called once per visible row. Run it in a worker so a long model
-    # list cannot stall the streamed tokens of a chat in the same process.
-    # n_ctx and n_parallel are bound as arguments rather than closed over: the
-    # body assigns to both (defaulting them), which would otherwise make them
-    # locals of this function and raise before either default could be applied.
+    # The header read, the HF cache walk, the drafter lookup and the capability probe are all blocking disk work,
+    # and this route is called once per visible row, so run it in a worker. n_ctx and n_parallel are bound as
+    # arguments rather than closed over: the body assigns to both, which would make them locals and raise.
     def _estimate(n_ctx: Optional[int] = n_ctx, n_parallel: Optional[int] = n_parallel) -> dict:
         null = {
             "kv_bytes": None,
@@ -4126,33 +3931,25 @@ async def get_kv_cache_estimate(
             be._model_identifier = "kv-estimate"
             be._read_gguf_metadata(path)
 
-            # With no pinned context a GGUF loads at its own native length, which
-            # only the metadata we just read knows. Defaulting here saves the caller
-            # a round trip spent discovering the number it then asks about.
-            # Mirror _resolve_parallel_slots: an omitted count means the server's
-            # standing slot count, not one slot. The KV estimator scales per-slot
-            # padding, so assuming 1 understates a default load.
+            # With no pinned context a GGUF loads at its own native length, which only the metadata just read knows.
+            # Mirror _resolve_parallel_slots too: an omitted count means the server's standing slot count, not one,
+            # and the KV estimator scales per-slot padding, so assuming 1 understates a default load.
             if n_parallel is None:
                 state = getattr(getattr(request, "app", None), "state", None)
                 n_parallel = getattr(state, "llama_parallel_slots", 1) or 1
-            # What the launch will actually serve, not what was asked for. A build
-            # without --kv-unified splits the window per slot, so load_model falls
-            # back to one; pricing a four-slot default against such a build
-            # inflates the cache several times over and can warn OOM about a
-            # command that would never launch that way. Same resolution
-            # /estimate-memory applies, so the two cannot disagree.
+            # What the launch will actually serve, not what was asked for. A build without --kv-unified splits the window
+            # per slot, so load_model falls back to one; pricing a four-slot default against such a build inflates the
+            # cache several times over. Same resolution /estimate-memory applies.
             try:
                 from routes.inference import _effective_parallel_slots
                 n_parallel = _effective_parallel_slots(n_parallel, diffusion_kind = False)
             except Exception as e:
                 logger.debug(f"slot clamp unavailable for '{repo_id}' {quant}: {e}")
 
-            # Whether the caller pinned a context, kept before the default below
-            # overwrites it. The planner reads the inherited LLAMA_ARG_CTX_SIZE
-            # only when its own n_ctx input is zero, so handing it the native
-            # length here priced the header's window for a child that will run at
-            # the environment's -- and an inherited context LARGER than native is
-            # then underpriced while still reading as auto-fitted.
+            # Whether the caller pinned a context, kept before the default below overwrites it. The planner reads the
+            # inherited LLAMA_ARG_CTX_SIZE only when its own n_ctx input is zero, so handing it the native length
+            # priced the header's window for a child that will run at the environment's, and an inherited context
+            # LARGER than native is then underpriced while still reading as auto-fitted.
             _inherited_device_pin = False
             try:
                 _dev = (os.environ.get("LLAMA_ARG_DEVICE") or "").strip()
@@ -4163,11 +3960,9 @@ async def get_kv_cache_estimate(
                 logger.debug(f"inherited device pin unreadable: {e}")
 
             _ctx_was_omitted = not n_ctx
-            # Whether the launch will auto-fit at all. Only a context nobody
-            # pinned gets reduced to fit: load_model keeps a positive inherited
-            # LLAMA_ARG_CTX_SIZE rather than fitting it, so an inherited window
-            # over budget is a real overage the caller must be allowed to warn
-            # about. Resolved below once the inherited value is known.
+            # Whether the launch will auto-fit at all. Only a context nobody pinned gets reduced to fit: load_model keeps
+            # a positive inherited LLAMA_ARG_CTX_SIZE rather than fitting it, so an inherited window over budget is a
+            # real overage the caller must be allowed to warn about.
             _context_is_pinned = not _ctx_was_omitted
             # Same precedence the launch uses: an inherited positive context beats
             # the header, since load_model drops it only when it is zero.
@@ -4184,11 +3979,9 @@ async def get_kv_cache_estimate(
             if not n_ctx or n_ctx < 1:
                 return null
 
-            # The K/V types the launch will really open, including an inherited
-            # LLAMA_ARG_CACHE_TYPE_K/V that no structured setting overrode. The
-            # planner already resolves these for gpu_bytes; without the same
-            # resolution here kv_bytes stayed at f16 and the KV segment, the
-            # per-token rate and the readout all contradicted the total beside
+            # The K/V types the launch will really open, including an inherited LLAMA_ARG_CACHE_TYPE_K/V that no
+            # structured setting overrode. Without the same resolution the planner applies for gpu_bytes, kv_bytes
+            # stayed at f16 and the KV segment, the per-token rate and the readout all contradicted the total beside
             # them. The heavier of the pair, matching the planner's own choice.
             _effective_cache_type = cache_type_kv
             try:
@@ -4202,9 +3995,8 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
-            # ctx_checkpoints is not a rounding error: each saved checkpoint is an
-            # SWA snapshot per slot, so a 4-slot SWA model at 32k measures 5.82 GiB
-            # with none and 11.82 GiB at the llama.cpp default of 32.
+            # ctx_checkpoints is not a rounding error: each saved checkpoint is an SWA snapshot per slot, so a
+            # 4-slot SWA model at 32k measures 5.82 GiB with none and 11.82 GiB at the llama.cpp default of 32.
             kv = be._estimate_kv_cache_bytes(
                 n_ctx,
                 _effective_cache_type,
@@ -4213,14 +4005,10 @@ async def get_kv_cache_estimate(
                 n_ubatch = n_ubatch,
             )
 
-            # The checkpoint share of that cache, by difference rather than by
-            # re-deriving the SWA layer walk -- the snapshots are the only term that
-            # separates the two calls, so asking the same function twice cannot drift
-            # from it. This is the same derivation the load planner uses at
-            # routes/inference.py, and it is reported separately because llama.cpp
-            # keeps these snapshots in HOST heap: the planner's GPU figure is
-            # kv_bytes - kv_checkpoint_bytes. Folded into the bar's VRAM total they
-            # warn OOM over memory that never touches the card.
+            # The checkpoint share of that cache, by difference rather than by re-deriving the SWA layer walk: the
+            # snapshots are the only term separating the two calls. Reported separately because llama.cpp keeps these
+            # snapshots in HOST heap (the planner's GPU figure is kv_bytes - kv_checkpoint_bytes); folded into the
+            # bar's VRAM total they warn OOM over memory that never touches the card.
             kv_checkpoint = 0
             if ctx_checkpoints:
                 _kv_without = be._estimate_kv_cache_bytes(
@@ -4232,31 +4020,20 @@ async def get_kv_cache_estimate(
                 )
                 kv_checkpoint = max(0, int(kv) - int(_kv_without))
 
-            # DSpark and DFlash attach a separate draft GGUF with its own weights
-            # and KV context, and Auto promotes to either ahead of MTP. Pricing
-            # them means reproducing the loader's whole sidecar precedence, which
-            # is how an estimate ends up charging a drafter the launch never
-            # opens. A DSpark sidecar alone runs to about 11 GB, so reporting a
-            # comfortable fit that omits it is the worst of the options: say the
-            # reserve is unpriced and let the caller draw nothing instead.
+            # DSpark and DFlash attach a separate draft GGUF with its own weights and KV context, and Auto promotes to
+            # either ahead of MTP. Pricing them means reproducing the loader's whole sidecar precedence, which is how
+            # an estimate charges a drafter the launch never opens. A DSpark sidecar alone runs to about 11 GB, so say
+            # the reserve is unpriced rather than report a comfortable fit that omits it.
             _spec_mode = (speculative_type or "").lower()
             spec_unpriced = _spec_mode in ("dspark", "dflash")
-            # Auto is not a mode that declines a sidecar: the load planner promotes it
-            # to DSpark or DFlash whenever the repo ships one and the binary supports
-            # it, ahead of MTP. Reading the explicit modes alone left the largest
-            # single allocation this route can miss -- a DSpark sidecar is about 11 GB
-            # -- silently absent from an Auto row, which is the case that reports a
-            # comfortable fit and then fails to load. Gated on the binary's own
-            # capability for the same reason the planner gates on it: charging (or
-            # here, abstaining over) a sidecar the launch never opens would blank the
-            # bar on hosts whose llama-server cannot run one.
+            # Auto is not a mode that declines a sidecar: the planner promotes it to DSpark or DFlash whenever the repo
+            # ships one and the binary supports it, ahead of MTP. Reading the explicit modes alone left an ~11 GB
+            # DSpark sidecar silently absent from an Auto row. Gated on the binary's own capability for the same
+            # reason the planner gates on it: abstaining over a sidecar never opened would blank the bar.
             if not spec_unpriced and _spec_mode == "auto":
                 try:
-                    # Imported here, not borrowed from _resolve_mtp_drafter: these
-                    # live in that function's local scope, so referencing them from
-                    # this one raised NameError into the except below and left
-                    # spec_unpriced false -- the silent no-op this guard exists to
-                    # prevent, and invisible precisely because it failed quietly.
+                    # Imported here, not borrowed from _resolve_mtp_drafter: these live in that function's local scope, so
+                    # referencing them raised NameError into the except below and left spec_unpriced false.
                     from core.inference.llama_cpp import (
                         _companion_snapshot_sibling,
                         _is_dflash_drafter_path,
@@ -4273,11 +4050,9 @@ async def get_kv_cache_estimate(
                         _has_dspark = bool(_companion_snapshot_sibling(path, _pick_dspark))
                         _has_dflash = bool(_companion_snapshot_sibling(path, _pick_dflash))
                     else:
-                        # A plain local folder resolves its sidecars the way the load
-                        # path does, through the same detectors that populate
-                        # gguf_dspark_file / gguf_dflash_file. Restricting this to
-                        # snapshots left every local model charting a total with the
-                        # drafter missing.
+                        # A plain local folder resolves its sidecars the way the load path does, through the same detectors that
+                        # populate gguf_dspark_file / gguf_dflash_file. Restricting this to snapshots left every local model
+                        # charting a total with the drafter missing.
                         from utils.models.drafters.dflash import detect_dflash_file
                         from utils.models.model_config import detect_dspark_file
 
@@ -4291,23 +4066,18 @@ async def get_kv_cache_estimate(
                 except Exception as e:
                     logger.debug(f"auto sidecar probe failed for '{repo_id}' {quant}: {e}")
 
-            # A vision GGUF launches with its mmproj resident unless the user
-            # turned vision off, and the projector is charged at a worst-case
-            # multiple of its file size (_MMPROJ_VRAM_SAFETY), not at it. Left
-            # out, a vision row shows a comfortable fit for a launch that has to
-            # find another gigabyte or push the projector to the CPU.
+            # A vision GGUF launches with its mmproj resident unless vision is off, and the projector is charged at a
+            # worst-case multiple of its file size (_MMPROJ_VRAM_SAFETY), not at it. Left out, a vision row shows a
+            # comfortable fit for a launch that has to find another gigabyte.
             projector = None
             if not disable_vision:
                 try:
                     from core.inference.llama_cpp import LlamaCppBackend as _Be
                     from utils.models.model_config import detect_mmproj_file
 
-                    # A cached HF layout puts the weights under a quant subdir
-                    # (snapshot/Q4_K_M/model.gguf) and the projector at the
-                    # snapshot ROOT, so scanning the weights' own directory finds
-                    # nothing. Anchored the same way the drafter lookup is, and
-                    # the same way the loader's _download_mmproj anchors on
-                    # near_path.
+                    # A cached HF layout puts the weights under a quant subdir and the projector at the snapshot ROOT, so scanning
+                    # the weights' own directory finds nothing. Anchored the same way the drafter lookup is, and the same way
+                    # the loader's _download_mmproj anchors on near_path.
                     from core.inference.llama_cpp import (
                         _companion_snapshot_sibling,
                         _pick_mmproj,
@@ -4323,11 +4093,9 @@ async def get_kv_cache_estimate(
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
 
-            # Only the MTP modes reserve memory; ngram is free. "auto" may or may
-            # not resolve to MTP, and the estimator returns None when it doesn't.
-            # Guarded separately: the MTP path reads more metadata than the KV path,
-            # and a model it can't size should still get its KV bar rather than
-            # dropping the whole response to nulls.
+            # Only the MTP modes reserve memory; ngram is free. "auto" may or may not resolve to MTP, and the estimator
+            # returns None when it does not. Guarded separately: the MTP path reads more metadata than the KV path, and
+            # a model it cannot size should still get its KV bar rather than dropping the response to nulls.
             spec = None
             spec_fixed = None
             if (speculative_type or "").lower() in ("mtp", "mtp+ngram", "auto"):
@@ -4342,22 +4110,15 @@ async def get_kv_cache_estimate(
                     drafter_path, drafter_bytes = _resolve_mtp_drafter(
                         path, search_root = repo_id if is_local else None
                     )
-                    # Auto declines MTP on a sub-3B embedded head, where the
-                    # per-token cost regresses; a separate drafter is exempt. Pricing
-                    # a reserve the load will not take would overstate the bar and
-                    # could warn OOM on a model that fits.
+                    # Auto declines MTP on a sub-3B embedded head, where the per-token cost regresses; a separate drafter
+                    # is exempt. Pricing a reserve the load will not take could warn OOM on a model that fits.
                     _mode = (speculative_type or "").lower()
 
-                    # Same reason, one level down: llama-server only takes the MTP
-                    # path when it advertises a --spec-type mtp token, and the loader
-                    # declines on an inconclusive probe too. Both cover the
-                    # separate-drafter path, which is emitted behind the same gate.
-                    # Probes are cached on (path, mtime), so this stays cheap.
+                    # Same reason one level down: llama-server only takes the MTP path when it advertises a --spec-type
+                    # mtp token, and the loader declines on an inconclusive probe too. Probes are cached on (path, mtime).
                     _binary_lacks_mtp = not (be.probe_server_capabilities() or {}).get("mtp_token")
-                    # Auto also declines an MLA embedded head (GLM/DeepSeek/Kimi):
-                    # that path keeps a duplicated full target-KV context and runs
-                    # slower than no speculation, so it is off unless opted into.
-                    # A separate drafter is unaffected, as is a non-MLA head.
+                    # Auto also declines an MLA embedded head (GLM/DeepSeek/Kimi): that path keeps a duplicated full target-KV
+                    # context and runs slower than no speculation. A separate drafter is unaffected, as is a non-MLA head.
                     _auto_drops_mla = (
                         _mode == "auto"
                         and be._kv_lora_rank is not None
@@ -4365,16 +4126,11 @@ async def get_kv_cache_estimate(
                         and not drafter_path
                         and not _mla_mtp_auto_enabled()
                     )
-                    # The loader's own precondition (is_mtp_model): a model with no
-                    # embedded head, no MTP name and no separate drafter cannot run
-                    # MTP at all, so llama-server gets --spec-default and reserves
-                    # nothing. Without this check _estimate_mtp_overhead_bytes still
-                    # charges its target-side terms, and because
-                    # mtp_keeps_target_ctx defaults to True -- deliberately, so an
-                    # unsure caller over-reserves -- every MLA model was billed a
-                    # second full f16 copy of its own KV. That is the whole cache
-                    # again, which is the largest way this bar could be wrong, and it
-                    # is wrong in the direction that warns OOM on a model that loads.
+                    # The loader's own precondition (is_mtp_model): a model with no embedded head, no MTP name and no separate
+                    # drafter cannot run MTP at all, so llama-server gets --spec-default and reserves nothing. Without this
+                    # check _estimate_mtp_overhead_bytes still charges its target-side terms, and because
+                    # mtp_keeps_target_ctx defaults to True every MLA model was billed a second full f16 copy of its own
+                    # KV: the whole cache again, in the direction that warns OOM on a model that loads.
                     _not_an_mtp_model = not (
                         bool(be._nextn_predict_layers)
                         or _is_mtp_model_name(repo_id, path)
@@ -4392,11 +4148,9 @@ async def get_kv_cache_estimate(
                     ):
                         pass
                     else:
-                        # The drafter's own weights: resident for as long as the
-                        # drafter is open and not reducible by shortening context.
-                        # Reported separately so the caller's auto-fit softening,
-                        # which exists for the context-linear part of the cache,
-                        # cannot swallow a fixed overage no shorter context fixes.
+                        # The drafter's own weights: resident for as long as the drafter is open and not reducible by shortening
+                        # context. Reported separately so the caller's auto-fit softening, which exists for the context-linear
+                        # part of the cache, cannot swallow a fixed overage no shorter context fixes.
                         spec_fixed = int(drafter_bytes or 0) or None
                         _effective_draft_n_max = spec_draft_n_max
                         if _effective_draft_n_max is None:
@@ -4424,47 +4178,28 @@ async def get_kv_cache_estimate(
                             drafter_path = drafter_path,
                             draft_weights_bytes = drafter_bytes,
                             n_parallel = n_parallel,
-                            # A Hybrid Mamba target keeps one recurrent rollback
-                            # state per drafted token, which dominates everything
-                            # else here: on a 4-slot model at 32k the reserve is
-                            # 0.125 GiB at the zero default and 6.944 GiB at a
-                            # depth of 16, so omitting it is a 55x understatement.
-                            # Blank is not zero. _build_speculative_flags emits
-                            # its own default when the field is unset (2 with a
-                            # GPU, 3 without), and the rollback state is
-                            # multiplied by it, so pricing zero dropped the
-                            # dominant allocation on a Hybrid Mamba target
-                            # outright. An explicit 0 is still honoured, since
-                            # that is a real request to draft nothing.
+                            # A Hybrid Mamba target keeps one recurrent rollback state per drafted token, which dominates everything else
+                            # here: on a 4-slot model at 32k the reserve is 0.125 GiB at the zero default and 6.944 GiB at a depth of
+                            # 16. Blank is not zero: _build_speculative_flags emits its own default when the field is unset (2 with a
+                            # GPU, 3 without) and the rollback state is multiplied by it. An explicit 0 is still honoured.
                             spec_draft_n_max = _effective_draft_n_max,
                         )
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
 
-            # The load planner's own answer, alongside this route's field-by-field
-            # one. It is the authoritative figure: it applies the inherited
-            # environment (LLAMA_ARG_CACHE_TYPE_K/V, LLAMA_ARG_SWA_FULL,
-            # LLAMA_ARG_CTX_SIZE), derives the companion search roots the loader
-            # derives, and includes the compute buffers -- every term this route
-            # would otherwise have to reproduce, and has repeatedly reproduced
-            # incompletely. gpu_bytes is what lands on the card, with the host-heap
-            # checkpoint share already subtracted.
-            #
-            # Added beside the existing fields rather than replacing them: the
-            # planner defines weights_bytes as the weights PLUS whichever projector
-            # and drafter the launch opens, while this route's field shipped meaning
-            # the quant file alone. Redefining it would move a number an existing
-            # caller already reads.
+            # The load planner's own answer, alongside this route's field-by-field one. It is the authoritative figure: it
+            # applies the inherited environment (LLAMA_ARG_CACHE_TYPE_K/V, LLAMA_ARG_SWA_FULL, LLAMA_ARG_CTX_SIZE),
+            # derives the companion search roots the loader derives, and includes the compute buffers. gpu_bytes is
+            # what lands on the card, with the host-heap checkpoint share subtracted. Added beside the existing fields
+            # rather than replacing them: the planner's weights_bytes includes the projector and drafter the launch
+            # opens, while this route's field shipped meaning the quant file alone.
             planner_gpu = None
             planner_compute = None
             planner_total = None
             planner_floor = None
             planner_unsized = False
-            # Bound BEFORE the try, not inside it. Every statement below can
-            # raise into the surrounding `except`, and a name defined only on the
-            # success path then reads as a NameError from the projection after
-            # it -- which this same route has already been bitten by once, in a
-            # guard that silently never ran because of it.
+            # Bound BEFORE the try, not inside it. Every statement below can raise into the surrounding `except`, and a
+            # name defined only on the success path then reads as a NameError from the projection after it.
             _b = None
             try:
                 from routes.inference import (
@@ -4474,16 +4209,10 @@ async def get_kv_cache_estimate(
                     _localized_estimate_config,
                 )
 
-                # Tensor mode replicates its compute buffers on every device in
-                # the pool, so pricing one device understates the reserve by a
-                # factor of however many cards the launch would use. Only consulted
-                # in tensor mode: a layer split does not replicate them the same
-                # way, and this is the same count the load panel derives.
-                # The effective mode, not the request boolean: the planner turns
-                # tensor mode on for an inherited LLAMA_ARG_SPLIT_MODE=tensor even
-                # when the per-model toggle is off, and it replicates the compute
-                # buffers per device when it does. Reading the toggle alone left
-                # n_devices at one for exactly that launch.
+                # Tensor mode replicates its compute buffers on every device in the pool, so pricing one device understates
+                # the reserve by however many cards the launch would use. Only consulted in tensor mode: a layer split does
+                # not replicate them the same way. The EFFECTIVE mode, not the request boolean: the planner turns tensor
+                # mode on for an inherited LLAMA_ARG_SPLIT_MODE=tensor even when the per-model toggle is off.
                 _effective_tp = tensor_parallel
                 try:
                     from core.inference.llama_server_args import _effective_tensor_parallel
@@ -4522,30 +4251,17 @@ async def get_kv_cache_estimate(
                         n_devices = _planner_devices,
                     )
                     if _b is not None:
-                        # `or None` would fold a real zero into "no answer".
-                        # Zero is a meaningful result: inherited placement such as
-                        # LLAMA_ARG_DEVICE=none makes the launch entirely CPU
-                        # resident, and discarding that sent the caller back to
-                        # summing segments and drawing VRAM pressure for a load
-                        # that touches no card at all.
+                        # `or None` would fold a real zero into "no answer". Zero is meaningful: inherited placement such as
+                        # LLAMA_ARG_DEVICE=none makes the launch entirely CPU resident, and discarding that sent the caller back
+                        # to summing segments and drawing VRAM pressure for a load that touches no card at all.
                         planner_gpu = int(_b.gpu_bytes)
                         planner_compute = int(_b.compute_bytes) or None
                         planner_total = int(_b.total_bytes) or None
                         planner_unsized = bool(_b.drafter_kv_unsized)
-                        # The same plan priced at the shortest context worth
-                        # asking for. Whatever is still there cannot be reduced by
-                        # shortening context: the drafter's weights, the flat
-                        # compute buffer, a Hybrid Mamba target's recurrent
-                        # rollback state. Taken by difference against the real
-                        # plan rather than by naming those terms, because naming
-                        # them is how this route kept missing one; the planner
-                        # decides what is fixed, and asking it twice cannot drift
-                        # from itself.
-                        #
-                        # This is what an unpinned row's hard verdict must be
-                        # drawn against. Auto-fit can shrink the cache, so a
-                        # context-driven overage is not a failure, but nothing it
-                        # can do touches this floor.
+                        # The same plan priced at the shortest context worth asking for. Whatever is still there cannot be reduced by
+                        # shortening context: the drafter's weights, the flat compute buffer, a Hybrid Mamba target's recurrent
+                        # rollback state. Taken by difference rather than by naming those terms, because naming them is how this
+                        # route kept missing one. An unpinned row's hard verdict must be drawn against this floor.
                         _floor = _gguf_memory_breakdown(
                             _cfg,
                             path,
@@ -4567,18 +4283,11 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"planner breakdown failed for '{repo_id}' {quant}: {e}")
 
-            # Shaped through the canonical MemoryEstimate rather than assembled
-            # here, so this route and POST /inference/estimate-memory cannot drift
-            # apart in vocabulary the way they had. The projection is what keeps
-            # this route's own meaning of `weights_bytes` -- the quant file ALONE
-            # -- while the panel's projection keeps its aggregate meaning. The two
-            # sit side by side in core/inference/memory_contract.py, which is the
-            # only place either mapping is written down.
-            #
-            # The terms this route prices ITSELF (the target cache, the
-            # speculative split, the projector, the checkpoint share) are passed
-            # in rather than read off the estimate: the planner has its own
-            # figures for some of them and they are not interchangeable.
+            # Shaped through the canonical MemoryEstimate rather than assembled here, so this route and POST
+            # /inference/estimate-memory cannot drift apart in vocabulary. The projection keeps this route's own
+            # meaning of `weights_bytes` (the quant file ALONE) while the panel's keeps its aggregate meaning; both
+            # live in core/inference/memory_contract.py. The terms this route prices ITSELF are passed in rather than
+            # read off the estimate: the planner has its own figures for some of them.
             _estimate = build_memory_estimate(
                 _b if _b is not None else EMPTY_BREAKDOWN,
                 quant_file_bytes = weights_bytes or 0,
@@ -4586,29 +4295,20 @@ async def get_kv_cache_estimate(
                 # What remains on the card at the shortest context, so a caller
                 # can tell a context-driven overage from one no context fixes.
                 gpu_floor_bytes = planner_floor,
-                # False only when the loader is free to shrink the context. A
-                # caller that softens its verdict for an auto-fitted row has to
-                # stop softening here, or an inherited window over budget reads
-                # as a fit for a launch that will OOM.
+                # False only when the loader is free to shrink the context. A caller that softens its verdict for an
+                # auto-fitted row has to stop softening here, or an inherited window over budget reads as a fit for a
+                # launch that will OOM.
                 context_is_pinned = _context_is_pinned,
-                # An inherited LLAMA_ARG_DEVICE confines the child to the cards it
-                # names, and an automatic launch preserves it. The caller's budget
-                # is an aggregate over the whole visible inventory, which then
-                # describes a pool the launch will not open -- a 30 GiB model
-                # reads as fitting 2x24 GiB while the child has one card. The
-                # caller cannot see the environment, so it is reported here.
-                # Any pin at all is enough to say so: the route does not know the
-                # host's inventory, and abstaining is the safe direction.
+                # An inherited LLAMA_ARG_DEVICE confines the child to the cards it names, and an automatic launch preserves
+                # it. The caller's budget is an aggregate over the whole visible inventory, which then describes a pool the
+                # launch will not open: a 30 GiB model reads as fitting 2x24 GiB while the child has one card.
                 inherited_device_pin = _inherited_device_pin,
                 # The planner saw a drafter whose cache it could not size, so its
                 # own total is a floor.
                 spec_unpriced = spec_unpriced or planner_unsized,
-                # The planner's own figures, kept exactly as this route computed
-                # them above: planner_gpu preserves a real zero, the other two do
-                # not. Passed in rather than assigned onto the model afterwards,
-                # because Pydantic does not validate assignment by default and a
-                # post-construction write puts whatever it is handed straight
-                # onto the wire.
+                # The planner's own figures, kept exactly as computed above: planner_gpu preserves a real zero, the other two
+                # do not. Passed in rather than assigned onto the model afterwards, because Pydantic does not validate
+                # assignment by default and a post-construction write puts whatever it is handed on the wire.
                 gpu_bytes = planner_gpu,
                 compute_bytes = planner_compute,
                 total_bytes = planner_total,
@@ -4621,10 +4321,8 @@ async def get_kv_cache_estimate(
                 # The part of spec_bytes a shorter context cannot reduce.
                 spec_fixed_bytes = spec_fixed if spec else None,
                 projector_bytes = projector or None,
-                # The part of kv_bytes that llama.cpp keeps in host heap rather
-                # than on the card, so a VRAM bar can subtract it. Included in
-                # kv_bytes, not beside it: the field shipped meaning the whole
-                # cache and an existing caller still reads it that way.
+                # The part of kv_bytes llama.cpp keeps in host heap rather than on the card, so a VRAM bar can
+                # subtract it. Included in kv_bytes, not beside it: the field shipped meaning the whole cache.
                 kv_checkpoint_bytes = kv_checkpoint or None,
             )
         except Exception as e:
@@ -4733,12 +4431,9 @@ async def get_gguf_download_progress(
 
 
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Most useful on-disk path for a HF cache repo.
-
-    Delegates to the Hub scanner's function of the same name so this route and
-    ``/api/hub/local-models`` name one directory: the newest snapshot dir, ties broken by
-    ``snapshot_selection_key``.
-    """
+    """Most useful on-disk path for a HF cache repo. Delegates to the Hub scanner's function of the same
+    name so this route and ``/api/hub/local-models`` name one directory: the newest snapshot dir, ties
+    broken by ``snapshot_selection_key``."""
     from hub.utils import inventory_scan as hf_cache_scan
     return hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
 
@@ -4755,15 +4450,10 @@ async def get_download_progress(
 
 
 def _repo_in_any_hf_cache(model_name: str) -> bool:
-    """Whether ``model_name`` already exists in ANY HF cache the discard searches
-    (active, legacy, default).
-
-    ``created_by_scan`` must be True only when the scan itself first pulled the repo;
-    checking just the active cache (``get_cache_path``) would mark a repo the user
-    already had in a legacy/default cache as scan-created, so declining the consent
-    would delete a model they did not download via the scan. Mirrors the cache set in
-    ``_all_hf_cache_scans`` but only probes for the one repo dir (cheap, no full scan).
-    """
+    """Whether ``model_name`` already exists in ANY HF cache the discard searches (active, legacy, default).
+    ``created_by_scan`` must be True only when the scan itself first pulled the repo; checking just the
+    active cache would mark a repo the user already had in a legacy/default cache as scan-created, so
+    declining the consent would delete a model they did not download."""
     from utils.paths import resolve_cached_repo_id_case
 
     dirname = f"models--{resolve_cached_repo_id_case(model_name).replace('/', '--')}"
@@ -4787,12 +4477,9 @@ def _repo_in_any_hf_cache(model_name: str) -> bool:
 
 
 def _all_hf_cache_scans():
-    """scan_cache_dir for the active, legacy, and default HF caches.
-
-    Each probe is isolated: an unreadable auxiliary cache (permission denied,
-    broken symlink, OS-redirected ~/.cache) is skipped, not fatal, so the
-    Downloaded list never blanks out and downloads never leak into Recommended.
-    """
+    """scan_cache_dir for the active, legacy, and default HF caches. Each probe is isolated: an
+    unreadable auxiliary cache is skipped, not fatal, so the Downloaded list never blanks out and
+    downloads never leak into Recommended."""
     from hub.utils.inventory_scan import all_hf_cache_scans
     return all_hf_cache_scans()
 
@@ -4832,21 +4519,17 @@ def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
 
 
 def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
-    """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant.
-
-    _gguf_copy_is_usable asks the stronger question now, so this has no caller here. It stays
-    because it was importable before, and a name read only from outside looks unused inside.
-    """
+    """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant. _gguf_copy_is_usable
+    asks the stronger question now, so this has no caller here; it stays because it was importable
+    before."""
     from hub.utils.inventory_scan import default_ref_offers_no_whole_quant as impl
     return impl(repo_cache_dir)
 
 
 def _gguf_copy_is_usable(repo_info, load_id: Optional[str], active_root: Optional[Path]) -> bool:
-    """Whether this copy of the repo holds a quant a load can reach.
-
-    A pinned copy names a complete snapshot. An unpinned copy must be in the active cache and have
-    an id that resolves onto a whole quant, which is exactly what withheld the pin.
-    """
+    """Whether this copy of the repo holds a quant a load can reach. A pinned copy names a complete
+    snapshot; an unpinned copy must be in the active cache and have an id that resolves onto a whole
+    quant, which is exactly what withheld the pin."""
     if load_id:
         return True
     if active_root is None:
@@ -4896,13 +4579,9 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
 
 
 def _one_shard_family_of(entries: list) -> list:
-    """*entries* narrowed to the single shard family the loader would open.
-
-    ``(rel, path, size)`` triples. Same rule as ``hub.utils.gguf.group_gguf_variant_files``:
-    every shard of one split GGUF shares a family, two files that do not are two checkpoints, and
-    the family kept is the one holding the lexicographically first file. A genuinely split GGUF is
-    one family and survives whole.
-    """
+    """*entries* narrowed to the single shard family the loader would open, as ``(rel, path, size)`` triples.
+    Same rule as ``hub.utils.gguf.group_gguf_variant_files``: every shard of one split GGUF shares a family,
+    two files that do not are two checkpoints, and the family kept is the one holding the first file."""
     if len(entries) < 2:
         return list(entries)
     from hub.utils.gguf import gguf_variant_family
@@ -4916,15 +4595,14 @@ def _one_shard_family_of(entries: list) -> list:
 
 
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
-    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy
-    quant-label spelling, None for neither.
+    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy quant-label spelling, None
+    for neither.
 
-    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
-    doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
-    ``expa/``. Directory-qualified keys keep their legacy bare spelling, since stored pins predate
-    them. Root-level H3 stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
-    first file would load a different task. Exact keys are used alone whenever any exist, and the
-    label is the fallback for rows with no root-stem identity.
+    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because doing it once
+    up front strips a qualified key's own path punctuation and folds ``exp-a/`` into ``expa/``.
+    Directory-qualified keys keep their legacy bare spelling, since stored pins predate them. Root-level H3
+    stems do not: a bare quant names both FL2VA and Ref2VA, and picking the first file would load a
+    different task.
     """
     from hub.utils.gguf import is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
@@ -4941,14 +4619,10 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
 
 def _variant_keys_match(key: str, want: str) -> bool:
-    """Whether *want* is *key*, for the exact-key test.
-
-    ``_normalized_quant_label`` strips hyphens and underscores, which is right for a bare quant
-    (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong for a path: it folds ``exp-a/`` and
-    ``expa/`` into one, so two advertised checkpoints both answered to the other's key. A qualified
-    key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
-    bare aliases it was written for.
-    """
+    """Whether *want* is *key*, for the exact-key test. ``_normalized_quant_label`` strips hyphens and
+    underscores, which is right for a bare quant (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong
+    for a path: it folds ``exp-a/`` and ``expa/`` into one, so two advertised checkpoints both answered to
+    the other's key."""
     from hub.utils.gguf import is_qualified_gguf_variant_key
 
     if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
@@ -4971,13 +4645,9 @@ def _repo_has_mmproj(repo_info) -> bool:
 
 
 def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
-    """Whether the copy this row loads ships a projector.
-
-    The loader opens the projector out of the snapshot it loads from, so one in a revision the
-    load never reaches is not vision support. A pinned row is judged on its snapshot, an unpinned
-    one on the first snapshot the load's own ordering finds a quant in. Judged per snapshot, not
-    per file: a split quant can sit in a subdirectory while the projector sits at the root.
-    """
+    """Whether the copy this row loads ships a projector. The loader opens the projector out of the snapshot it
+    loads from, so one in a revision the load never reaches is not vision support. Judged per snapshot, not
+    per file: a split quant can sit in a subdirectory while the projector sits at the root."""
     if load_id:
         return _snapshot_has_gguf_projector(load_id)
     # No projector in any revision means none to reach, and saves a cache walk.
@@ -5004,17 +4674,11 @@ def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
-    """Total on-disk size of primary GGUF weight files across all
-    revisions, excluding mmproj vision-adapter files.
-
-    Hugging Face hardlinks blobs shared between revisions, so this
-    deduplicates by blob path (or revision commit hash + filename as a
-    fallback) to avoid double-counting. Unknown sizes (``size_on_disk is
-    None``, e.g. a partial download) count as zero. mmproj files are
-    excluded so repos whose only ``.gguf`` artifact is a vision adapter
-    aren't classed as GGUF repos: the variant selector filters mmproj
-    out and would otherwise show zero pickable variants.
-    """
+    """Total on-disk size of primary GGUF weight files across all revisions, excluding mmproj. Hugging Face
+    hardlinks blobs shared between revisions, so this deduplicates by blob path (or revision commit hash +
+    filename) to avoid double-counting; unknown sizes count as zero. mmproj files are excluded so repos
+    whose only ``.gguf`` artifact is a vision adapter are not classed as GGUF repos: the variant selector
+    filters mmproj out and would otherwise show zero pickable variants."""
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
@@ -5032,18 +4696,14 @@ def _repo_gguf_size_bytes(repo_info) -> int:
 
 
 def _repo_has_gguf_files(repo_info) -> bool:
-    """True when any revision in a cached repo has a primary GGUF weight
-    file. Repos whose only ``.gguf`` artifact is an mmproj vision adapter
-    are not treated as GGUF here."""
+    """True when any revision in a cached repo has a primary GGUF weight file; an mmproj-only repo is
+    not one."""
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
 def _blob_mtime(f) -> float:
-    """Blob modification time in epoch seconds (0.0 if unknown).
-
-    Prefers HF metadata ``blob_last_modified``, falls back to stat(); uses
-    only mtimes (portable across Windows, macOS, Linux), never path parsing.
-    """
+    """Blob modification time in epoch seconds (0.0 if unknown). Prefers HF metadata
+    ``blob_last_modified``, falls back to stat(); only mtimes, never path parsing."""
     ts = getattr(f, "blob_last_modified", None)
     if isinstance(ts, (int, float)) and ts > 0:
         return float(ts)
@@ -5057,11 +4717,8 @@ def _blob_mtime(f) -> float:
 
 
 def _repo_gguf_last_modified(repo_info) -> float:
-    """Newest mtime among a repo's primary (non-mmproj) GGUF blobs.
-
-    Drives the Downloaded list's "last downloaded" ordering and groups a
-    multi-quant repo by its most recently downloaded quant.
-    """
+    """Newest mtime among a repo's primary (non-mmproj) GGUF blobs, driving the Downloaded list's "last
+    downloaded" ordering."""
     latest = 0.0
     for revision in repo_info.revisions:
         for f in cached_repo_files(revision):
@@ -5083,10 +4740,9 @@ def snapshot_has_complete_variants(snapshot: str) -> bool:
 
 
 def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
-    """Snapshot dir holding the newest primary GGUF, for a repo outside the active
-    hub cache that does not resolve by id. ``None`` when the id works or no
-    snapshot is recorded, since the repo dir itself is not loadable.
-    """
+    """Snapshot dir holding the newest primary GGUF, for a repo outside the active hub cache that does
+    not resolve by id. ``None`` when the id works or no snapshot is recorded, since the repo dir itself
+    is not loadable."""
     from hub.utils.hf_cache_state import snapshot_selection_key
 
     repo_path = getattr(repo_info, "repo_path", None)
@@ -5121,11 +4777,9 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
 def _preferred_gguf_copy(
     rows: dict, ranks: dict, key: str, candidate: tuple[bool, bool], size: int
 ) -> bool:
-    """Whether this copy should replace the one already kept for *key*.
-
-    Same order the Hub inventory deduplicates by: a copy that cannot load loses to one that can,
-    whichever cache holds it, then the active cache wins, then the larger download.
-    """
+    """Whether this copy should replace the one already kept for *key*, in the order the Hub inventory
+    deduplicates by: a copy that cannot load loses to one that can, then the active cache wins, then
+    the larger download."""
     existing = rows.get(key)
     if existing is None:
         return True
@@ -5227,14 +4881,10 @@ def _cached_repo_partial(
     repo_cache_dir: Optional[Path] = None,
     snapshot_dir: Optional[Path] = None,
 ) -> bool:
-    """Whether the cached model snapshot is incomplete (cancelled/partial download).
-    Reuses the hub inventory scan's snapshot-partial detector (cancel marker, legacy
-    .incomplete blob, manifest walk -- cheapest first). ``repo_cache_dir`` scopes the cache copy;
-    ``snapshot_dir`` attributes repo-wide signals to the selected revision. Without both, an
-    interrupted newer revision can flag a complete pinned revision as partial and hide it from the
-    picker.
-    Best-effort: a detection error reports not-partial so a scan glitch never hides a
-    genuinely usable repo."""
+    """Whether the cached model snapshot is incomplete (cancelled/partial download), reusing the hub inventory
+    scan's detector. ``repo_cache_dir`` scopes the cache copy and ``snapshot_dir`` attributes repo-wide
+    signals to the selected revision; without both, an interrupted newer revision can flag a complete pinned
+    revision as partial. Best-effort: a detection error reports not-partial so a glitch never hides a repo."""
     try:
         from hub.utils.inventory_scan import is_snapshot_partial
         return bool(is_snapshot_partial("model", repo_id, repo_cache_dir, snapshot_dir))
@@ -5261,17 +4911,11 @@ _NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
 
 def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
-    """Whether this snapshot has metadata and a complete weight payload.
-
-    Transformers snapshots use the local scanners' config-plus-weight check. Diffusers
-    pipelines instead have a root ``model_index.json`` and component payloads in subdirs,
-    so use the same component-completeness check that guards local media loads.
-
-    huggingface_hub keeps one snapshot per commit, so a partial fetch leaves an unloadable
-    dir with a newer mtime than the complete one beside it. Both halves happen: metadata
-    only (AutoConfig/AutoTokenizer at a newer revision) and weights only (Unsloth's base
-    model pre-warm fetches the shards plus index, no config.json).
-    """
+    """Whether this snapshot has metadata and a complete weight payload. Transformers snapshots use the local
+    scanners' config-plus-weight check; diffusers pipelines instead have a root ``model_index.json`` and
+    component payloads in subdirs, so use the component-completeness check that guards local media loads.
+    huggingface_hub keeps one snapshot per commit, so a partial fetch leaves an unloadable dir with a newer
+    mtime than the complete one beside it, and both halves happen: metadata only, and weights only."""
     if _local_pipeline_index(snapshot):
         from core.inference.media_locality import _pipeline_components_present
         from hub.utils.inventory_scan import snapshot_pipeline_missing_denoiser
@@ -5307,14 +4951,10 @@ def _repo_model_snapshots(repo_info) -> list:
 
 
 def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optional[Path]) -> bool:
-    """Whether loading this repo by its bare id lands somewhere that can serve it.
-
-    Only the active cache makes the id a target, and there ``from_pretrained`` follows
-    ``refs/main``: ``repo_id_will_not_resolve`` catches a ref naming no directory, but a
-    ref naming an EXISTING half-fetched snapshot resolves fine and then fails. This is the
-    non-GGUF twin of ``default_ref_offers_no_whole_quant``. An unreadable ref, or a repo
-    with no better sibling, keeps the id it had.
-    """
+    """Whether loading this repo by its bare id lands somewhere that can serve it. Only the active cache makes
+    the id a target, and there ``from_pretrained`` follows ``refs/main``: ``repo_id_will_not_resolve``
+    catches a ref naming no directory, but a ref naming an EXISTING half-fetched snapshot resolves fine and
+    then fails. The non-GGUF twin of ``default_ref_offers_no_whole_quant``."""
     try:
         if repo_path.parent.resolve(strict = False) != active_root:
             return False
@@ -5324,9 +4964,9 @@ def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optio
         return False
     if loadable is None:
         return True
-    # No refs/main at all is not "fine", it is unresolvable: huggingface_hub writes
-    # refs/<revision> only when revision != commit_hash, so a commit-pinned fetch writes
-    # none and a tag-pinned one writes refs/<tag>. Offline the bare id then finds nothing.
+    # No refs/main at all is not "fine", it is unresolvable: huggingface_hub writes refs/<revision> only when
+    # revision != commit_hash, so a commit-pinned fetch writes none and a tag-pinned one writes refs/<tag>.
+    # Offline the bare id then finds nothing.
     ref_snapshot = _default_ref_snapshot(repo_path)
     return ref_snapshot is not None and _snapshot_can_serve_a_load(ref_snapshot)
 
@@ -5334,14 +4974,11 @@ def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optio
 def _repo_model_selection(
     repo_info, active_root: Optional[Path]
 ) -> tuple[Optional[Path], Optional[str]]:
-    """The snapshot a load of this repo will read, and the load id pinning it.
-
-    One choice of revision, so every field describing the pick answers for the SAME copy.
-    Scanning history instead lets an old revision speak for the row: a repo pushed first as
-    a LoRA and later merged into the same id (``push_to_hub_merged``) keeps its stale
-    ``adapter_config.json``, and a whole-model row read as an adapter is dropped from the
-    chat picker. ``load_id`` is ``None`` when the bare id already reaches a serving copy.
-    """
+    """The snapshot a load of this repo will read, and the load id pinning it. One choice of revision, so every
+    field describing the pick answers for the SAME copy. Scanning history instead lets an old revision speak
+    for the row: a repo pushed first as a LoRA and later merged into the same id keeps its stale
+    ``adapter_config.json``, and a whole-model row read as an adapter is dropped from the chat picker.
+    ``load_id`` is ``None`` when the bare id already reaches a serving copy."""
     repo_path = getattr(repo_info, "repo_path", None)
     if repo_path is None or active_root is None:
         return None, None
@@ -5365,22 +5002,17 @@ def _repo_model_selection(
 
 
 def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
-    """Snapshot dir to load a non-GGUF repo by, or ``None`` when the bare id already works.
-
-    The non-GGUF twin of ``_repo_gguf_load_id``: a repo cached only in the legacy or
-    default cache otherwise reads as its bare id, which ``ModelConfig`` resolves through
-    the active cache instead, so offline the pick cannot load and online it re-downloads.
-    """
+    """Snapshot dir to load a non-GGUF repo by, or ``None`` when the bare id already works. The non-GGUF twin of
+    ``_repo_gguf_load_id``: a repo cached only in the legacy or default cache otherwise reads as its bare
+    id, which ``ModelConfig`` resolves through the active cache instead, so offline the pick cannot load and
+    online it re-downloads."""
     return _repo_model_selection(repo_info, active_root)[1]
 
 
 def _repo_model_format(repo_info, selected: Optional[Path] = None) -> Optional[str]:
-    """``"adapter"`` for a cached LoRA/PEFT repo, else ``None``.
-
-    ``cached_model_rows`` set no format, so every consumer filtering out adapters compared
-    against a key that never existed. An adapter ships ``adapter_config.json``; a merge does not.
-    Judged on the selected revision; only when none is determinable does history stand in.
-    """
+    """``"adapter"`` for a cached LoRA/PEFT repo, else ``None``. ``cached_model_rows`` set no format, so
+    every consumer filtering out adapters compared against a key that never existed. An adapter ships
+    ``adapter_config.json``; a merge does not. Judged on the selected revision."""
     for snapshot in [selected] if selected is not None else _repo_model_snapshots(repo_info):
         try:
             if (snapshot / "adapter_config.json").is_file():
@@ -5391,16 +5023,10 @@ def _repo_model_format(repo_info, selected: Optional[Path] = None) -> Optional[s
 
 
 def _repo_model_can_chat(repo_info, selected: Optional[Path] = None) -> Optional[bool]:
-    """``False`` for a cached encoder-only repo (embedding, CLIP, ViT), else ``None``.
-
-    The classification the hub inventory already applies to its own rows. ``task`` is
-    ``None`` for everything not diffusion, so a cached BERT or CLIP otherwise read as an
-    ordinary chat model. ``None`` when nothing is conclusive, so unknowns are never hidden.
-
-    The selected revision answers first, so capability describes the copy the pin will
-    load rather than whichever snapshot sorts newest. Other snapshots stand in only when
-    the selection has no readable config, such as a weights-only snapshot.
-    """
+    """``False`` for a cached encoder-only repo (embedding, CLIP, ViT), else ``None``: the classification the hub
+    inventory already applies to its own rows. ``task`` is ``None`` for everything not diffusion, so a
+    cached BERT or CLIP otherwise read as an ordinary chat model. ``None`` when nothing is conclusive, so
+    unknowns are never hidden. The selected revision answers first."""
     from hub.services.models.common import _local_transformers_can_chat, _read_local_json_object
 
     ordered = _repo_model_snapshots(repo_info)
@@ -5439,9 +5065,8 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     continue
                 selected, model_load_id = _repo_model_selection(repo_info, active_root)
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):
-                    # That guard withheld these because this schema could describe neither a
-                    # partial nor a path; it now carries load_id, so a recovery holding a
-                    # snapshot that serves a load is listed pinned to it instead of dropped.
+                    # That guard withheld these because this schema could describe neither a partial nor a path; it now
+                    # carries load_id, so a recovery holding a snapshot that serves a load is listed pinned to it.
                     if not (
                         model_load_id is not None
                         and selected is not None
@@ -5544,9 +5169,9 @@ async def delete_cached_model(
 
 
 def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
-    """Absolute path of a cached repo (newest snapshot dir) or, with *variant*,
-    that quant's main GGUF file (first split of a sharded quant). Paths come
-    from the HF cache scan only, so callers can't probe arbitrary paths."""
+    """Absolute path of a cached repo (newest snapshot dir) or, with *variant*, that quant's main GGUF file
+    (first split of a sharded quant). Paths come from the HF cache scan only, so callers cannot probe
+    arbitrary paths."""
 
     cache_scans = _all_hf_cache_scans()
 
@@ -5722,13 +5347,9 @@ _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
-    """True only for local paths under an Unsloth data root.
-
-    Containment is decided lexically (no filesystem access) before the path is
-    touched, then the path is symlink-resolved and re-checked so a symlink
-    inside a root can't point the sizer outside it. A user-controlled path thus
-    can't trigger a scan of an arbitrary dir.
-    """
+    """True only for local paths under an Unsloth data root. Containment is decided lexically (no filesystem
+    access) before the path is touched, then the path is symlink-resolved and re-checked so a symlink inside
+    a root cannot point the sizer outside it."""
     from utils.paths import outputs_root, exports_root, studio_root
     from utils.paths.storage_roots import cache_root
 
@@ -5769,11 +5390,9 @@ def _is_sizable_local_path(model: str) -> bool:
 def _export_size_cached(
     model: str, hf_token: Optional[str]
 ) -> tuple[Optional[int], Optional[int], str]:
-    """Estimate a model's fp16/bf16-equivalent size in bytes (+ total params).
-
-    Memoizes successful results by model id; never raises (failures return
-    (None, None, "unavailable") and are not cached). Blocking I/O; call off-thread.
-    """
+    """Estimate a model's fp16/bf16-equivalent size in bytes (+ total params). Memoizes successful results by
+    model id; never raises (failures return (None, None, "unavailable") and are not cached). Blocking I/O;
+    call off-thread."""
     cached = _EXPORT_SIZE_CACHE.get(model)
     if cached is not None:
         return cached
