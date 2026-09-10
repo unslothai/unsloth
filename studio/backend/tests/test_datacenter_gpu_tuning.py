@@ -915,10 +915,11 @@ def test_explicit_p2p_opt_out_does_not_warn_about_corruption(monkeypatch):
 def test_auto_fit_selection_without_a_pinned_order_refuses_p2p(monkeypatch):
     """The gate verifies nvidia-smi physical ids; the child only resolves the same
     cards when CUDA_DEVICE_ORDER is pinned, which the launch does solely for an
-    explicit user pick. For an auto-fit selection [0,1] here can be [0,2] there, so
-    refuse rather than confirm NVLink for a pair that is not the one running."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
-    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    explicit user pick. On a box that is NOT uniformly NVLinked, [0,1] here can be
+    [0,2] there, so refuse rather than confirm NVLink for a pair that is not the
+    one about to run."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 4))
+    _use_topo(monkeypatch, TOPO_BRIDGED_4X)
     monkeypatch.delenv("CUDA_DEVICE_ORDER")
     # Auto-fit (the launch will not pin the order): withheld.
     assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
@@ -957,3 +958,23 @@ def test_datacenter_box_warns_once_not_twice(monkeypatch):
     env = {"GGML_CUDA_P2P": "1"}
     LlamaCppBackend._apply_datacenter_env(env, [0, 1])
     assert len([m for m in seen if "peer copies stay" in m]) == 1, seen
+
+
+def test_uniform_nvlink_box_keeps_p2p_without_a_pinned_order(monkeypatch):
+    """The NVSwitch case PR #6098 benchmarked. When every pair on the box is NV#,
+    the index mapping cannot change the answer: whichever cards the child
+    resolves, they are linked. Requiring a pinned order there would strip P2P from
+    every auto-fit launch on a DGX/HGX, which is the flagship configuration."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")
+    for sel in ([0, 1], [0, 7], list(range(8)), None):
+        assert LlamaCppBackend._p2p_veto_reason(sel) is None, sel
+
+
+def test_partially_bridged_box_still_needs_a_pinned_order(monkeypatch):
+    # Not uniform, so a permutation really can change which pair runs.
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 4))
+    _use_topo(monkeypatch, TOPO_BRIDGED_4X)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None

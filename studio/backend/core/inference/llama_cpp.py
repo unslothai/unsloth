@@ -9339,11 +9339,21 @@ class LlamaCppBackend:
             # for an auto-fit selection the child reads them in FASTEST_FIRST order
             # and [0,1] here can be [0,2] there. Refuse rather than confirm NVLink
             # for a pair that is not the one about to run (#10613).
-            if not (launch_order_pinned or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"):
+            #
+            # Unless every pair on the box is NVLinked, in which case the mapping
+            # cannot matter: whichever cards the child resolves, they are linked.
+            # That covers the NVSwitch DGX/HGX case PR #6098 benchmarked, which
+            # otherwise loses P2P on any auto-fit launch.
+            if not (
+                launch_order_pinned
+                or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+                or all(cls._TOPO_NVLINK_RE.match(v) for v in matrix.values())
+            ):
                 return _pcie(
-                    "the child's device order is not pinned to PCI_BUS_ID, so the "
-                    "verified GPUs may not be the ones it runs on; set "
-                    "CUDA_DEVICE_ORDER=PCI_BUS_ID to enable P2P here"
+                    "the child's device order is not pinned to PCI_BUS_ID and the "
+                    "box is not uniformly NVLinked, so the verified GPUs may not be "
+                    "the ones it runs on; set CUDA_DEVICE_ORDER=PCI_BUS_ID to "
+                    "enable P2P here"
                 )
             selected = sorted(set(gpu_indices))
         else:
