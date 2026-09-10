@@ -448,10 +448,17 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     (root / "keep.txt").write_text("", encoding = "utf-8")
-    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    # Valid only once every package landed in it: the live tree never does here.
+    built = {}
+    monkeypatch.setattr(
+        tv,
+        "_venv_dir_is_valid_and_undamaged",
+        lambda d, packages, *a, **k: built.get(str(d)) == len(packages),
+    )
     installed = []
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) and False)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    siblings = lambda: sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".venv_t5_550."))
     for value in ("1", "t", "Y", "true", "on"):
         monkeypatch.setenv("UV_OFFLINE", value)
         installed.clear()
@@ -459,23 +466,31 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
         assert (root / "keep.txt").is_file()
         # The cache was asked, beside the tree, never in it.
         assert installed == [tv._VENV_T5_550_PACKAGES[0]]
-        assert not (tmp_path / ".venv_t5_550.offline-staging").exists()
-        assert not (tmp_path / ".venv_t5_550.offline-old").exists()
+        assert siblings() == []
     # A warm cache: every package installs into the staging tree and the swap is whole.
     staged_into = []
 
     def warm_install(pkg, target):
         staged_into.append(target)
+        built[target] = built.get(target, 0) + 1
         return True
 
     monkeypatch.setattr(tv, "_install_to_dir", warm_install)
     monkeypatch.setenv("UV_OFFLINE", "1")
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
-    assert set(staged_into) == {str(tmp_path / ".venv_t5_550.offline-staging")}
+    assert len(set(staged_into)) == 1
+    assert set(staged_into) == {str(tmp_path / f".venv_t5_550.offline-staging-{tv.os.getpid()}")}
     assert not (root / "keep.txt").exists()
     assert (root / tv._STUDIO_OWNED_MARKER).is_file()
-    assert not (tmp_path / ".venv_t5_550.offline-staging").exists()
-    assert not (tmp_path / ".venv_t5_550.offline-old").exists()
+    assert siblings() == []
+    # A staging tree that installed every package but does not validate never swaps in.
+    (root / "keep.txt").write_text("", encoding = "utf-8")
+    built.clear()
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: True)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+    assert (root / "keep.txt").is_file()
+    assert siblings() == []
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     root.mkdir(exist_ok = True)
     (root / "keep.txt").write_text("", encoding = "utf-8")
     installed.clear()
@@ -533,6 +548,58 @@ def test_the_pip_fallback_stays_out_offline(tmp_path, monkeypatch):
     calls.clear()
     assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
     assert [c[0] for c in calls] == ["uv", tv.sys.executable]
+
+
+def test_an_unreadable_sidecar_counts_as_content(tmp_path, monkeypatch):
+    """A listing that fails with anything but "not there" cannot say the tree is empty,
+    and the path taken for "empty" begins with deleting it."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    (root / "keep.txt").write_text("", encoding = "utf-8")
+    assert tv._sidecar_has_content(str(tmp_path / "absent")) is False
+    real_listdir = tv.os.listdir
+
+    def denied(path):
+        if str(path) == str(root):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(tv.os, "listdir", denied)
+    assert tv._sidecar_has_content(str(root)) is True
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+    assert (root / "keep.txt").is_file()
+
+
+def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, monkeypatch):
+    """Killed between the swap's two renames, the live path is empty and the preserved
+    tree sits under the retired name; the next call puts it back before it decides
+    anything, rather than reading the empty path as a first install."""
+    root = tmp_path / ".venv_t5_550"
+    retired = tmp_path / ".venv_t5_550.offline-old-4242"
+    retired.mkdir()
+    (retired / "keep.txt").write_text("", encoding = "utf-8")
+    (retired / tv._STUDIO_OWNED_MARKER).write_text("", encoding = "utf-8")
+    monkeypatch.setattr(
+        tv, "_venv_dir_is_valid_and_undamaged", lambda d, *a, **k: (Path(d) / "keep.txt").is_file()
+    )
+    monkeypatch.setattr(tv, "_top_up_optional_packages", lambda *a, **k: None)
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) and False)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert (root / "keep.txt").is_file()
+    assert not retired.exists()
+    assert installed == []
+    # With the live tree in place, a retired copy is a leftover and goes.
+    leftover = tmp_path / ".venv_t5_550.offline-old-99"
+    leftover.mkdir()
+    (leftover / "x").write_text("", encoding = "utf-8")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert (root / "keep.txt").is_file()
+    assert not leftover.exists()
 
 
 def test_a_failed_install_keeps_a_tree_another_process_completed_meanwhile(tmp_path, monkeypatch):

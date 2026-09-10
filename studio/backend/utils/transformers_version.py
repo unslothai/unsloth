@@ -2756,12 +2756,60 @@ def _sidecar_has_content(venv_dir: str) -> bool:
     """
     try:
         return any(name != _STUDIO_OWNED_MARKER for name in os.listdir(venv_dir))
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
+    except OSError:
+        # Unreadable is not empty: the caller's next move on "empty" is to delete the
+        # tree, which must not happen on a listing that could not say what was there.
+        return True
+
+
+_OFFLINE_STAGING_SUFFIX = ".offline-staging-"
+_OFFLINE_RETIRED_SUFFIX = ".offline-old-"
+
+
+def _sidecar_siblings(venv_dir: str, suffix: str) -> list[str]:
+    """`<venv_dir><suffix>*` beside the sidecar, oldest first by modification time."""
+    base = venv_dir.rstrip("/\\")
+    parent, stem = os.path.split(base)
+    try:
+        names = os.listdir(parent or ".")
+    except OSError:
+        return []
+    found = [os.path.join(parent, n) for n in names if n.startswith(stem + suffix)]
+    return sorted(found, key = lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
+
+
+def _recover_retired_sidecar(venv_dir: str) -> None:
+    """Put back a tree an interrupted offline swap left retired.
+
+    The swap renames the live tree aside and the staging tree into place; killed between
+    the two, it leaves the live path empty and the preserved tree next door. Read as a
+    first install, an offline call with a cold cache would then fail with a usable tree
+    a rename away. A live tree with content makes retired copies leftovers, and they go.
+    """
+    retired = _sidecar_siblings(venv_dir, _OFFLINE_RETIRED_SUFFIX)
+    if not retired:
+        return
+    if os.path.isdir(venv_dir) and _sidecar_has_content(venv_dir):
+        for old in retired:
+            shutil.rmtree(old, ignore_errors = True)
+        return
+    newest = retired[-1]
+    shutil.rmtree(venv_dir, ignore_errors = True)
+    try:
+        os.rename(newest, venv_dir)
+        logger.warning("restored %s from %s (an earlier swap was interrupted)", venv_dir, newest)
+    except OSError as exc:
+        logger.warning("could not restore %s from %s: %s", venv_dir, newest, exc)
+        return
+    for old in retired[:-1]:
+        shutil.rmtree(old, ignore_errors = True)
 
 
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
+    _recover_retired_sidecar(venv_dir)
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
         _top_up_optional_packages(venv_dir, packages)
         return True
@@ -2813,9 +2861,20 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
     """Rebuild *venv_dir* from uv's cache into a staging directory beside it and swap
     only once every package landed; a cold cache leaves the tree exactly as it was."""
     base = venv_dir.rstrip("/\\")
-    staging = base + ".offline-staging"
-    retired = base + ".offline-old"
+    # Per process: two workers activating one stale tier both come through here, and a
+    # shared staging path would have the later one deleting the earlier one's build, or
+    # swapping a tree with only its remaining packages over a completed sidecar.
+    staging = f"{base}{_OFFLINE_STAGING_SUFFIX}{os.getpid()}"
+    retired = f"{base}{_OFFLINE_RETIRED_SUFFIX}{os.getpid()}"
     shutil.rmtree(staging, ignore_errors = True)
+    # Staging trees of processes long gone (a kill mid-build) are not worth keeping; an
+    # hour is far beyond any build here, and a live one is younger than that.
+    for stale in _sidecar_siblings(venv_dir, _OFFLINE_STAGING_SUFFIX):
+        try:
+            if stale != staging and time.time() - os.path.getmtime(stale) > 3600:
+                shutil.rmtree(stale, ignore_errors = True)
+        except OSError:
+            pass
     # An empty directory takes the ordinary path, and _install_to_dir asks only the
     # cache under the offline switch; a failure removes the staging tree itself.
     if not _ensure_venv_dir(staging, packages, label):
@@ -2826,6 +2885,12 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
             label,
             venv_dir,
         )
+        return False
+    # Checked right before the swap, not only at the end of the install commands: only
+    # a tree that passes the same predicate the activation applies may replace the live one.
+    if not _venv_dir_is_valid_and_undamaged(staging, packages):
+        shutil.rmtree(staging, ignore_errors = True)
+        logger.warning("the offline rebuild of %s did not validate; %s left as is", label, venv_dir)
         return False
     try:
         shutil.rmtree(retired, ignore_errors = True)
