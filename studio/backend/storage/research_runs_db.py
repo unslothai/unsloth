@@ -385,11 +385,9 @@ def create_run(
 def _unbind_assistant_locked(
     conn: sqlite3.Connection, previous_id: str | None, next_id: str | None
 ) -> None:
-    """Drop the research binding from the reply the run is leaving behind.
-
-    Both replies would otherwise carry the same run id, and each renders whatever that run is
-    doing now -- so the new question's live card would appear twice.
-    """
+    """Drop the research binding from the reply the run is leaving behind. Both replies would otherwise
+    carry the same run id, and each renders whatever that run is doing now, so the new question's
+    live card would appear twice."""
     if not previous_id or previous_id == next_id:
         return
     row = conn.execute(
@@ -426,11 +424,9 @@ def _stopped_run_locked(conn: sqlite3.Connection, thread_id: str) -> sqlite3.Row
 
 
 def research_spent(thread_id: str) -> bool:
-    """Whether the thread's research is used up, which is what the composer greys out on.
-
-    The claim itself outlives a stopped run so the same run can be re-pointed, so a held
-    claim alone must not read as spent: after a Stop, research is still on offer.
-    """
+    """Whether the thread's research is used up, which is what the composer greys out on. The claim
+    itself outlives a stopped run so the same run can be re-pointed, so a held claim alone must not
+    read as spent: after a Stop, research is still on offer."""
     conn = get_connection()
     try:
         claim = conn.execute(
@@ -450,12 +446,10 @@ def rebind_cancelled(
     expected_project_id: str | None | object = _EXPECTED_PROJECT_ID_UNSET,
     project_context_snapshot: dict[str, Any] | None = None,
 ) -> dict | None:
-    """Re-point the thread's stopped run at a newer message, or return None.
-
-    A thread holds one Deep Research run for its lifetime, so a run the user stopped would
-    otherwise refuse every later question in that chat. Stopping kept nothing, so the same
-    run is reset and pointed at the new message instead of a second one being created.
-    """
+    """Re-point the thread's stopped run at a newer message, or return None. A thread holds one Deep
+    Research run for its lifetime, so a run the user stopped would otherwise refuse every later
+    question in that chat. Stopping kept nothing, so the same run is reset and pointed at the new
+    message instead of a second one being created."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -924,8 +918,8 @@ def retry(run_id: str, max_retries: int = 3) -> str:
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
         # Counted per question, not per run row: a thread re-points one run at each new question, so a raw
-        # retry_count would hand a fresh question whatever the stopped one left over, and nothing at all
-        # once the budget was spent.
+        # retry_count would hand a fresh question whatever the stopped one left over, and nothing at all once the
+        # budget was spent.
         spent = conn.execute(
             "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
             "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
@@ -993,11 +987,9 @@ _CLAIMABLE_SQL = """SELECT r.id FROM research_runs r
 
 
 def _has_claimable(now: int) -> bool:
-    """Read-only probe for claimable work, taking no write lock.
-
-    The supervisor polls twice a second forever and almost every poll finds nothing, so
-    opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock 2x/second and
-    any slow writer elsewhere became a stream of "database is locked" here.
+    """Read-only probe for claimable work, taking no write lock. The supervisor polls twice a second forever and
+    almost every poll finds nothing, so opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock
+    2x/second and any slow writer elsewhere became a stream of "database is locked" here.
     """
     conn = get_connection()
     try:

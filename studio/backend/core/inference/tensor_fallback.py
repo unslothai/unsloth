@@ -69,7 +69,6 @@ async def load_with_tensor_fallback(
         "(this model may not support tensor parallelism)",
         label,
     )
-    # explicit --split-mode layer: leftover extras or an inherited LLAMA_ARG_SPLIT_MODE=tensor would re-crash the retry
     # Force --split-mode layer (CLI wins over env) so neither leftover extras nor an inherited
     # LLAMA_ARG_SPLIT_MODE=tensor can re-engage tensor and re-crash the retry; load_model and the child both honor the
     # explicit layer override.

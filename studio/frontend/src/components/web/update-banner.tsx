@@ -12,9 +12,8 @@ import { Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-// macOS, Linux and WSL update via the POSIX installer; only native Windows
-// (PowerShell) needs the irm one-liner. Any non-windows device_type (incl. wsl)
-// resolves to the curl command below.
+// macOS, Linux and WSL update via the POSIX installer; only native Windows (PowerShell) needs the
+// irm one-liner. Any non-windows device_type (incl. wsl) resolves to the curl command below.
 const STUDIO_INSTALL_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
 const STUDIO_INSTALL_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";

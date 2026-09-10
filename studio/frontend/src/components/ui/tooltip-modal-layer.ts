@@ -22,11 +22,10 @@ export function isBlockedByActiveModal(element: HTMLElement): boolean {
 }
 
 // Whether a modal layer is up at all, shared by every tooltip. Radix sets body pointer-events to
-// none while one is, which is also when a hovered trigger stops receiving pointerleave, so an
-// open tooltip hangs over the dialog with nothing able to close it.
-//
-// Two observers, because the questions cost differently: "is a modal up" is one attribute on one
-// node; "which layer owns a trigger" needs the whole subtree, and only matters while one is up.
+// none while one is, which is also when a hovered trigger stops receiving pointerleave, so an open
+// tooltip hangs over the dialog with nothing able to close it. Two observers, because the questions
+// cost differently: "is a modal up" is one attribute on one node; "which layer owns a trigger"
+// needs the whole subtree, and only matters while one is up.
 let modalLayerUp = false;
 const modalLayerListeners = new Set<() => void>();
 let bodyLayerObserver: MutationObserver | null = null;

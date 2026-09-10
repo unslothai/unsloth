@@ -111,12 +111,10 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather
-  // than clamping it, so an overstated cap is a failed request and an
-  // understated one only a shorter answer. First match wins: a bare family
-  // prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
-  // `-chat-latest` aliases go first because they cap at 16,384 whatever their
-  // family does.
+  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather than clamping it, so
+  // an overstated cap is a failed request and an understated one only a shorter answer. First match
+  // wins: a bare family prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
+  // `-chat-latest` aliases go first because they cap at 16,384 whatever their family does.
   {
     providerType: "openai",
     prefixes: [
@@ -146,7 +144,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     cap: 4096,
   },
   { providerType: "openai", prefixes: ["gpt-4"], cap: 8192 },
-  // Anthropic
   {
     providerType: "anthropic",
     prefixes: [
@@ -178,7 +175,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     prefixes: ["claude-opus-4-1", "claude-opus-4-20250514"],
     cap: 32000,
   },
-  // Gemini
   {
     providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
@@ -901,10 +897,9 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
-  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked
-  // BEFORE the broader `gemini-2.5-flash` prefix.
-  // The backend maps "minimal" to that 512 floor in _stream_gemini.
-  // https://ai.google.dev/gemini-api/docs/thinking
+  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked BEFORE the
+  // broader `gemini-2.5-flash` prefix. The backend maps "minimal" to that 512 floor in
+  // _stream_gemini. https://ai.google.dev/gemini-api/docs/thinking
   if (m.startsWith("gemini-2.5-flash-lite")) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
