@@ -3024,3 +3024,91 @@ def test_the_hybrid_attention_count_divides_the_way_llama_cpp_does():
     )
     assert layout.n_attention_layers == 7
     assert total == layout.kv_bytes(8192) + layout.recurrent_bytes
+
+
+_QWEN4EXP_FIELDS = {
+    "general.architecture": "qwen4exp",
+    "qwen4exp.block_count": 48,
+    "qwen4exp.attention.head_count_kv": 2,
+    "qwen4exp.attention.head_count": 24,
+    "qwen4exp.embedding_length": 2560,
+    "qwen4exp.attention.key_length": 256,
+    "qwen4exp.attention.value_length": 256,
+    "qwen4exp.attention.indexer.key_length": 128,
+    "qwen4exp.full_attention_interval": 4,
+    "qwen4exp.ssm.inner_size": 6144,
+    "qwen4exp.ssm.state_size": 128,
+    "qwen4exp.ssm.group_count": 16,
+    "qwen4exp.ssm.conv_kernel": 4,
+    "qwen4exp.hyper_connection.count": 4,
+    "qwen4exp.ple.layers": [1],
+    "qwen4exp.ple.ngram_size": 3,
+    "qwen4exp.ple.conv_kernel": 4,
+    "qwen4exp.expert_count": 512,
+    "qwen4exp.expert_used_count": 10,
+    "qwen4exp.context_length": 262144,
+}
+
+
+def _qwen4exp_backend(**extra):
+    """unsloth/Qwen3.8-Flash-Next-GGUF: hybrid plus a lightning-indexer cache."""
+    b = _qwen3next_backend(
+        _architecture = "qwen4exp",
+        _n_heads = 24,
+        _embedding_length = 2560,
+        _ssm_inner_size = 6144,
+        _full_attention_interval = 4,
+    )
+    b._indexer_key_length = 128
+    b._hyper_connection_count = 4
+    b._ple_layers = [1]
+    b._ple_ngram_size = 3
+    b._ple_conv_kernel = 4
+    for key, value in extra.items():
+        setattr(b, key, value)
+    return b
+
+
+@pytest.mark.parametrize("n_ctx,before_mib,after_mib", [(8192, 304, 377), (65536, 1648, 2225)])
+def test_the_indexer_cache_is_charged_on_the_architecture_that_builds_one(
+    n_ctx, before_mib, after_mib
+):
+    """llama-model.cpp:create_memory routes qwen4exp to llama_memory_hybrid_idx, which
+    allocates a THIRD cache over the dense-attention rows: one head of
+    attention.indexer.key_length for K and one of attention.value_length for V, at the
+    full context (llama-memory-hybrid-idx.cpp fills n_head_kv_arr with 1 and overrides
+    n_embd_head_k_full, leaving n_embd_head_v alone). Neither reader knew the key
+    existed, so Qwen3.8-Flash-Next was 19% short at 8k and 26% short at 64k -- an
+    under-count, which loses the load. The PLE conv history is a row of the recurrent
+    cache in its own right (llama-memory-recurrent.cpp allocates cache_ple_r_l,
+    llama-hparams.cpp:ple_conv_state sizes it) and was missing too."""
+    from test_offload_planner import _StubReader, _StubTensor, _layout_from_reader
+
+    b = _qwen4exp_backend()
+    total = b._estimate_kv_cache_bytes(
+        n_ctx, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    attention = 12 * n_ctx * 2 * (256 + 256) * 2
+    indexer = 12 * n_ctx * (128 + 256) * 2
+    mamba = 36 * (30720 + 786432) * 4
+    ple = 1 * (3 * 3 * 4 * 2560) * 4
+    assert total == attention + indexer + mamba + ple
+    assert round(total / MIB) == after_mib
+    assert round((total - indexer - ple) / MIB) == before_mib
+
+    layout = _layout_from_reader(
+        _StubReader(
+            _QWEN4EXP_FIELDS,
+            [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(48)],
+        )
+    )
+    assert total == layout.kv_bytes(n_ctx) + layout.recurrent_bytes
+
+    # Only that architecture: the same shape under any other arch keeps two caches.
+    plain = _qwen4exp_backend(_architecture = "qwen3next")
+    assert (
+        plain._estimate_kv_cache_bytes(
+            n_ctx, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+        )
+        == total - indexer
+    )

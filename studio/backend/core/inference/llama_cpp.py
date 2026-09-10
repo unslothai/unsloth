@@ -6483,6 +6483,11 @@ class LlamaCppBackend:
         self._sliding_window_pattern: Optional[list[bool]] = None
         self._full_attention_interval: Optional[int] = None
         self._recurrent_layers: Optional[list[bool]] = None
+        self._indexer_key_length: Optional[int] = None
+        self._hyper_connection_count: Optional[int] = None
+        self._ple_layers: Optional[list[int]] = None
+        self._ple_ngram_size: Optional[int] = None
+        self._ple_conv_kernel: Optional[int] = None
         self._feed_forward_length_by_layer: Optional[list[int]] = None
         self._kv_lora_rank: Optional[int] = None
         self._key_length_mla: Optional[int] = None
@@ -12568,6 +12573,51 @@ class LlamaCppBackend:
         )
         return (n_attn, n_recurrent) if known else None
 
+    def _indexer_cache_bytes(
+        self, n_attn: int, total_cells: int, bpe_k: float, bpe_v: float
+    ) -> int:
+        """The lightning-indexer KV cache, on the architectures that build one.
+
+        llama-model.cpp:create_memory routes qwen4exp to llama_memory_hybrid_idx, whose
+        third cache runs over the dense-attention rows only (its filter_idx is
+        filter_attn) and holds the FULL n_ctx_seq, like the attention cache beside it.
+        llama-memory-hybrid-idx.cpp fills n_head_kv_arr with 1 and sets
+        n_embd_head_k_full to indexer_head_size, leaving n_embd_head_v alone, so it is
+        one head of attention.indexer.key_length for K against one of
+        attention.value_length for V. 576 MiB at 65536 on Qwen3.8-Flash-Next, which is
+        26% of the cache and was in neither reader.
+        """
+        from core.inference.offload_layout import INDEXER_CACHE_ARCHS
+
+        arch = str(getattr(self, "_architecture", None) or "").strip().lower()
+        key_len = getattr(self, "_indexer_key_length", None) or 0
+        val_len = self._kv_value_length or 0
+        if arch not in INDEXER_CACHE_ARCHS or not key_len or not val_len:
+            return 0
+        return int(n_attn * total_cells * (key_len * bpe_k + val_len * bpe_v))
+
+    def _ple_conv_state_bytes(
+        self,
+        n_parallel: int = 1,
+        n_rs_seq: int = 0,
+    ) -> int:
+        """The per-layer-embedding conv history, an f32 row of the recurrent cache.
+
+        Its own tensor, not part of the delta-net conv state next door
+        (llama-memory-recurrent.cpp allocates cache_ple_r_l separately), sized by
+        llama-hparams.cpp:ple_conv_state and held per sequence like the rest.
+        """
+        layers = getattr(self, "_ple_layers", None)
+        if not layers:
+            return 0
+        width = (
+            max(0, int(getattr(self, "_ple_conv_kernel", None) or 0) - 1)
+            * int(getattr(self, "_ple_ngram_size", None) or 0)
+            * int(getattr(self, "_hyper_connection_count", None) or 0)
+            * int(self._embedding_length or 0)
+        )
+        return int(len(layers) * width * 4 * max(1, n_parallel) * max(1, 1 + n_rs_seq))
+
     def _recurrent_state_bytes(self, n_parallel: int = 1) -> int:
         """VRAM for the conv + recurrent state of linear-attention layers.
 
@@ -12673,7 +12723,7 @@ class LlamaCppBackend:
         n_embd_s = d_state * d_inner
         return int(
             n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel) * max(1, 1 + n_rs_seq)
-        )
+        ) + self._ple_conv_state_bytes(n_parallel, n_rs_seq)
 
     def _legacy_head_dim(self) -> int:
         """Head-dim fallback for GGUFs without explicit key/value dims. Reached
@@ -12809,14 +12859,16 @@ class LlamaCppBackend:
         if hybrid_split is not None:
             n_attn = hybrid_split[0]
             recurrent = self._mamba_recurrent_state_bytes(n_parallel)
+            indexer = self._indexer_cache_bytes(n_attn, total_cells, bpe_k, bpe_v)
             if key_len is not None and val_len is not None:
                 v_width = n_kv * val_len if flash_attn else self._max_kv_value_width(val_len)
                 return (
                     int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
                     + recurrent
+                    + indexer
                 )
             head_dim = self._legacy_head_dim()
-            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent
+            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent + indexer
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -12923,6 +12975,11 @@ class LlamaCppBackend:
                 "_ssm_conv_kernel",
                 "_full_attention_interval",
                 "_recurrent_layers",
+                "_indexer_key_length",
+                "_hyper_connection_count",
+                "_ple_layers",
+                "_ple_ngram_size",
+                "_ple_conv_kernel",
                 "_feed_forward_length_by_layer",
                 "_key_length_mla",
                 "_value_length_mla",
@@ -14120,6 +14177,11 @@ class LlamaCppBackend:
         self._sliding_window_pattern = None
         self._full_attention_interval = None
         self._recurrent_layers = None
+        self._indexer_key_length = None
+        self._hyper_connection_count = None
+        self._ple_layers = None
+        self._ple_ngram_size = None
+        self._ple_conv_kernel = None
         self._feed_forward_length_by_layer = None
         self._kv_lora_rank = None
         self._key_length_mla = None
@@ -14248,6 +14310,11 @@ class LlamaCppBackend:
                                         f"{arch}.attention.value_length_swa": "kv_value_length_swa",
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
                                         f"{arch}.attention.recurrent_layers": "recurrent_layers",
+                                        f"{arch}.attention.indexer.key_length": "indexer_key_length",
+                                        f"{arch}.hyper_connection.count": "hyper_connection_count",
+                                        f"{arch}.ple.layers": "ple_layers",
+                                        f"{arch}.ple.ngram_size": "ple_ngram_size",
+                                        f"{arch}.ple.conv_kernel": "ple_conv_kernel",
                                         f"{arch}.ssm.inner_size": "ssm_inner_size",
                                         f"{arch}.ssm.state_size": "ssm_state_size",
                                         f"{arch}.ssm.group_count": "ssm_group_count",
@@ -14302,6 +14369,8 @@ class LlamaCppBackend:
                                     sliding_window_pattern_period = None
                                 elif attr == "recurrent_layers" and val_a is not None:
                                     self._recurrent_layers = [bool(x) for x in val_a]
+                                elif attr == "ple_layers" and val_a is not None:
+                                    self._ple_layers = [int(x) for x in val_a]
                                 elif attr == "feed_forward_length" and val_a is not None:
                                     # Kept apart from the scalar _feed_forward_length the compute-buffer
                                     # estimate reads: nemotron_h's is a per-layer array.
@@ -27193,6 +27262,11 @@ class LlamaCppBackend:
             self._sliding_window_pattern = None
             self._full_attention_interval = None
             self._recurrent_layers = None
+            self._indexer_key_length = None
+            self._hyper_connection_count = None
+            self._ple_layers = None
+            self._ple_ngram_size = None
+            self._ple_conv_kernel = None
             self._feed_forward_length_by_layer = None
             self._kv_lora_rank = None
             self._key_length_mla = None

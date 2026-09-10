@@ -282,6 +282,13 @@ _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
 }
 
 
+# Architectures llama.cpp gives a third, lightning-indexer KV cache over the dense-attention rows
+# (llama-model.cpp:create_memory -> llama_memory_hybrid_idx, gated on indexer_head_size > 0). The cache is MQA: one
+# head, attention.indexer.key_length wide for K, and the model's own attention.value_length for V, since
+# llama-memory-hybrid-idx.cpp overrides n_head_kv_arr and n_embd_head_k_full and leaves n_embd_head_v alone.
+INDEXER_CACHE_ARCHS: frozenset[str] = frozenset({"qwen4exp"})
+
+
 # Architectures whose recurrent rows hold a Kimi-Delta-Attention state rather than a Mamba one, so llama.cpp sizes
 # them from kda.head_dim and the head count (llama-hparams.cpp:n_embd_r, n_embd_s). Named rather than derived from the
 # key's presence: an unlisted KDA family (kimi-linear, bailingmoe3) has no measured figure to check the shape against,
@@ -426,6 +433,16 @@ def _layout_from_readers(readers) -> ModelLayout:
 
     kv_per_token = kv_heads_total * (int(key_len) + int(val_len)) * 2
 
+    # The indexer cache holds the full n_ctx_seq like the attention one does, so the product CAN express it: one head
+    # of attention.indexer.key_length for K plus one of value_length for V, on every dense-attention row.
+    indexer_key_len = (
+        int(_field(reader, f"{arch}.attention.indexer.key_length") or 0)
+        if arch in INDEXER_CACHE_ARCHS
+        else 0
+    )
+    if indexer_key_len:
+        kv_per_token += int(n_attention) * (indexer_key_len + int(val_len)) * 2
+
     # charging every layer the full context is the safe direction for the TOTAL
     # Charging every layer the full context above is the safe direction for the TOTAL; what it cannot say is which
     # layers hold the big caches.
@@ -458,6 +475,18 @@ def _layout_from_readers(readers) -> ModelLayout:
         n_embd_r = 3 * max(0, (d_conv or 4) - 1) * d_inner_kda
         n_embd_s = kda_head_dim * kda_head_dim * int(n_head)
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
+
+    # The PLE conv history is a row of its own in the recurrent cache, not part of the delta-net conv state next door
+    # (llama-memory-recurrent.cpp allocates cache_ple_r_l separately, sized by llama-hparams.cpp:ple_conv_state).
+    ple_layers = _field(reader, f"{arch}.ple.layers")
+    if recurrent and isinstance(ple_layers, (list, tuple)) and ple_layers:
+        ple_conv_state = (
+            max(0, int(_field(reader, f"{arch}.ple.conv_kernel") or 0) - 1)
+            * int(_field(reader, f"{arch}.ple.ngram_size") or 0)
+            * int(_field(reader, f"{arch}.hyper_connection.count") or 0)
+            * int(n_embd or 0)
+        )
+        recurrent += len(ple_layers) * ple_conv_state * 4
 
     # ssm.*/kda.* keys say the model HAS recurrent layers; nothing above could say which.
     if not recurrent_known and ((d_inner and d_state and d_conv) or kda_head_dim):
