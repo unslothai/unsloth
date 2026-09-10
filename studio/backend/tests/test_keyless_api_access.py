@@ -132,6 +132,30 @@ def test_exact_route_matrix_matches_registered_topology():
     assert intended <= registered
 
 
+@pytest.mark.parametrize("token", [None, "not-needed"])
+def test_resident_model_discovery_preserves_keyless_inference_access(token):
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+
+    def discovery_request(method = "GET", path = "/api/inference/loaded-models"):
+        if token is None:
+            return request_for(path = path, method = method)
+        return bearer_request(token, path = path, method = method)
+
+    assert subject_of(discovery_request()) == storage.DEFAULT_ADMIN_USERNAME
+    for method, path in (
+        ("POST", "/api/inference/loaded-models"),
+        ("POST", "/api/inference/load"),
+        ("GET", "/api/inference/status"),
+    ):
+        with pytest.raises(HTTPException):
+            subject_of(discovery_request(method, path))
+
+    set_keyless_api_access("off")
+    with pytest.raises(HTTPException):
+        subject_of(discovery_request())
+
+
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
     import storage.studio_db as studio_db
 
