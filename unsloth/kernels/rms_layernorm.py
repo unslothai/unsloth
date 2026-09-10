@@ -86,7 +86,7 @@ def _rms_layernorm_backward(
     r += row_idx * r_row_stride
 
     if GEMMA:
-        dX += row_idx * dY_row_stride
+        dX += row_idx * dX_row_stride
     else:
         dX = dY
 
@@ -165,7 +165,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     ):
         shape = X.shape
         dim: int = shape[-1]
-        X = X.reshape(-1, dim)
+        X = X.reshape(-1, dim).contiguous()
+        # kernels read W at unit stride, and this W is the one saved for backward.
+        W = W.contiguous()
         n_rows: int
         n_cols: int
         n_rows, n_cols = X.shape
@@ -204,7 +206,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def backward(ctx, dY: torch.Tensor):
         shape = dY.shape
         dim: int = shape[-1]
-        dY = dY.reshape(-1, dim)
+        dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
         n_rows: int
         n_cols: int
