@@ -59,6 +59,13 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
+  /**
+   * Capability names the provider advertises for this model ("thinking",
+   * "tools", "vision", ...). Only Ollama's native catalog reports these; absent
+   * means the provider does not describe capabilities per model, which is not
+   * the same as reporting none.
+   */
+  capabilities?: string[] | null;
 }
 
 export interface ProviderTestResult {

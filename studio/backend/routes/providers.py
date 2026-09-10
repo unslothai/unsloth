@@ -770,6 +770,19 @@ async def test_provider(
 # ── List models from provider ─────────────────────────────────────
 
 
+def _model_capability_names(model: dict) -> Optional[list[str]]:
+    """Capability names off a catalog row, or None when it declares none.
+
+    Only Ollama's native catalog carries these today, but any OpenAI-compatible
+    server is free to put its own shape under the same key, so an unexpected one
+    is dropped rather than failing the whole listing with a validation error.
+    """
+    values = model.get("capabilities")
+    if not isinstance(values, list):
+        return None
+    return [name for name in values if isinstance(name, str) and name]
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -870,6 +883,7 @@ async def list_provider_models(
                 display_name = m.get("id", ""),
                 context_length = m.get("context_length") or m.get("context_window"),
                 owned_by = m.get("owned_by"),
+                capabilities = _model_capability_names(m),
             )
             for m in models
         ]
