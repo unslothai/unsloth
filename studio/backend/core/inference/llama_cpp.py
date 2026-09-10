@@ -6192,6 +6192,7 @@ def _pending_placement_cleared(backend):
         yield
     finally:
         backend._memory_launch_pending = False
+        backend._memory_pending_settings = None
 
 
 @contextlib.contextmanager
@@ -6648,6 +6649,10 @@ class LlamaCppBackend:
         # spawned, so a save landing in that window still has a launch to
         # compare against.
         self._memory_launch_pending: bool = False
+        # The (keep_resident, no_ram_reserve) pair a launch in flight is committed to,
+        # published WITH the marker: a save during the placement work has no resolved
+        # state to compare against yet, only the snapshot the child will use.
+        self._memory_pending_settings: Optional[tuple[bool, bool]] = None
         # True when the resident model came from an explicit UI load rather than
         # the OpenAI API, so the idle unload can be scoped to API-loaded models.
         # Not on GgufLoadIntent: that is compared for equality to detect
@@ -12664,7 +12669,8 @@ class LlamaCppBackend:
         """Whether this CUDA build has no cudart to load.
 
         The predicate behind ``_warn_missing_windows_cuda_runtime``, split out
-        because it is also a placement fact: without cudart the CUDA ggml backend
+        because it is also a placement fact: without both linked runtime DLLs
+        (``cudart64_*`` and ``cublas64_*``) the CUDA ggml backend
         does not load, ``--list-devices`` prints "(none)" and the child runs on the
         CPU, while host probes still report the card. A DirectIO decision taken on
         the filename alone would then buffer the whole model in host RAM.
@@ -12676,12 +12682,18 @@ class LlamaCppBackend:
         # single-backend, so the ggml CUDA lib beside llama-server IS the build.
         if not os.path.isfile(os.path.join(binary_dir, "ggml-cuda.dll")):
             return False
+        # BOTH, because the prebuilt links both: cudart alone does not make the plugin
+        # loadable, and a venv can hold one without the other.
+        needed = {"cudart64_", "cublas64_"}
+        found: set[str] = set()
         for directory in path_dirs:
             try:
                 names = os.listdir(directory)
             except OSError:
                 continue
-            if any(name.lower().startswith("cudart64_") for name in names):
+            lowered = [name.lower() for name in names]
+            found |= {stem for stem in needed if any(n.startswith(stem) for n in lowered)}
+            if found >= needed:
                 return False
         return True
 
@@ -12708,10 +12720,11 @@ class LlamaCppBackend:
             ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
             cls._missing_cuda_runtime_warned.add(binary_dir)
             logger.warning(
-                "llama.cpp is the CUDA build (%s) but no cudart64_*.dll was found on its "
-                "DLL search path. The CUDA ggml backend will not load and llama-server "
-                "will report no devices. This is what a CPU-only PyTorch in the managed "
-                "environment looks like; repair the installation to restore GPU support.",
+                "llama.cpp is the CUDA build (%s) but cudart64_*.dll / cublas64_*.dll "
+                "were not both found on its DLL search path. The CUDA ggml backend will "
+                "not load and llama-server will report no devices. This is what a "
+                "CPU-only PyTorch in the managed environment looks like; repair the "
+                "installation to restore GPU support.",
                 ggml_cuda,
             )
         except Exception as e:
@@ -24015,6 +24028,12 @@ class LlamaCppBackend:
                 # answered reload_required=false about a child already committed to the
                 # older settings. _with_gguf_load_marker clears it however this exits.
                 self._memory_launch_pending = True
+                # The marker alone is not enough: `_memory_state` is still None until the
+                # flags are resolved, and the comparator reads None as "not governed by
+                # this policy" and answers satisfied. What the child IS committed to from
+                # here is the toggle snapshot, so publish that and let a save be compared
+                # against it directly.
+                self._memory_pending_settings = _mem_settings
                 # Armed HERE, not at the load call: that also covers the Hub download,
                 # and rows captured before it would price the fit against VRAM that has
                 # since been allocated. The scope on the load call only guarantees the

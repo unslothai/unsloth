@@ -2860,9 +2860,10 @@ class TestEveryDeviceSetChangeReAsks:
         src = self._src()
         arm = src[src.index("def _dio_decision_for(") :]
         arm = arm[: arm.index("return pair,")]
-        assert "host_resident = self._weights_in_host_memory(" in arm
-        assert "not host_resident" in arm
-        assert "fully_gpu_offloaded = fully_offloaded," in arm
+        flat = "".join(arm.split())
+        assert "host_resident=self._weights_in_host_memory(" in flat
+        assert "nothost_resident" in flat
+        assert "fully_gpu_offloaded=fully_offloaded," in flat
 
     def test_the_decision_answers_all_three_questions(self):
         src = self._src()
@@ -2998,9 +2999,10 @@ class TestTheVulkanProbeMemoIsScopedToThePlacement:
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect, core.inference.llama_cpp as m
 
-        assert "_vulkan_probe_memo_scope(), _pending_placement_cleared(" in inspect.getsource(
-            m._with_gguf_load_marker
-        )
+        # Whitespace-normalised: a formatter may split the with-statement across
+        # lines, and pinning the wrapping made that read as a behaviour change.
+        flat = "".join(inspect.getsource(m._with_gguf_load_marker).split())
+        assert "_vulkan_probe_memo_scope(),_pending_placement_cleared(self)," in flat
         assert "_arm_vulkan_probe_memo()" in inspect.getsource(LlamaCppBackend.load_model)
 
 
@@ -3058,14 +3060,37 @@ class TestALoadableGpuPluginIsRequired:
         empty.mkdir()
         assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(empty)])
 
-    def test_cudart_on_the_path_clears_it(self, tmp_path):
+    def test_both_runtime_libs_on_the_path_clear_it(self, tmp_path):
+        """The prebuilt links cudart64 AND cublas64; either one absent and the
+        plugin does not load."""
         from core.inference.llama_cpp import LlamaCppBackend
 
         (tmp_path / "ggml-cuda.dll").write_text("")
         libs = tmp_path / "libs"
         libs.mkdir()
         (libs / "cudart64_12.dll").write_text("")
+        (libs / "cublas64_12.dll").write_text("")
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
+
+    @pytest.mark.parametrize("present", ["cudart64_12.dll", "cublas64_12.dll"])
+    def test_only_one_of_the_pair_is_still_missing(self, tmp_path, present):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        libs = tmp_path / "libs"
+        libs.mkdir()
+        (libs / present).write_text("")
+        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
+
+    def test_the_pair_may_be_split_across_path_entries(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        (a / "cudart64_12.dll").write_text("")
+        (b / "cublas64_12.dll").write_text("")
+        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(a), str(b)])
 
     def test_a_non_cuda_build_is_never_missing(self, tmp_path):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -3184,3 +3209,48 @@ class TestTheSnapshotCarriesTheDioTokens:
         assert src.count("_mem_dio_flags_for_cmd = list(self._memory_dio_flags)") == 2
         assert src.count("_mem_dio_flags_for_cmd,") == 2  # both snapshots
         assert "self._memory_dio_flags,\n" in src  # the restore
+
+
+class TestASaveDuringPlacementIsAnswered:
+    """The marker makes the route see a pending launch, but `_memory_state` is None
+    until the flags resolve and the comparator reads None as "not governed". What
+    the child is committed to from the snapshot onwards is the toggle pair, so the
+    route answers from that."""
+
+    def test_the_launch_publishes_what_it_is_committed_to(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        marker = src.index("self._memory_launch_pending = True")
+        assert "self._memory_pending_settings = _mem_settings" in src
+        assert src.index("self._memory_pending_settings = _mem_settings") > marker
+
+    def test_it_is_dropped_with_the_marker(self):
+        import core.inference.llama_cpp as m
+
+        backend = type(
+            "_B", (), {"_memory_launch_pending": True, "_memory_pending_settings": (False, True)}
+        )()
+        with m._pending_placement_cleared(backend):
+            pass
+        assert backend._memory_launch_pending is False
+        assert backend._memory_pending_settings is None
+
+    def test_a_save_that_changes_a_toggle_asks_for_a_reload(self, monkeypatch):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(rs, "_active_launch_placement", lambda: (None, False, True, None, False))
+        monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, False))
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        assert rs._model_memory_reload_required() is True
+
+    def test_a_save_matching_the_committed_pair_does_not(self, monkeypatch):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(rs, "_active_launch_placement", lambda: (None, False, True, None, False))
+        monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, True))
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        assert rs._model_memory_reload_required() is False

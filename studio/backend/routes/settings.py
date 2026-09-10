@@ -926,6 +926,20 @@ def _active_launch_placement():
         return _NO_LAUNCH, False, True, None, False
 
 
+def _pending_launch_settings():
+    """The ``(keep_resident, no_ram_reserve)`` a launch in flight is committed to, or
+    None when nothing is mid-placement."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        if not bool(getattr(backend, "_memory_launch_pending", False)):
+            return None
+        return getattr(backend, "_memory_pending_settings", None)
+    except Exception:
+        return None
+
+
 def _model_memory_reload_required() -> bool:
     """True when the loaded process's memory placement contradicts the settings.
 
@@ -943,6 +957,16 @@ def _model_memory_reload_required() -> bool:
     state, policy_active, mlock_applicable, direct_io, dio_applicable = _active_launch_placement()
     if state is _NO_LAUNCH:
         return False
+
+    # A launch whose flags are not resolved yet has no state to compare, and the
+    # comparator reads None as "not governed by this policy". What it IS committed to
+    # is the toggle snapshot it took, so answer from that: a save that changes either
+    # toggle will not reach this child.
+    pending = _pending_launch_settings()
+    if state is None and pending is not None:
+        from utils.model_memory_settings import get_model_memory_settings
+
+        return get_model_memory_settings() != pending
 
     # Same predicate the duplicate-load comparator uses.
     from core.inference.llama_server_args import memory_state_satisfies_settings
