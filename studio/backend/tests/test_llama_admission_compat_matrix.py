@@ -249,9 +249,10 @@ class TestOldCallers:
                 is None
             ), f"{later} was appended without an optional default"
         plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
-        assert (
-            plain[-1] == "admission_output_allowance"
-        ), f"a parameter was inserted rather than appended; signature ends {plain[-3:]}"
+        assert plain[-2:] == [
+            "admission_output_allowance",
+            "on_prompt_fitted",
+        ], f"a parameter was inserted rather than appended; signature ends {plain[-4:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect
