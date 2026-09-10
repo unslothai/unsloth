@@ -71,6 +71,16 @@ _PREFLIGHT: dict[int, dict] = {}
 _WARNED: set = set()
 
 # The PDL ordering barrier, one 1-element bf16 buffer per device index. See ``_fire_barrier``.
+#
+# DELETE THIS WHEN FLASHINFER SHIPS THE GRIDDEPCONTROL FIX. The barrier exists only because
+# FlashInfer launches its cutlass FP4 GEMM with PDL while the CUTLASS ``griddepcontrol``
+# instructions that make PDL safe are compiled out of its build, and because ``enable_pdl = False``
+# is plumbed to its cute-dsl runner alone and silently ignored for cutlass. Once a FlashInfer
+# release builds those instructions in (or honours ``enable_pdl`` for cutlass), the barrier, the
+# ``UNSLOTH_NVFP4_ZERO_BUFFER`` escape hatch, ``reset_barriers`` and its call sites in
+# ``reset_nvfp4_state`` all go, and the ordering test in ``test_diffusion_nvfp4_speed.py`` goes with
+# them. Nothing else in this module depends on it. Tracked as item 3 of section 15 of the NVFP4
+# investigation README (``temp/nvfp4_upload/README.md``).
 _BARRIER_LOCK = threading.Lock()
 _BARRIERS: dict[int, Any] = {}
 
