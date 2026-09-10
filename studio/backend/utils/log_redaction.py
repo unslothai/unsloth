@@ -15,13 +15,26 @@ import re
 REDACTED = "<redacted>"
 
 # Terminal control sequences, stripped BEFORE anything is matched. Order matters: OSC comes before the single-character Fe class, which covers 0x5C-0x5F and would otherwise swallow the "]". ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC). A colorized writer puts an escape between key and value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching.
+# Every branch tolerates truncation, and that is load bearing twice over. A lazy `[\s\S]*?` body backtracks: an introducer with no terminator scans to end of string, fails, and falls through to a narrower branch, so each one pays a full scan of the rest of the record and the cost is quadratic in its length (on characters of U+009D: 10k 1.0s, 20k 4.2s, 40k 16.1s, against 0.005s for 40k of ordinary text). A negated body class dies at the first character that cannot belong, and an OPTIONAL terminator means the branch cannot fail at all, so there is nothing to backtrack into.
+# Excluding the terminators is not enough on its own: a run of introducers contains none, so the body is still consumed to end of string from every starting position. The body classes therefore exclude the introducers too, which is also the correct reading of ECMA-48, since a control string cannot nest inside another.
+# The aborted prefix must be CONSUMED, not skipped. Leaving it in the text welds it onto the key in front of it ("api_key" + "foo"), the trailing \b in _SECRET_KEYS then fails, and the credential behind it prints. So an introducer whose sequence is cut takes its partial body with it, and the post-condition is that no introducer _ANSI_INTRODUCER_RE recognises survives the strip. A truncated introducer is not exotic: it is what a rotated log, or any writer cut mid sequence, leaves behind.
+# CSI gets a second branch rather than an optional final byte, because [@-~] already covers the lowercase letters: "\x1b[" in front of "api_key" would otherwise take the "a" with it and leave "pi_key", which is the same welding bug in reverse. The fallback runs only after the terminated form has failed, and consumes the parameter and intermediate bytes alone.
+# The Fe class keeps its old members and gains the escape sequences a terminal actually writes that used to be left in the text a byte at a time: the charset designators ("\x1b(B" from less and tput, "\x1b)0", "\x1b#8", "\x1b%G") and the Fp pair "\x1b7" / "\x1b8" (DECSC / DECRC) and "\x1b=" / "\x1b>" (keypad). Dropping only the ESC left the "7" welded to what followed, which is how "AKIA...\x1b7" stopped matching its own trailing \b, and left a bare "(B" in the viewer.
+# Both classes are deliberately narrower than ECMA-48 6.3.1 allows. The intermediate byte is limited to the designators rather than all of 0x20-0x2F, because "-" and the quote live in that range and "\x1b--api-key" would lose its flag; the final byte stops at 0x5F rather than 0x7E, because that range covers the lowercase letters and "\x1bapi_key" would come back as "pi_key". ESC in front of ordinary text is a write cut short far more often than it is a real sequence, and truncation is the case this whole rule exists for.
+# The bare ESC at the end is the last resort, after every sequence shape above has failed. It is what satisfies the post-condition, and it costs nothing that the branches above have not already declined to claim.
+# The bodies also exclude the newline, which bounds how much a cut sequence can eat to the line it started on. This function runs per record for the viewer but over whole multiline blobs for exception text, and a lazy body accepts \n, so one stray introducer could otherwise blank an entire traceback.
 _ANSI_RE = re.compile(
-    r"\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c)"
-    r"|\x1b[P^_X][\s\S]*?(?:\x1b\\|\x9c)"
+    r"\x1b\][^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)?"
+    r"|\x1b[P^_X][^\x1b\x9c\n]*(?:\x1b\\|\x9c)?"
     r"|\x1b\[[0-?]*[ -/]*[@-~]"
-    r"|\x1b[@-Z\\-_]"
+    r"|\x1b\[[0-?]*[ -/]*"
     r"|\x9b[0-?]*[ -/]*[@-~]"
-    r"|[\x9d\x90\x98\x9e\x9f][\s\S]*?(?:\x07|\x9c)"
+    r"|\x9b[0-?]*[ -/]*"
+    r"|[\x9d\x90\x98\x9e\x9f][^\x07\x9c\x1b\x90\x98\x9b\x9d\x9e\x9f\n]*(?:\x07|\x9c)?"
+    r"|\x1b[#%()*+][0-~]"
+    r"|\x1b[78=>]"
+    r"|\x1b[@-Z\\-_]"
+    r"|\x1b"
 )
 _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
 

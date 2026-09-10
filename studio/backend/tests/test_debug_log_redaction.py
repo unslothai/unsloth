@@ -289,3 +289,149 @@ def test_studio_s3_secret_key_spellings_are_masked():
 def test_talking_about_the_s3_key_without_a_value_survives():
     line = "secret_access_key is required when use_iam_role is false"
     assert redact_log_text(line) == line
+
+
+def test_an_unterminated_ansi_introducer_does_not_cost_quadratic_time():
+    """A lazy scan for the terminator backtracks: the introducer with no
+    terminator scans to end of string, fails, and falls through to the single
+    character Fe branch, so the cost grows with the square of the record.
+
+    Before the negated body classes, 40k of these took ~15.8s against ~0.005s
+    for the same length of ordinary text, and the log viewer hands whole lines
+    to this function once a second. An unterminated introducer is not exotic; a
+    rotated log or a writer cut mid sequence leaves one behind.
+
+    Timing is asserted loosely, as a shape rather than a number: quadratic here
+    is seconds and linear is milliseconds, so any threshold in between separates
+    them on any host.
+    """
+    import time
+
+    shapes = [
+        "\x9d",
+        "\x90",
+        "\x98",
+        "\x9e",
+        "\x9f",
+        "\x9b",
+        "\x1b",
+        "\x1b]",
+        "\x1bP",
+        "\x1b[",
+        # Interleaved: no single body class can run to the end, but each start
+        # still offers the next one a fresh full scan under a lazy body.
+        "\x1b]\x9d",
+        "\x1bP\x9e\x1b[",
+        # A terminator that belongs to nobody, and a key in front of it, which
+        # is what a colorized line cut at a page boundary actually looks like.
+        "api_key\x9d",
+        "\x1b]title\x9d",
+    ]
+    for shape in shapes:
+        text = shape * (40000 // len(shape))
+        started = time.monotonic()
+        redact_log_text(text)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"{shape!r} took {elapsed:.1f}s"
+
+
+# The seven introducers _ANSI_INTRODUCER_RE recognises, which is the set that
+# decides whether the strip runs at all.
+_INTRODUCERS = ("\x1b", "\x90", "\x98", "\x9b", "\x9d", "\x9e", "\x9f")
+
+
+def test_an_aborted_ansi_sequence_takes_its_payload_with_it():
+    """A cut introducer must be consumed WITH its partial body, not skipped.
+
+    Leaving the body behind welds it onto the key in front of it, so "api_key"
+    reads as "api_keyfoo", the trailing word boundary in _SECRET_KEYS no longer
+    matches, and the credential behind it prints. The cut-then-terminated form
+    is the dangerous one, because a body class that stops at the next introducer
+    hands the later, well-formed sequence the match and drops the earlier one.
+    """
+    for text in (
+        # Cut, then a terminated sequence later in the same record.
+        "api_key\x1b]foo\x1b]bar\x07=abcdef123456",
+        "api_key\x9dfoo\x9dbar\x07=abcdef123456",
+        "api_key\x1bPfoo\x1bPbar\x1b\\=abcdef123456",
+        "api_key\x1b]foo\x1b[36m=abcdef123456",
+        # Cut with nothing after it to rescue the match.
+        "api_key\x1b]foo=abcdef123456",
+        "api_key\x9dfoo=abcdef123456",
+        "api_key\x1bPfoo=abcdef123456",
+        # Cut in the introducer itself, at the very end of the record.
+        "api_key\x1b[38;5=abcdef123456",
+        "api_key\x9b38;5=abcdef123456",
+    ):
+        masked = redact_log_text(text)
+        assert "abcdef123456" not in masked, text
+
+
+def test_no_introducer_survives_the_strip():
+    """The post-condition the aborted-prefix fix rests on. Any introducer left
+    in the text is a character that can sit between a key and its separator, and
+    every anchored rule below is defeated by exactly that."""
+    from utils.log_redaction import _ANSI_INTRODUCER_RE, _ANSI_RE
+
+    tails = ("", "x", "0;t", "\x07", "\x9c", "\x1b\\", "38;5;1m", "\x1b", "\x9d")
+    for introducer in _INTRODUCERS:
+        for tail in tails:
+            for suffix in ("", "api_key=abcdef123456"):
+                text = "before " + introducer + tail + suffix
+                stripped = _ANSI_RE.sub("", text)
+                assert not _ANSI_INTRODUCER_RE.search(stripped), (text, stripped)
+
+
+def test_terminated_ansi_sequences_are_still_stripped():
+    """The negated classes must not cost the stripping the rules depend on: an
+    escape between a key and its value stops every anchored rule matching."""
+    for text in (
+        "\x1b[36mpassword\x1b[0m=hunter2secret",
+        "\x1b]0;title\x1b\\api_key=abcdef123456",
+        "\x1b]0;title\x07api_key=abcdef123456",
+        "\x1bPsome dcs\x1b\\api_key=abcdef123456",
+        "\x9dbody\x9capi_key=abcdef123456",
+        "\x9bmapi_key=abcdef123456",
+        # Charset designators and the DECSC pair, which the old single-character
+        # Fe class left in the text one byte at a time.
+        "\x1b(Bapi_key=abcdef123456",
+        "\x1b7api_key=abcdef123456",
+        "api\x1b(B_key=abcdef123456",
+    ):
+        masked = redact_log_text(text)
+        assert "abcdef123456" not in masked and "hunter2secret" not in masked, text
+        assert REDACTED in masked, text
+
+
+def test_a_stripped_sequence_costs_only_itself():
+    """The other half of the bargain. Over-redaction hides the failure the user
+    opened the log to read, so a well-formed sequence has to leave the line it
+    wraps exactly as it found it, whatever the shape."""
+    line = "INFO loading unsloth/Llama-3.2-1B revision 8f3a2b1c in 13ms"
+    for sequence in (
+        "\x1b[36m", "\x1b[0m", "\x1b[38;5;196m", "\x1b[?25l", "\x1b[2K",
+        "\x1b]0;title\x07", "\x1b]0;title\x1b\\", "\x9d0;title\x9c",
+        "\x1bPx\x1b\\", "\x9b0m", "\x1bM", "\x1b7", "\x1b8", "\x1b(B", "\x1b)0", "\x1b#8",
+    ):
+        assert redact_log_text(sequence + line + sequence) == line, sequence
+    # A flag and a query parameter must survive an escape in front of them: the
+    # "--" and the "?" are what their rules are anchored on.
+    assert redact_log_text("\x1b--password hunter2secret") == "--password " + REDACTED
+    assert "abcdef123456" not in redact_log_text("\x1b?token=abcdef123456&next=1")
+
+
+def test_an_aborted_sequence_cannot_eat_past_its_own_line():
+    """A cut control string has no terminator, so the only bound left is the
+    newline, and the cost has to stop there. This function runs per record for
+    the live viewer but over whole multiline blobs for exception text, and a
+    body that accepts \\n would let one stray introducer blank a traceback."""
+    blob = (
+        "Traceback (most recent call last):\n"
+        '  File "/app/loader.py", line 42, in load\n'
+        '    raise RuntimeError("out of memory")\n'
+        "RuntimeError: out of memory"
+    )
+    for introducer in ("\x1b]", "\x1bP", "\x1b^", "\x9d", "\x9e", "\x1b", "\x9b"):
+        masked = redact_log_text(introducer + "cut" + blob)
+        assert '  File "/app/loader.py", line 42, in load' in masked, introducer
+        assert "RuntimeError: out of memory" in masked, introducer
