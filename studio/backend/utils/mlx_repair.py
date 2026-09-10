@@ -165,13 +165,38 @@ def _one_line(exc: BaseException) -> str:
     return _bounded(str(exc))
 
 
+def _is_concurrent_partial_import(exc: BaseException) -> bool:
+    """True for the ImportError shape of a concurrent first-import race (#9120).
+
+    Startup runs hardware detection, the torch warm, llama.cpp probes, and GGUF
+    precache on concurrent threads. The first-ever `import transformers` (inside
+    mlx_lm's own import chain) can land while another thread still has it
+    partially initialized, and `from transformers import AutoTokenizer` then
+    raises "cannot import name ... from ..." on a perfectly healthy install. A
+    genuinely broken install fails differently: "No module named ...", a shared
+    library error, or another exception type entirely.
+    """
+    return isinstance(exc, ImportError) and "cannot import name" in str(exc)
+
+
 def _mlx_runtime_import_blocker() -> Optional[str]:
-    """The first runtime import that will not load, and why. None when all do."""
+    """The first runtime import that will not load, and why. None when all do.
+
+    The concurrent partial-import race is retried, not reported: it clears on
+    its own once the other thread's import finishes, and one unlucky race at
+    boot would otherwise cache a chat-only verdict for the process's lifetime
+    (#9120). Only that signature is retried — a real install problem fails on
+    the first attempt and pays nothing.
+    """
     for module in _MLX_RUNTIME_IMPORTS:
-        try:
-            importlib.import_module(module)
-        except Exception as exc:
-            return f"{module} does not import ({type(exc).__name__}: {_one_line(exc)})"
+        for attempt in range(3):
+            try:
+                importlib.import_module(module)
+                break
+            except Exception as exc:
+                if not _is_concurrent_partial_import(exc) or attempt == 2:
+                    return f"{module} does not import ({type(exc).__name__}: {_one_line(exc)})"
+                time.sleep(0.5 * (attempt + 1))
     return None
 
 
