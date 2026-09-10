@@ -1901,17 +1901,24 @@ class ResearchSupervisor:
                             )
             await flush_progress()
             return report, reasoning, finish_reason, usage
-        except (ModelFirstOutputTimeout, ModelOutputIdleTimeout, ModelWallClockTimeout):
+        except (RunCancelled, LeaseLost):
             raise
-        except httpx.ReadTimeout as exc:
-            # Transport backstop: HTTPX raises this with no message, so name the stall instead.
-            if semantic_output_at is None:
-                raise ModelFirstOutputTimeout("Local model never produced output") from exc
-            raise ModelOutputIdleTimeout("Local model stopped producing output") from exc
-        except (TimeoutError, asyncio.TimeoutError) as exc:
-            raise ModelWallClockTimeout(
-                "Local model request exceeded its wall-clock timeout"
-            ) from exc
+        except Exception as exc:
+            if report_progress:
+                await flush_progress()
+            if isinstance(
+                exc, (ModelFirstOutputTimeout, ModelOutputIdleTimeout, ModelWallClockTimeout)
+            ):
+                raise
+            if isinstance(exc, httpx.ReadTimeout):
+                if semantic_output_at is None:
+                    raise ModelFirstOutputTimeout("Local model never produced output") from exc
+                raise ModelOutputIdleTimeout("Local model stopped producing output") from exc
+            if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+                raise ModelWallClockTimeout(
+                    "Local model request exceeded its wall-clock timeout"
+                ) from exc
+            raise
         finally:
             # revoked before the phase event, so a cancel there cannot leak a live key.
             try:
@@ -2016,8 +2023,26 @@ class ResearchSupervisor:
             error = _safe_error(exc)
             logger.warning("research.run_failed run_id=%s error=%s", run["id"], error)
             try:
+                fresh = await asyncio.to_thread(db.get_run, run["id"])
+                partial_report = ""
+                if not _run_moved_on(fresh, attempt):
+                    partial_report = (
+                        _report_after_boundary(fresh.get("report") or "", _REPORT_BOUNDARY_MARKER)
+                        or ""
+                    )
+                    partial_report = _validate_report_sources(
+                        partial_report, fresh.get("sources") or []
+                    )
+                    partial_report = _validate_report_document_sources(
+                        partial_report, fresh.get("documentSources") or []
+                    ).strip()
                 actual_status = await asyncio.to_thread(
-                    db.finish, run["id"], self.worker_id, "failed", error
+                    db.finish,
+                    run["id"],
+                    self.worker_id,
+                    "failed",
+                    error,
+                    {"report": partial_report} if partial_report else None,
                 )
             except sqlite3.OperationalError:
                 actual_status = await self._finish_after_lease_loss(run["id"])
@@ -2030,7 +2055,15 @@ class ResearchSupervisor:
                 )
             elif actual_status == "failed" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
-                    _update_assistant, fresh, f"Research failed: {error}", "failed"
+                    _update_assistant,
+                    fresh,
+                    (
+                        f"> **Incomplete report.** Research failed: {error}\n\n{fresh['report']}"
+                        if fresh.get("report")
+                        else f"Research failed: {error}"
+                    ),
+                    "failed",
+                    fresh.get("sources") if fresh.get("report") else None,
                 )
         finally:
             heartbeat.cancel()
