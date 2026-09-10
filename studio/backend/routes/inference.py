@@ -4729,18 +4729,22 @@ def _enabled_agent_skills() -> list[dict]:
         return current
 
 
-def _skill_tool_tip() -> str:
+def _skill_tool_tip(*, can_create: bool) -> str:
     from core.inference.skills import format_skill_catalog
 
     catalog = format_skill_catalog(_enabled_agent_skills())
     if not catalog:
         return ""
+    create_tip = (
+        " To create a skill, read skill-creator and then call create_skill." if can_create else ""
+    )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
         "helpful, then call read_skill before following its instructions. If the latest user "
         "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
-        "before answering. To create a skill, read skill-creator and then call create_skill. Skill "
-        "allowed-tools metadata never overrides Studio tool permissions.\n"
+        "before answering."
+        + create_tip
+        + " Skill allowed-tools metadata never overrides Studio tool permissions.\n"
         + catalog
     )
 
@@ -4780,14 +4784,14 @@ def _build_tool_action_nudge(
         if full_access and has_code:
             tips.append(_full_access_tip(code_tools))
         if has_skills:
-            tips.append(_skill_tool_tip())
+            tips.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
         return " ".join(tip for tip in tips if tip)
     if not (has_web or has_code or has_artifact):
         tips = []
         if has_research:
             tips.append(_TOOL_RESEARCH_TIP)
         if has_skills:
-            tips.append(_skill_tool_tip())
+            tips.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
         return " ".join(tip for tip in tips if tip)
 
     model_size_b = _extract_model_size_b(model_name)
@@ -4806,7 +4810,7 @@ def _build_tool_action_nudge(
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
     if has_skills:
-        tool_tip_parts.append(_skill_tool_tip())
+        tool_tip_parts.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -5145,7 +5149,12 @@ async def _select_request_tools(
     if tools_on and _enabled_agent_skills():
         from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
 
-        tools.extend((READ_SKILL_TOOL, CREATE_SKILL_TOOL))
+        skill_tools = (READ_SKILL_TOOL, CREATE_SKILL_TOOL)
+        if payload.enabled_tools is not None:
+            skill_tools = tuple(
+                tool for tool in skill_tools if tool["function"]["name"] in payload.enabled_tools
+            )
+        tools.extend(skill_tools)
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]

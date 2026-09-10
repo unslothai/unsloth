@@ -471,19 +471,30 @@ def create_skill(
 
     base = home if home is not None else Path.home()
     with _LOCK:
-        try:
-            _write_new_skill_manifest(base, normalized, manifest)
-        except FileExistsError as exc:
-            raise SkillError(f"Skill '{normalized}' already exists.") from exc
-        except SkillError:
-            raise
-        except OSError as exc:
-            raise SkillError(f"Could not create skill '{normalized}'.") from exc
-
         overrides = _load_overrides()
-        if normalized in overrides:
-            overrides.pop(normalized)
-            _save_overrides(overrides)
+        had_override = normalized in overrides
+        if had_override:
+            enabled_overrides = dict(overrides)
+            enabled_overrides.pop(normalized)
+            try:
+                _save_overrides(enabled_overrides)
+            except OSError as exc:
+                raise SkillError("Could not update skill enable overrides.") from exc
+
+        try:
+            try:
+                _write_new_skill_manifest(base, normalized, manifest)
+            except FileExistsError as exc:
+                raise SkillError(f"Skill '{normalized}' already exists.") from exc
+            except OSError as exc:
+                raise SkillError(f"Could not create skill '{normalized}'.") from exc
+        except Exception:
+            if had_override:
+                try:
+                    _save_overrides(overrides)
+                except OSError:
+                    pass
+            raise
 
     return {
         **metadata,

@@ -491,6 +491,22 @@ class TestToolActionNudge:
     def test_balanced_nudge_empty_without_known_tool_categories(self):
         assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
 
+    def test_read_skill_only_nudge_does_not_advertise_create_skill(self, monkeypatch):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [{"type": "function", "function": {"name": "read_skill"}}],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "create_skill" not in nudge
+
 
 # =====================================================================
 # Pydantic model tests

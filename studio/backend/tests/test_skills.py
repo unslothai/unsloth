@@ -374,6 +374,30 @@ def test_create_skill_tool_invalidates_the_inference_cache(isolated_skills, monk
     assert inference_routes._AGENT_SKILLS_CACHE == (0.0, [])
 
 
+
+def test_create_skill_tool_does_not_commit_when_override_clear_fails(
+    isolated_skills, monkeypatch
+):
+    from core.inference import tools as tools_module
+
+    home, studio = isolated_skills
+    studio.mkdir()
+    (studio / "skill-overrides.json").write_text('{"blocked":false}', encoding = "utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    def deny_override_write(_overrides):
+        raise PermissionError("read-only overrides")
+
+    monkeypatch.setattr(skills, "_save_overrides", deny_override_write)
+    result = tools_module.execute_tool(
+        "create_skill",
+        {"name": "blocked", "description": "Description", "instructions": "Instructions"},
+    )
+
+    assert result.startswith("Error:")
+    assert not (home / ".agents" / "skills" / "blocked").exists()
+
+
 def test_catalog_is_bounded_at_complete_entries():
     candidates = [{"name": f"skill-{index}", "description": "x" * 300} for index in range(20)]
 
@@ -430,6 +454,48 @@ def test_authenticated_list_and_toggle_routes(isolated_skills, monkeypatch):
     assert client.put("/api/skills/api-skill/enabled", json = {"enabled": "false"}).status_code == 422
 
 
+def test_skill_tool_selection_honors_explicit_allowlist(isolated_skills, monkeypatch):
+    import asyncio
+
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_routes
+
+    home, _ = isolated_skills
+    _write_skill(home, "agents", "guided")
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+    monkeypatch.setattr(inference_routes, "_enabled_agent_skills", skills.enabled_skills)
+    read_only = ChatCompletionRequest(
+        model = "test",
+        messages = [{"role": "user", "content": "hello"}],
+        enable_tools = True,
+        enabled_tools = ["read_skill"],
+        permission_mode = "auto",
+        stream = True,
+    )
+
+    selected = asyncio.run(
+        inference_routes._select_request_tools(read_only, tools_on = True, mcp_allowed = False)
+    )
+    names = [tool["function"]["name"] for tool in selected]
+    inference_routes._reject_confirm_gate_without_channel(
+        read_only, ui_events = False, selected_names = set(names)
+    )
+    assert names == ["read_skill"]
+
+    local_default = read_only.model_copy(
+        update = {"enabled_tools": ["read_skill", "create_skill"]}
+    )
+    selected = asyncio.run(
+        inference_routes._select_request_tools(local_default, tools_on = True, mcp_allowed = False)
+    )
+    assert [tool["function"]["name"] for tool in selected] == ["read_skill", "create_skill"]
+
+
+
 def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypatch):
     import asyncio
 
@@ -448,7 +514,7 @@ def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypa
     payload = ChatCompletionRequest(
         model = "test",
         messages = [{"role": "user", "content": "hello"}],
-        enabled_tools = [],
+        enabled_tools = ["read_skill", "create_skill"],
     )
 
     selected = asyncio.run(
