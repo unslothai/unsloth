@@ -1365,9 +1365,12 @@ def idle_status(
     repo_id: Optional[str],
     variant: Optional[str],
 ) -> tuple[DownloadJobState, Optional[str], int]:
-    require_download_account(registry, key)
     state = registry.get_job(key)
     generation = registry.current_generation(key)
+    # Ownership is recorded per job, so a repo with no job (never downloaded, or lost to a
+    # restart) has no owner to compare; a 404 there strands a client hydrating a download.
+    if state.state != "idle":
+        require_download_account(registry, key)
     if (
         state.state == "idle"
         and repo_id
