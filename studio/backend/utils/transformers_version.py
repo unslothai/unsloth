@@ -2662,6 +2662,10 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
                 logger.warning(
                     "%s: another process held the top-up lock too long; left as is", venv_dir
                 )
+                # Left as is, but not activated with a partial payload ahead of
+                # site-packages: the same rule as the offline branch above.
+                if _optional_package_partly_there(venv_dir, pkg):
+                    usable = False
                 continue
             if not _optional_package_absent(venv_dir, pkg):
                 continue
