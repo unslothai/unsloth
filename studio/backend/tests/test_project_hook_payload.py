@@ -50,3 +50,43 @@ def test_post_hook_trust_failure_retains_completed_tool_context(monkeypatch):
     assert "Post-tool hook failed after the tool ran" in result
     assert "Edited file.py" in result
     assert not result.startswith("Error:")
+
+
+@pytest.mark.parametrize("name", ["edit_file", "python", "terminal", "web_search"])
+@pytest.mark.parametrize("session_id", [None, "chat-session", "project-unconfigured"])
+def test_unconfigured_tools_keep_original_arguments_results_and_routing(
+    monkeypatch, name, session_id
+):
+    lookups = []
+
+    def trust(project_id):
+        lookups.append(project_id)
+        return {"hasStoredTrust": False}
+
+    monkeypatch.setattr(runtime.project_hook_trust_db, "get_project_hook_trust_record", trust)
+    monkeypatch.setattr(
+        runtime, "_project_for_tool", lambda *_args: pytest.fail("No extra project/thread routing")
+    )
+    monkeypatch.setattr(
+        runtime.common,
+        "project_workspace_access",
+        lambda *_args: pytest.fail("No extra workspace lease"),
+    )
+    monkeypatch.setattr(
+        runtime, "run_tool_hooks", lambda *_args, **_kwargs: pytest.fail("No hook execution")
+    )
+    arguments = {"code": "original"}
+    original = "  original result\r\n" * 1000
+
+    def raw(name, arguments, *, session_id):
+        assert arguments is expected_arguments
+        return original
+
+    expected_arguments = arguments
+    wrapped = runtime.with_project_tool_hooks(raw)
+    assert wrapped(name, arguments, session_id = session_id) is original
+    assert lookups == (
+        ["unconfigured"]
+        if name in runtime.HOOKED_TOOLS and session_id == "project-unconfigured"
+        else []
+    )

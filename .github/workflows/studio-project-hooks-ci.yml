@@ -72,8 +72,10 @@ jobs:
       - name: Compose the verification engine and its review surfaces
         shell: bash
         run: |
-          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 49536716a246d39f42f5336082b736f898f1acd0
-          if ! git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD; then
+          if ! git cat-file -e "d298242c37f772cec7a05b55de02698faeb8f3c5^{commit}" 2>/dev/null; then
+            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git d298242c37f772cec7a05b55de02698faeb8f3c5
+          fi
+          if ! git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff d298242c37f772cec7a05b55de02698faeb8f3c5; then
             python scripts/compose_project_hook_review.py
             git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' commit --no-edit
           fi
@@ -81,17 +83,23 @@ jobs:
       - name: Compose project lifecycle support
         shell: bash
         run: |
-          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 9ced365ad35a84f34d5cdb00f9f0cd766825fe4c
-          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
+          if ! git cat-file -e "10eec87e411ee03fed1999fd3df3971bf0c8d632^{commit}" 2>/dev/null; then
+            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 10eec87e411ee03fed1999fd3df3971bf0c8d632
+          fi
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff 10eec87e411ee03fed1999fd3df3971bf0c8d632
 
       - name: Compose confined edits and supervised commands
         if: matrix.variant == 'secure-tools'
         shell: bash
         run: |
-          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git c6118ec5a653e94158bd637bc59bc18656ca6257
-          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
-          git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 9f8e3d6b23c0a8922422411442c7ee182cf65ea7
-          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff FETCH_HEAD
+          if ! git cat-file -e "c6118ec5a653e94158bd637bc59bc18656ca6257^{commit}" 2>/dev/null; then
+            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git c6118ec5a653e94158bd637bc59bc18656ca6257
+          fi
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff c6118ec5a653e94158bd637bc59bc18656ca6257
+          if ! git cat-file -e "61de31296e406f1e0dc5af4ac07c96fff1343cf5^{commit}" 2>/dev/null; then
+            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git 61de31296e406f1e0dc5af4ac07c96fff1343cf5
+          fi
+          git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff 61de31296e406f1e0dc5af4ac07c96fff1343cf5
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:

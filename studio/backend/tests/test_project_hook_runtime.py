@@ -287,10 +287,14 @@ def test_hook_output_shares_the_tools_final_result_budget(reviewed_hooks, monkey
         arguments,
         *,
         result_budget_tokens = None,
+        session_id = None,
     ):
         return "tool result"
 
-    assert execute("terminal", {}, result_budget_tokens = 256) == "bounded"
+    assert (
+        execute("terminal", {}, result_budget_tokens = 256, session_id = "project-" + project_id)
+        == "bounded"
+    )
     assert observed == [
         (
             "Project hook output (untrusted data):\nhook output\nhook output\n\nTool result:\ntool result",
@@ -356,7 +360,11 @@ def test_no_hook_output_preserves_the_original_result_without_rebudgeting(
 
 
 def test_unconfigured_project_skips_hook_discovery_leases_and_process_probes(monkeypatch):
-    monkeypatch.setattr(runtime, "_project_for_tool", lambda *args: "no-hooks")
+    monkeypatch.setattr(
+        runtime,
+        "_project_for_tool",
+        lambda *args: pytest.fail("Unconfigured calls must use original project routing"),
+    )
     monkeypatch.setattr(
         trust_db, "get_project_hook_trust_record", lambda _id: {"hasStoredTrust": False}
     )

@@ -266,12 +266,16 @@ def with_project_tool_hooks(execute):
         tools._REQUEST_RESULT_BUDGET.set(call.get("result_budget_tokens"))
         tools._REQUEST_CONTEXT_TOKENS.set(call.get("context_tokens", tools._UNSET_CONTEXT_TOKENS))
         try:
-            project_id = _project_for_tool(call.get("session_id"), call.get("thread_id"))
-            if project_id is None:
+            session_id = call.get("session_id")
+            if not isinstance(session_id, str) or not session_id.startswith("project-"):
                 return execute(*args, **kwargs)
-            if not project_hook_trust_db.get_project_hook_trust_record(project_id)[
-                "hasStoredTrust"
-            ]:
+            # Unconfigured projects keep the original executor's routing and
+            # errors. Only configured hooks need extra thread/project checks.
+            candidate = session_id[len("project-") :]
+            if not project_hook_trust_db.get_project_hook_trust_record(candidate)["hasStoredTrust"]:
+                return execute(*args, **kwargs)
+            project_id = _project_for_tool(session_id, call.get("thread_id"))
+            if project_id is None:
                 return execute(*args, **kwargs)
             arguments = call.get("arguments")
             cancel_event = call.get("cancel_event")
