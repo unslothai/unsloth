@@ -29800,6 +29800,16 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    if payload.previous_response_id is not None:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "'previous_response_id' is not supported. Send the full conversation history in 'input'.",
+                status = 400,
+                code = "unsupported_parameter",
+                param = "previous_response_id",
+            ),
+        )
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
