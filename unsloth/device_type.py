@@ -88,7 +88,9 @@ def get_device_type():
             )
         if accelerator == "npu":
             return "npu"
-    raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD, Intel and Ascend NPU GPUs.")
+    raise NotImplementedError(
+        "Unsloth currently only works on NVIDIA, AMD, Intel and Ascend NPU GPUs."
+    )
 
 
 DEVICE_TYPE: str = get_device_type()
