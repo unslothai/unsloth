@@ -2114,13 +2114,21 @@ html[data-chat-font] .aui-root {
 		   which were the row's only oversized ends. Each selector has to
 		   outrank the compact pill rules, hence the longer shapes. */
 		.unsloth-composer-left > .unsloth-composer-plus,
-		.unsloth-composer-line .unsloth-composer-left > button.composer-pill-btn,
 		.unsloth-composer-line .aui-composer-action-wrapper > button,
 		.unsloth-composer-line .aui-composer-send,
 		.unsloth-composer-line .aui-composer-cancel {
 			width: 1.75rem;
 			height: 1.75rem;
 			/* The thinking pill reserves a text line; that would win over height. */
+			min-height: 1.75rem;
+		}
+
+		/* Tool pills only once the fit hook has collapsed their labels. Applied
+		   unconditionally, a 28px box makes a labelled pill measure as if it
+		   fit, and the hook keeps labels that then overflow it. */
+		.unsloth-composer-left[data-pill-compact="true"] > button.composer-pill-btn {
+			width: 1.75rem;
+			height: 1.75rem;
 			min-height: 1.75rem;
 		}
 
@@ -2210,10 +2218,22 @@ html[data-chat-font] .aui-root {
 	   split can leave a 42% thread pane inside a wide window, and a viewport
 	   breakpoint would keep the full 20px there. */
 	@container (max-width: 31.5rem) {
-		.unsloth-composer-dock-inner,
-		.aui-thread-welcome-message {
+		.unsloth-composer-dock-inner {
 			padding-left: 0.75rem;
 			padding-right: 0.75rem;
+		}
+
+		/* The welcome screen is inside the viewport's own 20px gutter, so pull
+		   back to the dock's 12px rather than adding to it; otherwise the empty
+		   state is 40px narrower than the thread it turns into. */
+		.aui-thread-welcome-message {
+			padding-left: 0;
+			padding-right: 0;
+			margin-left: -0.5rem;
+			margin-right: -0.5rem;
+			/* w-full would pin the width and the margins would only shift the
+			   box left; auto lets it widen into the gutter on both sides. */
+			width: auto;
 		}
 
 		.unsloth-welcome-title {
