@@ -42,6 +42,11 @@ UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 _JSON_STRUCTURAL = frozenset(',:{}[]" \t\n\r')
 
 
+def _reject_json_constant(name: str) -> Any:
+    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
+    raise ValueError(f"{name} is not JSON")
+
+
 def _looks_like_broken_json(raw: str) -> bool:
     """Whether this text was MEANT to be a JSON object and stopped before finishing.
 
@@ -58,7 +63,7 @@ def _looks_like_broken_json(raw: str) -> bool:
     if not text.startswith(("{", "[")):
         return False
     try:
-        json.loads(text)
+        json.loads(text, parse_constant = _reject_json_constant)
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
@@ -76,6 +81,10 @@ def _looks_like_broken_json(raw: str) -> bool:
             return False
         remainder = text[error.pos :]
         return bool(remainder) and not any(ch in _JSON_STRUCTURAL for ch in remainder)
+    except (ValueError, RecursionError):
+        # Decoder limits, not syntax: an integer past CPython's digit cap, nesting past the recursion limit, or a
+        # NaN/Infinity a strict parser refuses. JSON-shaped text this reader cannot take is as broken as a cut-off one.
+        return True
     return False
 
 
@@ -674,12 +683,15 @@ def coerce_tool_arguments(
         )
     if isinstance(raw_args, str):
         try:
-            parsed = json.loads(raw_args)
+            # Strict on purpose: NaN/Infinity decode here but replay as JSON no provider parses.
+            parsed = json.loads(raw_args, parse_constant = _reject_json_constant)
             if isinstance(parsed, Mapping):
                 return CoercedArguments(
                     coerce_arguments_by_schema(parsed, properties, repair = heal), False
                 )
-        except (json.JSONDecodeError, ValueError):
+        except (ValueError, RecursionError):
+            # ValueError covers JSONDecodeError and the digit cap; RecursionError is nesting past the limit. Model text
+            # must never raise out of here -- this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
             # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that
