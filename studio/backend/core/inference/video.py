@@ -930,6 +930,11 @@ def _video_auto_denoiser_scheme(
         return None
 
 
+# The planner DECIDED against the seed (distinct from never having run): a load whose pull kept the dense shards on
+# this decline must not re-take the decision against post-teardown capacity and fetch the artifact inline.
+DENOISER_SEED_DECLINED = "__declined__"
+
+
 def _video_seed_stays_resident(
     fam: Any,
     *,
@@ -1642,6 +1647,10 @@ class VideoBackend:
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
             )
+            # The plan runs while the previous pipeline is still resident, so its decline is pinned into the load.
+            video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
+            if video_seed_declined:
+                video_auto_denoiser = None
             # A conventional load seeds only what _video_auto_denoiser_scheme returns (None under speed_mode="off" even
             # for an explicit scheme); the raw request would drop dense shards the load then tops up inline, outside the
             # plan's progress, cancel and disk preflight. The modular path honours the raw request, so it keeps it.
@@ -1666,7 +1675,13 @@ class VideoBackend:
                 h3_auto_denoiser if h3_auto_denoiser and skip_transformer_weights else None
             )
             kwargs["_video_auto_denoiser_planned"] = (
-                video_auto_denoiser if video_auto_denoiser and skip_transformer_weights else None
+                DENOISER_SEED_DECLINED
+                if video_seed_declined
+                else (
+                    video_auto_denoiser
+                    if video_auto_denoiser and skip_transformer_weights
+                    else None
+                )
             )
             kwargs["_denoiser_prequant_skipped"] = skip_transformer_components
             h3_te_scheme = self._h3_te_quant_scheme_verified(
@@ -2470,7 +2485,8 @@ class VideoBackend:
         gpu_ordinal: Optional[int] = None,
     ) -> Optional[str]:
         """``_video_auto_denoiser_scheme`` on the planning path, resolved BEFORE anything is downloaded, or None,
-        also None when an artifact-sized plan would still offload (the load refuses to seed then)."""
+        and ``DENOISER_SEED_DECLINED`` when an artifact-sized plan would still offload (the load refuses to seed
+        then)."""
         try:
             if kind != "pipeline" or getattr(fam, "modular_workflow", None):
                 return None
@@ -2509,7 +2525,7 @@ class VideoBackend:
                         "kept",
                         scheme,
                     )
-                    return None
+                    return DENOISER_SEED_DECLINED
                 return scheme
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
             return None
@@ -3139,6 +3155,9 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             gpu_ordinal = load_kwargs.get("gpu_ordinal"),
         )
+        # A decline is not a scheme: this path stages files.
+        if video_planned == DENOISER_SEED_DECLINED:
+            video_planned = None
         if kind == "pipeline" and not getattr(fam, "modular_workflow", None):
             # The planned scheme IS the conventional seed decision (None under speed_mode="off" even for an explicit
             # request), so a raw-request fallback would stage an artifact and drop shards the load then opens neither of.
@@ -4033,7 +4052,8 @@ class VideoBackend:
 
         # Seeded denoiser(s): resolved HERE, before the plan is judged, because the family table's transformer term over-states both the steady size and the build peak for them, and on unified memory that is a hard refusal of a load that fits.
         denoiser_seed_scheme: Optional[str] = None
-        if kind == "pipeline":
+        # The plan's decline is pinned like its pick: the pull kept the dense shards on it.
+        if kind == "pipeline" and _video_auto_denoiser_planned != DENOISER_SEED_DECLINED:
             denoiser_seed_scheme = _video_auto_denoiser_planned or _video_auto_denoiser_scheme(
                 fam,
                 target = target,
