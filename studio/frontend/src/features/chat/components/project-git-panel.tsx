@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  gitAction,
-  gitConnectors,
-  gitPreviewKey,
   type GitHubPreview,
   type GitHubRequest,
   type GitManagementState,
   type PreparedCommit,
+  gitAction,
+  gitConnectors,
+  gitPreviewKey,
 } from "../api/project-git-actions-api";
 import {
-  getProjectGitStatus,
   type ProjectGitStatus,
+  getProjectGitStatus,
 } from "../api/project-git-review-api";
 import type { ProjectRecord } from "../types";
 import { GitDiffFile, ProjectGitReviewPanel } from "./project-git-review-panel";
@@ -201,12 +201,9 @@ function GitPanel({ project }: { project: GitProject }) {
         </p>
       ) : null}
       {notice ? (
-        <p
-          role="status"
-          className="rounded-lg bg-muted p-3 text-sm whitespace-pre-wrap"
-        >
+        <output className="block rounded-lg bg-muted p-3 text-sm whitespace-pre-wrap">
           {notice}
-        </p>
+        </output>
       ) : null}
       <ProjectGitReviewPanel key={reviewVersion} project={project} />
       {state && !available ? (
@@ -254,11 +251,11 @@ function GitPanel({ project }: { project: GitProject }) {
                 </code>
               </label>
             ))}
-          {!status?.files.length ? (
+          {status?.files.length ? null : (
             <p className="text-xs text-muted-foreground">
               No changed files to select.
             </p>
-          ) : null}
+          )}
         </div>
         <Button
           size="sm"
@@ -306,7 +303,8 @@ function GitPanel({ project }: { project: GitProject }) {
           <div className="rounded-lg border p-3 space-y-2 text-xs">
             <p>
               Prepared commit on {activeCommit.branch} at{" "}
-              {activeCommit.baseHead.slice(0, 12)}
+              {activeCommit.baseHead.slice(0, 12) ||
+                "new branch (no commits yet)"}
             </p>
             <pre className="whitespace-pre-wrap break-words">
               {activeCommit.message}
@@ -382,9 +380,9 @@ function GitPanel({ project }: { project: GitProject }) {
 
       <section className={section}>
         <h3 className="font-medium">Checkpoints</h3>
-        {!state?.checkpoints.length ? (
+        {state?.checkpoints.length ? null : (
           <p className="text-xs text-muted-foreground">No saved checkpoints.</p>
-        ) : null}
+        )}
         {state?.checkpoints.map((checkpoint) => (
           <div key={checkpoint.id} className="rounded-lg border p-3 space-y-2">
             <p className="text-xs">

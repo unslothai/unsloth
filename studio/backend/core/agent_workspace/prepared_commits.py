@@ -130,7 +130,7 @@ def prepare_commit(project_id, paths, message):
                 "operation": "prepare_commit",
                 "status": "awaiting_confirmation",
                 "branchRef": "refs/heads/" + repository_branch(repository),
-                "headSha": repository_head(repository),
+                "headSha": repository_head(repository, allow_unborn = True),
                 "gitRoot": str(repository),
                 "message": message,
                 "ownedPaths": paths,
@@ -160,7 +160,7 @@ def confirm_prepared_commit(project_id, preparation_id, token):
                 def require_current():
                     if (
                         str(repository) != record["gitRoot"]
-                        or repository_head(repository) != record["headSha"]
+                        or repository_head(repository, allow_unborn = True) != record["headSha"]
                         or "refs/heads/" + repository_branch(repository) != record["branchRef"]
                         or workspace_fingerprint(root) != record["sourceFingerprint"]
                     ):
@@ -171,7 +171,10 @@ def confirm_prepared_commit(project_id, preparation_id, token):
                 require_current()
                 paths = _owned_paths(root, record["ownedPaths"])
                 commit = build_selected_commit(
-                    repository, _repository_paths(repository, root, paths), record["message"]
+                    repository,
+                    _repository_paths(repository, root, paths),
+                    record["message"],
+                    allow_unborn = True,
                 )
                 state.save_candidate_commit(preparation_id, commit)
                 require_current()

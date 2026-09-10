@@ -6,11 +6,64 @@ from pathlib import Path
 
 import pytest
 
-from core.agent_workspace import git_review, prepared_commits, prepared_commit_state, worktrees
+from core.agent_workspace import (
+    git_review,
+    git_service,
+    prepared_commits,
+    prepared_commit_state,
+    worktrees,
+)
+from core.agent_workspace.git_context import AgentWorkspaceError
 from routes import project_worktrees
 from .test_project_git_safety import _client
-from .test_agent_workspace_worktrees_focused import _setup, _git, managed_workspace_records  # noqa: F401
+from .test_agent_workspace_worktrees_focused import (
+    _setup,
+    _git,
+    _project,
+    managed_workspace_records,
+)  # noqa: F401
 from .test_project_git_review import _repository, _commit_all, _bind_workspace, _workspace, _file
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Native POSIX mutation contract")
+@pytest.mark.parametrize("head_changes", [False, True])
+def test_prepared_first_commit_preserves_unborn_branch_and_index(tmp_path, head_changes):
+    root = _repository(tmp_path / "repository")
+    _project(root)
+    (root / "first.txt").write_text("staged\n")
+    (root / "unrelated.txt").write_text("unrelated\n")
+    _git(root, "add", ".")
+    (root / "first.txt").write_text("reviewed working content\n")
+    index = (root / ".git/index").read_bytes()
+    preview = prepared_commits.prepare_commit("project", ["first.txt"], "First prepared commit")
+    assert preview["baseHead"] == ""
+    if head_changes:
+        _git(root, "commit", "-qm", "External first commit")
+        with pytest.raises(AgentWorkspaceError, match = "Repository changed"):
+            prepared_commits.confirm_prepared_commit(
+                "project", preview["id"], preview["confirmationToken"]
+            )
+        assert prepared_commit_state.get_preparation(preview["id"])["status"] == "failed"
+        return
+    result = prepared_commits.confirm_prepared_commit(
+        "project", preview["id"], preview["confirmationToken"]
+    )
+    assert (
+        _git(root, "rev-list", "--parents", "-n", "1", result["commitSha"]) == result["commitSha"]
+    )
+    assert _git(root, "ls-tree", "--name-only", result["commitSha"]) == "first.txt"
+    assert _git(root, "show", f"{result['commitSha']}:first.txt") == "reviewed working content"
+    assert _git(root, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert git_service.repository_head(root, allow_unborn = True) == ""
+    assert (root / ".git/index").read_bytes() == index
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Native POSIX Git contract")
+def test_unresolvable_existing_branch_is_not_treated_as_unborn(tmp_path):
+    root = _repository(tmp_path / "repository")
+    (root / ".git/refs/heads/main").write_text("a" * 40 + "\n")
+    with pytest.raises(AgentWorkspaceError):
+        git_service.repository_head(root, allow_unborn = True)
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "Native POSIX mutation contract")

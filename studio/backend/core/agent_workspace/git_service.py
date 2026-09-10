@@ -416,11 +416,17 @@ def git_diff_for_root(
     )
 
 
-def build_selected_commit(repository: Path, paths: list[str], message: str) -> str:
+def build_selected_commit(
+    repository: Path,
+    paths: list[str],
+    message: str,
+    *,
+    allow_unborn: bool = False,
+) -> str:
     if not paths or not message.strip() or "\x00" in message:
         raise AgentWorkspaceError("A checkpoint requires selected paths and a message.")
     pathspecs = [_pathspec(path) for path in paths]
-    base = repository_head(repository)
+    base = repository_head(repository, allow_unborn = allow_unborn)
     with tempfile.NamedTemporaryFile(prefix = "unsloth-index-", delete = False) as handle:
         index_path = handle.name
     try:
@@ -431,7 +437,12 @@ def build_selected_commit(repository: Path, paths: list[str], message: str) -> s
             "GIT_COMMITTER_NAME": "Unsloth Studio",
             "GIT_COMMITTER_EMAIL": "studio@localhost",
         }
-        repository_command(repository, ["read-tree", base], neutralize_filters = True, extra_env = env)
+        repository_command(
+            repository,
+            ["read-tree", base] if base else ["read-tree", "--empty"],
+            neutralize_filters = True,
+            extra_env = env,
+        )
         repository_command(
             repository,
             ["add", "-A", "--", *pathspecs],
@@ -457,8 +468,7 @@ def build_selected_commit(repository: Path, paths: list[str], message: str) -> s
                 tree_sha,
                 "-m",
                 message,
-                "-p",
-                base,
+                *(["-p", base] if base else []),
             ],
             timeout = 30,
             output_limit = 256,
@@ -523,15 +533,33 @@ def restore_selected_paths(repository: Path, commit_sha: str, paths: list[str]) 
     )
 
 
-def repository_head(repository: Path) -> str:
-    output, truncated = repository_command(
+def repository_head(repository: Path, *, allow_unborn: bool = False) -> str:
+    code, output, truncated = _run(
         repository,
-        ["rev-parse", "--verify", "HEAD^{commit}"],
+        ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
         timeout = 10,
         output_limit = 256,
     )
+    if allow_unborn and code == 1 and not output.strip() and not truncated:
+        branch, branch_truncated = repository_command(
+            repository,
+            ["symbolic-ref", "--quiet", "HEAD"],
+            timeout = 10,
+            output_limit = 4096,
+        )
+        branch_ref = branch.strip()
+        if not branch_truncated and branch_ref.startswith("refs/heads/"):
+            ref_code, ref_output, ref_truncated = _run(
+                repository,
+                ["show-ref", "--verify", "--quiet", branch_ref],
+                timeout = 10,
+                output_limit = 256,
+            )
+            if ref_code == 1 and not ref_output.strip() and not ref_truncated:
+                # Persist an empty head in the existing non-null preparation schema.
+                return ""
     value = output.strip()
-    if truncated or _REF.fullmatch(value) is None:
+    if code != 0 or truncated or _REF.fullmatch(value) is None:
         raise AgentWorkspaceError("Git returned an invalid repository head.")
     return value
 

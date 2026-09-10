@@ -75,6 +75,12 @@ pinned secure-tools source in the second variant. Shared UI insertions from the 
 integration when those PRs land. No generated frontend files are included.
 
 Prepared refs are recovery objects; they are not branch commits or a push.
+Prepared commits also work on an attached branch before its first commit. The
+reviewed files form a parentless commit under the prepared ref; the branch,
+staging index, and unrelated staged files remain unchanged. Confirmation fails
+if an external first commit appears after the preview. An existing broken branch
+ref is rejected instead of being mistaken for a new branch. Worktree creation
+and checkpoints retain their existing committed-HEAD requirement.
 Handoff requires an already published branch and compatible `get_commit` and
 `create_pull_request` tools. Remote-head verification is a point-in-time check,
 not a lock against another GitHub writer. These advisory locks coordinate Studio
