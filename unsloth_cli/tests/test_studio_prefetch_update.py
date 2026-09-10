@@ -1265,3 +1265,48 @@ def test_a_plan_spelled_otherwise_at_the_same_release_is_not_trusted():
     assert _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.6"}}, {"unsloth": "2026.9.5.post1"}
     )
+
+
+def test_a_noop_marker_stands_for_the_installed_core_pins():
+    """A noop still leaves the swap's core step asking the index; with the index gone
+    the offline retry needs exact pins, and the installed versions are those pins."""
+    installed = {"unsloth": "2026.9.1", "unsloth-zoo": "2026.9.1"}
+    marker = {"schema": 1, "state": "noop", "core_plan": {}, "installed_core": installed}
+    assert _studio_prefetch.prefetched_core_pins(marker) == [
+        "unsloth==2026.9.1",
+        "unsloth-zoo==2026.9.1",
+    ]
+    assert _studio_prefetch.planned_core_names(marker) == ["unsloth", "unsloth-zoo"]
+    assert _studio_prefetch.plan_is_not_behind(marker, installed)
+    assert not _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.2"})
+    # A noop written before the installed versions were recorded names nothing.
+    assert _studio_prefetch.prefetched_core_pins({"state": "noop", "core_plan": {}}) == []
+    # A real plan wins over the installed record.
+    marker["core_plan"] = {"unsloth": "2026.9.3"}
+    assert _studio_prefetch.prefetched_core_pins(marker) == ["unsloth==2026.9.3"]
+
+
+def test_a_noop_run_records_the_installed_core_versions(managed, monkeypatch):
+    recorder = _Recorder(
+        [(lambda cmd: "--dry-run" in cmd, _plan_response("Resolved 4 packages\n"))]
+    )
+    monkeypatch.setattr(_studio_prefetch, "_run", recorder)
+    monkeypatch.setattr(
+        _studio_prefetch,
+        "_installed_version",
+        lambda name: {"unsloth": "2026.9.1", "unsloth-zoo": "2026.9.1"}.get(name),
+    )
+    payload = _studio_prefetch.run(studio_home = managed, floor = "2026.8.1", echo = lambda line: None)
+    assert payload["state"] == "noop"
+    assert payload["installed_core"] == {"unsloth": "2026.9.1", "unsloth-zoo": "2026.9.1"}
+    assert _studio_prefetch.prefetched_core_pins(_studio_prefetch.read_marker(managed)) == [
+        "unsloth==2026.9.1",
+        "unsloth-zoo==2026.9.1",
+    ]
+
+
+def test_a_relative_cache_is_anchored_where_uv_runs(monkeypatch):
+    root = Path("/studio/.update-prefetch")
+    monkeypatch.setattr(_studio_prefetch, "_filesystem_id", lambda path: None)
+    monkeypatch.setattr(_studio_prefetch, "_RUN_CWD", "/uv/cwd")
+    assert _studio_prefetch._volumes_to_check(root, "rel/uv") == [root, Path("/uv/cwd/rel/uv")]
