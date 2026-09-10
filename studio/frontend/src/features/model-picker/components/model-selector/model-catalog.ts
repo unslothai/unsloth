@@ -71,7 +71,15 @@ export interface CatalogGroup {
    *  `detectCapabilities` reads tags then repo-name keywords and a name like "MiniMax-H3-GGUF"
    *  says nothing about the audio track the model emits. */
   capabilities?: Partial<ModelCapabilities>;
+  /** Quant schemes the backend refuses for this model's FAMILY whatever the GPU, mirroring
+   *  `_FAMILY_SCHEME_DENY` in diffusion_transformer_quant.py. An explicit request for one of these
+   *  is refused at load, so the row must not advertise it. Absent means nothing is denied. */
+  deniedQuantSchemes?: readonly string[];
 }
+
+// The two families `_FAMILY_SCHEME_DENY` covers: both render out of bar on the same DiT. Keep in
+// step with that table; it is short, and it has changed before (fp8 was denied and then was not).
+const QWEN_DENIED_QUANT_SCHEMES = ["mxfp8", "nvfp4"] as const;
 
 
 const gguf = (repoId: string, extra?: Partial<ModelArtifact>): ModelArtifact => ({
@@ -169,6 +177,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     canonicalId: "unsloth/Qwen-Image-2512",
+    deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES,
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",
     scope: "image",
@@ -245,6 +254,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     canonicalId: "unsloth/Qwen-Image-Edit-2511",
+    deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES,
     displayName: "Qwen-Image-Edit 2511",
     description: "Image editing",
     scope: "image",
@@ -847,6 +857,13 @@ const LABEL_PART_SEPARATOR = " - ";
 const GGUF_SUFFIX_RE = /-gguf$/i;
 const RESOLUTION_RE = /^\d{3,4}p$/i;
 
+/** Whether this model's family refuses the requested scheme outright. The deny list is per family
+ *  and holds on every GPU, so no host capability can express it. */
+function groupDeniesPrecision(group: CatalogGroup, precision: RequestedPrecision): boolean {
+  const value = (precision ?? "").trim().toLowerCase();
+  return Boolean(value) && (group.deniedQuantSchemes?.includes(value) ?? false);
+}
+
 /** Whether a known artifact can accept transformer quantisation. Unknown ids defer to the backend. */
 export function curatedArtifactTakesDenseQuant(
   repoId: string,
@@ -876,6 +893,7 @@ function artifactDenseQuantChip(
   if (
     !(
       hostRunsDenseQuant(host) &&
+      !groupDeniesPrecision(group, precision) &&
       group.scope === "image" &&
       artifact.format === "bf16" &&
       artifact.loadKind === "pipeline" &&

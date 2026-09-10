@@ -10316,6 +10316,96 @@ def test_a_declined_quant_gives_back_the_bf16_placement(fake_runtime, tmp_path, 
     backend.unload()
 
 
+def test_a_pipeline_pick_stays_dense_when_the_speed_mode_will_not_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """Eager torchao is far slower than the bf16 it replaces, so an uncompilable load keeps bf16."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        speed_mode = "eager",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "eager" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_speed_off_keeps_the_bit_exact_bf16_pipeline(fake_runtime, tmp_path, monkeypatch):
+    """Speed=Off asks for bit-exact output, so an auto quant is rewritten to off before it runs."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        speed_mode = "off",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    # Not the compile guard: the rewrite happens well before it, so no decline reason is recorded.
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+    backend.unload()
+
+
+def test_a_pipeline_pick_stays_dense_when_this_process_cannot_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """A Windows install without Triton, or TORCHDYNAMO_DISABLE, must not quantise either."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "compile" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_an_uncompilable_pipeline_refuses_an_explicit_scheme(fake_runtime, tmp_path, monkeypatch):
+    """A pinned scheme fails closed rather than landing a slower-than-bf16 build."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("speed_mode", [None, "default", "max"])
+def test_a_compiling_speed_mode_still_quantises(fake_runtime, tmp_path, monkeypatch, speed_mode):
+    """The guard must not cost the default path: speed unset is upgraded to a compile.
+
+    "off" is absent on purpose -- it is not uncompilable, it is the bit-exact request that rewrites
+    an auto quant to off well before this guard, which the test below pins.
+    """
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        speed_mode = speed_mode,
+        _base_local_dir = str(tmp_path),
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert len(calls) == 1
+    backend.unload()
+
+
 def test_a_pipeline_pick_bakes_its_adapters_before_quantising(fake_runtime, tmp_path, monkeypatch):
     """Adapters are baked before torchao replaces their dense base layers."""
     from core.inference import diffusion as dmod

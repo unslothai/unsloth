@@ -2470,3 +2470,56 @@ def test_a_pipeline_pick_is_still_refused_on_a_device_that_cannot_quantise(monke
             transformer_quant = "fp8",
         )
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+
+
+def test_a_unet_family_is_refused_before_the_eviction_and_the_download(monkeypatch):
+    """SDXL's family metadata already proves there is no transformer, so say so pre-eviction."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: pytest.fail("the UNet refusal must not need a scheme probe"),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "sdxl", denoiser_attr = "unet"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='fp8' could not be used" in message
+    assert "unet" in message and "not a transformer" in message
+
+
+def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
+    """The new branch must not swallow the families that do have a transformer."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    seen: list = []
+    monkeypatch.setattr(
+        diffusion_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: (seen.append(a) or "fp8"),
+    )
+    # denoiser_attr defaults to "transformer" on every DiT family.
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+    )
+    assert seen

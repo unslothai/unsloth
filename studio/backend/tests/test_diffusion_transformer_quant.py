@@ -1851,3 +1851,30 @@ def test_a_card_with_no_arch_support_advertises_nothing_whatever_the_cache_says(
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {(TQ_FP8, "cuda:0"): True})
     assert tq.dense_quant_probed_schemes(_target(device = "cpu")) == ()
+
+
+def test_the_picker_mirrors_the_family_deny_list():
+    """The catalog carries `_FAMILY_SCHEME_DENY` so a denied scheme is never labelled fast.
+
+    The deny list is per FAMILY and holds on every GPU, so no host capability can express it and
+    the picker has to know it. Two copies of a fact drift; this is the guard. It has drifted
+    before -- fp8 was denied for qwen-image and then was not.
+    """
+    import pathlib
+    import re
+
+    catalog = (
+        pathlib.Path(tq.__file__).resolve().parents[3]
+        / "frontend/src/features/model-picker/components/model-selector/model-catalog.ts"
+    ).read_text(encoding = "utf-8")
+    mirrored = re.search(r"const QWEN_DENIED_QUANT_SCHEMES = \[([^\]]*)\]", catalog)
+    assert mirrored is not None, "the catalog no longer declares the mirrored deny list"
+    schemes = set(re.findall(r'"([^"]+)"', mirrored.group(1)))
+    denied = {scheme for schemes_ in tq._FAMILY_SCHEME_DENY.values() for scheme in schemes_}
+    assert schemes == denied, (schemes, denied)
+    # One catalog group per denied family, so a newly denied family cannot be forgotten.
+    assert catalog.count("deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES") == len(
+        tq._FAMILY_SCHEME_DENY
+    )
+    # Every denied family is one of the two qwen DiTs the mirror names.
+    assert set(tq._FAMILY_SCHEME_DENY) == {"qwen-image", "qwen-image-edit"}

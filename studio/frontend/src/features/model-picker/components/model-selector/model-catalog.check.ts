@@ -432,6 +432,33 @@ for (const id of [
   assert.equal(auto.find((o) => o.id === id)?.name, "Z-Image-Turbo (Fast)");
 }
 
+// A scheme the model's FAMILY denies is refused on every GPU, so the row must not promise it.
+{
+  const qwen = "Qwen/Qwen-Image-2512";
+  const edit = "Qwen/Qwen-Image-Edit-2511";
+  for (const id of [qwen, edit]) {
+    for (const denied of ["mxfp8", "nvfp4", "MXFP8", " NvFp4 "]) {
+      const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", denied);
+      assert.ok(row && !row.name.includes("(Fast)"), `${id} ${denied} reads "${row?.name}"`);
+      assert.equal(row?.tags.includes("MXFP8"), false, `${id} ${denied}`);
+      assert.equal(row?.tags.includes("NVFP4"), false, `${id} ${denied}`);
+    }
+    // The schemes it does allow are unaffected, and so is auto.
+    for (const [precision, chip] of [
+      ["fp8", "FP8"],
+      ["int8", "INT8"],
+      ["auto", "FP8 / INT8"],
+    ] as const) {
+      const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", precision);
+      assert.ok(row?.name.includes("(Fast)"), `${id} ${precision} reads "${row?.name}"`);
+      assert.deepEqual(row?.tags, [chip], `${id} ${precision}`);
+    }
+  }
+  // A model whose family denies nothing keeps every scheme.
+  const free = curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant", "nvfp4");
+  assert.deepEqual(free, { name: "Z-Image-Turbo (Fast)", tags: ["NVFP4"] });
+}
+
 // Do not duplicate a qualifier already present in the variant name.
 assert.deepEqual(
   curatedRowLabelFor("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG, "dense-quant"),

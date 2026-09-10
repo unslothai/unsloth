@@ -109,6 +109,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
     SPEED_DEFAULT,
+    SPEED_EAGER,
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
@@ -1423,6 +1424,16 @@ class DiffusionBackend:
             reason = None
             if not dense_quant_supported_kind(model_kind):
                 reason = dense_quant_unsupported_kind_reason(model_kind)
+            elif getattr(fam, "denoiser_attr", "transformer") != "transformer":
+                # The family table already knows SDXL denoises with a UNet, so this refusal needs no network and no
+                # assembly. Without it the route passes, the arbiter evicts the resident model and the pipeline
+                # downloads in full, and only then does dense_quant_blocker say the same thing -- the same
+                # after-the-eviction refusal the offload branch below exists to prevent.
+                reason = (
+                    f"'{getattr(fam, 'name', None)}' denoises with a "
+                    f"{getattr(fam, 'denoiser_attr', 'unet')}, not a transformer, and the dense torchao schemes "
+                    "do not cover it"
+                )
             elif _memory_request_forces_offload(memory_mode, cpu_offload):
                 # Not a measurement: balanced and low_vram name their policy outright, and the legacy flag forces model
                 # offload. Offload hooks move modules with Module.to(), which torchao tensors do not survive, so the
@@ -4339,6 +4350,25 @@ class DiffusionBackend:
                                 _base_local_dir or fetch_base, **pipe_kwargs
                             )
 
+                # A torchao transformer that is never compiled is ~30x slower than the bf16 it replaced (the forcing
+                # branch below measures the same thing from the other side), so a load that cannot compile must keep its
+                # dense weights rather than "optimise" into that. speed=off is fine: an engaged quant upgrades it to
+                # `default`. `eager` is an explicit refusal to compile, and compile_eligible covers the process that
+                # cannot run inductor at all -- a normal Windows CUDA install has no Triton wheel, and
+                # TORCHDYNAMO_DISABLE turns every compile into a silent no-op.
+                pipeline_quant_uncompilable: Optional[str] = None
+                if resolve_speed_mode(speed_mode, is_gguf = kind == "gguf") == SPEED_EAGER:
+                    pipeline_quant_uncompilable = (
+                        "Speed is set to 'eager', and a quantised transformer that is not compiled runs far slower "
+                        "than the bf16 weights it replaces. Pick a compiling speed mode to combine the two"
+                    )
+                elif not compile_eligible(target, is_gguf = False, family = fam):
+                    pipeline_quant_uncompilable = (
+                        "this process cannot run a torch.compile (no Triton, TORCHDYNAMO_DISABLE, or a family/device "
+                        "that does not compile), and a quantised transformer that is not compiled runs far slower "
+                        "than the bf16 weights it replaces"
+                    )
+
                 # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and
                 # pre-quantised pipelines; offloaded plans remain dense because torchao tensors cannot move.
                 # The pipeline is still on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe
@@ -4352,7 +4382,9 @@ class DiffusionBackend:
                     and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
                 ):
-                    pipeline_quant_blocker = dense_quant_blocker(pipe)
+                    pipeline_quant_blocker = pipeline_quant_uncompilable or dense_quant_blocker(
+                        pipe
+                    )
                     if pipeline_quant_blocker is not None:
                         logger.info(
                             "diffusion.transformer_quant: skipped (%s)", pipeline_quant_blocker
