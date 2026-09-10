@@ -165,9 +165,9 @@ def spawn_worker(
             # No tuning module: that unsloth_zoo is also the one setting HF_XET_HIGH_PERFORMANCE=1 at import, and the inherited "1" would hand the worker a 64GB ceiling, since xet-core applies the preset AFTER reading the environment.
             for key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP"):
                 env[key] = "0"
-    # Fall back to the backend's own HF_TOKEN so private repos stay downloadable, but never for a repo an API caller named: that would lend them the owner's identity.
     if not hf_token and allow_ambient_token:
-        hf_token = os.environ.get("HF_TOKEN") or None
+        from huggingface_hub.utils import get_token_to_send
+        hf_token = get_token_to_send(None)
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
     # hf_transfer's parallel Range chunks can leave sparse partials even in "http" mode, so disable it and keep the worker's writer sequential.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"

@@ -270,7 +270,10 @@ def test_an_explicit_request_token_wins_over_the_backend_one(monkeypatch):
     assert env["HF_TOKEN"] == "request-token"
 
 
-def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_path):
+@pytest.mark.parametrize("allow_ambient", [False, True])
+def test_http_retry_preserves_ambient_token_policy(
+    monkeypatch, tmp_path, cached_hf_login, allow_ambient
+):
     """The recovery ladder must carry the token policy: a job started without the ambient token
     must not pick it up when the Xet worker fails and the HTTP one takes over."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -289,6 +292,14 @@ def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_pat
         blob_hashes = frozenset({"blob"}),
     )[0]
     retried = []
+    environments = []
+    original_spawn = download_lifecycle.spawn_worker
+
+    def fake_popen(*args, **kwargs):
+        environments.append(kwargs["env"])
+        return _Proc(0)
+
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", fake_popen)
 
     def fake_spawn(
         _args,
@@ -299,7 +310,13 @@ def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_pat
         **_kwargs,
     ):
         retried.append(allow_ambient_token)
-        return _Proc(0)
+        return original_spawn(
+            _args,
+            _token,
+            use_xet = use_xet,
+            allow_ambient_token = allow_ambient_token,
+            **_kwargs,
+        )
 
     monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn)
     monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
@@ -315,7 +332,85 @@ def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_pat
         repo_id = "Org/Model",
         transport = download_registry.TRANSPORT_XET,
         watch_name = "model-watch",
-        allow_ambient_token = False,
+        allow_ambient_token = allow_ambient,
     )
 
-    assert retried == [False], "the HTTP retry regained the backend's token"
+    assert retried == [allow_ambient]
+    assert len(environments) == 1
+    assert environments[0].get("HF_TOKEN") == (cached_hf_login if allow_ambient else None)
+
+
+@pytest.fixture
+def cached_hf_login(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+
+    token_path = tmp_path / "token"
+    token_path.write_text("hf_test_cached_login\n")
+    monkeypatch.setattr(constants, "HF_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False)
+    for key in (
+        "HF_TOKEN",
+        "HF_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising = False)
+    return "hf_test_cached_login"
+
+
+@pytest.mark.parametrize("allow_ambient", [False, True])
+@pytest.mark.parametrize("explicit", [None, "hf_test_request"])
+@pytest.mark.parametrize("implicit_disabled", [False, True])
+def test_cached_login_obeys_caller_and_implicit_auth_policy(
+    monkeypatch, cached_hf_login, allow_ambient, explicit, implicit_disabled
+):
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", implicit_disabled)
+    env = _spawn_env(monkeypatch, explicit, allow_ambient_token = allow_ambient)
+
+    expected = explicit or (cached_hf_login if allow_ambient and not implicit_disabled else None)
+    assert env.get("HF_TOKEN") == expected
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == ("0" if expected else "1")
+
+
+def test_environment_token_takes_precedence_over_cached_login(monkeypatch, cached_hf_login):
+    monkeypatch.setenv("HF_TOKEN", "hf_test_environment")
+
+    env = _spawn_env(monkeypatch, None, allow_ambient_token = True)
+
+    assert env["HF_TOKEN"] == "hf_test_environment"
+
+
+def test_forbidden_ambient_token_is_not_resolved(monkeypatch, cached_hf_login):
+    import huggingface_hub.utils
+
+    def unexpected_resolution(*args):
+        pytest.fail("A restricted caller must not resolve the owner's credentials")
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", unexpected_resolution)
+    env = _spawn_env(
+        monkeypatch,
+        None,
+        allow_ambient_token = False,
+        cache_env = {
+            "HF_TOKEN": "hf_test_environment",
+            "HF_HUB_TOKEN": "hf_test_alias",
+            "HUGGING_FACE_HUB_TOKEN": "hf_test_alias",
+            "HUGGINGFACE_HUB_TOKEN": "hf_test_alias",
+            "HUGGINGFACEHUB_API_TOKEN": "hf_test_alias",
+        },
+    )
+
+    assert not any(
+        key in env
+        for key in (
+            "HF_TOKEN",
+            "HF_HUB_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "HUGGINGFACE_HUB_TOKEN",
+            "HUGGINGFACEHUB_API_TOKEN",
+        )
+    )
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
