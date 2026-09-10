@@ -108,12 +108,26 @@ const HARDWARE_DETECT_POLL_MS = 200;
 // The bounded wait above is spent at most once per page load: see fetchDeviceType.
 let hardwareWaitSpent = false;
 
+// Forced reads bypass the cache and always write, so they race each other: a slow one
+// landing after a later one restores what that one replaced. Ordered on what has been
+// WRITTEN, not on what has been issued -- a later read that fails writes nothing, and
+// discarding an earlier success for it would throw away the only answer either got.
+let forcedRead = 0;
+let forcedWritten = 0;
+// Whether any reply has carried the authed-only fields yet. An unauthenticated body says
+// strictly less than one of those did, so once this is set it must not write over one.
+// Not `fetched`: the backend publishes the tunnel before the hardware verdict, so an
+// authed reply during detection leaves real URLs stored with `fetched` still false.
+let authoritativeReply = false;
+
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
 }): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
+  const read = options?.force ? ++forcedRead : 0;
+  const superseded = () => read !== 0 && read < forcedWritten;
 
   try {
     // /api/health only reports the server's device_type to authed callers.
@@ -173,10 +187,29 @@ export async function fetchDeviceType(options?: {
       // later forced refresh already picked up device_type and the tunnel
       // fields; writing either would reset device type or null the tunnel
       // fields. Forced refreshes are explicit re-reads, so they still write.
-      if (shouldKeepAuthoritativePlatform(options?.force)) {
-        return usePlatformStore.getState().deviceType;
-      }
       const previous = usePlatformStore.getState();
+      // The authed-only fields are all-or-nothing, so one of them says which body this is.
+      // An unauthenticated reply carries no device_type, no chat_only_reason and no
+      // tunnel: it can only ever say less than is already stored, and the guard above
+      // already refuses it for a non-forced read. A forced read is the same reply, so it
+      // is refused too -- otherwise every poll made against an expired token walks a
+      // measurement back to a browser guess.
+      const authed = "cloudflare_url" in data;
+      if (
+        shouldKeepAuthoritativePlatform(options?.force) ||
+        superseded() ||
+        (!authed && authoritativeReply)
+      ) {
+        return previous.deviceType;
+      }
+      authoritativeReply = authoritativeReply || authed;
+      // Only an authed reply orders the forced reads. An unauthenticated one is accepted
+      // here just to seed a cold start, and letting it take the mark would make it
+      // outrank an authenticated read still in flight -- the same way a failed read used
+      // to, one branch over.
+      if (authed) {
+        forcedWritten = read || forcedWritten;
+      }
       // A provisional reply omits device_type, so a forced refresh during the warm would
       // fall back to the browser platform and relabel a WSL, SSH or remote host as local,
       // changing model filtering, paths and install commands. Keep the server's answer.
@@ -203,6 +236,8 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
+        // An authed null is a tunnel that stopped, not a field the reply left out: only
+        // an unauthenticated body omits these, and that one no longer reaches here.
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
@@ -214,11 +249,17 @@ export async function fetchDeviceType(options?: {
   } catch {
     // Backend not ready: use client-side detection so chat-only guard works
     // on initial load (important for macOS). Keep fetched=false so a later
-    // call retries against the backend. But a late non-forced failure must not
-    // wipe an authoritative platform that already resolved.
-    if (shouldKeepAuthoritativePlatform(options?.force)) {
+    // call retries against the backend. But a failure carries no verdict, so it
+    // must not wipe an authoritative platform that already resolved -- forced or
+    // not. Forced reads recur (the sidebar's recovery poll, the History grid's
+    // link-base poll), and one dropped request would otherwise relabel a Linux
+    // host from the browser it is being viewed from until the next success.
+    if (usePlatformStore.getState().fetched || superseded()) {
       return usePlatformStore.getState().deviceType;
     }
+    // Deliberately not advancing forcedWritten: this is the browser's guess, seeded so
+    // the chat-only guard has an answer on a cold start. A real reply still in flight
+    // must be allowed to replace it, whenever it lands.
     const deviceType = detectLocalPlatform();
     const chatOnly = deviceType === "mac";
     usePlatformStore.setState({ deviceType, chatOnly, fetched: false });

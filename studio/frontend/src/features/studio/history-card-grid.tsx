@@ -56,6 +56,10 @@ type StudioT = ReturnType<typeof useT>;
 
 const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
+// One GET: fetchDeviceType spends its hardware wait once per page load, not per call.
+const LINK_BASE_POLL_MS = 15000;
+// When a read is written off as stalled and a fresh one may take the guard.
+const LINK_BASE_STALL_MS = 30000;
 
 const statusBadge: Record<string, { className: string }> = {
   completed: {
@@ -253,8 +257,38 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel can now
-  // start and stop at any time, so refresh on click instead of polling at mount.
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. Never refreshed in the
+  // click -- Safari drops the clipboard permission across an await -- and nothing else
+  // re-reads /api/health once the verdict settles. Polled because the tunnel URL is
+  // published late (DNS, then a public probe) and can die without warning.
+  useEffect(() => {
+    // Skipped while one is outstanding: a forced read always writes the store, so a
+    // slow answer landing after a later one would put the old tunnel URL back. Bounded
+    // the way the sidebar's poll bounds its own, because fetchDeviceType has no timeout
+    // and a read that never settles would otherwise hold the guard for good. Only the
+    // owner clears it, or an abandoned read would free a guard it no longer holds.
+    let pollingSince = 0;
+    let pollOwner = 0;
+    const refreshLinkBase = () => {
+      if (pollingSince && Date.now() - pollingSince < LINK_BASE_STALL_MS) {
+        return;
+      }
+      const owned = ++pollOwner;
+      pollingSince = Date.now();
+      void fetchDeviceType({ force: true }).finally(() => {
+        if (owned === pollOwner) {
+          pollingSince = 0;
+        }
+      });
+    };
+    refreshLinkBase();
+    const id = window.setInterval(refreshLinkBase, LINK_BASE_POLL_MS);
+    window.addEventListener("focus", refreshLinkBase);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", refreshLinkBase);
+    };
+  }, []);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -604,11 +638,6 @@ export function HistoryCardGrid({
                   className="absolute bottom-3 right-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    try {
-                      await fetchDeviceType({ force: true });
-                    } catch {
-                      // Fall back to the last known server URL or this origin.
-                    }
                     // Encode each segment but keep "/" so the /p route matches.
                     const ref = (run.preview_ref ?? "")
                       .split("/")
