@@ -123,6 +123,13 @@ _denied_bucket="$_TMP/uvdenied"
 mkdir -p "$_denied_bucket/archive-v0" "$_denied_bucket/builds-v0/pkg"
 : > "$_denied_bucket/builds-v0/pkg/wheel.whl"
 chmod 000 "$_denied_bucket/archive-v0"
+# A cache-dir pointed at a mount point carries a root-owned lost+found. uv never writes it,
+# so it must not condemn an otherwise usable warm cache.
+_alien="$_TMP/uvalien"
+mkdir -p "$_alien/archive-v0/torch" "$_alien/lost+found"
+: > "$_alien/archive-v0/torch/libtorch.so"
+: > "$_alien/CACHEDIR.TAG"
+chmod 000 "$_alien/lost+found"
 # uv mutates interpreter-v4 too, so the verdict cannot stop at the five artifact families.
 _denied_meta="$_TMP/uvmeta2"
 mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
@@ -178,7 +185,10 @@ else
     assert_eq "a denied bucket -> studio"     "studio" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/n" '' "$_denied_meta")
     assert_eq "a denied metadata bucket too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/q" '' "$_alien")
+    assert_eq "lost+found does not condemn it" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
+chmod 700 "$_alien/lost+found"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
     "$_denied_meta/interpreter-v4"

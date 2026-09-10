@@ -763,19 +763,22 @@ _configure_uv_cache() {
             # create, since -w reads the mode not the filesystem; mktemp, since a fixed name
             # can be a planted link.
             for _uv_probe_dir in "$_uv_candidate" "$_uv_candidate"/*; do
-                if [ ! -d "$_uv_probe_dir" ]; then
-                    # Only where a BUCKET should be, which uv names <kind>-v<N>. There a file
-                    # or a symlink, dangling or not, is still an existing path to mkdir(2),
-                    # which answers EEXIST, so uv refuses it (see _dir_has_entries). The
-                    # root's own files -- CACHEDIR.TAG, .gitignore -- are not directories uv
-                    # creates.
+                # The root, then only where a BUCKET should be, which uv names <kind>-v<N>.
+                # Anything else at the top level is not uv's to write: CACHEDIR.TAG and
+                # .gitignore are its own files, and a cache-dir pointed at a mount point has
+                # a root-owned lost+found that must not condemn the whole cache.
+                if [ "$_uv_probe_dir" != "$_uv_candidate" ]; then
                     case "${_uv_probe_dir##*/}" in
-                        *-v[0-9]*)
-                            if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
-                                _uv_cand_writable=false
-                            fi
-                            ;;
+                        *-v[0-9]*) ;;
+                        *) continue ;;
                     esac
+                fi
+                if [ ! -d "$_uv_probe_dir" ]; then
+                    # A file, or a symlink dangling or not, is still an existing path to
+                    # mkdir(2), which answers EEXIST, so uv refuses it (see _dir_has_entries).
+                    if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
+                        _uv_cand_writable=false
+                    fi
                     continue
                 fi
                 _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
