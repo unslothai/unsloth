@@ -2991,23 +2991,22 @@ function VisibleAnswerRecomputeSync({
 }: { enabled: boolean }): ReactElement | null {
   // The answer's model rides in its usage record. A note from model A must not qualify the
   // chip for model B, loaded into the same thread before B has answered.
-  const answer = useAuiState(({ thread }) => {
+  // A primitive per selector: a selector returning a fresh object re-renders on every store
+  // read and React refuses the loop (error 185, seen in the Windows UI lane).
+  const lastAnswer = useAuiState(({ thread }) => {
     const messages = thread.messages;
     for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message.role !== "assistant") continue;
-      const custom = message.metadata?.custom as Record<string, unknown> | undefined;
-      const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
-      return {
-        recomputed: custom?.preemptRecomputed === true,
-        modelId: typeof usage?.modelId === "string" ? usage.modelId : null,
-      };
+      if (messages[i].role === "assistant") return messages[i];
     }
-    return { recomputed: false, modelId: null };
+    return null;
   });
+  const custom = lastAnswer?.metadata?.custom as Record<string, unknown> | undefined;
+  const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
+  const answerRecomputed = custom?.preemptRecomputed === true;
+  const answerModelId = typeof usage?.modelId === "string" ? usage.modelId : null;
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const recomputed =
-    answer.recomputed && (answer.modelId === null || answer.modelId === checkpoint);
+    answerRecomputed && (answerModelId === null || answerModelId === checkpoint);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
 
   useEffect(() => {
