@@ -33,6 +33,7 @@ export function SidebarEdgeTrigger({
   const {
     isMobile,
     openMobile,
+    peeking,
     pinned,
     setPeeking,
     toggleSidebar,
@@ -42,18 +43,31 @@ export function SidebarEdgeTrigger({
     setWidth,
     resetWidth,
   } = useSidebar();
+  // A drag that reaches the minimum pins the sidebar part-way through, which
+  // would unmount this: the handle would lose pointer capture and the width
+  // would never commit. Hold on until the pointer is released.
+  const [holding, setHolding] = useState(false);
+  const release = () => setHolding(false);
 
   const sidebarShowing = isMobile ? openMobile : pinned;
-  if (!isTauri || sidebarShowing) {
+  if (!isTauri || (sidebarShowing && !holding)) {
     return null;
   }
 
   return (
-    <div ref={ref} className="contents">
+    <div
+      ref={ref}
+      className="contents"
+      onPointerDownCapture={() => setHolding(true)}
+      onPointerUp={release}
+      onPointerCancel={release}
+      onLostPointerCapture={release}
+    >
       <PanelResizeHandle
         edge="right"
-        // Always the collapsed handle: this renders only while the sidebar is away.
-        open={false}
+        // Follows the pin, which a drag flips part-way through: from there the
+        // handle resizes the sidebar it just opened and commits on release.
+        open={pinned}
         width={width}
         stored={storedWidth}
         min={SIDEBAR_WIDTH_MIN}
@@ -62,16 +76,23 @@ export function SidebarEdgeTrigger({
         setWidth={setWidth}
         resetWidth={resetWidth}
         onToggle={toggleSidebar}
-        // Collapsed to nothing, so a drag grows from zero.
-        measure={() => 0}
+        // Start from what is on screen: held out, the panel is already at its
+        // full width, so a drag carries on from there instead of jumping.
+        measure={() => (peeking ? width : 0)}
         target={() =>
           ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ??
           null
         }
         cssVar="--sidebar-width"
         rootVar="--studio-sidebar-live-width"
-        // No enclosing [data-slot="sidebar"] out here; the handle falls back to `target()`.
-        scopedTarget={() => null}
+        // The sidebar declares --sidebar-width on itself, so a live width
+        // painted any higher up is shadowed. Queried, not `closest`: this
+        // strip is the sidebar's sibling.
+        scopedTarget={() =>
+          ref.current
+            ?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]')
+            ?.querySelector<HTMLElement>('[data-slot="sidebar"]') ?? null
+        }
         rootVarTargets={() =>
           Array.from(
             document.querySelectorAll<HTMLElement>(
