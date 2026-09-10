@@ -357,9 +357,10 @@ def test_a_recordless_record_beside_a_complete_install_is_removed_without_a_top_
     (stale / "METADATA").write_text("Name: tiktoken\nVersion: 0.7.0\n", encoding = "utf-8")
     monkeypatch.setattr(tv, "_env_offline", lambda: False)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
-    monkeypatch.setattr(tv, "_install_to_dir", lambda *a, **k: pytest.fail("installed over a present package"))
+    monkeypatch.setattr(
+        tv, "_install_to_dir", lambda *a, **k: pytest.fail("installed over a present package")
+    )
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     tv._top_up_optional_packages(str(root), ("tiktoken",))
     assert not stale.exists()
     assert (good / "RECORD").is_file()
-
