@@ -3259,6 +3259,21 @@ def test_the_auto_default_only_moves_a_table_over_four_gib(monkeypatch):
 def test_a_model_with_no_per_layer_embeddings_is_unaffected(monkeypatch):
     """Every non-PLE model plans exactly as it did: no bucket, nothing to excuse."""
     assert _ple_lazily(monkeypatch, _Stub()) is False
+
+
+def test_the_price_follows_the_lazy_mode_load_model_emitted(monkeypatch):
+    """load_model now spells --lazy-mode out for these archs instead of leaving it to
+    ``auto``, and hands the emitted value down as an input. The seam has to price THAT, or
+    the two disagree in both directions: a table under llama.cpp's 4 GiB threshold that
+    ``-lzm on`` really does page, and a table on an iGPU where ``auto`` silently becomes off
+    (src/llama-model.cpp:llama_model_base::load_tensors) while the price says paged."""
+    small = _ple_stub(ple_bytes = 1540 * MIB)
+    assert _ple_lazily(monkeypatch, small) is False
+    assert _ple_lazily(monkeypatch, small, emitted_lazy_mode = "on") is True
+    assert _ple_lazily(monkeypatch, _ple_stub()) is True
+    assert _ple_lazily(monkeypatch, _ple_stub(), emitted_lazy_mode = "off") is False
+    # No emission (an arch or a build Studio says nothing about) keeps the old resolution.
+    assert _ple_lazily(monkeypatch, _ple_stub(), emitted_lazy_mode = None) is True
     assert _ple_lazily(monkeypatch, _ple_stub(ple_bytes = 0)) is False
 
 
