@@ -327,43 +327,50 @@ def test_two_plots_in_one_code_execution_turn_replay_no_base64():
 
 
 def test_a_flood_of_stacked_image_markers_stays_linear():
-    """An MCP server's reply is unbounded text and this runs on the request thread,
-    so the cost has to follow its length. Re-partitioning the shortened string once
-    per marker copies it again every time: quadruple the markers and the work grows
-    about sixteenfold instead of fourfold.
+    """A hosted result's length is the provider's to choose and this runs on the request
+    thread, so the cost has to follow it. Re-partitioning the shortened string once per
+    marker copies it again every time: quadruple the markers and the work grows about
+    sixteenfold instead of fourfold.
 
-    Timed against itself rather than a wall-clock budget, so the bound means the same
-    thing on a fast laptop and a loaded runner.
+    Measured as CPU time, and as the best of several runs. A shared runner can deschedule
+    the process mid-call, which adds wall clock but no CPU, and taking the minimum drops
+    the samples where it happened -- interference can only ever make a run look slower.
     """
 
-    def elapsed(markers: int) -> float:
+    def cost(markers: int) -> float:
         flood = '\n__IMAGES__:["x"]' * markers
-        started = time.perf_counter()
-        assert strip_result_for_model(flood, "code_execution") == ""
-        return time.perf_counter() - started
+        best = float("inf")
+        for _ in range(5):
+            started = time.process_time()
+            assert strip_result_for_model(flood, "code_execution") == ""
+            best = min(best, time.process_time() - started)
+        return max(best, 1e-4)
 
-    small = max(elapsed(20_000), 1e-4)
-    large = elapsed(80_000)
+    small = cost(20_000)
+    large = cost(80_000)
 
-    assert large / small < 10.0, f"4x the markers cost {large / small:.1f}x the time"
+    assert large / small < 10.0, f"4x the markers cost {large / small:.1f}x the work"
 
 
-def test_an_oversized_sentinel_payload_is_left_unparsed():
+def test_an_oversized_source_map_is_left_unparsed():
     """`json.loads` on a big payload is the allocation, not the marker count: a few
-    megabytes of tiny items decode into hundreds of megabytes of objects. Both payloads
-    below are the shape their validator accepts and reach it through a tool that really
-    emits that envelope, so without the cap they strip."""
-    images = "answer\n__IMAGES__:[" + '"x",' * 2_500_000 + '"x"]'
-    assert len(images) > 8 << 20
-    assert strip_result_for_model(images, "code_execution") == images
-
+    megabytes of tiny items decode into hundreds of megabytes of objects. The source map
+    is ours and never near a megabyte, so past that it is not one of ours."""
     sources = "answer\n__RAG_SOURCES__:[" + "{}," * 400_000 + "{}]"
     assert len(sources) > 1 << 20
     assert strip_result_for_model(sources, "search_knowledge_base") == sources
 
-    # A plot's data URI is the largest thing a real envelope carries, and it still goes.
-    big_but_real = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * 500_000 + '"]'
-    assert strip_result_for_model(big_but_real, "code_execution") == "output"
+    small_enough = 'answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
+    assert strip_result_for_model(small_enough, "search_knowledge_base") == "answer"
+
+
+def test_a_large_plot_is_still_taken_off_the_result():
+    """The image payload has no length bound on purpose: a figure Gemini renders at high
+    DPI is a data URI of whatever size it chose, and leaving it in for being large is the
+    base64 leak this stripper exists to prevent."""
+    big = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * (12 << 20) + '"]'
+    assert len(big) > 8 << 20
+    assert strip_result_for_model(big, "code_execution") == "output"
 
 
 def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():

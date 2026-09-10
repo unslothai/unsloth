@@ -869,11 +869,13 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
-# `json.loads` on a payload this side of the gate below is our own tool's or the
-# provider's, never an MCP server's, but a few megabytes of "[{},{},...]" still decodes
-# into hundreds of megabytes of objects, so each marker is bounded by what it can really
-# carry: one plot's data URI for the image envelope, our own source map for the other.
-_MAX_IMAGE_PAYLOAD_CHARS = 8 << 20
+# The source map is ours: every producer builds it from a handful of retrieved chunks, so
+# a megabyte is already far past anything real and refusing to decode past it costs
+# nothing. There is deliberately no such bound on the image envelope. Its payload is one
+# plot's data URI, whose size is the provider's to choose, and refusing a big one for
+# being big would put the whole base64 back in the model's context -- the leak the walk
+# above exists to prevent. What keeps unbounded MCP text out of both is the gate on the
+# emitting tools, not a length.
 _MAX_SOURCE_MAP_CHARS = 1 << 20
 
 
@@ -900,8 +902,6 @@ def _strip_images_sentinel(result: str) -> str:
     while True:
         start = result.rfind(marker, 0, end)
         if start == -1:
-            break
-        if end - start - len(marker) > _MAX_IMAGE_PAYLOAD_CHARS:
             break
         try:
             images = json.loads(result[start + len(marker) : end])
