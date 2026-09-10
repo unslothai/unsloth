@@ -39,12 +39,16 @@ def data_designer_stub(monkeypatch, tmp_path):
     mcp = types.ModuleType("data_designer.config.mcp")
     mcp.MCPProvider = type("MCPProvider", (_Provider,), {})
     mcp.LocalStdioMCPProvider = type("LocalStdioMCPProvider", (_Provider,), {})
+    models = types.ModuleType("data_designer.config.models")
+    models.ModelProvider = type("ModelProvider", (_Provider,), {})
     config.mcp = mcp
+    config.models = models
     package.config = config
     for name, module in (
         ("data_designer", package),
         ("data_designer.config", config),
         ("data_designer.config.mcp", mcp),
+        ("data_designer.config.models", models),
     ):
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -97,3 +101,32 @@ def test_managed_recipe_stdio_provider_is_still_dropped(monkeypatch):
         ]
     }
     assert run_as(ALICE, build_mcp_providers, recipe) == []
+
+
+def _provider_recipe(endpoint: str) -> dict:
+    return {"model_providers": [{"name": "llm", "endpoint": endpoint, "api_key": "k"}]}
+
+
+@pytest.mark.parametrize(
+    "endpoint", (*_PRIVATE_ENDPOINTS, "http://169.254.169.254/latest", "http://[::1]:11434/v1")
+)
+def test_managed_recipe_model_provider_must_be_public(endpoint):
+    """The engine dials providers itself, so a managed recipe cannot point one at loopback or the LAN."""
+    from core.data_recipe.service import build_model_providers
+
+    with pytest.raises(HTTPException) as refused:
+        run_as(ALICE, build_model_providers, _provider_recipe(endpoint))
+    assert refused.value.status_code == 403
+    assert "public" in refused.value.detail
+
+
+def test_managed_recipe_model_provider_on_a_public_address_is_kept():
+    from core.data_recipe.service import build_model_providers
+    built = run_as(ALICE, build_model_providers, _provider_recipe("http://8.8.8.8/v1"))
+    assert [provider.endpoint for provider in built] == ["http://8.8.8.8/v1"]
+
+
+def test_owner_recipe_model_provider_endpoints_are_unchanged():
+    from core.data_recipe.service import build_model_providers
+    built = run_as(OWNER, build_model_providers, _provider_recipe(_PRIVATE_ENDPOINTS[0]))
+    assert [provider.endpoint for provider in built] == [_PRIVATE_ENDPOINTS[0]]

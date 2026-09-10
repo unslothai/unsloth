@@ -677,6 +677,13 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
 
+        # Each account has its own rag.db, so its stuck ingestion jobs are only visible from inside it.
+        try:
+            from storage.rag_db import reconcile_orphaned_ingestion_jobs
+            _run_as(_account, reconcile_orphaned_ingestion_jobs)
+        except Exception as exc:
+            _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
+
     try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
         # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
@@ -704,12 +711,6 @@ async def lifespan(app: FastAPI):
     app.state.llama_cpp_capabilities = None
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
-
-    try:
-        from storage.rag_db import reconcile_orphaned_ingestion_jobs
-        reconcile_orphaned_ingestion_jobs()
-    except Exception as exc:
-        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()

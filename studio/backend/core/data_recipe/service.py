@@ -136,11 +136,26 @@ def _apply_data_designer_image_context_patch() -> None:
     _IMAGE_CONTEXT_PATCHED = True
 
 
+def _require_public_provider_endpoint(endpoint: str) -> None:
+    """The recipe engine dials providers itself, so a managed account's endpoint must be public."""
+    if not managed_account():
+        return
+    from core.inference.providers import public_provider_address
+
+    try:
+        public_provider_address(str(endpoint or ""))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+        ) from exc
+
+
 def build_model_providers(recipe: dict[str, Any]):
     from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 
     providers: list[ModelProvider] = []
     for provider in recipe.get("model_providers", []):
+        _require_public_provider_endpoint(provider.get("endpoint"))
         api_key = provider.get("api_key")
         api_key_env = provider.get("api_key_env")
         if not api_key and api_key_env and not managed_account():

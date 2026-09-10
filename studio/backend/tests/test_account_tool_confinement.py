@@ -743,3 +743,51 @@ def test_runtime_secret_mounts_are_excluded_from_the_system_grant(tmp_path, monk
         assert not any(
             p == f"{resolved}/{private}" or p.startswith(f"{resolved}/{private}/") for p in granted
         ), private
+
+
+def test_privileged_etc_secrets_are_excluded_from_the_system_grant(tmp_path, monkeypatch):
+    """A root-run Studio must not hand a managed tool /etc/shadow, sudoers, host keys or private TLS keys."""
+    if sys.platform != "linux":
+        pytest.skip("Linux rule builder")
+    etc = tmp_path / "etc"
+    for name in ("ssl/private", "ssl/certs", "ssh", "sudoers.d", "security"):
+        (etc / name).mkdir(parents = True)
+    for name in (
+        "shadow",
+        "sudoers",
+        "sudoers.d/admins",
+        "security/opasswd",
+        "ssl/private/server.key",
+        "ssh/ssh_host_ed25519_key",
+        "hosts",
+        "ssh/ssh_config",
+        "ssh/ssh_host_ed25519_key.pub",
+        "ssl/certs/ca.pem",
+    ):
+        (etc / name).write_text(name)
+    monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", (str(etc),))
+    monkeypatch.setattr(
+        tool_confinement,
+        "_PRIVATE_SYSTEM_PATHS",
+        tuple(
+            str(etc / os.path.relpath(p, "/etc")) for p in tool_confinement._PRIVATE_SYSTEM_PATHS
+        ),
+    )
+    run_as(ALICE, tools._get_workdir, "chat")
+    rules = run_as(ALICE, tool_confinement._landlock_rules, 6, tools._SANDBOX_SITE_DIR)
+    granted = [p for p, _ in rules]
+    resolved = str(etc.resolve())
+    assert resolved not in granted
+    for public in ("hosts", "ssh/ssh_config", "ssh/ssh_host_ed25519_key.pub", "ssl/certs"):
+        assert f"{resolved}/{public}" in granted, public
+    for private in (
+        "shadow",
+        "sudoers",
+        "sudoers.d",
+        "security/opasswd",
+        "ssl/private",
+        "ssh/ssh_host_ed25519_key",
+    ):
+        assert not any(
+            p == f"{resolved}/{private}" or p.startswith(f"{resolved}/{private}/") for p in granted
+        ), private

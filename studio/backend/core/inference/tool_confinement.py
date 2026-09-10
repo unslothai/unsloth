@@ -57,6 +57,33 @@ _DEVICE_ROOT = "/dev"
 
 # Readable by the service user, so DAC alone does not stop a tool. The rest of /run is readable.
 _PRIVATE_RUNTIME_ROOTS = ("/run/user", "/run/secrets", "/run/credentials")
+# Secrets a root-run Studio (the Docker image) could otherwise hand a managed tool; the rest of /etc
+# (ld.so.cache, nsswitch, hosts, resolv.conf, ssl/certs) is what tool processes need.
+_PRIVATE_SYSTEM_PATHS = (
+    "/etc/shadow",
+    "/etc/shadow-",
+    "/etc/gshadow",
+    "/etc/gshadow-",
+    "/etc/security/opasswd",
+    "/etc/sudoers",
+    "/etc/sudoers.d",
+    "/etc/ssl/private",
+    "/etc/pki/tls/private",
+    "/etc/letsencrypt",
+    "/etc/krb5.keytab",
+    "/etc/ipsec.secrets",
+    "/etc/docker/key.json",
+    "/etc/ssh/ssh_host_*_key",
+)
+
+
+def _private_system_paths() -> list[str]:
+    import glob
+
+    out: list[str] = []
+    for pattern in _PRIVATE_SYSTEM_PATHS:
+        out.extend(sorted(glob.glob(pattern)) if any(ch in pattern for ch in "*?[") else [pattern])
+    return out
 
 
 class ToolConfinementUnavailable(RuntimeError):
@@ -274,7 +301,9 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     rules: list[tuple[str, int]] = []
     writable_roots = _writable_roots()
     protected = _protected_roots()
-    system_protected = _with_shared_bases(protected, _PRIVATE_RUNTIME_ROOTS)
+    system_protected = _with_shared_bases(
+        protected, (*_PRIVATE_RUNTIME_ROOTS, *_private_system_paths())
+    )
     for path in _existing(_SYSTEM_READ_ROOTS):
         _grant_excluding(path, read, system_protected, rules)
     for path in _interpreter_roots():

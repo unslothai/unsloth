@@ -58,7 +58,7 @@ import {
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
-import { useIsAccountOwner } from "@/features/auth/account-session";
+import { useIsAccountOwner } from "@/features/auth";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -264,6 +264,7 @@ export function GeneralTab() {
   const tokenValidated = tokenIsCurrent && tokenValidation.isValid === true;
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadUploadLimitSettings()
       .then((settings) => {
@@ -282,9 +283,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadHelperPrecacheSettings()
       .then((settings) => {
@@ -303,9 +305,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadPreviewSharing()
       .then((settings) => {
@@ -324,7 +327,7 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
 
   const saveHelperPrecache = async (enabled: boolean) => {
@@ -608,6 +611,9 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
+      {isOwner ? (
+        <>
       <SettingsSection
         title={t("settings.general.previewSharing.sectionTitle")}
       >
@@ -724,6 +730,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+        </>
+      ) : null}
 
       <SettingsSection
         title={t("settings.general.resetPreferences.sectionTitle")}

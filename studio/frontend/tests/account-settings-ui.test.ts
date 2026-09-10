@@ -84,7 +84,7 @@ function tab(owner = true) {
         effects.push(effect);
       },
     },
-    "@/features/auth/account-session": { useIsAccountOwner: () => owner },
+    "@/features/auth": { useIsAccountOwner: () => owner },
     "@/components/ui/button": { Button: "Button" },
     "@/components/ui/input": { Input: "Input" },
     "@/components/ui/label": { Label: "Label" },
@@ -277,7 +277,7 @@ test("Accounts is registered, searchable, and filtered from managed navigation a
   );
   assert.match(store, /"accounts"/);
   assert.match(dialog, /import\("\.\/tabs\/accounts-tab"\)/);
-  assert.match(dialog, /tab\.id !== "accounts" \|\| isOwner/);
-  assert.match(dialog, /deferredTab === "accounts" && !isOwner \? "general"/);
+  assert.match(dialog, /settingsTabVisible\(tab\.id, isOwner\)/);
+  assert.match(dialog, /resolveSettingsTab\(deferredTab, isOwner\)/);
   assert.equal((dialog.match(/visibleTabs\.map/g) ?? []).length, 2);
 });

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useIsAccountOwner } from "@/features/auth/account-session";
+import { useIsAccountOwner } from "@/features/auth";
+import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import { Button } from "@/components/ui/button";
 import {
@@ -259,10 +260,10 @@ function renderTab(tab: SettingsTab) {
 export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
-  const visibleTabs = useMemo(() => TABS.filter((tab) => tab.id !== "accounts" || isOwner), [isOwner]);
+  const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
-  const activeTab = requestedTab === "accounts" && !isOwner ? "general" : requestedTab;
+  const activeTab = resolveSettingsTab(requestedTab, isOwner);
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const opener = useSettingsDialogStore((s) => s.opener);
@@ -271,7 +272,7 @@ export function SettingsDialog() {
   // Mounting a heavy tab panel (System, Connections) in the same commit as the nav highlight makes
   // the highlight lag the click. Render the panel from a deferred value so the nav updates first.
   const deferredTab = useDeferredValue(activeTab);
-  const panelTab = deferredTab === "accounts" && !isOwner ? "general" : deferredTab;
+  const panelTab = resolveSettingsTab(deferredTab, isOwner);
   const [query, setQuery] = useState("");
 
   // Once opened, pull the other panels in on idle so a tab click never waits on the
