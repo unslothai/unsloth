@@ -8820,6 +8820,25 @@ def _run_patch_metadata() -> None:
     )
 
 
+# What building the plugin from its own directory writes back into it: setuptools leaves
+# build/lib/... and src/<name>.egg-info/ (PKG-INFO, SOURCES.txt) beside the sources on
+# every install from a path. Digesting those made the FIRST pass after an install see a
+# tree the install itself had changed, and rebuild the plugin: on an offline pass that
+# build asked the cache for setuptools and failed (observed on a fresh Linux install
+# whose first offline dependency pass exited 1 at "Building data-designer-unstructured-
+# seed"). Only the sources decide whether the plugin is current.
+_PLUGIN_BUILD_ARTIFACT_DIRS = frozenset({"__pycache__", "build", "dist", ".eggs"})
+
+
+def _is_plugin_build_artifact(relative: Path) -> bool:
+    parts = relative.parts
+    if any(part in _PLUGIN_BUILD_ARTIFACT_DIRS for part in parts[:-1]):
+        return True
+    if any(part.endswith((".egg-info", ".dist-info")) for part in parts[:-1]):
+        return True
+    return parts[-1].endswith((".pyc", ".pyo"))
+
+
 def _local_plugin_digest(plugin_dir: Path) -> "str | None":
     """One sha256 over a local plugin tree, so an edited seed plugin reinstalls.
 
@@ -8836,7 +8855,7 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
         paths = sorted(
             path
             for path in plugin_dir.rglob("*")
-            if path.is_file() and "__pycache__" not in path.parts
+            if path.is_file() and not _is_plugin_build_artifact(path.relative_to(plugin_dir))
         )
         for path in paths:
             digest.update(path.relative_to(plugin_dir).as_posix().encode("utf-8"))
