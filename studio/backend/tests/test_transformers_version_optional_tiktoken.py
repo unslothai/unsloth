@@ -458,7 +458,9 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
     installed = []
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) and False)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    siblings = lambda: sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".venv_t5_550."))
+    siblings = lambda: sorted(
+        p.name for p in tmp_path.iterdir() if p.name.startswith(".venv_t5_550.")
+    )
     for value in ("1", "t", "Y", "true", "on"):
         monkeypatch.setenv("UV_OFFLINE", value)
         installed.clear()
@@ -584,7 +586,6 @@ def test_a_sibling_that_vanishes_while_sorting_does_not_abort_the_repair(tmp_pat
     def vanishing(path):
         if str(path) == str(ghost):
             import shutil as _shutil
-
             _shutil.rmtree(ghost, ignore_errors = True)
             raise FileNotFoundError(2, "No such file or directory", str(path))
         return real_getmtime(path)
