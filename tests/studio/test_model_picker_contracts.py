@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from tests.studio._js_source import assert_guard_holds
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -2609,7 +2610,13 @@ def test_chat_autoload_records_every_validation_failure():
     # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
-    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
+    assert_guard_holds(
+        autoload,
+        "if",
+        "||",
+        {"autoLoadCancelled", "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 2,
+    )
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
@@ -3419,7 +3426,13 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
     cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
-    assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
+    assert_guard_holds(
+        cascade,
+        "while",
+        "&&",
+        {"!autoLoadCancelled", "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 1,
+    )
     assert "skippedAutoLoadCandidates.add(" in cascade
 
 

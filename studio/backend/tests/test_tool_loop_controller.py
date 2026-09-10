@@ -9,6 +9,15 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(controller):
+    assert not controller.force_final_answer
+    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
+        "web_search",
+        "python",
+    ]
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -164,11 +173,7 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     assert "already completed successfully" in duplicate_nudge
     assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
 
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
@@ -181,11 +186,7 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
 
     assert duplicate_one.action == "duplicate"
     assert "already completed successfully" in completion_one.model_message()["content"]
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
     duplicate_two = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_c"))
     completion_two = controller.record_noop(duplicate_two)
@@ -248,11 +249,7 @@ def test_forced_mismatch_keeps_the_required_tool_active():
 
     assert decision.action == "forced_mismatch"
     assert "required tool choice" in completion.model_message()["content"]
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
 
 def test_render_html_success_filters_active_tools_and_repeat_is_internal():
