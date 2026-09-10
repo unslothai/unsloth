@@ -7895,12 +7895,33 @@ _MLX_HEALTH_PROBE = (
 )
 
 
+# What the probe imports through mlx_lm and mlx_vlm besides the MLX pins themselves.
+# These carry ranged requirements, so one of them can move (a manual pip between two
+# updates, a tool that shares the venv) with every step still satisfied and nothing
+# installed by the pass; the recorded verdict then vouched for an import it never ran.
+_MLX_IMPORTED_DEPENDENCIES = (
+    "transformers",
+    "tokenizers",
+    "huggingface-hub",
+    "safetensors",
+    "numpy",
+    "pillow",
+    "protobuf",
+    "sentencepiece",
+)
+
+
 def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
         "pins": list(_MLX_PINS) + [_MLX_VLM_SPEC],
         "python": _installer_python_tag(),
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
+        # Versions as installed; a record without this key (an older pass) never matches
+        # and is probed once, then rewritten with it.
+        "imports": {
+            name: _installed_distribution_version(name) or "" for name in _MLX_IMPORTED_DEPENDENCIES
+        },
     }
 
 
@@ -7925,15 +7946,43 @@ def _mlx_payload_present() -> bool:
         # import probe would exercise, and a truncated one leaves every other RECORD
         # intact.
         for dist_name in ("mlx", "mlx-metal", "mlx-lm", "mlx-vlm"):
-            dist = importlib.metadata.distribution(dist_name)
-            for entry in dist.files or []:
-                if entry.size is None or str(entry).endswith(".pyc"):
-                    continue
-                if os.stat(dist.locate_file(entry)).st_size != entry.size:
-                    return False
+            # None (no RECORD) is not "present": nothing then vouches for the payload.
+            if _recorded_payload_damaged(dist_name) is not False:
+                return False
         return True
     except Exception:  # noqa: BLE001 - not finding it is the probe's job to explain
         return False
+
+
+def _recorded_payload_damaged(dist_name: str) -> "bool | None":
+    """Whether a file the distribution's RECORD names is gone or has another size.
+
+    None when the distribution has no readable RECORD, which is not evidence of an
+    intact payload. Read from RECORD rows, not Distribution.files: CPython 3.13 drops
+    paths that no longer exist from `files`, so a deleted file can never be found
+    through it. Bytecode is left out (recompiled after install); rows without a size
+    say nothing.
+    """
+    import csv
+    import io
+
+    dist = importlib.metadata.distribution(dist_name)
+    record = dist.read_text("RECORD")
+    if not record:
+        return None
+    for row in csv.reader(io.StringIO(record)):
+        if len(row) < 3 or not row[0] or row[0].endswith(".pyc") or not row[2]:
+            continue
+        try:
+            size = int(row[2])
+        except ValueError:
+            continue
+        try:
+            if os.stat(dist.locate_file(row[0])).st_size != size:
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def _report_mlx_stack_health(skipped: bool = False) -> None:
@@ -7965,6 +8014,7 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
         and recorded.get("pins") == fingerprint["pins"]
         and recorded.get("python") == fingerprint["python"]
         and recorded.get("mlx_vlm") == fingerprint["mlx_vlm"]
+        and recorded.get("imports") == fingerprint["imports"]
         and _mlx_payload_present()
     ):
         _step("mlx", "training stack ready")
@@ -8561,6 +8611,15 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     return remote == commit_id or remote.startswith(commit_id) or commit_id.startswith(remote)
 
 
+def _payload_recorded_intact(dist_name: str) -> bool:
+    """True only when the distribution has a RECORD and every file it names is there
+    at its recorded size; a missing distribution or RECORD is not intact."""
+    try:
+        return _recorded_payload_damaged(dist_name) is False
+    except Exception:  # noqa: BLE001 - not installed, or unreadable, is not intact
+        return False
+
+
 def _triton_kernels_step() -> None:
     """Install triton kernels, or keep the build that is there.
 
@@ -8586,7 +8645,10 @@ def _triton_kernels_step() -> None:
         return
     if "current" not in asked:
         _ref_current()
-    if asked["current"]:
+    # Provenance alone is not a build: the ref can still point at the resident commit
+    # with triton_kernels/ deleted or truncated underneath its dist-info, and a forced
+    # pass (UNSLOTH_STUDIO_FULL_DEPS) asked for every step to run.
+    if asked["current"] and not _full_deps_requested() and _payload_recorded_intact("triton_kernels"):
         _note("triton kernels: the installed build is what the requirement's ref points at -- kept")
         _record_step(_pass_input_key(req) or str(req), "skipped")
         return
@@ -8836,7 +8898,21 @@ def install_python_stack() -> int:
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
     # survives rather than mutate the venv behind a marker that still verifies.
-    if not install_manifest.remove_manifest():
+    # remove_manifest parks the live copy under the previous name for setup.ps1's
+    # ordering. On this path the evidence is already in memory, and a parked copy left
+    # here would be read by the next run as evidence of a completed pass over a venv
+    # this one may have half-modified; it goes now, before anything is mutated.
+    if install_manifest.remove_manifest():
+        install_manifest.consume_previous_manifest()
+        if install_manifest.previous_manifest_path().exists():
+            _safe_print(
+                f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
+                f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
+                "next run would read as a completed pass",
+                file = sys.stderr,
+            )
+            return 1
+    else:
         _safe_print(
             f"error: could not remove the stale {install_manifest.MANIFEST_NAME} in "
             f"{install_manifest.venv_root()}; refusing to install behind a marker "

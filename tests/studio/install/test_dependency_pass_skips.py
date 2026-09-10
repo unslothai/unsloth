@@ -505,6 +505,11 @@ def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, 
     monkeypatch.setattr(stack, "pip_install", lambda *a, **k: installs.append((a, k)))
     monkeypatch.setattr(stack, "_record_step", lambda key, outcome: recorded.append((key, outcome)))
     monkeypatch.setattr(stack, "_progress", lambda *_a, **_k: None)
+    # The keep also wants the recorded payload intact and no forced full pass; both are
+    # exercised at the end of this test.
+    payload_intact = {"value": True}
+    monkeypatch.setattr(stack, "_payload_recorded_intact", lambda dist: payload_intact["value"])
+    monkeypatch.setattr(stack, "_full_deps_requested", lambda: False)
 
     def _skip(
         req,
@@ -566,6 +571,21 @@ def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, 
     monkeypatch.setattr(stack, "_has_working_git", lambda: False)
     stack._triton_kernels_step()
     assert installs == [] and asked == []
+
+    # A current commit does not keep a build whose recorded files are damaged or gone
+    # (`pip show` still answers for it), nor one under UNSLOTH_FULL_DEPS: the forced pass
+    # the user asked for reinstalls it.
+    monkeypatch.setattr(stack, "_has_working_git", lambda: True)
+    monkeypatch.setattr(stack, "_skip_step", _skip)
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(True))
+    payload_intact["value"] = False
+    stack._triton_kernels_step()
+    assert len(installs) == 1 and installs[0][0][0] == "Installing triton kernels"
+    installs.clear()
+    payload_intact["value"] = True
+    monkeypatch.setattr(stack, "_full_deps_requested", lambda: True)
+    stack._triton_kernels_step()
+    assert len(installs) == 1
 
 
 def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -> None:
@@ -1240,6 +1260,11 @@ def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
         {"pins": ["mlx==0.0.1"]},
         {"python": "39"},
         {"mlx_vlm": "0.4.4"},
+        # A dependency the probe imports moved between two passes (still inside its
+        # declared range, so no step reinstalled it), and a record from before the
+        # imports were fingerprinted.
+        {"imports": {**{n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}, "transformers": "4.0.0"}},
+        {"imports": None},
     ],
 )
 def test_a_verdict_that_no_longer_describes_this_install_is_re_probed(mlx, mutation) -> None:
@@ -1273,6 +1298,8 @@ def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> N
     fingerprint = stack._mlx_health_fingerprint()
     assert fingerprint["pins"] == list(stack._MLX_PINS) + [stack._MLX_VLM_SPEC]
     assert fingerprint["python"] == stack._installer_python_tag()
+    assert fingerprint["imports"] == {n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}
+    assert {"transformers", "tokenizers", "numpy", "huggingface-hub"} <= set(fingerprint["imports"])
     # mlx-vlm floats inside a range, so the pin string alone does not identify what is
     # installed -- and it is the package whose half-install the probe exists to catch.
     assert fingerprint["mlx_vlm"] == "0.4.5"
@@ -1686,11 +1713,11 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
     payload.parent.mkdir()
     payload.write_bytes(b"x" * 10)
 
-    class _Entry(str):
-        size = 10
-
+    # RECORD rows, not Distribution.files: CPython 3.13 drops paths that no longer
+    # exist from `files`, so a deleted module could never be found through it.
+    record = {"text": "mlx_lm/sample_utils.py,sha256=x,10\nmlx_lm/__pycache__/x.pyc,,\n"}
     dist = SimpleNamespace(
-        files = [_Entry("mlx_lm/sample_utils.py"), _Entry("mlx_lm/__pycache__/x.pyc")],
+        read_text = lambda name: record["text"] if name == "RECORD" else None,
         locate_file = lambda f: tmp_path / str(f),
     )
     asked: list[str] = []
@@ -1707,8 +1734,34 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
     assert set(asked) >= {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"}
     payload.write_bytes(b"x" * 3)
     assert stack._mlx_payload_present() is False
+    payload.write_bytes(b"x" * 10)
+    assert stack._mlx_payload_present() is True
     payload.unlink()
     assert stack._mlx_payload_present() is False
+    # No RECORD is not "present" either: nothing then vouches for the payload.
+    payload.write_bytes(b"x" * 10)
+    record["text"] = None
+    assert stack._mlx_payload_present() is False
+
+
+def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatch, tmp_path):
+    """remove_manifest parks the live copy for setup.ps1's ordering. On the path that
+    read the live manifest itself, the parked copy would otherwise outlive a pass killed
+    part-way and be read by the next run as evidence of a completed pass."""
+    manifest = stack.install_manifest
+    live = tmp_path / manifest.MANIFEST_NAME
+    parked = tmp_path / manifest.PREVIOUS_MANIFEST_NAME
+    live.write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(manifest, "manifest_path", lambda root = None: live)
+    monkeypatch.setattr(manifest, "previous_manifest_path", lambda root = None: parked)
+    assert manifest.remove_manifest() is True
+    assert not live.exists() and parked.exists()
+    manifest.consume_previous_manifest()
+    assert not parked.exists()
+    source = open(stack.__file__, encoding = "utf-8").read()
+    at = source.index("if install_manifest.remove_manifest():")
+    assert "install_manifest.consume_previous_manifest()" in source[at : at + 200]
+    assert "previous_manifest_path().exists()" in source[at : at + 400]
 
 
 def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):

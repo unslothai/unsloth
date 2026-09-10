@@ -187,11 +187,12 @@ def test_a_larger_file_is_not_damage(site_packages):
     assert install_manifest.damaged_payload_files(PKG) == []
 
 
-def test_an_absent_record_is_not_damage(site_packages):
-    """RECORD is optional per the installed-projects spec."""
+def test_an_absent_record_in_a_dist_info_is_damage(site_packages):
+    """uv and pip write RECORD last, so a managed wheel install without one was
+    interrupted, and every truncation of its payload is invisible to the size check."""
     _dist(site_packages)
     _write(site_packages / PKG / "__init__.py", "x = 1\n")
-    assert install_manifest.damaged_payload_files(PKG) == []
+    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}: RECORD is missing"]
 
 
 def test_an_unreadable_file_is_not_damage(site_packages):

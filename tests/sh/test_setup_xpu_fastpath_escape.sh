@@ -40,7 +40,7 @@ grep -q 'INSTALLED_VER' "$WORK/blk.sh" \
     && { echo "FATAL: extraction ran past the end of _fast_path_escapes" >&2; exit 1; }
 # An extraction that lost any of the three moving parts would make cases below pass vacuously.
 _arms=$(grep -c '_SKIP_PYTHON_DEPS=false' "$WORK/blk.sh")
-[ "$_arms" = "3" ] || { echo "FATAL: expected 3 escape arms, extracted $_arms" >&2; exit 1; }
+[ "$_arms" = "4" ] || { echo "FATAL: expected 4 escape arms, extracted $_arms" >&2; exit 1; }
 for _need in _setup_pin_leaf _setup_pin_is_xpu _setup_generic_triton _setup_pin_known_nonxpu \
              _setup_known_nonxpu_leaf; do
     grep -q "$_need" "$WORK/blk.sh" || { echo "FATAL: extraction lost $_need" >&2; exit 1; }
@@ -109,6 +109,17 @@ check "no pin, cpu wheel, generic triton" \
 check "no pin, untagged wheel"  "$(escape "$(make_venv '2.9.1' yes f)" "")" true
 check "no pin, no torch at all" "$(escape "$(make_venv '' yes g)" "")" true
 check "no pin, no venv at all"  "$(escape "$WORK/nope" "")" true
+
+echo "an explicit pin of another curated family over a labelled wheel forces the pass (setup.ps1 parity)"
+check "cu128 pin, +cpu wheel"          "$(escape "$(make_venv '2.9.1+cpu' no h)" "" cu128)" false
+check "cu128 pin, +cu130 wheel"        "$(escape "$(make_venv '2.9.1+cu130' no i)" "" cu128)" true
+check "rocm7.1 pin, +cpu wheel"        "$(escape "$(make_venv '2.9.1+cpu' no j)" "" rocm7.1)" false
+check "gfx1201 pin, +cu128 wheel"      "$(escape "$(make_venv '2.9.1+cu128' no k)" "" gfx1201)" false
+check "cpu pin, +cu130 wheel"          "$(escape "$(make_venv '2.9.1+cu130' no l)" "" cpu)" false
+check "cu128 pin, untagged wheel"      "$(escape "$(make_venv '2.9.1' no m)" "" cu128)" true
+check "cu128 pin, no torch at all"     "$(escape "$(make_venv '' no n)" "" cu128)" true
+check "cu128-private pin, +cpu wheel"  "$(escape "$(make_venv '2.9.1+cpu' no o)" "" cu128-private)" true
+check "cu128 URL pin, +cpu wheel"      "$(escape "$(make_venv '2.9.1+cpu' no p)" "https://download.pytorch.org/whl/cu128")" false
 
 echo "an explicit xpu pin still repairs a mismatched wheel"
 check "pin + cpu wheel"        "$(escape "$(make_venv '2.9.1+cpu' no h)" "$XPU")" false

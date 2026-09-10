@@ -998,8 +998,14 @@ class TestNoTorchPersistenceParity:
         # Written after the manifest is dropped and before the dependency pass, so
         # a pass killed part-way still leaves the mode recorded somewhere.
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
-            "if not install_manifest.remove_manifest():"
+            "if install_manifest.remove_manifest():"
         )
+        # And the parked copy remove_manifest leaves for setup.ps1 goes with it on this
+        # path, before the pass starts, so a pass killed part-way leaves no manifest
+        # the next run could read as evidence of a finished one.
+        removed_at = text.index("if install_manifest.remove_manifest():")
+        consumed_at = text.index("install_manifest.consume_previous_manifest()", removed_at)
+        assert consumed_at < text.index("install_manifest.set_no_torch_marker(NO_TORCH)")
 
     def test_both_sides_use_the_same_marker_filename(self):
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
