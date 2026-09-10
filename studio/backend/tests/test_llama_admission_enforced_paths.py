@@ -1033,7 +1033,8 @@ class TestWhatTheWireActuallyCarries:
         assert wire == share - _RESERVE - conversation_tokens, (wire, share, conversation_tokens)
 
     def test_image_transport_bytes_do_not_come_off_the_answer(self):
-        """Only OpenAI `image_url` parts are compacted, so an Anthropic image keeps base64."""
+        """An Anthropic `image` part is priced as an image on both sides, never as base64
+        text (#10669), so the raw payload and its translation agree and neither swamps the share."""
         # A share (8192) above one image's allowance but below the base64 as prompt text.
         backend = _backend_stub(window = 32768, total = 32768, slots = 4)
         data = "A" * 40000
@@ -1067,10 +1068,10 @@ class TestWhatTheWireActuallyCarries:
         wire = _openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = backend, conversation = translated
         )
+        assert raw == wire, "the raw Anthropic image must be priced as an image, not as base64"
         assert (
-            raw == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
-        ), "the base64 transport should have swamped the share, leaving the flat allowance"
-        assert wire > raw, "the normalised part is priced as an image, not as prompt text"
+            raw > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
+        ), "the base64 transport must not swamp the share"
         assert wire == 32768 // 4 - _RESERVE - _openai_llama_admission_wire_prompt_tokens(
             translated, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
