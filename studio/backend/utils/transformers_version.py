@@ -2703,14 +2703,6 @@ def _optional_top_up_lock(venv_dir: str):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.25)
-
-        if sys.platform == "win32":
-            import msvcrt
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         if handle is not None:
             handle.close()
