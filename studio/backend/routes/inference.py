@@ -24797,7 +24797,7 @@ async def produce_openai_chat_completions(
         top_p = payload.top_p,
         top_k = payload.top_k,
         min_p = payload.min_p,
-        max_new_tokens = effective_max_tokens or 2048,
+        max_new_tokens = effective_max_tokens,
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
         seed = payload.seed,

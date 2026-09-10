@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A generation budget sized to the whole context window cannot also fit a prompt.
+"""An unset generation limit (``None``) resolves to the context the prompt leaves free.
 
-unsloth_fast_generate (unsloth/models/llama.py) raises when
-``input_length + max_new_tokens > config.max_position_embeddings``. An unset client
-limit resolves to the full window -- 2048, what ``load_model`` falls back to for
-``--max-seq-length 0`` -- so on a model whose window is 2048 (tinyllama-chat, which
-Unsloth's own mapper ships) every nonempty prompt raised instead of generating.
+unsloth_fast_generate raises once ``input_length + max_new_tokens`` passes the window, so no
+flat default fits every prompt. An explicit limit is never reduced.
 """
 
 import sys
@@ -21,7 +18,10 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.runtime_context import generation_budget_within_context
+from core.inference.runtime_context import (
+    UNSET_GENERATION_BUDGET,
+    generation_budget_within_context,
+)
 
 _WINDOW = 2048
 _PROMPT_LEN = 37
@@ -31,40 +31,55 @@ def _model(window = _WINDOW):
     return SimpleNamespace(config = SimpleNamespace(max_position_embeddings = window))
 
 
-def test_a_whole_window_budget_is_fitted_to_the_free_context():
-    assert generation_budget_within_context(_model(), _PROMPT_LEN, _WINDOW) == _WINDOW - _PROMPT_LEN
+def test_an_unset_budget_becomes_the_free_context():
+    assert generation_budget_within_context(_model(), _PROMPT_LEN, None) == _WINDOW - _PROMPT_LEN
 
 
-def test_a_budget_that_already_fits_is_left_alone():
+def test_an_explicit_budget_is_never_reduced():
+    # A request that does not fit must raise, not come back shortened.
     assert generation_budget_within_context(_model(), _PROMPT_LEN, 512) == 512
+    assert generation_budget_within_context(_model(), _PROMPT_LEN, _WINDOW) == _WINDOW
+    wide = SimpleNamespace(
+        max_seq_length = 1024, config = SimpleNamespace(max_position_embeddings = 32768)
+    )
+    assert generation_budget_within_context(wide, _PROMPT_LEN, 4096) == 4096
 
 
-def test_a_prompt_that_fills_the_window_keeps_the_real_overflow():
-    # Nothing is left to generate, so the budget must not be shrunk into a value
-    # that hides a prompt which genuinely does not fit.
-    assert generation_budget_within_context(_model(window = 32), 64, 256) == 256
+def test_a_prompt_with_no_room_left_gets_the_default_not_a_token():
+    # A floor of 1 clears a native 32768 guard on a 1024 load and returns one token.
+    assert generation_budget_within_context(_model(window = 32), 64, None) == UNSET_GENERATION_BUDGET
+    narrow = SimpleNamespace(
+        max_seq_length = 1024, config = SimpleNamespace(max_position_embeddings = 32768)
+    )
+    assert generation_budget_within_context(narrow, 1100, None) == UNSET_GENERATION_BUDGET
+    assert generation_budget_within_context(_model(window = 32), 31, None) == 1
 
 
 def test_the_selected_window_wins_over_a_wider_checkpoint():
     # from_pretrained keeps config.max_position_embeddings at max(requested, native)
     # and attaches the requested limit, so reading the config alone would serve a
-    # --max-seq-length 1024 load 2048 new tokens.
+    # --max-seq-length 1024 load the whole 32768.
     model = SimpleNamespace(
         max_seq_length = 1024,
         config = SimpleNamespace(max_position_embeddings = 32768),
     )
-    assert generation_budget_within_context(model, _PROMPT_LEN, _WINDOW) == 1024 - _PROMPT_LEN
+    assert generation_budget_within_context(model, _PROMPT_LEN, None) == 1024 - _PROMPT_LEN
 
 
-def test_a_model_declaring_no_window_is_passed_through():
-    assert generation_budget_within_context(SimpleNamespace(), _PROMPT_LEN, _WINDOW) == _WINDOW
-    assert generation_budget_within_context(_model(window = None), 1, 256) == 256
-    assert generation_budget_within_context(_model(window = "n/a"), 1, 256) == 256
-    assert generation_budget_within_context(_model(window = True), 1, 256) == 256
+def test_a_model_declaring_no_window_falls_back():
+    assert (
+        generation_budget_within_context(SimpleNamespace(), _PROMPT_LEN, None)
+        == UNSET_GENERATION_BUDGET
+    )
+    for unusable in (None, "n/a", True):
+        assert (
+            generation_budget_within_context(_model(window = unusable), 1, None)
+            == UNSET_GENERATION_BUDGET
+        )
+    assert generation_budget_within_context(SimpleNamespace(), _PROMPT_LEN, 256) == 256
 
 
-def test_an_unset_budget_stays_unset():
-    assert generation_budget_within_context(_model(), _PROMPT_LEN, None) is None
+def test_a_zero_budget_is_a_value_not_an_absence():
     assert generation_budget_within_context(_model(), _PROMPT_LEN, 0) == 0
 
 
@@ -174,10 +189,10 @@ def _run(backend, max_new_tokens):
     )
 
 
-def test_generate_stream_fits_a_whole_window_budget(monkeypatch):
+def test_generate_stream_resolves_an_unset_budget(monkeypatch):
     backend, model = _streaming_backend(monkeypatch)
 
-    _run(backend, _WINDOW)
+    _run(backend, None)
 
     assert model.calls, "generate was never reached"
     assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN
@@ -189,3 +204,54 @@ def test_generate_stream_passes_a_fitting_budget_through(monkeypatch):
     _run(backend, 512)
 
     assert model.calls[0]["max_new_tokens"] == 512
+
+
+def _vision_backend(monkeypatch, window = _WINDOW):
+    try:
+        from core.inference.inference import InferenceBackend
+    except (ImportError, RuntimeError) as exc:  # pragma: no cover - env-dependent
+        pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "vision-model"
+    backend.last_generation_stats = None
+    backend._generation_lock = threading.Lock()
+    model = _FakeModel(window)
+    tokenizer = _FakeTokenizer()
+    backend.models = {
+        backend.active_model_name: {
+            "model": model,
+            "tokenizer": tokenizer,
+            "processor": tokenizer,
+            "is_vision": True,
+            "chat_turn_end_eos_ids": [2],
+        }
+    }
+    monkeypatch.setattr(
+        backend, "_make_text_streamer", lambda *a, **k: _EmptyStreamer(), raising = False
+    )
+    monkeypatch.setattr(backend, "format_chat_prompt", lambda *a, **k: "PROMPT", raising = False)
+    return backend, model
+
+
+def test_the_vision_path_resolves_an_unset_budget(monkeypatch):
+    """Without this, a VLM turn reaches generate() with max_new_tokens=None, which
+    transformers reads as its own tiny max_length default rather than no limit."""
+    backend, model = _vision_backend(monkeypatch)
+
+    list(
+        backend._generate_vision_response(
+            [{"role": "user", "content": "hi"}],
+            "",
+            None,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            None,
+            1.0,
+        )
+    )
+
+    assert model.calls, "generate was never reached"
+    assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN

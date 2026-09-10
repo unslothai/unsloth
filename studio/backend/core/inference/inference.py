@@ -938,7 +938,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 2048,
+        max_new_tokens: Optional[int] = 2048,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         enable_thinking: Optional[bool] = None,
@@ -1058,7 +1058,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         tools: Optional[list] = None,
@@ -1103,7 +1103,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
@@ -1520,6 +1520,12 @@ class InferenceBackend:
                 use_harmony = self._is_gpt_oss_model(),
             )
 
+            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
+            max_new_tokens = generation_budget_within_context(
+                model, prompt_len or 0, max_new_tokens
+            )
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
@@ -1532,8 +1538,6 @@ class InferenceBackend:
                 min_p = min_p,
             )
             # Presence penalty (GGUF parity) for VLM chat.
-            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
-            prompt_len = int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
             _pp = (
                 _make_presence_penalty_processor(presence_penalty, prompt_len)
                 if _vision_input_ids is not None
@@ -1958,7 +1962,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
@@ -2021,8 +2025,6 @@ class InferenceBackend:
             )
 
             prompt_len = int(inputs["input_ids"].shape[1])
-            # An unset client limit arrives as the whole context window, which no
-            # nonempty prompt can also fit; generate raises rather than truncating.
             max_new_tokens = generation_budget_within_context(model, prompt_len, max_new_tokens)
 
             generation_kwargs = dict(

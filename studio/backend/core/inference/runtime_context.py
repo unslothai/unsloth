@@ -14,6 +14,9 @@ from typing import Any, Optional
 #: window from the model reports it as native but does not serve past it.
 MAX_REQUESTABLE_CONTEXT = 1048576
 
+#: Budget for an unset limit when there is no free context to size it from.
+UNSET_GENERATION_BUDGET = 2048
+
 
 def _field(source: Any, name: str) -> Any:
     """Key or attribute, since mlx.nn.Module is a dict; a raiser is absent, never a failed load."""
@@ -73,22 +76,28 @@ def runtime_context_length(model: Any, fallback: Optional[int] = None) -> Option
     return None
 
 
+def generation_budget_for_window(
+    window: Optional[int], prompt_length: int, max_new_tokens: Optional[int]
+) -> Optional[int]:
+    """Resolve a generation budget, where ``None`` means the caller set no limit.
+
+    An unset limit becomes the context the prompt leaves free. An explicit one is returned
+    untouched, so asking for more than fits still gets the backend's overflow error.
+    """
+    if max_new_tokens is not None:
+        return max_new_tokens
+    if not window:
+        return UNSET_GENERATION_BUDGET
+    free = int(window) - int(prompt_length)
+    # No room left: take the default and let the backend's overflow check decide. A floor
+    # of 1 would pass that check on a model loaded narrower than its checkpoint.
+    return free if free > 0 else UNSET_GENERATION_BUDGET
+
+
 def generation_budget_within_context(
     model: Any, prompt_length: int, max_new_tokens: Optional[int]
 ) -> Optional[int]:
-    """Fit a generation budget into the context the prompt leaves free.
-
-    Unsloth's generate refuses ``prompt_length + max_new_tokens`` past the model's
-    window, so a budget sized to the whole window -- what an unset client limit
-    resolves to -- fails on every nonempty prompt. The window is the one the load
-    selected, which a checkpoint wider than it is not served past. A prompt that
-    already fills it keeps the caller's budget, so a genuine overflow still surfaces
-    rather than being shrunk into silence.
-    """
-    if not max_new_tokens:
-        return max_new_tokens
-    window = runtime_context_length(model)
-    if window is None:
-        return max_new_tokens
-    free = window - int(prompt_length)
-    return free if 0 < free < int(max_new_tokens) else max_new_tokens
+    """``generation_budget_for_window`` against the window a loaded model declares."""
+    return generation_budget_for_window(
+        runtime_context_length(model), prompt_length, max_new_tokens
+    )

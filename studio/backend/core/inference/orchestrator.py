@@ -2211,7 +2211,8 @@ class InferenceOrchestrator:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
-        max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
+        # None lets the backend size an unset limit once it has counted the prompt.
+        max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else None
 
         # The worker's usage for the LATEST turn only. Hoisted out of the turn so the
         # loop can size a conversation search against a real prompt count, and cleared
