@@ -58,6 +58,7 @@ _INFERENCE_ROUTES = frozenset(
         ("POST", "/v1/messages"),
         ("POST", "/v1/messages/count_tokens"),
         ("GET", "/v1/models"),
+        ("GET", "/api/inference/loaded-models"),
         ("POST", "/v1/responses"),
         # Discovery probes, read-only. A keyless client that may list models and chat
         # but gets 401 on /props reads that as an auth wall in front of the whole
