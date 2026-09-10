@@ -138,3 +138,85 @@ def test_discrete_cuda_keeps_the_whole_free_reading(monkeypatch):
     assert LlamaCppBackend._get_gpu_memory() == [(0, 29509, 81559)]
 
 
+
+
+def test_gguf_fit_is_bounded_by_an_enforcing_cgroup(monkeypatch):
+    """A container's limit is a ceiling, not a floor.
+
+    ``_available_system_memory_mib`` already caps host MemAvailable by the cgroup
+    remainder, but reading it only as a lower bound throws that away whenever the
+    driver's host-wide MemFree is larger, which is the normal case in a container.
+    Host-backed GPU allocations are charged to the cgroup here, so a fit sized above it
+    is killed at memory.max.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 16384)
+    )
+    gpus = _spark_gpu_memory(monkeypatch, driver_free_mib = 102400, available_mib = 16384)
+
+    assert gpus[0][1] == 16384 - 1024
+
+
+def test_an_unconstrained_host_is_not_capped(monkeypatch):
+    """No cgroup limit means no ceiling: the credited pool stands."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    )
+    gpus = _spark_gpu_memory(monkeypatch, driver_free_mib = 29509, available_mib = 118451)
+
+    assert gpus[0][1] == 118451 - 1024
+
+
+def test_the_unified_preflight_reaches_an_integrated_cuda_soc(monkeypatch):
+    """The oversize-load guard was AMD-only, so a Spark's pool read as dedicated VRAM.
+
+    ``_shared_gpu_ids`` is populated for Vulkan alone, so without this the downstream
+    guard credits the SoC's reported pool against the weights, finds no spill, and the
+    unmapped oversize load that would have been remapped is not.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "torch", _spark_torch(29509, 124609))
+    for mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(mask, raising = False)
+
+    assert LlamaCppBackend._integrated_cuda_unified_memory(None) is True
+    assert LlamaCppBackend._integrated_cuda_unified_memory([0]) is True
+    # 180 GiB of weights against 118 GiB of pool: the message the preflight now reaches.
+    message = LlamaCppBackend._apu_ram_shortfall_message(
+        180 * GIB, 118 * 1024, part = "SoC"
+    )
+    assert message is not None
+    assert "unified-memory SoC" in message
+    # A Spark is aarch64 Linux and a Jetson is not a PC: neither runs under WSL.
+    assert ".wslconfig" not in message
+
+
+def test_the_apu_message_is_unchanged(monkeypatch):
+    """The AMD wording and its WSL hint are what they were."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    message = LlamaCppBackend._apu_ram_shortfall_message(64 * GIB, 46 * 1024)
+
+    assert "unified-memory APU" in message
+    assert ".wslconfig" in message
+
+
+def test_a_discrete_cuda_host_reaches_no_unified_preflight(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    import sys as _sys
+
+    module = _spark_torch(29509, 81559)
+    module.cuda.get_device_properties = lambda ordinal: _DiscreteProps()
+    monkeypatch.setitem(_sys.modules, "torch", module)
+    for mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(mask, raising = False)
+
+    assert LlamaCppBackend._integrated_cuda_unified_memory(None) is False
