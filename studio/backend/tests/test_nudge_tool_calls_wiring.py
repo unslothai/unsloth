@@ -12,9 +12,12 @@ Mechanism (verified here without loading a model):
   * the GGUF loop and external Unsloth loop use the same normalizer;
   * the external route forwards the request flag into ``ToolLoopPolicy``;
   * the API request models default the flag to ``None`` (opt-in / off);
-  * the Unsloth-facing routes forward the request's flag, and the Unsloth frontend
-    sends ``nudge_tool_calls: true`` -- exercised behaviourally in
-    ``test_safetensors_tool_loop.py`` and ``test_llama_cpp_tool_loop.py``.
+  * the Unsloth-facing routes forward the request's flag;
+  * the Unsloth frontend sends ``nudge_tool_calls`` on the local GGUF/safetensors
+    path and omits it on the external / ``run_tools_locally`` path so that loop
+    stays opt-in unless the request or ``UNSLOTH_TOOL_CALL_NUDGE=1`` sets true --
+    local opt-in is exercised behaviourally in ``test_safetensors_tool_loop.py``
+    and ``test_llama_cpp_tool_loop.py``.
 """
 
 import inspect
@@ -107,9 +110,9 @@ def test_api_request_models_default_the_flag_off():
 
 
 def test_studio_routes_forward_the_request_flag():
-    # The Unsloth chat frontend posts to /v1/chat/completions and /v1/messages
-    # with nudge_tool_calls=true; the route handlers forward the request value
-    # (external API clients that omit it fall back to the opt-in default).
+    # The Unsloth chat frontend posts nudge_tool_calls=true on the local
+    # GGUF/safetensors path; the route handlers forward the request value
+    # (omitted on the external loop, and by API clients, falls back to opt-in).
     from routes import inference as routes_inference
     for handler in (
         routes_inference.produce_openai_chat_completions,
@@ -119,6 +122,20 @@ def test_studio_routes_forward_the_request_flag():
         assert "nudge_tool_calls = payload.nudge_tool_calls" in src, handler.__name__
 
 
-def test_studio_external_adapter_forwards_the_nudge_flag():
+def test_studio_external_adapter_omits_the_nudge_flag_by_default():
     src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
-    assert "nudge_tool_calls: runtime.nudgeToolCalls" in src
+    ext_anchor = src.find("run_tools_locally: true")
+    assert ext_anchor != -1
+    ext_start = src.rfind("supportsStudioToolsForThisTurn", 0, ext_anchor)
+    assert ext_start != -1
+    ext_end = src.find("webSearchEnabledForThisTurn ||", ext_anchor)
+    assert ext_end != -1
+    external_block = src[ext_start:ext_end]
+    # External / run_tools_locally: omit the field so the request does not opt in.
+    assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_block
+    assert "nudge_tool_calls:" not in external_block
+
+    # Local GGUF / safetensors branch still sends the user setting.
+    local_src = src[:ext_start] + src[ext_end:]
+    assert "nudge_tool_calls: runtime.nudgeToolCalls" in local_src
+    assert "run_tools_locally: true" not in local_src
