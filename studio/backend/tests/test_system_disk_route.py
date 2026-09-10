@@ -16,8 +16,11 @@ cache lives on another disk.
 from __future__ import annotations
 
 import ast
+import os
 import shutil
+import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -67,6 +70,83 @@ def test_the_route_walks_nothing():
     assert (
         "hf_default_cache_dir" in imported
     ), "the route reports the filesystem root, not the models volume"
+    assert (
+        "get_hf_cache_paths" in imported
+    ), "the route reports the default cache, not the configured one"
+
+
+def _load_route(monkeypatch, *, hub_cache, default_cache, studio):
+    """Run the real route body against stub resolvers, without importing main.py.
+
+    main.py pulls in the whole backend, which no unit test can afford, so the function is
+    compiled from its own source with a no-op decorator and the three modules it imports
+    inside itself replaced. What runs is the shipped code, not a paraphrase of it.
+    """
+    namespace = {
+        "app": types.SimpleNamespace(get = lambda _path: (lambda fn: fn)),
+        "Depends": lambda _dep: None,
+        "get_current_subject": lambda: "alice",
+        "shutil": shutil,
+        "os": os,
+        "Path": Path,
+        "logger": types.SimpleNamespace(debug = lambda *_a, **_k: None),
+    }
+    storage = types.ModuleType("utils.paths.storage_roots")
+    storage.hf_default_cache_dir = lambda: default_cache
+    storage.studio_root = lambda: studio
+    settings = types.ModuleType("utils.hf_cache_settings")
+    settings.get_hf_cache_paths = lambda: types.SimpleNamespace(hub_cache = hub_cache)
+    monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage)
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
+    exec(compile(_route_source(), "<route>", "exec"), namespace)
+    return namespace["get_disk_space"]
+
+
+def test_the_route_follows_the_configured_models_folder(monkeypatch, tmp_path):
+    """A user who moved the Models Folder to another volume is asking about THAT volume.
+
+    hf_default_cache_dir() is documented to ignore HF_HUB_CACHE and the Studio setting, and its
+    home ancestor always exists, so a route that started there would answer confidently about a
+    disk the download is not going to touch.
+    """
+    configured = tmp_path / "elsewhere" / "hub"
+    configured.mkdir(parents = True)
+    default = tmp_path / "home" / ".cache" / "huggingface" / "hub"
+    default.mkdir(parents = True)
+
+    route = _load_route(
+        monkeypatch, hub_cache = configured, default_cache = default, studio = tmp_path / "s"
+    )
+    assert route(current_subject = "alice")["path"] == str(configured)
+
+
+def test_the_route_still_answers_when_the_settings_read_fails(monkeypatch, tmp_path):
+    """The settings read touches SQLite, and a reading is worth less than a broken download."""
+    broken = types.ModuleType("utils.hf_cache_settings")
+
+    def _raise():
+        raise RuntimeError("no database")
+
+    broken.get_hf_cache_paths = _raise
+    default = tmp_path / "default"
+    default.mkdir()
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", broken)
+
+    storage = types.ModuleType("utils.paths.storage_roots")
+    storage.hf_default_cache_dir = lambda: default
+    storage.studio_root = lambda: tmp_path / "s"
+    monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage)
+    namespace = {
+        "app": types.SimpleNamespace(get = lambda _path: (lambda fn: fn)),
+        "Depends": lambda _dep: None,
+        "get_current_subject": lambda: "alice",
+        "shutil": shutil,
+        "os": os,
+        "Path": Path,
+        "logger": types.SimpleNamespace(debug = lambda *_a, **_k: None),
+    }
+    exec(compile(_route_source(), "<route>", "exec"), namespace)
+    assert namespace["get_disk_space"](current_subject = "alice")["path"] == str(default)
 
 
 def test_a_disk_reading_is_microseconds(tmp_path):

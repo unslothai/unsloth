@@ -344,6 +344,10 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
     from hub.utils.hf_cache_state import invalidate_partial_resumability
 
     invalidate_partial_resumability()
+    # And the inventory's remembered sizes, which are keyed by cache rather than by path.
+    from utils.cache_inventory import invalidate_hf_rooted_sizes
+
+    invalidate_hf_rooted_sizes()
     return get_hf_cache_paths()
 
 

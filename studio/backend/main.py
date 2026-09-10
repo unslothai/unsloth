@@ -2247,10 +2247,22 @@ def get_disk_space(current_subject: str = Depends(get_current_subject)):
     """
     from utils.paths.storage_roots import hf_default_cache_dir, studio_root
 
+    # The ACTIVE hub cache, not the default one. hf_default_cache_dir() is documented to ignore
+    # HF_HUB_CACHE and the Models Folder setting, so on a machine that moved its downloads to
+    # another volume it would answer about ~/.cache/huggingface, which has nothing to do with
+    # where the next model lands. One SQLite setting read, no walk.
+    probes = []
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        probes.append(get_hf_cache_paths().hub_cache)
+    except Exception as exc:  # noqa: BLE001 - a settings read must not cost the reading
+        logger.debug(f"Could not resolve the active hub cache for the disk reading: {exc}")
+    probes.extend((hf_default_cache_dir(), studio_root()))
+
     # First existing ancestor: the cache directory itself may not have been created yet, and
     # disk_usage on a missing path raises rather than reporting the volume it would live on.
     candidates = []
-    for probe in (hf_default_cache_dir(), studio_root()):
+    for probe in probes:
         try:
             candidates.extend([probe, *probe.parents])
         except (OSError, ValueError, RuntimeError):

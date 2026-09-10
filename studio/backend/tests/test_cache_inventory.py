@@ -1444,3 +1444,50 @@ def test_a_compiled_cache_the_clear_would_refuse_says_so_on_the_row(
     result = purge_caches(["unsloth_compiled"])["results"][0]
     assert generated.exists()
     assert result["errors"]
+
+
+def test_moving_the_models_folder_forgets_the_old_roots_sizes(tmp_path, monkeypatch, isolated_caches):
+    """The memo is keyed by cache, not by path, so nothing about a new root evicts it.
+
+    A browser hides this by forcing a refresh off the inventory-version event. An API-key
+    caller may change the folder and read the inventory but may not pass refresh=true, so
+    without this it reads the previous volume's figures for the rest of the TTL.
+    """
+    from utils import cache_inventory as module
+
+    _write(tmp_path / "hub" / "blob", "b" * 40)
+    definition = definition_for("hf_hub")
+    monkeypatch.setattr(
+        cache_inventory, "describe_cache", lambda target: {"key": target.key, "size_bytes": 40}
+    )
+    assert module._described(definition, refresh = False)["size_bytes"] == 40
+
+    # The folder moves. Same key, different directory, and the walk would now answer 7.
+    monkeypatch.setattr(
+        cache_inventory, "describe_cache", lambda target: {"key": target.key, "size_bytes": 7}
+    )
+    assert module._described(definition, refresh = False)["size_bytes"] == 40, "memo not warm"
+
+    module.invalidate_hf_rooted_sizes()
+    assert module._described(definition, refresh = False)["size_bytes"] == 7
+
+
+def test_setting_the_cache_home_invalidates_the_inventory(monkeypatch):
+    """Wired into set_hf_cache_home, not merely available to it. The real function is called."""
+    import hub.utils.hf_cache_state as hf_cache_state
+    import hub.utils.inventory_scan as inventory_scan
+    import storage.studio_db as studio_db
+    from utils import cache_inventory as module
+    from utils import hf_cache_settings
+
+    called: list = []
+    monkeypatch.setattr(module, "invalidate_hf_rooted_sizes", lambda: called.append("sizes"))
+    monkeypatch.setattr(hf_cache_settings, "_environment_paths", lambda: None)
+    monkeypatch.setattr(hf_cache_settings, "_stored_cache_home", lambda: None)
+    monkeypatch.setattr(hf_cache_settings, "_stored_history", lambda: [])
+    monkeypatch.setattr(studio_db, "upsert_app_settings", lambda _values: None)
+    monkeypatch.setattr(inventory_scan, "invalidate_hf_cache_scans", lambda: None)
+    monkeypatch.setattr(hf_cache_state, "invalidate_partial_resumability", lambda: None)
+
+    hf_cache_settings.set_hf_cache_home(None)
+    assert called == ["sizes"]

@@ -1231,6 +1231,9 @@ def _purge_result(definition: CacheDefinition, outcome: PurgeOutcome) -> dict:
 # Emptying either removes the repositories the Hub inventory reports, so it is
 # one of the app-driven mutations inventory_scan says it is invalidated on.
 _HF_SCANNED_KEYS = frozenset({"hf_hub", "hf_datasets"})
+# The caches that live under the configured Hugging Face root, and therefore describe a
+# different directory the moment that root changes.
+_HF_ROOTED_KEYS = frozenset({"hf_hub", "hf_xet", "hf_datasets"})
 
 
 def _invalidate_hf_scans() -> None:
@@ -1240,6 +1243,19 @@ def _invalidate_hf_scans() -> None:
         logger.debug(f"Could not invalidate the Hugging Face scans: {exc}")
         return
     invalidate_hf_cache_scans()
+
+
+def invalidate_hf_rooted_sizes() -> None:
+    """Forget the sizes measured under the previous Hugging Face root.
+
+    The memo above is keyed by cache key, not by path, so moving the Models Folder leaves
+    three entries describing directories nobody reads any more. A browser hides that by
+    forcing a refresh off the inventory-version event, but an API-key caller is allowed to
+    change the folder and read the inventory while being forbidden refresh=true, and would
+    see the old root's figures for the rest of the TTL with no way to ask again.
+    """
+    for key in _HF_ROOTED_KEYS:
+        invalidate_cache_size(key)
 
 
 def purge_caches(keys: Iterable[str]) -> dict:
