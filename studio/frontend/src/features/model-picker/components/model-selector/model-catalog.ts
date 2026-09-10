@@ -10,6 +10,7 @@ import {
   classifyGgufFit as classifyGgufFitForDevice,
 } from "../../../../lib/gguf-fit.ts";
 import {
+  type DenseQuantSchemes,
   type HostClass,
   type RequestedPrecision,
   curatedArtifactIsOfferable,
@@ -195,6 +196,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     canonicalId: "unsloth/Qwen-Image",
+    // Same `qwen-image` family as the 2512 group above, so the same schemes are denied.
+    deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES,
     displayName: "Qwen-Image",
     description: "Text-to-image",
     scope: "image",
@@ -836,14 +839,18 @@ export function curatedDisplayNameFor(
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
   precision?: RequestedPrecision,
+  autoSchemes?: DenseQuantSchemes,
 ): string | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
   // A row that earns a speed qualifier must read the same closed as open: this helper names the
   // trigger and curatedRowLabelFor names the row, so a divergence would rename the model as
   // the popover opens.
-  if (curatedPerfSuffix(hit, host, precision)) {
-    return curatedRowLabelFor(repoId, catalog, host, precision)?.name ?? hit.group.displayName;
+  if (curatedPerfSuffix(hit, host, precision, autoSchemes)) {
+    return (
+      curatedRowLabelFor(repoId, catalog, host, precision, autoSchemes)?.name ??
+      hit.group.displayName
+    );
   }
   return hit.group.artifacts.length > 1
     ? `${hit.group.displayName} (${hit.artifact.label})`
@@ -889,6 +896,7 @@ function artifactDenseQuantChip(
   artifact: ModelArtifact,
   host: HostClass,
   precision: RequestedPrecision,
+  autoSchemes: DenseQuantSchemes,
 ): string | null {
   if (
     !(
@@ -902,7 +910,7 @@ function artifactDenseQuantChip(
   ) {
     return null;
   }
-  return denseQuantPrecisionChip(precision);
+  return denseQuantPrecisionChip(precision, undefined, autoSchemes);
 }
 
 /** Speed qualifier from the dense-quant path or an artifact-specific rule. */
@@ -910,8 +918,9 @@ function curatedPerfSuffix(
   hit: { group: CatalogGroup; artifact: ModelArtifact },
   host: HostClass,
   precision: RequestedPrecision,
+  autoSchemes: DenseQuantSchemes,
 ): string | null {
-  if (artifactDenseQuantChip(hit.group, hit.artifact, host, precision)) return "Fast";
+  if (artifactDenseQuantChip(hit.group, hit.artifact, host, precision, autoSchemes)) return "Fast";
   return h3PerfSuffix(hit.artifact.repoId, host);
 }
 
@@ -923,12 +932,13 @@ export function curatedRowLabelFor(
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
   precision?: RequestedPrecision,
+  autoSchemes?: DenseQuantSchemes,
 ): { name: string; tags: string[] } | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
   // Only where the host can run both rows, so the qualifier compares things the user can pick
   // between rather than advertising a speed they cannot have.
-  const perf = curatedPerfSuffix(hit, host, precision);
+  const perf = curatedPerfSuffix(hit, host, precision, autoSchemes);
   // Avoid duplicating variant names such as "Fast (distilled)".
   const qualify = (name: string) =>
     perf && !new RegExp(`\\b${perf}\\b`, "i").test(name) ? `${name} (${perf})` : name;
@@ -938,7 +948,13 @@ export function curatedRowLabelFor(
     return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
   }
   // Single-artifact groups omit format chips but retain the runtime precision chip.
-  const denseQuantChip = artifactDenseQuantChip(hit.group, hit.artifact, host, precision);
+  const denseQuantChip = artifactDenseQuantChip(
+    hit.group,
+    hit.artifact,
+    host,
+    precision,
+    autoSchemes,
+  );
   if (hit.group.artifacts.length <= 1) {
     return {
       name: qualify(hit.group.displayName),
@@ -965,6 +981,7 @@ export function catalogToModelOptions(
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
   precision?: RequestedPrecision,
+  autoSchemes?: DenseQuantSchemes,
 ): ModelOption[] {
   const options: ModelOption[] = [];
   for (const group of catalog) {
@@ -976,7 +993,7 @@ export function catalogToModelOptions(
       options.push({
         id: artifact.repoId,
         name:
-          curatedDisplayNameFor(artifact.repoId, catalog, host, precision) ??
+          curatedDisplayNameFor(artifact.repoId, catalog, host, precision, autoSchemes) ??
           group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",

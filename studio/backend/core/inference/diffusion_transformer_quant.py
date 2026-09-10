@@ -683,6 +683,25 @@ def dense_quant_probed_schemes(target: Any) -> tuple[str, ...]:
     return tuple(s for s in arch if _SMOKE_CACHE.get((s, card), True))
 
 
+def dense_quant_auto_schemes(target: Any) -> tuple[str, ...]:
+    """The schemes ``auto`` could actually pick here, without the allocating probe.
+
+    A SUBSET of ``dense_quant_probed_schemes``, and the distinction is load-bearing: the ladder
+    deliberately leaves nvfp4 out, so a host whose only usable scheme is nvfp4 runs an EXPLICIT
+    request and nothing automatic. A picker that reads "some scheme works" as "auto is fast" would
+    label such a row fast and then watch auto fall through to bf16."""
+    usable = set(dense_quant_probed_schemes(target))
+    if not usable:
+        return ()
+    cap = _capability()
+    if cap is None:
+        return ()
+    for floor, schemes in _AUTO_LADDER:
+        if cap >= floor:
+            return tuple(scheme for scheme in schemes if scheme in usable)
+    return ()
+
+
 def dense_quant_host_capable(target: Any) -> bool:
     """Whether an ``auto`` scheme could run here, without the allocating smoke probe.
 

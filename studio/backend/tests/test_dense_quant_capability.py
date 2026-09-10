@@ -68,14 +68,18 @@ def _run(monkeypatch, *, device_count, capable_by_ordinal):
     fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
     fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
     fake_quant.dense_quant_probed_schemes = _schemes
+    fake_quant.dense_quant_auto_schemes = _schemes
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", fake_quant)
+    monkeypatch.setitem(
+        sys.modules, "core.inference", types.SimpleNamespace(diffusion_transformer_quant = fake_quant)
+    )
 
     namespace: dict = {"Optional": Optional}
-    exec(_src("_dense_quant_schemes"), namespace)  # noqa: S102 -- the real body, not a copy of it
-    exec(_src("_dense_quant_supported"), namespace)  # noqa: S102
+    for name in ("_dense_quant_schemes_shared", "_dense_quant_schemes", "_dense_quant_supported"):
+        exec(_src(name), namespace)  # noqa: S102 -- the real bodies, not copies of them
     return namespace["_dense_quant_supported"](), scoped
 
 
@@ -106,13 +110,18 @@ def _run_schemes(monkeypatch, *, device_count, capable_by_ordinal):
     fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
     fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
     fake_quant.dense_quant_probed_schemes = lambda target: capable_by_ordinal[target]
+    fake_quant.dense_quant_auto_schemes = fake_quant.dense_quant_probed_schemes
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", fake_quant)
+    monkeypatch.setitem(
+        sys.modules, "core.inference", types.SimpleNamespace(diffusion_transformer_quant = fake_quant)
+    )
 
     namespace: dict = {"Optional": Optional}
-    exec(_src("_dense_quant_schemes"), namespace)  # noqa: S102
+    for name in ("_dense_quant_schemes_shared", "_dense_quant_schemes"):
+        exec(_src(name), namespace)  # noqa: S102
     return namespace["_dense_quant_schemes"](), scoped
 
 
@@ -161,7 +170,7 @@ def test_a_probe_failure_reports_incapable(monkeypatch):
 
 @pytest.mark.parametrize("needle", ["diffusion_device_scope", "device_count"])
 def test_the_wiring_stays_in_place(needle):
-    assert needle in _dense_quant_supported_src()
+    assert needle in _src("_dense_quant_schemes_shared")
 
 
 def test_the_capability_is_published_and_never_frozen():
@@ -180,6 +189,16 @@ def test_the_capability_is_published_and_never_frozen():
     )
     assert node.decorator_list == []
     assert "dense_quant_probed_schemes" in _src("_dense_quant_schemes")
+    assert "dense_quant_auto_schemes" in _src("_dense_quant_auto_schemes")
+    assert '"dense_quant_auto_schemes": list(_dense_quant_auto_schemes())' in src
+    assert (
+        next(
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.FunctionDef) and n.name == "_dense_quant_schemes_shared"
+        ).decorator_list
+        == []
+    )
 
 
 def test_the_published_list_follows_the_probe_as_it_warms(monkeypatch):
@@ -252,3 +271,12 @@ def test_every_ladder_scheme_clears_its_own_floor():
         for scheme in schemes:
             assert tq._SCHEME_MIN_CAPABILITY[scheme] <= floor, (scheme, floor)
     assert set(tq._SCHEME_MIN_CAPABILITY) == set(tq.TQ_SCHEMES)
+
+
+def test_the_auto_list_is_published_separately(monkeypatch):
+    """`/api/system` reports both sets, since a host can run a scheme auto will never pick."""
+    src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert '"dense_quant_schemes": list(_dense_quant_schemes())' in src
+    assert '"dense_quant_auto_schemes": list(_dense_quant_auto_schemes())' in src
+    assert '_dense_quant_schemes_shared("dense_quant_auto_schemes")' in src
+    assert '_dense_quant_schemes_shared("dense_quant_probed_schemes")' in src

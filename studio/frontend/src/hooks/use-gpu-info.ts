@@ -51,6 +51,8 @@ export interface GpuInfo {
   /** The explicit quant schemes the backend says every visible card can run. Undefined until
    *  system info arrives, and on a backend too old to report them. */
   denseQuantSchemes: string[] | undefined;
+  /** The subset of those an AUTO request could pick; the ladder omits nvfp4. */
+  denseQuantAutoSchemes: string[] | undefined;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -88,6 +90,7 @@ const DEFAULT_GPU: GpuInfo = {
   backend: "",
   denseQuantSupported: false,
   denseQuantSchemes: undefined,
+  denseQuantAutoSchemes: undefined,
   name: "Unknown",
   memoryTotalGb: 0,
   memorySharedGb: 0,
@@ -116,6 +119,9 @@ function toGpuInfo(
     denseQuantSupported: data?.dense_quant_supported === true,
     denseQuantSchemes: Array.isArray(data?.dense_quant_schemes)
       ? data.dense_quant_schemes
+      : undefined,
+    denseQuantAutoSchemes: Array.isArray(data?.dense_quant_auto_schemes)
+      ? data.dense_quant_auto_schemes
       : undefined,
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,

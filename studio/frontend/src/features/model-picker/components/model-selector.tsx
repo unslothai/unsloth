@@ -53,7 +53,10 @@ import {
   missingExternalModel,
 } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
-import type { RequestedPrecision } from "./model-selector/host-artifact-policy";
+import type {
+  DenseQuantSchemes,
+  RequestedPrecision,
+} from "./model-selector/host-artifact-policy";
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
@@ -129,6 +132,8 @@ interface ModelSelectorProps {
   /** The transformer precision this page will request, so a curated row names the precision that
    *  will run rather than the one the host could run. */
   requestedPrecision?: RequestedPrecision;
+  /** The schemes an AUTO request could pick on this host, so an auto row names what will run. */
+  denseQuantAutoSchemes?: DenseQuantSchemes;
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
@@ -331,6 +336,7 @@ function ModelSelectorContent({
   task,
   catalog,
   requestedPrecision,
+  denseQuantAutoSchemes,
   communityModelPolicy,
 }: {
   open: boolean;
@@ -360,6 +366,7 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   requestedPrecision?: RequestedPrecision;
+  denseQuantAutoSchemes?: DenseQuantSchemes;
   communityModelPolicy?: CommunityModelPolicy;
 }) {
   const t = useT();
@@ -623,6 +630,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               requestedPrecision={requestedPrecision}
+              denseQuantAutoSchemes={denseQuantAutoSchemes}
               communityModelPolicy={communityModelPolicy}
               section={effectiveHubSection}
               sectionToggle={
@@ -684,6 +692,7 @@ export function ModelSelector({
   task,
   catalog,
   requestedPrecision,
+  denseQuantAutoSchemes,
   communityModelPolicy = "none",
   placeholder,
   loaded,
@@ -856,6 +865,7 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         requestedPrecision={requestedPrecision}
+        denseQuantAutoSchemes={denseQuantAutoSchemes}
         communityModelPolicy={communityModelPolicy}
       />
     </Popover>

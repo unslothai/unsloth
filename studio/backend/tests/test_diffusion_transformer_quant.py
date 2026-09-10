@@ -1854,14 +1854,17 @@ def test_a_card_with_no_arch_support_advertises_nothing_whatever_the_cache_says(
 
 
 def test_the_picker_mirrors_the_family_deny_list():
-    """The catalog carries `_FAMILY_SCHEME_DENY` so a denied scheme is never labelled fast.
+    """EVERY catalog row whose family denies a scheme carries the deny list.
 
     The deny list is per FAMILY and holds on every GPU, so no host capability can express it and
-    the picker has to know it. Two copies of a fact drift; this is the guard. It has drifted
-    before -- fp8 was denied for qwen-image and then was not.
+    the picker has to know it. Resolved through `detect_family` per repo id rather than by counting
+    annotated groups: the count matched while `unsloth/Qwen-Image` -- a third catalog group on the
+    same `qwen-image` family -- was unannotated and still labelled fast.
     """
     import pathlib
     import re
+
+    from core.inference.diffusion_families import detect_family
 
     catalog = (
         pathlib.Path(tq.__file__).resolve().parents[3]
@@ -1872,9 +1875,58 @@ def test_the_picker_mirrors_the_family_deny_list():
     schemes = set(re.findall(r'"([^"]+)"', mirrored.group(1)))
     denied = {scheme for schemes_ in tq._FAMILY_SCHEME_DENY.values() for scheme in schemes_}
     assert schemes == denied, (schemes, denied)
-    # One catalog group per denied family, so a newly denied family cannot be forgotten.
-    assert catalog.count("deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES") == len(
-        tq._FAMILY_SCHEME_DENY
+
+    # Per group block, so a bf16 pipeline row is matched against its OWN `deniedQuantSchemes`.
+    checked = 0
+    for block in catalog.split("\n  {\n    canonicalId:")[1:]:
+        annotated = "deniedQuantSchemes:" in block
+        for repo_id in re.findall(r'bf16Pipeline\(\s*"([^"]+)"', block):
+            family = getattr(detect_family(repo_id), "name", None)
+            if family not in tq._FAMILY_SCHEME_DENY:
+                continue
+            checked += 1
+            assert annotated, f"{repo_id} resolves to '{family}', which denies schemes"
+    assert checked >= 3, f"the deny-list rows went missing from the catalog ({checked} found)"
+
+
+def test_the_auto_scheme_set_is_the_ladder_not_every_explicit_scheme(monkeypatch):
+    """`auto` cannot pick nvfp4, so a host that runs only nvfp4 offers nothing automatic."""
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+    # Cold: every ladder scheme this tier allows, in ladder order.
+    assert tq.dense_quant_auto_schemes(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+    # Only nvfp4 survives the probe -- an explicit request works, auto has nothing.
+    tq._SMOKE_CACHE.update(
+        {
+            (TQ_FP8, "cuda:0"): False,
+            (TQ_MXFP8, "cuda:0"): False,
+            (TQ_INT8, "cuda:0"): False,
+            (TQ_NVFP4, "cuda:0"): True,
+        }
     )
-    # Every denied family is one of the two qwen DiTs the mirror names.
-    assert set(tq._FAMILY_SCHEME_DENY) == {"qwen-image", "qwen-image-edit"}
+    assert tq.dense_quant_probed_schemes(_target()) == (TQ_NVFP4,)
+    assert tq.dense_quant_auto_schemes(_target()) == ()
+
+
+def test_the_auto_scheme_set_narrows_with_the_arch(monkeypatch):
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+    for cap, expected in [
+        ((8, 0), (TQ_INT8,)),
+        ((8, 9), (TQ_FP8, TQ_INT8)),
+        ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),
+    ]:
+        monkeypatch.setattr(tq, "_capability", lambda _c = cap: _c)
+        assert tq.dense_quant_auto_schemes(_target()) == expected, cap
+        # Never wider than what the host can run at all.
+        assert set(tq.dense_quant_auto_schemes(_target())) <= set(
+            tq.dense_quant_probed_schemes(_target())
+        ), cap
+
+
+def test_an_incapable_host_offers_no_auto_schemes(monkeypatch):
+    _capable_host(monkeypatch, torchao_reason = "ImportError: no torchao")
+    assert tq.dense_quant_auto_schemes(_target()) == ()

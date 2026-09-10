@@ -434,9 +434,12 @@ for (const id of [
 
 // A scheme the model's FAMILY denies is refused on every GPU, so the row must not promise it.
 {
-  const qwen = "Qwen/Qwen-Image-2512";
-  const edit = "Qwen/Qwen-Image-Edit-2511";
-  for (const id of [qwen, edit]) {
+  // Every catalog row the backend maps to a denying family, not just the two that were noticed.
+  for (const id of [
+    "Qwen/Qwen-Image-2512",
+    "Qwen/Qwen-Image-Edit-2511",
+    "Qwen/Qwen-Image",
+  ]) {
     for (const denied of ["mxfp8", "nvfp4", "MXFP8", " NvFp4 "]) {
       const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", denied);
       assert.ok(row && !row.name.includes("(Fast)"), `${id} ${denied} reads "${row?.name}"`);

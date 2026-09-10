@@ -14,6 +14,11 @@ export function useDenseQuantSchemes(): string[] | undefined {
   return useGpuInfo().denseQuantSchemes;
 }
 
+/** The subset of those an AUTO request could pick. */
+export function useDenseQuantAutoSchemes(): string[] | undefined {
+  return useGpuInfo().denseQuantAutoSchemes;
+}
+
 /** Combine platform and backend state into a media-picker host class. */
 export function useHostClass(): HostClass {
   const gpu = useGpuInfo();

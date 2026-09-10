@@ -67,10 +67,22 @@ export type DenseQuantSchemes = readonly string[] | undefined;
 export function denseQuantPrecisionChip(
   precision: RequestedPrecision,
   schemes?: DenseQuantSchemes,
+  autoSchemes?: DenseQuantSchemes,
 ): string | null {
   const value = (precision ?? "auto").trim().toLowerCase();
-  if (value === "" || value === "auto") return DENSE_QUANT_PRECISION_CHIP;
   if (value === "none" || value === "off") return null;
+  if (value === "" || value === "auto") {
+    // Auto's set is not the explicit set: the ladder omits nvfp4, so a host that runs only nvfp4
+    // has nothing automatic to offer and must not be labelled fast. Undefined means an older
+    // backend that does not report it, which keeps the generic chip.
+    if (!autoSchemes) return DENSE_QUANT_PRECISION_CHIP;
+    if (autoSchemes.length === 0) return null;
+    // Best and fallback, which is what the pair has always meant. One scheme names itself, so an
+    // Ampere host reads "INT8" rather than promising an FP8 it cannot run.
+    const best = autoSchemes[0].toUpperCase();
+    const last = autoSchemes[autoSchemes.length - 1].toUpperCase();
+    return best === last ? best : `${best} / ${last}`;
+  }
   if (schemes && !schemes.includes(value)) return null;
   return value.toUpperCase();
 }
@@ -94,7 +106,11 @@ export function loadControlsBlockDenseQuant({
   cpuOffload?: boolean;
 }): boolean {
   const speed = (speedMode ?? "").trim().toLowerCase();
-  const memory = (memoryMode ?? "").trim().toLowerCase();
+  // "auto" is this control's UNSET value: currentLoadAdvanced serialises it as undefined, so the
+  // backend sees no memory mode and the bare flag forces offload. Reading it as a named mode left
+  // the picker advertising the fast path for a request that cannot reach it.
+  const memoryRaw = (memoryMode ?? "").trim().toLowerCase();
+  const memory = memoryRaw === "auto" ? "" : memoryRaw;
   // Eager never compiles, and an uncompiled torchao transformer loses to the bf16 it replaces.
   if (speed === "eager") return true;
   // balanced / low_vram name their offload policy outright, and offload hooks move modules with
@@ -111,8 +127,9 @@ export function loadControlsBlockDenseQuant({
 export function effectiveRowPrecision(
   precision: RequestedPrecision,
   schemes?: DenseQuantSchemes,
+  autoSchemes?: DenseQuantSchemes,
 ): RequestedPrecision {
-  return denseQuantPrecisionChip(precision, schemes) === null ? "none" : precision;
+  return denseQuantPrecisionChip(precision, schemes, autoSchemes) === null ? "none" : precision;
 }
 
 /** The H3 group, whose two rows differ by roughly 10x in throughput. */

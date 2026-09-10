@@ -99,7 +99,7 @@ test("an explicit scheme the host cannot run is not advertised", () => {
   assert.equal(denseQuantPrecisionChip("int8", ampere), "INT8");
   assert.equal(effectiveRowPrecision("int8", ampere), "int8");
   assert.equal(denseQuantPrecisionChip("nvfp4", blackwell), "NVFP4");
-  // Auto never fails closed: it walks down to what the card has, so it keeps the pair everywhere.
+  // Auto never fails closed: it walks down to what the card has, so it keeps a chip everywhere.
   for (const schemes of [ampere, ada, blackwell]) {
     assert.equal(denseQuantPrecisionChip("auto", schemes), DENSE_QUANT_PRECISION_CHIP);
     assert.equal(effectiveRowPrecision("auto", schemes), "auto");
@@ -125,8 +125,12 @@ test("a load control that forces bf16 takes the fast label with it", () => {
   assert.equal(blocked({ memoryMode: "balanced" }), true);
   assert.equal(blocked({ memoryMode: "low_vram" }), true);
   assert.equal(blocked({ cpuOffload: true }), true);
-  // The bare flag only forces offload when no mode was named, matching the backend.
+  // The bare flag only forces offload when no mode was named, matching the backend. "auto" IS
+  // unset: the page serialises it as undefined, so the backend sees no mode and offloads.
   assert.equal(blocked({ memoryMode: "fast", cpuOffload: true }), false);
+  assert.equal(blocked({ memoryMode: "auto", cpuOffload: true }), true);
+  assert.equal(blocked({ memoryMode: "", cpuOffload: true }), true);
+  assert.equal(blocked({ memoryMode: "auto", cpuOffload: false }), false);
   // Speed=Off rewrites an AUTO quant to off, but an explicit scheme still runs.
   assert.equal(blocked({ speedMode: "off" }), true);
   assert.equal(loadControlsBlockDenseQuant({ precision: "fp8", speedMode: "off" }), false);
@@ -136,6 +140,28 @@ test("a load control that forces bf16 takes the fast label with it", () => {
   assert.equal(blocked({}), false);
   assert.equal(blocked({ speedMode: "auto", memoryMode: "auto", cpuOffload: false }), false);
   assert.equal(blocked({ speedMode: "default", memoryMode: "fast" }), false);
+});
+
+// The auto chip names what AUTO can pick, which is not every scheme the host can run.
+test("the auto chip is drawn from the ladder, not from every explicit scheme", () => {
+  // Unreported (older backend) keeps the generic pair.
+  assert.equal(denseQuantPrecisionChip("auto", ["int8"], undefined), DENSE_QUANT_PRECISION_CHIP);
+  // Ampere runs int8 alone, so promising an FP8 it cannot pick would be wrong.
+  assert.equal(denseQuantPrecisionChip("auto", ["int8"], ["int8"]), "INT8");
+  // Ada and Blackwell keep the pair: best and fallback are what the two names have always meant.
+  assert.equal(denseQuantPrecisionChip("auto", ["int8", "fp8"], ["fp8", "int8"]), "FP8 / INT8");
+  assert.equal(
+    denseQuantPrecisionChip("auto", ["int8", "fp8", "nvfp4", "mxfp8"], ["fp8", "mxfp8", "int8"]),
+    "FP8 / INT8",
+  );
+  // nvfp4 is explicit-only, so a host that runs nothing else has nothing automatic to offer.
+  assert.equal(denseQuantPrecisionChip("auto", ["nvfp4"], []), null);
+  assert.equal(effectiveRowPrecision("auto", ["nvfp4"], []), "none");
+  // ...but the explicit request it CAN run is still labelled.
+  assert.equal(denseQuantPrecisionChip("nvfp4", ["nvfp4"], []), "NVFP4");
+  assert.equal(effectiveRowPrecision("nvfp4", ["nvfp4"], []), "nvfp4");
+  // Off stays off regardless of what auto could do.
+  assert.equal(denseQuantPrecisionChip("none", ["int8"], ["int8"]), null);
 });
 
 test("the backends that only run the native engine are gguf-only", () => {
