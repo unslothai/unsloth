@@ -21,6 +21,7 @@ complete; the runtime validator used to require it, delete the sidecar and retry
 install that had just failed.
 """
 
+import contextlib
 import pathlib
 import shutil
 import sys
@@ -687,6 +688,7 @@ def test_a_sibling_that_vanishes_while_sorting_does_not_abort_the_repair(tmp_pat
     root = tmp_path / ".venv_t5_550"
     ghost = tmp_path / ".venv_t5_550.offline-old-1"
     ghost.mkdir()
+    (ghost / tv._STUDIO_OWNED_MARKER).write_text("", encoding = "utf-8")
     real_getmtime = tv.os.path.getmtime
 
     def vanishing(path):
@@ -712,7 +714,7 @@ def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, m
     monkeypatch.setattr(
         tv, "_venv_dir_is_valid_and_undamaged", lambda d, *a, **k: (Path(d) / "keep.txt").is_file()
     )
-    monkeypatch.setattr(tv, "_top_up_optional_packages", lambda *a, **k: None)
+    monkeypatch.setattr(tv, "_top_up_optional_packages", lambda *a, **k: True)
     installed = []
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) and False)
     monkeypatch.setenv("UV_OFFLINE", "1")
@@ -720,13 +722,87 @@ def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, m
     assert (root / "keep.txt").is_file()
     assert not retired.exists()
     assert installed == []
-    # With the live tree in place, a retired copy is a leftover and goes.
+    # With the live tree in place, a retired copy is a leftover and goes...
     leftover = tmp_path / ".venv_t5_550.offline-old-99"
     leftover.mkdir()
     (leftover / "x").write_text("", encoding = "utf-8")
+    (leftover / tv._STUDIO_OWNED_MARKER).write_text("", encoding = "utf-8")
+    # ...but only a tree this code made, under exactly the name it writes: in a custom
+    # Studio home a directory the user named like one, or one without the marker, is
+    # theirs and is neither deleted nor renamed into the live path.
+    users = tmp_path / ".venv_t5_550.offline-old-backup"
+    users.mkdir()
+    (users / "precious").write_text("", encoding = "utf-8")
+    unowned = tmp_path / ".venv_t5_550.offline-old-7"
+    unowned.mkdir()
+    (unowned / "precious").write_text("", encoding = "utf-8")
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert (root / "keep.txt").is_file()
     assert not leftover.exists()
+    assert (users / "precious").is_file() and (unowned / "precious").is_file()
+    # And with the live path empty, only an owned, exactly named tree is put back.
+    import shutil as _shutil
+    _shutil.rmtree(root)
+    monkeypatch.setattr(tv, "_repair_offline_beside", lambda *a, **k: False)
+    assert tv._recover_retired_sidecar(str(root)) is None
+    assert not root.exists()
+    assert (users / "precious").is_file() and (unowned / "precious").is_file()
+
+
+def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_path, monkeypatch):
+    """Two workers repairing one tier: the second waits on the tier's lock and, once it
+    holds it, finds the first one's finished tree and keeps it rather than wiping it."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    (root / "half").write_text("", encoding = "utf-8")
+    answers = iter([False, True])
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: next(answers))
+    monkeypatch.setattr(tv, "_top_up_optional_packages", lambda *a, **k: True)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "_runtime_repair_is_offline", lambda: False)
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
+    locked = []
+    real_lock = tv._file_lock
+
+    @contextlib.contextmanager
+    def recording_lock(path, wait):
+        locked.append(path)
+        with real_lock(path, wait) as held:
+            yield held
+
+    monkeypatch.setattr(tv, "_file_lock", recording_lock)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert installed == [] and (root / "half").is_file()
+    assert locked == [str(root) + tv._REBUILD_LOCK_SUFFIX]
+    # Still incomplete under the lock: the rebuild runs, in this process, once.
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert installed == list(tv._VENV_T5_550_PACKAGES)
+
+
+def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
+    """PIP_NO_INDEX with PIP_FIND_LINKS is a local wheelhouse: an air-gapped install got
+    its sidecars that way before UV_OFFLINE was honoured, and the offline guard must
+    not turn that pip away."""
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setattr(tv, "_uv_available", lambda: False, raising = False)
+    calls = []
+
+    class _Done:
+        returncode = 0
+
+    monkeypatch.setattr(tv.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _Done())
+    monkeypatch.delenv("PIP_NO_INDEX", raising = False)
+    monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+    assert tv._pip_is_configured_offline() is False
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    assert tv._pip_is_configured_offline() is False
+    monkeypatch.setenv("PIP_FIND_LINKS", str(tmp_path))
+    assert tv._pip_is_configured_offline() is True
+    source = open(tv.__file__, encoding = "utf-8").read()
+    assert "if _runtime_repair_is_offline() and not _pip_is_configured_offline():" in source
 
 
 def test_a_failed_install_keeps_a_tree_another_process_completed_meanwhile(tmp_path, monkeypatch):

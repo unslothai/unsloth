@@ -2741,20 +2741,14 @@ _OPTIONAL_TOP_UP_WAIT_SECONDS = 120.0
 
 
 @contextlib.contextmanager
-def _optional_top_up_lock(venv_dir: str):
-    """A cross-process lock on a sidecar's optional top-up, waited for up to a bound.
-
-    Workers activate tiers independently, so two can find the package absent at once;
-    two installers writing one --target tree leave it half-written, and a worker that
-    went on without waiting would activate with the package still absent. Yields True
-    when this process holds the lock, False when another kept it past the bound (or
-    the lock cannot be taken at all, read as "someone else's turn" rather than a
-    reason to write unguarded).
-    """
+def _file_lock(path: str, wait_seconds: float):
+    """A cross-process lock on *path*, waited for up to *wait_seconds*. Yields True when
+    this process holds it, False when another kept it past the bound (or it cannot be
+    taken at all, read as "someone else's turn" rather than a reason to write unguarded)."""
     handle = None
     try:
-        handle = open(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), "a+b")
-        deadline = time.monotonic() + _OPTIONAL_TOP_UP_WAIT_SECONDS
+        handle = open(path, "a+b")
+        deadline = time.monotonic() + wait_seconds
         while True:
             try:
                 if sys.platform == "win32":
@@ -2788,6 +2782,28 @@ def _optional_top_up_lock(venv_dir: str):
         except OSError:
             pass
         handle.close()
+
+
+_REBUILD_LOCK_SUFFIX = ".rebuild.lock"
+# A rebuild installs four packages; a worker that finds another mid-way waits for it
+# rather than building a second copy into the same directory.
+_REBUILD_WAIT_SECONDS = 15 * 60.0
+
+
+@contextlib.contextmanager
+def _optional_top_up_lock(venv_dir: str):
+    """A cross-process lock on a sidecar's optional top-up, waited for up to a bound.
+
+    Workers activate tiers independently, so two can find the package absent at once;
+    two installers writing one --target tree leave it half-written, and a worker that
+    went on without waiting would activate with the package still absent. Yields True
+    when this process holds the lock, False when another kept it past the bound (or
+    the lock cannot be taken at all, read as "someone else's turn" rather than a
+    reason to write unguarded).
+    """
+    with _file_lock(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), _OPTIONAL_TOP_UP_WAIT_SECONDS) as held:
+        yield held
+
 
 
 _UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
@@ -2912,6 +2928,22 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     if _runtime_repair_is_offline() and _sidecar_has_content(venv_dir):
         return _repair_offline_beside(venv_dir, packages, label)
 
+    # One rebuild of a tier at a time across processes. Workers activate tiers
+    # independently, and two that found the same directory incomplete used to build
+    # into it at once; the one that failed then found the other's finished tree and,
+    # in the window between that check and its cleanup, could delete it. Under the
+    # lock the second one waits and, if the first finished, takes the tree as it is.
+    with _file_lock(venv_dir.rstrip("/\\") + _REBUILD_LOCK_SUFFIX, _REBUILD_WAIT_SECONDS) as held:
+        if held and _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+            logger.info("%s at %s was completed by another process", label, venv_dir)
+            return _top_up_optional_packages(venv_dir, packages)
+        if not held:
+            logger.warning("%s: the rebuild lock was not obtained; rebuilding unguarded", venv_dir)
+        return _rebuild_venv_dir(venv_dir, packages, label)
+
+
+def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
+    """Wipe *venv_dir* and install every package into it; the caller holds the tier's lock."""
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
@@ -2948,6 +2980,15 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     return True
 
 
+
+def _drop_offline_staging(staging: str) -> None:
+    """The staging tree and the per-process rebuild lock _ensure_venv_dir took for it."""
+    shutil.rmtree(staging, ignore_errors = True)
+    try:
+        os.unlink(staging + _REBUILD_LOCK_SUFFIX)
+    except OSError:
+        pass
+
 def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Rebuild *venv_dir* from uv's cache into a staging directory beside it and swap
     only once every package landed; a cold cache leaves the tree exactly as it was."""
@@ -2957,7 +2998,7 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
     # swapping a tree with only its remaining packages over a completed sidecar.
     staging = f"{base}{_OFFLINE_STAGING_SUFFIX}{os.getpid()}"
     retired = f"{base}{_OFFLINE_RETIRED_SUFFIX}{os.getpid()}"
-    shutil.rmtree(staging, ignore_errors = True)
+    _drop_offline_staging(staging)
     # Staging trees of processes long gone (a kill mid-build) are not worth keeping; an
     # hour is far beyond any build here, and a live one is younger than that.
     for stale in _sidecar_siblings(venv_dir, _OFFLINE_STAGING_SUFFIX):
@@ -2969,7 +3010,7 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
     # An empty directory takes the ordinary path, and _install_to_dir asks only the
     # cache under the offline switch; a failure removes the staging tree itself.
     if not _ensure_venv_dir(staging, packages, label):
-        shutil.rmtree(staging, ignore_errors = True)
+        _drop_offline_staging(staging)
         logger.warning(
             "%s not found or incomplete at %s, and this session is offline with no cached "
             "copy to rebuild it from -- left as is until the next online update",
@@ -2980,7 +3021,7 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
     # Checked right before the swap, not only at the end of the install commands: only
     # a tree that passes the same predicate the activation applies may replace the live one.
     if not _venv_dir_is_valid_and_undamaged(staging, packages):
-        shutil.rmtree(staging, ignore_errors = True)
+        _drop_offline_staging(staging)
         logger.warning("the offline rebuild of %s did not validate; %s left as is", label, venv_dir)
         return False
     try:
@@ -2994,9 +3035,15 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
             raise
     except OSError as exc:
         logger.warning("could not swap the offline rebuild of %s into %s: %s", label, venv_dir, exc)
-        shutil.rmtree(staging, ignore_errors = True)
+        _drop_offline_staging(staging)
         return False
     shutil.rmtree(retired, ignore_errors = True)
+    # The staging tree is the live one now; the lock taken for its build goes with the
+    # staging name.
+    try:
+        os.unlink(staging + _REBUILD_LOCK_SUFFIX)
+    except OSError:
+        pass
     logger.info("Rebuilt %s at %s offline, from the cache", label, venv_dir)
     return True
 
