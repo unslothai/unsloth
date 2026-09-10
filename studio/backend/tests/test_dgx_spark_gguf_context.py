@@ -54,7 +54,9 @@ def _spark_torch(driver_free_mib: int, total_mib: int) -> types.ModuleType:
     return module
 
 
-def _spark_gpu_memory(monkeypatch, driver_free_mib, available_mib, total_mib = 124609):
+def _spark_gpu_memory(
+    monkeypatch, driver_free_mib, available_mib, total_mib = 124609, cgroup_mib = None
+):
     from core.inference.llama_cpp import LlamaCppBackend
 
     import sys as _sys
@@ -68,6 +70,13 @@ def _spark_gpu_memory(monkeypatch, driver_free_mib, available_mib, total_mib = 1
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: available_mib)
+    )
+    # The cgroup probe is a SECOND, independent read of the host, so leaving it live
+    # would let the machine running the suite decide the answer: under a container with
+    # a memory.max below the mocked pool these cases fail while claiming to be hermetic.
+    # Stubbed to the value the case is about, None (unconstrained) unless it says.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: cgroup_mib)
     )
     # nvidia-smi answers [N/A] for both memory columns on a Spark, so every row is
     # unparseable and the probe falls through to torch. Absent is the same path.
@@ -149,24 +158,18 @@ def test_gguf_fit_is_bounded_by_an_enforcing_cgroup(monkeypatch):
     Host-backed GPU allocations are charged to the cgroup here, so a fit sized above it
     is killed at memory.max.
     """
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    monkeypatch.setattr(
-        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 16384)
+    gpus = _spark_gpu_memory(
+        monkeypatch, driver_free_mib = 102400, available_mib = 16384, cgroup_mib = 16384
     )
-    gpus = _spark_gpu_memory(monkeypatch, driver_free_mib = 102400, available_mib = 16384)
 
     assert gpus[0][1] == 16384 - 1024
 
 
 def test_an_unconstrained_host_is_not_capped(monkeypatch):
     """No cgroup limit means no ceiling: the credited pool stands."""
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    monkeypatch.setattr(
-        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    gpus = _spark_gpu_memory(
+        monkeypatch, driver_free_mib = 29509, available_mib = 118451, cgroup_mib = None
     )
-    gpus = _spark_gpu_memory(monkeypatch, driver_free_mib = 29509, available_mib = 118451)
 
     assert gpus[0][1] == 118451 - 1024
 
@@ -220,3 +223,97 @@ def test_a_discrete_cuda_host_reaches_no_unified_preflight(monkeypatch):
         monkeypatch.delenv(mask, raising = False)
 
     assert LlamaCppBackend._integrated_cuda_unified_memory(None) is False
+
+
+def test_the_preflight_probe_is_skipped_on_a_discrete_x86_host(monkeypatch):
+    """The gate that keeps an ordinary NVIDIA load from paying for a CUDA context.
+
+    ``_integrated_cuda_gpu_ids`` calls ``get_device_properties`` on every visible card,
+    which initialises CUDA and pins a primary context per device in this long-lived
+    process. The launch preflight runs after the VRAM budget was taken, so a probe there
+    can OOM a tightly fitted child on a host whose answer is False regardless.
+    """
+    import platform as _platform
+    import sys as _sys
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    torch_module = _spark_torch(29509, 81559)
+    torch_module.cuda.is_initialized = lambda: False
+
+    def _refuse(ordinal):
+        raise AssertionError("the preflight touched a device on an x86 discrete host")
+
+    torch_module.cuda.get_device_properties = _refuse
+    monkeypatch.setitem(_sys.modules, "torch", torch_module)
+    monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
+
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
+
+
+def test_the_preflight_probe_runs_on_arm_and_once_cuda_is_up(monkeypatch):
+    """ARM is where an integrated part can exist, and an initialised CUDA is free."""
+    import platform as _platform
+    import sys as _sys
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    torch_module = _spark_torch(29509, 124609)
+    torch_module.cuda.is_initialized = lambda: False
+    monkeypatch.setitem(_sys.modules, "torch", torch_module)
+
+    monkeypatch.setattr(_platform, "machine", lambda: "aarch64")
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is True
+
+    # Already paid for: the context exists, so the reading costs nothing new.
+    monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
+    torch_module.cuda.is_initialized = lambda: True
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is True
+
+
+def test_repricing_keeps_the_soc_wording(monkeypatch):
+    """A text-only retry must not turn a Spark's notice into a .wslconfig hint.
+
+    The repriced message is rebuilt from scratch after the CPU-pinned projector is
+    dropped, so the hardware kind has to travel with it.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    original = LlamaCppBackend._apu_ram_shortfall_message(
+        200 * GIB, 118 * 1024, part = "SoC"
+    )
+    backend._last_load_warning = original
+
+    backend._reprice_after_dropping_pinned_projector(
+        apu_msg = original,
+        host_msg = None,
+        model_size = 180 * GIB,
+        pinned_bytes = 20 * GIB,
+        avail_mib = 118 * 1024,
+        part = "SoC",
+    )
+
+    assert backend._last_load_warning is not None
+    assert "unified-memory SoC" in backend._last_load_warning
+    assert ".wslconfig" not in backend._last_load_warning
+
+
+def test_repricing_still_says_apu_for_an_apu():
+    """The AMD path keeps the wording and the WSL hint it has always had."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    original = LlamaCppBackend._apu_ram_shortfall_message(64 * GIB, 46 * 1024)
+    backend._last_load_warning = original
+
+    backend._reprice_after_dropping_pinned_projector(
+        apu_msg = original,
+        host_msg = None,
+        model_size = 60 * GIB,
+        pinned_bytes = 4 * GIB,
+        avail_mib = 46 * 1024,
+    )
+
+    assert "unified-memory APU" in backend._last_load_warning
+    assert ".wslconfig" in backend._last_load_warning

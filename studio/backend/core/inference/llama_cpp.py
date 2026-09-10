@@ -8988,6 +8988,34 @@ class LlamaCppBackend:
         except Exception:
             return False
 
+    @staticmethod
+    def _integrated_cuda_probe_is_free() -> bool:
+        """True when asking ``_integrated_cuda_gpu_ids()`` costs no NEW CUDA context.
+
+        ``get_device_properties()`` initialises CUDA, which pins a ~700 MiB primary
+        context per visible card in this long-lived process (see ``_get_gpu_memory``).
+        The launch preflight runs AFTER the VRAM budget was snapshotted, so paying it
+        there can OOM a tightly fitted child on a discrete host that was never going to
+        answer True in the first place.
+
+        Free in two cases. Either torch already initialised CUDA earlier in this load,
+        so the context exists and the probe adds nothing; or the machine is one where
+        an integrated CUDA part can exist at all. ``cudaDeviceProp::integrated`` is set
+        only by Tegra and GB10 class SoCs, which are ARM, so on x86 the answer is False
+        without touching a device. An ARM host with discrete cards (GH200) still pays,
+        which is correct: there the probe is the only way to tell the two apart.
+        """
+        try:
+            import platform
+
+            import torch
+
+            if getattr(torch.cuda, "is_initialized", lambda: False)():
+                return True
+            return platform.machine().lower() in {"aarch64", "arm64"}
+        except Exception:
+            return False
+
     # "Off" spellings ggml itself ignores (it tests presence); we honour them.
     _UNIFIED_MEMORY_OFF = frozenset({"", "0", "false", "no", "off"})
 
@@ -11612,6 +11640,7 @@ class LlamaCppBackend:
         model_size: Optional[int],
         pinned_bytes: int,
         avail_mib: Optional[int],
+        part: str = "APU",
     ) -> None:
         """Re-price the APU RAM advisory once a text-only retry drops a CPU-pinned
         vision projector.
@@ -11654,7 +11683,7 @@ class LlamaCppBackend:
         # it would charge ``model_size`` against ``avail - model_size`` and report a
         # shortfall for a load that demonstrably just started. Same pool, one term
         # removed, is the only comparison that answers the question being asked.
-        repriced = self._apu_ram_shortfall_message(model_size, avail_mib)
+        repriced = self._apu_ram_shortfall_message(model_size, avail_mib, part = part)
         if repriced:
             self._last_load_warning = repriced + suffix
         elif host_msg:
@@ -22712,6 +22741,8 @@ class LlamaCppBackend:
                 _host_ram_msg: Optional[str] = None
                 # The RAM figure those notices were priced against, kept with them.
                 _apu_avail_mib: Optional[int] = None
+                # ...and which part they describe, for the same reason.
+                _apu_ram_part = "APU"
 
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
@@ -22728,7 +22759,10 @@ class LlamaCppBackend:
                     # never remapped. Same helper the tensor-spill guard already uses.
                     and (
                         self._amd_apu_wants_unified_memory(gpu_indices)
-                        or self._integrated_cuda_unified_memory(gpu_indices)
+                        or (
+                            self._integrated_cuda_probe_is_free()
+                            and self._integrated_cuda_unified_memory(gpu_indices)
+                        )
                     )
                 ):
                     # Read ONCE and kept, because the text-only fallback re-prices this
@@ -22736,17 +22770,22 @@ class LlamaCppBackend:
                     # second live reading there would be the pool MINUS the model the
                     # reprice is asking about, which double-charges it.
                     _apu_avail_mib = self._available_system_memory_mib()
+                    # Which hardware this notice is about, kept beside the notice: the
+                    # text-only fallback rebuilds the message later and would otherwise
+                    # rebuild a Spark's as an APU's, complete with .wslconfig advice
+                    # that cannot apply to a Jetson or a DGX Spark.
+                    _apu_ram_part = (
+                        "APU"
+                        if self._amd_apu_wants_unified_memory(gpu_indices)
+                        else "SoC"
+                    )
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
                         # this guard exists to stop an oversize load being OOM-killed
                         # mid-read, so it has to weigh the projector either way.
                         model_size + _mmproj_pinned_bytes,
                         _apu_avail_mib,
-                        part = (
-                            "APU"
-                            if self._amd_apu_wants_unified_memory(gpu_indices)
-                            else "SoC"
-                        ),
+                        part = _apu_ram_part,
                     )
                     # gpu_indices is None for a launch nothing pinned, so the guard
                     # priced every visible card, including an APU the gate is about to
@@ -26125,6 +26164,7 @@ class LlamaCppBackend:
                                     model_size = model_size,
                                     pinned_bytes = _mmproj_pinned_bytes,
                                     avail_mib = _apu_avail_mib,
+                                    part = _apu_ram_part,
                                 )
                             else:
                                 # Read the exit code before _kill_process() clears it, so
