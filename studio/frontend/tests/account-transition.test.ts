@@ -6,8 +6,10 @@ import test from "node:test";
 import {
   ACCOUNT_CHROME_KEYS,
   ACCOUNT_DATABASES,
+  BROWSER_ACCOUNT_FENCE_KEY,
   BROWSER_ACCOUNT_KEY,
   accountDatabaseName,
+  accountTransitionPending,
   browserAccountMarker,
   installAccountTransitionListener,
   normalizeAccountUsername,
@@ -158,7 +160,8 @@ test("switch removes every content prefix and preserves only listed chrome and u
     b.browser,
   );
   assert.equal(changed, true);
-  assert.deepEqual(b.removed.sort(), content.sort());
+  // The fence is written before the tokens and lifted after the marker.
+  assert.deepEqual(b.removed.sort(), [...content, BROWSER_ACCOUNT_FENCE_KEY].sort());
   for (const key of ACCOUNT_CHROME_KEYS)
     assert.equal(b.data.get(key), "chrome");
   assert.equal(b.data.get("unrelated"), "keep");
@@ -174,7 +177,7 @@ test("a first managed login clears legacy owner data even without a marker", asy
     await transitionBrowserAccount("alice", "/chat", () => {}, b.browser),
     true,
   );
-  assert.deepEqual(b.removed, ["unsloth-old-content"]);
+  assert.deepEqual(b.removed, ["unsloth-old-content", BROWSER_ACCOUNT_FENCE_KEY]);
 });
 
 test("same managed account keeps content and avoids IndexedDB work", async () => {
@@ -367,6 +370,39 @@ test("cross-tab switches reload once, ignoring initial owner markers, removals a
     storageArea: b.browser.localStorage,
   });
   send({ key: BROWSER_ACCOUNT_KEY, oldValue: "alice", newValue: "bob" });
+  assert.equal(b.reloads(), 1);
+});
+
+test("a switch fences peers before the new tokens and lifts the fence after the marker", async () => {
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "unsloth", unsloth_auth_token: "alice-token" });
+  let fenceAtCommit: string | null = null;
+  await transitionBrowserAccount(
+    { username: "bob", accountId: "b1" },
+    "/chat",
+    () => {
+      fenceAtCommit = b.data.get(BROWSER_ACCOUNT_FENCE_KEY) ?? null;
+      b.data.set("unsloth_auth_token", "bob-token");
+    },
+    b.browser,
+  );
+  assert.equal(fenceAtCommit, "account:b1:bob");
+  assert.equal(b.data.has(BROWSER_ACCOUNT_FENCE_KEY), false);
+  assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "account:b1:bob");
+});
+
+test("a peer holds requests from the fence until the marker reloads it", () => {
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "unsloth" });
+  installAccountTransitionListener(b.browser);
+  const send = b.listeners[0];
+  assert.equal(accountTransitionPending(), false);
+  send({ key: BROWSER_ACCOUNT_FENCE_KEY, oldValue: null, newValue: "unsloth" });
+  assert.equal(accountTransitionPending(), false);
+  send({ key: BROWSER_ACCOUNT_FENCE_KEY, oldValue: null, newValue: "account:b1:bob" });
+  assert.equal(accountTransitionPending(), true);
+  assert.equal(b.reloads(), 0);
+  send({ key: BROWSER_ACCOUNT_KEY, oldValue: "unsloth", newValue: "account:b1:bob" });
+  assert.equal(b.reloads(), 1);
+  send({ key: BROWSER_ACCOUNT_FENCE_KEY, oldValue: "account:b1:bob", newValue: null });
   assert.equal(b.reloads(), 1);
 });
 

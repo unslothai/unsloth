@@ -28,6 +28,7 @@ for (const mode of ["single", "multi"]) {
       new URL("../src/features/auth/api.ts", import.meta.url),
       {
         "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: false },
+        "@/lib/account-transition": { accountTransitionPending: () => false },
         "./session": {
           getAuthToken: () => "setup-token",
           getRefreshToken: () => null,

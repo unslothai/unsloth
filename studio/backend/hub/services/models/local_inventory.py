@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from hub.services.models import account_access
 
 import asyncio
 import os
@@ -89,6 +88,12 @@ _is_transformers_bin_weight_file = model_common._is_transformers_bin_weight_file
 _prefer_complete_larger = model_common._prefer_complete_larger
 _gguf_variant_state_summary = model_common._gguf_variant_state_summary
 _is_diffusers_pipeline_dir = model_common._is_diffusers_pipeline_dir
+
+
+def _account_access():
+    """Imported on use: the CLI reads this inventory without FastAPI, which account_access needs."""
+    from hub.services.models import account_access
+    return account_access
 
 
 def _http_error(status_code: int, detail: str):
@@ -969,9 +974,9 @@ async def _scan_local_models_response(
 
 
 async def _account_local_response(response):
-    if not account_access.managed_account():
+    if not _account_access().managed_account():
         return response
-    models = await asyncio.to_thread(account_access.filter_model_rows, response.models)
+    models = await asyncio.to_thread(_account_access().filter_model_rows, response.models)
     return response.model_copy(update = {"models": models})
 
 
@@ -1070,7 +1075,7 @@ def get_scan_folders_response() -> dict:
 
 
 def add_scan_folder_response(path: str) -> dict:
-    path = account_access.private_directory(path, "")
+    path = _account_access().private_directory(path, "")
     try:
         folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:

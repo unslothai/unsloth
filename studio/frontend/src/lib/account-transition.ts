@@ -4,6 +4,17 @@
 import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
 
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
+/** Written before a switch publishes new tokens, so peer tabs stop sending requests until the
+ * marker lands and they reload. */
+export const BROWSER_ACCOUNT_FENCE_KEY = "unsloth.browser-account.fence.v1";
+/** A peer tab holds the marker for at most this long before reloading on its own. */
+export const ACCOUNT_FENCE_TIMEOUT_MS = 10_000;
+
+let transitionPending = false;
+/** True in a peer tab between another tab's fence and its marker: requests must not go out. */
+export function accountTransitionPending(): boolean {
+  return transitionPending;
+}
 export const OWNER_BROWSER_ACCOUNT = "unsloth";
 
 export const APPEARANCE_KEY = "unsloth_appearance_customization";
@@ -210,9 +221,13 @@ export async function transitionBrowserAccount(
       ),
     );
   }
+  // Fence first: peers see it before the tokens, so nothing of the previous account goes out
+  // under the new credentials while their reload is pending.
+  if (changed) storage.setItem(BROWSER_ACCOUNT_FENCE_KEY, marker);
   commitSession();
   if (storage.getItem(BROWSER_ACCOUNT_KEY) !== marker)
     storage.setItem(BROWSER_ACCOUNT_KEY, marker);
+  if (changed) storage.removeItem(BROWSER_ACCOUNT_FENCE_KEY);
   if (changed) browser.location.replace(postAuthRoute);
   return changed;
 }
@@ -224,20 +239,32 @@ export function installAccountTransitionListener(
   if (watchedBrowsers.has(browser)) return;
   watchedBrowsers.add(browser);
   let reloading = false;
+  let fenceTimer: ReturnType<typeof setTimeout> | null = null;
+  const reload = () => {
+    if (reloading) return;
+    reloading = true;
+    if (fenceTimer !== null) clearTimeout(fenceTimer);
+    clearAccountSessionStorage(browser);
+    browser.location.reload();
+  };
   browser.addEventListener("storage", (event) => {
-    if (
-      reloading ||
-      event.key !== BROWSER_ACCOUNT_KEY ||
-      event.newValue === null
-    )
-      return;
+    if (reloading || event.newValue === null) return;
     if (event.storageArea && event.storageArea !== browser.localStorage) return;
+    if (event.key === BROWSER_ACCOUNT_FENCE_KEY) {
+      const current = parseAccountMarker(
+        browser.localStorage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
+      );
+      if (isSameAccount(current, parseAccountMarker(event.newValue))) return;
+      // Stop sending until the marker arrives; a switch that never finishes still reloads.
+      transitionPending = true;
+      if (fenceTimer === null) fenceTimer = setTimeout(reload, ACCOUNT_FENCE_TIMEOUT_MS);
+      return;
+    }
+    if (event.key !== BROWSER_ACCOUNT_KEY) return;
     const previous = parseAccountMarker(
       event.oldValue ?? OWNER_BROWSER_ACCOUNT,
     );
     if (isSameAccount(previous, parseAccountMarker(event.newValue))) return;
-    reloading = true;
-    clearAccountSessionStorage(browser);
-    browser.location.reload();
+    reload();
   });
 }
