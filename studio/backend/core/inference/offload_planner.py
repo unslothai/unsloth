@@ -673,9 +673,13 @@ def _fit_fallback_placement(
         # resident and it moves close to the MINIMUM it needs, same as the planner.
         host_experts = 0
         for block in reversed(blocks):
+            # fit.cpp grades only the FIRST partial layer it reaches (``ngl_t.overflow_type``,
+            # common/fit.cpp:486-560) and moves LAYER_FRACTION_MOE of every layer past it, so
+            # the boundary block gives up a rung and not its whole expert set.
+            overflow = _fit_boundary_overflow(block, resident - host_experts - budget)
+            if overflow is not None:
+                return Placement(host_groups = [_ffn_group(layout, host_experts + overflow)])
             host_experts += block.spillable_bytes
-            if resident - host_experts <= budget:
-                return Placement(host_groups = [_ffn_group(layout, host_experts)])
         # Every expert on the host and still short. common/fit.cpp does not fail here: it
         # lowers n_gpu_layers and moves whole LEADING layers with their cache share.
         recurrent_per_layer = (

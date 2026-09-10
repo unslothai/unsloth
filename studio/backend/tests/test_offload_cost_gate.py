@@ -438,15 +438,21 @@ def graded_moe_layout(n_blocks: int = 8, ffn_gib: float = 3.0) -> ModelLayout:
 
 
 def test_a_unified_cache_gives_every_slot_the_whole_prompt_window():
-    """--kv-unified is one shared stream, so n_ctx / slots is not the window."""
+    """--kv-unified is one shared stream, so n_ctx / slots is not the window.
+
+    Re-anchored at ``min_penalty_reduction = 0``: now that the fitter grades its boundary
+    block the same way the planner does, the two arms place the same bytes on this layout
+    and the default margin declines the tie, which would hide the window this pins.
+    """
     layout = graded_moe_layout()
     host = HostProfile(threads = 12)
+    tie = dict(host = host, min_penalty_reduction = 0.0)
     divided = plan_placement(
         layout,
         [20 * GIB],
         200 * GIB,
         32768,
-        opts = gated(host = host, n_parallel = 4, min_parallel = 4),
+        opts = gated(n_parallel = 4, min_parallel = 4, **tie),
     )
     assert divided.spills_anything and "tokens per slot" not in divided.reason
 
@@ -455,12 +461,12 @@ def test_a_unified_cache_gives_every_slot_the_whole_prompt_window():
         [20 * GIB],
         200 * GIB,
         32768,
-        opts = gated(host = host, n_parallel = 4, min_parallel = 4, kv_unified = True),
+        opts = gated(n_parallel = 4, min_parallel = 4, kv_unified = True, **tie),
     )
     assert not unified.spills_anything and unified.declined_by_gate
     assert "32768 tokens per slot" in unified.reason, unified.reason
 
-    one_slot = plan_placement(layout, [20 * GIB], 200 * GIB, 32768, opts = gated(host = host))
+    one_slot = plan_placement(layout, [20 * GIB], 200 * GIB, 32768, opts = gated(**tie))
     assert "tokens per slot" in one_slot.reason, one_slot.reason
 
 
@@ -911,3 +917,48 @@ def test_a_load_that_already_fits_gives_the_fitter_nothing_to_move():
     )
     assert knob_fit_ms == 0.0 and knob_ms == 0.0
     assert knob_declined is None, "a free plan against a free fit is a tie, not a decline"
+
+
+def per_matrix_moe_layout(n_blocks: int = 40) -> ModelLayout:
+    """An MoE with its expert matrices broken out, so the boundary block has rungs to give."""
+    d, u, g, a = int(0.20 * GIB), int(0.15 * GIB), int(0.12 * GIB), int(0.025 * GIB)
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = d + u + g,
+            resident_bytes = a,
+            ffn_down_bytes = d,
+            ffn_up_bytes = u,
+            ffn_gate_bytes = g,
+            attn_bytes = a,
+        )
+        for i in range(n_blocks)
+    )
+    return replace(moe_layout(n_blocks), blocks = blocks)
+
+
+def test_the_moe_fallback_grades_its_boundary_block_like_the_dense_arm():
+    """fit.cpp grades the first partial layer it reaches and moves LAYER_FRACTION_MOE of
+    every layer past it. Adding the boundary block's whole expert set over-moved by up to
+    one block, made the fitter look costlier than it is, and biased the gate toward
+    accepting the planner's spill."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = per_matrix_moe_layout()
+    down = layout.blocks[0].ffn_down_bytes
+    gate = layout.blocks[0].ffn_gate_bytes
+    whole = layout.blocks[0].spillable_bytes
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    resident = all_resident_bytes(
+        layout, 8192, kv_quantised = False, kv_bytes_floor = 0, kv_on_host = False, n_seq = 1
+    )
+
+    def moved(deficit_past_three: int) -> int:
+        budget = resident - 3 * whole - deficit_past_three
+        placement = _fit_fallback_placement(layout, gated(), budget, 8192, **args)
+        assert placement is not None
+        return sum(g.bytes_total for g in placement.host_groups)
+
+    assert moved(down // 2) == 3 * whole + down
+    assert moved(down + gate // 2) == 3 * whole + down + gate
+    assert moved(down + gate + 1) == 4 * whole

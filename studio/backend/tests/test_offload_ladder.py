@@ -893,7 +893,12 @@ def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
 
 
 def test_the_gate_scores_the_same_request_after_rung_1_lowers_the_slots(monkeypatch):
-    """A request does not get longer because the server takes fewer at once."""
+    """A request does not get longer because the server takes fewer at once.
+
+    Re-anchored at ``min_penalty_reduction = 0``: the fitter now grades its MoE boundary
+    block, so on this layout it places exactly what rung 1 does and the default margin
+    declines the tie before ``rank`` is ever reached at the reduced slot count.
+    """
     from core.inference import offload_planner as planner
 
     layout = graded_moe()
@@ -919,6 +924,7 @@ def test_the_gate_scores_the_same_request_after_rung_1_lowers_the_slots(monkeypa
         n_parallel = 2,
         kv_bytes_floor_by_parallel = table,
         require_cost_win = True,
+        min_penalty_reduction = 0.0,
         workload_prompt_tokens = 1024,
     )
     plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
@@ -997,7 +1003,10 @@ def test_an_interval_hybrid_sums_the_attention_rows_of_its_per_layer_vector():
 def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monkeypatch):
     """The emitted batch floor follows the slot count, so a plan rung 1 reduced
     launches at a smaller micro-batch than the caller's; scored at the caller's,
-    its prefill stream was priced at twice its real size."""
+    its prefill stream was priced at twice its real size.
+
+    Re-anchored at ``min_penalty_reduction = 0`` for the same reason as the test above.
+    """
     from core.inference import offload_planner as planner
 
     layout = graded_moe()
@@ -1023,6 +1032,7 @@ def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monk
         n_parallel = 2,
         kv_bytes_floor_by_parallel = table,
         require_cost_win = True,
+        min_penalty_reduction = 0.0,
         n_ubatch = 256,
     )
     plan = plan_placement(
