@@ -3,6 +3,7 @@
 #
 # Installs into the managed Unsloth home so the backend's binary discovery
 # (core/inference/stt_ggml_sidecar.py::find_whisper_server_binary) picks it up:
+#   <UNSLOTH_HOME>/whisper.cpp/build/bin/whisper-server          (master root)
 #   <UNSLOTH_STUDIO_HOME>/whisper.cpp/build/bin/whisper-server   (custom home)
 #   ~/.unsloth/whisper.cpp/build/bin/whisper-server              (default)
 #
@@ -19,7 +20,25 @@ set -eu
 WHISPER_CPP_SOURCE="${WHISPER_CPP_SOURCE:-https://github.com/ggml-org/whisper.cpp}"
 WHISPER_CPP_TAG="${WHISPER_CPP_TAG:-v1.9.1}"
 
-STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-${UNSLOTH_HOME:-}}}"
+# Stripped and tilde-expanded before it can outrank anything, as setup.sh and the Python
+# resolvers do: ${VAR:-} only treats the EMPTY string as unset, so a whitespace-only value
+# would win here and name a relative "   /whisper.cpp" the backend never looks in.
+_root_value() {
+    _rv=$(printf '%s' "${1:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    case "$_rv" in
+        "~") _rv="$HOME" ;;
+        "~/"*) _rv="$HOME/${_rv#'~/'}" ;;
+    esac
+    printf '%s' "$_rv"
+}
+
+# UNSLOTH_HOME first: whisper.cpp is a SIBLING of studio/ under the master root, and the CLI
+# exports UNSLOTH_STUDIO_HOME=<root>/studio beside it, so taking that one would install a level
+# below where stt_ggml_sidecar._managed_whisper_cpp_dir() looks.
+_STUDIO_HOME_ALIAS="${STUDIO_HOME:-}"   # read before the name below is reassigned
+STUDIO_HOME="$(_root_value "${UNSLOTH_HOME:-}")"
+[ -n "$STUDIO_HOME" ] || STUDIO_HOME="$(_root_value "${UNSLOTH_STUDIO_HOME:-}")"
+[ -n "$STUDIO_HOME" ] || STUDIO_HOME="$(_root_value "$_STUDIO_HOME_ALIAS")"
 CUSTOM_STUDIO_HOME=false
 if [ -n "$STUDIO_HOME" ]; then
     CUSTOM_STUDIO_HOME=true

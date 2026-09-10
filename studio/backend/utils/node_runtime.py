@@ -47,14 +47,19 @@ def _version_meets_floor(version: str) -> bool:
 
 
 def managed_node_dir() -> Path:
-    """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a
-    parent with llama.cpp -- ``<STUDIO_HOME>`` in custom mode, else legacy ``~/.unsloth``."""
+    """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a parent with
+    llama.cpp -- ``UNSLOTH_HOME`` when set, else ``<STUDIO_HOME>`` in custom mode, else legacy
+    ``~/.unsloth``."""
     legacy_node = Path.home() / ".unsloth" / "node"
     try:
         # Lazy import (mirrors _find_llama_server_binary) so this module stays
         # importable even if utils.paths cannot be loaded.
-        from utils.paths.storage_roots import studio_root
+        from utils.paths.storage_roots import studio_root, unsloth_home
 
+        # setup.sh installs Node at <master root>/node, beside studio/.
+        master = unsloth_home()
+        if master is not None:
+            return master / "node"
         resolved = studio_root()
         legacy_studio = Path.home() / ".unsloth" / "studio"
         try:

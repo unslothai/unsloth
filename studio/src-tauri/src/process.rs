@@ -1855,6 +1855,7 @@ fn windows_roots_from(
 /// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
 /// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -1888,6 +1889,18 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_DG_SHIM",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
+    // storage_roots.py fills these only when blank, so a relative value the user set is kept as
+    // written and would name a different folder after the move.
+    "TORCH_EXTENSIONS_DIR",
+    "TORCH_HOME",
+    "TRITON_HOME",
+    "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
+    "CUDA_CACHE_PATH",
+    "MPLCONFIGDIR",
+    "NUMBA_CACHE_DIR",
+    "DATA_DESIGNER_HOME",
+    "DATA_DESIGNER_MANAGED_ASSETS_PATH",
     "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR",
     "UNSLOTH_DIFFUSION_COND_CACHE_DIR",
     "HF_HOME",
@@ -1896,6 +1909,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    // transformers appends this to sys.path, so a relative value would import a
+    // different generated module after the move.
+    "HF_MODULES_CACHE",
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
@@ -2206,7 +2222,17 @@ fn names_a_path(name: &str, value: &str) -> bool {
 /// Names every managed spawn removes before starting the child: Tauri uses the
 /// legacy Unsloth root whatever the environment says. Resolving one can only
 /// invent a failure for a value the child is never going to see.
-const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
+///
+/// UNSLOTH_HOME moves the databases, assets and caches exactly as
+/// UNSLOTH_STUDIO_HOME does, plus the managed llama.cpp, node and whisper.cpp
+/// dirs. UNSLOTH_PORTABLE names no root but portable_mode() reads it on its own,
+/// repointing the Hugging Face and torch caches away from the shared user ones.
+pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
+    "UNSLOTH_STUDIO_HOME",
+    "STUDIO_HOME",
+    "UNSLOTH_PORTABLE",
+];
 
 /// Read only by the update and installer path (install_python_stack.py), so a
 /// stale value must not be able to fail a probe, a backend start or an auth
@@ -3327,11 +3353,13 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
-    // is a pre-existing user-controlled llama.cpp dir override; keep it.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    // Tauri uses the legacy root whatever the environment says; scrub so the
+    // spawned Python backend can't diverge. Off the shared list, so a name added
+    // there cannot be honoured by the backend and missed here.
+    // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
+    for name in MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its
     // redirected streams with the locale code page and non-ASCII lands as U+FFFD.

@@ -80,7 +80,10 @@ def test_kill_orphan_catches_oserror_from_studio_root():
 
 
 def _exec_search_roots_block(
-    home: Path, studio_root_value: Path, resolve_raises: bool
+    home: Path,
+    studio_root_value: Path,
+    resolve_raises: bool,
+    master: Path | None = None,
 ) -> list[Path]:
     """Run _find_llama_server_binary's search_roots derivation -- plus the shared
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
@@ -103,6 +106,7 @@ def _exec_search_roots_block(
     block = textwrap.dedent(" " * 8 + src[block_start:block_end])
     fake_module = type(sys)("fake_storage_roots")
     fake_module.studio_root = lambda: studio_root_value
+    fake_module.unsloth_home = lambda: master
     sys.modules["utils.paths.storage_roots"] = fake_module
     try:
         original_resolve = Path.resolve
@@ -146,6 +150,20 @@ def test_search_roots_keeps_custom_when_resolve_fails(tmp_path):
     assert (
         home / ".unsloth" / "llama.cpp"
     ) not in roots, f"legacy llama path must not appear in custom-mode search_roots: {roots}"
+
+
+def test_search_roots_follow_the_master_root(tmp_path):
+    # llama.cpp is a sibling of studio/ there; a failing resolve() must not drop the master root.
+    home = tmp_path / "home"
+    home.mkdir()
+    master = tmp_path / "portable"
+    roots = _exec_search_roots_block(
+        home = home,
+        studio_root_value = master / "studio",
+        resolve_raises = True,
+        master = master,
+    )
+    assert roots == [master / "llama.cpp"]
 
 
 def test_search_roots_default_mode_uses_legacy_only(tmp_path):

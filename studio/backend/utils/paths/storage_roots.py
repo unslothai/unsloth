@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import ntpath
 import os
+import platform
 import re
+import stat as stat_module
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable
@@ -42,21 +45,97 @@ def _infer_studio_home_from_venv() -> Path | None:
     return None
 
 
+def _resolved(value: str) -> Path:
+    try:
+        return Path(value).expanduser().resolve()
+    except (OSError, ValueError):
+        return Path(value).expanduser()
+
+
+def unsloth_home() -> Path | None:
+    """The master root, or None. STUDIO_HOME is its studio/ child; llama.cpp, node and
+    whisper.cpp are SIBLINGS of studio/, the layout setup.sh already gives UNSLOTH_HOME."""
+    override = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    return _resolved(override) if override else None
+
+
+_PORTABLE_ON_VALUES = ("1", "true", "yes", "on")
+_PORTABLE_OFF_VALUES = ("0", "false", "off", "no")
+
+# portable_mode() runs on every cache-var lookup, so warn once per process, not once per call.
+_warned_unrecognized_portable = False
+
+
+def _warn_unrecognized_portable(raw: str) -> None:
+    global _warned_unrecognized_portable
+    if _warned_unrecognized_portable:
+        return
+    _warned_unrecognized_portable = True
+    logger.warning(
+        "Ignoring UNSLOTH_PORTABLE=%r: expected one of %s to turn portable mode "
+        "on, or one of %s to leave it off.",
+        raw,
+        "/".join(_PORTABLE_ON_VALUES),
+        "/".join(_PORTABLE_OFF_VALUES),
+    )
+
+
+def portable_mode() -> bool:
+    """Whether this install keeps everything under one directory. Implied by UNSLOTH_HOME, and
+    settable on its own so an existing install can opt in."""
+    # Case-folded: UNSLOTH_PORTABLE=FALSE read as "on" would move the caches out from under a
+    # user who asked for the opposite.
+    raw = (os.environ.get("UNSLOTH_PORTABLE") or "").strip()
+    value = raw.lower()
+    if value in _PORTABLE_ON_VALUES:
+        return True
+    if value and value not in _PORTABLE_OFF_VALUES:
+        _warn_unrecognized_portable(raw)
+    # Unrecognized means no opinion, exactly as an off value does: neither vetoes a real
+    # portable install, whose root is what makes it portable.
+    return unsloth_home() is not None
+
+
+# Warned once per distinct pair rather than per call: studio_root() runs many times a request,
+# and both variables can be rebound inside one process.
+_warned_root_conflicts: set[tuple[str, str]] = set()
+
+
+def _warn_root_conflict(resolved: Path, master: Path) -> None:
+    key = (str(resolved), str(master))
+    if key in _warned_root_conflicts:
+        return
+    _warned_root_conflicts.add(key)
+    # Not fatal: failing here would break a resolver called at import time.
+    logger.warning(
+        "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
+        "install is not self-contained.",
+        resolved,
+        master,
+    )
+
+
 def studio_root() -> Path:
     """Unsloth install root.
 
-    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
-    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins if
-    both are set (specific signal beats generic alias).
+    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then UNSLOTH_HOME's studio/ child, then
+    sys.prefix inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME outranks both: it
+    names this exact directory, while the others only name the tree it sits in.
     """
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
         override = (os.environ.get("STUDIO_HOME") or "").strip()
     if override:
-        try:
-            return Path(override).expanduser().resolve()
-        except (OSError, ValueError):
-            return Path(override).expanduser()
+        resolved = _resolved(override)
+        master = unsloth_home()
+        # Path.parents excludes the path itself, so a flat layout (both naming one root) would
+        # otherwise warn on every call.
+        if master is not None and master != resolved and master not in resolved.parents:
+            _warn_root_conflict(resolved, master)
+        return resolved
+    master = unsloth_home()
+    if master is not None:
+        return master / "studio"
     inferred = _infer_studio_home_from_venv()
     if inferred is not None:
         return inferred
@@ -398,6 +477,347 @@ def well_known_model_dirs() -> list[Path]:
     return _existing_dirs(candidates, resolve = True)
 
 
+def _user_set_hf_home() -> bool:
+    """Whether HF_HOME was set by the user rather than seeded by Unsloth.
+
+    initialize_hf_cache_environment fills a blank HF_HOME before this runs, so hf_cache_settings'
+    import-time snapshot is the only record of who chose it.
+    """
+    try:
+        from utils.hf_cache_settings import _EXPLICIT_CACHE_ENV
+    except ImportError:
+        return False
+    return bool(_EXPLICIT_CACHE_ENV.get("HF_HOME"))
+
+
+def _portable_cache_defaults(root: Path) -> dict[str, str]:
+    """Cache vars that only move under the root in portable mode, since they hold shared user data
+    or large re-downloads. The hub and xet caches are handled inside hf_cache_settings, which must
+    agree with the Settings UI. HF_HOME never moves: credentials should not follow a cache onto a
+    removable volume.
+    """
+    if not portable_mode():
+        return {}
+    if _user_set_hf_home():
+        # Assets, datasets and modules derive from an explicit HF_HOME, so pinning them here
+        # would split one deliberately chosen cache across two volumes.
+        return {"TORCH_HOME": str(root / "torch")}
+    return {
+        "HF_DATASETS_CACHE": str(root / "huggingface" / "datasets"),
+        # These two derive from <HF_HOME>, which stays on the host, so they are the HF roots
+        # that would otherwise still write outside the volume.
+        "HF_ASSETS_CACHE": str(root / "huggingface" / "assets"),
+        # transformers.utils.hub reads this at import and appends it to sys.path, so a
+        # trust_remote_code load leaves generated modules on the host without it.
+        "HF_MODULES_CACHE": str(root / "huggingface" / "modules"),
+        "TORCH_HOME": str(root / "torch"),
+    }
+
+
+def _triton_cache_defaults(root: Path) -> dict[str, str]:
+    """Triton's regenerable directories, named one at a time.
+
+    TRITON_HOME would move all three at once (triton-lang/triton#4265), and that is why it is not
+    used: ~/.triton/override holds hand-written kernels, so moving their parent makes a
+    TRITON_KERNEL_OVERRIDE=1 run silently fall back to the compiler's own output. The dedicated
+    variables outrank the derivation (triton/knobs.py cache_knobs).
+    """
+    if (os.environ.get("TRITON_HOME") or "").strip():
+        # Whoever moved the whole tree meant the cache with it; TRITON_CACHE_DIR would outrank it.
+        return {}
+    return {
+        "TRITON_CACHE_DIR": str(root / "triton"),
+        # A sibling, not a child: dumps are asked for by hand and should outlive a cache wipe.
+        "TRITON_DUMP_DIR": str(root / "triton-dump"),
+    }
+
+
+def _nothing_at(path: Path, *, ending: str = "") -> bool:
+    """Whether *path* positively holds nothing, the only state that licenses a pin.
+
+    Not Path.exists/is_dir/glob: they report ENOTDIR, ELOOP, EBADF (and from 3.14 EACCES and EIO)
+    as absence, so a directory we merely cannot inspect would read as empty and the redirect would
+    hide the user's files. os.lstat and os.scandir raise on all of it. lstat rather than stat: a
+    dangling symlink is still something the user put there. *ending* asks instead whether the
+    DIRECTORY holds no entry with that suffix; pass it lowercase, as Windows glob matched
+    case-insensitively.
+    """
+    try:
+        if not ending:
+            os.lstat(path)
+            return False
+        # A link at the directory itself is something the user put there, and scandir follows
+        # it: an empty target, or a dangling one whose volume is not mounted right now, would
+        # read as an empty directory and the styles placed at that target would be hidden behind
+        # the pin. lstat, so the link and not its target answers, and so an unreadable parent
+        # still raises into the handler below rather than being called absence.
+        if stat_module.S_ISLNK(os.lstat(path).st_mode) or _is_reparse_point(path):
+            return False
+        with os.scandir(path) as entries:
+            return not any(entry.name.lower().endswith(ending) for entry in entries)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        # Could not look. Declining a pin costs a shared cache directory; taking one wrongly
+        # hides the configuration or datasets underneath it.
+        return False
+
+
+def _matplotlib_config_dir() -> Path | None:
+    """Where matplotlib reads matplotlibrc and stylelib/ from when MPLCONFIGDIR is unset, or None
+    when this machine has no such directory. Mirrors _get_config_or_cache_dir: XDG config base on
+    Linux/FreeBSD, %LOCALAPPDATA% on Windows but keeping a pre-existing ~/.matplotlib there.
+
+    The Windows branch is matplotlib 3.11's; the pinned 3.10.9 sends every non-XDG platform to
+    ~/.matplotlib. The disagreement is one-way and safe: an rc under %LOCALAPPDATA% that 3.10.9
+    would ignore only costs us the pin, and it never hides a file matplotlib does read.
+
+    None means matplotlib falls back to a temporary directory, so a pin can strand nothing.
+    """
+    # XDG_CONFIG_HOME ahead of Path.home(), as _get_xdg_config_dir does: an install that sets it
+    # has a config dir even with no resolvable home.
+    if sys.platform.startswith(("linux", "freebsd")):
+        base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
+        if base:
+            return Path(base) / "matplotlib"
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        return None
+    if sys.platform.startswith(("linux", "freebsd")):
+        return home / ".config" / "matplotlib"
+    if sys.platform == "win32":
+        legacy = home / ".matplotlib"
+        # Not is_dir(): an unreadable ~/.matplotlib raises before 3.14 and reads as absent from
+        # 3.14, which sends the probe to a %LOCALAPPDATA% that is empty on exactly the machines
+        # where the old directory holds the rc.
+        if not _nothing_at(legacy):
+            return legacy
+        local_app_data = (os.environ.get("LOCALAPPDATA") or "").strip()
+        return Path(local_app_data) / "matplotlib" if local_app_data else legacy
+    return home / ".matplotlib"
+
+
+def _matplotlib_defaults(root: Path) -> dict[str, str]:
+    """MPLCONFIGDIR, unless matplotlib's own directory holds user configuration.
+
+    The one variable moves the CONFIG directory as well as the cache, so pinning it would drop a
+    user matplotlibrc and every custom style, silently changing the loss plots
+    core/training/training.py draws. matplotlib creates the directory on import, so contents
+    decide, not existence.
+    """
+    managed = root / "matplotlib"
+    pinned = {"MPLCONFIGDIR": str(managed)}
+    # Our own configuration first, for the reason _data_designer_defaults gives: the legacy probe
+    # re-runs every launch, so on its own it hands a matplotlibrc written HERE to a
+    # ~/.config/matplotlib created later by some other tool. Measured across four launches: dpi
+    # 177 from the managed config, then 222 once a legacy rc appeared, then 177 again when it was
+    # removed, with the managed rc present throughout. A style that changes on a later launch and
+    # changes back is worse than either choice made once.
+    if not (
+        _nothing_at(managed / "matplotlibrc")
+        and _nothing_at(managed / "stylelib", ending = ".mplstyle")
+    ):
+        return pinned
+    config_dir = _matplotlib_config_dir()
+    if config_dir is not None and not (
+        _nothing_at(config_dir / "matplotlibrc")
+        and _nothing_at(config_dir / "stylelib", ending = ".mplstyle")
+    ):
+        return {}
+    return pinned
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """A Windows junction, which is_symlink() answers False for.
+
+    os.path.isjunction arrived in 3.12 and the Studio venv can be 3.11, so its absence means
+    "no junctions to worry about" rather than an error.
+    """
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is None:
+        return False
+    try:
+        return bool(isjunction(path))
+    except (OSError, ValueError):
+        return False
+
+
+def _data_designer_in_use(home: Path) -> bool:
+    """Whether the managed Data Designer home holds work worth keeping.
+
+    _setup_cache_env creates this directory and its managed-assets child on the first launch, so
+    existence alone would pin a home nobody has written to. Same rule as _nothing_at read for
+    contents: a home we merely cannot list still counts as in use, since dropping the pin would
+    hide the recipes here behind a re-seeded ~/.data-designer.
+    """
+    try:
+        entries = list(home.iterdir())
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    for entry in entries:
+        try:
+            if entry.name != "managed-assets":
+                return True
+            # A link here is the user redirecting their assets somewhere else, which is state
+            # worth as much as a file. _setup_cache_env only ever makes a plain directory, and
+            # is_dir() follows a link, so an empty target read as the untouched layout Unsloth
+            # creates: the pin was dropped and the redirect went with it.
+            if entry.is_symlink() or _is_reparse_point(entry):
+                return True
+            if not entry.is_dir():
+                return True
+            if any(entry.iterdir()):
+                return True
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return True
+    return False
+
+
+def _data_designer_defaults(root: Path) -> dict[str, str]:
+    """Data Designer's home, unless the user already has one.
+
+    Not a cache: repointing an existing ~/.data-designer hides its yaml configs and multi-GB
+    parquet behind a re-seeded default. MANAGED_ASSETS_PATH derives from the home, so it is only
+    ours to set when the home is. data_designer.config.utils.constants reads both at IMPORT time.
+    """
+    if (os.environ.get("DATA_DESIGNER_HOME") or "").strip():
+        return {}
+    home = root.parent / "data-designer"
+    pinned = {
+        "DATA_DESIGNER_HOME": str(home),
+        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(home / "managed-assets"),
+    }
+    # The legacy probe re-runs every launch, so on its own it would hand the recipes written here
+    # to a ~/.data-designer created later by a standalone run. Our own populated home is the
+    # record of the first choice.
+    if _data_designer_in_use(home):
+        return pinned
+    try:
+        legacy = Path.home() / ".data-designer"
+    except (OSError, RuntimeError):
+        # No home, so this pin can hide nothing: data_designer's own default is equally
+        # unavailable, off the same call.
+        return pinned
+    return pinned if _nothing_at(legacy) else {}
+
+
+def _path_safe(value: str) -> str:
+    """A directory-name-safe rendering of a build field."""
+    return re.sub(r"[^A-Za-z0-9.]+", "-", value)
+
+
+def _torch_version_fields() -> dict[str, str]:
+    """The build identity torch.version exposes, read without importing torch.
+
+    Runs on a startup path that executes before torch exists in a fresh venv, so it stays a file
+    read. torch/version.py assigns only literals, but whether it annotates them
+    (``cuda: Optional[str] = ...``) varies by release, hence a regex rather than ast or exec.
+    """
+    origin = getattr(importlib.util.find_spec("torch"), "origin", None)
+    if not origin:
+        return {}
+    text = (Path(origin).parent / "version.py").read_text(encoding = "utf-8")
+    found = re.findall(
+        r"""^(__version__|debug|cuda|hip|xpu)\s*(?::[^=\n]+)?=\s*([^\s#]+)""",
+        text,
+        re.MULTILINE,
+    )
+    return {name: value.strip("'\"") for name, value in found}
+
+
+def _torch_accelerator_tag(fields: dict[str, str]) -> str:
+    """torch's own cu_str, widened to the runtimes it declines to name: cpp_extension picks 'cpu'
+    whenever version.cuda is unset, filing a ROCm build beside a real CPU one. hip first, as
+    torch main prioritises ROCm."""
+    for field, prefix in (("hip", "rocm"), ("cuda", "cu"), ("xpu", "xpu")):
+        value = fields.get(field)
+        if not value or value == "None":
+            continue
+        # torch spells the CUDA version without dots: 12.8 -> cu128.
+        return prefix + _path_safe(value.replace(".", "") if field == "cuda" else value)
+    return "cpu"
+
+
+def _torch_runtime_tag() -> str:
+    """Name the extension cache after the runtime that builds into it.
+
+    torch.utils.cpp_extension._get_build_directory appends a ``py<ver>_<accelerator>`` folder to
+    the DEFAULT root only, never to a TORCH_EXTENSIONS_DIR we supply, so pinning a flat path drops
+    the isolation that keeps a py313/cu128 build from being loaded by a py312/cu126 one.
+
+    The accelerator comes from the generated cuda/hip fields rather than a local segment of
+    __version__: conda-forge's CPU and CUDA packages of one release carry the same __version__.
+    __version__ stays in the tag too, since local segments such as +cpu.cxx11.abi mark ABI splits
+    no other field records.
+    """
+    tag = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
+    # Architecture too, which torch's own py<ver>_<cu_str> naming omits: an arm64 python and a
+    # Rosetta x86_64 python on one Mac agree on every other field, so ninja reads the other's
+    # build as up to date. Same shape for a $HOME an aarch64 and an x86_64 host both mount.
+    tag += "_" + _path_safe(f"{sys.platform}-{platform.machine() or 'unknown'}")
+    try:
+        fields = _torch_version_fields()
+    except (ImportError, OSError, ValueError, AttributeError):
+        # No torch yet, or a half-built source tree. The interpreter tag alone still isolates
+        # more than the flat path it replaces.
+        return tag
+    if not fields:
+        return tag
+    tag += "_" + _torch_accelerator_tag(fields)
+    version = fields.get("__version__")
+    if version:
+        tag += "_" + _path_safe(version)
+    if fields.get("debug") == "True":
+        # A debug build keeps the soname of a release one but not its ABI.
+        tag += "_debug"
+    return tag
+
+
+# Caches whose path is pasted into a compiler command line by somebody else's code, unquoted.
+#
+# torch/_inductor/cpp_builder.py builds the g++/clang++ invocation with " ".join(sources) and an
+# unquoted output path, then reparses it with shlex.split. A root containing a space therefore
+# splits into two arguments and the build fails outright:
+#
+#   g++: fatal error: input file .../my is the same as output file
+#
+# Nothing here can fix that: the quoting is in PyTorch. What we can do is not create the
+# situation. Left unset, Inductor uses its own whitespace-free temporary directory, which is
+# exactly what happened before this file started pinning these, so skipping the pin is a return
+# to the behaviour that shipped rather than a new fallback.
+#
+# It is not a rare shape. The default Studio root hangs off the profile directory, and
+# "C:\Users\First Last" is an ordinary Windows account name.
+_TOOLCHAIN_PATH_KEYS = frozenset(
+    {
+        "TORCHINDUCTOR_CACHE_DIR",
+        "TORCH_EXTENSIONS_DIR",
+        "TRITON_CACHE_DIR",
+        "TRITON_DUMP_DIR",
+        "TRITON_HOME",
+        "CUDA_CACHE_PATH",
+    }
+)
+
+
+def _usable_dir(value: str) -> bool:
+    """Whether a path we generated is actually a directory the toolchain can compile into."""
+    try:
+        return Path(value).is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _toolchain_unsafe(key: str, value: str) -> bool:
+    """Whether pinning *key* to *value* would hand a compiler a path it cannot parse."""
+    return key in _TOOLCHAIN_PATH_KEYS and any(ch.isspace() for ch in value)
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -417,11 +837,40 @@ def _setup_cache_env() -> None:
         # cache landed in the user home. Must be set before unsloth_zoo.compiler imports: it reads the value at import
         # time and puts it on sys.path.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
+        # Regenerable and process-scoped. Shared user data (HF hub cache, torch.hub checkpoints)
+        # stays where the other tools look, except in portable mode.
+        "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
+        # Tagged: torch only inserts its own ABI folder when TORCH_EXTENSIONS_DIR is unset, so a
+        # flat pin would let two runtimes sharing this root import each other's .so.
+        "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions" / _torch_runtime_tag()),
+        # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
+        "CUDA_CACHE_PATH": str(root / "cuda"),
+        "NUMBA_CACHE_DIR": str(root / "numba"),
     }
+    defaults.update(_matplotlib_defaults(root))
+    defaults.update(_triton_cache_defaults(root))
+    defaults.update(_data_designer_defaults(root))
+    defaults.update(_portable_cache_defaults(root))
     for key, value in defaults.items():
         # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
         # sys.path and sends the compiler to the system temp directory instead.
         if not (os.environ.get(key) or "").strip():
+            # An explicit value is still honoured above: the caller chose it, and only a default
+            # we invented is ours to withhold.
+            if _toolchain_unsafe(key, value):
+                logger.debug(
+                    "leaving %s unset: %s contains whitespace, which the C++ builders "
+                    "paste into a command line unquoted",
+                    key,
+                    value,
+                )
+                # Blank is not the same as absent to the library that reads this. Inductor takes
+                # "   " as a relative path and hands it to the very unquoted command line being
+                # refused here, so the key goes rather than staying blank, and torch falls back to
+                # its own temporary cache. The comment above promises "blank counts as unset";
+                # this is what makes that true on a spaced root as well.
+                os.environ.pop(key, None)
+                continue
             os.environ[key] = value
             # Best-effort: a non-writable custom HF_HOME must not crash startup
             try:
@@ -438,6 +887,18 @@ def _setup_cache_env() -> None:
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):
                 pass
+            # A toolchain path we invented and could not make is worse than no path at all. torch
+            # treats the value as authoritative, so a regular file at <studio>/cache/torchinductor
+            # or a parent with a restrictive ACL fails every compile, where an unset variable
+            # would have used the library's own temporary cache. The placement error above is
+            # deliberately swallowed, which is exactly what left an unusable path published.
+            #
+            # Only these keys. UNSLOTH_COMPILE_LOCATION left unset falls back to a bare relative
+            # name resolving against the CWD, which is the bug that pin exists to fix, and the
+            # data roots are not caches with a library default to fall back to.
+            if key in _TOOLCHAIN_PATH_KEYS and not _usable_dir(value):
+                logger.debug("leaving %s unset: %s is not a usable directory", key, value)
+                os.environ.pop(key, None)
 
 
 def setup_cache_env() -> None:

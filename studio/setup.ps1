@@ -513,12 +513,31 @@ function Test-UnslothCmdShimFile {
     return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
 }
 
-# Explicit staging root, shared default cache, or the custom Unsloth home's tree.
+# The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit
+# BESIDE studio\ under it, so deriving them from $StudioHome would put them one level below
+# where every runtime resolver looks.
+function Get-MasterRootOverride {
+    if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
+    $value = $env:UNSLOTH_HOME.Trim()
+    if ($value -eq "~") {
+        $value = $env:USERPROFILE
+    } elseif ($value -like "~/*" -or $value -like "~\*") {
+        $value = (Join-Path $env:USERPROFILE $value.Substring(1).TrimStart('/', '\'))
+    }
+    return (Get-CanonicalDir -Path $value)
+}
+
+# Explicit staging root, the master root, the shared default cache, or the custom Unsloth
+# home's tree.
 function Get-ManagedLlamaCppDir {
     param([AllowNull()][string]$StagingRoot = $null)
 
     if ($StagingRoot) {
         return (Join-Path $StagingRoot "llama.cpp")
+    }
+    $masterRoot = Get-MasterRootOverride
+    if ($masterRoot) {
+        return (Join-Path $masterRoot "llama.cpp")
     }
     if (-not (Test-StudioHomeIsCustom)) {
         return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -535,8 +554,9 @@ function Invoke-ManagedLlamaCppPreflight {
     $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
     if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
     Write-StudioLine ""
-    # A denied custom home cannot be claimed as an Unsloth-managed cache.
-    $homeIsCustom = Test-StudioHomeIsCustom
+    # A denied custom home cannot be claimed as an Unsloth-managed cache. Computed rather
+    # than read off $RuntimeRootIsCustom: this runs beside the line that defines it.
+    $homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)
     # Preserve user-supplied wording when either override names this tree.
     $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
     $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
@@ -2243,8 +2263,42 @@ $StudioOwnedMarker = ".unsloth-studio-owned"
 $NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 $StudioHomeIsCustom = Test-StudioHomeIsCustom
+# Ownership applies to node\, llama.cpp\ and whisper.cpp\ whenever a master root moves them,
+# even with $StudioHome left at the legacy path: $StudioHomeIsCustom is false there, and false
+# is what licenses the installers to replace and delete without the Unsloth-owned marker. The
+# Studio home itself, and the venvs under it, keep the other flag. Mirrors setup.sh.
+$RuntimeRootIsCustom = $StudioHomeIsCustom -or [bool](Get-MasterRootOverride)
 $LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot
 $UnslothHome = Split-Path -Parent $LlamaCppDir
+
+# Record the master root inside the Studio tree, for the uninstaller. Mirrors setup.sh.
+#
+# UNSLOTH_HOME can be set for a single command -- `$env:UNSLOTH_HOME = 'D:\portable'; unsloth
+# studio update` -- and node\, llama.cpp\ and whisper.cpp\ then live somewhere only that
+# environment named. uninstall.ps1 finds the Studio root by its own means, so it can find this
+# note; without it, a later uninstall run without the variable removed the Studio tree and
+# stranded multi-gigabyte runtimes beside it.
+#
+# Only for a master root: the other branches derive the root from paths the uninstaller already
+# knows, and a stale note claiming a root that moved would be worse than none.
+if ((Get-MasterRootOverride) -and -not $StageRoot) {
+    try {
+        $noteDir = Join-Path $StudioHome "share"
+        if (-not (Test-Path -LiteralPath $noteDir -PathType Container)) {
+            [void][System.IO.Directory]::CreateDirectory($noteDir)
+        }
+        # Staged then renamed: a reader that caught a half-written note would name a truncated
+        # path, and this note licenses deletions.
+        $notePath = Join-Path $noteDir ".unsloth-master-root"
+        $noteTmp = "$notePath.$PID"
+        [System.IO.File]::WriteAllText($noteTmp, $UnslothHome + [Environment]::NewLine)
+        # Move-Item -Force, not [IO.File]::Move with an overwrite flag: that overload is .NET
+        # Core only and setup.ps1 still runs under Windows PowerShell 5.1.
+        Move-Item -LiteralPath $noteTmp -Destination $notePath -Force
+    } catch {
+        Write-StudioLine "  note: could not record the master root for uninstall: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
+}
 
 $WithLlamaCppDir = $null
 $llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight -StagingRoot $StageRoot
@@ -3497,8 +3551,12 @@ $NodeSource = $null
 if (-not $IsPipInstall) {
     # Put Node beside the Unsloth root. OXC can still need npm when the
     # frontend build is skipped.
+    $_masterRoot = Get-MasterRootOverride
     if ($StageRoot) {
         $NodeParent = $StageRoot
+    } elseif ($_masterRoot) {
+        # Same derivation as Get-ManagedLlamaCppDir: beside studio\, not inside it.
+        $NodeParent = $_masterRoot
     } else {
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
         elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
@@ -3764,11 +3822,28 @@ if ($NeedNodeForSetup) {
     } elseif ($NodeSource -eq "bundled") {
         New-Item -ItemType Directory -Force -Path $NodeParent -ErrorAction SilentlyContinue | Out-Null
         # Minimal ownership guard; never os.replace over a user-owned dir.
-        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+        # $RuntimeRootIsCustom as well as $NodeOverride: the master-root branch above sets
+        # $NodeParent and leaves $NodeOverride null, so <master>\node reached the whole-directory
+        # replacement in install_node_prebuilt.py with none of the ownership evidence a custom
+        # UNSLOTH_STUDIO_HOME requires. The master root is the user's directory too. setup.sh
+        # passes _RUNTIME_ROOT_IS_CUSTOM here for the same reason. Or, not replacing: a custom
+        # Studio home must keep the guard it already had.
+        #
+        # Anything at the path counts as occupied, not just a directory. install_node_prebuilt's
+        # _swap_into_place renames whatever it finds there out of the way, so a regular file or a
+        # symlink named `node` under a user-selected root was displaced by a guard that only asked
+        # about containers. Ownership evidence lives inside a directory, so a non-directory can
+        # never carry it and is refused outright. setup.sh's _assert_studio_owned_or_absent takes
+        # the same view of -d against -e and -L.
+        if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir)) {
             $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
             $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
-            if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
-                Write-StudioLine "[ERROR] $NodeDir already exists and is not an Unsloth-owned Node install." -ForegroundColor Red
+            $nodeIsDir = Test-Path -LiteralPath $NodeDir -PathType Container
+            if (-not $nodeIsDir -or (
+                    -not (Test-Path -LiteralPath $nodeOwnedMarker) -and
+                    -not (Test-Path -LiteralPath $nodeMeta))) {
+                $what = if ($nodeIsDir) { "an Unsloth-owned Node install" } else { "a directory" }
+                Write-StudioLine "[ERROR] $NodeDir already exists and is not $what." -ForegroundColor Red
                 Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
                 Exit-SetupFailure "$NodeDir is not an Unsloth-owned Node install"
             }
@@ -3788,7 +3863,9 @@ if ($NeedNodeForSetup) {
             Write-StudioLine "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
             Exit-SetupFailure "Could not install an isolated Node runtime"
         }
-        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+        # Same condition as the guard above, or the tree this run just created under a master
+        # root stays unmarked and the uninstaller declines to remove it as somebody else's.
+        if (($NodeOverride -or $RuntimeRootIsCustom) -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
             New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
         }
         $env:PATH = "$NodeDir;" + $env:PATH
@@ -4069,26 +4146,30 @@ function Assert-StudioOwnedOrAbsent {
         [Parameter(Mandatory = $true)][string]$Label,
         # whisper.cpp is non-fatal by contract, so it needs the denial handed back
         # rather than exited on. Only this mode returns a value.
-        [switch]$NonFatal
+        [switch]$NonFatal,
+        # The runtime children pass $RuntimeRootIsCustom; everything under the
+        # Studio home keeps $StudioHomeIsCustom.
+        [AllowNull()][object]$IsCustom = $null
     )
+    $isCustomRoot = $StudioHomeIsCustom
+    if ($null -ne $IsCustom) { $isCustomRoot = [bool]$IsCustom }
     # Denied is not Absent: a root we cannot read cannot be proven ours, and
-    # returning here would let the caller replace it. Both stops stay gated on
-    # $StudioHomeIsCustom, as before; a default-home denial is reported by the
-    # phase that owns the path.
+    # returning here would let the caller replace it; a default-home denial is
+    # reported by the phase that owns the path.
     $pathState = Get-PathState -Path $Path -PathType Container
     if ($pathState -ne "Present") {
-        if ($StudioHomeIsCustom -and $pathState -eq "Denied") {
+        if ($isCustomRoot -and $pathState -eq "Denied") {
             if ($NonFatal) { return "Denied" }
             Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
         }
         return
     }
     $markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf
-    if ($StudioHomeIsCustom -and $markerState -eq "Denied") {
+    if ($isCustomRoot -and $markerState -eq "Denied") {
         if ($NonFatal) { return "Denied" }
         Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
     }
-    if ($StudioHomeIsCustom -and $markerState -ne "Present") {
+    if ($isCustomRoot -and $markerState -ne "Present") {
         $adoptState = Get-StudioAdoptableState -Path $Path
         if ($adoptState -eq "Denied") {
             if ($NonFatal) { return "Denied" }
@@ -5186,9 +5267,25 @@ if ($script:UnslothVerbose) {
 
 # Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
 # paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
-if ($StageRoot -or $LongPathsEnabled) {
+#
+# This value is persisted to the USER environment below, so every later Studio process inherits
+# it and _setup_cache_env's fill-if-unset default never applies on Windows. It therefore has to
+# name the same directory the resolver would have chosen, or the containment this branch is for
+# simply does not happen on Windows.
+#
+# Two things still outrank that. Long paths off keeps the short drive-root directory, because
+# Inductor's filenames hit MAX_PATH and a contained cache that cannot be written is worse than
+# an uncontained one. And a path containing a space is refused for the same reason
+# storage_roots._TOOLCHAIN_PATH_KEYS refuses one: torch/_inductor/cpp_builder.py pastes it into
+# a compiler command line unquoted, and "C:\Users\First Last" is an ordinary account name.
+$TorchCacheDir = $null
+if ($StageRoot) {
     $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"
-} else {
+} elseif ($LongPathsEnabled) {
+    $candidate = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
+    if ($candidate -notmatch '\s') { $TorchCacheDir = $candidate }
+}
+if (-not $TorchCacheDir) {
     $TorchCacheDir = "C:\tc"
 }
 if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
@@ -6097,8 +6194,8 @@ if ($LocalLlamaCppSrc) {
                 throw
             }
         }
-        if ($StudioHomeIsCustom) {
-            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        if ($RuntimeRootIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
         }
         # The destination is about to be deleted and replaced, so a denial here
         # must stop rather than throw raw: under a default home nothing above
@@ -6151,7 +6248,7 @@ if ($LocalLlamaCppLinked) {
     # Keep this late guard as defense in depth before the prebuilt installer.
     $llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir
     if ($llamaDirState -eq "Denied") {
-        Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$StudioHomeIsCustom
+        Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$RuntimeRootIsCustom
     }
     if ($llamaDirState -eq "Readable") {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
@@ -6178,8 +6275,8 @@ if ($LocalLlamaCppLinked) {
     }
     substep "installing prebuilt llama.cpp bundle (preferred path)..."
     # install_llama_prebuilt.py's os.replace() would displace a custom-home llama.cpp first.
-    if ($StudioHomeIsCustom) {
-        Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+    if ($RuntimeRootIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
     }
     $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
@@ -6258,7 +6355,7 @@ if ($LocalLlamaCppLinked) {
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
             }
-            if ($StudioHomeIsCustom -and (Test-Path -LiteralPath $LlamaCppDir -PathType Container)) {
+            if ($RuntimeRootIsCustom -and (Test-Path -LiteralPath $LlamaCppDir -PathType Container)) {
                 Mark-StudioOwned -Path $LlamaCppDir
             }
             $installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir
@@ -6336,8 +6433,8 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
 } elseif ($env:UNSLOTH_SKIP_WHISPER_INSTALL -eq "1") {
     substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
-} elseif ($StudioHomeIsCustom -and (Test-Path -LiteralPath $WhisperInstaller) -and
-        (Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -NonFatal) -eq "Denied") {
+} elseif ($RuntimeRootIsCustom -and (Test-Path -LiteralPath $WhisperInstaller) -and
+        (Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {
     # Never fatal, per the phase header: the guard below would exit the whole run
     # on an unreadable tree, taking llama.cpp down with it. Only the denial is
     # caught here; an unowned tree still stops.
@@ -6345,8 +6442,8 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
 } elseif (Test-Path -LiteralPath $WhisperInstaller) {
     # The installer's atomic activation replaces the whole directory, so the
     # custom-home ownership guard must run first (mirrors the llama block).
-    if ($StudioHomeIsCustom) {
-        Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install"
+    if ($RuntimeRootIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -IsCustom $RuntimeRootIsCustom
     }
     $whisperArgs = @($WhisperInstaller, "--install-dir", $WhisperCppDir)
     if ($env:UNSLOTH_WHISPER_RELEASE_TAG) {
@@ -6381,7 +6478,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         } else {
             step "whisper.cpp" "prebuilt installed"
         }
-        if ($StudioHomeIsCustom -and (Test-PathQuiet $WhisperCppDir "Container")) {
+        if ($RuntimeRootIsCustom -and (Test-PathQuiet $WhisperCppDir "Container")) {
             Mark-StudioOwned -Path $WhisperCppDir
         }
     } elseif ($whisperExit -eq 3) {
@@ -6474,7 +6571,7 @@ $NeedRebuild = $false
 $llamaBinState = if ($LocalLlamaCppLinked) { "Absent" } else { Get-PathState -Path $LlamaServerBin -PathType Leaf }
 if ($llamaBinState -eq "Denied") {
     # Nothing proved this tree is ours here, so do not advise deleting it.
-    Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$StudioHomeIsCustom
+    Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$RuntimeRootIsCustom
 }
 if ($llamaBinState -eq "Present") {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
@@ -6484,7 +6581,7 @@ if ($llamaBinState -eq "Present") {
             $cachedCuda = Select-String -LiteralPath $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
         } catch {
             if (-not (Test-AccessDeniedError $_)) { throw }
-            Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$StudioHomeIsCustom
+            Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$RuntimeRootIsCustom
         }
         if ($HasNvidiaSmi -and -not $cachedCuda) {
             Write-StudioLine "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
@@ -6699,8 +6796,8 @@ if ($LocalLlamaCppLinked) {
         # why: in-place git mutation (remote set-url, checkout -B, clean -fdx)
         # rewrites $LlamaCppDir; mirror the prebuilt and temp-dir-swap guards
         # so an unrelated workspace .git tree is never silently overwritten.
-        if ($StudioHomeIsCustom) {
-            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        if ($RuntimeRootIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
         }
         Write-StudioLine "   Syncing llama.cpp to $ResolvedSourceRef..." -ForegroundColor Gray
         # Always sync the remote URL so switching between default/fork sources works
@@ -6773,7 +6870,7 @@ if ($LocalLlamaCppLinked) {
             }
         }
         # In-place git-sync must mark the tree, else a later Assert-StudioOwnedOrAbsent exits.
-        if ($BuildOk -and $StudioHomeIsCustom) {
+        if ($BuildOk -and $RuntimeRootIsCustom) {
             Mark-StudioOwned -Path $LlamaCppDir
         }
     } else {
@@ -6999,7 +7096,7 @@ if ($LocalLlamaCppLinked) {
 
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
-        Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install"
+        Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
         if ((Get-PathState -Path $OriginalLlamaCppDir) -ne "Absent") {
             Remove-Item -LiteralPath $OriginalLlamaCppDir -Recurse -Force -ErrorAction SilentlyContinue
             # Any unreadable or locked child survives the removal, and Move-Item
@@ -7068,7 +7165,7 @@ if ($LocalLlamaCppLinked) {
 $llamaCppItem = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
 $llamaCppIsLink = $llamaCppItem -and ($llamaCppItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
 if (-not $llamaCppIsLink -and (
-        -not $StudioHomeIsCustom -or
+        -not $RuntimeRootIsCustom -or
         (Test-PathQuiet (Join-Path $LlamaCppDir $StudioOwnedMarker) "Leaf") -or
         (Test-StudioOwnedAdoptable $LlamaCppDir)
     )) {

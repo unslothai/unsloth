@@ -52,7 +52,14 @@ Check "the source-build .git probe stops on a denied checkout" (
     $setupText -match '\$llamaGitState -eq "Denied"')
 Check "the ownership guard stops on a denied root instead of returning" (
     $setupText -match '\$pathState = Get-PathState -Path \$Path -PathType Container' -and
-    $setupText -match '\$StudioHomeIsCustom -and \$pathState -eq "Denied"')
+    $setupText -match '\$isCustomRoot -and \$pathState -eq "Denied"')
+# The guard now takes the flag as a parameter, because the runtime children beside studio\ under
+# a master root are owned even when the Studio home itself is the legacy one. With no override
+# it must still be the script-level flag this file's other checks are about, or the guard would
+# be reading something nothing sets.
+Check "the guard's flag defaults to the script-level one" (
+    $setupText -match '\$isCustomRoot = \$StudioHomeIsCustom' -and
+    $setupText -match 'if \(\$null -ne \$IsCustom\) \{ \$isCustomRoot = \[bool\]\$IsCustom \}')
 Check "guidance says an app reinstall does not reset the folder" (
     $setupText -match 'reinstalling Unsloth Studio, to any drive, reuses it' -and
     $setupText -match 'Reinstalling the app does not reset it\.')
@@ -455,7 +462,7 @@ if ($assertSrc -and $markSrc) {
 $installPath = [System.IO.Path]::Combine($repoRoot, "install.ps1")
 $preflightFns = @("Test-AccessDeniedError", "Get-PathState", "Get-LlamaCppInstallReadState",
                   "Get-PathDenialDetail", "Write-PathAccessDenied", "Get-CanonicalDir",
-                  "Test-StudioHomeIsCustom", "Get-ManagedLlamaCppDir",
+                  "Test-StudioHomeIsCustom", "Get-MasterRootOverride", "Get-ManagedLlamaCppDir",
                   "Invoke-ManagedLlamaCppPreflight")
 $preflightSrc = @()
 foreach ($fn in $preflightFns) {
@@ -463,6 +470,27 @@ foreach ($fn in $preflightFns) {
     Check "install.ps1 defines $fn" ($null -ne $src)
     if ($src) { $preflightSrc += $src }
 }
+# Anything the lifted bodies call that is not itself lifted, and is not one of the stubs the
+# harness defines. A missing helper does not announce itself: the child dies on the first call,
+# every Write-Host after it is lost, and the assertions below fail as though the preflight had
+# resolved the wrong directory. This is how Get-MasterRootOverride was missed.
+$harnessStubs = @("step", "substep", "Write-StudioLine")
+$preflightCalls = @()
+foreach ($src in $preflightSrc) {
+    $tokens = [System.Management.Automation.PSParser]::Tokenize($src, [ref]$null)
+    foreach ($t in $tokens) {
+        if ($t.Type -eq "Command" -and $t.Content -match "^(Get|Test|Invoke|Write|Set|New)-[A-Za-z]+$") {
+            $preflightCalls += $t.Content
+        }
+    }
+}
+$unlifted = @($preflightCalls | Sort-Object -Unique | Where-Object {
+    $_ -notin $preflightFns -and $_ -notin $harnessStubs -and
+    -not (Get-Command $_ -ErrorAction SilentlyContinue)
+})
+Check ("the preflight lifts every install.ps1 helper it calls" +
+       $(if ($unlifted.Count) { " (not lifted: " + ($unlifted -join ", ") + ")" } else { "" })) `
+      ($unlifted.Count -eq 0)
 if ($preflightSrc.Count -eq $preflightFns.Count) {
     $preflightHarness = @"
 `$ErrorActionPreference = "Stop"

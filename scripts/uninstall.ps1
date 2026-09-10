@@ -119,6 +119,34 @@ Environment:
         }
     }
 
+    # The exact shape prebuilt_core.py leaves behind when it takes over an abandoned lock: one of
+    # the component lock names, ".stale.", and the pid it moved aside. The leading dot alone was
+    # not enough, since ".backup.install.lock.stale.copy" is dotted too, and in a user-chosen
+    # master root that file is theirs. uninstall.sh applies the same shape.
+    $script:StaleLockPattern = '^\.(llama\.cpp|node|whisper\.cpp|sd\.cpp)\.install\.lock\.stale\.[0-9]+$'
+
+    # An install lock, and only an install lock.
+    #
+    # prebuilt_core.install_lock creates these with os.open(O_CREAT | O_EXCL) and writes a pid,
+    # so the lock is always a regular file. _RemovePath deletes recursively, which in a
+    # user-chosen master root would take a whole tree that merely happens to carry one of these
+    # fixed names, with none of the owner-marker proof the runtime children beside it require.
+    # uninstall.sh's _remove_lock_file is the same rule.
+    function _RemoveLockFile {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        # A reparse point at a lock name is not a lock either, and following one would delete
+        # whatever it points at.
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item -and -not $item.PSIsContainer -and
+            -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            _RemovePath $Path
+        } else {
+            _Substep "keeping non-file at an install-lock path: $Path" "Yellow"
+        }
+    }
+
     # LOCALAPPDATA / APPDATA are dropped in service and CI contexts, so fall back to the known
     # folder; $null only if that fails too, which callers treat as incomplete cleanup.
     function _AppDataRoot {
@@ -562,6 +590,59 @@ Environment:
     # Discover non-default Unsloth roots from env vars + studio.conf files. Mirrors install.ps1's
     # precedence: UNSLOTH_STUDIO_HOME wins and STUDIO_HOME is ignored when both are set, or
     # uninstalling install A would also delete install B from a stale STUDIO_HOME.
+    # The master root UNSLOTH_HOME names, or $null. studio\ is its child and llama.cpp, node and
+    # whisper.cpp are its other children, so removing the Studio root alone strands them. Trimmed
+    # and tilde-expanded like storage_roots.unsloth_home() and studio\setup.ps1.
+    function _MasterRoot {
+        $raw = $env:UNSLOTH_HOME
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            # The note setup.ps1 leaves in the Studio tree, when this run has no UNSLOTH_HOME of
+            # its own. `$env:UNSLOTH_HOME = 'D:\portable'; unsloth studio update` installs the
+            # runtimes there and leaves nothing in a later environment, so without the note an
+            # uninstall removed the Studio tree and stranded them. Every Studio root this script
+            # already knows is consulted and the first readable note wins; the deny list and the
+            # marker gates still apply to whatever it names, so a stale note cannot license a
+            # removal the environment could not. Mirrors _master_root in uninstall.sh.
+            $noteRoots = @()
+            if ($env:USERPROFILE) { $noteRoots += (Join-Path $env:USERPROFILE ".unsloth\studio") }
+            foreach ($override in @($env:UNSLOTH_STUDIO_HOME, $env:STUDIO_HOME)) {
+                if (-not [string]::IsNullOrWhiteSpace($override)) {
+                    $noteRoots += (_ExpandTilde $override.Trim())
+                }
+            }
+            foreach ($noteRoot in $noteRoots) {
+                $notePath = Join-Path $noteRoot "share\.unsloth-master-root"
+                if (-not (Test-Path -LiteralPath $notePath -PathType Leaf)) { continue }
+                try {
+                    # One line, first only: a note that grew a second line is not one we wrote.
+                    $line = @(Get-Content -LiteralPath $notePath -TotalCount 1 -ErrorAction Stop)[0]
+                } catch { continue }
+                if (-not [string]::IsNullOrWhiteSpace($line)) { $raw = $line; break }
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $expanded = _ExpandTilde $raw.Trim()
+        $norm = $null
+        # The provider path first, exactly as setup.ps1's Get-CanonicalDir resolves it.
+        # [IO.Path]::GetFullPath anchors a RELATIVE root at [Environment]::CurrentDirectory,
+        # which PowerShell does not keep in step with its own location: after a Set-Location the
+        # two disagree, so a relative UNSLOTH_HOME named one install to setup and a different one
+        # here. Nothing downstream would notice -- process selection, the marker check and the
+        # removal all just operate on the wrong root, and the marker only spares trees that are
+        # not Unsloth's, not another Unsloth install.
+        try {
+            $norm = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($expanded)
+        } catch { $norm = $null }
+        try { $norm = [System.IO.Path]::GetFullPath($(if ($norm) { $norm } else { $expanded })).TrimEnd('\','/') }
+        catch { return $null }
+        if (-not $norm) { return $null }
+        # The default root is left to the blocks that own it, which remove it unconditionally.
+        if ($env:USERPROFILE -and ($norm -ieq (Join-Path $env:USERPROFILE ".unsloth").TrimEnd('\','/'))) {
+            return $null
+        }
+        return $norm
+    }
+
     function _CustomStudioRoots {
         $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $defaultRoot = $null
@@ -581,10 +662,19 @@ Environment:
         }
 
         $envRoot = $null
-        if ($env:UNSLOTH_STUDIO_HOME) {
-            $envRoot = $env:UNSLOTH_STUDIO_HOME
-        } elseif ($env:STUDIO_HOME) {
-            $envRoot = $env:STUDIO_HOME
+        # IsNullOrWhiteSpace, not truthiness: storage_roots.studio_root() trims these, so a
+        # whitespace-only override is unset to every resolver. A bare truthy test called it
+        # present, suppressed the master-root branch below, and then discarded the whitespace
+        # path, leaving <UNSLOTH_HOME>\studio installed while its runtime siblings went.
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+            $envRoot = $env:UNSLOTH_STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+            $envRoot = $env:STUDIO_HOME.Trim()
+        } else {
+            # Last, as in storage_roots.studio_root(): UNSLOTH_HOME names the tree, and the two
+            # above name this exact directory, so either of them wins outright.
+            $master = _MasterRoot
+            if ($master) { $envRoot = (Join-Path $master "studio") }
         }
         if ($envRoot) {
             $expandedEnv = _ExpandTilde $envRoot
@@ -913,7 +1003,23 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    # Resolved here, before the stop pass: a loaded llama-server.exe under the master root keeps
+    # its own tree locked, and the removal below would exhaust its retries and leave it installed.
+    $masterRootToStop = _MasterRoot
+    $masterChildrenToStop = @()
+    if ($masterRootToStop -and -not (_IsUnsafeRoot $masterRootToStop)) {
+        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "stable-diffusion.cpp")) {
+            $childPath = Join-Path $masterRootToStop $childName
+            # Only the trees this uninstall is going to delete, so an unmarked neighbour's
+            # process is never killed.
+            if (Test-Path -LiteralPath (Join-Path $childPath ".unsloth-studio-owned") -PathType Leaf) {
+                $masterChildrenToStop += $childPath
+            }
+        }
+    }
+    # $ownedRoots, not $knownRoots: see the note where the two lists are built. The master
+    # children are already marker-gated above, so they carry their own proof of ownership.
+    $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop) + @($masterChildrenToStop)
     # The reparse expansion turns one path into generic subdirectories of wherever it points
     # (node, bin, unsloth_studio), so it is gated for the same reason.
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $ownedRoots))
@@ -930,6 +1036,20 @@ Environment:
         }
         if (-not (_IsStudioRoot $r)) {
             _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
+            continue
+        }
+        # The flat layout: UNSLOTH_HOME and UNSLOTH_STUDIO_HOME naming one directory. The resolver
+        # accepts it, so the Studio root and the user-chosen master root are the same path, and
+        # _RemoveRootRecordingDb takes a Studio root WHOLE once it carries the ownership marker.
+        # Every other master-root child below is individually marker-gated so a user-chosen root
+        # is never removed wholesale; this was the one hole in that rule. Kept rather than pruned:
+        # data left behind is recoverable and printed, a deleted file is not. Mirrors uninstall.sh.
+        $flatMaster = $masterRootToStop
+        if ($flatMaster -and ($r.TrimEnd('\', '/') -ieq $flatMaster.TrimEnd('\', '/'))) {
+            _Substep "keeping $r`: UNSLOTH_HOME and the Studio root name the same directory," "Yellow"
+            _Substep "so removing it would take whatever else you keep there. Delete it by hand" "Yellow"
+            _Substep "once you have checked what is in it." "Yellow"
+            $script:RemoveFailed = $true
             continue
         }
         _RemoveRootRecordingDb $r
@@ -966,6 +1086,54 @@ Environment:
     # Unsloth's %TEMP% before the sweep ever looked at its owner.pid.
     $preservedTemp = @(_RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp)
     if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir -Preserve $preservedTemp }
+    # The master root's own children. Marker-gated rather than removed outright like the
+    # ~/.unsloth ones below: <master> is a directory the user chose and may hold their files, so
+    # only a tree an Unsloth installer marked is ours to delete. The locks and .staging are ours
+    # by name (prebuilt_core.py) and carry no marker. Mirrors scripts/uninstall.sh.
+    # $masterRootToStop, not a fresh _MasterRoot: that resolver can read its answer from a note
+    # inside a Studio tree, and the custom-root loop above has already removed that tree, so a
+    # second call returns nothing and the marked llama.cpp, Node and whisper.cpp siblings are
+    # stranded. It was resolved before the stop pass, which is before any deletion.
+    $masterRoot = $masterRootToStop
+    if ($masterRoot -and (_IsUnsafeRoot $masterRoot)) {
+        _Substep "refusing to remove unsafe path: $masterRoot" "Yellow"
+        $masterRoot = $null
+    }
+    if ($masterRoot) {
+        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "stable-diffusion.cpp")) {
+            $childPath = Join-Path $masterRoot $childName
+            if ((Test-Path -LiteralPath $childPath) -and
+                -not (Test-Path -LiteralPath (Join-Path $childPath ".unsloth-studio-owned") -PathType Leaf)) {
+                _Substep "keeping $childName without Unsloth owner marker: $childPath" "Yellow"
+            } else {
+                _RemovePath $childPath
+            }
+        }
+        foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock",
+                                ".whisper.cpp.install.lock", ".sd.cpp.install.lock")) {
+            _RemoveLockFile (Join-Path $masterRoot $lockName)
+        }
+        # The prebuilt installers SHARE <root>\.staging and prune it only when empty, so
+        # anything left in it here is not ours: remove the directory only, never its contents.
+        $masterStaging = Join-Path $masterRoot ".staging"
+        if ((Test-Path -LiteralPath $masterStaging) -and
+            -not (Get-ChildItem -LiteralPath $masterStaging -Force -ErrorAction SilentlyContinue)) {
+            _RemovePath $masterStaging
+        }
+        if (Test-Path -LiteralPath $masterRoot) {
+            # $script:StaleLockPattern, not a glob: the shape has to be the installer's own,
+            # name and numeric pid both, or a user's file in their own root is taken.
+            foreach ($stale in @(Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue |
+                                 Where-Object { $_.Name -match $script:StaleLockPattern })) {
+                _RemoveLockFile $stale.FullName
+            }
+        }
+        # Only when nothing of the user's is left.
+        if ((Test-Path -LiteralPath $masterRoot) -and
+            -not (Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue)) {
+            _RemovePath $masterRoot
+        }
+    }
     # Shared llama.cpp build + cache, siblings of studio under ~/.unsloth in default mode.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
     # "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp produces
@@ -987,15 +1155,16 @@ Environment:
     # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
     if ($defaultUnslothHome) {
         foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock", ".whisper.cpp.install.lock")) {
-            _RemovePath (Join-Path $defaultUnslothHome $lockName)
+            _RemoveLockFile (Join-Path $defaultUnslothHome $lockName)
         }
         # Taking over an abandoned lock renames it to .stale.<pid> before unlinking; a crash
         # between the two strands the rename, so sweep any leftovers. -Force sees dotted names.
         if (Test-Path -LiteralPath $defaultUnslothHome) {
-            # -like, not -Filter: the Win32 filter is unreliable for names with several dots.
+            # -match, not -Filter: the Win32 filter is unreliable for names with several dots,
+            # and only the installer's exact shape is ours to remove.
             foreach ($stale in @(Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue |
-                                 Where-Object { $_.Name -like "*.install.lock.stale.*" })) {
-                _RemovePath $stale.FullName
+                                 Where-Object { $_.Name -match $script:StaleLockPattern })) {
+                _RemoveLockFile $stale.FullName
             }
         }
     }
@@ -1099,6 +1268,33 @@ Environment:
         }
     } catch {
         _Substep "could not update user PATH: $($_.Exception.Message)" "Yellow"
+    }
+    # Clear the persisted Inductor cache path, when it still names a tree this run deleted.
+    #
+    # setup.ps1 writes TORCHINDUCTOR_CACHE_DIR to the USER environment, so it outlives the
+    # install and every later PyTorch process on this account inherits it, including ones with
+    # nothing to do with Unsloth. Left behind, they compile into the removed directory and
+    # rebuild part of the tree the uninstall just took away.
+    #
+    # Only a value inside a root this run owned. A user who pointed the variable at a directory
+    # of their own keeps it, and so does the shared C:\tc fallback, which is not install
+    # specific and is not deleted here either.
+    try {
+        $persistedCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if (-not [string]::IsNullOrWhiteSpace($persistedCache)) {
+            $expandedCache = [Environment]::ExpandEnvironmentVariables($persistedCache).TrimEnd('\', '/')
+            foreach ($r in $ownedRoots) {
+                if (-not $r) { continue }
+                $rNorm = $r.TrimEnd('\', '/')
+                if ($expandedCache -ieq $rNorm -or $expandedCache -ilike "$rNorm\*") {
+                    [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', [NullString]::Value, 'User')
+                    _Substep "cleared TORCHINDUCTOR_CACHE_DIR: $persistedCache" "Green"
+                    break
+                }
+            }
+        }
+    } catch {
+        _Substep "could not clear TORCHINDUCTOR_CACHE_DIR: $($_.Exception.Message)" "Yellow"
     }
     # Remove HKCU\Software\Unsloth (PathBackup lives here; install.ps1 owns it).
     try {

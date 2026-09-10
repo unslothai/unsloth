@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
 
 import pytest
 
@@ -339,3 +340,183 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] != "/tmp/prior-inductor"  # redirected
     cc.restore(ctx)
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
+
+
+# -------------------------------------------------------------------------- legacy root
+def _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache) -> tuple:
+    """Write a bundle under a fake pre-relocation root, then hand back an upgraded install:
+    ``(legacy_root, studio_home)``, with the environment already pointing at a non-portable
+    install whose new default root is empty."""
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    studio_home = tmp_path / "studio"
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(legacy))
+    seeded = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(seeded) is True
+
+    monkeypatch.delenv(cc._ENV_DIR, raising = False)
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
+    return legacy, studio_home
+
+
+def test_legacy_bundle_is_read_but_the_new_root_takes_the_writes(
+    monkeypatch, tmp_path, fake_megacache
+):
+    # An upgraded install stays warm without the home directory becoming the write root:
+    # begin() points TORCHINDUCTOR_CACHE_DIR at ctx.dir and save() writes every later bundle.
+    legacy, studio_home = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    import os
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    assert ctx.hit is True  # warm: the legacy bundle still counts
+    assert str(ctx.dir).startswith(str(studio_home))
+    assert str(os.environ["TORCHINDUCTOR_CACHE_DIR"]).startswith(str(studio_home))
+    assert legacy not in ctx.dir.parents
+    # The read fallback migrates: the pair now lives in the write root, byte-identical.
+    assert ctx.bundle.read_bytes() == (legacy / ctx.key / cc._BUNDLE_NAME).read_bytes()
+    assert ctx.manifest_path.exists()
+
+
+def test_migrated_bundle_serves_the_next_run_without_the_legacy_root(
+    monkeypatch, tmp_path, fake_megacache
+):
+    legacy, _ = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+
+    import shutil
+
+    shutil.rmtree(legacy)  # the old cache gets cleaned up: the warm start must survive
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx.hit is True
+
+
+def test_load_only_mode_reads_legacy_without_writing_to_it(monkeypatch, tmp_path, fake_megacache):
+    legacy, _ = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    monkeypatch.setenv(cc._ENV_SAVE, "0")
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    assert ctx.hit is True
+    assert not ctx.bundle.exists()  # a read-only cache stays read-only, both roots
+    assert (legacy / ctx.key / cc._BUNDLE_NAME).exists()
+
+
+def test_key_absent_from_legacy_never_writes_into_it(monkeypatch, tmp_path, fake_megacache):
+    # The old fallback swapped the WHOLE root, so even an unheld key wrote into the home dir.
+    legacy, studio_home = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    before = {p.name for p in legacy.iterdir()}
+
+    other = dict(_BEGIN_KW, family = "qwen-image")
+    ctx = cc.begin(transformer = _transformer(("QwenImageTransformerBlock",)), **other)
+
+    assert ctx.hit is False
+    assert cc.save(ctx) is True
+    assert str(ctx.bundle).startswith(str(studio_home))
+    assert {p.name for p in legacy.iterdir()} == before
+
+
+def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_path):
+    # begin() points TORCHINDUCTOR_CACHE_DIR inside this root, so a fallback here would write
+    # GBs into the host machine's home directory.
+    monkeypatch.delenv(cc._ENV_DIR, raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    legacy.mkdir(parents = True)
+    monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
+
+    root = cc.cache_root()
+
+    assert root != legacy
+    assert str(root).startswith(str(tmp_path / "portable"))
+    assert cc.legacy_cache_root() is None  # not even read: not part of the install
+
+
+def test_explicit_dir_override_ignores_the_legacy_root(monkeypatch, tmp_path):
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "chosen"))
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    legacy.mkdir(parents = True)
+    monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
+
+    assert cc.cache_root() == tmp_path / "chosen"
+    assert cc.legacy_cache_root() is None
+
+
+def test_an_unreadable_legacy_root_is_a_miss_not_a_failure(monkeypatch, tmp_path):
+    # The legacy root is the HOST's home, so it can be on a mount the new cache does not need.
+    # Path.exists raises for EACCES and EIO before 3.14, and begin() does not catch around here.
+    monkeypatch.delenv(cc._ENV_DIR, raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
+
+    def _raise(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "exists", _raise)
+
+    assert cc.legacy_cache_root() is None
+
+
+def test_an_unreadable_legacy_bundle_pair_is_a_miss_not_a_failure(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    legacy.mkdir(parents = True)
+    monkeypatch.setattr(cc, "legacy_cache_root", lambda: legacy)
+    ctx = cc.CacheContext(
+        key = "abc",
+        dir = tmp_path / "new" / "abc",
+        bundle = tmp_path / "new" / "abc" / "cache.bin",
+        manifest_path = tmp_path / "new" / "abc" / "manifest.json",
+        env_fp = "e",
+        model_fp = "m",
+        mode = "auto",
+    )
+
+    def _raise(self, *a, **k):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(Path, "exists", _raise)
+
+    assert cc._load_from_legacy(ctx, None) is False
+
+
+def test_a_manifest_that_is_not_an_object_is_a_miss(monkeypatch, tmp_path, fake_megacache):
+    """json.loads returns [] for "[]" and None for "null", and .get() on either raises.
+
+    _try_load's whole contract is that a bad cache entry is a miss, and the legacy root makes
+    this reachable in a way it was not before: the manifest being validated was written by an
+    older build, on a disk this run has never checked.
+    """
+    legacy, _ = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    for payload in ("[]", "null", '"a string"', "42"):
+        for key_dir in legacy.iterdir():
+            (key_dir / cc._MANIFEST_NAME).write_text(payload, encoding = "utf-8")
+        ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+        assert ctx.hit is False, payload
+
+
+def test_an_unreadable_write_root_falls_back_to_legacy(monkeypatch, tmp_path, fake_megacache):
+    """Path.exists() raises rather than answering False when a parent denies traversal.
+
+    This branch moves the write root, so it can land on a directory the process does not own on
+    some machine. Unguarded, that exception left begin() before the legacy fallback could run,
+    which is the fallback the relocation depends on for a warm start.
+    """
+    legacy, studio_home = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    real_exists = Path.exists
+
+    def _raise_under_studio(self, *a, **k):
+        if str(self).startswith(str(studio_home)):
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self, *a, **k)
+
+    monkeypatch.setattr(Path, "exists", _raise_under_studio)
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx.hit is True

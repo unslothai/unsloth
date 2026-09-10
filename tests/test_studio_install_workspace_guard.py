@@ -401,15 +401,30 @@ def test_setup_helpers_gate_on_canonical_custom_root():
     """setup.sh/setup.ps1 ownership guards must gate on a canonical custom-vs-legacy root comparison."""
     sh_src = SETUP_SH.read_text(encoding = "utf-8")
     sh_idx = sh_src.index("_assert_studio_owned_or_absent() {")
-    sh_func = sh_src[sh_idx : sh_idx + 600]
+    # To the end of the function, not a fixed width, for the reason the PowerShell half below
+    # already gives: a new parameter or comment pushes the assertions out of a fixed window and
+    # the test fails while the guard it is about is intact.
+    sh_func = sh_src[sh_idx:].split("\n}\n", 1)[0]
+    # The caller may name the flag (the runtime children pass _RUNTIME_ROOT_IS_CUSTOM), but the
+    # default has to stay the canonical one.
     assert (
-        '"$_STUDIO_HOME_IS_CUSTOM" = true' in sh_func
-    ), "setup.sh _assert_studio_owned_or_absent must gate on _STUDIO_HOME_IS_CUSTOM"
+        '_aso_custom="${3:-$_STUDIO_HOME_IS_CUSTOM}"' in sh_func
+        and '"$_aso_custom" = true' in sh_func
+    ), "setup.sh _assert_studio_owned_or_absent must gate on the canonical custom-root flag"
     assert (
         "_LEGACY_STUDIO_HOME=" in sh_src
         and "_studio_home_canon=" in sh_src
         and "_STUDIO_HOME_IS_CUSTOM=" in sh_src
     ), "setup.sh must compute the canonical custom-root flag"
+    # A master root moves the runtime children, so the flag has to widen to cover them. Not the
+    # exact one-liner this used to name: UNSLOTH_HOME can legitimately name ~/.unsloth, the root a
+    # default install already uses, and treating that as custom made an update reject a legacy
+    # source-built llama.cpp that carries no owner marker. tests/test_setup_master_root.py runs
+    # the shipped derivation for that case; the rule here is the two halves being present.
+    assert '_RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"' in sh_src
+    assert (
+        "_RUNTIME_ROOT_IS_CUSTOM=true" in sh_src and "$_MASTER_ROOT" in sh_src
+    ), "setup.sh must widen the flag to a master root, which moves the runtime children"
 
     ps_src = SETUP_PS1.read_text(encoding = "utf-8")
     ps_idx = ps_src.index("function Assert-StudioOwnedOrAbsent")
@@ -417,8 +432,8 @@ def test_setup_helpers_gate_on_canonical_custom_root():
     # out of.
     ps_func = ps_src[ps_idx:].split("\nfunction ", 1)[0]
     assert (
-        "$StudioHomeIsCustom -and" in ps_func
-    ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on $StudioHomeIsCustom"
+        "$isCustomRoot = $StudioHomeIsCustom" in ps_func and "$isCustomRoot -and" in ps_func
+    ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on the canonical custom-root flag"
     assert (
         "$StudioOwnedMarker) -PathType Leaf" in ps_func
     ), "setup.ps1 marker check must use -PathType Leaf so a directory cannot satisfy it"
@@ -434,8 +449,8 @@ def test_setup_ps1_inplace_git_sync_marks_studio_owned():
         "Mark-StudioOwned -Path $LlamaCppDir" in inplace_block
     ), "in-place git-sync branch must call Mark-StudioOwned on success"
     assert (
-        "$StudioHomeIsCustom" in inplace_block
-    ), "in-place Mark-StudioOwned call should be gated on $StudioHomeIsCustom"
+        "$RuntimeRootIsCustom" in inplace_block
+    ), "in-place Mark-StudioOwned call should be gated on $RuntimeRootIsCustom"
 
 
 def test_setup_ps1_inplace_git_sync_asserts_studio_owned_before_mutation():
@@ -630,6 +645,99 @@ def test_tauri_preflight_scrubs_studio_home_env():
     assert (
         'cmd.env_remove("STUDIO_HOME")' in commands
     ), "commands.rs check_install_status must scrub STUDIO_HOME"
+    # Belt and braces: the managed context is what removes the whole list at these sites.
+    assert (
+        preflight.count("apply_managed_cli_context_tokio(&mut cmd)") >= 2
+    ), "preflight probes must build the managed context, which is what applies the scrub list"
+    assert (
+        "apply_managed_cli_context_tokio(&mut cmd)" in commands
+    ), "commands.rs check_install_status must build the managed context"
+
+
+# The three storage_roots.py resolvers that CHOOSE a data root, as opposed to the ones that
+# join a subdirectory onto whatever they chose. Every environment variable read inside them
+# moves the desktop's databases, assets and caches, so every one has to be scrubbed.
+# _env_unsloth_home is the env-reading half unsloth_home splits into once it grows an on-disk
+# fallback. Absent resolvers are skipped, not failed, so this holds for either spelling.
+_ROOT_CHOOSING_RESOLVERS = (
+    "unsloth_home",
+    "_env_unsloth_home",
+    "portable_mode",
+    "studio_root",
+)
+
+
+def _root_moving_env_names() -> set[str]:
+    """The env vars storage_roots.py picks a root from, read out of the shipped source.
+
+    Derived rather than written down, so a fourth root variable fails this test on the commit
+    that adds it instead of on the bug report that follows it.
+    """
+    source = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(
+        encoding = "utf-8"
+    )
+    names: set[str] = set()
+    seen = 0
+    for resolver in _ROOT_CHOOSING_RESOLVERS:
+        marker = f"\ndef {resolver}("
+        if marker not in source:
+            continue
+        seen += 1
+        start = source.index(marker)
+        end = source.index("\ndef ", start + 1)
+        names |= set(re.findall(r'os\.environ\.get\(\s*"([A-Z][A-Z0-9_]*)"', source[start:end]))
+    assert seen, "none of the root-choosing resolvers exist under these names any more"
+    assert names, "the root-choosing resolvers read no environment variable any more"
+    return names
+
+
+def _rust_string_list(source: str, const_name: str) -> list[str]:
+    """The string literals in a `const NAME: &[&str] = &[...];` declaration."""
+    start = source.index(f"const {const_name}:")
+    return re.findall(r'"([^"]*)"', source[start : source.index(";", start)])
+
+
+def test_tauri_managed_children_scrub_every_root_moving_env():
+    """A shell-level Unsloth root must not reach the packaged desktop's Python children.
+
+    The desktop pins the legacy ~/.unsloth root and hardcodes it in Rust, so any variable
+    storage_roots.py would resolve a different root from has to be removed before the spawn,
+    or the databases, assets and caches move while the Rust half keeps reading the old place.
+    """
+    src_root = REPO_ROOT / "studio" / "src-tauri" / "src"
+    process = (src_root / "process.rs").read_text(encoding = "utf-8")
+    install = (src_root / "install.rs").read_text(encoding = "utf-8")
+
+    scrubbed = _rust_string_list(process, "MANAGED_CHILD_SCRUBBED_ENV")
+    assert len(scrubbed) == len(set(scrubbed)), f"duplicate names in the scrub list: {scrubbed}"
+    missing = sorted(_root_moving_env_names() - set(scrubbed))
+    assert not missing, (
+        f"{missing} would redirect the managed backend's data root away from the legacy one "
+        "the Tauri shell hardcodes"
+    )
+
+    # Second scrub path: start_backend removes the list again after the managed context, so
+    # the skip is a fact about the child. The whole list, not a subset that can drift.
+    start = process.index("pub fn start_backend(")
+    end = min(
+        offset
+        for offset in (process.find("\npub fn ", start + 1), process.find("\nfn ", start + 1))
+        if offset != -1
+    )
+    backend_start = process[start:end]
+    assert (
+        "for name in MANAGED_CHILD_SCRUBBED_ENV" in backend_start
+    ), "start_backend must scrub the whole list, not the names that were in it when it was written"
+
+    # Third spawn path: the installer runs install.sh / install.ps1 directly, never reaching
+    # apply_managed_cli_context, so it applies the list itself.
+    assert (
+        "for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV" in install
+    ), "install.rs spawns outside the managed context and must scrub the whole list"
+    for name in scrubbed:
+        assert (
+            f'cmd.env_remove("{name}")' not in install
+        ), f"install.rs scrubs {name} by hand as well as by list; the hand-written copy can rot"
 
 
 def test_install_sh_shim_uses_atomic_replace():
