@@ -7333,6 +7333,37 @@ def _target_accepts_audio_input(load_path: str) -> bool:
         return True
 
 
+def _names_video_token(config) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return any(
+        (key in ("video_token_id", "video_token_index") and value is not None)
+        or _names_video_token(value)
+        for key, value in config.items()
+    )
+
+
+def _target_accepts_video_input(load_path: str) -> bool:
+    """Whether an MLX target's config names a video placeholder token; a config that cannot
+    be read is left to the load."""
+    from utils.hardware import DeviceType, get_device
+
+    if get_device() != DeviceType.MLX:
+        return False
+    from core.inference.mlx_inference import _mlx_vlm_decodes_video
+
+    if not _mlx_vlm_decodes_video():
+        return False
+    try:
+        config = json.loads(
+            (Path(load_path).expanduser() / "config.json").read_text(encoding = "utf-8")
+        )
+    except Exception as exc:
+        logger.debug("auto-switch: video probe failed for %s: %s", load_path, exc)
+        return True
+    return _names_video_token(config)
+
+
 def _target_accepts_request_input(
     load_path: str,
     is_gguf: bool,
@@ -7348,7 +7379,7 @@ def _target_accepts_request_input(
     A local GGUF takes both capabilities from its companion mmproj, so one probe
     answers for either, modality-aware through ``need_image``. Other checkpoints
     declare them apart: vision in the config architecture, audio input in the
-    tokenizer's special tokens.
+    tokenizer's special tokens, video input as a placeholder token in the config.
     """
     if is_gguf:
         if not gguf_companion_roots:
@@ -7359,8 +7390,7 @@ def _target_accepts_request_input(
             need_image,
             gguf_companion_roots,
         )
-    # input_video is llama.cpp's own part type, so a clip is refused right after the load.
-    if needs_video:
+    if needs_video and not _target_accepts_video_input(load_path):
         return False
     if needs_audio and not _target_accepts_audio_input(load_path):
         return False
@@ -7607,6 +7637,7 @@ def _preflight_speech_codec_for_switch(
 _AUDIO_IMAGE_INPUT_DETAIL = (
     "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
+_AUDIO_VIDEO_INPUT_DETAIL = "This model takes audio or a video in one message, not both."
 
 
 async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: bool) -> None:
@@ -7644,6 +7675,8 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
                 ),
             ) from None
         return
+    if audio_preflight.get("has_video"):
+        raise HTTPException(status_code = 400, detail = _AUDIO_VIDEO_INPUT_DETAIL)
     if audio_preflight.get("continue_final"):
         raise HTTPException(
             status_code = 400,
@@ -8482,8 +8515,8 @@ async def _maybe_auto_switch_model(
     can't strand a preview-owned model as Unsloth-owned. ``require_image`` makes that
     rejection modality-aware for a GGUF, whose one projector carries both, and
     ``require_audio_input`` covers a non-GGUF checkpoint, which declares the two
-    separately, and ``require_video`` rules a non-GGUF target out entirely, since
-    only llama.cpp takes a clip. ``modality_label`` names the inputs attached, so the
+    separately, and ``require_video`` asks a non-GGUF target for a video placeholder
+    token. ``modality_label`` names the inputs attached, so the
     rejection does not report a modality the request never carried. ``gguf_only``
     marks an endpoint that reads llama.cpp alone, where loading a non-GGUF model
     would unload the resident one and leave the handler with nothing to serve.
@@ -14347,6 +14380,7 @@ async def _load_model_impl(
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
+                    has_video_input = _model_info.get("has_video_input", False),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
                     mlx_kv_bits = _model_info.get("mlx_kv_bits"),
                     mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
@@ -15124,6 +15158,7 @@ async def _load_model_impl(
             is_audio = _model_info.get("is_audio", config.is_audio),
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
+            has_video_input = _model_info.get("has_video_input", False),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_bits = _model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
@@ -17210,6 +17245,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         is_audio = False
         audio_type = None
         has_audio_input = False
+        has_video_input = False
         model_info = {}
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
@@ -17217,6 +17253,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
+            has_video_input = model_info.get("has_video_input", False)
         chat_template_info = model_info.get("chat_template_info", {})
         chat_template = (
             chat_template_info.get("template") if isinstance(chat_template_info, dict) else None
@@ -17247,6 +17284,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
+            has_video_input = has_video_input,
             is_mlx = bool(model_info.get("is_mlx", False)),
             mlx_kv_bits = model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
@@ -19424,6 +19462,21 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
 
 
+_VIDEO_INPUT_REFUSAL = (
+    "Video input is only supported on a local GGUF or MLX model with video support."
+)
+
+
+def _local_video_clip(payload, model_info) -> str:
+    """The clip, as bare base64, that a non-GGUF backend is handed, else a refusal by name."""
+    if not model_info.get("has_video_input"):
+        raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
+    video_b64, rejection = _video_b64_rejection(payload.video_base64)
+    if rejection is not None:
+        raise HTTPException(status_code = rejection[0], detail = rejection[1])
+    return video_b64
+
+
 def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]]:
     """The clip's base64 without its data URI header, plus why it is refused.
 
@@ -21521,13 +21574,9 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        # input_video is llama.cpp's own part type, so the proxy has nowhere to
-        # put the clip. Say so rather than answering as if there were no video.
+        # The proxy has nowhere to put the clip; say so rather than answering without it.
         if payload.video_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Video input is only supported on a local GGUF model with video support.",
-            )
+            raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
         # _build_external_messages carries no input_audio case, so the recording would be
         # stripped and the provider would answer the text alone -- a plausible reply to a
         # question about audio nobody heard. Refuse it the way video is refused.
@@ -21725,6 +21774,7 @@ async def produce_openai_chat_completions(
             "continue_final": _continue_final_message(payload),
             "has_image": _images_in_last_user_message(payload.messages)
             or _legacy_image_is_distinct(payload),
+            "has_video": _needs_video,
         }
         if _needs_audio_input
         else None
@@ -21869,6 +21919,14 @@ async def produce_openai_chat_completions(
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
         model_name = _orchestrator_public_model_id(backend) or payload.model
+        model_info = backend.models.get(backend.active_model_name, {})
+        # Before the speech and audio-input dispatches, which return before the clip is attached.
+        _video_clip = None
+        if payload.video_base64:
+            _video_clip = _local_video_clip(payload, model_info)
+            # Settled here: a model without audio input never enters the audio-input path.
+            if payload.audio_base64:
+                raise HTTPException(status_code = 400, detail = _AUDIO_VIDEO_INPUT_DETAIL)
         # Restated here because the pre-switch check runs only when an automatic
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
@@ -22222,15 +22280,6 @@ async def produce_openai_chat_completions(
                 code = "unsupported_parameter",
                 param = "n",
             ),
-        )
-
-    # Injection lives in the GGUF branch below, since input_video is llama.cpp's
-    # own part type. Without this a transformers model answers as if the clip
-    # were never attached.
-    if payload.video_base64 and not using_gguf:
-        raise _reject(
-            400,
-            "Video input is only supported on a local GGUF model with video support.",
         )
 
     # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
@@ -24322,6 +24371,7 @@ async def produce_openai_chat_completions(
         (_sf_tools_on or _sf_mcp_allowed)
         and _sf_features.get("supports_tools", False)
         and image is None
+        and _video_clip is None
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -24834,6 +24884,8 @@ async def produce_openai_chat_completions(
         logit_bias = payload.logit_bias,
         stop = normalized_stop,
     )
+    if _video_clip is not None:
+        gen_kwargs["video"] = _video_clip
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.
     if payload.enable_thinking is not None:
@@ -24851,9 +24903,10 @@ async def produce_openai_chat_completions(
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    # A clip renders through the processor as an image does.
     _sf_image_tpl = (
         (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
-        if image is not None
+        if image is not None or _video_clip is not None
         else None
     )
     # Differs from processor_template: a template-less processor still places the image.
@@ -24876,9 +24929,8 @@ async def produce_openai_chat_completions(
         # Read the resolved value, not a fresh _effective_enable_tools: the gate
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
-        # Once an image rules out the server loop the passthrough takes the request, or
-        # image-plus-tools is answered with prose and no schemas at all (#10092).
-        (not _sf_tools_on or (image is not None and not _sf_use_tools))
+        # An image or a clip rules out the server loop, so the passthrough takes the request (#10092).
+        (not _sf_tools_on or ((image is not None or _video_clip is not None) and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
         and _sf_supports_tools
@@ -25354,11 +25406,15 @@ async def produce_openai_chat_completions(
                                 # Mark the owning turn before the correction is appended,
                                 # or the reverse scan attaches the picture to it (#10092).
                                 _nudge_base = gen_kwargs["messages"]
-                                if _sf_renders_image:
+                                if _sf_renders_image or _video_clip is not None:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
                                     )
-                                    _nudge_base = _nudge_attach(_nudge_base)
+                                    _nudge_base = _nudge_attach(
+                                        _nudge_base,
+                                        image = _sf_renders_image,
+                                        video = _video_clip is not None,
+                                    )
                                 retry_messages = [
                                     *_nudge_base,
                                     *nudge_messages(_data, _sf_heal),

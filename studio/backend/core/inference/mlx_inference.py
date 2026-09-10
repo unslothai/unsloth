@@ -23,6 +23,7 @@ from core.inference.runtime_context import (
 from core.inference.chat_template_helpers import (
     # Aliased to this module's historic names; bodies moved to the shared helper (#10092).
     count_structured_images as _count_vlm_images,
+    count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
     markup_for_tokenizer,
@@ -741,6 +742,103 @@ _IMAGE_PROBE_MESSAGES = [
     {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]}
 ]
 _TEXT_PROBE_MESSAGES = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+_VIDEO_PROBE_MESSAGES = [
+    {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "hi"}]}
+]
+
+
+def _mlx_vlm_decodes_video() -> bool:
+    """mlx-vlm gained its clip decoder in 0.5.0; a release without it takes no video."""
+    try:
+        from mlx_vlm import utils as vlm_utils
+    except ImportError:
+        return False
+    return callable(getattr(vlm_utils, "load_video", None))
+
+
+def _mlx_reads_video(processor) -> bool:
+    """Whether the processor carries a video component and the template places a video marker."""
+    if processor is None or getattr(processor, "video_processor", None) is None:
+        return False
+    if not _mlx_vlm_decodes_video():
+        return False
+    from core.inference.chat_template_helpers import (
+        apply_chat_template_for_generation,
+        chat_render_target,
+    )
+
+    try:
+        target = chat_render_target(processor)
+        marked = apply_chat_template_for_generation(target, _VIDEO_PROBE_MESSAGES)
+        if not marked or marked == apply_chat_template_for_generation(target, _TEXT_PROBE_MESSAGES):
+            return False
+        return not _vlm_prompt_issue(marked, _VIDEO_PROBE_MESSAGES)
+    except BaseException:
+        # A load must never fail on a probe, matching _image_marker_survives.
+        return False
+
+
+def _write_video_clip(video_b64: str) -> str:
+    import base64
+    import tempfile
+
+    data = base64.b64decode(video_b64)
+    with tempfile.NamedTemporaryFile(prefix = "unsloth-video-", delete = False) as handle:
+        handle.write(data)
+        return handle.name
+
+
+# mlx-vlm holds two native-resolution RGB copies of the sampled frames before the processor resizes.
+_VIDEO_DECODE_BUDGET_BYTES = 2 << 30
+
+
+def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
+    """mlx-vlm's (fps, min_frames, nframes); older releases pass only ``fps`` to ``load_video``."""
+    import inspect
+
+    from mlx_vlm import utils as vlm_utils
+
+    resolve = getattr(vlm_utils, "resolve_video_sampling", None)
+    if resolve is not None:
+        sampling = resolve(processor, {})
+        return sampling.fps, sampling.min_frames, sampling.nframes
+    defaults = inspect.signature(vlm_utils.load_video).parameters
+    return defaults["fps"].default, defaults["min_frames"].default, None
+
+
+def _video_frame_rate(clip_path: str, processor) -> Optional[float]:
+    """The sampling ``fps`` keeping the decoded stack within the budget; None when cv2 cannot
+    open the clip, which mlx-vlm then refuses itself."""
+    import cv2
+
+    capture = cv2.VideoCapture(clip_path)
+    try:
+        if not capture.isOpened():
+            return None
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        native_fps = capture.get(cv2.CAP_PROP_FPS)
+    finally:
+        capture.release()
+    if min(width, height, total_frames) <= 0 or not native_fps or native_fps <= 0:
+        return None
+    wanted_fps, min_frames, nframes = _video_sampling_target(processor)
+    affordable = _VIDEO_DECODE_BUDGET_BYTES // (2 * 3 * width * height)
+    needed = min_frames if nframes is None else nframes
+    if affordable < needed:
+        raise RuntimeError(
+            f"The video's {width}x{height} frames are too large to decode: {needed} of them "
+            f"exceed the {_VIDEO_DECODE_BUDGET_BYTES >> 20} MiB frame budget."
+        )
+    return min(wanted_fps, affordable * native_fps / total_frames)
+
+
+def _discard_video_clip(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _classify_mlx_audio_type(
@@ -2144,10 +2242,16 @@ class MLXInferenceBackend:
         adapter_state,
         images = None,
         prompt = None,
+        has_video = False,
     ):
         store = self._vlm_prompt_cache_store()
         if store is None or self._vlm_is_diffusion_model(self._model):
             # Diffusion generation never consults the prefix hook.
+            return None
+        if has_video:
+            # A snapshot spanning the video rows is keyed by token ids the clip does not
+            # vary, so a later clip would resume the first one's vision rows and its mRoPE
+            # grid. Prefill every video turn instead.
             return None
         media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
         if images and not media_ids:
@@ -2542,6 +2646,7 @@ class MLXInferenceBackend:
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
+            "has_video_input": is_vision and _mlx_reads_video(self._processor),
             "context_length": _served_ctx,
             # Parity with llama.cpp's requested_n_ctx: the served window cannot say
             # whether anything was asked for, and that decides reuse and "pinned".
@@ -2823,15 +2928,21 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
         _adapter_state = None,
+        video = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
+        if video is not None:
+            if not _mlx_vlm_decodes_video():
+                raise RuntimeError("The installed mlx-vlm does not read video.")
+            if not self._is_vlm:
+                raise RuntimeError("The loaded model does not read video.")
 
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
         # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._is_vlm and image is not None:
+        if self._is_vlm and (image is not None or video is not None):
             # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
@@ -2844,6 +2955,8 @@ class MLXInferenceBackend:
                 messages,
                 system_prompt = system_prompt,
                 structured_content = _renders_via_processor,
+                image = image is not None,
+                video = video is not None,
             )
         else:
             full_messages = self._with_system_prompt(messages, system_prompt)
@@ -2870,6 +2983,7 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                video = video,
             )
         else:
             stream = self._generate_text(
@@ -3128,6 +3242,7 @@ class MLXInferenceBackend:
         messages,
         images,
         *,
+        videos = None,
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
@@ -3161,6 +3276,17 @@ class MLXInferenceBackend:
                 f"VLM conversation contains {structured_images} structured image "
                 f"item(s) for {attached_images} attached image(s)."
             )
+        attached_videos = 0 if videos is None else len(videos)
+        structured_videos = sum(
+            _count_vlm_videos(message.get("content"))
+            for message in messages
+            if isinstance(message, dict)
+        )
+        if structured_videos != attached_videos:
+            raise RuntimeError(
+                f"VLM conversation contains {structured_videos} structured video "
+                f"item(s) for {attached_videos} attached video(s)."
+            )
         prompt = None
         has_tool_history = _vlm_messages_have_tool_history(messages)
         prompt_error = None
@@ -3185,6 +3311,12 @@ class MLXInferenceBackend:
             raise RuntimeError(
                 f"VLM chat template returned {prompt_issue} and cannot be recovered "
                 "without dropping tool-call history."
+            ) from prompt_error
+        if prompt_issue and attached_videos:
+            # mlx-vlm's registered renderers take image and audio counts only.
+            raise RuntimeError(
+                f"VLM chat template returned {prompt_issue} and cannot be recovered "
+                "for a video turn."
             ) from prompt_error
 
         if images is not None and prompt_issue:
@@ -3256,6 +3388,7 @@ class MLXInferenceBackend:
         logit_bias = None,
         _adapter_state = None,
         stop = None,
+        video = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -3263,6 +3396,7 @@ class MLXInferenceBackend:
         prompt, chat_target = self._render_vlm_prompt(
             messages,
             images,
+            videos = [video] if video is not None else None,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
@@ -3279,9 +3413,10 @@ class MLXInferenceBackend:
         sequences = _mlx_stop_sequences(stop)
         stopped = False
         logger.info(
-            "VLM generating: prompt_len=%d, has_image=%s",
+            "VLM generating: prompt_len=%d, has_image=%s, has_video=%s",
             len(prompt),
             image is not None,
+            video is not None,
         )
         # stream_generate forwards **kwargs into generate_step (builds the
         # sampler + logits_processors internally). GOTCHA: generate_step expects
@@ -3322,7 +3457,9 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        session = self._vlm_prompt_cache_session(_adapter_state, images, prompt)
+        session = self._vlm_prompt_cache_session(
+            _adapter_state, images, prompt, has_video = video is not None
+        )
         if session is not None:
             vlm_kwargs["prompt_cache"] = session.cache
             vlm_kwargs["prompt_cache_state"] = session
@@ -3344,11 +3481,20 @@ class MLXInferenceBackend:
                 _temporary_mlx_adapter_state(self._model, _adapter_state),
                 session_scope,
             ):
-                if images and session is None:
+                if session is None and (images or video is not None):
                     # The vision pass gets the headroom, under the lock so nothing refills it.
+                    # A video turn never resumes a snapshot, so the retained ones are pure
+                    # occupancy against the frame budget it is about to allocate.
                     self._release_vlm_snapshots()
                 final_response = None
+                clip_path = None
                 try:
+                    if video is not None:
+                        clip_path = _write_video_clip(video)
+                        vlm_kwargs["video"] = [clip_path]
+                        frame_rate = _video_frame_rate(clip_path, self._processor)
+                        if frame_rate is not None:
+                            vlm_kwargs["fps"] = frame_rate
                     # Emit any prefilled <think> block before the first token so the
                     # UI renders it during prefill, matching _generate_text. Done
                     # inside the adapter context so an unsupported request raises
@@ -3382,6 +3528,8 @@ class MLXInferenceBackend:
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
                 finally:
+                    if clip_path is not None:
+                        _discard_video_clip(clip_path)
                     cached_n = produced_n = 0
                     produced_s = 0.0
                     if session is not None:

@@ -523,9 +523,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # backend does not answer, which is not the same as a confirmed False.
             if _entry.get("context_length_enforced") is not None:
                 model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
-            # Backend post-load audio classification outranks pre-load config.
+            # Backend post-load audio and video classification outranks pre-load config.
             model_info.update(
-                {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+                {
+                    k: _entry[k]
+                    for k in ("is_audio", "audio_type", "has_audio_input", "has_video_input")
+                    if k in _entry
+                }
             )
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
@@ -712,6 +716,11 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
             if gated in cmd and _backend_declares(backend, gated):
                 gen_kwargs[gated] = cmd[gated]
+        # A clip cannot be dropped like an unknown sampling knob: the answer would ignore it.
+        if cmd.get("video_base64"):
+            if not _backend_declares(backend, "video"):
+                raise RuntimeError("The loaded backend does not read video.")
+            gen_kwargs["video"] = cmd["video_base64"]
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:

@@ -4116,6 +4116,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
             audio_preflight_has_image = (
                 audio_preflight.get("has_image") if audio_preflight is not None else None
             ),
+            audio_preflight_has_video = (
+                audio_preflight.get("has_video") if audio_preflight is not None else None
+            ),
         )
         raise _Reached()
 
@@ -4132,6 +4135,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "claim_resident": False,
         "require_audio_input": True,
         "audio_preflight_has_image": False,
+        "audio_preflight_has_video": False,
     }
 
     # An image in the same request does need the vision tower.
@@ -4149,7 +4153,18 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "claim_resident": False,
         "require_audio_input": True,
         "audio_preflight_has_image": True,
+        "audio_preflight_has_video": False,
     }
+
+    # A clip beside the recording is refused after the load, so the switch must know first.
+    payload = _chat_request(
+        model = "org/B-GGUF", audio_base64 = "AAAA", video_base64 = "AAAAGGZ0eXBtcDQy"
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert captured["modality_label"] == "audio or video"
+    assert captured["audio_preflight_has_image"] is False
+    assert captured["audio_preflight_has_video"] is True
 
     # an image on an earlier turn stays valid: the non-GGUF audio route listens to
     # the current recording and deliberately permits referring back to prior images.
@@ -8959,34 +8974,41 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
     }
 
 
-def test_a_video_request_never_switches_to_a_non_gguf_target():
-    """A clip is served through llama.cpp's input_video part alone, so the chat handler
-    rejects one on any other backend. Without this the swap unloads the resident GGUF
-    and the request 400s straight after, which is what the guard exists to prevent."""
-    # need_image False is the combination that used to fall through to the accepting branch.
-    assert (
-        inference_route._target_accepts_request_input(
-            "/srv/models/VL-MLX",
-            False,
-            True,
-            False,
-            None,
-            False,
-            True,
+def test_a_video_request_switches_to_a_non_gguf_target_only_with_a_video_token(
+    tmp_path, monkeypatch
+):
+    """Loaded for video only if the config names a video token; no config is left to the load."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX, raising = False)
+    monkeypatch.setattr("core.inference.mlx_inference._mlx_vlm_decodes_video", lambda: True)
+
+    def _target(name, config):
+        target = tmp_path / name
+        target.mkdir()
+        if config is not None:
+            (target / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        return str(target)
+
+    def _accepts(path):
+        # need_image False is the combination that used to fall through to the accepting branch.
+        return inference_route._target_accepts_request_input(
+            path, False, True, False, None, False, True
         )
-        is False
-    )
-    # an image alongside the clip must not talk it back into the swap either.
+
+    assert _accepts(_target("image-only", {"model_type": "gemma3", "vision_config": {}})) is False
+    assert _accepts(_target("flat", {"model_type": "qwen2_vl", "video_token_id": 151656})) is True
+    assert _accepts(_target("nested", {"text_config": {"video_token_index": 7}})) is True
+    assert _accepts(_target("unset", {"video_token_id": None})) is False
+    assert _accepts(_target("no-config", None)) is True
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    assert _accepts(_target("cuda", {"model_type": "qwen2_vl", "video_token_id": 151656})) is False
+
+    # Without the clip decoder the load leaves has_video_input unset, so no load either.
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX, raising = False)
+    monkeypatch.setattr("core.inference.mlx_inference._mlx_vlm_decodes_video", lambda: False)
     assert (
-        inference_route._target_accepts_request_input(
-            "/srv/models/VL-MLX",
-            False,
-            True,
-            False,
-            None,
-            True,
-            True,
-        )
+        _accepts(_target("old-mlx-vlm", {"model_type": "qwen2_vl", "video_token_id": 151656}))
         is False
     )
     # the GGUF arm still decides on the companion mmproj, so needs_video does not short it.
@@ -10323,6 +10345,52 @@ def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch)
 
     assert exc.value.status_code == 400
     assert exc.value.detail == inference_route._AUDIO_IMAGE_INPUT_DETAIL
+    assert recorder.calls == []
+    assert llama.is_loaded is True
+
+
+def test_audio_beside_a_clip_is_rejected_before_a_non_gguf_switch(monkeypatch):
+    """The clip conflict is the first audio rule served, so the switch orders it first."""
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    recorder = _LoadRecorder(llama)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Audio-VLM", None, "org/Audio-VLM"),
+        backend = llama,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Audio-VLM",
+                object(),
+                "tester",
+                require_vision = True,
+                require_image = False,
+                require_audio_input = True,
+                require_video = True,
+                audio_preflight = {
+                    "b64": "AAAA",
+                    "continue_final": True,
+                    "has_image": True,
+                    "has_video": True,
+                },
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == inference_route._AUDIO_VIDEO_INPUT_DETAIL
     assert recorder.calls == []
     assert llama.is_loaded is True
 

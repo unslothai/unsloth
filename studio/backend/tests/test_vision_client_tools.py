@@ -573,6 +573,36 @@ def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
     )
 
 
+def test_a_video_is_attached_the_way_an_image_is():
+    """Every attached medium lands on the newest user turn, media before text, never doubled."""
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    alone = messages_with_attached_image(
+        [{"role": "user", "content": "what moves"}], image = False, video = True
+    )
+    assert alone[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
+
+    both = messages_with_attached_image(
+        [{"role": "user", "content": [{"type": "text", "text": "compare"}]}], video = True
+    )
+    assert both[-1]["content"] == [
+        {"type": "image"},
+        {"type": "video"},
+        {"type": "text", "text": "compare"},
+    ]
+
+    placed = messages_with_attached_image(
+        [
+            {"role": "user", "content": [{"type": "video_url", "video_url": {"url": "x"}}]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "and now?"},
+        ],
+        video = True,
+    )
+    assert [p["type"] for p in placed[-1]["content"]] == ["image", "text"]
+    assert [p["type"] for p in placed[0]["content"]] == ["video_url"]
+
+
 def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
     """A processor template alone does not mean the render selects it; mirroring it anyway
     profiles an unused body with processor semantics (#10092)."""
@@ -685,6 +715,58 @@ def test_image_tool_support_is_classified_from_the_processor_template():
 
     assert backend.calls, "generation never ran"
     assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+
+
+def test_video_tool_support_is_classified_from_the_processor_template():
+    """A clip renders through the processor, so tool support is read off the processor template."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["has_video_input"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+    }
+    clip = "AAAAGGZ0eXBtcDQy"
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "what moves")],
+        video_base64 = clip,
+        tools = [passthrough.LOOKUP_TOOL],
+        stream = False,
+    )
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        monkeypatch.setattr(
+            inf,
+            "_detect_safetensors_features",
+            lambda _backend, template, **k: {"supports_tools": template == _CHATML_WITH_TOOLS},
+        )
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                payload, request = passthrough._Request(), current_subject = "u"
+            )
+
+        asyncio.run(_run())
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+    assert backend.calls[0]["video"] == clip
 
 
 def test_mlx_selects_structured_content_for_a_processor_render():

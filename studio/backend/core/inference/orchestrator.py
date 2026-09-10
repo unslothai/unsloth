@@ -234,6 +234,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "is_audio": model_info.get("is_audio", False),
         "audio_type": model_info.get("audio_type"),
         "has_audio_input": model_info.get("has_audio_input", False),
+        "has_video_input": model_info.get("has_video_input", False),
         "context_length": model_info.get("context_length"),
         "native_context_length": model_info.get("native_context_length"),
         "max_context_length": model_info.get("max_context_length"),
@@ -1038,6 +1039,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video_b64: Optional[str] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1060,6 +1062,8 @@ class InferenceOrchestrator:
             cmd["seed"] = seed
         if stop:
             cmd["stop"] = stop
+        if video_b64:
+            cmd["video_base64"] = video_b64
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
         if tools is not None:
@@ -1275,6 +1279,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -1339,6 +1344,7 @@ class InferenceOrchestrator:
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
             seed = seed,
+            video_b64 = video,
         )
 
         mailbox: queue.Queue = queue.Queue()
@@ -2128,6 +2134,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -2164,6 +2171,7 @@ class InferenceOrchestrator:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             stop = stop,
+            video = video,
         )
 
     def generate_chat_completion_with_tools(
@@ -2383,6 +2391,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        video: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -2432,6 +2441,7 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
                 seed = seed,
+                video_b64 = video,
             )
 
             # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the lock above, having
