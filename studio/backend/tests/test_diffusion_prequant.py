@@ -2048,8 +2048,6 @@ def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
     assert pq._fp8_activation_floor_present({}, None) is True
 
 
-
-
 def _policy_meta(
     policy = None,
     *,

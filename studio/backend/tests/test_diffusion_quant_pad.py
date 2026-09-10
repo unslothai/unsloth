@@ -308,8 +308,6 @@ def test_is_quantized_linear_only_accepts_a_torchao_weight():
     assert is_quantized_linear(nn.LayerNorm(8)) is False
 
 
-
-
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("shape", [(1, 0, 8), (0, 8), (2, 0, 8)])
 def test_an_empty_activation_comes_back_at_the_projected_width(bias, shape):

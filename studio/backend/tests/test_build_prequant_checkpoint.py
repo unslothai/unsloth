@@ -787,8 +787,6 @@ def test_a_calibrated_policy_build_corrects_the_4_bit_layers_only(monkeypatch, t
     assert saved["ckpt"]["metadata"]["nvfp4_policy"]["gptq"] is True
 
 
-
-
 def _calib_prompts():
     build = _script()
     return build.load_calibration_prompts()
@@ -1060,8 +1058,6 @@ def test_a_calibrated_build_is_refused_before_the_dense_download(monkeypatch, tm
     assert "from_pretrained" not in saved
 
 
-
-
 def test_the_calibration_grid_reads_as_wxhxframes_only_for_a_video_family():
     build = _script()
     assert build.parse_calib_grid("1024", video = False) == (1024, 1024, None)
@@ -1099,7 +1095,12 @@ class _StubVideoPipe:
         def __init__(self) -> None:
             self.guidance_scale = 1.0
 
-    def __init__(self, *, supports = None, guider = False):
+    def __init__(
+        self,
+        *,
+        supports = None,
+        guider = False,
+    ):
         self.calls: list = []
         self.guider = self._Guider() if guider else None
         self._supports = tuple(

@@ -48,8 +48,6 @@ def _stub(
     )
 
 
-
-
 def test_auto_selects_flashinfer_when_import_capability_and_preflight_all_pass(monkeypatch):
     _stub(monkeypatch)
     assert ops.select_nvfp4_backend(0) == "flashinfer"
@@ -129,8 +127,6 @@ def test_the_env_value_is_case_and_space_insensitive(monkeypatch, value):
     monkeypatch.setenv(ops.NVFP4_BACKEND_ENV, value)
     with pytest.warns(RuntimeWarning):
         assert ops.select_nvfp4_backend(0) == "torchao"
-
-
 
 
 def _dotted(node: ast.AST) -> str:
@@ -228,8 +224,6 @@ def test_the_modules_never_set_the_current_stream():
         assert "set_stream" not in path.read_text(encoding = "utf-8"), path.name
 
 
-
-
 @pytest.mark.parametrize(
     "m,k,n",
     [
@@ -284,8 +278,6 @@ def test_register_ops_is_idempotent():
     ops.register_ops()
     assert hasattr(torch.ops.unsloth_nvfp4, "quantize")
     assert hasattr(torch.ops.unsloth_nvfp4, "mm")
-
-
 
 
 def test_real_preflight_reports_ok_on_a_blackwell_card_with_flashinfer():

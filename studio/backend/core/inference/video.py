@@ -5909,6 +5909,7 @@ class VideoBackend:
                 # Driven off scheduler.step rather than the callback below, since only some
                 # families expose a callback and the step index has to be right for all of them.
                 from .diffusion_nvfp4_protect import protect_generation
+
                 protect_ctx = protect_generation(pipe, steps, logger = logger)
 
                 if "callback_on_step_end" in call_params:

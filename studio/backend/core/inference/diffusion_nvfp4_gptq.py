@@ -216,7 +216,6 @@ class HessianAccumulator:
         """Layers no sampled forward reached: a Hessian of zeros corrects nothing."""
         return sorted(fqn for fqn, count in self.samples.items() if not count)
 
-
     def step_callback(self, steps: Sequence):
         """A ``callback_on_step_end`` that arms the hooks for ``steps``. It fires AFTER step i, so
         it arms step i + 1 and ``arm_first`` covers step 0."""
