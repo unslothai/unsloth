@@ -1598,3 +1598,71 @@ def test_an_ordinary_uv_cache_is_still_offered(tmp_path, isolated_caches):
 
     assert entry["purgeable"] is True
     assert entry["blocked_reason"] is None
+
+
+def test_a_partial_purge_reports_only_what_it_actually_removed(tmp_path, isolated_caches):
+    """rmtree can delete some children and then hit a permission error or a file that moved.
+
+    The whole subtree is measured before the removal, so without subtracting the survivors the
+    toast claimed bytes that are still on disk, which is the one thing a "freed" figure must
+    not do.
+    """
+    root = tmp_path / "uv"
+    _write(root / "tree" / "gone.bin", "g" * 100)
+    stubborn = root / "tree" / "stays"
+    _write(stubborn / "kept.bin", "k" * 40)
+    stubborn.chmod(0o500)  # the delete of its child fails, the directory survives
+    try:
+        outcome = empty_cache_root(root)
+    finally:
+        stubborn.chmod(0o700)
+
+    assert outcome.errors, "the removal was expected to fail partway"
+    assert (stubborn / "kept.bin").exists()
+    assert outcome.freed_bytes == 100
+
+
+def test_a_curated_dataset_import_holds_off_a_model_cache_clear():
+    """The curated import calls load_dataset and snapshot_download directly.
+
+    It is not a managed download and not a training run, so it claimed nothing and a Clear of
+    hf_hub, hf_xet or hf_datasets passed every guard: begin_cache_purge asks about jobs, owners
+    and deletes, and this was none of the three. The snapshot then went out from under the copy
+    and the import failed in front of the user.
+    """
+    from hub.utils.download_registry import get_datasets_registry
+
+    registry = get_datasets_registry()
+    owner = object()
+    granted, _ = registry.claim_repository_owner("some/curated-set", owner)
+    assert granted
+    try:
+        assert registry.begin_cache_purge() is False
+    finally:
+        registry.release_repository_owner("some/curated-set", owner)
+    # And once it is done, the clear is allowed again.
+    assert registry.begin_cache_purge() is True
+    registry.end_cache_purge()
+
+
+def test_the_import_route_takes_that_claim_and_gives_it_back():
+    """The interlock has to be reached, not merely available. The route is checked as source
+    because driving the import needs the network and a real dataset repo."""
+    import ast
+    import inspect
+
+    import routes.training as training
+
+    source = inspect.getsource(training)
+    tree = ast.parse(source)
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "claim_repository_owner" in calls
+    assert "release_repository_owner" in calls
+    # Released in a finally, or a failed import leaves the cache reserved for the process's life.
+    start = source.index("claim_repository_owner")
+    tail = source[start:]
+    assert "finally:" in tail[: tail.index("release_repository_owner")]

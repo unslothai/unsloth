@@ -268,6 +268,20 @@ test("the cache row is reachable from settings search", () => {
   assert.match(search, /"settings\.resources\.storage\.caches\.keywords"/);
 });
 
+test("a forced reading is taken after the request that is already in flight", () => {
+  // The pre-start reading and the completion reading are different questions about the same
+  // disk, and returning the first as the answer to the second reports the space as it was
+  // BEFORE the download wrote anything.
+  const check = readFileSync(
+    new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(check, /if \(!options\.force\) return inFlight;/);
+  // Chained behind it, and coalesced: one waiting, not one per caller.
+  assert.match(check, /queued = inFlight/);
+  assert.match(check, /if \(!queued\)/);
+});
+
 test("the download that used the space is the one that reports it", () => {
   // requestStart reads the disk BEFORE a download, which is the right moment to refuse one. A
   // download that starts with room and then eats it crosses the threshold with nobody looking:
@@ -280,11 +294,14 @@ test("the download that used the space is the one that reports it", () => {
   assert.match(loop, /import \{ checkDiskSpace \}/);
   const finalize = loop.slice(loop.indexOf("export function finalize"));
   const body = finalize.slice(0, finalize.indexOf("\nexport "));
-  // void, not await: a reading must never delay the teardown of a finished job.
-  assert.match(body, /\n  void checkDiskSpace\(\);/);
+  // void, not await: a reading must never delay the teardown of a finished job. Forced, or the
+  // interval swallows it for any download shorter than 30 s and the in-flight pre-download
+  // reading is handed back in its place, which is the figure this call exists to correct.
+  assert.match(body, /\n  void checkDiskSpace\(\{ force: true \}\);/);
   // After the early returns, or a job that was already terminal asks again on every poll.
   assert.ok(
-    body.indexOf("TERMINAL_DISPLAY_STATES") < body.indexOf("void checkDiskSpace()"),
-    "the reading runs before the already-terminal guard",
+    body.indexOf("TERMINAL_DISPLAY_STATES") < body.indexOf("void checkDiskSpace("),
+    "the reading has to sit after the already-terminal guard, or a job that has already "
+      + "finished asks again on every poll",
   );
 });

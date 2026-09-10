@@ -42,10 +42,13 @@ const MIN_INTERVAL_MS = 30_000;
 
 let lastCheckedAt = 0;
 let inFlight: Promise<void> | null = null;
+/** At most one reading waiting behind the current one. See `force` below. */
+let queued: Promise<void> | null = null;
 
 export function __resetLowDiskCheckForTests(): void {
   lastCheckedAt = 0;
   inFlight = null;
+  queued = null;
   notifier = null;
 }
 
@@ -61,21 +64,8 @@ async function readDisk(): Promise<DiskReadingResponse | null> {
   }
 }
 
-/**
- * Read the disk and warn if a threshold was crossed. Never rejects, never blocks the caller.
- *
- * `force` skips the interval, for the mount check, which is the first reading of the session
- * and has nothing to collapse against.
- */
-export function checkDiskSpace(options: { force?: boolean } = {}): Promise<void> {
-  const now = Date.now();
-  if (!options.force && now - lastCheckedAt < MIN_INTERVAL_MS) {
-    return Promise.resolve();
-  }
-  // Share one request rather than queue a second: callers arrive together when a page starts
-  // several downloads at once.
-  if (inFlight) return inFlight;
-  lastCheckedAt = now;
+function runCheck(): Promise<void> {
+  lastCheckedAt = Date.now();
   inFlight = (async () => {
     const disk = await readDisk();
     if (!disk) return;
@@ -86,4 +76,39 @@ export function checkDiskSpace(options: { force?: boolean } = {}): Promise<void>
     inFlight = null;
   });
   return inFlight;
+}
+
+/**
+ * Read the disk and warn if a threshold was crossed. Never rejects, never blocks the caller.
+ *
+ * `force` means the caller needs a reading taken AFTER it asked: the app mount, which is the
+ * first of the session and has nothing to collapse against, and a finished download, which is
+ * asking precisely because the number from before it started writing is now wrong. So force
+ * skips the interval AND declines to share an in-flight request, since that request may well be
+ * the pre-download reading it is trying to correct. It chains behind it instead.
+ *
+ * Still bounded: one in flight and at most one waiting, so a queue of files finishing together
+ * costs two readings rather than one per file.
+ */
+export function checkDiskSpace(options: { force?: boolean } = {}): Promise<void> {
+  if (!options.force && Date.now() - lastCheckedAt < MIN_INTERVAL_MS) {
+    return Promise.resolve();
+  }
+  if (inFlight) {
+    // Unforced callers arrive together when a page starts several downloads at once, and any
+    // reading answers them.
+    if (!options.force) return inFlight;
+    if (!queued) {
+      queued = inFlight
+        .then(() => {
+          queued = null;
+          return runCheck();
+        })
+        .catch(() => {
+          queued = null;
+        });
+    }
+    return queued;
+  }
+  return runCheck();
 }

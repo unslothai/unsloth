@@ -240,9 +240,13 @@ export function finalize(
   // The operation that used the space is the one that should surface the pressure. requestStart
   // reads the disk before a download, which is the right moment to refuse one, but a download
   // that STARTS with room and then eats it crosses the threshold with nobody looking: there is
-  // no interval, so without this the warning waits for the next download attempt. Throttled and
-  // in-flight-shared like every other caller, so a queue finishing together asks once.
-  void checkDiskSpace();
+  // no interval, so without this the warning waits for the next download attempt.
+  //
+  // force, so the reading is taken AFTER the write. Unforced it would be swallowed by the
+  // interval for any download shorter than 30 s, or handed the in-flight pre-download figure
+  // this call exists to correct. Still bounded to one reading in flight and one waiting, so a
+  // queue finishing together costs two rather than one per file.
+  void checkDiskSpace({ force: true });
   if (job.kind === DOWNLOAD_KIND.MODEL) {
     invalidateGgufVariantsCache(job.repoId);
   }

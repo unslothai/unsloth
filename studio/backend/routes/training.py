@@ -4300,6 +4300,35 @@ async def import_diffusion_dataset_example(
                         # Best effort: one unrestorable entry must not mask the original failure.
                         pass
 
+            # Hold the datasets registry for this repo across the fetch.
+            #
+            # Both loaders call load_dataset / snapshot_download directly rather than going
+            # through a managed download, so nothing here claimed the registry and a Clear of
+            # hf_hub, hf_xet or hf_datasets passed every guard: begin_cache_purge asks about
+            # jobs, owners and deletes, and this import was none of the three. The snapshot then
+            # went out from under the copy and the import failed in front of the user.
+            #
+            # claim_repository_owner is the same reservation a managed download takes, and it
+            # excludes a purge in both directions: it refuses while one is running, and
+            # begin_cache_purge refuses while an owner is held.
+            _import_registry = None
+            _import_owner = object()
+            try:
+                from hub.utils.download_registry import get_datasets_registry
+                _import_registry = get_datasets_registry()
+            except Exception as exc:  # noqa: BLE001 - a broken registry must not kill an import
+                logger.debug(f"Could not reach the datasets registry for the import: {exc}")
+            if _import_registry is not None:
+                granted, reason = _import_registry.claim_repository_owner(
+                    entry["repo"], _import_owner
+                )
+                if not granted:
+                    if reason == "deleting":
+                        raise HTTPException(
+                            status_code = 409,
+                            detail = "A cache clear is running. Try the import again in a moment.",
+                        )
+                    _import_registry = None  # already busy with this repo; do not release it
             try:
                 try:
                     if entry["loader"] == "imagefolder_jsonl":
@@ -4344,6 +4373,11 @@ async def import_diffusion_dataset_example(
                         ),
                     )
             finally:
+                if _import_registry is not None:
+                    try:
+                        _import_registry.release_repository_owner(entry["repo"], _import_owner)
+                    except Exception as exc:  # noqa: BLE001 - a held claim must not mask the error
+                        logger.debug(f"Could not release the import claim: {exc}")
                 shutil.rmtree(staging, ignore_errors = True)
                 shutil.rmtree(rescue, ignore_errors = True)
         return _import_response(entry, folder, imported = imported)

@@ -1082,7 +1082,13 @@ def _total_disk_bytes() -> Optional[int]:
     return int(usage.total) if usage is not None else None
 
 
-def _remove_entry(entry: os.DirEntry, root: Path, outcome: PurgeOutcome, ledger: LinkLedger) -> None:
+def _remove_entry(
+    entry: os.DirEntry,
+    root: Path,
+    outcome: PurgeOutcome,
+    ledger: LinkLedger,
+    survivors: LinkLedger,
+) -> None:
     """Remove one top-level entry, recording what it would free rather than adding it up here.
 
     The freed total is read off the ledger once the whole root is done: an inode still linked
@@ -1101,7 +1107,15 @@ def _remove_entry(entry: os.DirEntry, root: Path, outcome: PurgeOutcome, ledger:
             _measure_tree(path, ledger)
             # rmtree refuses a symlinked directory and does not follow links it
             # finds inside, so the walk cannot leave *root*.
-            shutil.rmtree(path)
+            try:
+                shutil.rmtree(path)
+            except OSError:
+                # It removed some children and then hit a permission error or a file that moved
+                # under it. The whole subtree is already in the ledger, so what survived is
+                # recorded too and subtracted at the end: reporting bytes that are still on disk
+                # is the one thing a "freed" figure must not do.
+                _measure_tree(path, survivors)
+                raise
         else:
             _record_entry(entry, ledger)
             os.unlink(path)
@@ -1122,6 +1136,8 @@ def empty_cache_root(
     outcome = PurgeOutcome()
     resolved = assert_purgeable_root(root, protected = protected, trees = trees, keep = keep)
     ledger = LinkLedger()
+    # What a failed removal left behind, subtracted from the ledger below.
+    survivors = LinkLedger()
     try:
         with os.scandir(resolved) as scan:
             entries = list(scan)
@@ -1131,8 +1147,11 @@ def empty_cache_root(
     for entry in entries:
         if not _matching(entry.name, patterns):
             continue
-        _remove_entry(entry, resolved, outcome, ledger)
-    outcome.freed_bytes += ledger.freeable_bytes()
+        _remove_entry(entry, resolved, outcome, ledger, survivors)
+    # Never negative: the survivor walk sees the tree after the failure, so it cannot record
+    # more than the pre-removal walk did, but a file that grew in between should not turn a
+    # partial purge into a negative report.
+    outcome.freed_bytes += max(0, ledger.freeable_bytes() - survivors.freeable_bytes())
     return outcome
 
 
