@@ -339,3 +339,27 @@ def test_the_top_up_removes_the_recordless_dist_info_an_interrupted_install_left
     assert not stale.exists()
     assert (root / "tiktoken-0.9.0.dist-info" / "marker").is_file()
     assert (other / "RECORD").is_file()
+
+
+def test_a_recordless_record_beside_a_complete_install_is_removed_without_a_top_up(
+    tmp_path, monkeypatch
+):
+    """A retry that succeeded after an interrupted install leaves both; the package is
+    present, so no top-up runs, and the stale metadata must still go."""
+    root = tmp_path / ".venv_t5_550"
+    (root / "tiktoken").mkdir(parents = True)
+    (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+    good = root / "tiktoken-0.9.0.dist-info"
+    good.mkdir()
+    (good / "RECORD").write_text("", encoding = "utf-8")
+    stale = root / "tiktoken-0.7.0.dist-info"
+    stale.mkdir()
+    (stale / "METADATA").write_text("Name: tiktoken\nVersion: 0.7.0\n", encoding = "utf-8")
+    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda *a, **k: pytest.fail("installed over a present package"))
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), ("tiktoken",))
+    assert not stale.exists()
+    assert (good / "RECORD").is_file()
+

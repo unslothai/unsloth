@@ -2146,6 +2146,16 @@ _sidecar_top_up_tiktoken() {
     # and the package without the native extension and RECORD; the sidecar predicate
     # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
     # check would skip this top-up forever while Qwen tokenizers fail.
+    # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
+    # the new version beside it, and importlib.metadata may keep answering the stale
+    # one. It goes before the package is declared present, so a complete install that
+    # a retry put beside an older recordless record does not keep the record forever.
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
+            rm -rf "$_stt_info"
+        fi
+    done
+    unset _stt_info
     for _stt_meta in "$_stt_dir"/tiktoken-*.dist-info/METADATA; do
         if [ -f "$_stt_meta" ] && [ -f "${_stt_meta%METADATA}RECORD" ] && [ -f "$_stt_dir/tiktoken/__init__.py" ]; then
             unset _stt_meta
@@ -2153,16 +2163,6 @@ _sidecar_top_up_tiktoken() {
         fi
     done
     unset _stt_meta
-    # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
-    # the new version beside it, and importlib.metadata may keep answering the stale
-    # one. Nothing here has both a RECORD and the payload (the loop above returned
-    # otherwise), so the recordless metadata goes first.
-    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
-        if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
-            rm -rf "$_stt_info"
-        fi
-    done
-    unset _stt_info
     # --upgrade: a --target install without it does not replace existing files, so a
     # damaged tiktoken/ directory an interrupted install left would be kept under fresh
     # metadata and read as present on the next run.
