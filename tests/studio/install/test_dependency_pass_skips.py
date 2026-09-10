@@ -1754,4 +1754,3 @@ def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatc
     assert manifest.violated_constraints(req_file = req) == []
     versions["pyarrow"] = [""]
     assert manifest.violated_constraints(req_file = req) == ["pyarrow"]
-
