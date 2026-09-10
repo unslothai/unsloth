@@ -1630,7 +1630,11 @@ def test_the_unsupported_kind_reason_names_the_kind_and_the_two_that_work():
 class _Denoiser:
     """A module as the gate reads one: parameters that report a dtype."""
 
-    def __init__(self, dtype = "torch.bfloat16", **attrs) -> None:
+    def __init__(
+        self,
+        dtype = "torch.bfloat16",
+        **attrs,
+    ) -> None:
         self._params = [types.SimpleNamespace(dtype = dtype)]
         for key, value in attrs.items():
             setattr(self, key, value)
@@ -1699,6 +1703,7 @@ def test_the_denoiser_view_presents_an_arbitrary_attribute_as_the_transformer():
 
 def test_a_pipeline_that_cannot_be_walked_is_not_called_quantised():
     """An inspection failure is not evidence of prior quantisation."""
+
     class _Unwalkable:
         def parameters(self, recurse = True):
             raise RuntimeError("no")
@@ -1736,4 +1741,4 @@ def test_the_ideogram_fp8_loader_stamps_what_it_widened():
     import core.inference.diffusion_ideogram4 as ideo
 
     source = pathlib.Path(ideo.__file__).read_text(encoding = "utf-8")
-    assert "mark_source_precision(model, \"fp8\")" in source
+    assert 'mark_source_precision(model, "fp8")' in source

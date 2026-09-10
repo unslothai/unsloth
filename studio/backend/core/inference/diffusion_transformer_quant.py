@@ -472,7 +472,9 @@ class DenoiserView:
 
     @property
     def transformer(self) -> Any:
-        return getattr(object.__getattribute__(self, "_pipe"), object.__getattribute__(self, "_attr"))
+        return getattr(
+            object.__getattribute__(self, "_pipe"), object.__getattribute__(self, "_attr")
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(object.__getattribute__(self, "_pipe"), name)
@@ -547,7 +549,6 @@ def transformer_is_quantised(module: Any) -> bool:
     """Whether any Linear weight has been replaced by a torchao tensor subclass."""
     try:
         import torch
-
         for sub in module.modules():
             if not isinstance(sub, torch.nn.Linear):
                 continue

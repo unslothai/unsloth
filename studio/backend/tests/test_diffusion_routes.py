@@ -2422,9 +2422,7 @@ def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
         lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(
-        diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8"
-    )
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
         model_kind = "pipeline",

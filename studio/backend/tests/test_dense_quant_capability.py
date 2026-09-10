@@ -73,9 +73,7 @@ def test_a_single_incapable_gpu_reports_incapable(monkeypatch):
 
 def test_every_visible_card_must_be_capable(monkeypatch):
     """Mixed-capability hosts must not advertise dense quant."""
-    result, scoped = _run(
-        monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: False}
-    )
+    result, scoped = _run(monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: False})
     assert result is False
     # Probe each ordinal under its own device scope.
     assert scoped == [0, 1]

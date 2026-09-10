@@ -10124,7 +10124,13 @@ def _init_with_denoiser(dtype):
     return _init
 
 
-def _stub_pipeline_dense_quant(backend, monkeypatch, *, engages = "fp8", denoisers = ("transformer",)):
+def _stub_pipeline_dense_quant(
+    backend,
+    monkeypatch,
+    *,
+    engages = "fp8",
+    denoisers = ("transformer",),
+):
     """Stub a capable CUDA host and record transformer quantisation calls."""
     from core.inference import diffusion as dmod
 
@@ -10247,12 +10253,18 @@ def test_a_pipeline_pick_bakes_its_adapters_before_quantising(fake_runtime, tmp_
 
     monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
 
-    def _load_lora(self, path, adapter_name = None):
+    def _load_lora(
+        self,
+        path,
+        adapter_name = None,
+    ):
         order.append(f"bake:{adapter_name}")
 
     monkeypatch.setattr(_FakePipe, "load_lora_weights", _load_lora, raising = False)
     monkeypatch.setattr(
-        _FakePipe, "set_adapters", lambda self, names, adapter_weights = None: None,
+        _FakePipe,
+        "set_adapters",
+        lambda self, names, adapter_weights = None: None,
         raising = False,
     )
     backend.load_pipeline(

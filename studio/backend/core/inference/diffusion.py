@@ -4172,10 +4172,7 @@ class DiffusionBackend:
                     transformer_quant_pinned is not None
                     and not precision_fallback_allowed()
                     # Refuse known failures before downloading a pipeline.
-                    and (
-                        transformer_quant_decline is not None
-                        or (pipe is None and kind == "gguf")
-                    )
+                    and (transformer_quant_decline is not None or (pipe is None and kind == "gguf"))
                 ):
                     _refuse_pinned_precision()
 
