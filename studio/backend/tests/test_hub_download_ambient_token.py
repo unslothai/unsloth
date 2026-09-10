@@ -414,3 +414,29 @@ def test_forbidden_ambient_token_is_not_resolved(monkeypatch, cached_hf_login):
         )
     )
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "invalid_encoding"])
+def test_unusable_cached_login_does_not_block_an_anonymous_worker(
+    monkeypatch, cached_hf_login, failure
+):
+    from pathlib import Path
+    from huggingface_hub import constants
+
+    token_path = Path(constants.HF_TOKEN_PATH)
+    if failure == "invalid_encoding":
+        token_path.write_bytes(b"\xff\xfe\xff")
+    else:
+        original_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == token_path:
+                raise PermissionError("cached token is unreadable")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+    env = _spawn_env(monkeypatch, None, allow_ambient_token = True)
+
+    assert "HF_TOKEN" not in env
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"

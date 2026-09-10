@@ -167,7 +167,11 @@ def spawn_worker(
                 env[key] = "0"
     if not hf_token and allow_ambient_token:
         from huggingface_hub.utils import get_token_to_send
-        hf_token = get_token_to_send(None)
+        try:
+            hf_token = get_token_to_send(None)
+        except (OSError, UnicodeError):
+            logger.warning("Could not read the saved Hugging Face token; downloading anonymously")
+            hf_token = None
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
     # hf_transfer's parallel Range chunks can leave sparse partials even in "http" mode, so disable it and keep the worker's writer sequential.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
