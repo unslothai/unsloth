@@ -302,6 +302,7 @@ class InferenceOrchestrator:
         self.active_model_name: Optional[str] = None
         self.models: dict = {}
         self.loading_models: set = set()
+        self._load_download_keys: list[str] = []
         from core.inference.defaults import get_default_models
 
         # The list depends on detection (chat-only hosts get the GGUF set) and the MLX self-heal re-detects, so
@@ -893,6 +894,11 @@ class InferenceOrchestrator:
 
             if rtype == "status":
                 logger.info("Subprocess status: %s", resp.get("message", ""))
+                deadline = time.monotonic() + timeout
+                continue
+
+            if rtype == "downloads":
+                self._claim_load_downloads(resp)
                 deadline = time.monotonic() + timeout
                 continue
 
@@ -1832,6 +1838,7 @@ class InferenceOrchestrator:
                         if isinstance(_tpl_info, dict):
                             self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
+                    self._release_load_downloads()
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
@@ -1843,6 +1850,7 @@ class InferenceOrchestrator:
 
         except Exception as exc:
             self.loading_models.discard(model_name)
+            self._release_load_downloads()
             from utils.transformers_version import SidecarSwapInProgress
 
             if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
@@ -1858,6 +1866,31 @@ class InferenceOrchestrator:
             except Exception as teardown_exc:
                 logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
+        finally:
+            self._release_load_downloads()
+
+    def _claim_load_downloads(self, resp: dict) -> None:
+        from hub.services.load_downloads import claim_load_downloads
+        self._release_load_downloads()
+        try:
+            self._load_download_keys = claim_load_downloads(
+                resp.get("repo_ids") or [],
+                xet_disabled = bool(resp.get("xet_disabled")),
+                hub_cache = resp.get("hub_cache"),
+            )
+        except Exception as exc:
+            logger.warning("Could not register the load's downloads: %s", exc)
+
+    def _release_load_downloads(self) -> None:
+        keys, self._load_download_keys = self._load_download_keys, []
+        if not keys:
+            return
+        from hub.services.load_downloads import release_load_downloads
+
+        try:
+            release_load_downloads(keys)
+        except Exception as exc:
+            logger.warning("Could not release the load's downloads: %s", exc)
 
     def cancel_load(self, model_name: str) -> bool:
         """Abort an in-flight load by terminating its subprocess.

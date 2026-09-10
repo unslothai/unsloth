@@ -879,6 +879,7 @@ _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
+_LOAD_DOWNLOAD_OWNER = "load"
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -913,9 +914,26 @@ class _DownloadProgressDisplay:
         self._last_bucket = -1
         self._last_line_length = 0
         self._last_expected = 0
+        self._source: Optional[str] = None
         self._interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
 
-    def update(self, progress: dict) -> None:
+    def update(
+        self,
+        progress: dict,
+        source: Optional[str] = None,
+    ) -> None:
+        if source != self._source:
+            # A different repo is a different transfer: its bytes and percentage are not a
+            # continuation of the last one. Without this the redirected-output branch below,
+            # which only prints when the bucket rises, stays silent for a whole base
+            # download that starts near zero after an adapter finished near the top.
+            self._source = source
+            self._samples.clear()
+            self._last_expected = 0
+            # Not `_shown`: `_last_bucket = -1` already lets the next line through, while
+            # clearing it would strand a finished bar below 100% and drop the closing
+            # newline, since `complete()` and `close()` both gate on it.
+            self._last_bucket = -1
         downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
         completed = max(0, int(progress.get("completed_bytes") or 0))
         expected = max(0, int(progress.get("expected_bytes") or 0))
@@ -998,6 +1016,37 @@ def _normalized_variant(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
+def _in_flight_bytes(reading: dict) -> int:
+    """Bytes in a repo's incomplete files: what the endpoint counts as a live transfer."""
+    downloaded = max(0, int(reading.get("downloaded_bytes") or 0))
+    completed = max(0, int(reading.get("completed_bytes") or 0))
+    return downloaded - completed
+
+
+def _active_reading(
+    readings: list[tuple[str, dict]],
+    grown: "frozenset[str]" = frozenset(),
+    last: Optional[str] = None,
+) -> tuple[str, dict]:
+    """The one repo whose transfer the progress line should follow.
+
+    A model, its base, and the repos the loader may substitute for that base are separate
+    downloads, and the substitutes are alternatives, so no sum of them is a total anyone
+    is fetching: adding the totals of two candidate bases -- or of a base already sitting
+    complete in the cache -- renders a percentage against a denominator that does not
+    exist. Bytes are still summed for liveness, since any repo moving is progress, but the
+    line follows whichever repo has bytes in flight, and the model itself when none does.
+    """
+    # A repo seen to move wins over one that merely holds bytes: an abandoned `.incomplete`
+    # blob can be larger than the live transfer's current partial, and a shard finalizing
+    # drops the live figure, so the biggest partial on disk is not the running download.
+    moved = [item for item in readings if item[0] in grown and _in_flight_bytes(item[1]) > 0]
+    active = max(moved or readings, key = lambda item: _in_flight_bytes(item[1]))
+    if _in_flight_bytes(active[1]) > 0:
+        return active
+    return next((item for item in readings if item[0] == last), readings[0])
+
+
 class _ModelDownloadProgress:
     """Best-effort polling of the model download endpoints."""
 
@@ -1014,6 +1063,13 @@ class _ModelDownloadProgress:
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
+        self._repo_bytes: dict[str, int] = {}
+        self._companions: list[str] = []
+        self._companions_listed = True
+        self._active_repo: Optional[str] = None
+
+    def _is_gguf(self) -> bool:
+        return bool(self._variant) or "gguf" in self._model.lower()
 
     def _configure(self) -> None:
         self._configured = True
@@ -1021,7 +1077,7 @@ class _ModelDownloadProgress:
             return
         # GGUF repos need the selected quant's size; the repo endpoint totals every
         # quant. Resolve the variant first, otherwise show bytes only.
-        if self._variant or "gguf" in self._model.lower():
+        if self._is_gguf():
             try:
                 params = urlencode({"repo_id": self._model})
                 try:
@@ -1055,6 +1111,52 @@ class _ModelDownloadProgress:
                 # Older servers lack this endpoint; byte progress is still useful.
                 pass
 
+    def _companion_repos(self) -> list[str]:
+        if not self._companions_listed:
+            return self._companions
+        try:
+            listing = _http_json(
+                "GET",
+                f"{self._base}{self._progress_prefix}/active-downloads",
+                self._key,
+                timeout = 10,
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                self._companions_listed = False
+            return self._companions
+        except Exception:
+            return self._companions
+        for item in listing.get("downloads") or []:
+            repo = str(item.get("repo_id") or "")
+            loading = item.get("owner") == _LOAD_DOWNLOAD_OWNER or bool(item.get("load_attached"))
+            if not loading or repo.lower() == self._model.lower():
+                continue
+            if repo and repo not in self._companions:
+                self._companions.append(repo)
+        return self._companions
+
+    def _read(
+        self,
+        repo: str,
+        gguf: bool = False,
+    ) -> dict:
+        if gguf:
+            params = urlencode(
+                {"repo_id": repo, "variant": self._variant, "expected_bytes": self._expected_bytes}
+            )
+            url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
+        else:
+            params = urlencode({"repo_id": repo})
+            url = f"{self._base}{self._progress_prefix}/download-progress?{params}"
+        return _http_json("GET", url, self._key, timeout = 10)
+
+    def _companion_reading(self, repo: str) -> Optional[dict]:
+        try:
+            return self._read(repo)
+        except Exception:
+            return None
+
     def poll(self) -> None:
         if not self._configured:
             self._configure()
@@ -1063,43 +1165,37 @@ class _ModelDownloadProgress:
         if time.monotonic() < self._retry_at:
             return
         try:
-            if self._variant or "gguf" in self._model.lower():
-                params = urlencode(
-                    {
-                        "repo_id": self._model,
-                        "variant": self._variant,
-                        "expected_bytes": self._expected_bytes,
-                    }
-                )
-                url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
-            else:
-                url = (
-                    f"{self._base}{self._progress_prefix}/download-progress?"
-                    f"{urlencode({'repo_id': self._model})}"
-                )
             try:
-                reading = _http_json("GET", url, self._key, timeout = 10)
+                reading = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
                 if exc.code != 404 or self._progress_prefix == "/api/models":
                     raise
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            # The liveness baseline only ever rises. A reading falls for reasons that are
-            # not "bytes left the disk": an incomplete scan reporting a lower bound, a
-            # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
-            # measured absence, not an error), an XET run purging its partial. Following a
-            # reading down would make the recovery back to the same figure look like fresh
-            # growth and renew the deadline for a server that is downloading nothing, and a
-            # flapping mount could do that forever. The cost is that a transfer which truly
-            # restarts is not counted again until it passes its own high mark; that failure
-            # is bounded and says so, where a false renewal is an unbounded wait.
-            self._downloaded_bytes = max(
-                self._downloaded_bytes, max(0, int(reading.get("downloaded_bytes") or 0))
+            companions = [(repo, self._companion_reading(repo)) for repo in self._companion_repos()]
+            readings = [(self._model, reading)] + [
+                (repo, item) for repo, item in companions if item is not None
+            ]
+            grown = frozenset(
+                repo
+                for repo, item in readings
+                if repo in self._repo_bytes
+                and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
             )
+            # The liveness baseline only ever rises: a reading can fall for reasons that
+            # are not bytes leaving the disk, and following it down would let the same
+            # bytes count as fresh growth on the way back up.
+            for repo, item in readings:
+                self._repo_bytes[repo] = max(
+                    self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
+                )
+            self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0
-            self._display.update(reading)
+            active_repo, active = _active_reading(readings, grown, self._active_repo)
+            self._active_repo = active_repo
+            self._display.update(active, active_repo)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
             # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 import pytest
 import typer
 
@@ -13,6 +15,9 @@ import unsloth_cli.commands.start as start_cli
 
 BASE = "http://127.0.0.1:8888"
 MODEL = "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF"
+ADAPTER = "owner/coder-lora"
+ADAPTER_BASE = "owner/coder-base"
+ADAPTER_BYTES = 20 * 1024**2
 KEY_LINE = f"{start_cli._START_API_KEY_PREFIX}sk-unsloth-test\n"
 EXPECTED_BYTES = 500 * 1024**3
 STEP_S = 120.0
@@ -89,6 +94,7 @@ class Harness:
         rebound = False,
         ready_at = None,
         tail = KEY_LINE,
+        model = MODEL,
     ):
         self.clock = FakeClock(STEP_S)
         self.log_path = None
@@ -106,6 +112,8 @@ class Harness:
         self.chunk_bytes = chunk_bytes
         self.ready_at = ready_at
         self.tail = tail
+        self.model = model
+        self.base_polls = 0
         self.server = FakePopen()
         self.iterations = 0
         self.polls = 0
@@ -128,6 +136,20 @@ class Harness:
         timeout = 30,
         error = None,
     ):
+        if url.endswith("/active-downloads"):
+            if self.model != ADAPTER:
+                return {"downloads": []}
+            return {"downloads": [{"repo_id": ADAPTER_BASE, "owner": "load", "state": "running"}]}
+        if "download-progress" in url and urlencode({"repo_id": ADAPTER}) in url:
+            return {
+                "downloaded_bytes": ADAPTER_BYTES,
+                "completed_bytes": ADAPTER_BYTES,
+                "expected_bytes": ADAPTER_BYTES,
+                "progress": 1.0,
+                "cache_measured": True,
+            }
+        if urlencode({"repo_id": ADAPTER_BASE}) in url:
+            self.base_polls += 1
         if "gguf-variants" in url:
             return {
                 "default_variant": "Q4_K_M",
@@ -212,12 +234,12 @@ class Harness:
             with open(self.log_path, "ab") as handle:
                 handle.write(self.chatter(self.iterations).encode())
         if self.ready_at is not None and self.iterations >= self.ready_at:
-            self.tail = f"{KEY_LINE}Model loaded: {MODEL}\n"
+            self.tail = f"{KEY_LINE}Model loaded: {self.model}\n"
             return True
         return False
 
     def start(self):
-        return start_cli._start_studio_server(BASE, MODEL, start_cli.LoadOptions())
+        return start_cli._start_studio_server(BASE, self.model, start_cli.LoadOptions())
 
 
 def test_a_live_download_survives_past_the_idle_cap(monkeypatch):
@@ -399,6 +421,34 @@ def test_a_vanished_cache_mount_is_not_progress(monkeypatch, capsys):
         harness.start()
 
     assert harness.vanished > 0
+    assert harness.shutdowns == [harness.server]
+    assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
+    assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_lora_base_model_download_counts_as_progress(monkeypatch):
+    harness = Harness(monkeypatch, model = ADAPTER, chunk_bytes = 1024**3, ready_at = 40)
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.base_polls >= 40
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_stalled_lora_base_model_still_times_out(monkeypatch, capsys):
+    harness = Harness(
+        monkeypatch,
+        model = ADAPTER,
+        downloaded_bytes = 12 * 1024**3,
+        chunk_bytes = 0,
+    )
+
+    with pytest.raises(typer.Exit):
+        harness.start()
+
+    assert harness.base_polls > 0
     assert harness.shutdowns == [harness.server]
     assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
     assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S

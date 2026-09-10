@@ -3982,6 +3982,442 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
     assert not any(isinstance(event, tuple) and "server ready" in event[-1] for event in created)
 
 
+def _load_listing(*repos):
+    return {"downloads": [{"repo_id": repo, "owner": "load", "state": "running"} for repo in repos]}
+
+
+def test_model_download_progress_counts_a_base_the_load_reports(monkeypatch, capsys):
+    calls = []
+    base_bytes = iter([1024**3, 2 * 1024**3])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append(url)
+        if url.endswith("/api/hub/active-downloads"):
+            return _load_listing("owner/adapter", "owner/base")
+        if url.endswith("download-progress?repo_id=owner%2Fadapter"):
+            return {
+                "downloaded_bytes": 8 * 1024**2,
+                "completed_bytes": 8 * 1024**2,
+                "expected_bytes": 8 * 1024**2,
+                "progress": 1.0,
+            }
+        if url.endswith("download-progress?repo_id=owner%2Fbase"):
+            downloaded = next(base_bytes)
+            return {
+                "downloaded_bytes": downloaded,
+                "completed_bytes": 0,
+                "expected_bytes": 4 * 1024**3,
+                "progress": downloaded / (4 * 1024**3),
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 8 * 1024**2 + 2 * 1024**3
+    assert calls.count(f"{BASE}/api/hub/active-downloads") == 2
+    assert "2.0 GiB / 4.0 GiB" in capsys.readouterr().out
+
+
+def test_model_download_progress_ignores_downloads_the_load_does_not_own(monkeypatch):
+    reads = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/hub/active-downloads"):
+            return {
+                "downloads": [
+                    {"repo_id": "someone/else", "state": "running"},
+                    {"repo_id": "OWNER/ADAPTER", "owner": "load", "state": "running"},
+                ]
+            }
+        reads.append(url)
+        return {"downloaded_bytes": 1024, "expected_bytes": 4096}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    assert progress.downloaded_bytes == 1024
+    assert reads == [f"{BASE}/api/hub/download-progress?repo_id=owner%2Fadapter"]
+
+
+def test_model_download_progress_stops_listing_on_a_server_without_the_route(monkeypatch):
+    listings = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            listings.append(url)
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+        return {"downloaded_bytes": 1024, "expected_bytes": 4096}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert len(listings) == 1
+    assert progress.downloaded_bytes == 1024
+
+
+def test_model_download_progress_asks_again_after_a_transient_listing_error(monkeypatch):
+    listings = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            listings.append(url)
+            if len(listings) == 1:
+                raise urllib.error.URLError("busy")
+            return _load_listing("owner/base")
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    assert progress.downloaded_bytes == 1024
+    progress.poll()
+    assert progress.downloaded_bytes == 1024 + 3 * 1024**3
+    assert len(listings) == 2
+
+
+def test_model_download_progress_keeps_its_own_reading_when_a_base_read_fails(monkeypatch):
+    adapter_bytes = iter([4 * 1024**2, 9 * 1024**2])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            return _load_listing("owner/base")
+        if url.endswith("repo_id=owner%2Fbase"):
+            raise TimeoutError("the server took too long to answer")
+        return {"downloaded_bytes": next(adapter_bytes), "expected_bytes": 40 * 1024**2}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    assert progress.downloaded_bytes == 4 * 1024**2
+    progress.poll()
+
+    assert progress.downloaded_bytes == 9 * 1024**2
+    assert progress._failures == 0
+
+
+def test_model_download_progress_keeps_an_unknown_total_unknown(monkeypatch, capsys):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            return _load_listing("owner/base")
+        if url.endswith("repo_id=owner%2Fadapter"):
+            return {
+                "downloaded_bytes": 20 * 1024**2,
+                "completed_bytes": 20 * 1024**2,
+                "expected_bytes": 20 * 1024**2,
+                "progress": 1.0,
+            }
+        return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    out = capsys.readouterr().out
+    assert progress.downloaded_bytes == 20 * 1024**2 + 3 * 1024**3
+    assert "100%" not in out
+    assert "3.0 GiB" in out
+
+
+def test_model_download_progress_does_not_invent_a_total_across_repos(monkeypatch, capsys):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            return _load_listing("owner/base", "unsloth/base-unsloth-bnb-4bit")
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {
+                "downloaded_bytes": 16 * 1024**3,
+                "completed_bytes": 16 * 1024**3,
+                "expected_bytes": 16 * 1024**3,
+            }
+        if url.endswith("repo_id=unsloth%2Fbase-unsloth-bnb-4bit"):
+            return {
+                "downloaded_bytes": 2 * 1024**3,
+                "completed_bytes": 0,
+                "expected_bytes": 6 * 1024**3,
+            }
+        return {"downloaded_bytes": 0, "completed_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    out = capsys.readouterr().out
+    assert "2.0 GiB / 6.0 GiB" in out
+    assert "22.0 GiB" not in out
+    assert progress.downloaded_bytes == 18 * 1024**3
+
+
+def test_model_download_progress_counts_a_hub_download_the_load_attached_to(monkeypatch):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            return {
+                "downloads": [{"repo_id": "owner/base", "load_attached": True, "state": "running"}]
+            }
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    assert progress.downloaded_bytes == 1024 + 3 * 1024**3
+
+
+def test_model_download_progress_keeps_polling_a_repo_the_list_dropped(monkeypatch):
+    listings = iter([_load_listing("owner/base"), {"downloads": []}])
+    base_bytes = iter([1024**3, 2 * 1024**3])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            return next(listings)
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": next(base_bytes), "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 1024 + 2 * 1024**3
+
+
+def test_model_download_progress_polls_a_namespace_less_base_the_load_reports(monkeypatch):
+    reads = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            return _load_listing("gpt2")
+        reads.append(url)
+        if url.endswith("repo_id=gpt2"):
+            return {"downloaded_bytes": 500 * 1024**2, "expected_bytes": 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/gpt2-lora", None)
+
+    progress.poll()
+
+    assert progress.downloaded_bytes == 1024 + 500 * 1024**2
+    assert f"{BASE}/api/hub/download-progress?repo_id=gpt2" in reads
+
+
+def test_download_progress_display_forgets_the_last_repos_total(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    display.update(
+        {
+            "downloaded_bytes": 1024**3,
+            "completed_bytes": 0,
+            "expected_bytes": 60 * 1024**3,
+            "progress": 0.02,
+        },
+        "owner/base",
+    )
+    display.update(
+        {
+            "downloaded_bytes": 6 * 1024**3,
+            "completed_bytes": 0,
+            "expected_bytes": 6 * 1024**3,
+            "progress": 0.99,
+        },
+        "unsloth/base-bnb-4bit",
+    )
+    display.complete()
+
+    out = capsys.readouterr().out
+    assert "100% 6.0 GiB / 6.0 GiB" in out
+    assert "60.0 GiB" not in out.splitlines()[-1]
+
+
+def test_model_download_progress_completes_the_transfer_it_last_showed(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    base_readings = iter(
+        [
+            {
+                "downloaded_bytes": 2 * 1024**3,
+                "completed_bytes": 0,
+                "expected_bytes": 4 * 1024**3,
+                "progress": 0.5,
+            },
+            {
+                "downloaded_bytes": 4 * 1024**3,
+                "completed_bytes": 4 * 1024**3,
+                "expected_bytes": 4 * 1024**3,
+                "progress": 0.99,
+            },
+        ]
+    )
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/active-downloads"):
+            return _load_listing("owner/base")
+        if url.endswith("repo_id=owner%2Fbase"):
+            return next(base_readings)
+        return {
+            "downloaded_bytes": 8 * 1024**2,
+            "completed_bytes": 8 * 1024**2,
+            "expected_bytes": 8 * 1024**2,
+            "progress": 1.0,
+        }
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+    progress.complete()
+
+    out = capsys.readouterr().out
+    assert "100% 4.0 GiB / 4.0 GiB" in out
+    assert "8.0 MiB" not in out
+
+
+def test_active_reading_follows_the_repo_with_bytes_in_flight():
+    model = ("owner/adapter", {"downloaded_bytes": 1024, "completed_bytes": 1024})
+    cached_base = (
+        "owner/base",
+        {"downloaded_bytes": 16 * 1024**3, "completed_bytes": 16 * 1024**3},
+    )
+    transferring = ("unsloth/base-4bit", {"downloaded_bytes": 2 * 1024**3, "completed_bytes": 0})
+
+    # A base already complete in the cache is not the transfer to render, even though it
+    # carries by far the most bytes.
+    assert start._active_reading([model, cached_base, transferring]) is transferring
+    # Nothing moving: fall back to the model's own reading rather than a stale companion.
+    assert start._active_reading([model, cached_base]) is model
+
+
+def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    # An adapter finishing near the top of its bar.
+    display.update(
+        {"downloaded_bytes": 95, "completed_bytes": 0, "expected_bytes": 100, "progress": 0.95},
+        "owner/adapter",
+    )
+    # Then a multi-gigabyte base starting from nothing.
+    display.update(
+        {
+            "downloaded_bytes": 1024**3,
+            "completed_bytes": 0,
+            "expected_bytes": 40 * 1024**3,
+            "progress": 0.025,
+        },
+        "owner/base",
+    )
+
+    out = capsys.readouterr().out
+    assert "1.0 GiB / 40.0 GiB" in out
+
+
+def test_active_reading_prefers_a_repo_that_moved_over_a_bigger_partial():
+    corpse = ("unsloth/base-4bit", {"downloaded_bytes": 9 * 1024**3, "completed_bytes": 0})
+    live = ("owner/base", {"downloaded_bytes": 2 * 1024**3, "completed_bytes": 0})
+    model = ("owner/adapter", {"downloaded_bytes": 10, "completed_bytes": 10})
+
+    # Nothing known to have moved: the biggest partial is all there is to go on.
+    assert start._active_reading([model, corpse, live]) is corpse
+    # Once the live repo is seen to move it wins, however large the abandoned blob is.
+    assert start._active_reading([model, corpse, live], frozenset({"owner/base"})) is live
+
+
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
     release = start.threading.Event()
     calls = []

@@ -23,7 +23,7 @@ import time
 import traceback
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = get_logger(__name__)
 from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
@@ -392,6 +392,63 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+def _load_download_repos(
+    mc,
+    load_in_4bit: bool,
+    backend,
+    companions = (),
+) -> list[str]:
+    from hub.utils.paths import is_valid_repo_id
+    from utils.paths import is_local_path
+    from utils.security.file_security import load_scan_target
+    from utils.third_party_source import SPEECH_CODEC_REPOSITORIES
+
+    audio_type = getattr(mc, "audio_type", None)
+    repos = [str(mc.identifier), *(str(repo) for repo in companions)]
+    base = getattr(mc, "base_model", None)
+    if base:
+        repos.append(str(base))
+        mapped = None
+        if getattr(backend, "device", None) == "mlx":
+            try:
+                from unsloth_zoo.mlx.loader import _remap_unsloth_bnb_hub_id_for_mlx
+                mapped = _remap_unsloth_bnb_hub_id_for_mlx(str(base), None)[0]
+            except Exception:
+                mapped = None
+        else:
+            try:
+                from unsloth.models import loader
+                from unsloth.models.loader_utils import get_model_name
+
+                quantized = (
+                    load_in_4bit
+                    and not getattr(mc, "is_audio", False)
+                    and getattr(loader, "ALLOW_BITSANDBYTES", True)
+                )
+                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
+                    mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
+            except Exception:
+                mapped = None
+        if mapped:
+            repos.append(str(mapped))
+    repos.extend(SPEECH_CODEC_REPOSITORIES.get(audio_type, ()))
+    hub_ids: list[str] = []
+    for repo in repos:
+        repo, _subdirs = load_scan_target(repo, ())
+        if is_valid_repo_id(repo) and not is_local_path(repo) and repo not in hub_ids:
+            hub_ids.append(repo)
+    return hub_ids
+
+
+def _hub_cache_dir() -> Optional[str]:
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        return str(get_hf_cache_paths().hub_cache)
+    except Exception:
+        return None
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -462,6 +519,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
 
+        _send_response(
+            resp_queue,
+            {
+                "type": "downloads",
+                "repo_ids": _load_download_repos(mc, load_in_4bit, backend, targets),
+                "xet_disabled": os.environ.get("HF_HUB_DISABLE_XET") == "1",
+                "hub_cache": _hub_cache_dir(),
+            },
+        )
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
             on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
