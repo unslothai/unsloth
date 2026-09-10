@@ -61,9 +61,8 @@ export function DebuggingTab() {
   // A burst larger than one response continues on the next poll, which in
   // manual mode never comes unless the user knows to ask for it.
   const [morePending, setMorePending] = useState(false);
-  // File logging is off and an older session's log is still on disk, so the
-  // pane shows real content that will never grow. Unsaid, a stale log is
-  // indistinguishable from a live one.
+  // File logging is off and an older session's log is still on disk, so the pane shows real content
+  // that will never grow. Unsaid, a stale log is indistinguishable from a live one.
   const [staleSession, setStaleSession] = useState(false);
   const { copied, copy } = useCopyFeedback();
 
@@ -126,11 +125,10 @@ export function DebuggingTab() {
         return;
       }
       if (isLogSourceGone(error)) {
-        // The id we hold is no longer enumerated (file removed, or pushed out of
-        // the per-family window). The backend sends 404 so the picker rebuilds;
-        // without this the loop re-polls a dead id forever. Reselecting the
-        // server's default terminates: it comes from the same walk, and
-        // "nothing at all" is a 200 with a status, not another 404.
+        // The id we hold is no longer enumerated (file removed, or pushed out of the per-family
+        // window). The backend sends 404 so the picker rebuilds; without this the loop re-polls a
+        // dead id forever. Reselecting the server's default terminates: it comes from the same
+        // walk, and "nothing at all" is a 200 with a status, not another 404.
         cursorRef.current = null;
         await refreshSources({ signal, reselect: true });
         return;
@@ -140,9 +138,8 @@ export function DebuggingTab() {
     [refreshSources, t],
   );
 
-  // The llama runner writes a NEW file per load attempt, so a list fetched at
-  // mount goes stale exactly when it matters: fail a load with the tab open and
-  // that failure's log is not offered.
+  // The llama runner writes a NEW file per load attempt, so a list fetched at mount goes stale
+  // exactly when it matters: fail a load with the tab open and that failure's log is not offered.
   const rescanSourcesIfStale = useCallback(
     async (signal?: AbortSignal) => {
       if (Date.now() - lastSourceScanRef.current < SOURCE_RESCAN_MS) return;
@@ -216,10 +213,9 @@ export function DebuggingTab() {
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
     setRealpath(null);
-    // Every notice below describes the file being left, so all of them go with
-    // it. Clearing only `dropped` let a failed first read on the new source keep
-    // claiming the OLD one's state, and in manual mode nothing retries: the pane
-    // sat there calling a live log a frozen session.
+    // Every notice below describes the file being left, so all of them go with it. Clearing only
+    // `dropped` let a failed first read on the new source keep claiming the OLD one's state, and in
+    // manual mode nothing retries: the pane sat there calling a live log a frozen session.
     setDropped(false);
     setMorePending(false);
     setStaleSession(false);

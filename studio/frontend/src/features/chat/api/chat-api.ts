@@ -108,10 +108,10 @@ export class StreamInterruptedError extends Error {
 /** Thrown when a reasoning model consumes its output budget before emitting any standard content,
  *  so the chat UI can explain a completed stream holding only a thinking panel. */
 export class GenerationLengthError extends Error {
-  /** @param maxTokensWasSet whether the user actually configured a Max Tokens value. With Max Tokens
-   *  on "Max" the backend already requests the whole context length, so generation stops at the
-   *  context wall and "Increase Max Tokens" cannot be followed. The false branch also covers a
-   *  finite cap the prompt left no room for, hence the wording about raising the cap. */
+  /** @param maxTokensWasSet whether the user actually configured a Max Tokens value. With Max Tokens on "Max"
+     *  the backend already requests the whole context length, so generation stops at the context wall and
+     *  "Increase Max Tokens" cannot be followed. The false branch also covers a finite cap the prompt left no room
+     *  for, hence the wording about raising the cap. */
   constructor(maxTokensWasSet = true) {
     super(
       maxTokensWasSet
@@ -828,10 +828,10 @@ export async function getChatThread(
   threadId: string,
   options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
-  // Bounded for the delete reconciliation: an unbounded read there would hang the delete the write
-  // timeout exists to keep moving. `timeoutMs` is for a caller with a deadline of its own,
-  // since the settings pairing gives up long before the write timeout and each retry otherwise
-  // left the previous attempt running. `signal` ends it earlier still.
+  // Bounded for the delete reconciliation: an unbounded read there would hang the delete the write timeout
+  // exists to keep moving. `timeoutMs` is for a caller with a deadline of its own, since the settings pairing
+  // gives up long before the write timeout and each retry otherwise left the previous attempt running. `signal`
+  // ends it earlier still.
   const timeout =
     options.bounded || options.timeoutMs !== undefined
       ? disposableTimeoutSignal(options.timeoutMs ?? THREAD_WRITE_TIMEOUT_MS)
@@ -883,9 +883,9 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
-  /** Off for one update inside a bulk action, which announces itself once at the end. Every
-   *  notification is a synchronous localStorage write that wakes the other tabs, so Archive All
-   *  would otherwise send one per thread. */
+  /** Off for one update inside a bulk action, which announces itself once at the end. Every notification is a
+     *  synchronous localStorage write that wakes the other tabs, so Archive All would otherwise send one per
+     *  thread. */
   notify?: boolean;
   /** Give up on the write; used to stand a superseded settings PATCH down. */
   signal?: AbortSignal;
@@ -1107,9 +1107,9 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
-/** The server owns this message and will reject every save of it. Distinct from a transient
- *  failure: retrying can never succeed, so callers must stop rather than back off. Without
- *  this the per-chunk autosave re-sent on every chunk for the whole generation. */
+/** The server owns this message and will reject every save of it. Distinct from a transient failure: retrying
+ *  can never succeed, so callers must stop rather than back off. Without this the per-chunk autosave re-sent on
+ *  every chunk for the whole generation. */
 /** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
 const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
 const CONFLICT_KIND_PROTECTED = "protected";
@@ -1563,9 +1563,8 @@ export async function* streamChatCompletions(
       sawReasoningContent &&
       !sawAssistantContent
     ) {
-      // The backend substitutes the full context length when the user left Max Tokens on "Max", so a
-      // payload value equal to it is indistinguishable from unset, and both mean the setting is
-      // not the lever.
+      // The backend substitutes the full context length when the user left Max Tokens on "Max", so a payload value
+      // equal to it is indistinguishable from unset, and both mean the setting is not the lever.
       throw new GenerationLengthError(
         maxTokensIsTheLimit({
           cap: payload.max_tokens ?? null,
@@ -1698,9 +1697,8 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Only abort on an early/abnormal exit: after a natural [DONE] the request is logically complete
-    // and the backend finalizes its api-monitor entry, so cancelling here can mark a successful
-    // request as cancelled.
+    // Only abort on an early/abnormal exit: after a natural [DONE] the request is logically complete and the
+    // backend finalizes its api-monitor entry, so cancelling here can mark a successful request as cancelled.
     if (!completed) {
       try {
         await reader.cancel();
