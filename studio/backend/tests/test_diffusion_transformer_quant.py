@@ -1379,8 +1379,6 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
         apply_small_m_padding(object(), TQ_INT8, "minimax-h3")
 
 
-
-
 def test_the_zero_row_guard_is_nvfp4_only():
     """The zero-row guard is nvfp4 only."""
     from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
@@ -1550,8 +1548,6 @@ def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
         assert (candidates[0] if candidates else None) == chosen, (cc, family)
 
 
-
-
 def _prefer(
     monkeypatch,
     row,
@@ -1663,8 +1659,6 @@ def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
     assert tq._FAMILY_AUTO_PREFER == {}
     for family in (None, "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-ti2v-5b"):
         assert select_transformer_quant_scheme(_target(), "auto", family = family) == TQ_FP8
-
-
 
 
 def test_divisible_for_scheme_matches_each_gemm():
