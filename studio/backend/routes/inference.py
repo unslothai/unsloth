@@ -26461,6 +26461,27 @@ def _servable_catalog_rows(
     ]
 
 
+def _openai_residency_fields(loaded: bool) -> dict:
+    """Authoritative residency for OpenAI-compatible catalogs.
+
+    Open WebUI's llama.cpp provider ignores a bare ``loaded`` boolean and, when
+    ``status`` is missing, assumes the model is resident
+    (``get_provider_model_loaded_state``). Publish both ``loaded`` and
+    ``status.value`` from the same lifecycle truth so a downloaded-but-unloaded
+    model stays ``loaded: false`` after that merge.
+    """
+    is_loaded = bool(loaded)
+    return {
+        "loaded": is_loaded,
+        "status": {"value": "loaded" if is_loaded else "unloaded"},
+    }
+
+
+def _with_openai_residency(entry: dict) -> dict:
+    """Stamp catalog/list rows with residency fields derived from ``loaded``."""
+    return {**entry, **_openai_residency_fields(bool(entry.get("loaded")))}
+
+
 async def _openai_catalog_objects() -> list[dict]:
     """Every model the server knows about for ``GET /v1/models``: the loaded
     model(s) plus locally available (downloaded/cached) models discovered by
@@ -26472,7 +26493,7 @@ async def _openai_catalog_objects() -> list[dict]:
     # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
-        by_id[entry["id"]] = {**entry, "loaded": True}
+        by_id[entry["id"]] = _with_openai_residency({**entry, "loaded": True})
     orchestrator = _peek_inference_backend()
     resident_id = _orchestrator_public_model_id(orchestrator) if orchestrator else None
 
@@ -26493,7 +26514,7 @@ async def _openai_catalog_objects() -> list[dict]:
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
-            "loaded": loaded,
+            **_openai_residency_fields(loaded),
         }
         # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
         # For the resident model that must be the quant actually loaded, not the
@@ -26517,7 +26538,7 @@ async def _openai_catalog_objects() -> list[dict]:
     for obj in media:
         by_id.setdefault(obj["id"], obj)
 
-    return list(by_id.values())
+    return [_with_openai_residency(entry) for entry in by_id.values()]
 
 
 # Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
@@ -26558,7 +26579,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
-            return {**entry, "loaded": True}
+            return _with_openai_residency({**entry, "loaded": True})
 
     objects = await _openai_catalog_objects()
     for model in objects:

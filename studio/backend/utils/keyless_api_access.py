@@ -65,6 +65,9 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
+        # Open WebUI management catalog (same list as /v1/models, outside /v1).
+        # Load/unload stay credentialed: they mutate residency.
+        ("GET", "/models"),
     }
 )
 
