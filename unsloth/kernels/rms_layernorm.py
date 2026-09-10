@@ -169,8 +169,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         shape = X.shape
         dim: int = shape[-1]
         X = X.reshape(-1, dim).contiguous()
-        # The kernels read W with unit column stride, and this is also the W saved
-        # for backward, so a sliced or expanded weight has to be materialized too.
+        # kernels read W at unit stride, and this W is the one saved for backward.
         W = W.contiguous()
         n_rows: int
         n_cols: int
