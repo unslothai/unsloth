@@ -1,4 +1,3 @@
-import pathlib
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
@@ -22,6 +21,7 @@ complete; the runtime validator used to require it, delete the sidecar and retry
 install that had just failed.
 """
 
+import pathlib
 import sys
 import types as _types
 from pathlib import Path
