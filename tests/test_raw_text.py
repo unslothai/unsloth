@@ -198,15 +198,17 @@ def test_raw_text_loader():
         # Spaces around newlines trimmed on both sides, even across multiple newlines.
         assert preprocessor.clean_text("foo \n\n bar") == "foo\n\nbar"
 
-        # Stripping a non-ASCII char between spaces must not leave a double space
+        # Stripping a non-ASCII symbol between spaces must not leave a double space. These used to
+        # use a letter (\u00e9) as the stand-in for "a non-ASCII char"; letters are kept now, so the
+        # symbols carry the whitespace assertions instead.
         assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
-        assert preprocessor.clean_text("a \u00e9 b") == "a b"
+        assert preprocessor.clean_text("a \u2122 b") == "a b"
         assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
 
-        # Stripping a non-ASCII char adjacent to a newline must not leave a stray space.
-        assert preprocessor.clean_text("foo \u00e9\nbar") == "foo\nbar"
-        assert preprocessor.clean_text("foo\n\u00e9 bar") == "foo\nbar"
-        # The double-space collapse must not swallow a paragraph break near a non-ASCII char.
+        # Stripping a non-ASCII symbol adjacent to a newline must not leave a stray space.
+        assert preprocessor.clean_text("foo \u00a9\nbar") == "foo\nbar"
+        assert preprocessor.clean_text("foo\n\u2122 bar") == "foo\nbar"
+        # The double-space collapse must not swallow a paragraph break near a non-ASCII symbol.
         assert preprocessor.clean_text("a \u00a9\n\nb") == "a\n\nb"
 
         # Idempotence: clean_text twice == once.
@@ -236,6 +238,45 @@ def test_raw_text_loader():
 
     finally:
         os.unlink(test_file)
+
+
+def test_clean_text_keeps_letters_marks_and_punctuation():
+    """Letters, digits, marks and punctuation from any script are text, not noise.
+
+    The character class used to be [^\\x20-\\x7E\\n], which deleted every non-ASCII character, so an
+    accented word lost its accents and a document in any non-Latin script came back empty.
+    Marks have to survive or Devanagari and Arabic lose their vowels, and punctuation has to
+    survive or a Chinese sentence loses its full stop.
+
+    Deliberately a top-level test: test_raw_text_loader wraps its body in try/except, so an
+    assertion added there is swallowed and the suite still reports a pass.
+    """
+    preprocessor = TextPreprocessor()
+    for script_text in [
+        "Le caf\u00e9 \u00e9tait tr\u00e8s bon.",
+        "\u00bfD\u00f3nde est\u00e1 la ni\u00f1a?",
+        "Gr\u00f6\u00dfe und Stra\u00dfe",
+        "\u673a\u5668\u5b66\u4e60\u5f88\u6709\u8da3\u3002",
+        "\u3053\u3093\u306b\u3061\u306f\u3001\u4e16\u754c\u3002",
+        "\u0645\u0631\u062d\u0628\u0627\u060c \u0628\u0627\u0644\u0639\u0627\u0644\u0645",
+        "\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440!",
+        "\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e\u0964",
+        "\uc548\ub155\ud558\uc138\uc694.",
+        "\u0393\u03b5\u03b9\u03ac \u03c3\u03bf\u03c5",
+    ]:
+        assert preprocessor.clean_text(script_text) == script_text, (
+            f"clean_text must not drop letters, marks or punctuation: {script_text!r}"
+        )
+
+
+def test_clean_text_still_drops_symbols_and_control_characters():
+    """The control for the test above: what was noise before is still noise."""
+    preprocessor = TextPreprocessor()
+    assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
+    assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
+    assert preprocessor.clean_text("a\x00b") == "ab"
+    assert preprocessor.clean_text("a\x1bb") == "ab"
+    assert preprocessor.clean_text("\ufeffhello") == "hello"
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():

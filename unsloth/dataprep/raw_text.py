@@ -13,6 +13,7 @@ import os
 import re
 import json
 import csv
+import unicodedata
 from typing import List, Dict, Any, Union, Optional
 from datasets import Dataset
 from pathlib import Path
@@ -303,7 +304,12 @@ def _iter_column(dataset, column):
 
 class TextPreprocessor:
     _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
-    _INVALID_CHARS_PATTERN = re.compile(r"[^\x20-\x7E\n]")
+    # Outside printable ASCII, keep whatever is part of the text and drop the rest. This used to
+    # be the class [^\x20-\x7E\n], which deleted every non-ASCII character, so "café" came back
+    # as "caf" and a document in any non-Latin script came back empty. Marks have to survive or
+    # Devanagari and Arabic lose their vowels, and punctuation has to survive or a Chinese
+    # sentence loses its full stop. Symbols (\u00a9, emoji) are still dropped, as before.
+    _KEEP_UNICODE_CATEGORIES = ("L", "N", "M", "P")
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n{3,}")
@@ -316,7 +322,12 @@ class TextPreprocessor:
         """Remove unwanted characters, normalize whitespace"""
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         text = self._WHITESPACE_PATTERN.sub(" ", text)
-        text = self._INVALID_CHARS_PATTERN.sub("", text)
+        text = "".join(
+            c for c in text
+            if " " <= c <= "~"
+            or c == "\n"
+            or unicodedata.category(c)[0] in self._KEEP_UNICODE_CATEGORIES
+        )
         text = self._MULTIPLE_SPACES_PATTERN.sub(" ", text)
         text = self._NEWLINE_SPACES_PATTERN.sub("\n", text)
         text = self._MULTIPLE_NEWLINES_PATTERN.sub("\n\n", text)
