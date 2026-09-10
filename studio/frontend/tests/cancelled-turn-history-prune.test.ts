@@ -69,8 +69,7 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
 });
 
 test("a Stop while a model loads arrives as a Stop", () => {
-  // waitForModelReady's rejection is not caught inside run(), so a bare Error would reach
-  // assistant-ui as reason "error" and the turn would replay as a failure, not a Stop.
+  // Uncaught in run(), so a bare Error reaches assistant-ui as "error" and replays as a failure.
   assert.match(
     adapter,
     /reject\(abortSignal\.reason \?\? new DOMException\("Aborted", "AbortError"\)\)/,
@@ -78,9 +77,7 @@ test("a Stop while a model loads arrives as a Stop", () => {
 });
 
 test("a Stop that beats the durable admission arrives as a Stop", () => {
-  // createChatGenerationRunUntilAbort resolves null only when the Stop won the race. Returning
-  // there yields nothing, so assistant-ui settles the turn "complete", the fill never engages,
-  // and the prompt is pruned away again -- the same defect as the waitForModelReady case above.
+  // Null only when the Stop won the race; a bare return settles the turn "complete".
   assert.match(
     adapter,
     /throw runSignal\.reason \?\?\s*new DOMException\("Aborted", "AbortError"\)/,

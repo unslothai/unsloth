@@ -1472,9 +1472,8 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
   );
 }
 
-/** A Stop with no output serialises empty, so pruneOutboundHistory would drop the user
- *  prompt once a later turn follows it (#10428 after #10445). Nothing was yielded, so
- *  `status` is the only record left, and only `cancelled` there is a deliberate Stop. */
+/** #10428: an empty Stop serialises empty and pruneOutboundHistory takes its prompt too.
+ *  Nothing was yielded, so `status` is all that is left, and only `cancelled` is deliberate. */
 function stoppedAssistantReplayText(message: RunMessage): string {
   const info = readIncompleteInfo(
     (message as { metadata?: unknown }).metadata,
@@ -2112,8 +2111,7 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
       if (abortSignal?.aborted) {
-        // The real reason, not a bare Error: this rejection leaves the adapter uncaught, and a
-        // Stop that does not arrive as an AbortError is filed as a failed turn (#10428 review).
+        // Uncaught in the adapter, and a Stop that is not an AbortError files as a failure (#10428).
         reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
         return;
       }
@@ -6327,10 +6325,8 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    // Admission only resolves null when the Stop won the race, and returning here
-                    // yields nothing, so assistant-ui settles the turn "complete". A Stop that does
-                    // not arrive as an AbortError is filed as a finished reply, the fill above never
-                    // engages, and the interrupted prompt is pruned away again (#10428).
+                    // Null only when the Stop won the race; a bare return yields nothing, so the
+                    // turn settles "complete" and its prompt is pruned again (#10428).
                     if (generationDecision === "durable") {
                       throw runSignal.reason ??
                         new DOMException("Aborted", "AbortError");
