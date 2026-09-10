@@ -1443,6 +1443,15 @@ def test_a_conflict_the_last_pass_left_behind_does_not_run_the_step(monkeypatch,
     monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: [])
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
     stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.5.0"]}
+    # The record is evidence about the installed set it was made against, no other: a
+    # requirer moved within its range since (a manual pip between two passes) can have
+    # dropped the bound that made the conflict, and the same entry would then hide a
+    # resolvable one. No recorded set (an older manifest) and a different one both run.
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    stack._PASS_EVIDENCE["known_unmet_index"] = "not-the-installed-set"
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    stack._PASS_EVIDENCE["known_unmet_index"] = stack._installed_index_digest()
+    assert stack._PASS_EVIDENCE["known_unmet_index"]
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is True
     monkeypatch.setattr(
         stack.install_manifest,

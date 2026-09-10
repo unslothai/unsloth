@@ -8318,6 +8318,7 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         "pip_check_ok": manifest.get("pip_check_ok"),
         "mlx_health": manifest.get("mlx_health"),
         "known_unmet": manifest.get("known_unmet"),
+        "known_unmet_index": manifest.get("known_unmet_index"),
         "bnb_rocm": manifest.get("bnb_rocm"),
         "bnb_rocm_asset": manifest.get("bnb_rocm_asset"),
     }
@@ -8371,6 +8372,20 @@ def _violated_constraints() -> "list[str]":
 
 
 _CLOSURE_INDEX_CACHE: "tuple[int, dict | None] | None" = None
+
+
+def _installed_index_digest() -> "str | None":
+    """One sha256 over (name, version) of everything installed: what a recorded conflict
+    is evidence about. None when the index cannot be read, which matches no record."""
+    import hashlib
+
+    index = _installed_index()
+    if index is None:
+        return None
+    digest = hashlib.sha256()
+    for name in sorted(index):
+        digest.update(f"{name}=={index[name][0]}\n".encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _installed_index() -> "dict | None":
@@ -8481,7 +8496,13 @@ def _requirements_satisfied(
             # one this step cannot satisfy -- two installed distributions pin the same
             # dependency to disjoint ranges -- so it is not evidence that the step's work
             # is missing. Anything new is. Audit failures ("<...>") are never on the list.
-            known = set((_PASS_EVIDENCE.get("known_unmet") or {}).get(key) or [])
+            # ...and only while the installed set the record was made against is the
+            # one on disk. A requirer that moved within its range since (a manual pip
+            # between two passes) can have dropped the bound that made the conflict,
+            # and the same "<name> <version>" entry would then hide a resolvable one.
+            known: set = set()
+            if _PASS_EVIDENCE.get("known_unmet_index") == _installed_index_digest():
+                known = set((_PASS_EVIDENCE.get("known_unmet") or {}).get(key) or [])
             unmet = [entry for entry in unmet if entry not in known]
             if unmet:
                 # Named under UNSLOTH_VERBOSE because the alternative failure is
@@ -9661,6 +9682,9 @@ def install_python_stack() -> int:
                 },
                 "step_results": dict(_STEP_RESULTS),
                 "known_unmet": _closure_record(),
+                # The installed set that record describes; a record is honoured only
+                # against the same set.
+                "known_unmet_index": _installed_index_digest(),
                 # What the AMD bitsandbytes repair left installed, so the next pass can
                 # tell a wheel it landed on purpose from one another step pulled in.
                 "bnb_rocm": _BNB_ROCM_PASS_PROVENANCE,
