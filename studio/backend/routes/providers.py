@@ -284,7 +284,6 @@ async def create_provider_config(
 
 
 @router.put("/{provider_id}", response_model = ProviderResponse)
-@serialize_provider_config
 async def update_provider_config(
     provider_id: str,
     payload: ProviderUpdate,
@@ -292,6 +291,28 @@ async def update_provider_config(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Update a saved provider configuration."""
+    row, validated_account, needs_proof, restore = await _apply_provider_update(
+        provider_id, payload, credential, via_api_key
+    )
+    if needs_proof and validated_account:
+        # Deliberately outside the serialize_provider_config lock: this awaits the 30s
+        # provider_oauth_write_guard file lock, and holding the config lock across that
+        # wait both stalls every other save for this provider and deadlocks against a save
+        # landing in between — the exact window this rollback is built for. The mutation is
+        # already committed; on failure the rollback restores only this request's columns.
+        try:
+            await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
+        except Exception:
+            restore()
+            raise
+    return _provider_response(row)
+
+
+@serialize_provider_config
+async def _apply_provider_update(
+    provider_id: str, payload: ProviderUpdate, credential: tuple, via_api_key: bool
+):
+    """Serialize and commit one provider mutation; the caller records the catalog proof."""
 
     require_ui_session(via_api_key)
     existing = providers_db.get_provider(provider_id)
@@ -481,26 +502,8 @@ async def update_provider_config(
         raise HTTPException(status_code = 400, detail = "No fields to update")
 
     row = providers_db.get_provider(provider_id)
-    if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models is not None:
-        # Record the proof here rather than when a catalog is read: reading one only
-        # shows which account answered, while this is the point where the row's models
-        # were actually judged against it and stored.
-        # The account the selection was judged against, not whatever owns the connection
-        # by now. remember_catalog_account re-reads under the guard and declines to write
-        # when the bundle has moved on, so a rebind in between records nothing.
-        # Written after the row, never before: a proof recorded ahead of a commit that
-        # then failed would license models this connection never saved. Recording it is
-        # part of the save, so a failure here undoes the row too. Leaving the new models
-        # behind without the proof is the state saved_models_proven_for exists to catch,
-        # and it outlives the process: after a restart, with the plan catalog unreadable,
-        # the row's own slugs stop authorizing chat and the next save is refused as well.
-        if validated_account:
-            try:
-                await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
-            except Exception:
-                _restore_metadata()
-                raise
-    return _provider_response(row)
+    needs_proof = existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models is not None
+    return row, validated_account, needs_proof, _restore_metadata
 
 
 @router.put("/{provider_id}/api-key/migrate", response_model = ProviderResponse)
