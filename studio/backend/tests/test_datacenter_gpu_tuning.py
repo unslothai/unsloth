@@ -1361,3 +1361,27 @@ def test_windows_nvml_candidates_include_the_nvsmi_directory(monkeypatch):
     assert LlamaCppBackend._nvml_library() is None
     assert any("NVSMI" in t for t in tried), tried
     assert tried[0] == "nvml.dll", "the search path should still be tried first"
+
+
+def test_an_explicit_pick_keeps_its_pci_provenance(monkeypatch):
+    """The UI's picker hands back PCI-ordered ids. A torch fallback in the unrelated
+    memory query sets _GPU_IDS_ARE_PCI_INDICES False process-wide, and that must not
+    cost an explicitly selected NVLinked pair its P2P."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 4))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+
+    # Caller says nothing: fall back to the process-wide flag, which vetoes.
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+
+    # Caller knows these ids came from the PCI-ordered picker: no veto.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason(
+        [0, 1], True, ids_are_pci_indices = True
+    ) is None
+
+    # And an explicit False from the caller still vetoes.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason(
+        [0, 1], True, ids_are_pci_indices = False
+    ) is not None

@@ -107,9 +107,11 @@ def _print_nvml_agreement() -> None:
         )
     if topo_yes - nvml_yes:
         print(
-            f"{sorted(topo_yes - nvml_yes)} are NVLink to topo -m but not to NVML. "
-            "This is the\nconservative direction: Studio would simply not enable P2P "
-            "for them."
+            f"{sorted(topo_yes - nvml_yes)} are NVLink to topo -m but not to NVML.\n"
+            "This is the conservative direction: by default NVML answers first, so "
+            "Studio\nwould not enable P2P for them. Setting "
+            "UNSLOTH_P2P_TOPO_CROSSCHECK=1 makes topo -m\nwin any disagreement, which "
+            "would enable them instead."
         )
     print()
 

@@ -9504,12 +9504,15 @@ class LlamaCppBackend:
         cls,
         gpu_indices = None,
         launch_order_pinned = False,
+        ids_are_pci_indices = None,
     ) -> Optional[str]:
         """Fail-closed wrapper around _p2p_veto_reason_inner: anything unexpected
         reads as "do not set P2P", since losing the tuning beats an exception
         escaping into load_model and failing the load."""
         try:
-            return cls._p2p_veto_reason_inner(gpu_indices, launch_order_pinned)
+            return cls._p2p_veto_reason_inner(
+                gpu_indices, launch_order_pinned, ids_are_pci_indices
+            )
         except Exception as e:
             logger.debug(f"peer-fabric check failed: {e}")
             return f"the peer-fabric check could not complete ({type(e).__name__})"
@@ -9519,6 +9522,7 @@ class LlamaCppBackend:
         cls,
         gpu_indices = None,
         launch_order_pinned = False,
+        ids_are_pci_indices = None,
     ) -> Optional[str]:
         """Why GGML_CUDA_P2P must NOT be set for this selection, or None once a
         working NVLink fabric is confirmed for every selected pair. Fails CLOSED on
@@ -9597,7 +9601,12 @@ class LlamaCppBackend:
             # index the matrix verbatim. NVML does not carry that implication, and
             # _get_gpu_memory's torch fallback hands back CUDA ordinals, which index
             # this matrix wrongly under FASTEST_FIRST (#10613).
-            if cls._matrix_is_nvml(matrix) and cls._GPU_IDS_ARE_PCI_INDICES is not True:
+            pci_ids = (
+                cls._GPU_IDS_ARE_PCI_INDICES is True
+                if ids_are_pci_indices is None
+                else ids_are_pci_indices
+            )
+            if cls._matrix_is_nvml(matrix) and not pci_ids:
                 return _pcie(
                     "the GPU selection came from torch rather than nvidia-smi, so "
                     "its ids are CUDA ordinals and cannot be matched against the "
@@ -9706,6 +9715,7 @@ class LlamaCppBackend:
         gpu_indices = None,
         p2p_opted_out = False,
         launch_order_pinned = False,
+        ids_are_pci_indices = None,
     ) -> bool:
         """Inject DC llama.cpp tuning into env in place via setdefault (user values
         win); return whether the box qualified. Only datacenter NVIDIA parts qualify
@@ -9747,7 +9757,9 @@ class LlamaCppBackend:
             veto = (
                 "GGML_CUDA_P2P was turned off in the environment"
                 if p2p_opted_out
-                else LlamaCppBackend._p2p_veto_reason(gpu_indices, launch_order_pinned)
+                else LlamaCppBackend._p2p_veto_reason(
+                    gpu_indices, launch_order_pinned, ids_are_pci_indices
+                )
             )
             if veto is None:
                 applied.append(_apply("GGML_CUDA_P2P", "1"))
@@ -24480,6 +24492,13 @@ class LlamaCppBackend:
                     os.environ.get("CUDA_VISIBLE_DEVICES") is None
                     and LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
                 )
+                # Whether THESE ids are nvidia-smi indices, which is not the same
+                # question as where _get_gpu_memory last got its ids. An explicit pick
+                # is PCI-ordered by construction, so a torch fallback in the unrelated
+                # memory query must not demote it and cost a verified fabric its P2P.
+                _p2p_ids_are_pci = bool(gpu_ids) or (
+                    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
+                )
 
                 # Only when the fabric is NOT confirmed: on a verified NV# pair the
                 # flag is the benchmarked configuration. Datacenter boxes are
@@ -24493,7 +24512,9 @@ class LlamaCppBackend:
                     and self._effective_gpu_count(gpu_indices) > 1
                     and not LlamaCppBackend._warned_no_nvlink
                 ):
-                    _p2p_veto = self._p2p_veto_reason(gpu_indices, _p2p_launch_order_pinned)
+                    _p2p_veto = self._p2p_veto_reason(
+                        gpu_indices, _p2p_launch_order_pinned, _p2p_ids_are_pci
+                    )
                     if _p2p_veto is not None:
                         LlamaCppBackend._warned_no_nvlink = True
                         logger.warning(
@@ -24518,6 +24539,7 @@ class LlamaCppBackend:
                         gpu_indices,
                         p2p_opted_out = self._p2p_user_opted_out(),
                         launch_order_pinned = _p2p_launch_order_pinned,
+                        ids_are_pci_indices = _p2p_ids_are_pci,
                     )
 
                 # Pin to selected GPU(s) (issue #7164; resolved above into gpu_indices).
