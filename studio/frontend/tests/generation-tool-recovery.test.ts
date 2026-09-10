@@ -1161,3 +1161,50 @@ test("the id-less sentinel keeps the file searchable and cannot collide", () => 
   }
   assert.equal(src.match(/`#idless:/g)?.length, 3);
 });
+
+test("a source an earlier recovery saved stays behind text replayed after it", async () => {
+  const citations = "Title: Docs\nURL: https://docs.unsloth.ai/\nSnippet: g";
+  // What a previous recovery session persisted: the card, then the source it appended.
+  const saved = [
+    { type: "text", text: "Searching." },
+    {
+      type: "tool-call",
+      toolCallId: "ws_0:run:1",
+      backendToolCallId: "ws_0",
+      toolName: "web_search",
+      args: {},
+      argsText: "{}",
+      result: citations,
+    },
+    {
+      type: "source",
+      sourceType: "url",
+      id: "https://docs.unsloth.ai/",
+      url: "https://docs.unsloth.ai/",
+      title: "Docs",
+    },
+  ];
+  const { content } = await recoverRun(saved, [
+    { choices: [{ delta: { content: " Here is **what" } }] },
+    { choices: [{ delta: { content: " I found** next." } }] },
+  ]);
+
+  // Carried at its old offset the source would split the reply, and the emphasis with it.
+  assert.equal(content.at(-1)?.type, "source");
+  assert.deepEqual(
+    content.filter((part) => part.type === "source").map((part) => part.url),
+    ["https://docs.unsloth.ai/"],
+  );
+  assert.equal(
+    content
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join(""),
+    "Searching. Here is **what I found** next.",
+  );
+  assert.equal(
+    content.filter((part) => part.type === "text").length,
+    2,
+    "the text either side of the card, not cut again by the source",
+  );
+});

@@ -110,6 +110,33 @@ export function createGenerationToolRecovery(
 ) {
   const pending = new Map<string, CarriedPart>();
   const researchHandoff = newDeepResearchHandoff();
+  // A source a previous recovery appended is carried at the offset it was appended AT, so text
+  // replayed after it lands behind it and cuts the reply in two, breaking any markdown that
+  // spans the cut. `withSources` rebuilds these from the card, so drop them and let every
+  // rebuild re-append them, which is also where the live adapter puts them. A citation source
+  // is anchored where it arrived and has no card to rebuild it, so it stays.
+  const rebuildableSourceIds = new Set(
+    carried.flatMap(({ part }) => {
+      const card = record(part);
+      return card?.type === "tool-call" &&
+        card.result !== undefined &&
+        (card.toolName === "web_search" || card.toolName === "web_fetch")
+        ? parseSourcesFromResult(searchResultText(card.result)).map(
+            (source) => source.id,
+          )
+        : [];
+    }),
+  );
+  for (let i = carried.length - 1; i >= 0; i--) {
+    const part = record(carried[i].part);
+    if (
+      part?.type === "source" &&
+      typeof part.id === "string" &&
+      rebuildableSourceIds.has(part.id)
+    ) {
+      carried.splice(i, 1);
+    }
+  }
   const sourceIds = new Set(
     carried.flatMap(({ part }) => {
       const source = record(part);
