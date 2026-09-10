@@ -3377,3 +3377,120 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     assert backend.last_load_warning is None
+
+
+# --------------------------------------------------------- flash attention pricing
+
+
+def _flash_attn_priced(
+    tmp_path: Path,
+    *,
+    caps = None,
+    **load_kwargs,
+):
+    """Every ``flash_attn`` the launch hands the KV estimator, plus the argv.
+
+    The floors and ``kv_bytes_at`` the seam gives the planner all come out of
+    ``_estimate_kv_cache_bytes``, so what that call is told about flash attention IS
+    what the plan is priced at.
+    """
+    gb = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._get_gguf_size_bytes = lambda _path: 8 * gb
+    backend._can_estimate_kv = lambda: True
+    seen: list = []
+
+    def record_kv(
+        _ctx,
+        _cache_type = None,
+        *args,
+        flash_attn = True,
+        **kwargs,
+    ):
+        seen.append(flash_attn)
+        # Distinguishable, and in llama.cpp's direction: FA off pads V to the model
+        # max, so the FA-off arm is the larger number.
+        return (1 if flash_attn else 2) * gb
+
+    backend._estimate_kv_cache_bytes = record_kv
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
+    backend._select_gpus = lambda *a, **k: ([0], False)
+    backend._select_gpus_split_aware = lambda *a, **k: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: dict(caps or {})
+
+    captured = _launch(backend, gguf, n_ctx = 8192, **load_kwargs)
+    assert seen, "the launch priced no KV cache at all"
+    return seen, captured["cmd"]
+
+
+def test_the_planner_is_priced_at_the_flash_attention_the_launch_runs(tmp_path):
+    """Default launch: --flash-attn on is emitted, so the cache is priced FA ON.
+
+    It used to be pinned off to survive the hard-crash recovery, but that retry now
+    revokes the plan and re-fits, so the pin only over-charged: +17% to +102% against
+    what llama-server allocates on every iSWA model measured, because the FA-off arm
+    pads every layer's V to n_embd_v_gqa_max over the whole model.
+    """
+    seen, cmd = _flash_attn_priced(tmp_path)
+
+    assert cmd[cmd.index("--flash-attn") + 1] == "on"
+    assert set(seen) == {True}, f"the launch priced flash attention as {sorted(set(seen))}"
+
+
+def test_a_typed_flash_attention_off_is_priced_off(tmp_path):
+    """User extras go last and llama.cpp is last-wins, so -fa off is what runs."""
+    seen, cmd = _flash_attn_priced(tmp_path, extra_args = ["-fa", "off"])
+
+    assert cmd[-2:] == ["-fa", "off"]
+    assert set(seen) == {False}, f"the launch priced flash attention as {sorted(set(seen))}"
+
+
+def test_a_build_without_the_flag_is_priced_off(tmp_path):
+    """No --flash-attn to emit means the child runs without it, whatever was asked."""
+    seen, cmd = _flash_attn_priced(tmp_path, caps = {"supports_flash_attn": False})
+
+    assert "--flash-attn" not in cmd
+    assert set(seen) == {False}, f"the launch priced flash attention as {sorted(set(seen))}"
+
+
+def test_the_flash_attention_off_retry_still_gives_the_placement_back(tmp_path):
+    """Why the pin is not needed: the FA-off respawn does not relaunch the plan.
+
+    Every labelled respawn goes through _revoke_spill_plan inside _spawn_and_wait,
+    which strips the -ot / --load-mode / --parallel the plan wrote and appends
+    ``--fit on``; the FA-off rung passes ``label = "-noflash"``, so the launch that
+    runs without flash attention is fitted by llama.cpp, not priced by the planner.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    tree = ast.parse(src)
+    spawn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_spawn_and_wait"
+    )
+    # The revocation is unconditional on `label`, so any rung added later is covered.
+    guard = next(
+        node
+        for node in ast.walk(spawn)
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "label"
+    )
+    assert "_revoke_spill_plan" in ast.dump(guard)
+
+    noflash = [
+        call
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_spawn_and_wait"
+        and any(
+            kw.arg == "label" and getattr(kw.value, "value", None) == "-noflash"
+            for kw in call.keywords
+        )
+    ]
+    assert noflash, "the flash-attention-off retry no longer labels its respawn"

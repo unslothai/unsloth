@@ -1647,9 +1647,9 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
     layer's V is padded to hparams.n_embd_v_gqa_max() over the whole model, which
     is what _estimate_kv_cache_bytes charges via _max_kv_value_width. V goes
     constant while K stays per-layer, so an unpadded vector prices a ratio the
-    total does not have. Not an edge case: load_model pins planned_flash_attn =
-    False unconditionally (llama_cpp.py:16690), so the padded branch is the one
-    every spill plan's total is built from."""
+    total does not have. Reached whenever the launch runs FA off: a build without
+    --flash-attn, a typed -fa off, or the hard-crash recovery, which revokes the
+    plan and re-fits."""
     b = _swa_backend()
     # SWA layers wider than global ones, so the model-wide max is the SWA width
     # and the padding actually moves: n_embd_v_gqa_max = 8 * 256.

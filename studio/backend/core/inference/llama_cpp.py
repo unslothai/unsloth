@@ -12496,9 +12496,9 @@ class LlamaCppBackend:
         # layer's V is padded to hparams.n_embd_v_gqa_max() over the WHOLE model,
         # which is what _estimate_kv_cache_bytes charges (_max_kv_value_width). The
         # V half goes constant while K stays per-layer, so an unpadded vector
-        # prices a ratio the total does not have. Not an edge case: load_model pins
-        # planned_flash_attn = False unconditionally (llama_cpp.py:16690), so the
-        # padded branch is the only one the total ever takes. bpe_v is floored at
+        # prices a ratio the total does not have. Reached whenever the launch runs
+        # FA off: a build without --flash-attn, a typed -fa off, or the hard-crash
+        # recovery, which revokes the plan and re-fits. bpe_v is floored at
         # f16 for a quantised cache, and with V constant that asymmetry moves the
         # ratio too, so carry both rather than cancelling one.
         bpe_k = _kv_bytes_per_elem(cache_type_kv)
@@ -19626,9 +19626,17 @@ class LlamaCppBackend:
                 _pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
                     extra_args, n_layers = self._n_layers
                 )
-                # A hard-crash recovery may relaunch this same plan with FA off.
-                # Size that larger cache up front so the recovery cannot OOM.
-                planned_flash_attn = False
+                # What the argv will carry: this launch emits --flash-attn on whenever
+                # the build has the flag, and the user's extras go last, so only a typed
+                # -fa off turns it back off. NOT pinned False for the hard-crash
+                # recovery: that retry revokes the plan (_drop_tensor_spill) and re-fits
+                # with FA off, so pinning it only over-prices the cache and the compute
+                # buffer on every launch that keeps FA on, by +17% to +102% measured.
+                # env is deliberately ignored: LLAMA_ARG_FLASH_ATTN is applied before
+                # argv (common/arg.cpp:common_params_parse_ex), so the emitted flag wins.
+                planned_flash_attn = bool(
+                    server_caps.get("supports_flash_attn", True)
+                ) and _flash_attn_enabled_from_args(extra_args, default = True, env = {})
                 cache_override = parse_cache_override(extra_args)
                 # Budget the heavier of asymmetric --cache-type-k/-v extras (they
                 # win per axis at launch, appended last); resolve_cache_type_kv only
