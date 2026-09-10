@@ -16,6 +16,15 @@
 
 name: Interrupted install recovery
 
+# The legs live in .github/ci/interrupted-install-matrix.yml, each with a `pr` flag: a
+# pull_request runs the `pr: true` subset (2 of 10), while a push to main, the nightly
+# schedule and workflow_dispatch run all 10, picked by the `select` job below. 6 of the 10
+# are macOS on an account capped at five concurrent macOS jobs, and on every PR audited
+# before the split the full set was cancelled by the next push before its macOS legs had
+# started. Installers plus the ready/stale predicate the probes call: pyproject.toml and
+# the Tauri preflight sources were dropped because neither is an installer and both change
+# far more often than the kill path does.
+
 on:
   pull_request:
     paths:
@@ -24,16 +33,8 @@ on:
       - 'studio/setup.sh'
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
-      - 'studio/src-tauri/src/install.rs'
-      - 'studio/src-tauri/src/preflight.rs'
-      - 'studio/src-tauri/src/preflight/**'
       - 'unsloth_cli/commands/studio.py'
-      # Every leg installs the checkout with `--local`, so this file decides the console
-      # script and the core deps: `-h` and `desktop-capabilities` only survive a torn
-      # install because typer/click/rich are declared here, not in an extra.
-      - 'pyproject.toml'
-      # studio_install_ok and verify-install, the decisions the probe asserts on, live here,
-      # so an install_state() accepting a missing manifest would merge unrun.
+      # install_state() decides ready vs stale for every probe (commands/studio.py:501).
       - 'unsloth_cli/_studio_deps.py'
       - 'studio/install_manifest.py'
       # The requirement files are the phases: studio.txt declares structlog, whose absence
@@ -45,13 +46,45 @@ on:
       - '.github/scripts/interrupt-install.sh'
       - '.github/scripts/interrupt-install.ps1'
       - '.github/scripts/interrupted_install_probe.py'
+      - '.github/scripts/select_install_matrix.py'
+      - '.github/ci/interrupted-install-matrix.yml'
       - '.github/workflows/interrupted-install-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+  # Every push to main that touches an installer runs the full set, so a merge is
+  # covered at merge time and not only by the nightly.
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'install.ps1'
+      - 'studio/setup.sh'
+      - 'studio/setup.ps1'
+      - 'studio/install_python_stack.py'
+      - 'unsloth_cli/commands/studio.py'
+      # install_state() decides ready vs stale for every probe (commands/studio.py:501).
+      - 'unsloth_cli/_studio_deps.py'
+      - 'studio/install_manifest.py'
+      - 'studio/backend/requirements/**'
+      - '.github/scripts/interrupt-install.sh'
+      - '.github/scripts/interrupt-install.ps1'
+      - '.github/scripts/interrupted_install_probe.py'
+      - '.github/scripts/select_install_matrix.py'
+      - '.github/ci/interrupted-install-matrix.yml'
+      - '.github/workflows/interrupted-install-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+  schedule:
+    # Nightly, all 10 legs. Offset from clean-machine-install-ci.yml's 09:23 so the two
+    # do not race for the five macOS slots.
+    - cron: '41 10 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # The event is in the group so a scheduled run and a push to main, which share a ref,
+  # cannot cancel each other; the sha makes it unique per commit on main so a merge burst
+  # cannot cancel a pending run (see studio-backend-ci.yml). On a PR branch the group is
+  # the ref, so a new push cancels the run for the previous one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -60,9 +93,45 @@ env:
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
 
 jobs:
+  select:
+    name: select legs
+    # arm64, not ubuntu-latest: this job fronts every leg, so its queue wait is added to
+    # all of them, and the arm pool starts in minutes where ubuntu-latest queues for hours.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    outputs:
+      interrupt: ${{ steps.pick.outputs.interrupt }}
+      interrupt_windows: ${{ steps.pick.outputs.interrupt_windows }}
+      # Both Windows legs are nightly-only, and an empty matrix is a workflow error rather
+      # than an empty job, so the Windows job gates on this count.
+      interrupt_windows_count: ${{ steps.pick.outputs.interrupt_windows_count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # Pinned to the PyYAML the workflow guards run under, so the file parses the same way
+      # here as in tests/studio/test_install_matrix_selection.py.
+      - name: Install PyYAML
+        run: pip install pyyaml==6.0.2
+
+      - name: Pick the legs for this event
+        id: pick
+        env:
+          MATRIX_FILE: .github/ci/interrupted-install-matrix.yml
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 .github/scripts/select_install_matrix.py \
+            --file "$MATRIX_FILE" --event "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
+
   # ── macOS + Linux: kill at each phase ─────────────────────────────────────
   interrupt:
     name: ${{ matrix.os }} kill@${{ matrix.label }}
+    needs: select
     runs-on: ${{ matrix.os }}
     # Above the deadlines this leg actually configures, or a slow runner is cancelled
     # mid-assertion and the leg proves nothing: 25 min to the marker
@@ -70,46 +139,10 @@ jobs:
     # --help checks, two 300s deep checks, a 300s backend wait) around a repair
     # install. Legs land in 6-10 min in practice; this is the ceiling, not the target.
     timeout-minutes: 90
+    # The legs are in .github/ci/interrupted-install-matrix.yml; every one is a hard gate.
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Only a marker: the driver signals the moment that line appears, and no leg waits
-          # first. Every label prints BEFORE its work, so the kill is inside the phase at
-          # detection, and a delay only bets on how long the phase runs. The bet lost twice,
-          # both times turning a leg into a duplicate of the next one: a flat 3s wait moved
-          # 5 of the 12 legs of staging run 30419729244, and in 30426111484 it carried the
-          # macOS torch leg into "Installing Unsloth" because the PyTorch step, called
-          # minutes long here, finished in under three seconds.
-          #
-          # Every leg is a hard gate, with no continue-on-error cell: a leg allowed to fail
-          # is a warning wearing a red icon, and this workflow's whole claim is that a
-          # killed install cannot report itself healthy.
-          #
-          # The exact reported case: killed during the sub-step that installs structlog.
-          - {os: macos-15, label: studio-deps, marker: 'studio deps'}
-          # Coarse phases, earliest to latest -- each leaves a different partial venv.
-          # No venv cell: "Creating virtual environment" ran 0.107s in staging run
-          # 30419729244 (03:31:07.371 -> 07.478 to "Installing PyTorch"), shorter than any
-          # poll watching the log, so the kill landed in the NEXT phase every time it was
-          # tried (30423181897 and 30424366953 both) and the leg was the torch leg under a
-          # different label. Lost with it: a venv caught half-written, not reachable by
-          # interruption at this resolution, and the only loss -- the torch leg lands at the
-          # top of the PyTorch step, so it leaves a complete venv with nothing in it.
-          - {os: macos-15, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch'}
-          - {os: macos-15, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth'}
-          - {os: macos-15, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup'}
-          # Other dependency-pass sub-steps around the named one. No pip-bootstrap cell, same
-          # reason as venv: "1/10 pip bootstrap" is over before a poll can see it, so in both
-          # 30419729244 and 30424366953 the signal landed in "2/10 unsloth extras", the next
-          # cell down. No base-packages cell either: --local sets skip_base, so
-          # install_python_stack returns before "base packages" prints and that leg ran to
-          # completion, proving nothing.
-          - {os: macos-15, label: unsloth-extras, marker: 'unsloth extras'}
-          - {os: macos-15, label: data-designer,  marker: 'data designer deps'}
-          # Linux: same teardown path, different package manager and process semantics.
-          - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps'}
-          - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch'}
+      matrix: ${{ fromJSON(needs.select.outputs.interrupt) }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -287,16 +320,13 @@ jobs:
     # different root resolution, no bundled-file overlay). Worse, "Installing PyTorch" is
     # only printed by Write-TauriLog (install.ps1:2440), so the torch leg's marker could
     # never appear. The runner is ephemeral, so the default root is safe to install into.
+    needs: select
+    if: needs.select.outputs.interrupt_windows_count != '0'
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # install.ps1:121 parses `--no-torch`; `-SkipTorch` matches no case there and is
-          # silently dropped. The torch leg must NOT skip torch or its marker never appears.
-          - {label: studio-deps, marker: 'studio deps', installArgs: '--tauri --no-torch --local'}
-          - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local'}
+      matrix: ${{ fromJSON(needs.select.outputs.interrupt_windows) }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

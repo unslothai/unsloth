@@ -984,6 +984,19 @@ def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
 
 
+def _preferred_step_error(current: str, candidate: str) -> str:
+    """The failure to report when several steps failed differently.
+
+    An engine failure tells the user to wait and retry, an empty sweep tells them to ask
+    something else, so a later "No results found." must not bury an earlier rate limit.
+    """
+    if not candidate:
+        return current
+    if is_tool_error(current) and not is_tool_error(candidate):
+        return current
+    return candidate
+
+
 def _run_moved_on(fresh: dict | None, attempt: int) -> bool:
     """Whether the run this worker was running has since been re-pointed at a newer question.
 
@@ -2159,6 +2172,8 @@ class ResearchSupervisor:
         document_sources: list[dict] = []
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
+        completed_steps = 0
+        step_error = ""
         question, conversation_context = await asyncio.to_thread(
             _research_question_context,
             run["threadId"],
@@ -2185,6 +2200,7 @@ class ResearchSupervisor:
             elif argument:
                 used_queries.add(argument)
             if step.get("status") != "completed":
+                step_error = _preferred_step_error(step_error, str(result.get("error") or ""))
                 continue
             restored_state = _normalize_research_state(result.get("researchState"))
             if restored_state:
@@ -2237,6 +2253,9 @@ class ResearchSupervisor:
                 f"{item.get('text') or item.get('snippet') or ''}"
                 for item in accepted_rag_sources
             )
+            # An unscraped search persists no excerpt, so a completed step can come back with nothing in it.
+            if web_evidence or rag_evidence:
+                completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
             notes.append(
                 f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}\n\n"
@@ -2547,6 +2566,10 @@ class ResearchSupervisor:
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
             clean_result = strip_result_for_model(result, "web_search")
+            if step_failed:
+                step_error = _preferred_step_error(step_error, clean_result[:500])
+            else:
+                completed_steps += 1
             step_result = {
                 "action": action["action"],
                 "input": argument,
@@ -2591,6 +2614,8 @@ class ResearchSupervisor:
             )
             await self._check_worker_write(run["id"], seq is not None)
         await self._check_active(run["id"])
+        if not completed_steps and not sources and not document_sources:
+            raise ValueError(f"No research step gathered any evidence. {step_error}".rstrip())
         source_catalog = "\n".join(
             f"{index}. Title: {_citation_title(source, source['url'])}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)
