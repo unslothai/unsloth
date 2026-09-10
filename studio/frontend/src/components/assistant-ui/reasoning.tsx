@@ -36,6 +36,7 @@ import {
   startsNewReasoningRound,
   useChatPreferencesStore,
 } from "@/features/chat";
+import { isRenderableRenderHtmlToolPart } from "@/features/chat/artifacts/html-fences";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -61,6 +62,21 @@ import {
 } from "react";
 const ANIMATION_DURATION = 200;
 const AUTO_SCROLL_THRESHOLD_PX = 24;
+
+function selectionIntersectsElement(
+  selection: Selection | null,
+  element: Element | null,
+): boolean {
+  if (!selection || selection.isCollapsed || !element) {
+    return false;
+  }
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    if (selection.getRangeAt(index).intersectsNode(element)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
   variants: {
@@ -499,6 +515,12 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
 
   const messageId = useAuiState(({ message }) => message.id);
 
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
+
+  const reasoningContentRef = useRef<HTMLDivElement>(null);
+
   const reasoningText = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
@@ -541,13 +563,22 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
           : { history: [], messageId, started: true },
       );
     };
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) {
+    if (
+      !selectionIntersectsElement(
+        window.getSelection(),
+        reasoningContentRef.current,
+      )
+    ) {
       startPagination();
       return;
     }
     const handleSelectionChange = () => {
-      if (window.getSelection()?.isCollapsed !== false) {
+      if (
+        !selectionIntersectsElement(
+          window.getSelection(),
+          reasoningContentRef.current,
+        )
+      ) {
         startPagination();
       }
     };
@@ -733,6 +764,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       <ReasoningContent
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
+        ref={reasoningContentRef}
       >
         {paginationActive && (
           <ReasoningPageNavigation
@@ -758,7 +790,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
               ) : (
                 <SearchImagesEnabledContext.Provider value={false}>
                   <MarkdownTextSource
-
+                    messageHasRenderableRenderHtmlTool={
+                      messageHasRenderableRenderHtmlTool
+                    }
                     messageId={messageId}
                     sourceText={page.markdown}
                     streaming={isReasoningStreaming && viewingLatestPage}

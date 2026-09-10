@@ -1002,19 +1002,21 @@ const MarkdownTextImpl = () => {
 };
 
 type MarkdownTextSourceProps = {
+  messageHasRenderableRenderHtmlTool: boolean;
   messageId: string;
   sourceText: string;
   streaming: boolean;
 };
 
 const MarkdownTextSourceImpl = ({
+  messageHasRenderableRenderHtmlTool,
   messageId,
   sourceText,
   streaming,
 }: MarkdownTextSourceProps) => (
   <MarkdownTextRenderer
     isStreaming={streaming}
-    messageHasRenderableRenderHtmlTool={false}
+    messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
     messageId={messageId}
     messageTextKey="[]"
     precedingText=""

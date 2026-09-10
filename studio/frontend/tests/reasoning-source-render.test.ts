@@ -51,6 +51,63 @@ const html = renderToStaticMarkup(createElement(GroupScopeHarness));
 process.stdout.write(html, () => process.exit(0));
 `;
 
+const RENDER_SOURCE_WITH_RENDER_HTML_SIBLING = String.raw`
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  AssistantRuntimeProvider,
+  useLocalRuntime,
+} from "@assistant-ui/react";
+import { createServer } from "vite";
+
+const virtualId = "virtual:reasoning-source-render";
+const resolvedId = "\0" + virtualId;
+const vite = await createServer({
+  appType: "custom",
+  logLevel: "silent",
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true, watch: null },
+  plugins: [{
+    name: "reasoning-source-render",
+    resolveId(id) {
+      return id === virtualId ? resolvedId : undefined;
+    },
+    load(id) {
+      if (id !== resolvedId) return undefined;
+      return 'export { MarkdownTextSource } from "/src/components/assistant-ui/markdown-text.tsx"; export { useChatRuntimeStore } from "/src/features/chat/index.ts";';
+    },
+  }],
+});
+const loaded = await vite.ssrLoadModule(virtualId);
+Object.assign(loaded.useChatRuntimeStore.getInitialState(), {
+  artifactsEnabled: true,
+  collapseHtmlArtifacts: true,
+  loadedIsDiffusion: false,
+});
+const adapter = { async *run() {} };
+const sourceText = [
+  "\`\`\`html",
+  "<!DOCTYPE html>",
+  "<html><body>reasoning HTML fence</body></html>",
+  "\`\`\`",
+].join(String.fromCharCode(10));
+function GroupScopeHarness() {
+  const runtime = useLocalRuntime(adapter);
+  return createElement(
+    AssistantRuntimeProvider,
+    { runtime },
+    createElement(loaded.MarkdownTextSource, {
+      messageHasRenderableRenderHtmlTool: true,
+      messageId: "reasoning-group-message",
+      sourceText,
+      streaming: false,
+    }),
+  );
+}
+const html = renderToStaticMarkup(createElement(GroupScopeHarness));
+process.stdout.write(html, () => process.exit(0));
+`;
+
 test("source Markdown renders in an assistant root scope without a message part", async () => {
   const { stdout } = await execFileAsync(
     process.execPath,
@@ -67,4 +124,20 @@ test("source Markdown renders in an assistant root scope without a message part"
     stdout,
     /<span[^>]+data-streamdown="strong"[^>]*>reasoning page<\/span>/,
   );
+});
+
+test("source Markdown suppresses a duplicate HTML card when render_html is present", async () => {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--input-type=module", "--eval", RENDER_SOURCE_WITH_RENDER_HTML_SIBLING],
+    {
+      cwd: process.cwd(),
+      maxBuffer: 1_000_000,
+      timeout: 30_000,
+    },
+  );
+
+  assert.match(stdout, /data-streamdown="code-block"/);
+  assert.match(stdout, /reasoning HTML fence/);
+  assert.doesNotMatch(stdout, /Open HTML preview preview/);
 });
