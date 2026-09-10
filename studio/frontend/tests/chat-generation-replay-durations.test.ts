@@ -161,3 +161,44 @@ test("the follower feeds the clock, the seed and the publish", () => {
     "the append-only helper is back: it shifts every group after the summary by one",
   );
 });
+
+// The array's LENGTH says how many groups exist; it never said whether the LAST one had finished. Consecutive
+// closed blocks coalesce into ONE rendered group, so a tab that shut mid-thought leaves a number for a thought
+// this reader is still inside -- `groups > groupCount` is false for it, and with no `startedAt` to resume from
+// `resumeGroup` bailed and the stale pre-close value was all anyone would ever know about it.
+test("a seeded thought that keeps growing here counts the seconds BOTH tabs watched", () => {
+  const replay = createRecoveryReplay([{ type: "reasoning", text: "thought one" }], [4]);
+  replay.applyChunk(thought(" and went on for six more seconds"), 3_000);
+  replay.applyChunk(answer("the answer"), 9_000);
+  assert.deepEqual(
+    replay.durations().reasoningDurations,
+    [10],
+    "the four the closing tab measured AND the six this one watched -- not the stale 4, and not the 6 alone",
+  );
+});
+
+test("an answer starting here does not re-time a thought the closing tab finished", () => {
+  // The other half of it: a seeded group that had ALREADY closed must keep the number it arrived with. Growth
+  // is what reopens it, and an answer streaming past the end of the block is not growth.
+  const replay = createRecoveryReplay([{ type: "reasoning", text: "thought one" }], [4]);
+  replay.applyChunk(answer("the answer, which goes on for a while"), 9_000);
+  assert.deepEqual(
+    replay.durations().reasoningDurations,
+    [4],
+    "seconds nobody watched are not re-measured as seconds somebody did",
+  );
+});
+
+test("a server summary arriving after the seed describes the thought it lands on", () => {
+  // A resumed group had no summary target either: `recordServerDuration` only writes where a group started,
+  // and nothing here had "started" anything -- so the authoritative number was dropped on the floor.
+  const replay = createRecoveryReplay([{ type: "reasoning", text: "thought one" }], [4]);
+  replay.applyChunk(thought(" still going"), 3_000);
+  replay.recordServerDuration(9_000);
+  replay.applyChunk(answer("done"), 6_000);
+  assert.deepEqual(
+    replay.durations().reasoningDurations,
+    [9],
+    "the server's number wins for the group it describes",
+  );
+});

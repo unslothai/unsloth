@@ -216,9 +216,19 @@ export function createRecoveryReplay(
   // renderer indexes its `reasoningDurations` by, which is what keeps index N of one the same thought as
   // index N of the other.
   let clockAt = 0;
+  // The seed's length says how many groups exist, never whether the LAST one had finished when the tab before
+  // this one shut: consecutive closed blocks coalesce into one rendered group, so the run can still be inside a
+  // thought the seed already has a number for. How much of that thought the closing tab had read is what lets
+  // the tracker tell that from an answer that started streaming, and the seconds it watched then count on top
+  // of the value it arrived with instead of overwriting it.
   const groupTiming = createReasoningDurationTracker(
     () => clockAt,
-    seedDurations ? { durations: seedDurations } : undefined,
+    seedDurations
+      ? {
+          durations: seedDurations,
+          lastGroupTextLength: lastReasoningGroupTextLength(seeded.parts),
+        }
+      : undefined,
   );
 
   /** The one place the reply grows, so a call's boundary is recorded at the character it happened at.
