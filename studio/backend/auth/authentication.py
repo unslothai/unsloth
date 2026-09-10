@@ -355,9 +355,8 @@ async def credentials_for_token(
 
 
 async def subject_for_header_or_query_token(request: Any, token: Optional[str]) -> str:
-    """Resolve the bearer from ``Authorization`` or, failing that, from a ``?token=`` the route read
-    for itself, and return its subject. An ``<img src>``, an ``<a download>`` and the native save
-    command all fetch without a header, so the query is the only place their token can ride."""
+    """The subject of the bearer in ``Authorization``, or failing that in a ``?token=`` the route
+    read for itself. An ``<img src>`` and the native save command fetch without a header."""
     header = request.headers.get("authorization") or ""
     header_token = header[7:] if header.lower().startswith("bearer ") else ""
     # A blank header is the absent header, so the `?token=` such a caller sends is still owed.

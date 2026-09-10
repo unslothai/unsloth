@@ -61,8 +61,8 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
 
 
 def _is_pandas_missing(value: Any) -> bool:
-    """pandas' own missing sentinels. Identity, not ``pd.isna``, which answers element-wise for a
-    list or an array; these two are singletons, so there is nothing to broadcast over."""
+    """pandas' own missing sentinels. Identity rather than ``pd.isna``, which answers element-wise
+    for a list or an array; these two are singletons."""
     try:
         import pandas as pd  # type: ignore
     except ImportError:  # pragma: no cover
@@ -77,14 +77,11 @@ def to_jsonable(value: Any) -> Any:
     except ImportError:  # pragma: no cover
         np = None  # type: ignore
 
-    # Ahead of everything below: NaT answers hasattr(isoformat) and returns the string "NaT", and
-    # NA reaches to_preview_jsonable's str() fallback as "<NA>". Both turn a missing value into a
-    # real one.
+    # Ahead of everything below: NaT isoformat()s to "NaT" and NA hits the str() fallback.
     if _is_pandas_missing(value):
         return None
 
-    # A DECIMAL column arrives as Decimal from pandas and as a float from DuckDB. Without this the
-    # two readers disagree about the same artifact: one writes 1.2, the other the string "1.20".
+    # DuckDB hands a DECIMAL back as a float and pyarrow as a Decimal: 1.2 against "1.20".
     if isinstance(value, Decimal):
         return float(value)
 

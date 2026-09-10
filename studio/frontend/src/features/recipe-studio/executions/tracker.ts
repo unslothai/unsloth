@@ -285,8 +285,7 @@ export async function trackRecipeExecution({
         : Promise.resolve(eventAnalysis),
       shouldFetchPreviewDataset || kind === "full"
         ? getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 })
-        : // The event carries every record the preview produced, which is not always the number
-          // asked for. Reporting the request as the total makes a complete preview look partial.
+        : // The event carries every record produced, which is not always the number asked for.
           Promise.resolve({
             dataset: eventDatasetRows,
             total: eventDatasetRows.length,

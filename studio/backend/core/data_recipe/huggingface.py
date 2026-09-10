@@ -26,8 +26,7 @@ def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     try:
         candidate = resolve_dataset_path(artifact_path).expanduser()
     except ValueError as exc:
-        # A path outside every dataset root never reaches the containment check below, so without
-        # this it surfaced as a 500 instead of the same refusal.
+        # Outside every dataset root, so it never reaches the check below: a 500, not a refusal.
         raise RecipeDatasetPublishError(
             "This execution artifact is outside the Recipe Studio dataset storage."
         ) from exc

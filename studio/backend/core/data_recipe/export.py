@@ -24,10 +24,8 @@ ExportFormat = Literal["jsonl", "parquet"]
 # A DuckDB vector is 2048 rows, so this fetches ~8k rows at a time.
 _JSONL_EXPORT_VECTORS_PER_CHUNK = 4
 _JSONL_EXPORT_BATCH_ROWS = 8192
-# file_row_number is the row's ordinal inside its own shard, so this is a total order that matches
-# the generated artifact. row_number() OVER (PARTITION BY filename) is not: DuckDB leaves a window
-# with no ORDER BY undefined, and its parallel parquet scan then numbers the rows differently on
-# every query, which paged reads turn into dropped and duplicated rows.
+# file_row_number, not row_number() OVER (PARTITION BY filename): a window with no ORDER BY is
+# undefined in DuckDB, and its parallel scan renumbered every query.
 _PARQUET_EXPORT_SQL = (
     "SELECT * EXCLUDE (filename, file_row_number) "
     "FROM read_parquet(?, filename=true, file_row_number=true) "
@@ -49,9 +47,8 @@ def _parquet_dir(dataset_path: Path) -> Path:
 
 
 def _parquet_files(parquet_dir: Path) -> list[Path]:
-    """The real shards. A macOS volume stores extended attributes in a ``._batch.parquet``
-    companion that the glob matches but no reader can parse, so it is dropped here the way the
-    worker that writes this directory drops it."""
+    """The real shards, without the ``._batch.parquet`` companions a macOS volume leaves beside
+    them: the glob matches those but no reader can parse one. Same call the worker makes."""
     return drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
 
 
@@ -95,10 +92,8 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
     except Exception:
         return False
     try:
-        # One cursor for the whole export: the chunked fetches keep memory bounded, and the single
-        # ORDER BY is what keeps every row present exactly once. Re-running the query per page
-        # instead re-derives the order each time, so the pages overlap and gap. The shard list
-        # rather than a "*.parquet" glob, which DuckDB would expand back over the companions.
+        # One cursor for the whole export: the single ORDER BY is what keeps every row exactly
+        # once. A shard list, not a glob DuckDB would re-expand over the companions.
         conn.execute(
             _PARQUET_EXPORT_SQL,
             [[str(path.resolve()) for path in _parquet_files(parquet_dir)]],
@@ -120,11 +115,8 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
 
 
 def _write_jsonl_with_pyarrow(parquet_dir: Path, destination: Path) -> bool:
-    """Row group at a time, so a dataset DuckDB will not take does not have to fit in memory.
-
-    A shard is not a safe unit here: ``merge_batches`` collapses a whole run into one file, and a
-    full run goes up to 200,000 rows. It declines the job outright rather than leaving a
-    half-written file behind."""
+    """Row group at a time, for a dataset DuckDB will not take. Not shard at a time:
+    ``merge_batches`` collapses a whole run into one file. Declines rather than half-write."""
     try:
         import pyarrow.parquet as pyarrow_parquet  # type: ignore
     except Exception:
@@ -157,9 +149,7 @@ def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]
 
 
 def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
-    # DuckDB streams it; pyarrow streams it a row group at a time when DuckDB will not take the
-    # schema (a dataset carrying its own `filename` or `file_row_number` column is one); the Data
-    # Designer reader is the last resort and is the only one that materializes everything.
+    # Only the last of these materializes the dataset; the first two stream.
     if _stream_jsonl_from_parquet_with_duckdb(
         parquet_dir = parquet_dir,
         destination = destination,
@@ -188,12 +178,8 @@ def _artifact_image_files(dataset_path: Path) -> list[Path]:
 
 
 def download_filename(*, artifact_path: str, export_format: ExportFormat, stem: str) -> str:
-    """The name the export will actually have, and the same checks the export itself makes.
-
-    Whether the JSONL comes back zipped depends on the artifact, so the server settles that rather
-    than the client guessing. It also walks the artifact the way ``build_dataset_download`` will,
-    so a run whose shards have since been deleted is refused while the caller can still be told,
-    instead of failing later inside a download the browser has already been handed."""
+    """The name the export will have, and the checks ``build_dataset_download`` will make, so a
+    run whose shards are gone is refused while the caller can still be told."""
     try:
         dataset_path = _resolve_recipe_artifact_path(artifact_path)
     except RecipeDatasetPublishError as exc:
@@ -212,8 +198,7 @@ def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None
         if not image_file.is_file():
             continue
         relative_path = image_file.relative_to(images_dir)
-        # Stored, not deflated: on 500 MB of PNGs that cost 8.6s and saved 0 MB, and the desktop
-        # downloader gives the whole build 30s before it gives up waiting for headers.
+        # Stored, not deflated: deflating already-compressed images bought nothing and cost 7x.
         archive.write(
             image_file,
             arcname = str(Path("images") / relative_path),
@@ -240,8 +225,7 @@ def build_dataset_download(
         tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
         tmp.close()
         zip_path = Path(tmp.name)
-        # Only the caller of a successful build knows to delete the temp file, so a failed one
-        # has to take its own away.
+        # Only a successful build's caller unlinks the temp file, so a failed one takes its own.
         try:
             with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
                 for parquet_file in _parquet_files(parquet_dir):
@@ -260,8 +244,7 @@ def build_dataset_download(
         image_files = _artifact_image_files(dataset_path)
         if not image_files:
             return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
-        # Rows reference these by relative path, the way the publish path uploads them, so a bare
-        # JSONL would hand over a multimodal dataset whose images are all missing.
+        # Rows reference these by relative path, so a bare JSONL loses every image.
         zip_tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
         zip_tmp.close()
         zip_path = Path(zip_tmp.name)

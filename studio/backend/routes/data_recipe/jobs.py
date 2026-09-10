@@ -57,14 +57,9 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 logger = get_logger(__name__)
 router = APIRouter()
 
-# The dataset link is handed to the browser's own download machinery and to the native save
-# command, neither of which can set an Authorization header. It carries an HMAC capability minted
-# by the bearer-gated route below rather than the session token itself, which would otherwise sit
-# in download history and proxy logs holding every API the session can reach. Same shape as the
-# signed gallery-video links.
-# The native save dialog opens before the request is made and waits on the user, so the clock has
-# to outlast someone leaving that dialog open. Still far short of the 12h the gallery video links
-# carry, and this one names a single export.
+# Fetched without an Authorization header, so the link carries an HMAC capability rather than the
+# session token, which download history would keep. Same shape as the signed video links.
+# The native save dialog opens before the request, so this outlasts a user sitting on it.
 _DOWNLOAD_LINK_TTL = 30 * 60
 _DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
 
@@ -72,8 +67,7 @@ _DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
 def _download_link_payload(
     *, job_id: str, export_format: str, artifact_path: str | None, filename: str | None
 ) -> str:
-    # Every parameter the export reads is signed. A token naming only the job would still let its
-    # holder swap artifact_path and pull down a different recipe's dataset.
+    # Every parameter the export reads, or the holder could swap artifact_path for another run's.
     parts = [job_id, export_format, artifact_path or "", filename or ""]
     return "\x1f".join(parts)
 
@@ -692,8 +686,7 @@ def create_job_dataset_download_url(
     all, and under what name, so a failure lands in the UI instead of after the save dialog has
     opened. The URL is relative, so it survives whatever proxy the page itself came through."""
     if no_credential:
-        # The capability outlives the setting that admitted this caller, and travels off the origin
-        # keyless access is scoped to. Same refusal the signed video links make.
+        # The capability outlives the setting that admitted this caller. As the video links do.
         raise HTTPException(
             status_code = 403,
             detail = "Dataset download links can only be created from the Unsloth UI or with an API key.",
@@ -719,8 +712,7 @@ def create_job_dataset_download_url(
                 status_code = 400,
                 detail = "Parquet download requires persisted recipe artifacts.",
             )
-        # An in-memory preview only survives while its job is the current one. Ask now, so a run
-        # the manager has moved past fails here rather than after the chooser has opened.
+        # An in-memory preview lives only while its job is current: ask before the chooser opens.
         if get_job_manager().get_dataset(job_id, limit = 1, offset = 0) is None:
             raise HTTPException(status_code = 404, detail = "dataset not ready")
         name = f"{stem}.jsonl"
@@ -736,8 +728,7 @@ def create_job_dataset_download_url(
         query["artifact_path"] = artifact_path
     if filename:
         query["filename"] = filename
-    # Relative to this router, not to the app: the frontend's data-recipe base is configurable,
-    # and a path built here could not know what it was set to.
+    # Relative to this router: the frontend's data-recipe base is configurable.
     return {"path": f"/jobs/{job_id}/download?{urlencode(query)}", "filename": name}
 
 

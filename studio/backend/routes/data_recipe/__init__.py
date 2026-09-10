@@ -29,8 +29,8 @@ _header_authenticated.include_router(jobs_router)
 _header_authenticated.include_router(mcp_router)
 
 router = APIRouter()
-# Kept out of the group above: the download URL is handed to the browser and to the native save
-# command, so it has to accept the bearer from ?token= as well. It brings its own guard.
+# Kept out of the group above: the download link is fetched without a header, so it brings its
+# own guard.
 router.include_router(jobs_download_router)
 router.include_router(_header_authenticated)
 

@@ -347,15 +347,13 @@ export async function downloadRecipeJobDataset(
   if (options?.filename) {
     params.set("filename", options.filename);
   }
-  // Minted over authFetch, which is what refreshes an expired session, and what surfaces a run
-  // that cannot be exported before the save dialog opens. The link carries a signed capability
-  // for this one export, so the session bearer never reaches the URL, and the server names the
-  // file: whether a JSONL export comes back zipped depends on the artifact having images.
+  // Minted over authFetch: it refreshes an expired session and surfaces an unexportable run
+  // before the save dialog opens. The server names the file, since a JSONL is zipped only when
+  // the artifact has images.
   const { path, filename } = await getJson<{ path: string; filename: string }>(
     `/jobs/${jobId}/download-url?${params.toString()}`,
   );
-  // Same base every other call in this file goes through, so a build that repoints
-  // VITE_DATA_DESIGNER_API downloads from the service it actually configured.
+  // The same base every other call here uses, so a repointed VITE_DATA_DESIGNER_API is honoured.
   return { url: apiUrl(`${DATA_DESIGNER_API_BASE}${path}`), filename };
 }
 

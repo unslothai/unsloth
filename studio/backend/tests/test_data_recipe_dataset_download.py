@@ -105,12 +105,8 @@ def test_build_dataset_download_preserves_row_order_within_shard(tmp_path: Path,
 
 
 def test_build_dataset_download_exports_every_row_once_across_shards(tmp_path: Path, monkeypatch):
-    """A dataset bigger than one fetch chunk still comes out whole, in artifact order.
-
-    Reading it a page at a time re-derived the row order per page, and DuckDB's parallel parquet
-    scan does not repeat it, so the pages overlapped and gapped: 120k rows exported as 72k
-    distinct ones.
-    """
+    """Paging re-derived the row order per page and DuckDB's parallel scan does not repeat it, so
+    the pages overlapped and gapped: 120k rows came out as 72k distinct ones."""
     pytest.importorskip("duckdb")
     pytest.importorskip("pyarrow")
     pytest.importorskip("pandas")
@@ -397,9 +393,8 @@ def _download_app(monkeypatch, tmp_path: Path, jobs_route):
 
 
 def test_download_link_is_minted_over_the_bearer_and_used_without_one(monkeypatch, tmp_path: Path):
-    """The URL goes to an <a download> and to the native save command, neither of which can set a
-    header. It carries a signed capability rather than the session token, which would otherwise
-    sit in download history holding every API the session can reach."""
+    """The URL is fetched without a header, so it carries a signed capability rather than the
+    session token, which download history would keep."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -511,9 +506,8 @@ def _write_appledouble_companion(path: Path) -> None:
 
 
 def test_build_dataset_download_ignores_appledouble_companions(tmp_path: Path, monkeypatch):
-    """A macOS volume writes extended attributes to ._batch.parquet. DuckDB cannot parse one, so
-    keeping it in the shard list took the whole streaming path down to the slowest fallback, and
-    put a file no reader accepts inside the archive."""
+    """DuckDB cannot parse a ._batch.parquet companion, so keeping it in the shard list dropped the
+    export to the slowest fallback and put an unreadable file in the archive."""
     pytest.importorskip("duckdb")
     dataset_path = tmp_path / "recipe-datasets" / "job-macos"
     parquet_dir = dataset_path / "parquet-files"
@@ -577,9 +571,7 @@ def test_build_dataset_download_keeps_a_real_file_named_like_a_companion(
 
 
 def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path, monkeypatch):
-    """DuckDB hands a DECIMAL back as a float and pandas as a Decimal, which reached the preview
-    serializer's str() fallback. The same artifact then exported as 1.2 or as "1.20" depending on
-    which reader was available."""
+    """The same artifact exported as 1.2 or as "1.20" depending on which reader was available."""
     pytest.importorskip("duckdb")
     pyarrow = pytest.importorskip("pyarrow")
     import pyarrow.parquet as pyarrow_parquet
@@ -610,8 +602,8 @@ def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path,
 
 
 def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
-    """NaT answers hasattr(isoformat) and isoformat()s to the string "NaT"; NA reaches the str()
-    fallback as "<NA>". Either one writes a real value where the dataset had none."""
+    """NaT isoformat()s to "NaT" and NA hits the str() fallback as "<NA>", either of which writes
+    a real value where the dataset had none."""
     pd = pytest.importorskip("pandas")
     from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
 
@@ -654,8 +646,7 @@ def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Pat
 
 
 def test_jsonl_export_ships_the_images_its_rows_reference(tmp_path: Path, monkeypatch):
-    """Rows carry relative image paths, which is why the publish path uploads the images folder
-    alongside the parquet. A bare JSONL handed over a multimodal dataset with every image missing."""
+    """Rows carry relative image paths, so a bare JSONL loses every image."""
     dataset_path = tmp_path / "recipe-datasets" / "job-multimodal"
     _write_parquet_rows(dataset_path / "parquet-files", [{"image": "images/nested/pic.png"}])
     nested = dataset_path / "images" / "nested"
@@ -718,8 +709,7 @@ def test_jsonl_export_stays_a_plain_file_without_images(tmp_path: Path, monkeypa
 
 
 def test_pandas_fallback_exports_a_schema_duckdb_will_not_take(tmp_path: Path):
-    """A dataset carrying its own `filename` column is one DuckDB refuses, because read_parquet
-    wants that name for its own. The shard-at-a-time pandas writer takes it, columns intact."""
+    """DuckDB refuses a dataset carrying its own `filename`, since read_parquet wants that name."""
     pytest.importorskip("duckdb")
     from core.data_recipe.export import (
         _stream_jsonl_from_parquet_with_duckdb,
@@ -739,9 +729,8 @@ def test_pandas_fallback_exports_a_schema_duckdb_will_not_take(tmp_path: Path):
 
 
 def test_minting_refuses_a_run_whose_shards_are_gone(tmp_path: Path, monkeypatch):
-    """A historical run is not the manager's current job, so its artifact path comes from the
-    client and nothing had confirmed it still held anything. The link minted fine and the browser
-    then failed invisibly against it."""
+    """A historical run's artifact path comes from the client, and nothing confirmed it still held
+    anything: the link minted fine and the browser then failed invisibly against it."""
     dataset_path = tmp_path / "recipe-datasets" / "job-swept"
     (dataset_path / "parquet-files").mkdir(parents = True)
     monkeypatch.setattr(
@@ -756,9 +745,8 @@ def test_minting_refuses_a_run_whose_shards_are_gone(tmp_path: Path, monkeypatch
 
 
 def test_minting_is_refused_for_a_keyless_caller(monkeypatch, tmp_path: Path):
-    """The capability outlives the setting that admitted the caller and travels off the origin
-    keyless access is scoped to, so it is not something a keyless request may mint. Same refusal
-    the signed gallery-video links make."""
+    """The capability outlives the setting that admitted the caller, so a keyless request may not
+    mint one. Same refusal the signed gallery-video links make."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -775,8 +763,8 @@ def test_minting_is_refused_for_a_keyless_caller(monkeypatch, tmp_path: Path):
 
 
 def test_download_link_outlasts_the_native_save_dialog():
-    """The chooser opens before the request is made and waits on the user, so a link that expired
-    while it sat open would 401 after the destination had been picked."""
+    """The chooser opens before the request, so a link expiring while it sits open 401s after the
+    destination was picked."""
     jobs_route = pytest.importorskip("routes.data_recipe.jobs")
 
     assert jobs_route._DOWNLOAD_LINK_TTL >= 15 * 60

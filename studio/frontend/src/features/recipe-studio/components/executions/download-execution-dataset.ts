@@ -10,11 +10,8 @@ import {
 import { downloadRecipeJobDataset } from "../../api";
 import type { RecipeExecutionRecord } from "../../execution-types";
 
-/**
- * Whether the bytes are known to have landed. The native downloader streams the response and
- * rejects a non-2xx, so "saved" is the truth there. In the browser the save is an anchor click
- * that resolves before the request is even sent, so the most that can be claimed is "started".
- */
+/** Whether the bytes are known to have landed: a browser anchor click resolves before the
+ * request is even sent, while the native downloader streams and rejects a non-2xx. */
 export type DownloadOutcome = "saved" | "started";
 
 function sanitizeFilenameStem(value: string): string {
@@ -53,14 +50,10 @@ export async function downloadExecutionDataset(
 ): Promise<DownloadOutcome> {
   const filenameStem = buildDownloadFilename(execution);
 
-  // Whenever the run is still addressable, the backend export is the one that is complete: it
-  // pages the whole dataset. The rows held here are only ever the current page, and when the
-  // completion event is missed the tracker fills them from a 20-row fetch, so serializing them
-  // produced a successful but silently truncated download.
+  // The backend export pages the whole dataset; the rows here are one page of it.
   if (execution.jobId) {
     try {
-      // Minting the link is a real authenticated request, so a run that cannot be exported fails
-      // here, before anything is reported as downloaded.
+      // A real authenticated request, so an unexportable run fails before anything is claimed.
       const { url, filename } = await downloadRecipeJobDataset(execution.jobId, {
         artifactPath: execution.artifact_path,
         filename: filenameStem,
@@ -71,10 +64,8 @@ export async function downloadExecutionDataset(
       if (isDownloadCancelled(error)) {
         throw error;
       }
-      // A preview the job manager has moved past is gone from the server; the rows still here are
-      // all there is, and they are only worth writing when they are the whole dataset. A run with
-      // persisted artifacts is never served from here: its images live beside the parquet, and a
-      // bare JSONL would hand over the references without the files.
+      // Only a stale preview lands here, and only worth writing whole. An artifact-backed run
+      // must not: its images live beside the parquet, and a bare JSONL loses them.
       if (execution.artifact_path || !hasCompleteLocalDataset(execution)) {
         throw error;
       }
