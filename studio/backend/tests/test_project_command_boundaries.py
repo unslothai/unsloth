@@ -598,7 +598,9 @@ def test_native_project_tools_kill_detached_descendants_before_lease_and_slot_re
         mutation.release_workspace_mutation_slot(identity)
     time.sleep(0.5)
 
-    assert result.startswith("Execution timed out after 0.2 seconds."), result
+    lines = result.splitlines()
+    assert lines[0].isdigit(), result
+    assert "Execution timed out after 0.2 seconds." in lines, result
     assert lease_released.exists()
     assert not escaped.exists()
 
