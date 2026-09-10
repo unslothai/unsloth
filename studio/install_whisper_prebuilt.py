@@ -1644,6 +1644,11 @@ def existing_install_current_without_plan(
         # An upstream pin selects the newest release packaging THAT version, which the
         # repository-wide latest cannot name once a newer upstream is published: ask
         # the release list for it instead, as llama's check does for its upstream pins.
+        # By tag name, which only the fork's convention (v1.9.2-unsloth.N) supports; a
+        # custom repository is matched by manifest in _release_plan_for_host, so the
+        # full path answers there.
+        if published_repo != DEFAULT_PUBLISHED_REPO:
+            return False
         newest = _api_newest_release_tag_for_upstream(published_repo, whisper_tag, recorded_release)
         if not newest or newest != recorded_release:
             return False

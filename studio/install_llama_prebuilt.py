@@ -6898,7 +6898,10 @@ def _marker_selection_patch(
         # is what expected_install_fingerprint hashed, so it must be recorded as null
         # rather than left absent.
         patch["runtime_sha256"] = choice.runtime_sha256
-    if install_dir is not None and not isinstance(marker.get("runtime_files"), dict):
+    # An empty record counts as absent: runtime_file_records answers {} when a binary
+    # could not be read (a scanner holding it), and a marker carrying that would fail
+    # the no-network check closed on every update with nothing ever retrying it.
+    if install_dir is not None and not marker.get("runtime_files"):
         try:
             backfill_patterns: list[str] | None = runtime_patterns_for_choice(choice)
         except PrebuiltFallback:
@@ -7337,8 +7340,10 @@ def runtime_file_records(
         if record is None:
             continue
         try:
-            record["sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        except OSError as exc:
+            # Streamed: a CUDA llama-server is large, and reading it whole to hash it
+            # was an allocation of its size on every fresh record.
+            record["sha256"] = sha256_file(candidate)
+        except (OSError, MemoryError) as exc:
             # A binary that can be statted but not read (a scanner holding it, say)
             # must not stay in the record at the size-only tier the sweep above gave
             # it: the fast path would then trust a same-size corrupt binary it never
@@ -7374,7 +7379,7 @@ def _runtime_files_match(install_dir: Path, host: HostInfo, marker: "dict[str, A
                 log(f"kept install rejected: {relative} is {info.st_size} bytes")
                 return False
             digest = expected.get("sha256")
-            if digest is not None and hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+            if digest is not None and sha256_file(candidate) != digest:
                 log(f"kept install rejected: {relative} does not match the recorded digest")
                 return False
         except OSError as exc:

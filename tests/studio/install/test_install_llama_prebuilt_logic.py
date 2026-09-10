@@ -6385,14 +6385,14 @@ def test_the_payload_records_cover_the_bundles_own_allowlist(tmp_path, monkeypat
     assert len(records["build/bin/llama-server"]["sha256"]) == 64
     # A binary that stats but cannot be read must not stay at the size-only tier the
     # sweep gave it: the record is unusable, so the fast path fails closed.
-    real_read_bytes = Path.read_bytes
+    real_sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 
-    def denied(self):
-        if self.name == "llama-server":
+    def denied(path):
+        if path.name == "llama-server":
             raise PermissionError("held by a scanner")
-        return real_read_bytes(self)
+        return real_sha256_file(path)
 
-    monkeypatch.setattr(Path, "read_bytes", denied)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "sha256_file", denied)
     assert runtime_file_records(install_dir, linux_host(), patterns) == {}
 
 
@@ -6418,6 +6418,23 @@ def test_the_reuse_path_backfills_what_the_no_network_check_needs(tmp_path, monk
     assert "runtime_sha256" in marker
     assert marker["host_profile"] == host_profile(linux_host())
     assert "build/bin/libggml-base.so.0" in marker["runtime_files"]
+    assert _check(install_dir) is True
+
+
+def test_an_empty_runtime_record_is_backfilled_like_an_absent_one(tmp_path, monkeypatch):
+    """runtime_file_records answers {} when a binary could not be read; a marker that
+    persisted it would fail the no-network check closed forever unless the reuse path
+    treats it as missing and records it again once the bytes can be read."""
+    install_dir = _current_install(tmp_path, monkeypatch, runtime_files = {})
+    assert _check(install_dir) is False
+    sync_marker_selection(
+        install_dir,
+        choice = asset_choice(),
+        backend_request = "auto",
+        host = linux_host(),
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    assert marker["runtime_files"]
     assert _check(install_dir) is True
 
 
