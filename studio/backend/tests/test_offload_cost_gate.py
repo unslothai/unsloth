@@ -868,3 +868,22 @@ def test_the_fitter_is_modelled_on_the_cache_size_the_caller_measured():
         opts = replace(opts, kv_bytes_at = None),
     )
     assert untrusted.predicted_fit_request_ms > plan.predicted_fit_request_ms
+
+
+def test_a_slow_pcie_link_declines_the_spill_a_fast_one_takes():
+    """The gate's own end of the link. 55 GiB/s is a PCIe 5 x16 host, 6 a desktop x4 slot;
+    the spill is identical and only its prefill stream got eight times slower, which is
+    enough to lose to llama.cpp's own fit. Before the link was an input, every host was
+    quoted the reference machine's rate and took this spill."""
+    layout = dense_layout()
+    card = [11500 * MIB]
+    fast = plan_placement(
+        layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6, link_gib_s = 55.0))
+    )
+    slow = plan_placement(
+        layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6, link_gib_s = 6.0))
+    )
+    assert fast.spilled_blocks and not fast.declined_by_gate, fast.reason
+    assert not slow.spilled_blocks
+    assert slow.declined_by_gate and "not worth it" in slow.reason
+    assert slow.predicted_request_ms > fast.predicted_request_ms

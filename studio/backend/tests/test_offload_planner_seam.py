@@ -191,6 +191,7 @@ def _inputs(
     reserve_floor = 0,
     host_unpriced = 0,
     kv_bytes_at = None,
+    link_gib_s = None,
 ):
     return {
         "model_size": model_size,
@@ -213,6 +214,7 @@ def _inputs(
         "shared_gpu_ids": set() if shared is None else set(shared),
         "host_ram_unpriced_bytes": host_unpriced,
         "kv_bytes_at": kv_bytes_at,
+        "link_gib_s": link_gib_s,
         "separate_draft_on_gpu": separate_draft,
         **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
@@ -2854,3 +2856,48 @@ def test_the_compute_reserve_reaches_the_planner_priced_per_context(monkeypatch)
     seen.clear()
     _plan(_Stub(), free_mib = 14 * 1024, ctx_compute = 512 * MIB)
     assert seen["opts"].overhead_bytes_at is None
+
+
+# ------------------------------------------------- the link the prefill term is priced at
+
+
+def test_the_measured_link_reaches_the_cost_model(monkeypatch):
+    """The snapshot reads the device's PCIe rate; this is the other end of that wire.
+    Absent, the cost model keeps the 55 GiB/s it was calibrated on."""
+    from core.inference import offload_planner
+    from core.inference.offload_cost_model import PREFILL_STREAM_GIB_S
+
+    seen = {}
+    real = offload_planner.plan_placement
+
+    def capture(*a, **k):
+        seen["opts"] = k.get("opts")
+        return real(*a, **k)
+
+    monkeypatch.setattr(offload_planner, "plan_placement", capture)
+    _plan(_Stub(), free_mib = 14 * 1024, link_gib_s = 6.5)
+    assert seen["opts"].host.link_gib_s == 6.5
+
+    seen.clear()
+    _plan(_Stub(), free_mib = 14 * 1024)
+    assert seen["opts"].host.link_gib_s == PREFILL_STREAM_GIB_S
+
+
+def test_the_launch_path_snapshots_the_link_over_the_credited_devices():
+    """The planner can only price what the launch path measures for it, and only the
+    devices the plan may credit bound the transfer."""
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert '"link_gib_s":(Noneifis_vulkan_backendelseself._nvidia_link_gib_s(' in compact
+    assert "gpu_indicesifgpu_indicesisnotNoneelse[_idxfor_idx,_freein(gpusor())]" in compact
+
+
+def test_a_slower_link_can_turn_a_planned_spill_into_a_decline():
+    """The direction that matters. A spill worth taking over a PCIe 5 x16 link is not
+    worth taking over a desktop x4 slot, because prefill has to stream the same bytes
+    eight times slower, and before this the seam quoted every host the B200's rate."""
+    fast = _plan(_Stub(), free_mib = 12800, n_threads = 6, link_gib_s = 55.0)
+    slow = _plan(_Stub(), free_mib = 12800, n_threads = 6, link_gib_s = 6.0)
+    assert fast is not None and slow is not None
+    assert fast.spills_anything, "the fast-link control has to spill, or this proves nothing"
+    assert not slow.spills_anything
+    assert slow.declined_by_gate and "not worth it" in slow.reason

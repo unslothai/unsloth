@@ -356,3 +356,55 @@ def test_a_partial_prefill_batch_still_copies_every_spilled_tensor():
     short = rank([p], n_generated = 0, n_prompt = 512, n_ubatch = 2048)[0][1]
     full = rank([p], n_generated = 0, n_prompt = 2048, n_ubatch = 2048)[0][1]
     assert short == pytest.approx(full)
+
+
+# --------------------------------------------------------------- the PCIe link
+
+
+def test_prefill_is_priced_at_the_hosts_own_link():
+    """The 55 GiB/s default was measured on PCIe 5 x16. A Colab L4 moves 12.3 GiB/s and a
+    desktop x4 slot about 6.5, so pricing every host at the reference rate under-prices a
+    spill's prefill several fold on exactly the machines that need the planner most."""
+    from core.inference.offload_cost_model import PREFILL_STREAM_GIB_S, prefill_penalty_ms
+
+    p = Placement([DENSE_FFN_G])
+    reference = prefill_penalty_ms(p, 4096, host = HostProfile(threads = 6))
+    assert reference == pytest.approx(
+        prefill_penalty_ms(p, 4096, host = HostProfile(threads = 6, link_gib_s = PREFILL_STREAM_GIB_S))
+    ), "the default has to leave every calibrated number where it was"
+
+    for link in (6.0, 12.3, 27.5):
+        slow = prefill_penalty_ms(p, 4096, host = HostProfile(threads = 6, link_gib_s = link))
+        assert slow == pytest.approx(
+            reference * PREFILL_STREAM_GIB_S / link
+        ), "streaming a fixed number of bytes takes time inversely proportional to the rate"
+
+    per_token = prefill_penalty_ms_per_token(p, host = HostProfile(link_gib_s = 6.0))
+    assert per_token == pytest.approx(prefill_penalty_ms_per_token(p) * PREFILL_STREAM_GIB_S / 6.0)
+
+
+def test_a_slower_link_only_moves_the_prefill_term_of_rank():
+    """Generation reads host weights on the CPU backend and never crosses the link
+    (measured: spilled generation tracks thread count, not PCIe generation), so a pure-decode
+    ranking must not move while a pure-prefill one must."""
+    p = Placement([DENSE_FFN_G])
+    fast = HostProfile(threads = 6)
+    slow = HostProfile(threads = 6, link_gib_s = 6.0)
+
+    decode_fast = rank([p], fast, n_generated = 256, n_prompt = 0)[0][1]
+    decode_slow = rank([p], slow, n_generated = 256, n_prompt = 0)[0][1]
+    assert decode_slow == pytest.approx(decode_fast)
+
+    prefill_fast = rank([p], fast, n_generated = 0, n_prompt = 4096)[0][1]
+    prefill_slow = rank([p], slow, n_generated = 0, n_prompt = 4096)[0][1]
+    assert prefill_slow > prefill_fast * 8.0
+
+
+def test_an_unreadable_link_rate_is_never_a_free_transfer():
+    """A caller that passes 0 has no answer, not an infinitely fast bus."""
+    from core.inference.offload_cost_model import prefill_penalty_ms
+
+    p = Placement([DENSE_FFN_G])
+    assert prefill_penalty_ms(p, 4096, host = HostProfile(link_gib_s = 0.0)) == pytest.approx(
+        prefill_penalty_ms(p, 4096)
+    )
