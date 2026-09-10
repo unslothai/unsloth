@@ -2417,7 +2417,14 @@ class TestInstallShStructure:
                 )
 
     def test_cuda_precedence(self):
-        """ROCm detection runs only when NVIDIA is absent (check runtime ordering in get_torch_index_url)."""
+        """ROCm detection runs only when NVIDIA is absent, or when ROCm was ASKED for.
+
+        The automatic profile still gives CUDA precedence: that is the guarantee, and a
+        false AMD positive would swap a working install. The one exception is an
+        explicit UNSLOTH_FORCE_ROCM_TORCH request, which is the only route a mixed
+        NVIDIA+AMD host has to its AMD card (#10450), so any AMD probe reached before
+        the no-NVIDIA branch has to be guarded by that request and nothing else.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         body = _extract_sh_function_body(source, "get_torch_index_url")
@@ -2427,15 +2434,42 @@ class TestInstallShStructure:
         no_nvidia_branch = body.find('if [ "$_nvidia_detected" -eq 0 ]')
         if no_nvidia_branch < 0:
             no_nvidia_branch = body.find('if [ -z "$_smi" ]')
-        rocm_call = body.find("_has_amd_rocm_gpu")
         assert nvidia_call >= 0, "get_torch_index_url should call _has_usable_nvidia_gpu"
         assert no_nvidia_branch >= 0, "get_torch_index_url should gate ROCm on no-nvidia branch"
         assert (
-            rocm_call > no_nvidia_branch
-        ), "ROCm detection should sit inside the 'no NVIDIA' branch"
-        assert (
             nvidia_call < no_nvidia_branch
         ), "NVIDIA detection should run before the no-NVIDIA branch"
+
+        # The automatic path is unchanged: an AMD probe still sits inside the branch.
+        assert (
+            body.find("_has_amd_rocm_gpu", no_nvidia_branch) > no_nvidia_branch
+        ), "ROCm detection should sit inside the 'no NVIDIA' branch"
+
+        # Anything earlier has to be the explicit request, judged on the shell statement
+        # it belongs to rather than on the whole file: a bare probe before the branch
+        # would give AMD precedence over CUDA on every automatic install.
+        #
+        # Comment lines are dropped first, since the comment explaining the guard names
+        # the probe it guards, and continuation lines are then joined, since the guard
+        # and the probe sit either side of a backslash.
+        lines = [
+            line
+            for line in body[:no_nvidia_branch].splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        statement, guarded = [], []
+        for line in lines:
+            statement.append(line)
+            if not line.rstrip().endswith("\\"):
+                guarded.append(" ".join(statement))
+                statement = []
+        for stmt in guarded:
+            if "_has_amd_rocm_gpu" not in stmt:
+                continue
+            assert "_rocm_torch_explicitly_requested" in stmt, (
+                "an AMD probe before the no-NVIDIA branch must be guarded by "
+                f"_rocm_torch_explicitly_requested, got: {stmt.strip()!r}"
+            )
 
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""

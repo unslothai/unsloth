@@ -705,10 +705,12 @@ class TestTorch211PinAllowlistParity:
 
 
 class TestShadowingIntegratedGfxParity:
-    """The shadowing-APU skip (#7776) exists twice: studio/setup.ps1 resolves the
-    arch and builds $ROCmIndexUrl before it ever invokes the Python stack
-    installer, so both copies of the list have to agree or one entry point keeps
-    installing the iGPU's wheel family."""
+    """The shadowing-APU skip (#7776) exists four times now: studio/setup.ps1
+    resolves the arch and builds $ROCmIndexUrl before it ever invokes the Python
+    stack installer, install_llama_prebuilt.py honours setup's repick, and
+    install.sh answers the ROCm-request route on Linux before the Python stack
+    runs at all. Every copy has to agree or one entry point keeps installing the
+    iGPU's wheel family."""
 
     _STRIX = {"gfx1150", "gfx1151", "gfx1152"}
 
@@ -727,6 +729,20 @@ class TestShadowingIntegratedGfxParity:
                 return set(ast.literal_eval(node.value.args[0]))
         raise AssertionError("SHADOWING_INTEGRATED_GFX not found in install_llama_prebuilt.py")
 
+    def _install_sh_list(self):
+        body = _sh_function_body(
+            _INSTALL_SH.read_text(encoding = "utf-8"), "_amd_gfx_is_shadowing_integrated"
+        )
+        m = re.search(r"\n\s*(gfx[^)]*)\)\s*return 0", body)
+        assert m, "the shadowing-APU arm was not found in _amd_gfx_is_shadowing_integrated"
+        return {arch.strip() for arch in m.group(1).split("|")}
+
+    def test_install_sh_matches_install_python_stack(self):
+        # install.sh exports the family it chose and _ensure_rocm_torch returns on its first
+        # line for a non-ROCm one, so the shell picking the iGPU here is final and the Python
+        # preference never runs to correct it.
+        assert self._install_sh_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
     def test_setup_ps1_matches_install_python_stack(self):
         assert self._setup_ps1_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
@@ -741,6 +757,7 @@ class TestShadowingIntegratedGfxParity:
         assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
         assert not (self._STRIX & self._setup_ps1_list())
         assert not (self._STRIX & self._prebuilt_list())
+        assert not (self._STRIX & self._install_sh_list())
 
 
 if __name__ == "__main__":
