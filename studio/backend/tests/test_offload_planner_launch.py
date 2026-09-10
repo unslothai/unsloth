@@ -946,6 +946,18 @@ def test_a_revoked_plan_restores_the_context_locals_with_the_argv(tmp_path, monk
     assert backend._max_context_length == 8192
 
 
+def test_a_revoked_one_slot_plan_restores_the_shared_cache_with_the_slots(tmp_path, monkeypatch):
+    """The integrity flags emit --kv-unified only above one slot and run after the plan
+    lowered them, so the revocation that restores --parallel 4 must restore the shared
+    pool too, or the recovered server splits -c four ways per request.
+    """
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    cmds, _backend = _launch_crash_then_ok(tmp_path, monkeypatch, plan)
+    assert len(cmds) == 2, cmds
+    assert _flag(cmds[0], "--parallel") == "1" and "--kv-unified" not in cmds[0]
+    assert _flag(cmds[1], "--parallel") == "4" and "--kv-unified" in cmds[1], cmds[1]
+
+
 def test_a_per_model_loader_mode_keeps_the_planner_off_the_launch(tmp_path, monkeypatch):
     """The per-model Mmap pick wins over the plan's --load-mode none, so the
     launch does not hand the planner the pre-cap context or its rungs, and the

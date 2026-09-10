@@ -1569,6 +1569,9 @@ def test_a_non_finite_tensor_split_declines_instead_of_raising(value):
     assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": value}) is None
     # Not vacuous: finite shares still parse and still plan.
     assert _extra_args_tensor_split(["-ts", "3,1"], {}) == [3.0, 1.0]
+    # llama.cpp folds the underscore, so the reader must see this spelling too.
+    assert _extra_args_tensor_split(["--tensor_split", "3,1"], {}) == [3.0, 1.0]
+    assert _extra_args_tensor_split(["--tensor_split=3,1"], {}) == [3.0, 1.0]
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"]) is not None
 
 

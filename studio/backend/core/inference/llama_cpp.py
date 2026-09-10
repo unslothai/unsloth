@@ -5626,9 +5626,10 @@ def _extra_args_tensor_split(
         raw = str(env_value).strip()
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
-        if name not in _TENSOR_SPLIT_FLAGS:
+        # _flag_name: llama.cpp folds an underscore in any long option to a dash.
+        if _flag_name(arg) not in _TENSOR_SPLIT_FLAGS:
             continue
+        _, _, inline = arg.partition("=")
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
         if value.strip():
             raw = value.strip()
@@ -14669,6 +14670,7 @@ class LlamaCppBackend:
         self._tensor_split = None
         self._spill_plan_flags = []
         self._spill_plan_restore = {}
+        self._spill_plan_append = []
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
         # chat load (load_model phase 1 only kills the process, it doesn't run
         # the unload reset) so /status doesn't misreport TP and an identical
@@ -22809,6 +22811,7 @@ class LlamaCppBackend:
                 fully_gpu_offloaded = False
                 self._spill_plan_flags = []
                 self._spill_plan_restore = {}
+                self._spill_plan_append = []
                 _spill_ctx_locals_before = None
                 # A spill plan that moved no weight (fewer slots, the projector on the CPU, the
                 # draft dropped, a shorter context) pins every layer on the GPU.
@@ -22895,6 +22898,7 @@ class LlamaCppBackend:
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
                         self._spill_plan_restore = {}
+                        self._spill_plan_append = []
                         _spill_ctx_locals_before = None
                         cmd.extend(self._spill_plan_flags)
                         _spill_keeps_every_layer_on_gpu = "-ot" not in _spill_flags
@@ -22904,6 +22908,11 @@ class LlamaCppBackend:
                             _np_at = cmd.index("--parallel")
                             self._spill_plan_restore["--parallel"] = cmd[_np_at + 1]
                             cmd[_np_at + 1] = str(_spill.n_parallel)
+                            # The integrity flags run after this and emit --kv-unified only
+                            # above one slot, so a revocation that puts the slots back has to
+                            # put the shared pool back too or serve -c / N per request.
+                            if _spill.n_parallel <= 1 and planned_kv_unified:
+                                self._spill_plan_append = ["--kv-unified"]
                             # the plan priced the cache at fewer slots (rung 1)
                             n_parallel = _spill.n_parallel  # allow-slot-clamp: planner rung 1
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
@@ -27046,6 +27055,7 @@ class LlamaCppBackend:
             self._spec_fallback_reason = None
             self._spill_plan_flags = []
             self._spill_plan_restore = {}
+            self._spill_plan_append = []
 
             self._mmproj_fallback_reason = None
             self._capability_probe_inconclusive = False
@@ -28367,6 +28377,9 @@ class LlamaCppBackend:
                 del stripped[at : at + 2]
             else:
                 stripped[at + 1] = value
+        for tok in getattr(self, "_spill_plan_append", None) or ():
+            if tok not in stripped:
+                stripped.append(tok)
         logger.info("Tensor spill: dropping the plan for the %s retry; %s", why, "using --fit on")
         return [*stripped, "--fit", "on"]
 
