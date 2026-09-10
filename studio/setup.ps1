@@ -5906,6 +5906,12 @@ function Repair-SidecarTiktoken {
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf })
     $payload = Join-Path $TargetDir "tiktoken"
     if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
+    # Not present, so every tiktoken dist-info still here describes a payload that is
+    # missing or damaged. It goes before the install: --upgrade replaces the package but
+    # lands the new version's dist-info under its own name beside the old one, and
+    # importlib.metadata may keep answering the stale version.
+    Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
     # --upgrade: a --target install without it does not replace existing files, so a
     # damaged tiktoken\ directory an interrupted install left would be kept under fresh
     # metadata and read as present on the next run.
