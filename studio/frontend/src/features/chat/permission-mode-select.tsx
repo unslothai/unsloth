@@ -58,8 +58,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   {
     value: "off",
     label: "Run automatically",
-    description:
-      "Run tool calls without approval prompts inside the sandbox. Unsupported operations stay blocked",
+    description: "Run tool calls without approval prompts inside the sandbox",
     icon: SparklesGlyph,
   },
   {

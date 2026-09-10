@@ -3,13 +3,6 @@
 
 import { MAX_SERIALISED_LENGTH } from "./tool-arg-text.ts";
 
-const ONE_CALL_APPROVAL_TOOLS = new Set(["edit_file", "python", "terminal"]);
-
-/** Mutating local tools require a fresh decision for each exact call. */
-export function canRememberToolApproval(toolName: string): boolean {
-  return !ONE_CALL_APPROVAL_TOOLS.has(toolName);
-}
-
 /** Approval must never cover bytes hidden by the card's argument limit. */
 export function canApproveToolArguments(
   toolName: string,

@@ -13,25 +13,14 @@ import {
   summarizeEditFileArgs,
 } from "../src/components/assistant-ui/edit-file-tool-summary.ts";
 import {
-  canApproveToolArguments,
-  canRememberToolApproval,
-} from "../src/components/assistant-ui/tool-approval-policy.ts";
-import {
   MAX_SERIALISED_LENGTH,
   toolArgText,
 } from "../src/components/assistant-ui/tool-arg-text.ts";
+import { canApproveToolArguments } from "../src/components/assistant-ui/tool-argument-visibility.ts";
 
 const EDIT_FILE_CARD_RE = /edit_file:\s*EditFileToolUIConfirmable/;
-const UNSUPPORTED_BLOCKED_RE = /Unsupported operations stay blocked/;
 const editWithReplaceAll = (replaceAll: unknown): Record<string, unknown> =>
   Object.fromEntries([["replace_all", replaceAll]]);
-
-test("mutating local tools require approval for each call", () => {
-  for (const toolName of ["edit_file", "python", "terminal"]) {
-    assert.equal(canRememberToolApproval(toolName), false, toolName);
-  }
-  assert.equal(canRememberToolApproval("web_search"), true);
-});
 
 test("truncated or unrepresentable edit requests cannot be approved", () => {
   const small = {
@@ -163,12 +152,4 @@ test("edit_file has a dedicated confirmable card", async () => {
     "utf8",
   );
   assert.match(thread, EDIT_FILE_CARD_RE);
-});
-
-test("automatic mode tells users unsupported operations stay blocked", async () => {
-  const permissions = await readFile(
-    new URL("../src/features/chat/permission-mode-select.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(permissions, UNSUPPORTED_BLOCKED_RE);
 });

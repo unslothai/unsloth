@@ -17,7 +17,7 @@ import type {
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
-import { canApproveToolArguments, canRememberToolApproval } from "./tool-approval-policy";
+import { canApproveToolArguments } from "./tool-argument-visibility";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -54,11 +54,10 @@ export function ToolConfirmationControls({
     (s) => s.clearToolConfirmation,
   );
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
-  const canRememberApproval = canRememberToolApproval(toolName);
   const canApproveArguments = canApproveToolArguments(toolName, args);
   const autoAllowed = useChatRuntimeStore(
     (s) =>
-      canRememberApproval &&
+      canApproveArguments &&
       (s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
   );
 
@@ -182,19 +181,17 @@ export function ToolConfirmationControls({
       >
         Allow
       </Button>
-      {canRememberApproval ? (
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={pending !== null}
-          onClick={() => {
-            if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
-            void resolve("allow");
-          }}
-        >
-          Always allow
-        </Button>
-      ) : null}
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={pending !== null || !canApproveArguments}
+        onClick={() => {
+          if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
+          void resolve("allow");
+        }}
+      >
+        Always allow
+      </Button>
       <Button
         size="xs"
         variant="destructive"
@@ -208,11 +205,12 @@ export function ToolConfirmationControls({
           Could not send your decision. Try again.
         </span>
       ) : null}
-      {!canApproveArguments ? (
+      {canApproveArguments ? null : (
         <span className="text-xs text-destructive">
-          This edit cannot be displayed completely. Deny it and request smaller edits.
+          This edit cannot be displayed completely. Deny it and request smaller
+          edits.
         </span>
-      ) : null}
+      )}
     </div>
   );
 }
