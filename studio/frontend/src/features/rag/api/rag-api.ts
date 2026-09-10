@@ -211,9 +211,8 @@ export function uploadProjectDocument(
   );
 }
 
-// Cached "does this project have indexed sources?" probe so the chat adapter can
-// auto-scope project chats without a round trip per message. The sources panel
-// invalidates on upload/delete.
+// Cached "does this project have indexed sources?" probe so the chat adapter can auto-scope project
+// chats without a round trip per message. The sources panel invalidates on upload/delete.
 const projectSourcesCache = new Map<string, { has: boolean; at: number }>();
 const PROJECT_SOURCES_TTL_MS = 30_000;
 
@@ -799,9 +798,8 @@ export function getPreviewTarget(
   );
 }
 
-// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
-// consumers bypass authFetch, and a relative path under Tauri resolves against
-// the webview origin.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because consumers bypass
+// authFetch, and a relative path under Tauri resolves against the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

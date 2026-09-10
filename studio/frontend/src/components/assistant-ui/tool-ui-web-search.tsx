@@ -102,9 +102,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   // object here, and .trim() on one crashes the card that was meant to show the call.
   const query = toolArgText((args as { query?: unknown })?.query);
   const url = toolArgText((args as { url?: unknown })?.url).trim();
-  // gpt-5.x agentic search: `open_page` carries a url, `find_in_page` a url and
-  // a pattern. Older streams send neither, so a url with a pattern is the same
-  // call by shape.
+  // gpt-5.x agentic search: `open_page` carries a url, `find_in_page` a url and a pattern. Older
+  // streams send neither, so a url with a pattern is the same call by shape.
   const pattern = toolArgText((args as { pattern?: unknown })?.pattern);
   const actionType = toolArgText(
     (args as { action_type?: unknown })?.action_type,

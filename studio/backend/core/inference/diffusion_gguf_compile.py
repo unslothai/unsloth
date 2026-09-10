@@ -33,8 +33,6 @@ from typing import Any
 from .diffusion_patch_backend import apply_patch, revert_patch
 
 
-# --- kill-switch -------------------------------------------------------------------
-
 _ENV_COMPILE_DEQUANT = "UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT"
 _DISABLED = {"0", "off", "false", "no"}
 
@@ -97,9 +95,6 @@ def uninstall_compiled_dequant() -> None:
     if gguf_utils is not None:
         revert_patch(gguf_utils, _DEQUANT_ATTR)
     _compiled_dequant_installed = False
-
-
-# --- convenience -------------------------------------------------------------------
 
 
 def uninstall_all() -> None:
