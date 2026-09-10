@@ -501,45 +501,6 @@ def test_a_client_that_never_heard_of_the_field_still_validates():
     assert payload.deep_research_armed is None
 
 
-def test_arming_research_caps_the_turn_to_one_deep_research_call():
-    """One durable run per thread: several calls can only make one run plus 409s."""
-    from models.inference import ChatCompletionRequest
-
-    msgs = [{"role": "user", "content": "hi"}]
-    armed = ChatCompletionRequest(
-        model = "local-model",
-        messages = msgs,
-        deep_research_armed = True,
-        parallel_tool_calls = True,
-    )
-    assert armed.parallel_tool_calls is False
-    # Also set when the client says nothing, since the default is per-backend.
-    assert (
-        ChatCompletionRequest(
-            model = "local-model",
-            messages = msgs,
-            deep_research_armed = True,
-        ).parallel_tool_calls
-        is False
-    )
-    # Unarmed turns keep ordinary parallel tool use.
-    assert (
-        ChatCompletionRequest(
-            model = "local-model",
-            messages = msgs,
-            parallel_tool_calls = True,
-        ).parallel_tool_calls
-        is True
-    )
-    assert (
-        ChatCompletionRequest(
-            model = "local-model",
-            messages = msgs,
-        ).parallel_tool_calls
-        is None
-    )
-
-
 def test_an_empty_question_is_refused_rather_than_researched_blank():
     from core.inference.tools import execute_tool
 

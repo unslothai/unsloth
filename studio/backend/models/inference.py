@@ -2624,17 +2624,6 @@ class ChatCompletionRequest(BaseModel):
             self.confirm_tool_calls = True
         return self
 
-    @model_validator(mode = "after")
-    def _cap_parallel_tool_calls_for_research(self) -> "ChatCompletionRequest":
-        # Deep Research owns one durable run per thread, so a response carrying several
-        # deep_research calls can only ever produce one run plus a pile of 409s. The
-        # one-call cap already exists on every backend behind parallel_tool_calls=false;
-        # arming research is reason enough to set it. Untouched when research is not
-        # armed, where ordinary parallel tool use is fine.
-        if self.deep_research_armed:
-            self.parallel_tool_calls = False
-        return self
-
 
 class ChatCountTokensRequest(ReasoningControlsRequest):
     """Count prompt tokens for a local chat without generating."""
