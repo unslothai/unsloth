@@ -5902,11 +5902,14 @@ function Repair-SidecarTiktoken {
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$DirName
     )
-    # The payload, not the dist-info alone: an interrupted install can leave the
-    # dist-info directory with no package beside it, the sidecar predicate accepts the
-    # sidecar (tiktoken is unpinned and optional), and a dist-info-only check would then
-    # skip this top-up forever while Qwen tokenizers keep failing.
-    $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue)
+    # The payload AND a complete dist-info (RECORD is written last), as
+    # _sidecar_top_up_tiktoken and the runtime's _optional_package_absent check: an
+    # interrupted install can leave the dist-info with no package beside it, or METADATA
+    # and the package without the native extension and RECORD; the sidecar predicate
+    # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
+    # check would skip this top-up forever while Qwen tokenizers keep failing.
+    $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf })
     $payload = Join-Path $TargetDir "tiktoken"
     if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
     # --upgrade: a --target install without it does not replace existing files, so a
@@ -5943,6 +5946,7 @@ function Test-SidecarCurrent {
     # with quotes or backslashes cannot break the -c string. A timeout reads as stale, and
     # the rebuild that follows is the installer's own fallback.
     $pythonExe = $null
+    $probe = $null
     try { $pythonExe = (Get-Command python -ErrorAction Stop).Source } catch { $pythonExe = $null }
     if ($pythonExe) {
         $argv = (@($shim, "sidecar", $TargetDir) + $pins) -join [char]0
@@ -5963,7 +5967,15 @@ function Test-SidecarCurrent {
         if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: $($out.Substring(9))" }
         return $false
     }
-    # An old or unusable tree: fall back to the version grep this replaced.
+    # No marker and a failure: the audit started and died (an exception in the shim, an
+    # interpreter that cannot run it). That is not the legacy silent exit 0 the version
+    # grep below stands in for, and reading it as current would retire the audit for
+    # exactly the trees it could not read. Stale, and the rebuild follows.
+    if ($null -ne $probe -and -not $probe.Ok) {
+        if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: audit failed" }
+        return $false
+    }
+    # An old shim (clean, silent exit 0): fall back to the version grep this replaced.
     return (Test-TargetPackageVersion -TargetDir $TargetDir -PackageName "transformers" -ExpectedVersion $Version)
 }
 
