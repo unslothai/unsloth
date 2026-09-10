@@ -188,9 +188,9 @@ function skipsByMarkup(element: FindElementLike): boolean {
   if (SKIP_TAGS.has(element.tagName.toUpperCase())) return true;
   if (hasClassToken(element, "katex-mathml")) return true;
   if (element.getAttribute(FIND_SKIP_ATTRIBUTE) !== null) return true;
-  // Boolean attributes, so presence is the whole signal. The shell parks an off-route workspace
-  // under `inert`; Radix marks the page `aria-hidden` behind a modal. KaTeX is the narrow exception:
-  // its painted HTML tree is deliberately aria-hidden because a clipped MathML mirror speaks it.
+  // Boolean attributes, so presence is the whole signal. The shell parks an off-route workspace under `inert`;
+  // Radix marks the page `aria-hidden` behind a modal. KaTeX is the narrow exception: its painted HTML tree is
+  // deliberately aria-hidden because a clipped MathML mirror speaks it.
   if (element.getAttribute("hidden") !== null) return true;
   if (element.getAttribute("inert") !== null) return true;
   return (
@@ -204,10 +204,10 @@ export function skipsSubtree(
   style: ResolvedStyle | null = computedStyle(element),
 ): boolean {
   if (skipsByMarkup(element)) return true;
-  // `contentVisibilityAuto` off, since such a subtree is skipped rather than hidden and nothing
-  // would put it back (scrolling renders without mutating, so the observer never fires); opacity
-  // off, so a message fading in stays findable. Both spellings of each option, since an engine
-  // reads only the name it knows: the modern one alone is a no-op on Chrome 105-120, Firefox 106-121.
+  // `contentVisibilityAuto` off, since such a subtree is skipped rather than hidden and nothing would put it back
+  // (scrolling renders without mutating, so the observer never fires); opacity off, so a message fading in stays
+  // findable. Both spellings of each option, since an engine reads only the name it knows: the modern one alone
+  // is a no-op on Chrome 105-120, Firefox 106-121.
   const painted = element.checkVisibility?.({
     contentVisibilityAuto: false,
     opacityProperty: false,
@@ -362,9 +362,9 @@ export function buildTextIndex(
         }
         // A share, not all: one huge node given the rest leaves out everything after it.
         let take = Math.min(ceiling - length, MAX_NODE_CHARS);
-        // Never between the halves of a pair: keeping the leading one leaves a code unit that is
-        // not a character, which reads as a grapheme of its own and lets a match end against it,
-        // inside what the page draws as one. Dropping it instead makes the cut a real boundary.
+        // Never between the halves of a pair: keeping the leading one leaves a code unit that is not a character,
+        // which reads as a grapheme of its own and lets a match end against it, inside what the page draws as one.
+        // Dropping it instead makes the cut a real boundary.
         if (take > 0 && take < data.length && isPairedHalf(data, take))
           take -= 1;
         if (take <= 0) {
@@ -439,16 +439,14 @@ export function buildTextIndex(
 /**
  * True when a rebuild renumbers the match list, so the search has to re-anchor to the viewport.
  *
- * The index is the workspace followed by the surfaces portaled in front of it, joined at
- * `rootLength`. A monitor stays searchable while it is up and rewrites its reading on a timer, so
- * judged as one string every poll reads as a renumbered document and throws the reader out of the
- * conversation behind it. What decides is whether text moved AHEAD of the reader's offset.
+ * The index is the workspace followed by the surfaces portaled in front of it, joined at `rootLength`. A monitor
+ * stays searchable while it is up and rewrites its reading on a timer, so judged as one string every poll reads
+ * as a renumbered document and throws the reader out of the conversation behind it. What decides is whether text
+ * moved AHEAD of the reader's offset.
  *
- * This is the cheap half of the answer. `search` asks the exact question afterwards, by looking for
- * a match still starting at that offset, so this only has to turn down the rebuilds where the
- * offset would be meaningless.
- *
- * Here rather than beside its caller: the hook imports React and cannot run under `node --test`.
+ * This is the cheap half of the answer. `search` asks the exact question afterwards, by looking for a match
+ * still starting at that offset, so this only has to turn down the rebuilds where the offset would be
+ * meaningless. Here rather than beside its caller: the hook imports React and cannot run under `node --test`.
  */
 export function renumbersMatches(
   before: FindTextIndex,
@@ -519,10 +517,8 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
   return variants;
 }
 
-/**
- * One canonical cluster. Hangul conjoining sequences can contain repeated leading, vowel, and
- * trailing Jamo, so the whole L*V*T* run has to win before the generic character alternative.
- */
+/** One canonical cluster. Hangul conjoining sequences can contain repeated leading, vowel, and trailing Jamo,
+ * so the whole L*V*T* run has to win before the generic character alternative. */
 const CLUSTER_PATTERN =
   // biome-ignore lint/suspicious/noMisleadingCharacterClass: Jamo and combining marks intentionally form canonical clusters.
   /(?:[ᄀ-ᅟꥠ-꥿]+[ᅠ-ᆧힰ-ퟆ]+[ᆨ-ᇿퟋ-ퟻ]*|[\s\S])[̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
@@ -539,11 +535,10 @@ const TRAILING_HANGUL_JAMO_SOURCE = "[\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 const HANGUL_HINT_PATTERN = /[ᄀ-ᇿꥠ-꥿가-ퟻ]/u;
 
 /**
- * True when a cluster needs the trailing-jamo boundary, which only the pattern path writes.
- *
- * Extended and Old Hangul jamo have no precomposed form, so NFC and NFD spell them the same way and
- * the single-spelling query would take the literal scan, where an open syllable prefix-matches a
- * closed one. Modern Hangul always has two spellings and reaches the pattern anyway.
+ * True when a cluster needs the trailing-jamo boundary, which only the pattern path writes. Extended and Old
+ * Hangul jamo have no precomposed form, so NFC and NFD spell them the same way and the single-spelling query
+ * would take the literal scan, where an open syllable prefix-matches a closed one. Modern Hangul always has two
+ * spellings and reaches the pattern anyway.
  */
 function needsHangulBoundary(needle: string): boolean {
   if (!HANGUL_HINT_PATTERN.test(needle)) return false;
@@ -561,10 +556,8 @@ function needsHangulBoundary(needle: string): boolean {
 const HANGUL_LVT_PATTERN =
   /^([\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6])([\u11a8-\u11ff\ud7cb-\ud7fb][\s\S]*)$/u;
 
-/**
- * The half-composed spelling of a closed syllable: the L+V pair precomposed, the trailing jamo left
- * as it is. Neither NFC nor NFD writes it, so a document holding one is invisible to both.
- */
+/** The half-composed spelling of a closed syllable: the L+V pair precomposed, the trailing jamo left as it is.
+ * Neither NFC nor NFD writes it, so a document holding one is invisible to both. */
 function partiallyComposedHangul(cluster: string): string | null {
   const parts = HANGUL_LVT_PATTERN.exec(cluster);
   if (!parts) return null;
@@ -584,9 +577,9 @@ function isPairedHalf(text: string, at: number): boolean {
 
 /**
  * Per cluster, because alternating whole spellings of the WHOLE query reaches only all-composed or
- * all-decomposed text, and one occurrence can be neither: joining two text nodes joins two sources,
- * so `café` in one and `café` in the next make one visible word with a spelling the
- * query cannot be written in. Every engine's own find matches it.
+ * all-decomposed text, and one occurrence can be neither: joining two text nodes joins two sources, so `café` in
+ * one and `café` in the next make one visible word with a spelling the query cannot be written in. Every
+ * engine's own find matches it.
  */
 function canonicalSource(needle: string, dotted: boolean): string {
   let out = "";
@@ -610,10 +603,10 @@ function canonicalSource(needle: string, dotted: boolean): string {
     // A decomposed dotted I folds to `i` plus a combining dot, which has no precomposed form, so
     // NFC cannot put it back and the plain query would miss a word plainly on screen.
     if (dotted && cluster === "i") spellings.push(`i${COMBINING_DOT}`);
-    // Longest first, as `canonicalVariants` is: alternation takes the first that fits, so a short
-    // spelling that is a prefix of a long one wins and the rest of the cluster is left outside the
-    // match: `i` before `i` plus its combining dot ended the match inside the grapheme, and the
-    // boundary check threw the occurrence away rather than reaching for the longer spelling.
+    // Longest first, as `canonicalVariants` is: alternation takes the first that fits, so a short spelling that is
+    // a prefix of a long one wins and the rest of the cluster is left outside the match: `i` before `i` plus its
+    // combining dot ended the match inside the grapheme, and the boundary check threw the occurrence away rather
+    // than reaching for the longer spelling.
     if (spellings.length > 1) spellings.sort((a, b) => b.length - a.length);
     const spellingSource =
       spellings.length === 1
@@ -634,13 +627,12 @@ function canonicalSource(needle: string, dotted: boolean): string {
  *  index costs 4ms once and a fraction of a microsecond a question. */
 const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
-/** Every boundary in the index, once seeking for them has cost more than walking the lot would.
- *
- *  In time, not in seeks: a seek is 0.2us into a page of Hangul and 1236us into a page of flags,
- *  so any count is far too small for one and far too large for the other, and the large end cost
- *  a first search twenty seconds. The budget is what a scan of this index would itself cost, so
- *  the total stays within twice the better of the two and no constant is left to be wrong about.
- *  The rate is the slower of the two measured, 1.3M characters scanned in 82ms. */
+/** Every boundary in the index, once seeking for them has cost more than walking the lot would. In time, not
+ *  in seeks: a seek is 0.2us into a page of Hangul and 1236us into a page of flags, so any count is far too
+ *  small for one and far too large for the other, and the large end cost a first search twenty seconds. The
+ *  budget is what a scan of this index would itself cost, so the total stays within twice the better of the two
+ *  and no constant is left to be wrong about. The rate is the slower of the two measured, 1.3M characters
+ *  scanned in 82ms. */
 const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
 const seekCosts = new WeakMap<
   FindTextIndex,
@@ -693,11 +685,10 @@ function graphemeSegmenter() {
 }
 
 /**
- * Whether this engine's `containing` agrees with its own iterator about where a segment starts.
- *
- * WebKit's answers the segment that ENDS at the offset: over `x` and a thumbs up it reads 0, 0, 1
- * where Chromium and Firefox read 0, 1, 1, so every interior boundary comes back "not a boundary".
- * Where it is wrong the boundaries are tabulated instead, which is the same answer more slowly.
+ * Whether this engine's `containing` agrees with its own iterator about where a segment starts. WebKit's answers
+ * the segment that ENDS at the offset: over `x` and a thumbs up it reads 0, 0, 1 where Chromium and Firefox read
+ * 0, 1, 1, so every interior boundary comes back "not a boundary". Where it is wrong the boundaries are
+ * tabulated instead, which is the same answer more slowly.
  */
 let seeksBoundaries: boolean | undefined;
 function segmenterSeeksBoundaries(platform: {
@@ -756,12 +747,11 @@ function joinsAcross(before: string, point: string): boolean {
 }
 
 /**
- * True when `[start, end)` begins and ends where a grapheme does.
- *
- * Asked of the platform, which knows the whole of UAX 29 and is kept current with it; enumerating
- * the ranges here kept missing one more way to land inside a cluster every round. Asked one offset
- * at a time, so neither the size of the index nor where the match landed in it costs anything:
- * tabulating a block's boundaries instead paid 250ms per block, and paid it again on every reindex.
+ * True when `[start, end)` begins and ends where a grapheme does. Asked of the platform, which knows the whole
+ * of UAX 29 and is kept current with it; enumerating the ranges here kept missing one more way to land inside a
+ * cluster every round. Asked one offset at a time, so neither the size of the index nor where the match landed
+ * in it costs anything: tabulating a block's boundaries instead paid 250ms per block, and paid it again on every
+ * reindex.
  */
 function alignsToGraphemes(
   index: FindTextIndex,
@@ -776,10 +766,10 @@ function alignsToGraphemes(
   ) {
     return false;
   }
-  // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
-  // far more than looking. Nothing below U+0300 joins: the lowest combining mark is U+0300, the
-  // lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and everything
-  // astral arrives as a surrogate. Both sides of each edge, since the query can end with one.
+  // Almost every match is in text that cannot join at either edge, and asking the segmenter costs far more than
+  // looking. Nothing below U+0300 joins: the lowest combining mark is U+0300, the lowest spacing mark U+0903,
+  // Prepend starts at U+0600, Hangul Jamo at U+1100, and everything astral arrives as a surrogate. Both sides of
+  // each edge, since the query can end with one.
   if (
     !splitsCrlf(text, start) &&
     !splitsCrlf(text, end) &&
