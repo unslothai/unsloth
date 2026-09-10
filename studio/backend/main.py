@@ -5,7 +5,6 @@
 Main FastAPI application for Unsloth UI Backend
 """
 
-import functools
 import os
 import sys
 import threading
@@ -2129,31 +2128,34 @@ def _get_cached_system_gpu_info(
         return combined_info
 
 
-@functools.lru_cache(maxsize = 1)
 def _dense_quant_schemes() -> tuple:
     """The dense-quant schemes EVERY visible card can run.
 
     The picker cannot see the selected card, so mixed-capability hosts report the intersection, and
     one bit is not enough: an Ampere card clears the ladder on int8 alone, so the picker needs the
-    per-scheme answer to avoid labelling an explicit fp8 row fast. The result is cached because
-    hardware capability is static and this endpoint is polled frequently."""
+    per-scheme answer to avoid labelling an explicit fp8 row fast.
+
+    Not cached, because the answer sharpens: ``dense_quant_probed_schemes`` returns the arch floor
+    until the load path has paid for a smoke verdict and the cached verdict afterwards, so an
+    lru_cache here would freeze the cold answer for the life of the process. Each call is a
+    capability read plus a dict lookup; nothing here probes or allocates."""
     try:
         from core.inference.diffusion_device import (
             diffusion_device_scope,
             resolve_diffusion_device_target,
         )
-        from core.inference.diffusion_transformer_quant import dense_quant_host_schemes
+        from core.inference.diffusion_transformer_quant import dense_quant_probed_schemes
 
         import torch
 
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
-            return tuple(dense_quant_host_schemes(resolve_diffusion_device_target()))
+            return tuple(dense_quant_probed_schemes(resolve_diffusion_device_target()))
         shared: Optional[tuple] = None
         for ordinal in range(count):
             with diffusion_device_scope(ordinal):
                 schemes = tuple(
-                    dense_quant_host_schemes(resolve_diffusion_device_target(ordinal = ordinal))
+                    dense_quant_probed_schemes(resolve_diffusion_device_target(ordinal = ordinal))
                 )
             shared = schemes if shared is None else tuple(s for s in shared if s in schemes)
             if not shared:

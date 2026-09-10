@@ -663,6 +663,26 @@ def dense_quant_host_schemes(target: Any) -> tuple[str, ...]:
     return tuple(s for s in TQ_SCHEMES if cap >= _SCHEME_MIN_CAPABILITY[s])
 
 
+def dense_quant_probed_schemes(target: Any) -> tuple[str, ...]:
+    """``dense_quant_host_schemes`` narrowed by smoke verdicts ALREADY in the cache.
+
+    The arch floor is a necessary condition, not a sufficient one: a prototype kernel can be absent
+    on a card whose capability clears the floor, and only ``_scheme_supported``'s quantise+matmul
+    probe knows. This reads verdicts the load path has already paid for and never runs the probe
+    itself -- ``/api/system`` is polled, and the in-process fallback buys a CUDA context the backend
+    can never give back (measured: 78 MiB on top of a live context here, and the whole context on a
+    cold one). So a warm backend advertises exactly what the loader will accept, and a cold one
+    advertises the arch floor, which is what it did before.
+
+    An unprobed scheme is kept, not dropped: the cache holds no entry for a probe that hit the
+    allocator, and that is "could not tell", the same way ``unproven_ok`` treats it."""
+    arch = dense_quant_host_schemes(target)
+    if not arch:
+        return ()
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    return tuple(s for s in arch if _SMOKE_CACHE.get((s, card), True))
+
+
 def dense_quant_host_capable(target: Any) -> bool:
     """Whether an ``auto`` scheme could run here, without the allocating smoke probe.
 

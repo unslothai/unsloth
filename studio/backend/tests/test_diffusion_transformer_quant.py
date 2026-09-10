@@ -1814,3 +1814,40 @@ def test_a_host_that_cannot_quantise_advertises_no_schemes(monkeypatch):
     _capable_host(monkeypatch)
     monkeypatch.setattr(tq, "_capability", lambda: None)
     assert tq.dense_quant_host_schemes(_target()) == ()
+
+
+def test_a_cached_smoke_verdict_narrows_the_advertised_schemes(monkeypatch):
+    """The arch floor is necessary, not sufficient: a probed failure must not stay advertised."""
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+    # Cold: nothing probed yet, so the arch floor is the answer, exactly as before.
+    assert tq.dense_quant_probed_schemes(_target()) == tq.dense_quant_host_schemes(_target())
+    # The load path has since proved the prototype kernels are missing on this card.
+    tq._SMOKE_CACHE.update({(TQ_NVFP4, "cuda:0"): False, (TQ_MXFP8, "cuda:0"): False})
+    assert tq.dense_quant_probed_schemes(_target()) == (TQ_INT8, TQ_FP8)
+    # A positive verdict keeps its scheme.
+    tq._SMOKE_CACHE[(TQ_NVFP4, "cuda:0")] = True
+    assert TQ_NVFP4 in tq.dense_quant_probed_schemes(_target())
+
+
+def test_the_advertised_schemes_never_probe(monkeypatch):
+    """A status route must not buy the CUDA context the in-process probe leaks."""
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+    monkeypatch.setattr(
+        tq, "_smoke_probe", lambda *a, **k: pytest.fail("the status path probed in-process")
+    )
+    monkeypatch.setattr(
+        tq, "_child_probe_table", lambda device: pytest.fail("the status path spawned a child")
+    )
+    assert tq.dense_quant_probed_schemes(_target())
+
+
+def test_a_card_with_no_arch_support_advertises_nothing_whatever_the_cache_says(monkeypatch):
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {(TQ_FP8, "cuda:0"): True})
+    assert tq.dense_quant_probed_schemes(_target(device = "cpu")) == ()

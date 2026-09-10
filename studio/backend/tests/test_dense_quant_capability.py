@@ -67,16 +67,13 @@ def _run(monkeypatch, *, device_count, capable_by_ordinal):
     fake_device.diffusion_device_scope = _Scope
     fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
     fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
-    fake_quant.dense_quant_host_schemes = _schemes
+    fake_quant.dense_quant_probed_schemes = _schemes
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", fake_quant)
 
-    namespace: dict = {
-        "functools": types.SimpleNamespace(lru_cache = lambda maxsize: (lambda f: f)),
-        "Optional": Optional,
-    }
+    namespace: dict = {"Optional": Optional}
     exec(_src("_dense_quant_schemes"), namespace)  # noqa: S102 -- the real body, not a copy of it
     exec(_src("_dense_quant_supported"), namespace)  # noqa: S102
     return namespace["_dense_quant_supported"](), scoped
@@ -108,16 +105,13 @@ def _run_schemes(monkeypatch, *, device_count, capable_by_ordinal):
     fake_device.diffusion_device_scope = _Scope
     fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
     fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
-    fake_quant.dense_quant_host_schemes = lambda target: capable_by_ordinal[target]
+    fake_quant.dense_quant_probed_schemes = lambda target: capable_by_ordinal[target]
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", fake_quant)
 
-    namespace: dict = {
-        "functools": types.SimpleNamespace(lru_cache = lambda maxsize: (lambda f: f)),
-        "Optional": Optional,
-    }
+    namespace: dict = {"Optional": Optional}
     exec(_src("_dense_quant_schemes"), namespace)  # noqa: S102
     return namespace["_dense_quant_schemes"](), scoped
 
@@ -170,12 +164,33 @@ def test_the_wiring_stays_in_place(needle):
     assert needle in _dense_quant_supported_src()
 
 
-def test_the_probe_is_cached_and_published():
-    """The capability is cached and included in ``/api/system``."""
+def test_the_capability_is_published_and_never_frozen():
+    """`/api/system` carries both, and the scheme list must not be memoised.
+
+    `dense_quant_probed_schemes` answers the arch floor until the load path pays for a smoke
+    verdict and the cached verdict afterwards, so an lru_cache here would pin the cold answer for
+    the life of the process."""
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
-    assert "@functools.lru_cache(maxsize = 1)\ndef _dense_quant_schemes" in src
     assert '"dense_quant_supported": _dense_quant_supported()' in src
     assert '"dense_quant_schemes": list(_dense_quant_schemes())' in src
+    node = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "_dense_quant_schemes"
+    )
+    assert node.decorator_list == []
+    assert "dense_quant_probed_schemes" in _src("_dense_quant_schemes")
+
+
+def test_the_published_list_follows_the_probe_as_it_warms(monkeypatch):
+    """A verdict the loader has already paid for narrows what the picker advertises."""
+    answers = {None: ADA}
+    schemes, _ = _run_schemes(monkeypatch, device_count = 1, capable_by_ordinal = answers)
+    assert schemes == ADA
+    # The smoke probe later rules fp8 out on this card; the next poll must say so.
+    answers[None] = AMPERE
+    schemes, _ = _run_schemes(monkeypatch, device_count = 1, capable_by_ordinal = answers)
+    assert schemes == AMPERE
 
 
 # Per-scheme capability: one bit cannot tell an Ampere host from an Ada one.
