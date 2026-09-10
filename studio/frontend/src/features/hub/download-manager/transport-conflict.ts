@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { toast } from "@/lib/toast";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
 import { getActiveModelDownloads } from "./api";
@@ -164,6 +165,11 @@ export async function requestStart(
   // during; read after them it would name the page they moved to.
   const originRoute = currentRoute();
   const originSelectionEpoch = currentStartToastSelectionEpoch();
+  // The one funnel every download passes through, and the reason the low-disk notice needs no
+  // interval. Not awaited and never a gate: a download is not blocked on a disk reading, and a
+  // host that cannot answer must not stop one. The check throttles itself, so a page that
+  // starts several downloads at once still makes one request.
+  void checkDiskSpace();
   return runWithPendingStartGuard(req, async () => {
     const preferred: TransportMode = await resolveTransportMode();
     let mode: TransportMode = preferred;

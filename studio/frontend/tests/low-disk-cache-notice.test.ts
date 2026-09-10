@@ -141,11 +141,10 @@ test("the notice fetches its own readings rather than waiting to be told", () =>
   // subscribeSystemInfo only adds a callback to a Set: it never requests
   // /api/system, so a bare subscriber hears nothing unless the floating monitor
   // or the resources tab happens to be open, which is not this notice's user.
-  assert.match(hook, /useSystemInfo\(\{ pollMs: LOW_DISK_POLL_MS \}\)/);
-  assert.match(hook, /observeDiskPressure\(systemInfo\.disk\)/);
+  // The notice asks for a reading itself, once, when the shell mounts.
+  assert.match(hook, /checkDiskSpace\(\{ force: true \}\)/);
+  assert.match(hook, /setLowDiskNotifier\(/);
   assert.match(hook, /toast\.warning\(/);
-  // Slow on purpose: a disk fills over hours and this runs on every route.
-  assert.match(hook, /LOW_DISK_POLL_MS = 60_000/);
   // The description interpolates {free} and {total} bare, so the unit has to be
   // in the value or the toast reads "4.0 free of 500".
   assert.match(
@@ -158,6 +157,73 @@ test("the notice fetches its own readings rather than waiting to be told", () =>
   );
   // The toast has to lead somewhere: the Storage section it is about.
   assert.match(hook, /scrollTarget: "resources-caches"/);
+});
+
+test("nothing polls the disk on a timer", () => {
+  // The point of the redesign. An interval here runs in every open tab forever to answer a
+  // question whose answer only changes when something writes to the disk, and the route it used
+  // to poll, /api/system, enumerates GPUs and reads package metadata on the way.
+  for (const file of [
+    "../src/features/settings/hooks/use-low-disk-notice.ts",
+    "../src/features/settings/low-disk-check.ts",
+  ]) {
+    const src = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(src, /setInterval|pollMs|useSystemInfo/, file);
+  }
+});
+
+test("a download asks the disk on the way past", () => {
+  // requestStart is the single funnel every download goes through, which is what lets the
+  // notice drop its timer without going silent for the user who is actually filling the disk.
+  const funnel = readFileSync(
+    new URL(
+      "../src/features/hub/download-manager/transport-conflict.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(funnel, /import \{ checkDiskSpace \}/);
+  // void, not await: a disk reading is advice and must never gate or delay a download.
+  assert.match(funnel, /\n  void checkDiskSpace\(\);/);
+
+  const check = readFileSync(
+    new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
+    "utf8",
+  );
+  // One syscall, not the GPU-enumerating route.
+  assert.match(check, /"\/api\/system\/disk"/);
+  assert.doesNotMatch(check, /"\/api\/system"/);
+  // A burst of downloads is still one disk.
+  assert.match(check, /MIN_INTERVAL_MS/);
+  // A host that cannot answer must not surface an error or stop anything.
+  assert.match(check, /return null;/);
+});
+
+test("the disk route does one syscall and no directory walk", () => {
+  const main = readFileSync(
+    new URL("../../backend/main.py", import.meta.url),
+    "utf8",
+  );
+  const route = main.slice(
+    main.indexOf('@app.get("/api/system/disk")'),
+    main.indexOf('@app.get("/api/system/gpu-visibility")'),
+  );
+  assert.ok(route.length > 0, "the disk route is gone");
+  assert.match(route, /shutil\.disk_usage/);
+  // Comments and the docstring stripped first, or a comment merely NAMING one of these names
+  // fails the check below, and a comment explaining why psutil is absent is exactly the kind of
+  // comment this route wants.
+  const code = route
+    .replace(/"""[\s\S]*?"""/g, "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+  // Not os.walk, not scandir, not the cache inventory: this is asked for on the way into a
+  // download and cannot afford to walk a multi-gigabyte cache.
+  assert.doesNotMatch(code, /os\.walk|scandir|cache_inventory|psutil/);
+  // Measured where the bytes land, which is a different volume whenever the model cache is on
+  // another disk from the filesystem root.
+  assert.match(route, /hf_default_cache_dir/);
 });
 
 test("the notice is mounted in the app shell, not on one route", () => {

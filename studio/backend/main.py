@@ -2227,6 +2227,55 @@ def get_system_info(
     }
 
 
+@app.get("/api/system/disk")
+def get_disk_space(current_subject: str = Depends(get_current_subject)):
+    """Free space where downloads land. One syscall, and nothing else.
+
+    Separate from /api/system because that route enumerates GPUs, reads package metadata and
+    samples CPU: fine for a screen the user is looking at, far too much to run on the chance
+    that a disk is filling. The low-disk notice asks for THIS instead, and only when a download
+    is about to start.
+
+    shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
+    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    Windows it reports the quota available to the CALLING user, which is the number that decides
+    whether the download fits, so that difference is the correct one.
+
+    Measured at the models root rather than the filesystem root: those are different volumes
+    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    matters is the one the bytes are going to.
+    """
+    from utils.paths.storage_roots import hf_default_cache_dir, studio_root
+
+    # First existing ancestor: the cache directory itself may not have been created yet, and
+    # disk_usage on a missing path raises rather than reporting the volume it would live on.
+    candidates = []
+    for probe in (hf_default_cache_dir(), studio_root()):
+        try:
+            candidates.extend([probe, *probe.parents])
+        except (OSError, ValueError, RuntimeError):
+            continue
+    candidates.append(Path(os.path.abspath(os.sep)))
+
+    for candidate in candidates:
+        try:
+            usage = shutil.disk_usage(candidate)
+        except (OSError, ValueError):
+            continue
+        return {
+            "path": str(candidate),
+            # Decimal GB, matching /api/system, so the two agree on screen.
+            "total_gb": round(usage.total / 1e9, 2),
+            "free_gb": round(usage.free / 1e9, 2),
+            "percent_used": (
+                round((usage.total - usage.free) / usage.total * 100, 1) if usage.total else 0
+            ),
+        }
+    # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
+    # failed and a zero free as a full disk, and this is neither.
+    return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}
+
+
 @app.get("/api/system/gpu-visibility")
 async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)):
     # Off-loop: get_device() blocks on detection while the warm is still importing torch.
