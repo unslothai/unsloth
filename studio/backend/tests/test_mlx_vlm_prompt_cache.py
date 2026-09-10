@@ -9,7 +9,7 @@ import pytest
 
 from core.inference import mlx_inference as snapshots
 from core.inference.mlx_inference import (
-    VLM_PROMPT_CACHE_PREFILL_STEP as STEP,
+    VLM_PREFILL_STEP,
     RecordingForward,
     VLMPromptCacheSession,
     VLMPromptSnapshotStore,
@@ -19,7 +19,16 @@ from core.inference.mlx_inference import (
     release_cache_entries,
     media_prefix_end,
     shape_stable_prefix,
+    vlm_prefill_step,
 )
+
+# The tests' grid; production reads mlx-vlm's.
+STEP = 256
+
+
+def Session(*args, **kwargs):
+    kwargs.setdefault("step", STEP)
+    return VLMPromptCacheSession(*args, **kwargs)
 
 
 @pytest.fixture(autouse = True)
@@ -129,13 +138,14 @@ def run_generation(
     cache,
     start,
     between = None,
+    step = STEP,
     **kwargs,
 ):
     """mlx-vlm's prefill loop: grid chunks over all but the last token, then it."""
     n = len(token_ids)
     pos = start
     while n - pos > 1:
-        take = min(STEP, n - pos - 1)
+        take = min(step, n - pos - 1)
         language_model(token_ids[pos : pos + take], cache = cache, **kwargs)
         if between is not None:
             between(cache)
@@ -159,7 +169,7 @@ def _generate(
     media_token_ids = (),
     **session_kwargs,
 ):
-    with VLMPromptCacheSession(
+    with Session(
         store, "m", language_model, make_cache, media_token_ids = media_token_ids, **session_kwargs
     ) as session:
         prefix = session.find_prefix_length(token_ids)
@@ -177,7 +187,7 @@ def test_shape_stable_prefix_is_the_last_whole_chunk_from_the_origin():
     grid += [(2049, 0, 2048), (4018, 0, 3840), (600, 647, 0), (648, 647, 647), (903, 647, 647)]
     grid += [(904, 647, 903), (1160, 647, 1159)]
     for tokens, origin, prefix in grid:
-        assert shape_stable_prefix(tokens, origin) == prefix, (tokens, origin)
+        assert shape_stable_prefix(tokens, origin, STEP) == prefix, (tokens, origin)
 
 
 def test_copy_and_release_walk_every_array_of_a_composite_layout(fake_mx):
@@ -285,7 +295,7 @@ def test_recording_forward_copies_what_generation_converted_after_the_boundary_f
 
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     ids = list(range(700))
-    with VLMPromptCacheSession(store, "m", FakeLanguageModel(), make_cache) as session:
+    with Session(store, "m", FakeLanguageModel(), make_cache) as session:
         session.find_prefix_length(ids)
         run_generation(session._forward._language_model, ids, session.cache, 0, between = quantize)
         assert session.finish()
@@ -462,7 +472,7 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx,
         raise MemoryError("no room for a copy")
 
     monkeypatch.setattr(sys.modules["mlx.core"], "eval", _fail)
-    with VLMPromptCacheSession(store, "m", language_model, make_cache) as session:
+    with Session(store, "m", language_model, make_cache) as session:
         assert session.find_prefix_length(ids + [1]) == 512
         run_generation(language_model, ids + [1], session.cache, 512)
         assert session.cache[0].offset == 701 and len(store) == 0
@@ -473,23 +483,23 @@ def test_session_stores_only_snapshots_that_sit_on_the_grid(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     language_model = FakeLanguageModel()
     ids = list(range(600))
-    with VLMPromptCacheSession(store, "m", language_model, make_cache) as session:
+    with Session(store, "m", language_model, make_cache) as session:
         session.find_prefix_length(ids)
         language_model(ids[:150], cache = session.cache)
         language_model(ids[150:300], cache = session.cache)
         language_model(ids[300:], cache = session.cache)
         assert session._forward.record.snapshot is not None
         assert not session.finish()
-    with VLMPromptCacheSession(store, "m", language_model, lambda: [FakeState()]) as session:
+    with Session(store, "m", language_model, lambda: [FakeState()]) as session:
         session.find_prefix_length(ids[:300])
         run_generation(session._forward._language_model, ids[:300], session.cache, 0)
         assert session._forward.record.snapshot is not None and not session.finish()
-    with VLMPromptCacheSession(store, "m", language_model, make_cache) as session:
+    with Session(store, "m", language_model, make_cache) as session:
         assert not session.finish() and session.cache[0].offset == 0
     assert len(store) == 0
 
     layout = lambda: [FakeCacheList(FakeKV(), FakeState()), FakeCacheList(FakeKV(), FakeState())]
-    with VLMPromptCacheSession(store, "m", language_model, layout) as session:
+    with Session(store, "m", language_model, layout) as session:
         session.find_prefix_length(ids)
         run_generation(language_model, ids, session.cache, 0)
         assert session.finish()
@@ -526,7 +536,7 @@ def test_session_serves_and_stores_only_prefixes_past_the_last_media_token(fake_
     _generate(store, language_model, prompt, media_token_ids = (9,))
     store.store("t", prompt[:768], _snapshot(prompt[:768]))
     store.store("m", [5] + prompt[1:768], _snapshot(range(768)))
-    session = lambda **kw: VLMPromptCacheSession(
+    session = lambda **kw: Session(
         store, "m", language_model, make_cache, media_token_ids = (9,), **kw
     )
     assert session().find_prefix_length(prompt) == 768 and len(store) == 3
@@ -635,9 +645,7 @@ def test_session_feeds_the_chunking_policy_only_the_rows_past_the_cache(fake_mx)
     ask = lambda cache, n: host.chunked_prefill_policy(
         prompt_cache = cache, prefill_kwargs = {"mm_token_type_ids": FakeTypeIds(n, 0)}
     )
-    with VLMPromptCacheSession(
-        store, "m", FakeLanguageModel(), make_cache, policy_hosts = (host, plain)
-    ):
+    with Session(store, "m", FakeLanguageModel(), make_cache, policy_hosts = (host, plain)):
         assert ask(resumed, 300) is True
         ask(make_cache(), 300)
         ask(resumed, 50)
@@ -651,10 +659,23 @@ def test_snapshot_module_imports_mlx_only_when_copying(monkeypatch):
     monkeypatch.delitem(sys.modules, "mlx.core", raising = False)
     monkeypatch.setitem(sys.modules, "mlx", None)
     monkeypatch.setitem(sys.modules, "mlx.core", None)
-    assert shape_stable_prefix(300) == 256
+    assert shape_stable_prefix(300, step = STEP) == 256
     with pytest.raises(ImportError):
         copy_cache_entries([FakeKV()])
     assert snapshots.VLM_PROMPT_CACHE_ENTRIES == 6
+
+
+def test_session_defaults_to_mlx_vlm_prefill_step(fake_mx):
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    language_model = FakeLanguageModel()
+    ids = list(range(VLM_PREFILL_STEP + 60))
+    with VLMPromptCacheSession(store, "m", language_model, make_cache) as session:
+        assert session.step == vlm_prefill_step() == VLM_PREFILL_STEP == 2048
+        assert session.find_prefix_length(ids) == 0
+        run_generation(language_model, ids, session.cache, 0, step = session.step)
+        assert session.finish()
+    assert store.lookup("m", ids, limit = len(ids))[1] == 2048
+    assert shape_stable_prefix(2048) == 0 and shape_stable_prefix(2049) == 2048
 
 
 class FakeSlottedKV:
@@ -705,7 +726,7 @@ def test_session_restores_the_model_when_one_host_is_named_twice(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     host = FakeHost()
     before = type(host)
-    with VLMPromptCacheSession(store, "m", host, make_cache, policy_hosts = (host, host)):
+    with Session(store, "m", host, make_cache, policy_hosts = (host, host)):
         pass
     assert type(host) is before
     assert "chunked_prefill_policy" not in vars(host)
@@ -717,7 +738,7 @@ def test_session_restores_the_model_even_if_unpatching_fails(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     host = FakeHost()
     before = type(host)
-    session = VLMPromptCacheSession(store, "m", host, make_cache, policy_hosts = (host,))
+    session = Session(store, "m", host, make_cache, policy_hosts = (host,))
     session.__enter__()
     del host.chunked_prefill_policy
     session.__exit__(None, None, None)

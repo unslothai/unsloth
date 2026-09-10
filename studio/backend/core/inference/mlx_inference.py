@@ -45,18 +45,31 @@ logger = get_logger(__name__)
 
 
 # Prefix reuse for mlx-vlm generation, owned by Studio. A forward is not shape-invariant, so a reused turn answers as
-# an unreused one only when both chunk the same rows: every request prefills on one grid and snapshots where a chunk
-# of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
+# an unreused one only when both chunk the same rows: every request prefills on mlx-vlm's own grid and snapshots where
+# a chunk of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
 # prefill_step_size.
 
-# The grid the boundary sits on: a prompt shorter than the step has no boundary at all.
-VLM_PROMPT_CACHE_PREFILL_STEP = 256
+# mlx-vlm's default prefill step, when it cannot be read: a prompt no longer than the step
+# has no boundary at all.
+VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
-def shape_stable_prefix(token_count, origin = 0):
+def vlm_prefill_step():
+    """The grid: mlx-vlm's default step, so an unreused request prefills as mlx-vlm does."""
+    try:
+        from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
+        return int(DEFAULT_PREFILL_STEP_SIZE)
+    except ImportError:
+        return VLM_PREFILL_STEP
+
+
+def shape_stable_prefix(
+    token_count,
+    origin = 0,
+    step = VLM_PREFILL_STEP,
+):
     """Rows whole chunks produced from ``origin``; mlx-vlm holds the last token back."""
-    step = VLM_PROMPT_CACHE_PREFILL_STEP
     rows = token_count - 1
     if rows < origin:
         return 0
@@ -400,7 +413,9 @@ class VLMPromptCacheSession:
         releases_unserved = False,
         media_block = None,
         policy_hosts = (),
+        step = VLM_PREFILL_STEP,
     ):
+        self.step = step
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
@@ -442,7 +457,7 @@ class VLMPromptCacheSession:
         self._token_ids = token_ids
         origin = self.media_block.rows(token_ids) if self.media_block is not None else 0
         self._origin = origin
-        boundary = shape_stable_prefix(len(token_ids), origin)
+        boundary = shape_stable_prefix(len(token_ids), origin, self.step)
         self._media_end = media_prefix_end(token_ids, self._media_token_ids)
         record = self._forward.record
         if boundary < self._media_end:
@@ -470,7 +485,7 @@ class VLMPromptCacheSession:
             self.cache = entries
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
-        record.capture_at = (boundary - prefix_len) // VLM_PROMPT_CACHE_PREFILL_STEP
+        record.capture_at = (boundary - prefix_len) // self.step
         self.reused_tokens = prefix_len
         return prefix_len
 
@@ -509,13 +524,12 @@ class VLMPromptCacheSession:
             return False
         # Read off the snapshot: a declined offer captures an earlier boundary.
         held = cache_entries_offset(snapshot)
-        step = VLM_PROMPT_CACHE_PREFILL_STEP
         if (
             not held
             or held < self._origin
-            or (held - self._origin) % step
+            or (held - self._origin) % self.step
             or held < self._media_end
-            or held > shape_stable_prefix(len(self._token_ids), self._origin)
+            or held > shape_stable_prefix(len(self._token_ids), self._origin, self.step)
         ):
             logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
             return False
@@ -2068,6 +2082,7 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
+                step = vlm_prefill_step(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -3284,7 +3299,7 @@ class MLXInferenceBackend:
             if session.media_block is not None:
                 vlm_kwargs.update(session.media_block.generate_kwargs())
             # Reused and unreused turns must prefill on the same grid to match.
-            vlm_kwargs["prefill_step_size"] = VLM_PROMPT_CACHE_PREFILL_STEP
+            vlm_kwargs["prefill_step_size"] = session.step
         session_scope = session if session is not None else nullcontext()
 
         def _stream_vlm_snapshots():

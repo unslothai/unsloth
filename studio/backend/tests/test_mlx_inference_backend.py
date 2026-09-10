@@ -4898,3 +4898,29 @@ def test_mlx_keeps_a_think_closer_whose_opener_came_from_the_prefill(monkeypatch
     final = snapshots[-1]
     assert final.startswith("<think>"), final
     assert "</think>" in final, f"the closer was trimmed, leaving the block open: {final!r}"
+
+
+def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend, VLMPromptSnapshotStore
+
+    names = ("mlx_vlm", "mlx_vlm.generate", "mlx_vlm.generate.common", "mlx_vlm.models")
+    modules = {name: types.ModuleType(name) for name in names + ("mlx_vlm.models.cache",)}
+    modules["mlx_vlm.generate.common"].DEFAULT_PREFILL_STEP_SIZE = 1234
+    modules["mlx_vlm.models.cache"].make_prompt_cache = lambda _model, max_kv_size = None: []
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class LanguageModel:
+        pass
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._vlm_snapshot_store = VLMPromptSnapshotStore(10**6)
+    backend._vlm_snapshot_store_unavailable = False
+    backend._vlm_is_diffusion_model = lambda _model: False
+    backend._model = SimpleNamespace(config = SimpleNamespace(), language_model = LanguageModel())
+    backend._kv_cache_window = None
+    backend.active_model_name = "m"
+    session = backend._vlm_prompt_cache_session("base")
+    assert mlx_inference.vlm_prefill_step() == 1234 and session.step == 1234
+    assert mlx_inference.shape_stable_prefix(1300, step = session.step) == 1234
