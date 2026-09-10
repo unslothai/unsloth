@@ -1062,9 +1062,12 @@ def test_pin_requires_ids_to_be_pci_indices(monkeypatch):
 def test_gpu_id_provenance_is_recorded(monkeypatch):
     # The nvidia-smi branch yields PCI indices; the torch fallback yields ordinals.
     monkeypatch.setattr(
-        subprocess, "run",
+        subprocess,
+        "run",
         lambda *a, **k: types.SimpleNamespace(
-            returncode = 0, stdout = "0, 1000, 2000\n1, 1000, 2000\n", stderr = "",
+            returncode = 0,
+            stdout = "0, 1000, 2000\n1, 1000, 2000\n",
+            stderr = "",
         ),
     )
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
