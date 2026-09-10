@@ -7701,6 +7701,13 @@ def _expected_release_tag_without_plan(
         if repo == UPSTREAM_REPO:
             # Upstream publishes one release per build under the build's own tag.
             return recorded_release
+        if repo != DEFAULT_PUBLISHED_REPO and is_release_tag_like(requested):
+            # Any other repository is selected by iter_release_payloads_by_time, which
+            # fetches a release-tag-like pin as that exact release and never as a
+            # "<pin>-<packaging>" one; expecting the newest packaging here would reject
+            # a current marker on every update and redo the selection to reach the
+            # same install.
+            return requested
         # The fork, and any other repo the selector orders by published_at, can package
         # the same upstream build more than once, and the selector installs the newest
         # packaging; a pinned build therefore still asks the API.

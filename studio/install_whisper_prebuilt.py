@@ -1582,7 +1582,12 @@ def _api_newest_release_tag_for_upstream(
         tag = release.get("tag_name") if isinstance(release, dict) else None
         if not isinstance(tag, str):
             continue
-        if tag == recorded_release or _normalized_upstream_tag(tag.split("-", 1)[0]) == wanted:
+        # The packaged tag is the upstream tag plus "-<packaging>"; the upstream part
+        # can itself carry a hyphen (v1.9.2-rc1), so it is matched as a prefix rather
+        # than cut at the first hyphen, which would read v1.9.2-rc1-unsloth.2 as a
+        # packaging of v1.9.2 and leave a newer revision out of the answer.
+        packaged = _normalized_upstream_tag(tag)
+        if tag == recorded_release or packaged == wanted or packaged.startswith(wanted + "-"):
             matching.append(release)
     return llama._newest_release_tag_from_releases(matching)
 

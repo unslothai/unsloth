@@ -6699,6 +6699,7 @@ def test_a_pinned_upstream_build_expects_the_newest_fork_packaging_of_it(monkeyp
     expected = M._expected_release_tag_without_plan(marker, "b9596", M.DEFAULT_PUBLISHED_REPO, "")
     assert expected == "b9596-mix-bbb"
     assert expected != marker["release_tag"]
+
     # A marker for another build is not current whatever the listing says.
     assert (
         M._expected_release_tag_without_plan(
@@ -6714,21 +6715,32 @@ def test_a_pinned_upstream_build_expects_the_newest_fork_packaging_of_it(monkeyp
         )
         == "b9596"
     )
-    # Any other repo is ordered by published_at like the fork, and can package one build
-    # more than once: the newest packaging is asked for, the recorded release counting.
+    # Any other repository is selected by iter_release_payloads_by_time, which fetches
+    # a release-tag-like pin as that exact release: a newer b9596-* release there is
+    # not what the selector installs, so it is not what is expected here either, and
+    # nothing is listed to learn it.
+    monkeypatch.setattr(M, "github_releases", lambda repo, **kw: pytest.fail("listed the repo"))
+    assert (
+        M._expected_release_tag_without_plan(
+            {"tag": "b9596", "release_tag": "b9596"}, "b9596", "someone/else", ""
+        )
+        == "b9596"
+    )
+    # A pin that is not a release tag (a commit) is found by scanning the releases in
+    # published_at order, and the newest packaging of it is what the selector takes.
     monkeypatch.setattr(
         M,
         "github_releases",
         lambda repo, **kw: [
-            {"tag_name": "b9596-mix-1", "published_at": "2026-01-01T00:00:00Z"},
-            {"tag_name": "b9596-mix-2", "published_at": "2026-01-02T00:00:00Z"},
+            {"tag_name": "abc1234-mix-1", "published_at": "2026-01-01T00:00:00Z"},
+            {"tag_name": "abc1234-mix-2", "published_at": "2026-01-02T00:00:00Z"},
         ],
     )
     assert (
         M._expected_release_tag_without_plan(
-            {"tag": "b9596", "release_tag": "b9596-mix-1"}, "b9596", "someone/else", ""
+            {"tag": "abc1234", "release_tag": "abc1234-mix-1"}, "abc1234", "someone/else", ""
         )
-        == "b9596-mix-2"
+        == "abc1234-mix-2"
     )
 
 

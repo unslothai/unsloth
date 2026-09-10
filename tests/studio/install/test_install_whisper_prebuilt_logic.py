@@ -2289,6 +2289,22 @@ def _whisper_check(install_dir, host, **overrides) -> bool:
     return M.existing_install_current_without_plan(install_dir, host, **kwargs)
 
 
+def test_a_hyphenated_upstream_pin_keeps_its_suffix_when_matching_packagings(monkeypatch):
+    """v1.9.2-rc1-unsloth.2 packages v1.9.2-rc1, not v1.9.2: cutting the packaged tag at
+    its first hyphen left the newer revision out and reported the recorded one current."""
+    releases = [
+        {"tag_name": "v1.9.2-unsloth.5", "published_at": "2026-03-01T00:00:00Z"},
+        {"tag_name": "v1.9.2-rc1-unsloth.2", "published_at": "2026-02-01T00:00:00Z"},
+        {"tag_name": "v1.9.2-rc1-unsloth.1", "published_at": "2026-01-01T00:00:00Z"},
+    ]
+    monkeypatch.setattr(M.llama, "github_releases", lambda _repo, max_pages = 1: releases)
+    newest = M._api_newest_release_tag_for_upstream("r/w", "v1.9.2-rc1", "v1.9.2-rc1-unsloth.1")
+    assert newest == "v1.9.2-rc1-unsloth.2"
+    # And a plain pin still does not take a longer tag that merely starts with it.
+    releases.append({"tag_name": "v1.9.20-unsloth.1", "published_at": "2026-04-01T00:00:00Z"})
+    assert M._api_newest_release_tag_for_upstream("r/w", "v1.9.2", "v1.9.2-unsloth.5") == "v1.9.2-unsloth.5"
+
+
 def test_whisper_current_install_needs_no_release_fetch(tmp_path, monkeypatch):
     install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
 
