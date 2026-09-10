@@ -3107,3 +3107,101 @@ def test_a_windowed_cache_across_devices_is_not_shrunk_on_a_stale_layer_vector()
         kv_layer_weights = vector,
     )
     assert one.priced and one.n_ctx < 65536, one.reason
+
+
+# ----------------------------------------------- lazily-read per-layer embeddings
+
+
+def test_the_per_layer_embeddings_are_their_own_bucket_inside_token_embd():
+    """A slice, not a second charge: the seam has to be able to take the PLE back out of
+    the host side without the tied-output duplicate going with it."""
+    fields = {k.replace("llama.", "gemma4."): v for k, v in _shard_fields().items()}
+    fields["general.architecture"] = "gemma4"
+    reader = _StubReader(
+        fields,
+        _shard_tensors(range(64))
+        + [
+            _StubTensor("token_embd.weight", GIB),
+            _StubTensor("per_layer_token_embd.weight", 5 * GIB),
+        ],
+    )
+    layout = _layout_from_reader(reader)
+    assert layout.complete
+    assert layout.per_layer_embd_bytes == 5 * GIB
+    assert layout.token_embd_bytes == 6 * GIB
+
+
+def _ple_layout(ple_bytes):
+    """``q4_layout`` with ``ple_bytes`` of per-layer embeddings inside token_embd."""
+    base = q4_layout()
+    return ModelLayout(
+        **{
+            **base.__dict__,
+            "arch": "gemma4",
+            "token_embd_bytes": base.token_embd_bytes + ple_bytes,
+            "per_layer_embd_bytes": ple_bytes,
+        }
+    )
+
+
+def test_a_lazily_read_per_layer_embedding_leaves_the_mmap_branch_host_side():
+    """gemma4 and qwen4exp create per_layer_token_embd TENSOR_READ_LAZY, so under mmap
+    llama.cpp serves it out of the mapping: page cache the OS can evict, not resident bytes
+    the plan has to buy. Charging Qwen3.8-Flash-Next's 26.82 GiB in full flipped this plan
+    to pageable on machines that had the room.
+
+    Both plans stay on the mmap branch here (one byte short of ``none``), so the delta IS
+    the tensor, and VRAM must not move by a byte.
+    """
+    from core.inference.offload_planner import PlanOptions
+
+    layout = _ple_layout(5 * GIB)
+    charged_opts, lazy_opts = PlanOptions(), PlanOptions(ple_read_lazily = True)
+    full = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = charged_opts).host_bytes
+    ram = full + charged_opts.host_ram_headroom_bytes - 1
+
+    charged = plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts)
+    lazy = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
+
+    assert charged.load_mode_none is False and lazy.load_mode_none is False
+    assert charged.vram_bytes == lazy.vram_bytes
+    assert charged.spilled_blocks == lazy.spilled_blocks
+    assert charged.host_bytes - lazy.host_bytes == 5 * GIB
+    assert charged.ple_charged_to_host is True and lazy.ple_charged_to_host is False
+
+
+def test_the_none_branch_pays_for_the_per_layer_embedding_it_was_excused():
+    """--load-mode none asks for no mapping, so the tensor comes back before the flag may
+    be emitted, and the plan's host figure says so."""
+    from core.inference.offload_planner import PlanOptions
+
+    layout = _ple_layout(5 * GIB)
+    charged_opts, lazy_opts = PlanOptions(), PlanOptions(ple_read_lazily = True)
+    charged = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = charged_opts)
+    lazy = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = lazy_opts)
+
+    assert charged.load_mode_none is True and lazy.load_mode_none is True
+    assert lazy.host_bytes == charged.host_bytes
+    assert lazy.ple_charged_to_host is True
+
+
+def test_a_host_that_holds_only_the_mapped_plan_keeps_mmap_rather_than_refusing():
+    """The two decisions the over-charge moved, on one host: the spill is admitted, and it
+    is admitted UNDER mmap, because the bytes that made it look unaffordable are the ones
+    llama.cpp never faults in."""
+    from core.inference.offload_planner import PlanOptions
+
+    layout = _ple_layout(20 * GIB)
+    charged_opts = PlanOptions(require_cost_win = True)
+    lazy_opts = PlanOptions(require_cost_win = True, ple_read_lazily = True)
+    full = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = charged_opts).host_bytes
+    # Room for everything but the per-layer embeddings.
+    ram = full - 20 * GIB + charged_opts.host_ram_headroom_bytes
+
+    charged = plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts)
+    lazy = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
+
+    assert charged.declined_by_gate is True and "host RAM" in charged.reason
+    assert lazy.declined_by_gate is False and lazy.spilled_blocks
+    assert lazy.load_mode_none is False, "the none branch would have to pay the 20 GiB back"
+    assert lazy.ple_charged_to_host is False

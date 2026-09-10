@@ -147,6 +147,11 @@ class PlanOptions:
     pipeline_overhead_bytes: int = 0
     # Host RAM this planner refuses to spend, so a spill does not push the box into swap.
     host_ram_headroom_bytes: int = 2 * GIB
+    # True when THIS launch will read layout.per_layer_embd_bytes from the mapping rather than hold it resident, which
+    # takes it out of the mmap branch's host RAM. The seam decides it: the arch, the build's --lazy-mode and the
+    # resolved mode all have to agree (llama-model-loader.cpp:llama_model_loader::lazy_read::add). Default False keeps
+    # the old full charge for every caller that does not price it.
+    ple_read_lazily: bool = False
     context_policy: ContextPolicy = ContextPolicy.NEVER_REDUCE
     min_ctx: int = 4096
     spill_order: SpillOrder = SpillOrder.BACK_FIRST
@@ -239,6 +244,9 @@ class Plan:
     draft_dropped: bool = False
     cache_ram_mib: int = -1
     declined_by_gate: bool = False
+    # Whether host_bytes above includes the per-layer embeddings, so the branch this plan was sized on is on the record
+    # rather than inferable only from load_mode_none.
+    ple_charged_to_host: bool = True
     # The decline is a MEASUREMENT rather than a comparison, and it does not move with the
     # context, so FIT_ONLY must not retry smaller.
     veto: bool = False
@@ -2142,7 +2150,17 @@ def _finish(
         if kv_on_host
         else 0
     )
-    host_side = layout.token_embd_bytes + spilled_weight_bytes + mmproj_host_bytes + kv_host_bytes
+    # Lazily-read per-layer embeddings are paged out of the mapping, so under mmap they are page cache the OS can
+    # evict, not a resident cost: charging 26.82 GiB of Qwen3.8-Flash-Next's PLE flipped this plan to pageable and
+    # refused it on machines that had the room.
+    ple_lazy_bytes = layout.per_layer_embd_bytes if opts.ple_read_lazily else 0
+    host_side = (
+        layout.token_embd_bytes
+        - ple_lazy_bytes
+        + spilled_weight_bytes
+        + mmproj_host_bytes
+        + kv_host_bytes
+    )
 
     # A projector alone can close the deficit, and then nothing below scores the plan: the cost
     # gate is skipped, and with it the only refusal that keeps a host side out of swap.
@@ -2195,7 +2213,8 @@ def _finish(
 
     spilled_bytes = spilled_weight_bytes
     # token_embd is host-resident on every launch, so it is host RAM this plan has to be
-    # able to pay for even when nothing is spilled; the -nkvo cache is in there too.
+    # able to pay for even when nothing is spilled; the -nkvo cache is in there too, and
+    # a lazily-read PLE is not, until the load mode below asks for it.
     host_bytes = host_side
     vram_bytes = (
         all_resident_bytes(
@@ -2211,10 +2230,16 @@ def _finish(
 
     # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but only
     # when host RAM holds the host side; otherwise mmap keeps an over-commit pageable.
+    # "none" is the branch that has to pay for the PLE: this plan asks for no mapping, so the tensor it was excused
+    # from above has to fit in RAM before that flag can be emitted.
     if host_ram_bytes is None or opts.prompt_cache_unbounded:
         load_mode_none = False
     else:
-        load_mode_none = host_bytes <= max(0, host_ram_bytes - opts.host_ram_headroom_bytes)
+        load_mode_none = host_bytes + ple_lazy_bytes <= max(
+            0, host_ram_bytes - opts.host_ram_headroom_bytes
+        )
+    if load_mode_none:
+        host_bytes += ple_lazy_bytes
 
     # The prompt cache is host RAM llama-server takes on top of the spill, 8 GiB by default, and
     # the cheapest thing in the system to give up.
@@ -2262,6 +2287,7 @@ def _finish(
         spilled_lm_head = spill_lm_head,
         vram_bytes = vram_bytes,
         host_bytes = host_bytes,
+        ple_charged_to_host = not ple_lazy_bytes or load_mode_none,
         kv_spilled_to_host = kv_on_host_rung,
         predicted_gen_penalty_ms = _spill_penalty_ms(
             layout,

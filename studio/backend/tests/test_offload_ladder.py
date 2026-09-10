@@ -439,6 +439,7 @@ def tied_embedding_layout(vocab: int, per_layer: int) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = 0,
         token_embd_bytes = vocab + per_layer,
+        per_layer_embd_bytes = per_layer,
         other_resident_bytes = vocab,
         kv_bytes_per_token_f16 = 0.615 * GIB / 9216,
         n_ctx_train = 32768,

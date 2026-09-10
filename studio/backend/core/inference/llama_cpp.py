@@ -4579,6 +4579,72 @@ def _flash_attn_enabled_from_args(
     return enabled
 
 
+# The two architectures whose per_layer_token_embd llama.cpp creates TENSOR_READ_LAZY:
+# models/gemma4.cpp:llama_model_gemma4::load_arch_tensors and
+# models/qwen4exp.cpp:llama_model_qwen4exp::load_arch_tensors. gemma3n's PLE is passed flag
+# 0, so it stays resident and keeps the full charge.
+_LAZY_PER_LAYER_EMBD_ARCHS = frozenset({"gemma4", "qwen4exp"})
+
+# --lazy-mode auto declines anything at or below this, so the DEFAULT only ever moves a very
+# large table (llama-model-loader.cpp:llama_model_loader::lazy_read::add).
+_LAZY_MODE_AUTO_MIN_BYTES = 4 * 1024**3
+
+
+def _lazy_mode_from_args(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> str:
+    """llama.cpp's resolved --lazy-mode for a launch: ``on``, ``auto`` or ``off``."""
+    mode = "auto"
+    # Studio emits no --lazy-mode of its own, so unlike flash attention the inherited
+    # LLAMA_ARG_LAZY_MODE really does reach the child; argv still wins over it.
+    value = str((os.environ if env is None else env).get("LLAMA_ARG_LAZY_MODE", "")).strip().lower()
+    if value in ("on", "auto", "off"):
+        mode = value
+    values = [str(arg) for arg in args] if args else []
+    for i, raw in enumerate(values):
+        if _flag_name(raw) not in {"-lzm", "--lazy-mode"}:
+            continue
+        _, eq, inline = raw.partition("=")
+        candidate = inline if eq else (values[i + 1] if i + 1 < len(values) else "")
+        candidate = candidate.strip().lower()
+        if candidate in ("on", "auto", "off"):
+            mode = candidate
+    return mode
+
+
+def _per_layer_embd_read_lazily(
+    arch: str,
+    ple_bytes: int,
+    *,
+    supports_lazy_mode: bool,
+    load_mode: Optional[str] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether this launch pages the per-layer embeddings instead of holding them resident.
+
+    Every clause fails CLOSED, i.e. back to the full host-RAM charge this replaced: an arch
+    llama.cpp does not mark lazy, a build with no --lazy-mode, an explicit --lazy-mode off, a
+    table too small for the auto threshold, or a launch that asked for no mapping at all.
+
+    That last one is the conservative clause, not a modelled one. llama.cpp maps a lazy
+    context whatever the load mode (llama-model-loader.cpp:llama_model_loader::init_mappings
+    maps when ``lazy.any()``, and load_all_data reads it ``from_mapping``), so --load-mode
+    none does NOT in fact fault the table in; charging it there is a margin against a user
+    who asked for residency, and it only ever keeps a plan off the "none" branch.
+    """
+    if arch not in _LAZY_PER_LAYER_EMBD_ARCHS or ple_bytes <= 0:
+        return False
+    if not supports_lazy_mode:
+        return False
+    if str(load_mode or "").strip().lower() == "none":
+        return False
+    mode = _lazy_mode_from_args(extra_args, env)
+    if mode == "off":
+        return False
+    return mode == "on" or ple_bytes > _LAZY_MODE_AUTO_MIN_BYTES
+
+
 def _effective_spec_type(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
@@ -7915,6 +7981,7 @@ class LlamaCppBackend:
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
+                "supports_lazy_mode": False,
                 "spec_draft_ngl_flag": None,
                 "spec_draft_cache_k_flag": None,
                 "spec_draft_cache_v_flag": None,
@@ -7962,6 +8029,7 @@ class LlamaCppBackend:
         supports_slot_save = False
         supports_no_mmproj_offload = False
         supports_load_mode = False
+        supports_lazy_mode = False
         spec_draft_ngl_flag = None
         spec_draft_cache_k_flag = None
         spec_draft_cache_v_flag = None
@@ -8189,6 +8257,9 @@ class LlamaCppBackend:
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
+            # Fails CLOSED like --load-mode above: a build with no --lazy-mode reads the
+            # per-layer embeddings in full, so an unreadable --help must keep charging them.
+            supports_lazy_mode = _is_real("--lazy-mode")
             # Record WHICH alias this build has: --spec-draft-ngl only landed in
             # b8955, and a build exposing only --gpu-layers-draft would refuse to
             # start on the newer name. Long forms only, since the block parser above
@@ -8279,6 +8350,7 @@ class LlamaCppBackend:
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
+            "supports_lazy_mode": supports_lazy_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
             "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
             "spec_draft_cache_v_flag": spec_draft_cache_v_flag,
@@ -22126,6 +22198,8 @@ class LlamaCppBackend:
                         # cache as one rather than as an f16 product with a smaller floor under it.
                         "cache_type_kv": cache_type_kv,
                         "load_mode": load_mode,
+                        # Whether this build can page a TENSOR_READ_LAZY tensor at all.
+                        "supports_lazy_mode": bool(server_caps.get("supports_lazy_mode")),
                         "context_policy_fit_only": bool(_spill_ctx_request) and ctx_override != 0,
                         "min_ctx": int(_AUTO_OFFLOAD_CTX),
                         "workload_prompt_tokens": int(
@@ -28258,6 +28332,17 @@ class LlamaCppBackend:
                 pipeline_overhead_bytes = self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024,
                 # Module-level, unlike the line above, so not reachable through self.
                 host_ram_headroom_bytes = _HOST_RAM_HEADROOM_MIB * 1024 * 1024,
+                # The per-layer embeddings come off the host side when llama.cpp will read
+                # them from the mapping rather than hold them resident: 26.82 GiB of
+                # Qwen3.8-Flash-Next's, which used to refuse the plan on a box that had room.
+                ple_read_lazily = _per_layer_embd_read_lazily(
+                    layout.arch,
+                    int(getattr(layout, "per_layer_embd_bytes", 0) or 0),
+                    supports_lazy_mode = bool(inputs.get("supports_lazy_mode")),
+                    load_mode = inputs.get("load_mode"),
+                    extra_args = extra_args,
+                    env = source_env,
+                ),
                 # -nkvo is not a reason to decline: it moves the cache and the
                 # recurrent state OUT of VRAM, so the deficit is smaller, not
                 # larger.

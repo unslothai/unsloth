@@ -2331,9 +2331,11 @@ def _captured_opts(monkeypatch, stub, **kw):
 
     monkeypatch.setattr(offload_planner, "plan_placement", capture)
     extra_args = kw.pop("extra_args", None)
+    # Popped, not passed through as an input: the seam reads the environment itself.
+    env = {"UNSLOTH_SMART_OFFLOAD": "1", **(kw.pop("env", None) or {})}
     inputs = _inputs(**{k: v for k, v in kw.items() if k in _inputs.__code__.co_varnames})
     inputs.update({k: v for k, v in kw.items() if k not in _inputs.__code__.co_varnames})
-    stub._planned_tensor_spill(inputs, extra_args = extra_args, env = {"UNSLOTH_SMART_OFFLOAD": "1"})
+    stub._planned_tensor_spill(inputs, extra_args = extra_args, env = env)
     assert "kwargs" in seen, "the seam declined before reaching the planner"
     return seen["kwargs"]["opts"], seen
 
@@ -2851,3 +2853,96 @@ def test_the_compute_reserve_reaches_the_planner_priced_per_context(monkeypatch)
     seen.clear()
     _plan(_Stub(), free_mib = 14 * 1024, ctx_compute = 512 * MIB)
     assert seen["opts"].overhead_bytes_at is None
+
+
+# ------------------------------------- which launches read the PLE instead of holding it
+
+
+class _PleStub(_Stub):
+    """``_Stub`` whose layout carries per-layer embeddings of a given arch and size."""
+
+    arch = "gemma4"
+    ple_bytes = 8 * GIB
+
+    def _tensor_spill_layout(
+        self,
+        model_path,
+        *,
+        all_shards = False,
+    ):
+        base = _Stub._tensor_spill_layout(self, model_path, all_shards = all_shards)
+        return ModelLayout(
+            **{
+                **base.__dict__,
+                "arch": self.arch,
+                "token_embd_bytes": base.token_embd_bytes + self.ple_bytes,
+                "per_layer_embd_bytes": self.ple_bytes,
+            }
+        )
+
+
+def _ple_stub(**attrs):
+    stub = _PleStub()
+    for key, value in attrs.items():
+        setattr(stub, key, value)
+    return stub
+
+
+def _ple_lazily(monkeypatch, stub, **kw):
+    """Whether the seam tells the planner this launch pages the per-layer embeddings."""
+    kw.setdefault("supports_lazy_mode", True)
+    opts, _ = _captured_opts(monkeypatch, stub, free_mib = 14 * 1024, **kw)
+    return opts.ple_read_lazily
+
+
+def test_a_lazy_arch_on_a_build_with_the_flag_reads_the_embeddings_from_the_mapping(monkeypatch):
+    """gemma4 (models/gemma4.cpp:llama_model_gemma4::load_arch_tensors) and qwen4exp
+    (models/qwen4exp.cpp:llama_model_qwen4exp::load_arch_tensors) are the only two archs
+    that create per_layer_token_embd TENSOR_READ_LAZY."""
+    assert _ple_lazily(monkeypatch, _ple_stub()) is True
+    assert _ple_lazily(monkeypatch, _ple_stub(arch = "qwen4exp")) is True
+
+
+def test_gemma3n_keeps_the_full_charge(monkeypatch):
+    """The one PLE architecture llama.cpp does NOT mark lazy: models/gemma3n.cpp passes
+    flag 0, so the tensor is read in full and is resident host RAM."""
+    assert _ple_lazily(monkeypatch, _ple_stub(arch = "gemma3n")) is False
+
+
+def test_a_build_without_lazy_mode_keeps_the_full_charge(monkeypatch):
+    """--lazy-mode first appears at b10700. An older llama-server reads the table in full
+    whatever the arch says, and a --help that could not be parsed answers the same way."""
+    assert _ple_lazily(monkeypatch, _ple_stub(), supports_lazy_mode = False) is False
+
+
+def test_a_launch_that_asked_for_no_mapping_keeps_the_full_charge(monkeypatch):
+    """--load-mode none is the user asking for residency. llama.cpp in fact still maps a
+    lazy context (llama-model-loader.cpp:llama_model_loader::init_mappings maps whenever
+    lazy.any()), so this is a deliberate margin: it can only keep a plan off the none
+    branch, never admit one that does not fit."""
+    assert _ple_lazily(monkeypatch, _ple_stub(), load_mode = "none") is False
+
+
+def test_lazy_mode_off_keeps_the_full_charge(monkeypatch):
+    """ "off: always keep them resident". Both spellings, and the env twin Studio never
+    emits over."""
+    assert _ple_lazily(monkeypatch, _ple_stub(), extra_args = ["--lazy-mode", "off"]) is False
+    assert _ple_lazily(monkeypatch, _ple_stub(), extra_args = ["-lzm=off"]) is False
+    assert _ple_lazily(monkeypatch, _ple_stub(), env = {"LLAMA_ARG_LAZY_MODE": "off"}) is False
+
+
+def test_the_auto_default_only_moves_a_table_over_four_gib(monkeypatch):
+    """``auto`` is the default and it declines anything at or below 4 GiB
+    (llama-model-loader.cpp:llama_model_loader::lazy_read::add), so gemma-4-E2B's 1540 MiB
+    per-layer table is resident on a default launch and only ``on`` pages it."""
+    small = _ple_stub(ple_bytes = 1540 * MIB)
+    assert _ple_lazily(monkeypatch, small) is False
+    assert _ple_lazily(monkeypatch, small, extra_args = ["--lazy-mode", "on"]) is True
+    assert _ple_lazily(monkeypatch, _ple_stub(ple_bytes = 4 * GIB)) is False
+    assert _ple_lazily(monkeypatch, _ple_stub(ple_bytes = 4 * GIB + 1)) is True
+
+
+def test_a_model_with_no_per_layer_embeddings_is_unaffected(monkeypatch):
+    """Every non-PLE model plans exactly as it did: no bucket, nothing to excuse."""
+    assert _ple_lazily(monkeypatch, _Stub()) is False
+    assert _ple_lazily(monkeypatch, _ple_stub(ple_bytes = 0)) is False
