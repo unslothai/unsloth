@@ -15,20 +15,33 @@ name: Windows Unsloth API CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # What the test boots: the backend, the Windows installer chain and the
+      # CLI. studio/frontend/** stays because install.ps1 builds the bundle and
+      # the dist cache key hashes it; unsloth/** and studio/src-tauri/** are gone
+      # because the install is --no-torch and never touches the Tauri shell, so
+      # edits there could not change what this job observes.
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.ps1'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.ps1'
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # The test itself, named rather than globbed: the rest of tests/studio is
+      # Playwright drivers and PowerShell units this workflow never runs.
+      - 'tests/studio/studio_api_smoke.py'
       - '.github/workflows/studio-windows-api-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # And for the GGUF download that primes HF_HOME.
+      - '.github/scripts/hf-download-with-retry.sh'
   push:
     branches: [main]
   workflow_dispatch:

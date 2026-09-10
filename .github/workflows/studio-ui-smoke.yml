@@ -19,13 +19,23 @@ name: Unsloth UI CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # The two halves Playwright actually drives, the backend and the React
+      # bundle, plus the installer and CLI that put them on the box. This used
+      # to be studio/** and unsloth/**. The install is --no-torch, so an edit
+      # under unsloth/** cannot reach the venv under test, and studio/src-tauri
+      # is never built here; both fired five Linux slots per push for nothing.
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
       # The Playwright test files themselves -- a PR that ONLY edits
-      # the test must still trigger UI CI.
+      # the test must still trigger UI CI. Kept as the directory glob:
+      # tests/studio/test_stt_model_search_locator_contract.py asserts it.
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
@@ -35,17 +45,15 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # And for the GGUF download that primes HF_HOME in every shard.
+      - '.github/scripts/hf-download-with-retry.sh'
       # Both apt steps in this workflow shell out to it, so an edit to it changes
       # what this workflow actually runs.
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
+      # The frontend-dist actions are not listed: this workflow never uses them.
       - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
-      - '.github/actions/frontend-dist-restore/action.yml'
-      - '.github/actions/frontend-dist-save/action.yml'
   push:
     branches: [main]
   workflow_dispatch:
