@@ -96,9 +96,9 @@ class TestThePoolIsNeverFilledToTheLastCell:
             assert enforced is not None
             occupancy = (_prompt_tokens(payload) + enforced) * slots
             assert occupancy < window, f"{window}/{slots}: fills the pool to {occupancy}"
-            assert window - occupancy >= slots, (
-                f"{window}/{slots}: only {window - occupancy} cells left for {slots} sequences"
-            )
+            assert (
+                window - occupancy >= slots
+            ), f"{window}/{slots}: only {window - occupancy} cells left for {slots} sequences"
 
     def test_the_reserve_is_taken_out_of_the_charge_not_added_to_it(self):
         """The ledger holds `prompt + allowance`; the reserve is room it paid for and did
