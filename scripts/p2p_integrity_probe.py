@@ -67,13 +67,12 @@ def _print_topology() -> None:
 
 
 def _print_nvml_agreement() -> None:
-    """Compare the NVML fast path against `nvidia-smi topo -m`.
+    """Compare the NVML fast path (~230 ms) against `nvidia-smi topo -m` (~1.2 s).
 
-    Studio reads NVLink connectivity from NVML (~230 ms) and falls back to the
-    shell-out (~1.2 s). They agree exactly on an 8x B200 NVSwitch host, but PCIe-only
-    and partially bridged boxes were not available to test. The line that matters is
-    an NVML-positive / topo-negative pair: that would be the fast path claiming a
-    link the slow path denies. Please report it on #10613 if you see one."""
+    They agree exactly on an 8x B200 NVSwitch host, but PCIe-only and partially
+    bridged boxes were not available to test. The line that matters is an
+    NVML-positive / topo-negative pair, the fast path claiming a link the slow path
+    denies. Please report it on #10613 if you see one."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "studio" / "backend"))
         from core.inference.llama_cpp import LlamaCppBackend as backend

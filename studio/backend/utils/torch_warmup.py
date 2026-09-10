@@ -240,18 +240,13 @@ def _warm_inference_backend() -> None:
 
 
 def _prime_nvlink_topology() -> None:
-    """Build the P2P gate's interconnect matrix before the first model load.
+    """Build the P2P gate's interconnect matrix so the load path does not pay the
+    probe inline. Rides the inference_backend stage because it imports the same
+    first-party module.
 
-    It costs ~230 ms via NVML, or ~1.2 s where only `nvidia-smi topo -m` can answer,
-    and the load path would otherwise pay it inline. Rides the inference_backend
-    stage rather than adding one of its own: it imports the same first-party module,
-    so a separate stage would need a purge mapping it has no use for.
-
-    Only hosts that would probe anyway do any work, and a failure here must not fail
-    the stage. cache_failure=False because this runs early, possibly mid driver
-    initialisation: a miss cached here would keep P2P off for the life of the process
-    even once the topology became readable, so a failed prime leaves the cache cold
-    and the load path probes as it would have (#10613)."""
+    cache_failure=False: this runs early, possibly mid driver initialisation, and a
+    miss cached here would keep P2P off for the life of the process even once the
+    topology became readable (#10613)."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         if LlamaCppBackend._effective_gpu_count() < 2:

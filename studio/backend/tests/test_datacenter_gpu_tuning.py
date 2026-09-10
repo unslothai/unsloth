@@ -101,8 +101,8 @@ def _isolate_host_topology(monkeypatch):
     pinned so a CI box with GPUs cannot colour the results.
 
     NVML is stubbed absent by default so the topo tests still exercise the parser;
-    on a machine with a driver the fast path answers first and the canned
-    `nvidia-smi` output is never read. The NVML tests install their own fake."""
+    with a real driver the fast path would answer first and the canned `nvidia-smi`
+    output would never be read. The NVML tests install their own fake."""
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     LlamaCppBackend._NVLINK_TOPO_GENERATION = 0
     LlamaCppBackend._IOMMU_CACHE = None
@@ -1074,9 +1074,9 @@ def test_gpu_id_provenance_is_recorded(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# NVML fast path. The gate reads the same matrix from the driver's own NVML
-# instead of `nvidia-smi topo -m` (~230 ms against ~1.2 s on an 8x B200). These
-# drive a fake libnvidia-ml so the failure modes are reachable without hardware.
+# NVML fast path: the same matrix from the driver's own NVML instead of
+# `nvidia-smi topo -m`. These drive a fake libnvidia-ml so the failure modes are
+# reachable without hardware.
 # ---------------------------------------------------------------------------
 
 _NVML_OK = 0
@@ -1084,8 +1084,8 @@ _NVML_ERROR = 999
 
 
 class _FakeNvml:
-    """Minimal stand-in for libnvidia-ml.so.1 driven through the same ctypes calls
-    as the real one: rc out, values written through byref pointers."""
+    """Stand-in for libnvidia-ml.so.1 with the real calling convention: rc out,
+    values written through byref pointers."""
 
     def __init__(
         self,
@@ -1240,23 +1240,21 @@ def _use_topo_after_nvml(monkeypatch, fake, text):
 
 
 def test_nvml_partial_walk_is_not_a_partial_matrix(monkeypatch):
-    """A failure after some pairs succeeded must discard the successes, not approve
-    the pairs that happened to answer first."""
+    """A failure mid-walk must discard the successes, not approve the pairs that
+    happened to answer first."""
     _use_nvml(monkeypatch, _FakeNvml(count = 4, fail_status_after = 3))
     assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
 
 
 def test_nvml_positive_without_active_links_is_a_contradiction(monkeypatch):
-    """The guard for hardware not available here: if the NVLink capability index
-    ever reads OK on a box with no live NVLinks, that is unknown, not a green
-    light."""
+    """Guard for hardware not available here: an OK on a box with no live NVLinks is
+    unknown, not a green light."""
     _use_nvml(monkeypatch, _FakeNvml(count = 2, active_links = [0, 0]))
     assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
 
 
 def test_nvml_unlinked_pair_vetoes_p2p(monkeypatch):
-    """Two islands: 0-1 and 2-3 bridged, nothing across. A cross-island selection
-    must not get P2P."""
+    """Two islands, 0-1 and 2-3. A cross-island selection must not get P2P."""
     linked = {(0, 1), (1, 0), (2, 3), (3, 2)}
     _use_nvml(monkeypatch, _FakeNvml(count = 4, linked_pairs = linked))
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
@@ -1267,8 +1265,8 @@ def test_nvml_unlinked_pair_vetoes_p2p(monkeypatch):
 
 
 def test_nvml_matrix_needs_nvidia_smi_provenance(monkeypatch):
-    """`topo -m` answering proves nvidia-smi enumerated the selection. NVML does
-    not, so torch-ordinal ids must not be matched against an NVML matrix."""
+    """`topo -m` answering proves nvidia-smi enumerated the selection; NVML does not,
+    so torch-ordinal ids must not be matched against an NVML matrix."""
     _use_nvml(monkeypatch, _FakeNvml(count = 4))
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
@@ -1296,8 +1294,7 @@ def test_nvml_single_gpu_gives_no_verdict(monkeypatch):
 
 
 def test_crosscheck_prefers_topo_on_disagreement(monkeypatch):
-    """Qualification aid: when both answer and they differ, the slow one wins and
-    the disagreement is logged."""
+    """When both answer and differ, the slow one wins and it is logged."""
     monkeypatch.setenv("UNSLOTH_P2P_TOPO_CROSSCHECK", "1")
     _use_topo_after_nvml(monkeypatch, _FakeNvml(count = 2), TOPO_PCIE_2X)
     records = _capture_warnings(monkeypatch)
@@ -1307,9 +1304,9 @@ def test_crosscheck_prefers_topo_on_disagreement(monkeypatch):
 
 
 def test_nvml_unknown_status_is_not_a_denial(monkeypatch):
-    """NVML_P2P_STATUS_UNKNOWN (6), or a status from a newer driver, is not evidence
-    of no NVLink. Recording it as NO-NVLINK would make the matrix look conclusive and
-    deny topo -m the chance to confirm a fabric that is really there."""
+    """UNKNOWN (6), or a status from a newer driver, is not evidence of no NVLink:
+    recording it as NO-NVLINK would deny topo -m the chance to confirm a real
+    fabric."""
     for status in (6, 42):
         _use_nvml(monkeypatch, _FakeNvml(count = 2, status_value = status))
         assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
@@ -1321,8 +1318,8 @@ def test_nvml_unknown_status_is_not_a_denial(monkeypatch):
 
 
 def test_a_failed_prime_does_not_poison_the_cache(monkeypatch):
-    """The startup prime runs early, possibly mid driver init. A miss cached there
-    would keep P2P off for the whole process even once the topology is readable."""
+    """The prime runs early, possibly mid driver init. A miss cached there would keep
+    P2P off for the whole process even once the topology is readable."""
     monkeypatch.setattr(
         LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: None)
     )
@@ -1347,10 +1344,10 @@ def test_a_successful_prime_is_still_cached(monkeypatch):
 
 def test_windows_nvml_candidates_include_the_nvsmi_directory(monkeypatch):
     """A driver install can leave nvml.dll in NVSMI rather than a DLL search path,
-    the same way it does nvidia-smi.exe."""
+    as it does nvidia-smi.exe."""
     tried = []
-    # The autouse fixture stubs _nvml_library absent, so restore the real one; taken
-    # from the module-level capture, since the class attribute is already the stub.
+    # From the module-level capture, since the autouse fixture already replaced the
+    # class attribute with the absent stub.
     monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(_REAL_NVML_LIBRARY))
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
