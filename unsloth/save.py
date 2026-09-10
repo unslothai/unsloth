@@ -5386,7 +5386,8 @@ def save_to_gguf_generic(
 
 def _push_merged_to_hub_revision(save_kwargs):
     import tempfile
-    from huggingface_hub import ModelCard
+    from huggingface_hub import CommitOperationAdd, ModelCard
+    from unsloth_zoo.saving_utils import get_original_model_id
 
     if not save_kwargs["is_main_process"]:
         return
@@ -5410,10 +5411,18 @@ def _push_merged_to_hub_revision(save_kwargs):
             card = ModelCard.load(card_path)
         else:
             model = save_kwargs["model"]
+            base_model = model.config._name_or_path
+            if os.path.isdir(base_model):
+                original_model_id = get_original_model_id(base_model)
+                base_model = (
+                    original_model_id
+                    if original_model_id is not None and not os.path.exists(original_model_id)
+                    else repo_id
+                )
             card = ModelCard(
                 MODEL_CARD.format(
                     username = username,
-                    base_model = model.config._name_or_path,
+                    base_model = base_model,
                     model_type = model.config.model_type,
                     method = "",
                     extra = "unsloth",
@@ -5425,10 +5434,16 @@ def _push_merged_to_hub_revision(save_kwargs):
             dict.fromkeys([*(card.data.tags or []), *(save_kwargs["tags"] or []), "unsloth"])
         )
         card.save(card_path)
-        return api.upload_folder(
+        return api.create_commit(
             repo_id = repo_id,
             repo_type = "model",
-            folder_path = directory,
+            operations = [
+                CommitOperationAdd(
+                    path_in_repo = path.relative_to(directory).as_posix(), path_or_fileobj = path
+                )
+                for path in sorted(Path(directory).rglob("*"))
+                if path.is_file()
+            ],
             revision = save_kwargs["revision"],
             create_pr = save_kwargs["create_pr"],
             commit_message = save_kwargs["commit_message"],

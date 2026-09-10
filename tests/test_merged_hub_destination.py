@@ -67,6 +67,7 @@ def saving(monkeypatch):
 
     zoo = ModuleType("unsloth_zoo.saving_utils")
     zoo.merge_and_overwrite_lora = merge
+    zoo.get_original_model_id = lambda path: records.get("original_model_id")
     monkeypatch.setitem(sys.modules, "unsloth_zoo.saving_utils", zoo)
 
     class Api:
@@ -76,8 +77,11 @@ def saving(monkeypatch):
         def create_repo(self, **kwargs):
             records["repos"].append(kwargs)
 
-        def upload_folder(self, **kwargs):
-            files = {p.name: p.read_text() for p in Path(kwargs["folder_path"]).iterdir()}
+        def create_commit(self, **kwargs):
+            files = {
+                operation.path_in_repo: Path(operation.path_or_fileobj).read_text()
+                for operation in kwargs["operations"]
+            }
             records["uploads"].append({**kwargs, "files": files, "token": self.token})
             if records.get("fail_upload"):
                 raise OSError("upload failed")
@@ -217,3 +221,14 @@ def test_full_finetune_stages_model_and_metadata_together(saving):
     assert set(upload["files"]) == {"config.json", "model.safetensors", "README.md"}
     assert ModelCard(upload["files"]["README.md"]).data.datasets == ["owner/data"]
     assert records["merges"] == []
+
+
+@pytest.mark.parametrize("original_id", ["upstream/base-model", None])
+def test_local_base_model_card_uses_hub_identifier(saving, tmp_path, original_id):
+    env, records, _ = saving
+    records["original_model_id"] = original_id
+    model = PeftModel()
+    model.config = SimpleNamespace(_name_or_path = str(tmp_path), model_type = "llama")
+    env["unsloth_generic_push_to_hub_merged"](model, "owner/model", revision = "candidate")
+    card = ModelCard(records["uploads"][0]["files"]["README.md"])
+    assert card.data.base_model == (original_id or "owner/model")
