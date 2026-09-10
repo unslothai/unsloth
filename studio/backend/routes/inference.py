@@ -2275,6 +2275,16 @@ def _openai_llama_admission_wire_prompt_tokens(
     )
 
 
+# Cells a sequence needs beyond what it writes. llama-server stops on
+# `prompt.n_tokens() + 1 >= slot.n_ctx` (server-context.cpp process_token and pre_decode), so
+# a sequence held to exactly its share leaves the pool nothing to place its next token in.
+# Filling a `--kv-unified` pool to exactly `capacity * share` failed 3 of 6 and 4 of 8
+# concurrent waves on b10840 at `-c 16384 --parallel 4`, and every failure is the whole-pool
+# kill this bound exists to prevent. 2 was the measured floor; 8 keeps margin for a build that
+# needs another cell, and costs 0.2% of a 4096 share.
+_OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS = 8
+
+
 def _openai_llama_admission_wire_output_bound(
     *,
     share: int,
@@ -2298,6 +2308,9 @@ def _openai_llama_admission_wire_output_bound(
     )
     if budget:
         allowance = min(allowance, max(0, budget - prompt_tokens))
+    # Inside the charge, never beside it: the ledger already holds `prompt + allowance`, so
+    # the reserve is room it paid for and did not spend.
+    allowance -= _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS
     # Never zero, which llama-server refuses.
     return max(1, allowance)
 

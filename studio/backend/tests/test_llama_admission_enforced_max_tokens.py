@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+    _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS as _RESERVE,
     _openai_llama_admission_enforced_max_tokens,
     _openai_llama_admission_tokens,
 )
@@ -78,6 +79,45 @@ class TestTheInvariant:
             assert (_prompt_tokens(payload) + enforced) * slots <= 32768
 
 
+class TestThePoolIsNeverFilledToTheLastCell:
+    """llama-server stops a sequence on `prompt.n_tokens() + 1 >= slot.n_ctx`, so a request
+    held to exactly its share leaves the pool nothing to place its next token in.
+
+    Measured on b10840 at `-c 16384 --parallel 4 --kv-unified`: four chats summing to
+    exactly 16384 cells lost every chat in 3 of 6 and 4 of 8 waves, which is the whole-pool
+    kill this bound exists to prevent. A reserve of 2 cells a request was the floor.
+    """
+
+    def test_a_full_capacity_leaves_the_pool_room_to_step(self):
+        for window, slots in ((16384, 4), (16384, 2), (16384, 8), (65536, 4), (4096, 4)):
+            backend = _backend(window = window, total = window, slots = slots)
+            payload = _chat(max_tokens = window)
+            enforced = _enforced(payload, backend)
+            assert enforced is not None
+            occupancy = (_prompt_tokens(payload) + enforced) * slots
+            assert occupancy < window, f"{window}/{slots}: fills the pool to {occupancy}"
+            assert window - occupancy >= slots, (
+                f"{window}/{slots}: only {window - occupancy} cells left for {slots} sequences"
+            )
+
+    def test_the_reserve_is_taken_out_of_the_charge_not_added_to_it(self):
+        """The ledger holds `prompt + allowance`; the reserve is room it paid for and did
+        not spend. Charging for it would admit fewer chats to buy the same safety."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        payload = _chat(max_tokens = 16384)
+        charged = _openai_llama_admission_tokens(
+            payload, budget = 16384, capacity = 4, context_window = 16384
+        )
+        assert _prompt_tokens(payload) + _enforced(payload, backend) < charged
+
+    def test_an_over_share_prompt_keeps_a_usable_allowance(self):
+        """The reserve comes off the flat allowance too, and must not floor it."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        payload = _chat("word " * 4000, max_tokens = 16384)
+        enforced = _enforced(payload, backend)
+        assert enforced is not None and enforced > 512, enforced
+
+
 class TestWhatIsLeftAlone:
     def test_a_stated_cap_is_never_clamped(self):
         """It is already honest: charged and sent as the same number."""
@@ -130,14 +170,15 @@ class TestTheEdges:
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat("word " * 4000, max_tokens = 16384)
         enforced = _enforced(payload, backend)
-        assert enforced == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert enforced == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
         charged = _openai_llama_admission_tokens(
             payload, budget = 16384, capacity = 4, context_window = 16384
         )
-        assert _prompt_tokens(payload) + enforced == charged
+        assert _prompt_tokens(payload) + enforced == charged - _RESERVE
 
-    def test_the_bound_is_exactly_the_charge(self):
-        """These two must not drift in EITHER direction; see the class below."""
+    def test_the_bound_is_the_charge_less_the_reserve(self):
+        """These two must not drift in EITHER direction beyond the reserve; see the class
+        below. The reserve is the only permitted gap, and it is the safe direction."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         charged = _openai_llama_admission_tokens(
@@ -145,19 +186,21 @@ class TestTheEdges:
         )
         enforced = _enforced(payload, backend)
         assert (
-            _prompt_tokens(payload) + enforced == charged
+            _prompt_tokens(payload) + enforced == charged - _RESERVE
         ), f"charged {charged} but permits {_prompt_tokens(payload) + enforced}"
         # And it is still generous: a chat gets its share, not a flat thousand tokens.
         assert enforced > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
 
-    def test_the_charge_never_exceeds_what_is_permitted(self):
-        """If it did, admission would be reserving room the request cannot use."""
+    def test_the_charge_exceeds_what_is_permitted_by_the_reserve_alone(self):
+        """Any more and admission reserves room the request cannot use; any less and the
+        pool has no cell left to step into."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         charged = _openai_llama_admission_tokens(
             payload, budget = 16384, capacity = 4, context_window = 16384
         )
-        assert charged <= _prompt_tokens(payload) + _enforced(payload, backend)
+        permitted = _prompt_tokens(payload) + _enforced(payload, backend)
+        assert charged - _RESERVE <= permitted <= charged
 
 
 def _prompt_tokens(payload):
@@ -312,7 +355,9 @@ class TestAnOverSharePromptIsPricedTheSameOnBothSides:
                 payload, backend, budget = total, capacity = slots, window = total
             )
             assert _prompt_tokens(payload) > share, "not an over-share prompt"
-            assert permitted == charge, f"{total}/{slots}: charged {charge}, permits {permitted}"
+            assert (
+                charge - _RESERVE <= permitted <= charge
+            ), f"{total}/{slots}: charged {charge}, permits {permitted}"
 
     def test_a_default_image_chat_is_not_truncated_after_one_token(self):
         """4224 tokens of image allowance against a 4096 share on 16K with four slots."""
@@ -339,9 +384,10 @@ class TestAnOverSharePromptIsPricedTheSameOnBothSides:
             payload, request = None, llama_backend = backend, conversation = conversation
         )
         assert (
-            bound == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+            bound == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
         ), f"an image answer is capped at {bound} tokens"
-        assert permitted == charge
+        assert bound > 512, "an image chat must still get a usable answer"
+        assert charge - _RESERVE <= permitted <= charge
 
     def test_a_full_queue_of_over_share_requests_still_fits_the_budget(self):
         """Concurrency drops instead: what is admitted may occupy what it was charged."""

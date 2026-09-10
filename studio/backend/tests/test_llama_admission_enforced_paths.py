@@ -46,6 +46,7 @@ from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+    _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS as _RESERVE,
     _build_openai_passthrough_body,
     _openai_llama_admission_retry_max_tokens,
     _openai_llama_admission_wire_prompt_tokens,
@@ -1022,7 +1023,7 @@ class TestWhatTheWireActuallyCarries:
         conversation_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        assert wire == share - conversation_tokens, (wire, share, conversation_tokens)
+        assert wire == share - _RESERVE - conversation_tokens, (wire, share, conversation_tokens)
 
     def test_image_transport_bytes_do_not_come_off_the_answer(self):
         """Only OpenAI `image_url` parts are compacted, so an Anthropic image keeps base64."""
@@ -1060,10 +1061,10 @@ class TestWhatTheWireActuallyCarries:
             payload, request = None, llama_backend = backend, conversation = translated
         )
         assert (
-            raw == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+            raw == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
         ), "the base64 transport should have swamped the share, leaving the flat allowance"
         assert wire > raw, "the normalised part is priced as an image, not as prompt text"
-        assert wire == 32768 // 4 - _openai_llama_admission_wire_prompt_tokens(
+        assert wire == 32768 // 4 - _RESERVE - _openai_llama_admission_wire_prompt_tokens(
             translated, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
 
@@ -1305,8 +1306,9 @@ class TestARetryThatGrewItsPrompt:
         first_prompt = _openai_llama_admission_wire_prompt_tokens(
             first_messages, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        # The charge IS the first attempt's wire occupancy, which is what the retry has.
-        assert first_prompt + allowance == charge == budget // slots
+        # The charge IS the first attempt's wire occupancy plus the reserve it never sends.
+        assert charge == budget // slots
+        assert first_prompt + allowance == charge - _RESERVE
 
         grown = first_messages + [
             # The whole allowance came back as an unparseable call.
@@ -1325,7 +1327,7 @@ class TestARetryThatGrewItsPrompt:
             llama_backend = backend,
         )
         # Without the first attempt to measure against, a fresh flat allowance.
-        assert unbounded == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert unbounded == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
 
         bound = _openai_llama_admission_retry_max_tokens(
             {"messages": grown},
@@ -1351,7 +1353,7 @@ class TestARetryThatGrewItsPrompt:
         allowance = _openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = backend, conversation = first_messages
         )
-        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
         charge = _openai_llama_admission_tokens(
             payload,
             budget = budget,
@@ -1374,7 +1376,7 @@ class TestARetryThatGrewItsPrompt:
             first_messages = first_messages,
         )
         assert bound > 1
-        assert retry_prompt + bound == charge
+        assert retry_prompt + bound == charge - _RESERVE
 
     def test_a_client_that_named_a_cap_is_left_alone(self):
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
@@ -1587,7 +1589,7 @@ class TestTheAnthropicSurface:
         prompt = _openai_llama_admission_wire_prompt_tokens(sent)
         allowance = seen["plain"]["admission_output_allowance"]
         assert raw < share <= prompt, (raw, share, prompt)
-        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, allowance
+        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE, allowance
         assert charged and charged[0] >= prompt + allowance, (charged, prompt, allowance)
 
     def test_the_tool_generator_is_bounded(self, monkeypatch):
