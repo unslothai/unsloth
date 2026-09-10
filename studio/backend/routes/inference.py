@@ -8080,7 +8080,11 @@ def _loaded_satisfies(requested: str) -> bool:
     A bare ``org/model`` is satisfied by any loaded quant of that repo; an explicit
     ``:QUANT`` must match the loaded one.
     """
-    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+    from core.inference.openai_auto_download import (
+        looks_like_gguf_hub_repo_id,
+        looks_like_quant,
+        split_model_ref,
+    )
 
     base, variant = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
@@ -8114,10 +8118,14 @@ def _loaded_satisfies(requested: str) -> bool:
     if not active:
         return False
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo. A
-    # root stem (``model-Q4_K_M-mtp``) is a GGUF request too when the local index says so.
+    # root stem (``model-Q4_K_M-mtp``) is a GGUF request too: decisive on a catalog-shaped GGUF
+    # repo id, whose builds the listing can still fetch, and otherwise when the local index
+    # says so -- a build not yet cached must reach the switch that lists and downloads it.
     if looks_like_quant(variant):
         return False
     if variant and looks_like_quant(variant, allow_root_stem = True):
+        if looks_like_gguf_hub_repo_id(base):
+            return False
         try:
             from core.inference.local_model_resolver import resolve_local_gguf
 

@@ -71,6 +71,39 @@ def scoped_file_blob_hashes(
     )
 
 
+def _state_variant(repo_id: str, variant: Optional[str]) -> Optional[str]:
+    """The spelling a status, cancel or progress lookup should key on: the request's own when
+    a job or state exists under it, else the spelling of the ONE active job or stored manifest
+    whose file list says it is this build. A lone tagged build started as ``Q4_K_M`` and looked
+    up as ``model-Q4_K_M-mtp`` is one download, not an idle row beside a running one."""
+    from hub.utils.gguf import manifest_build_key, _key_names_build, stored_variant_spelling
+
+    wanted = (variant or "").strip()
+    if not wanted:
+        return variant
+    if _registry.get_job(_download_job_key(repo_id, wanted)).state != "idle":
+        return wanted
+    try:
+        for ref in _registry.active_job_refs(repo_id):
+            metadata = ref.metadata
+            spelling = (getattr(metadata, "variant", None) or "").strip()
+            if not spelling or spelling.lower() == wanted.lower():
+                continue
+            hub_cache = getattr(metadata, "hub_cache", None)
+            manifest = download_manifest.read_manifest(
+                "model", repo_id, spelling, hub_cache = Path(hub_cache) if hub_cache else None
+            )
+            key = manifest_build_key(manifest) if manifest is not None else None
+            if key and _key_names_build(key, wanted, ()):
+                return spelling
+    except Exception:
+        pass
+    try:
+        return stored_variant_spelling(repo_id, wanted)
+    except Exception:
+        return wanted
+
+
 def _job_status(
     key: str,
     *,
@@ -383,6 +416,7 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
+    variant = await asyncio.to_thread(_state_variant, repo_id, variant)
     key = _download_job_key(repo_id, variant)
 
     state = download_lifecycle.cancel_worker(
@@ -402,6 +436,7 @@ async def get_download_status_response(repo_id: str, gguf_variant: str = "") -> 
         return DownloadJobStatus(state = "idle")
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
     variant = (gguf_variant or "").strip() or None
+    variant = await asyncio.to_thread(_state_variant, repo_id, variant)
     key = _download_job_key(repo_id, variant)
     return _job_status(key, repo_id = repo_id, variant = variant)
 
@@ -627,6 +662,7 @@ async def get_gguf_download_progress_response(
             "progress": 0,
             "cache_path": None,
         }
+    progress_variant = await asyncio.to_thread(_state_variant, repo_id, progress_variant)
 
     def _metadata_resolver(
         resolved_repo_id: str, token: Optional[str]

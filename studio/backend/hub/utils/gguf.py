@@ -858,6 +858,73 @@ def accepts_bare_quant_alias(key: str) -> bool:
     return is_qualified_gguf_variant_key(key) and not is_h3_denoiser_variant_key(key)
 
 
+def manifest_build_key(manifest) -> Optional[str]:
+    """The variant key of the build a download manifest describes, read off its main GGUF paths.
+    None for a manifest naming no main GGUF (a scope, a companion-only fetch)."""
+    from hub.utils.gguf_plan import is_main_gguf_candidate
+
+    main = sorted(
+        file.path
+        for file in (getattr(manifest, "expected_files", ()) or ())
+        if getattr(file, "path", None) and is_main_gguf_candidate(file.path)
+    )
+    return gguf_variant_key(main[0]) if main else None
+
+
+def _key_names_build(key: str, wanted: str, keys: Iterable[str]) -> bool:
+    """Whether a manifest describing build *key* is the build *wanted* names: the key itself,
+    or the qualified key whose bare alias *wanted* is, when no build in *keys* owns that
+    spelling exactly."""
+    target = _forward_slashed(wanted).strip().lower()
+    if _forward_slashed(key).strip().lower() == target:
+        return True
+    return resolve_variant_alias({*keys, key}, wanted) == key and target != key.lower()
+
+
+def stored_variant_spelling(
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    keys: Iterable[str] = (),
+    hub_cache = None,
+) -> Optional[str]:
+    """The spelling this build's download state is stored under.
+
+    State is written under the spelling the DOWNLOAD used, and a build has two: a legacy client
+    (or any client, before the lister qualified it) starts a lone tagged build as ``Q4_K_M``,
+    while the row now advertises ``model-Q4_K_M-mtp``. Looked up by the row's key, the manifest,
+    marker and job under the bare spelling were invisible -- the card read idle mid-download.
+    *variant* itself when state exists under it; else the ONE other spelling whose manifest
+    describes this build (the manifest's own file list says which build it is, so a bare-spelled
+    manifest for the PLAIN build never answers for the tagged one); else *variant* unchanged.
+    *keys* is the inventory the caller holds, for the ownership rule.
+    """
+    from hub.utils import download_manifest
+
+    wanted = (variant or "").strip()
+    if not wanted:
+        return variant
+    if download_manifest.read_manifest(
+        "model", repo_id, wanted, hub_cache = hub_cache
+    ) is not None or download_manifest.has_cancel_marker(
+        "model", repo_id, wanted, hub_cache = hub_cache
+    ):
+        return wanted
+    matches: list[str] = []
+    try:
+        stored = list(download_manifest.iter_variant_manifests("model", repo_id, hub_cache = hub_cache))
+    except Exception:
+        return wanted
+    for spelling, _path in stored:
+        if not spelling or spelling.lower() == wanted.lower():
+            continue
+        manifest = download_manifest.read_manifest("model", repo_id, spelling, hub_cache = hub_cache)
+        key = manifest_build_key(manifest) if manifest is not None else None
+        if key and _key_names_build(key, wanted, keys):
+            matches.append(spelling)
+    return matches[0] if len(matches) == 1 else wanted
+
+
 def _forward_slashed(text: Optional[str]) -> str:
     """A variant spelling with Windows separators folded to the ``/`` a key is minted with."""
     return (text or "").replace("\\", "/")

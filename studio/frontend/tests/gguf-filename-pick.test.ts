@@ -168,3 +168,16 @@ test("a tagged root build outranks a subordinate checkpoint sharing its quant", 
     null,
   );
 });
+
+test("a downloaded and a remote copy of one tagged build are one identity", () => {
+  const remote = { ...TAGGED, downloaded: false };
+  assert.equal(pickGgufFilename([remote, TAGGED], "Q4_K_M"), TAGGED.filename);
+  assert.equal(pickGgufFilename([TAGGED, remote], "Q4_K_M"), TAGGED.filename);
+  const localOnly = { ...TAGGED, filename: "local/model-Q4_K_M-mtp.gguf" };
+  assert.equal(
+    pickGgufFilename([remote, localOnly], "Q4_K_M"),
+    localOnly.filename,
+  );
+  // Two identities still name neither.
+  assert.equal(pickGgufFilename([remote, TAGGED_FP16], "Q4_K_M"), null);
+});

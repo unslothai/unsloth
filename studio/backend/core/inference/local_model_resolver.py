@@ -200,7 +200,7 @@ def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
     return tuple(state)
 
 
-def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
+def _legacy_variant_aliases(variants, inventory = None) -> tuple[tuple[str, str], ...]:
     """``(legacy label, current label)`` for each id this module used to publish and no longer does.
 
     /v1/models published the loader's label before the swap to the shared lister, and a client
@@ -214,12 +214,20 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
     Grouped rows give one file per quant, so ``alpha-Q4_K_M.gguf`` beside
     ``zeta-BF16-Q4_K_M.gguf`` keeps the 404. Never raises: _local_gguf_entry answers None on an
     escape, which would drop the whole repo.
+
+    *inventory* is every build cached for the repo across ALL its revisions, when the entry is
+    one revision of an HF cache repo; ownership of a spelling is decided against that, the way
+    the cached loaders decide it. Judged by the selected revision alone, a newer snapshot holding
+    only ``model-Q4_K_M-mtp`` aliased ``Q4_K_M`` to it while an older snapshot held the plain
+    build that owns the spelling exactly, and the switch loaded the tagged checkpoint for it.
     """
     try:
         from utils.models.model_config import _extract_quant_label, _qualified_variant_name
 
+        inventory = list(inventory) if inventory is not None else list(variants)
         # .lower() matches how _resolve_from_index folds the request
-        current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
+        current = {str(v.quant).lower() for v in inventory if getattr(v, "quant", None)}
+        offered = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
         seen: dict[str, Optional[str]] = {}
         for variant in variants:
             quant = getattr(variant, "quant", None)
@@ -243,7 +251,7 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
         # persisted ``repo:Q4_K_M`` in the local index that the remote resolver had just
         # downloaded through, because the root build owns that spelling everywhere else.
         owners: dict[str, list[str]] = {}
-        for variant in variants:
+        for variant in inventory:
             quant = getattr(variant, "quant", None)
             if not quant or not accepts_bare_quant_alias(str(quant)):
                 continue
@@ -252,7 +260,10 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
                 continue
             owners.setdefault(key, []).append(str(quant))
         for key, candidates in owners.items():
-            seen[key] = resolve_variant_alias(candidates, key)
+            owner = resolve_variant_alias(candidates, key)
+            # An owner cached only in another revision is not something THIS entry can load;
+            # the cached loaders resolve that spelling across revisions, this entry stays silent.
+            seen[key] = owner if owner is not None and owner.lower() in offered else None
         return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
     except Exception:
         return ()
@@ -338,6 +349,15 @@ def _local_gguf_entry(
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
+        # Every revision's builds, for deciding which spellings this revision's builds own.
+        inventory = list(variants)
+        if cache_repo_dir is not None:
+            for root in local_gguf_companion_roots(str(load_dir), repo_level = True)[1:]:
+                try:
+                    sibling_variants, _ = list_local_gguf_variants(root, require_existing_files = True)
+                except Exception:
+                    continue
+                inventory.extend(sibling_variants)
         # that call orders by descending size, and downstream reads [0]
         # That call orders by descending size, so the head is the biggest quant (often F16). Downstream reads [0], and a
         # bare id must mean whichever quant a plain load would take: answering with the largest can evict a model and
@@ -365,7 +385,7 @@ def _local_gguf_entry(
             str(load_dir),
             quants,
             repo_level_companions = cache_repo_dir is not None,
-            aliases = _legacy_variant_aliases(variants),
+            aliases = _legacy_variant_aliases(variants, inventory = inventory),
         )
     except Exception:
         return None

@@ -1328,6 +1328,27 @@ def idle_status(
     return (state.state, state.error, generation)
 
 
+def _published_variant(metadata) -> Optional[str]:
+    """The key a job's row is advertised under: a lone tagged build started under the legacy
+    bare spelling is keyed ``Q4_K_M`` in the registry, and a client matching this list against
+    the ``model-Q4_K_M-mtp`` row it shows found no job for it. The manifest names the build."""
+    variant = metadata.variant
+    if not variant or str(variant).startswith("@"):
+        return variant
+    try:
+        from hub.utils.gguf import manifest_build_key
+        from pathlib import Path
+
+        hub_cache = getattr(metadata, "hub_cache", None)
+        manifest = download_manifest.read_manifest(
+            metadata.repo_type, metadata.repo_id, variant, hub_cache = Path(hub_cache) if hub_cache else None
+        )
+        key = manifest_build_key(manifest) if manifest is not None else None
+    except Exception:
+        key = None
+    return key or variant
+
+
 def active_download_refs(
     registry: download_registry.DownloadRegistry, repo_id: Optional[str], *, with_variant: bool
 ) -> list[ActiveDownload]:
@@ -1337,7 +1358,7 @@ def active_download_refs(
         if with_variant:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
             if metadata is not None:
-                variant = metadata.variant
+                variant = _published_variant(metadata)
             else:
                 _repo, sep, raw_variant = ref.key.partition("::")
                 variant = raw_variant if sep and raw_variant else None

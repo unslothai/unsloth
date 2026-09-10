@@ -93,7 +93,11 @@ const bareLabelOf = (quant: string, label: string): boolean => {
  *  `distilled/model-Q4_K_M`, and only two roots still tie. Two rows carrying the label name
  *  neither, and the prompt stays. */
 function aliasedFilename(
-  listed: readonly { filename: string; quant: string | null }[],
+  listed: readonly {
+    filename: string;
+    quant: string | null;
+    downloaded: boolean;
+  }[],
   wanted: string,
 ): string | null {
   let byAlias = listed.filter((v) => v.quant && bareLabelOf(v.quant, wanted));
@@ -101,7 +105,13 @@ function aliasedFilename(
     const roots = byAlias.filter((v) => v.quant && atRepoRoot(v.quant));
     byAlias = roots.length > 0 ? roots : byAlias;
   }
-  return byAlias.length === 1 ? byAlias[0].filename : null;
+  // One IDENTITY, not one row: a downloaded and a remote copy of the same key are one build,
+  // as the exact-label branch already reads them, and the downloaded one is the file to load.
+  const identities = new Set(byAlias.map((v) => v.quant?.toLowerCase()));
+  if (identities.size !== 1) {
+    return null;
+  }
+  return (byAlias.find((v) => v.downloaded) ?? byAlias[0]).filename;
 }
 
 /** The .gguf to load, given the listing and what the pick carried: a filename, a quant label, or nothing. A load needs a real

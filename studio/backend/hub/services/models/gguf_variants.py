@@ -30,6 +30,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
+    stored_variant_spelling,
     GgufVariantInfo,
     _keys_at_repo_root,
     collapse_same_quant_root_builds,
@@ -1605,23 +1606,46 @@ async def get_gguf_variants_answer(
         def _repo_signals_apply_to(quant: str) -> bool:
             return repo_signal_applies or quant.lower() not in excused_quants
 
+        # State is keyed by the spelling the download used, which for a lone tagged build may be
+        # the legacy bare quant while the row is its qualified key; read the row's state under
+        # whichever spelling holds it, or the card sat idle beside its own running download.
+        row_keys = [v.quant for v in variants if getattr(v, "quant", None)]
+        state_quants: dict[str, str] = {}
+
+        def _state_quant(quant: str) -> str:
+            if quant not in state_quants:
+                try:
+                    state_quants[quant] = (
+                        stored_variant_spelling(
+                            repo_id,
+                            quant,
+                            keys = row_keys,
+                            hub_cache = hf_cache_scan._hub_cache_for_repo_dir(repo_cache_dir),
+                        )
+                        or quant
+                    )
+                except Exception:
+                    state_quants[quant] = quant
+            return state_quants[quant]
+
         # Manifest + marker + main incomplete-blob check: catches variants whose download was cancelled or whose
         # expected shards are missing/undersized.
         for variant in partial_scan_variants:
             try:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 variant_hashes = requirement.main_hashes if requirement is not None else None
+                state_quant = _state_quant(variant.quant)
                 if variant_hashes is None and incomplete_hashes:
                     variant_hashes = gguf_variant_blob_hashes(
                         repo_id,
-                        variant.quant,
+                        state_quant,
                         hf_token,
                         include_companions = False,
                         repo_cache_dir = repo_cache_dir,
                     )
                 if hf_cache_scan.is_variant_partial(
                     repo_id,
-                    variant.quant,
+                    state_quant,
                     scan_snapshot_dir,
                     incomplete_blob_hashes = incomplete_hashes,
                     variant_blob_hashes = variant_hashes,
@@ -1631,7 +1655,7 @@ async def get_gguf_variants_answer(
                     partial_quants.add(variant.quant)
                     partial_quant_transports[variant.quant] = _partial_transport_for_variant(
                         repo_id,
-                        variant.quant,
+                        state_quant,
                         repo_cache_dir,
                     )
             except Exception as e:
@@ -1657,7 +1681,7 @@ async def get_gguf_variants_answer(
                         variant.quant,
                         _partial_transport_for_variant(
                             repo_id,
-                            variant.quant,
+                            _state_quant(variant.quant),
                             repo_cache_dir,
                         ),
                     )
@@ -1697,7 +1721,8 @@ async def get_gguf_variants_answer(
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
                 partial_resumable = (
-                    is_partial and _partial_resumable_for_variant(repo_id, v.quant, repo_cache_dir)
+                    is_partial
+                    and _partial_resumable_for_variant(repo_id, _state_quant(v.quant), repo_cache_dir)
                 ),
                 dependency_key = _variant_dependency_key(repo_id, v.filename),
             )
