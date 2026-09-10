@@ -267,6 +267,8 @@ def stdio_mcp_enabled() -> bool:
     opt-in, where the process tool policy is False merely by the external-host default, not by
     choice.
     """
+    if _managed_mcp_restricted():
+        return False
     if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
         return False
     from state.tool_policy import get_tool_policy

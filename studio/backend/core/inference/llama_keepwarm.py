@@ -887,18 +887,22 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    # As /unload: a kept claim hides the empty GPU from other accounts.
-                    from hub.services.models.account_access import clear_resident
-                    from routes.inference import release_chat_gpu_claim
-
-                    clear_resident("chat")
-                    await asyncio.to_thread(release_chat_gpu_claim)
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)
+                    # As /unload: a kept claim hides the empty GPU from other accounts. After the
+                    # stash, so a failed release never loses the reload identity.
+                    try:
+                        from hub.services.models.account_access import clear_resident
+                        from routes.inference import release_chat_gpu_claim
+
+                        clear_resident("chat")
+                        await asyncio.to_thread(release_chat_gpu_claim)
+                    except Exception as exc:  # noqa: BLE001 - the unload already happened
+                        logger.debug("Idle auto-unload: claim release failed: %s", exc)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
                     # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)
