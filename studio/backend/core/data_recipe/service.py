@@ -137,13 +137,20 @@ def _apply_data_designer_image_context_patch() -> None:
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
-    """The recipe engine dials providers itself, so a managed account's endpoint must be public."""
+    """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
+    transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
+    may rebind to loopback or the LAN after this public-address check."""
     if not managed_account():
         return
+    from urllib.parse import urlsplit
+
     from core.inference.providers import public_provider_address
 
+    url = str(endpoint or "")
     try:
-        public_provider_address(str(endpoint or ""))
+        if urlsplit(url).scheme != "https":
+            raise ValueError("Managed accounts may only use HTTPS provider endpoints.")
+        public_provider_address(url)
     except ValueError as exc:
         raise HTTPException(
             status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"

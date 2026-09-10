@@ -120,10 +120,20 @@ def test_managed_recipe_model_provider_must_be_public(endpoint):
     assert "public" in refused.value.detail
 
 
-def test_managed_recipe_model_provider_on_a_public_address_is_kept():
+def test_managed_recipe_model_provider_on_a_public_https_address_is_kept():
     from core.data_recipe.service import build_model_providers
-    built = run_as(ALICE, build_model_providers, _provider_recipe("http://8.8.8.8/v1"))
-    assert [provider.endpoint for provider in built] == ["http://8.8.8.8/v1"]
+    built = run_as(ALICE, build_model_providers, _provider_recipe("https://8.8.8.8/v1"))
+    assert [provider.endpoint for provider in built] == ["https://8.8.8.8/v1"]
+
+
+def test_managed_recipe_model_provider_over_plain_http_is_refused():
+    """The engine re-resolves the name when it connects, so only TLS pins the peer; plain HTTP is refused."""
+    from core.data_recipe.service import build_model_providers
+
+    with pytest.raises(HTTPException) as refused:
+        run_as(ALICE, build_model_providers, _provider_recipe("http://8.8.8.8/v1"))
+    assert refused.value.status_code == 403
+    assert "HTTPS" in refused.value.detail
 
 
 def test_owner_recipe_model_provider_endpoints_are_unchanged():
