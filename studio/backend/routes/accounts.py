@@ -67,9 +67,11 @@ def retire_account_roots(account: AccountContext):
     # A load the account started before its tombstone is torn down here; one after it is refused.
     from core.inference import video as video_module
     from core.inference.diffusion_engine_router import retire_load_for_account
+    from routes.inference import retire_account_loads
 
     retire_load_for_account(account.account_id)
     video_module.retire_load_for_account(account.account_id)
+    retire_account_loads(account.account_id)
     run_as(account, close_mcp_sessions)
     run_as(account, invalidate_tool_cache)
     from storage.studio_db import close_wal_keeper_for

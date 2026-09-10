@@ -213,13 +213,18 @@ def note_resident_account(modality: str, *references: str) -> None:
 media_load_lock = threading.Lock()
 
 
+def require_live_account() -> None:
+    """A tombstoned account starts nothing and shares nothing."""
+    if managed_account():
+        from core.training.account_jobs import account_is_retired
+        if account_is_retired():
+            raise HTTPException(status_code = 403, detail = "Account is retired")
+
+
 def admit_media_load(modality: str, start, *references: str):
     """Start a load under the retirement scan's lock, so a tombstoned account starts none."""
     with media_load_lock:
-        if managed_account():
-            from core.training.account_jobs import account_is_retired
-            if account_is_retired():
-                raise HTTPException(status_code = 403, detail = "Account is retired")
+        require_live_account()
         result = start()
         note_resident_account(modality, *references)
         return result
@@ -246,6 +251,7 @@ def publish_resident(modality: str, *references: str) -> None:
     """A new resident: recorded as before, with its loader as the only sharer."""
     if not policy.installation_has_managed_accounts():
         return
+    require_live_account()
     note_resident_account(modality, *references)
     with _sharers_lock:
         _resident_sharers[modality] = {current_account_id()}
@@ -255,6 +261,7 @@ def join_resident(modality: str) -> None:
     """A matching load reused the resident: the caller shares it from now on."""
     if not policy.installation_has_managed_accounts():
         return
+    require_live_account()
     with _sharers_lock:
         _resident_sharers.setdefault(modality, set()).add(current_account_id())
 

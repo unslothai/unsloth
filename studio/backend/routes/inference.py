@@ -14152,6 +14152,22 @@ def _cancel_for_shutdown(attempt: _ScopedLoadAttempt) -> None:
     attempt.cancel_complete.set()
 
 
+def retire_account_loads(account_id: str) -> int:
+    """Cancel every /load the account owns. Runs after its tombstone, which refuses later ones."""
+    with _scoped_load_attempts_lock:
+        attempts = {
+            attempt.token: attempt
+            for attempt in (*_pending_load_attempts.values(), *_scoped_load_attempts.values())
+            if attempt.subject == account_id
+        }
+        running = _running_load_attempt
+        if running is not None and running.subject == account_id:
+            attempts[running.token] = running
+    for attempt in attempts.values():
+        _cancel_for_shutdown(attempt)
+    return len(attempts)
+
+
 def begin_load_lifecycle() -> None:
     """Clear the shutdown latch so a restarted server accepts loads again."""
     global _loads_shutting_down
@@ -14444,6 +14460,8 @@ async def _load_model_impl(
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        # Retirement sweeps registered attempts; a load it raced is refused here, before the GPU.
+        account_access.require_live_account()
 
         # Auto-switch and preview call this impl directly, without a _ScopedLoadAttempt,
         # so the shutdown sweep has no event to set for them. Reading the latch here puts

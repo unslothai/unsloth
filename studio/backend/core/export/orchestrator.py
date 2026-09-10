@@ -476,14 +476,18 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         allow_ambient: bool = True,
         subject: Optional[str] = None,
+        base_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
         Always spawns a fresh subprocess to ensure a clean Python interpreter.
+        ``base_model`` pins an already authorized adapter base; the worker then ignores the
+        adapter config, which its owner can rewrite after the check.
         """
         validate_job_paths({"checkpoint_path": checkpoint_path})
         sub_config = {
             "checkpoint_path": checkpoint_path,
+            "base_model": base_model,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,

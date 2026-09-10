@@ -28,6 +28,7 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 from utils.utils import safe_error_detail
@@ -98,6 +99,18 @@ def _resolve_export_hf_token(
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
+def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
+    """The adapter's config names the base the worker loads, so it is authorized like the checkpoint."""
+    if not account_access.managed_account():
+        return None
+    from utils.models import get_base_model_from_lora
+
+    base = get_base_model_from_lora(checkpoint_path)
+    if base:
+        account_access.require_model_access(base)
+    return base or None
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest,
@@ -112,6 +125,7 @@ async def load_checkpoint(
     a clear error instead of tearing down the user's other running workloads.
     """
     validate_job_paths(request.model_dump())
+    base_model = await asyncio.to_thread(_authorized_adapter_base, request.checkpoint_path)
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -120,6 +134,7 @@ async def load_checkpoint(
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
+            base_model = base_model,
             max_seq_length = request.max_seq_length,
             load_in_4bit = request.load_in_4bit,
             trust_remote_code = request.trust_remote_code,
