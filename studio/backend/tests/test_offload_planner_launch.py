@@ -1066,3 +1066,72 @@ def test_a_plan_that_moves_no_weight_is_watched_for_sysmem_fallback(tmp_path, mo
         caps = caps,
     )
     assert seen == [False], seen
+
+
+def test_a_launch_recovered_under_fit_on_is_not_watched_for_sysmem_fallback(tmp_path, monkeypatch):
+    """A forced full-offload launch that crashed and came back under --fit on is the fitter's
+    placement, which may hold layers in host RAM. Watching it would read a legitimately slow
+    partial placement with VRAM full as the driver paging, and tell the user to change a
+    policy that is not in play."""
+    import subprocess
+    from unittest.mock import patch
+
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+
+    seen = []
+
+    def spy(self, **kw):
+        seen.append(bool(kw.get("fully_gpu_offloaded")))
+        return None
+
+    monkeypatch.setattr(LlamaCppBackend, "_windows_sysmem_fallback_watch", spy)
+    monkeypatch.delenv("UNSLOTH_SMART_OFFLOAD", raising = False)
+
+    def run(returncodes):
+        # A card the 1 KiB stub fits on outright, so the launch is a proved full offload.
+        backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, CARD_MIB, CARD_MIB)])
+        backend.probe_server_capabilities = lambda _binary = None: {"supports_metrics": True}
+        launches: list = []
+
+        class _Process:
+            pid = 123
+            stdout = ()
+
+            def __init__(self, returncode):
+                self.returncode = returncode
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                return None
+
+            def wait(self, timeout = None):
+                return self.returncode
+
+            def kill(self):
+                return None
+
+        real_popen = subprocess.Popen
+
+        def popen(cmd, **kwargs):
+            # Only the server is faked; anything else the launch runs is real.
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return real_popen(cmd, **kwargs)
+            launches.append(list(cmd))
+            return _Process(returncodes[len(launches) - 1])
+
+        backend._wait_for_health = lambda timeout, **_kw: returncodes[len(launches) - 1] is None
+        seen.clear()
+        with patch.object(subprocess, "Popen", side_effect = popen):
+            assert backend.load_model(GgufLoadIntent(gguf_path = str(gguf), model_identifier = "t"))
+        return launches
+
+    clean = run([None])
+    assert clean[0][clean[0].index("--fit") + 1] == "off"
+    assert seen == [True], seen
+
+    recovered = run([1, None])
+    assert len(recovered) == 2
+    assert recovered[1][recovered[1].index("--fit") + 1] == "on"
+    assert seen == [False], seen

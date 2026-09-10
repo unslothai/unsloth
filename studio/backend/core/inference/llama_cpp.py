@@ -8763,6 +8763,15 @@ class LlamaCppBackend:
         # pricing (_per_layer_embd_read_lazily) already agree there.
         if ple_bytes <= _LAZY_MODE_AUTO_MIN_BYTES:
             return None
+        # A --device the user typed (or an inherited LLAMA_ARG_DEVICE) is appended after this
+        # and wins for placement, so the devices whose mmap support decides the mode are not
+        # the ones ``gpu_indices`` names: "on" against an iGPU is a mode the child refuses.
+        # Left to auto, which resolves against the devices it actually gets.
+        if (
+            _extra_args_main_device(extra_args) is not None
+            or str((env or {}).get("LLAMA_ARG_DEVICE", "")).strip()
+        ):
+            return None
         return (
             "on"
             if self._selected_devices_can_mmap(
@@ -25150,6 +25159,9 @@ class LlamaCppBackend:
                 # healthy is often a later one (drafterless, no-flash, arch
                 # fallback). A per-call flag left those successes unrecorded.
                 _did_rocm_retry = False
+                # Set when a launch Studio proved fully resident crashed and came back under
+                # --fit on: the fitter may then hold layers in host RAM, so that proof is void.
+                _fit_on_recovered = False
 
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """The fit's ``--load-mode none`` off a --flash-attn off respawn.
@@ -25237,7 +25249,7 @@ class LlamaCppBackend:
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
-                    nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
+                    nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry, _fit_on_recovered
                     # One revocation point for the tensor-spill plan instead of a
                     # strip per retry site. `label` is empty ONLY on the first
                     # spawn, so a retry added later is covered automatically. The
@@ -25403,6 +25415,7 @@ class LlamaCppBackend:
                                 run_cmd = _reverted
                                 self._memory_state = resolve_effective_memory_state(run_cmd, env)
                                 _did_fit_retry = True
+                                _fit_on_recovered = True
                                 continue
                         if (
                             not _did_fit_retry
@@ -25471,6 +25484,7 @@ class LlamaCppBackend:
                             run_cmd = _run
                             self._memory_state = resolve_effective_memory_state(_run, env)
                             _did_fit_retry = True
+                            _fit_on_recovered = True
                             continue
                         if (
                             not _did_fit_retry
@@ -26914,8 +26928,13 @@ class LlamaCppBackend:
                                 is_vulkan_backend = is_vulkan_backend,
                                 # A plan that moved no weight pins every layer on the card
                                 # under -ngl -1 --fit off, the launch WDDM can page silently.
-                                fully_gpu_offloaded = fully_gpu_offloaded
-                                or _spill_keeps_every_layer_on_gpu,
+                                # A launch that crashed and came back under --fit on is the
+                                # fitter's placement, which may hold layers in host RAM: slow
+                                # with VRAM full is then legitimate, not the policy paging.
+                                fully_gpu_offloaded = (
+                                    fully_gpu_offloaded or _spill_keeps_every_layer_on_gpu
+                                )
+                                and not _fit_on_recovered,
                             ),
                         )
                     except Exception as e:

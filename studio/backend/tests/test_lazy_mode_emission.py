@@ -182,3 +182,21 @@ def test_load_model_emits_the_mode_it_priced():
     assert '_spill_inputs["emitted_lazy_mode"] = _emitted_lazy_mode' in source
     seam = inspect.getsource(LlamaCppBackend._planned_tensor_spill)
     assert 'emitted_mode = inputs.get("emitted_lazy_mode")' in seam
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--device", "Vulkan1"], {}),
+        (["-dev", "CUDA1"], {}),
+        (["--device=Vulkan0,Vulkan1"], {}),
+        (None, {"LLAMA_ARG_DEVICE": "Vulkan1"}),
+    ],
+)
+def test_a_pass_through_device_selection_leaves_the_mode_to_auto(extra_args, env):
+    """The extras are appended after Studio's flags and win for placement, so the devices
+    whose mmap support decides the mode are theirs, not gpu_indices'. Forcing ``on`` against
+    an iGPU they name is a mode the child refuses (test_off_on_a_vulkan_igpu); auto resolves
+    against the devices it actually gets."""
+    assert _mode(extra_args = extra_args, env = env) is None
+    assert _mode() == "on", "the same launch without the selection still says the mode"
