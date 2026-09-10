@@ -54,8 +54,8 @@ def _run(monkeypatch, *, device_count, capable_by_ordinal):
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", fake_quant)
 
     namespace: dict = {}
-    exec(_src("_dense_quant_supported"), namespace)  # noqa: S102 -- the real body, not a copy of it
-    return namespace["_dense_quant_supported"](), scoped
+    exec(_src("_probe_dense_quant_supported"), namespace)  # noqa: S102 -- the real body
+    return namespace["_probe_dense_quant_supported"](), scoped
 
 
 def test_a_single_capable_gpu_reports_capable(monkeypatch):
@@ -101,29 +101,44 @@ def test_a_probe_failure_reports_incapable(monkeypatch):
 
 @pytest.mark.parametrize("needle", ["diffusion_device_scope", "device_count"])
 def test_the_wiring_stays_in_place(needle):
-    assert needle in _src("_dense_quant_supported")
+    assert needle in _src("_probe_dense_quant_supported")
 
 
 def test_the_capability_is_published_and_never_memoised():
-    """`/api/system` carries the bit, and it must be recomputed on every poll.
+    """`/api/system` carries the bit, and the probe must not be pinned.
 
-    `dense_quant_host_capable` counts an UNPROBED scheme as usable, so a cold backend answers yes
-    and the first real load can then record a kernel failure. Memoising here would pin that
-    optimistic answer for the life of the process.
+    `dense_quant_host_capable` counts an UNPROBED scheme as usable, so an early answer can be yes
+    and a later load can record a kernel failure. Memoising the probe would pin the optimistic
+    answer for the life of the process.
     """
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert '"dense_quant_supported": _dense_quant_supported()' in src
     node = next(
         n
         for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.FunctionDef) and n.name == "_dense_quant_supported"
+        if isinstance(n, ast.FunctionDef) and n.name == "_probe_dense_quant_supported"
     )
     assert node.decorator_list == []
-    assert "lru_cache" not in src.split("def _dense_quant_supported")[0][-400:]
 
 
-def test_the_published_bit_follows_the_probe_as_it_warms(monkeypatch):
-    """A verdict the loader has since paid for must reach the next poll."""
+def test_the_polled_route_never_imports_the_ml_stack():
+    """torch and torchao cost ~0.8s each and hold the GIL; /api/system is polled through startup.
+
+    The reader answers from `sys.modules` and a value the post-warm worker resolved, so a poll on a
+    cold backend imports nothing. `_await_hardware_detection` avoids the same stall for the same
+    reason.
+    """
+    reader = _src("_dense_quant_supported")
+    assert '"torch" in sys.modules' in reader and '"torchao" in sys.modules' in reader
+    # The reader itself must not reach the importing probe except behind that guard.
+    assert "_probe_dense_quant_supported" not in reader
+    src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    # ...and something off the polled path has to resolve it, or the label never appears.
+    assert "_refresh_dense_quant_capability()" in _src("_post_warm_background_work")
+
+
+def test_the_probe_follows_the_smoke_cache_as_it_warms(monkeypatch):
+    """A verdict the loader has since paid for must reach the next resolution."""
     answers = {None: True}
     result, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = answers)
     assert result is True

@@ -589,6 +589,16 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
 
     if _post_warm_retired(generation):
         return
+    # Off the polled path on purpose: /api/system must not import torchao itself (see
+    # _dense_quant_supported), and the warm above has already paid for torch.
+    try:
+        _refresh_dense_quant_capability()
+    except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+        import structlog as _structlog
+        _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
+
+    if _post_warm_retired(generation):
+        return
     _start_linked_folder_auto_sync(generation)
 
 
@@ -1997,17 +2007,16 @@ def _get_cached_system_gpu_info(
         return combined_info
 
 
-def _dense_quant_supported() -> bool:
+def _probe_dense_quant_supported() -> bool:
     """Whether an ``auto`` request could engage a dense quant on EVERY visible card.
 
     The picker cannot see which card a load will land on, so a mixed host answers for the least
     capable one.
 
-    Deliberately NOT cached: the answer sharpens. ``dense_quant_host_capable`` treats an unprobed
-    scheme as usable, so the first poll on a cold backend can say yes and the first real load can
-    then record a kernel failure in ``_SMOKE_CACHE``. A process-lifetime cache would pin the
-    optimistic answer and keep labelling rows fast on a host where every load falls back to bf16.
-    Each call is a capability read plus dict lookups; nothing here probes or allocates."""
+    IMPORTS the ML stack, so only ``_refresh_dense_quant_capability`` calls it, and only from the
+    post-warm worker or from a request that already has both modules loaded. Never memoised: the
+    answer sharpens, because ``dense_quant_host_capable`` counts an unprobed scheme as usable and a
+    later load can record a kernel failure in ``_SMOKE_CACHE``."""
     try:
         from core.inference.diffusion_device import (
             diffusion_device_scope,
@@ -2027,6 +2036,35 @@ def _dense_quant_supported() -> bool:
         return True
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
         return False
+
+
+# Resolved off the polled path: None until the post-warm worker or a request that already holds the
+# ML stack has answered.
+_dense_quant_capability: Optional[bool] = None
+
+
+def _refresh_dense_quant_capability() -> bool:
+    """Resolve the dense-quant bit and cache it. Imports torch and torchao; never call from a route
+    that has not already got them."""
+    global _dense_quant_capability
+    _dense_quant_capability = _probe_dense_quant_supported()
+    return _dense_quant_capability
+
+
+def _dense_quant_supported() -> bool:
+    """The dense-quant bit for ``/api/system``, from already-loaded state only.
+
+    This route is polled throughout startup, and ``import torch`` and ``import torchao.quantization``
+    cost ~0.8s each and hold the GIL, which is the stall ``_await_hardware_detection`` already goes
+    out of its way to keep off this path. So: never import here. The post-warm worker resolves it
+    once the coordinated warm has the stack up, and a request that finds both modules already loaded
+    refreshes it, so a kernel verdict a load recorded reaches the picker on the next poll.
+
+    False before that is the honest answer, not a wrong one: the picker renders it as no fast label,
+    the same way it treats an unknown VRAM budget until system info arrives."""
+    if "torch" in sys.modules and "torchao" in sys.modules:
+        return _refresh_dense_quant_capability()
+    return bool(_dense_quant_capability)
 
 
 @app.get("/api/system")
