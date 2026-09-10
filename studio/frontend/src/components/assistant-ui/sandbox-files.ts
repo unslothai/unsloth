@@ -129,12 +129,19 @@ export function sandboxRoutePrefix(sessionId: string): {
  * The sandbox a chat's tool calls run in. Threads inside a project share the
  * project's workspace, so their files land in one place instead of one folder
  * per thread.
+ *
+ * `workspaceSessionId` is required rather than optional: changing a project's
+ * working directory rotates it, so a caller that omits it silently gets the
+ * pre-rotation `project-<id>` and hands the user a session that no longer
+ * exists. Pass the project's current value, or `undefined` when there is no
+ * project and the thread's own id is the answer.
  */
 export function sandboxSessionIdFor(
   threadId: string | undefined,
   projectId: string | null | undefined,
+  workspaceSessionId: string | null | undefined,
 ): string | undefined {
-  return projectId ? `project-${projectId}` : threadId;
+  return projectId ? workspaceSessionId || `project-${projectId}` : threadId;
 }
 
 /**
@@ -234,16 +241,22 @@ export function sandboxSessionInSrc(src: string): string | null {
  * still has its older files, and exactly what the tool card above the prose resolves from its own
  * persisted envelope. A model echoes real workdir paths out of the stdout it saw; discarding that echo
  * is what broke those answers' images after a move. Only a path that records nothing (a bare
- * `outputs/plot.png`) falls back to this chat's CURRENT scope: `project-<id>` else threadId.
+ * `outputs/plot.png`) falls back to this chat's CURRENT scope: the project's workspace session
+ * else threadId. See `sandboxSessionIdFor` for why the session is passed in rather than derived.
  */
 export function markdownSandboxImageSrc(
   src: string,
-  ctx: { threadId: string | undefined; projectId: string | null | undefined },
+  ctx: {
+    threadId: string | undefined;
+    projectId: string | null | undefined;
+    workspaceSessionId: string | null | undefined;
+  },
 ): string | null {
   const file = sandboxFileForSrc(src);
   if (file === null) return null;
   const sessionId =
-    sandboxSessionInSrc(src) ?? sandboxSessionIdFor(ctx.threadId, ctx.projectId);
+    sandboxSessionInSrc(src) ??
+    sandboxSessionIdFor(ctx.threadId, ctx.projectId, ctx.workspaceSessionId);
   // No recorded session and no thread yet means no directory to read from; the raw src stays as it is.
   return sessionId ? sandboxFilePath(sessionId, file) : null;
 }

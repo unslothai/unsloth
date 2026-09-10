@@ -96,6 +96,11 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
 import {
+  chooseProjectWorkspace,
+  revealProjectWorkspace,
+  switchToManagedWorkspace,
+} from "./utils/project-workspace-actions";
+import {
   Archive03Icon,
   BookOpen01Icon,
   BubbleChatTemporaryIcon,
@@ -104,7 +109,9 @@ import {
   Edit03Icon,
   Folder01Icon,
   Folder02Icon,
+  FolderAddIcon,
   FolderExportIcon,
+  FolderOpenIcon,
   LayoutAlignRightIcon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -1379,6 +1386,19 @@ function ProjectLanding({
   const [renamingProject, setRenamingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [deletingProject, setDeletingProject] = useState(false);
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  async function updateWorkspace(
+    action: (projectId: string) => Promise<unknown>,
+  ): Promise<void> {
+    if (workspaceBusy) return;
+    setWorkspaceBusy(true);
+    try {
+      await action(projectId);
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
 
   async function handleProjectExport(
     format: ProjectChatExportFormat,
@@ -1465,6 +1485,7 @@ function ProjectLanding({
 
   // Full chat actions, matching the sidebar chat menu.
   const { projects } = useChatProjects();
+  const project = projects.find((candidate) => candidate.id === projectId);
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
   const confirmDeleteChats = useChatPreferencesStore(
@@ -1723,9 +1744,25 @@ function ProjectLanding({
                   className="size-6.5"
                 />
               </span>
-              <h1 className="min-w-0 flex-1 truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
-                {projectName}
-              </h1>
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
+                  {projectName}
+                </h1>
+                {project?.workspaceKind === "external" ? (
+                  <p
+                    title={project.workspacePath ?? undefined}
+                    className={`mt-1 truncate text-sm ${
+                      project.workspaceAvailable === false
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {project.workspaceAvailable === false
+                      ? `Folder unavailable · ${project.workspacePath ?? "Unknown folder"}`
+                      : project.workspacePath}
+                  </p>
+                ) : null}
+              </div>
               <NonModalDropdownMenu
                 side="bottom"
                 align="end"
@@ -1755,6 +1792,39 @@ function ProjectLanding({
                   <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
                   <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
                 </DropdownMenuItem>
+                {isTauri && nativePathLeasesSupported ? (
+                  <>
+                    <DropdownMenuItem
+                      disabled={workspaceBusy}
+                      onSelect={() => void updateWorkspace(chooseProjectWorkspace)}
+                    >
+                      <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                      <span>
+                        {project?.workspaceKind === "external"
+                          ? "Change folder"
+                          : "Use existing folder"}
+                      </span>
+                    </DropdownMenuItem>
+                    {project?.workspaceKind === "external" ? (
+                      <DropdownMenuItem
+                        disabled={workspaceBusy}
+                        onSelect={() => void updateWorkspace(switchToManagedWorkspace)}
+                      >
+                        <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                        <span>Use managed folder</span>
+                      </DropdownMenuItem>
+                    ) : null}
+                  </>
+                ) : null}
+                {isTauri && project ? (
+                  <DropdownMenuItem
+                    title="Open the folder this project's tool calls read and write"
+                    onSelect={() => void revealProjectWorkspace(project)}
+                  >
+                    <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>Open project folder</span>
+                  </DropdownMenuItem>
+                ) : null}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />

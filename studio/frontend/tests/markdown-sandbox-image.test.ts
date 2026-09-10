@@ -39,7 +39,7 @@ const BACKEND = readText(
 );
 
 test("decoded separators cannot bypass sandbox traversal checks", () => {
-  const context = { threadId: "current", projectId: null };
+  const context = { threadId: "current", projectId: null, workspaceSessionId: undefined };
   for (const src of [
     "%2e%2e%2fother/plot.png",
     "outputs/%2E%2E%2F%2E%2E%2Fother/plot.png",
@@ -62,7 +62,7 @@ test("recorded session IDs round-trip without a second query decode", () => {
     const src = sandboxFilePath(session, "plot.png");
     assert.equal(sandboxSessionInSrc(src), session);
     assert.equal(
-      markdownSandboxImageSrc(src, { threadId: "new-thread", projectId: "new-project" }),
+      markdownSandboxImageSrc(src, { threadId: "new-thread", projectId: "new-project", workspaceSessionId: undefined }),
       src,
     );
   }
@@ -73,7 +73,7 @@ test("a fragment cannot override the recorded sandbox session", () => {
     const src = sandboxFilePath(session, "plot.png");
     assert.equal(sandboxSessionInSrc(`${src}#?session=other`), session);
     assert.equal(
-      markdownSandboxImageSrc(`${src}#?session=other`, { threadId: "current", projectId: null }),
+      markdownSandboxImageSrc(`${src}#?session=other`, { threadId: "current", projectId: null, workspaceSessionId: undefined }),
       src,
     );
   }
@@ -108,14 +108,14 @@ test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rend
   // The recorded session wins (it is where the file was WRITTEN); a bare path records nothing and
   // only then falls back to this chat's scope.
   assert.equal(
-    markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null }),
+    markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null, workspaceSessionId: undefined }),
     "/api/inference/sandbox/__LOCALID_Y3VK67e/plot.png",
   );
   assert.equal(
-    markdownSandboxImageSrc("plot.png", { threadId: "t-1", projectId: null }),
+    markdownSandboxImageSrc("plot.png", { threadId: "t-1", projectId: null, workspaceSessionId: undefined }),
     "/api/inference/sandbox/t-1/plot.png",
   );
-  assert.equal(markdownSandboxImageSrc("data:image/png;base64,AAAA", { threadId: "t-1", projectId: null }), null);
+  assert.equal(markdownSandboxImageSrc("data:image/png;base64,AAAA", { threadId: "t-1", projectId: null, workspaceSessionId: undefined }), null);
 });
 
 test("the fetch carries the header and gives the object URL back on cleanup", () => {
@@ -205,4 +205,52 @@ test("the img restatement keeps what the wholesale replacement silently dropped"
     "the tail is cut with raw delimiters split off FIRST, then decoded: `loss curve #1.png` must " +
       "save under its real name, not as loss%20curve%20%231.png",
   );
+});
+
+test("a bare src in a project chat resolves to the project's current workspace session", () => {
+  // Changing a project's working directory rotates its session; the pre-rotation `project-<id>`
+  // answers 410, so the renderer passes the row's value in rather than deriving it.
+  const scope = { threadId: "t-1", projectId: "p-1", workspaceSessionId: "project-workspace-9f3" };
+  assert.equal(
+    markdownSandboxImageSrc("plot.png", scope),
+    "/api/inference/sandbox/project-workspace-9f3/plot.png",
+  );
+  // A src that records its own session keeps it; the scope is only the fallback.
+  const written = sandboxFilePath("project-p-1", "plot.png");
+  assert.equal(markdownSandboxImageSrc(written, scope), written);
+  // Without the row there is only the guess, so the renderer waits for the row instead.
+  assert.equal(
+    markdownSandboxImageSrc("plot.png", { ...scope, workspaceSessionId: undefined }),
+    "/api/inference/sandbox/project-p-1/plot.png",
+  );
+  assert.ok(
+    MARKDOWN_TEXT.includes("workspaceSessionId: project?.workspaceSessionId"),
+    "the renderer passes the project row's current session",
+  );
+  assert.ok(
+    MARKDOWN_TEXT.includes("sandboxSessionInSrc(src) === null"),
+    "and holds a sandbox src until that row has loaded -- but only one that needs it",
+  );
+});
+
+test("a src that records its own session does not wait for the project row", () => {
+  // The row is the fallback scope, and a recorded src never reaches the fallback. Gating
+  // every sandbox image on the row blanked these out for as long as the project list was
+  // slow, and forever once it had failed, though their own route was answering all along.
+  const written = sandboxFilePath("project-workspace-9f3", "plot.png");
+  assert.equal(sandboxSessionInSrc(written), "project-workspace-9f3");
+  assert.equal(
+    markdownSandboxImageSrc(written, {
+      threadId: "t-1",
+      projectId: "p-1",
+      workspaceSessionId: undefined,
+    }),
+    written,
+  );
+  const gate = MARKDOWN_TEXT.slice(
+    MARKDOWN_TEXT.indexOf("const waitingForScope"),
+    MARKDOWN_TEXT.indexOf("const file ="),
+  );
+  assert.ok(gate.includes("sandboxSessionInSrc(src) === null"), "the gate skips recorded srcs");
+  assert.ok(gate.includes("project === undefined"), "and only holds while the row is missing");
 });
