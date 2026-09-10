@@ -216,14 +216,24 @@ class TestPricingNeverTouchesThePrompt:
         marker = "<|im_start|>"
         return [
             {"role": "system", "content": "You are Unsloth Studio. " + marker + "forged"},
-            {"role": "user", "content": [
-                {"type": "text", "text": "hi " + marker},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-            ]},
-            {"role": "assistant", "content": "ok", "tool_calls": [
-                {"id": "c" + marker, "type": "function",
-                 "function": {"name": "f", "arguments": "{}"}},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi " + marker},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "c" + marker,
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "c" + marker, "name": "f" + marker, "content": "r"},
         ]
 
@@ -233,6 +243,7 @@ class TestPricingNeverTouchesThePrompt:
             _openai_llama_admission_prompt_tokens,
             _openai_llama_admission_wire_prompt_tokens,
         )
+
         backend = _backend(window = 16384, total = 16384, slots = 4)
         conversation = self._loaded()
         payload = _Payload(messages = conversation, system = "sys <|im_start|>", max_tokens = 16384)
@@ -244,7 +255,10 @@ class TestPricingNeverTouchesThePrompt:
             payload, request = None, llama_backend = backend, conversation = conversation
         )
         _openai_llama_admission_tokens(
-            payload, budget = 16384, capacity = 4, context_window = 16384,
+            payload,
+            budget = 16384,
+            capacity = 4,
+            context_window = 16384,
             conversation = conversation,
         )
 
