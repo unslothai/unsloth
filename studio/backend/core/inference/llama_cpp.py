@@ -4263,6 +4263,11 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
+# Multimodal encoders (e.g. Gemma 4 vision) process image tokens with non-causal
+# attention, which requires n_ubatch >= one image's token count. The llama.cpp
+# default of 512 is too small for a single Gemma 4 image, so default to 2048
+# when launching with a vision mmproj and the user did not override the sizes.
+_MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 _LLAMA_ARG_AUTO_VALUES = frozenset({"auto", "-1"})
@@ -5759,6 +5764,30 @@ def _extra_args_n_ubatch(
     if n_ctx is not None and n_ctx > 0:
         effective = min(effective, n_ctx)
     return effective
+
+
+def _batch_ubatch_for_mmproj(
+    mmproj_path: Optional[str],
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    *,
+    is_vision: bool = False,
+) -> tuple[Optional[int], Optional[int]]:
+    """Raise the default batch/ubatch for vision-mmproj loads when unspecified.
+
+    Vision encoders like Gemma 4 attend over all image tokens at once, so
+    llama-server's default 512-token micro-batch aborts with
+    ``GGML_ASSERT(n_ubatch >= n_tokens_all)``. When the caller left both sizes
+    unset and no env var or extra_arg overrides them, default to a larger size.
+    """
+    if not mmproj_path or not is_vision:
+        return n_batch, n_ubatch
+    if n_batch is not None or n_ubatch is not None:
+        return n_batch, n_ubatch
+    if _extra_args_n_ubatch(extra_args) is not None:
+        return n_batch, n_ubatch
+    return _MMPROJ_DEFAULT_N_BATCH_UBATCH, _MMPROJ_DEFAULT_N_BATCH_UBATCH
 
 
 def _build_ngram_mod_flags(
@@ -18824,6 +18853,13 @@ class LlamaCppBackend:
         n_parallel = intent.n_parallel
         n_batch = intent.n_batch
         n_ubatch = intent.n_ubatch
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+            mmproj_path,
+            n_batch,
+            n_ubatch,
+            extra_args,
+            is_vision = is_vision,
+        )
         load_mode = intent.load_mode
         spec_draft_cache_type = intent.spec_draft_cache_type
         ctx_checkpoints = intent.ctx_checkpoints
