@@ -73,11 +73,10 @@ def loader():
         {"load_in_16bit": True, "quantization_config": {"load_in_4bit": True}},
     ],
 )
-def test_conflicts_fail_before_checkpoint_access(loader, kwargs):
+def test_conflicts_fail_before_model_loading(loader, kwargs):
     env, captured = loader
     with pytest.raises(RuntimeError, match = "Can only load in"):
         env["from_pretrained"](**kwargs)
-    assert captured["config_calls"] == 0
     assert "dispatch" not in captured
 
 
@@ -99,3 +98,27 @@ def test_valid_precision_and_existing_overrides(loader, kwargs, allow_bnb, expec
     assert captured["dispatch"]["load_in_4bit"] is expected_4bit
     if "quantization_config" in kwargs:
         assert captured["dispatch"]["quantization_config"] == kwargs["quantization_config"]
+
+
+@pytest.mark.parametrize("base_name, expected", [("owner/base-bf16", False), ("owner/base", None)])
+def test_adapter_base_precision_is_resolved_before_validation(loader, base_name, expected):
+    env, captured = loader
+
+    def config(name, **kwargs):
+        if name == "owner/adapter":
+            raise ValueError("Adapter has no model config")
+        return SimpleNamespace(model_type = "llama", rope_scaling = None)
+
+    env["AutoConfig"] = SimpleNamespace(from_pretrained = config)
+    env["PeftConfig"] = SimpleNamespace(
+        from_pretrained = lambda *a, **k: SimpleNamespace(base_model_name_or_path = base_name)
+    )
+    if expected is None:
+        with pytest.raises(RuntimeError, match = "Can only load in"):
+            env["from_pretrained"](model_name = "owner/adapter", load_in_16bit = True)
+        assert "dispatch" not in captured
+    else:
+        with pytest.raises(DispatchReached):
+            env["from_pretrained"](model_name = "owner/adapter", load_in_16bit = True)
+        assert captured["dispatch"]["model_name"] == base_name
+        assert captured["dispatch"]["load_in_4bit"] is expected
