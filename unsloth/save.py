@@ -5506,6 +5506,14 @@ def unsloth_generic_save(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
+    if save_method == "merged_4bit":
+        raise RuntimeError(
+            "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
+            "to merge to GGUF or others later on. I suggest you to do this as a final step\n"
+            "if you're planning to do multiple saves.\n"
+            "If you are certain, change `save_method` to `merged_4bit_forced`."
+        )
+
     if push_to_hub and (create_pr or revision is not None):
         return _push_merged_to_hub_revision(dict(locals()))
 
@@ -5515,14 +5523,7 @@ def unsloth_generic_save(
     if token is None and push_to_hub:
         token = get_token()
 
-    if save_method == "merged_4bit":
-        raise RuntimeError(
-            "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
-            "to merge to GGUF or others later on. I suggest you to do this as a final step\n"
-            "if you're planning to do multiple saves.\n"
-            "If you are certain, change `save_method` to `merged_4bit_forced`."
-        )
-    elif save_method == "merged_4bit_forced":
+    if save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
 
     # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao and GGUF save paths.

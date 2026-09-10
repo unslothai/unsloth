@@ -308,6 +308,26 @@ def test_none_commit_message_uses_default(saving):
     assert records["uploads"][0]["commit_message"] == "Trained with Unsloth"
 
 
+@pytest.mark.parametrize("options", [{"revision": "candidate"}, {"create_pr": True}, {}])
+def test_unforced_4bit_rejection_does_not_create_hub_resources(saving, options):
+    env, records, _ = saving
+    with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
+        env["unsloth_generic_push_to_hub_merged"](
+            PeftModel(), "owner/new-model", save_method = "merged_4bit", **options
+        )
+    assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
+
+
+def test_forced_4bit_mode_still_reaches_staged_save(saving):
+    env, records, _ = saving
+    env["unsloth_generic_push_to_hub_merged"](
+        PeftModel(), "owner/model", save_method = "merged_4bit_forced", revision = "candidate"
+    )
+    assert records["merges"][0]["save_method"] == "merged_4bit"
+    assert len(records["uploads"]) == 1
+    assert records["uploads"][0]["revision"] == "candidate"
+
+
 @pytest.mark.parametrize("create_pr", [False, True])
 def test_missing_destination_branch_is_created(saving, create_pr):
     env, records, _ = saving
