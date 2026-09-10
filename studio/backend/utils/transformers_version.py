@@ -2581,6 +2581,18 @@ def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
         if not _install_to_dir(pkg, staging):
             return False
         entries = sorted(os.listdir(staging), key = lambda name: name.endswith(".dist-info"))
+        # An interrupted install can have left `<pkg>-<old>.dist-info` with no RECORD.
+        # uv cannot uninstall one (it warns and installs the new version beside it), the
+        # two validators skip a recordless dist-info, and importlib.metadata would keep
+        # answering whichever it meets first; every other dist-info of the project goes
+        # before the new metadata lands, under the lock the caller holds.
+        for name in entries:
+            if not name.endswith(".dist-info"):
+                continue
+            project = name[: -len(".dist-info")].rsplit("-", 1)[0]
+            for stale in _dist_info_entries(venv_dir, project):
+                if stale != name:
+                    shutil.rmtree(os.path.join(venv_dir, stale), ignore_errors = True)
         for name in entries:
             source = os.path.join(staging, name)
             target = os.path.join(venv_dir, name)
