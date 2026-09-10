@@ -9417,6 +9417,105 @@ class LlamaCppBackend:
             logger.debug(f"compute_cap probe failed: {e}")
             return {}
 
+    @staticmethod
+    def _nvidia_smi_free_total_mib(
+        gpu_indices = None, *, runner = None
+    ) -> "list[tuple[int, int, int]]":
+        """(physical id, free MiB, total MiB) per NVIDIA GPU, or [] when nvidia-smi cannot
+        answer. Never raises.
+
+        Deliberately NOT ``_get_gpu_memory``: that one falls back to amd-smi and to torch, so a
+        Windows ROCm host would answer it, and the only caller here asks a question about the
+        NVIDIA driver. Devices whose total is unreadable ("N/A" on MIG/vGPU) are dropped, since
+        the caller works in a fraction of total.
+        """
+
+        def _default_runner():
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,memory.free,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            return result.stdout if result.returncode == 0 else None
+
+        try:
+            out = (runner or _default_runner)()
+        except Exception as e:
+            logger.debug(f"nvidia-smi memory probe failed: {e}")
+            return []
+        if not out:
+            return []
+        allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+        wanted = {int(i) for i in gpu_indices} if gpu_indices else None
+        rows: list[tuple[int, int, int]] = []
+        for line in str(out).strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            try:
+                idx, free_mib, total_mib = int(parts[0]), int(parts[1]), int(parts[2])
+            except ValueError:
+                continue
+            if total_mib <= 0:
+                continue
+            if allowed is not None and idx not in allowed:
+                continue
+            if wanted is not None and idx not in wanted:
+                continue
+            rows.append((idx, free_mib, total_mib))
+        rows.sort(key = lambda r: r[0])
+        return rows
+
+    def _windows_sysmem_fallback_watch(
+        self,
+        *,
+        gpu_indices = None,
+        model_bytes: int = 0,
+        is_vulkan_backend: bool = False,
+        fully_gpu_offloaded: bool = False,
+    ):
+        """A ``SysmemFallbackWatch`` for this launch, or None to watch nothing.
+
+        None on every platform but Windows, on a Vulkan build (the policy is a CUDA/WDDM one),
+        on a launch Studio did not prove fully resident (a spilled launch is legitimately slow
+        with VRAM legitimately full, which is the same two readings), and whenever the floor
+        below cannot be computed. None means the stats logger behaves exactly as before.
+
+        The floor is the host-to-device link rate divided by the weight bytes a token reads:
+        under sysmem fallback every one of those bytes crosses the link once per token, so no
+        paging launch can beat it, while a launch whose weights really are in VRAM reads them at
+        device bandwidth, an order of magnitude higher. Whole-GGUF bytes, so a MoE launch gets a
+        floor well UNDER its real one: this errs towards staying silent.
+        """
+        if sys.platform != "win32" or is_vulkan_backend or not fully_gpu_offloaded:
+            return None
+        if int(model_bytes or 0) <= 0:
+            return None
+        if not self._nvidia_smi_free_total_mib(gpu_indices):
+            return None
+        from core.inference.offload_cost_model import PREFILL_STREAM_GIB_S
+
+        link_gib_s = self._nvidia_link_gib_s(gpu_indices) or PREFILL_STREAM_GIB_S
+        floor_tok_s = float(link_gib_s) / (int(model_bytes) / float(1024**3))
+        if not (floor_tok_s > 0.0):
+            return None
+        from core.inference.llama_stats import SysmemFallbackWatch
+
+        return SysmemFallbackWatch(
+            lambda: LlamaCppBackend._nvidia_smi_free_total_mib(gpu_indices),
+            floor_tok_s,
+            logger,
+        )
+
     # Per-lane one-direction PCIe payload rate, GB/s, by link generation.
     _PCIE_GB_S_PER_LANE = {1: 0.25, 2: 0.5, 3: 0.985, 4: 1.969, 5: 3.938, 6: 7.877}
     # Measured fraction of that ceiling a real H2D stream reaches (a B200 moved 54.4 of a gen5 x16 63 GB/s link).
@@ -26594,7 +26693,17 @@ class LlamaCppBackend:
                         from core.inference.llama_stats import maybe_start_stats_logger
                         if self._stats_logger is not None:
                             self._stats_logger.stop()
-                        self._stats_logger = maybe_start_stats_logger(self.base_url, logger)
+                        self._stats_logger = maybe_start_stats_logger(
+                            self.base_url,
+                            logger,
+                            # Windows CUDA only; None elsewhere, which is the previous call.
+                            sysmem_watch = self._windows_sysmem_fallback_watch(
+                                gpu_indices = gpu_indices,
+                                model_bytes = int(model_size or 0),
+                                is_vulkan_backend = is_vulkan_backend,
+                                fully_gpu_offloaded = fully_gpu_offloaded,
+                            ),
+                        )
                     except Exception as e:
                         logger.debug(f"engine-stats logger not started: {e}")
                 else:

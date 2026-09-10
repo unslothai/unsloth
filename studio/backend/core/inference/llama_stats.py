@@ -21,6 +21,91 @@ _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MUL
 _OFF = {"0", "false", "no", "off"}
 
 
+class SysmemFallbackWatch:
+    """Windows CUDA only: warn once when a resident placement is silently paging to system RAM.
+
+    Since driver 536.40 a Windows CUDA allocation that no longer fits in VRAM does not fail;
+    the WDDM driver demand-pages it between the device and system memory, ``cudaMalloc``
+    returns success, and nothing in CUDA, NVML or nvidia-smi reports that it happened
+    (NVIDIA KB 5490, https://nvidia.custhelp.com/app/answers/detail/a_id/5490, and
+    https://forums.developer.nvidia.com/t/cudamalloc-with-sysmem-fallback/347791). There is no
+    per-process query and no per-process way to turn it off, so this only ever reports.
+
+    The fingerprint, from https://github.com/ollama/ollama/issues/16725: nvidia-smi free memory
+    pinned at 0 to 2 percent of total, no out-of-memory anywhere, and generation an order of
+    magnitude below what a resident placement should give. ``floor_gen_tok_s`` is the caller's
+    expectation for the third part; the launch path derives it from the host-to-device link
+    rate and the weight bytes a token reads, so it is the ceiling the paging path could reach,
+    far under the rate a placement Studio proved resident would run at.
+
+    Sampling is ordered cheapest first: the throughput half comes free from the /metrics scrape
+    that is already running, and the VRAM probe only runs once generation is already slow.
+    """
+
+    def __init__(
+        self,
+        vram_probe,
+        floor_gen_tok_s,
+        logger,
+        *,
+        free_fraction_max = 0.02,
+        consecutive = 3,
+    ):
+        self._probe = vram_probe
+        self._floor = float(floor_gen_tok_s)
+        self._log = logger
+        self._free_fraction_max = float(free_fraction_max)
+        # One slow tick is a cold prompt or a scrape boundary; the fingerprint is sustained.
+        self._consecutive = max(1, int(consecutive))
+        self._streak = 0
+        self._reported = False
+
+    def observe(self, *, running, gen_tok_s):
+        """Feed one /metrics tick. True on the tick the warning was emitted, else False."""
+        if self._reported:
+            return False
+        if not running or not gen_tok_s or float(gen_tok_s) <= 0.0:
+            self._streak = 0
+            return False
+        if float(gen_tok_s) > self._floor:
+            self._streak = 0
+            return False
+        try:
+            sample = self._probe()
+        except Exception:
+            sample = None
+        # Unreadable is not evidence: an absent probe must not manufacture the fingerprint.
+        if not sample:
+            self._streak = 0
+            return False
+        pegged = []
+        for _idx, free_mib, total_mib in sample:
+            if int(total_mib) <= 0:
+                continue
+            pegged.append((int(free_mib) / float(total_mib)) <= self._free_fraction_max)
+        if not pegged or not any(pegged):
+            self._streak = 0
+            return False
+        self._streak += 1
+        if self._streak < self._consecutive:
+            return False
+        self._reported = True
+        self._log.warning(
+            "cuda_sysmem_fallback_suspected",
+            gen_tok_s = round(float(gen_tok_s), 2),
+            expected_floor_tok_s = round(self._floor, 2),
+            free_mib = [int(f) for _i, f, _t in sample],
+            total_mib = [int(t) for _i, _f, t in sample],
+            detail = "VRAM is full, nothing reported an out-of-memory error, and generation is "
+            "an order of magnitude slow: on Windows the NVIDIA driver lets an oversized CUDA "
+            "allocation succeed and pages it to system RAM instead of failing. The model loaded, "
+            "it is just not resident. Set 'CUDA - Sysmem Fallback Policy' to 'Prefer No Sysmem "
+            "Fallback' in NVIDIA Control Panel, 3D Settings (driver 546.01 or newer, needs an "
+            "application restart), or load a smaller model or context.",
+        )
+        return True
+
+
 class LlamaServerStatsLogger:
     """Daemon poller that logs vLLM-style engine stats from llama-server.
 
@@ -34,6 +119,7 @@ class LlamaServerStatsLogger:
         logger,
         interval_s = 10.0,
         stall_timeout_s = 600.0,
+        sysmem_watch = None,
     ):
         self._url = f"{base_url.rstrip('/')}/metrics"
         self._log = logger
@@ -46,6 +132,9 @@ class LlamaServerStatsLogger:
         self._stall_since = None
         self._stall_reported = False
         self._unmeasurable_reported = False
+        # Windows CUDA only, and None everywhere else, so every other platform runs the
+        # loop it ran before.
+        self._sysmem_watch = sysmem_watch
 
     def start(self):
         if self._thread is None:
@@ -179,6 +268,11 @@ class LlamaServerStatsLogger:
                 "prompt_tokens_total" in m and "prompt_seconds_total" in m
             )
             prompt_tps = m.get("prompt_tokens_seconds") or prompt_delta
+            if self._sysmem_watch is not None:
+                try:
+                    self._sysmem_watch.observe(running = running, gen_tok_s = gen_tps)
+                except Exception:  # a probe must never kill the stats thread
+                    pass
             stalled_for = self._stalled_for(now, running, decode_calls)
             if self._stall_timeout and stalled_for >= self._stall_timeout:
                 if decode_calls is None:
@@ -254,8 +348,14 @@ def _env_float(name, default, logger):
     return value
 
 
-def maybe_start_stats_logger(base_url, logger):
-    """Start a stats logger unless UNSLOTH_STUDIO_ENGINE_STATS disables it."""
+def maybe_start_stats_logger(
+    base_url,
+    logger,
+    sysmem_watch = None,
+):
+    """Start a stats logger unless UNSLOTH_STUDIO_ENGINE_STATS disables it.
+
+    ``sysmem_watch`` is the Windows CUDA sysmem-fallback detector, None everywhere else."""
     if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
         return None
     interval = _env_float("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", 10.0, logger)
@@ -267,6 +367,7 @@ def maybe_start_stats_logger(base_url, logger):
         logger,
         interval,
         stall_timeout_s = stall_timeout,
+        sysmem_watch = sysmem_watch,
     )
     sl.start()
     return sl
