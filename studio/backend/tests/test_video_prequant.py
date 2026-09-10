@@ -1533,3 +1533,51 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
         )
         == "int8"
     )
+
+
+def test_the_seeded_denoiser_repo_is_claimed_against_a_concurrent_delete(monkeypatch):
+    """The plan that verifies a hosted denoiser also drops the dense DiT shards from the pull, so
+    the repo the checkpoint comes from has to join the in-flight claim: it is neither repo_id nor
+    base_repo, and a delete admitted while the seed is fetching leaves the load with neither
+    artifact."""
+    from core.inference import video as vid
+    from core.inference.video_families import detect_video_family
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and not wan.modular_workflow
+    backend = vid.VideoBackend()
+    backend._load_token = 1
+    backend._loading = vid._VideoLoadingState(repo_id = wan.base_repo, base_repo = wan.base_repo)
+    monkeypatch.setattr(vid, "_detect_load_family", lambda *a, **k: wan)
+    monkeypatch.setattr(vid, "_assert_pick_is_not_speech", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_h3_planned_auto_denoiser_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_video_planned_auto_denoiser_scheme", lambda *a, **k: "nvfp4")
+    monkeypatch.setattr(backend, "_denoiser_prequant_verified", lambda *a, **k: True)
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: None)
+    # Sampled from inside the build, which is where the seed opens the checkpoint: a claim published
+    # after that point cannot revoke a delete the guard already admitted.
+    claimed: list = []
+    monkeypatch.setattr(
+        backend, "load_pipeline", lambda **kwargs: claimed.extend(backend.loading_repo_ids())
+    )
+    backend._run_load(
+        repo_id = wan.base_repo,
+        local_files_only = True,
+        _load_token = 1,
+        transformer_quant = "nvfp4",
+    )
+    assert "unsloth/Wan2.2-TI2V-5B-NVFP4" in claimed
+
+
+def test_both_experts_of_an_moe_resolve_to_one_claimed_repo():
+    """The two A14B experts are two files in ONE repo, so the claim names it once."""
+    from core.inference.video_families import detect_video_family
+
+    a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert a14b is not None and a14b.is_moe
+    assert VideoBackend._denoiser_prequant_repo_ids(a14b, "nvfp4", a14b.base_repo) == (
+        "unsloth/Wan2.2-T2V-A14B-NVFP4",
+    )
+    # Nothing to claim when nothing resolves: an unseeded load keeps its dense shards.
+    assert VideoBackend._denoiser_prequant_repo_ids(a14b, "int8", a14b.base_repo) == ()
+    assert VideoBackend._denoiser_prequant_repo_ids(a14b, "auto", a14b.base_repo) == ()

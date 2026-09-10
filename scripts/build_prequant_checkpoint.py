@@ -806,6 +806,27 @@ def verify_against(
     return 3
 
 
+# The quantiser the calibration pass solves and scores its corrections against.
+GPTQ_SCHEME = "nvfp4"
+
+
+def gptq_scheme_refusal(scheme: str, gptq_dir: Optional[str]) -> Optional[str]:
+    """Why GPTQ corrections may not be baked under ``scheme``, or None.
+
+    A correction is grid-specific: the pass writes weights that already lie on the NVFP4 grid and
+    its held-out do-no-harm scores were measured after NVFP4 rounding. Re-quantising them as fp8 /
+    int8 / mxfp8 keeps the perturbation and drops the measurement, and nothing downstream catches
+    it -- the second build reproduces the same bytes, so the fingerprint gate passes and the
+    artifact publishes."""
+    if not gptq_dir or scheme == GPTQ_SCHEME:
+        return None
+    return (
+        f"--gptq-dir cannot be combined with --scheme {scheme}: the corrections lie on the "
+        f"{GPTQ_SCHEME} grid and were scored there, so quantising them as {scheme} would bake a "
+        "correction nobody measured."
+    )
+
+
 def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional[str]:
     """Why ``--verify-against`` cannot answer the question it exists for, or None.
 
@@ -1030,6 +1051,7 @@ def main(argv = None) -> int:
     for refusal in (
         upload_gate_refusal(args.upload_repo, args.verify_against),
         verify_target_refusal(args.out, args.verify_against),
+        gptq_scheme_refusal(scheme, args.gptq_dir),
         # ConvRot rotates the weight before quantize_, which a GPTQ weight has not been corrected for: the correction was solved against the UNROTATED activation covariance.
         (
             "--gptq-dir and --convrot-groupsize cannot be combined: the correction was solved "
@@ -1542,9 +1564,10 @@ def main(argv = None) -> int:
     if gptq_plan is not None:
         # Provenance of every corrected weight. Not part of the fingerprint's identity: it hashes the packed payloads, so a different set of corrections already reads as a different artifact there.
         metadata["gptq"] = {
-            "source": os.path.abspath(args.gptq_dir),
-            "meta_path": os.path.abspath(gptq_where["meta"]),
-            "score_path": os.path.abspath(gptq_where["score"]) if gptq_where["score"] else None,
+            # Basenames only: this block travels with the checkpoint to a public repo.
+            "source": os.path.basename(os.path.abspath(args.gptq_dir)),
+            "meta_path": os.path.basename(gptq_where["meta"]),
+            "score_path": os.path.basename(gptq_where["score"]) if gptq_where["score"] else None,
             "score_mode": args.gptq_score_mode,
             "prompts": gptq_pass.get("prompts"),
             "steps_sampled": gptq_pass.get("steps_sampled"),

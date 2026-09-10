@@ -1617,6 +1617,18 @@ class VideoBackend:
                             H3_TE_QUANT_REPO,
                             H3_LEGACY_TE_QUANT_REPO,
                         )
+                    # The seeded denoiser comes from a third repo too; this branch drops the dense DiT shards, so a
+                    # delete admitted mid-fetch would leave the load with no denoiser at all.
+                    if skip_transformer_weights:
+                        claimed = self._denoiser_prequant_repo_ids(
+                            fam,
+                            h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
+                            base,
+                            kwargs.get("h3_task"),
+                        )
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(self._loading.asset_repos + claimed)
+                        )
                     self._loading.expected_bytes = expected
             # Checkpoint downloads outside the lock so an unload can preempt the multi-GB pull; companions pre-download
             # the same way.
@@ -2551,6 +2563,50 @@ class VideoBackend:
             return False
 
     @staticmethod
+    def _denoiser_prequant_source_list(
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        h3_task: Optional[str] = None,
+    ) -> list[Any]:
+        """Every ``PrequantSource`` a seeded load would open, or ``[]``. Shared by the byte plan, the
+        offline cache probe and the in-flight repo claim; registry only, never raises."""
+        scheme = (transformer_quant or "").strip().lower()
+        if scheme in ("", "auto", "off", "none"):
+            return []
+        try:
+            from .diffusion_prequant import resolve_prequant_source
+            from .video_denoiser_prequant import denoiser_prequant_sources
+
+            if getattr(fam, "modular_workflow", None):
+                source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
+                return [source] if source is not None else []
+            resolved = denoiser_prequant_sources(fam, scheme, base)
+            return list(resolved.values()) if resolved else []
+        except Exception as exc:  # noqa: BLE001 -- a bad registry entry must not sink the plan
+            logger.warning("video.denoiser_prequant_unresolved: %s", exc)
+            return []
+
+    @staticmethod
+    def _denoiser_prequant_repo_ids(
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        h3_task: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        """The hosted repo id(s) a seeded denoiser is fetched from, or ``()``, for the in-flight
+        delete guard (the conditioner's pre-cast makes the same claim)."""
+        return tuple(
+            dict.fromkeys(
+                src.location
+                for src in VideoBackend._denoiser_prequant_source_list(
+                    fam, transformer_quant, base, h3_task
+                )
+                if getattr(src, "kind", None) == "repo" and getattr(src, "location", None)
+            )
+        )
+
+    @staticmethod
     def _denoiser_prequant_hub_files(
         fam: Any,
         transformer_quant: Optional[str],
@@ -2573,21 +2629,7 @@ class VideoBackend:
 
         Same failure rule as the encoder helper: an unreachable repo yields no files and is only
         logged, because the plan is a staging hint and the load still falls back to dense."""
-        scheme = (transformer_quant or "").strip().lower()
-        if scheme in ("", "auto", "off", "none"):
-            return None, []
-        try:
-            from .diffusion_prequant import resolve_prequant_source
-            from .video_denoiser_prequant import denoiser_prequant_sources
-            if getattr(fam, "modular_workflow", None):
-                source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
-                sources = [source] if source is not None else []
-            else:
-                resolved = denoiser_prequant_sources(fam, scheme, base)
-                sources = list(resolved.values()) if resolved else []
-        except Exception as exc:  # noqa: BLE001 -- a bad registry entry must not sink the plan
-            logger.warning("video.denoiser_prequant_unresolved: %s", exc)
-            return None, []
+        sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None, []
         locations = {src.location for src in sources}
@@ -2637,19 +2679,7 @@ class VideoBackend:
         corroborate against without the Hub, so a cached name is taken at face value: the loader
         opening a damaged checkpoint falls back to dense, which is the same failure an online
         size mismatch would have produced one step later."""
-        scheme = (transformer_quant or "").strip().lower()
-        try:
-            from .diffusion_prequant import resolve_prequant_source
-            from .video_denoiser_prequant import denoiser_prequant_sources
-            if getattr(fam, "modular_workflow", None):
-                source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
-                sources = [source] if source is not None else []
-            else:
-                resolved = denoiser_prequant_sources(fam, scheme, base)
-                sources = list(resolved.values()) if resolved else []
-        except Exception as exc:  # noqa: BLE001 -- a bad registry entry keeps the dense shards
-            logger.warning("video.denoiser_prequant_unresolved: %s", exc)
-            return None
+        sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
         # A local override is on disk by definition; only a hosted checkpoint has a cache to probe
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None

@@ -9,6 +9,7 @@ or cannot be loaded, with nothing at build time saying so, which is why they are
 pure functions and asserted here rather than left inline in ``main``."""
 
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -538,6 +539,41 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
         "frac_diff": 0.0,
     }
     assert "gptq" not in saved["ckpt"]["metadata"]["fingerprint"]
+    # The block is published with the checkpoint, so it names the files and never the build host's
+    # directory layout.
+    assert block["source"] == "gptq"
+    assert block["meta_path"] == "gptq_meta.json" and block["score_path"] == "gptq_check.json"
+    assert not any(os.sep in str(block[field]) for field in ("source", "meta_path", "score_path"))
+
+
+def test_a_calibrated_build_is_refused_under_another_quantiser(monkeypatch, tmp_path, capsys):
+    """The corrections lie on the NVFP4 grid and were scored there, so a build that would
+    re-quantise them as fp8 is refused rather than published as a measured artifact whose scores
+    no longer describe it."""
+    build = _script()
+    _stub_build_stack(monkeypatch, _fake_state_dict())
+    out = tmp_path / "fp8.pt"
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "--family",
+            "wan2.2-ti2v-5b",
+            "--scheme",
+            "fp8",
+            "--out",
+            str(out),
+            "--gptq-dir",
+            str(tmp_path),
+        ]
+    )
+    assert code == 2
+    assert not out.exists()
+    # The refusal itself, not the "cannot read the meta" the empty directory would also produce.
+    assert "--gptq-dir cannot be combined with --scheme fp8" in capsys.readouterr().out
+    assert build.gptq_scheme_refusal("nvfp4", str(tmp_path)) is None
+    assert build.gptq_scheme_refusal("fp8", None) is None
+    assert "mxfp8" in (build.gptq_scheme_refusal("mxfp8", str(tmp_path)) or "")
 
 
 def test_a_rotated_build_may_not_also_be_a_calibrated_one(monkeypatch, tmp_path):
