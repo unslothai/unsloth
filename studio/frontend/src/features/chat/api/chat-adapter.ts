@@ -1472,8 +1472,7 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
   );
 }
 
-/** #10428: an empty Stop serialises empty and pruneOutboundHistory takes its prompt too.
- *  Nothing was yielded, so `status` is all that is left, and only `cancelled` is deliberate. */
+/** #10428: an empty Stop loses its prompt to the prune. Only `cancelled` in `status` is deliberate. */
 function stoppedAssistantReplayText(message: RunMessage): string {
   const info = readIncompleteInfo(
     (message as { metadata?: unknown }).metadata,
@@ -6325,8 +6324,7 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    // Null only when the Stop won the race; a bare return yields nothing, so the
-                    // turn settles "complete" and its prompt is pruned again (#10428).
+                    // Null only when the Stop won the race; a bare return settles it "complete" (#10428).
                     if (generationDecision === "durable") {
                       throw runSignal.reason ??
                         new DOMException("Aborted", "AbortError");

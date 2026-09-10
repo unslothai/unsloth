@@ -226,8 +226,8 @@ def test_the_defect_is_two_user_turns_touching_on_the_wire():
 
 
 def test_a_stop_before_any_output_keeps_its_prompt_on_the_wire():
-    """#10428: the interrupted prompt must still transmit. #9484 wanted alternating roles, not
-    deletion, and the placeholder is what gives them."""
+    """#10428: the interrupted prompt must still transmit; #9484 wanted alternating roles, not
+    deletion."""
     out = _run(_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]"))
     assert out["kept"] == ["user", "assistant", "user"]
     assert out["keptText"] == ["first", "second"]
@@ -468,8 +468,7 @@ def test_a_stop_with_no_persisted_marker_still_reads_as_a_stop():
 
 
 def test_a_generation_that_failed_is_not_replayed_as_a_stop():
-    """Same empty shape under ``reason: "error"``: the prompt stays either way, but the cancelled
-    label would misreport why to the model."""
+    """Same empty shape under ``reason: "error"``: the prompt stays, but "stopped" misreports why."""
     for is_external in ("false", "true"):
         out = _run(
             _send_script(f"[{_user('first')}, {FAILED_UNMARKED}, {_user('second')}]", is_external)
@@ -479,9 +478,8 @@ def test_a_generation_that_failed_is_not_replayed_as_a_stop():
 
 
 def test_a_reloaded_stop_keeps_its_prompt_once_the_marker_was_persisted():
-    """Reloaded, not in-session: ``status`` rebuilds as ``complete``, so the persisted
-    ``custom.incomplete`` marker is all that still says this turn was stopped. The durable path
-    stamps it server-side (``_sync_assistant_status_locked``); the next test is the gap."""
+    """Reloaded, not in-session: ``status`` rebuilds as ``complete``, so the persisted marker is
+    all that still says this was stopped. The durable path stamps it; the next test is the gap."""
     reloaded = (
         '{ role: "assistant", content: [], status: { type: "complete", reason: "unknown" },'
         ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
@@ -493,9 +491,8 @@ def test_a_reloaded_stop_keeps_its_prompt_once_the_marker_was_persisted():
 
 
 def test_a_reloaded_stop_with_no_persisted_marker_is_still_dropped():
-    """The known limit, pinned as a decision. A Stop before the first token never reaches a
-    streamed yield, so ``liveCustom`` never runs and the reloaded row is indistinguishable from
-    a silent reply. Closing it means persisting at Stop time, not reading harder here."""
+    """The known limit, pinned as a decision: nothing persists a marker, so the reloaded row is
+    indistinguishable from a silent reply. Closing it means persisting at Stop time, not here."""
     reloaded_unmarked = (
         '{ role: "assistant", content: [], status: { type: "complete", reason: "unknown" },'
         " metadata: { custom: {} } }"
