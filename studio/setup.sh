@@ -1599,14 +1599,33 @@ _setup_uv_sha256() {
     fi
 }
 
-# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a ceiling where
-# `timeout` exists (stock macOS has none).
+# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a 20 s ceiling
+# everywhere. GNU timeout where it exists; without it (stock macOS) the probe runs in the
+# background and is killed when the ceiling passes, so a discovered binary that starts and
+# never answers cannot hold setup ahead of its download or pip fallback.
 _setup_uv_probe_exec() {
+    _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
     if command -v timeout >/dev/null 2>&1; then
-        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
-    else
-        "$1" --version >/dev/null 2>&1 </dev/null
+        timeout "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        return $?
     fi
+    "$1" --version >/dev/null 2>&1 </dev/null &
+    _supe_pid=$!
+    _supe_waited=0
+    while kill -0 "$_supe_pid" 2>/dev/null; do
+        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
+            kill "$_supe_pid" 2>/dev/null
+            wait "$_supe_pid" 2>/dev/null
+            unset _supe_pid _supe_waited
+            return 124
+        fi
+        sleep 1
+        _supe_waited=$((_supe_waited + 1))
+    done
+    wait "$_supe_pid"
+    _supe_rc=$?
+    unset _supe_pid _supe_waited
+    return $_supe_rc
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked

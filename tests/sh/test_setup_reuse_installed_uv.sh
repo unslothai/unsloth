@@ -110,7 +110,7 @@ for shell in sh bash; do
         HANG_PROBE="$WORK/$shell hang probe.sh"
         # The 20 s ceiling is the helper's; the test only needs it to be finite, so the
         # wall clock is bounded below what an unbounded probe would take.
-        sed 's/timeout 20 /timeout 2 /' "$PROBE" > "$HANG_PROBE"
+        { echo '_SETUP_UV_PROBE_SECONDS=2'; cat "$PROBE"; } > "$HANG_PROBE"
         _hang_started=$(date +%s)
         assert_eq "$shell: a uv that never answers is not reused" \
             "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$HANG" "$shell" "$HANG_PROBE")"
@@ -118,6 +118,20 @@ for shell in sh bash; do
             ok "$shell: ...and the probe returned within its bound"
         else
             bad "$shell: ...and the probe returned within its bound"
+        fi
+        # Stock macOS has no GNU timeout: a PATH holding only the shell and sleep (no
+        # timeout) must still return within the ceiling.
+        NOTO="$CASE/no timeout bin"
+        mkdir -p "$NOTO"
+        ln -s "$(command -v sleep)" "$NOTO/sleep"
+        ln -s "$(command -v "$shell")" "$NOTO/$shell"
+        _hang_started=$(date +%s)
+        assert_eq "$shell: without GNU timeout a uv that never answers is still not reused" \
+            "none" "$(env -i PATH="$NOTO" HOME="$HOME_DIR" UV_INSTALL_DIR="$HANG" "$shell" "$HANG_PROBE")"
+        if [ $(( $(date +%s) - _hang_started )) -lt 30 ]; then
+            ok "$shell: ...and the fallback bound held"
+        else
+            bad "$shell: ...and the fallback bound held"
         fi
     fi
 done
