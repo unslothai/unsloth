@@ -10617,8 +10617,12 @@ class LlamaCppBackend:
                     # lower bound that is thrown away whenever host-wide MemFree is
                     # larger, the normal case in a container. Allocations here are
                     # charged to the cgroup, so an oversized fit dies at memory.max.
+                    # `<=` below, not `<`: _available_system_memory_mib is itself
+                    # cgroup-capped, so it hands back exactly the remainder whenever
+                    # MemAvailable exceeds it, which makes equality the ordinary result
+                    # on a constrained Spark rather than a coincidence.
                     cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
-                    if cgroup_mib is not None and cgroup_mib < raw_mib:
+                    if cgroup_mib is not None and cgroup_mib <= raw_mib:
                         raw_mib = cgroup_mib
                         # ...and then the pool is the container's, not the device's.
                         # _vram_usable_mib takes its occupancy reserve as

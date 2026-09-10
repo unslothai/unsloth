@@ -463,3 +463,16 @@ def test_an_all_integrated_selection_still_reaches_the_preflight(monkeypatch):
 
     assert LlamaCppBackend._integrated_cuda_selection_is_all_shared(None) is True
     assert LlamaCppBackend._integrated_cuda_selection_is_all_shared([0]) is True
+
+
+def test_an_equal_cgroup_remainder_is_still_the_ceiling(monkeypatch):
+    """_available_system_memory_mib is cgroup-capped, so it hands back exactly the
+    remainder whenever MemAvailable exceeds it: equality is the ordinary result on a
+    constrained Spark whose driver-free reading is no larger, not a coincidence."""
+    gpus = _spark_gpu_memory(
+        monkeypatch, driver_free_mib = 8192, available_mib = 16384, cgroup_mib = 16384
+    )
+
+    assert gpus[0][1] == 16384 - 1024
+    # The host-wide total here would reserve several GiB the container cannot reach.
+    assert gpus[0][2] == 0
