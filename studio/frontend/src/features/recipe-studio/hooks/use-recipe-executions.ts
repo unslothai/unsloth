@@ -880,11 +880,10 @@ export function useRecipeExecutions({
         return false;
       }
 
-      // Recipe and Chat share one singleton local inference backend. This direct
-      // load is a point-in-time handoff to job creation, not a lease: if Chat
-      // swaps models after this succeeds, the backend runs against current state.
-      // A future generation token should be validated across this load and the
-      // `/jobs` loaded-model gate.
+      // Recipe and Chat share one singleton local inference backend. This direct load is a
+      // point-in-time handoff to job creation, not a lease: if Chat swaps models after this
+      // succeeds, the backend runs against current state. A future generation token should be
+      // validated across this load and the `/jobs` loaded-model gate.
       const restorePrevious = await prepareLocalModelForExecution(payload);
       if (restorePrevious === false) {
         return false;

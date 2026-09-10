@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""whisper.cpp prebuilt freshness check.
-
-Reads UNSLOTH_WHISPER_PREBUILT_INFO.json (written by install_whisper_prebuilt.py)
-and compares the installed release tag against the latest on GitHub. Surfaced via
-utils.whisper_cpp_update (GET /api/whisper/update-status and the combined
-llama+whisper update status). Fails open on any missing data so we never show a
-misleading banner.
-
-The mechanics (marker walk-up, GitHub fetch, memo + disk cache, report skeleton)
-live in utils.prebuilt.freshness_flow; this module keeps the whisper version
-policy and the per-module caches its tests patch.
-"""
+"""whisper.cpp prebuilt freshness check. Reads UNSLOTH_WHISPER_PREBUILT_INFO.json (written by install_whisper_prebuilt.py) and compares the installed release tag against the latest on GitHub, surfaced via utils.whisper_cpp_update (GET /api/whisper/update-status and the combined llama+whisper update status). Fails open on any missing data so we never show a misleading banner. The mechanics (marker walk-up, GitHub fetch, memo + disk cache, report skeleton) live in utils.prebuilt.freshness_flow; this module keeps the whisper version policy and the per-module caches its tests patch."""
 
 from __future__ import annotations
 
@@ -49,8 +38,7 @@ def _cache_dir() -> Path:
 
 
 def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
-    """Walk up from binary_path to find UNSLOTH_WHISPER_PREBUILT_INFO.json.
-    None = no marker (source build / custom path) or invalid JSON."""
+    """Walk up from binary_path to find UNSLOTH_WHISPER_PREBUILT_INFO.json. None = no marker (source build / custom path) or invalid JSON."""
     if not binary_path:
         return None
     cached = _marker_cache.get(binary_path)
@@ -72,16 +60,14 @@ def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
 
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
-    """Newest published release tag for `repo`, by publish time (see
-    freshness_flow for why this is not GitHub's /releases/latest pointer)."""
+    """Newest published release tag for `repo`, by publish time (see freshness_flow for why this is not GitHub's /releases/latest pointer)."""
     return _flow.fetch_latest_release_tag(
         repo, timeout, log_message = "whisper freshness fetch failed"
     )
 
 
 def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
-    """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
-    None when offline and never previously cached."""
+    """Latest release tag for `repo`. Memo + disk-cached (24h TTL). None when offline and never previously cached."""
     return _flow.latest_published_release(
         repo,
         force_refresh = force_refresh,
@@ -93,16 +79,14 @@ def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optio
 
 
 def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[dict[str, int]]:
-    """Asset name -> size (bytes) for the newest published release of `repo`,
-    selected exactly like _fetch_latest_release_tag. None on any failure."""
+    """Asset name -> size (bytes) for the newest published release of `repo`, selected exactly like _fetch_latest_release_tag. None on any failure."""
     return _flow.fetch_latest_release_assets(
         repo, timeout, log_message = "whisper freshness asset fetch failed"
     )
 
 
 def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional[dict[str, int]]:
-    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when
-    offline and never fetched. In-memory only -- a restart simply re-fetches."""
+    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart simply re-fetches."""
     return _flow.latest_release_assets(
         repo,
         force_refresh = force_refresh,
@@ -112,10 +96,7 @@ def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional
 
 
 def _asset_platform_suffix(asset: str, installed_tag: Optional[str]) -> Optional[str]:
-    """The tag-independent ``<os>-<arch>-<accel>.<ext>`` suffix identifying this
-    host's bundle, from stripping the ``whisper-<tag>-`` prefix off the installed
-    asset name. Falls back to anchoring on the platform token when the marker tag
-    does not line up with the asset's embedded tag."""
+    """The tag-independent ``<os>-<arch>-<accel>.<ext>`` suffix identifying this host's bundle, from stripping the ``whisper-<tag>-`` prefix off the installed asset name. Falls back to anchoring on the platform token when the marker tag does not line up with the asset's embedded tag."""
     if isinstance(installed_tag, str) and installed_tag:
         tag = installed_tag if installed_tag.startswith("v") else f"v{installed_tag}"
         prefix = f"whisper-{tag}-"
@@ -132,13 +113,7 @@ def update_download_size_bytes(
     *,
     force_refresh: bool = False,
 ) -> Optional[int]:
-    """Download size of the latest-release asset matching this host's installed
-    bundle (same platform/arch/accel suffix). None when there is no marker asset,
-    the latest assets can't be read, or no match.
-
-    Assets are named ``whisper-<tag>-<os>-<arch>-<accel>.<ext>`` and the fork
-    builds every slice itself, so only the publish repo is consulted (no
-    upstream/binary_repo passthrough)."""
+    """Download size of the latest-release asset matching this host's installed bundle (same platform/arch/accel suffix). None when there is no marker asset, the latest assets cannot be read, or nothing matches. Assets are named ``whisper-<tag>-<os>-<arch>-<accel>.<ext>`` and the fork builds every slice itself, so only the publish repo is consulted (no upstream/binary_repo passthrough)."""
     if not marker or not latest_tag or not repo:
         return None
     installed_asset = marker.get("asset")
@@ -162,12 +137,7 @@ def update_download_size_bytes(
 
 
 def parse_release_version(tag: object) -> Optional[tuple]:
-    """Comparable key ``(upstream_major, upstream_minor, upstream_patch,
-    unsloth_serial)`` for a tag like ``v1.9.1-unsloth.2``.
-
-    Tolerant of a leading ``v`` and a missing ``-unsloth.N`` suffix (serial then
-    0); the upstream version is padded to major/minor/patch. None when the version
-    component is not purely numeric."""
+    """Comparable key ``(upstream_major, upstream_minor, upstream_patch, unsloth_serial)`` for a tag like ``v1.9.1-unsloth.2``. Tolerant of a leading ``v`` and a missing ``-unsloth.N`` suffix (serial then 0); the upstream version is padded to major/minor/patch. None when the version component is not purely numeric."""
     if not isinstance(tag, str):
         return None
     s = tag.strip()
@@ -194,13 +164,7 @@ def parse_release_version(tag: object) -> Optional[tuple]:
 
 
 def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
-    """Whether `installed` is genuinely behind `latest`.
-
-    - identical tags -> not behind (clears the sticky banner post-update)
-    - both parse -> behind only when the latest version key is strictly greater
-      (a lower/equal version is never "behind" -> downgrade guard)
-    - either fails to parse and they differ -> behind (plain inequality)
-    """
+    """Whether `installed` is genuinely behind `latest`: identical tags are not behind (clearing the sticky banner post-update); when both parse, behind only when the latest version key is strictly greater (a lower or equal version is never behind, the downgrade guard); when either fails to parse and they differ, behind by plain inequality."""
     if not installed or not latest:
         return False
     installed, latest = installed.strip(), latest.strip()
@@ -219,13 +183,8 @@ def check_prebuilt_freshness(
     threshold_days: int = STALENESS_THRESHOLD_DAYS,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Returns {has_marker, stale, behind, installed_tag, latest_tag,
-    installed_at_utc, age_days, published_repo, threshold_days}.
-    behind = installed genuinely older than latest (see is_behind).
-    stale = behind AND age >= threshold.
-    Fails open on missing data (behind/stale stay False)."""
-    # The whisper marker records a single ``release_tag`` (e.g. v1.9.1-unsloth.2);
-    # both display and comparison use it directly.
+    """Returns {has_marker, stale, behind, installed_tag, latest_tag, installed_at_utc, age_days, published_repo, threshold_days}. behind = installed genuinely older than latest (see is_behind), stale = behind AND age >= threshold. Fails open on missing data (behind/stale stay False)."""
+    # The whisper marker records a single ``release_tag`` (e.g. v1.9.1-unsloth.2); both display and comparison use it directly.
     return _flow.check_freshness(
         binary_path,
         threshold_days = threshold_days,
@@ -239,14 +198,7 @@ def check_prebuilt_freshness(
 
 
 def reset_caches(*, drop_disk: bool = False) -> None:
-    """Drop the in-memory freshness caches. The no-arg form is test-only.
-
-    With ``drop_disk = True`` also delete the on-disk 24h release cache. Used by
-    the post-install/update path: clearing memory alone leaves the stale
-    same-version value on disk, so an offline post-install GitHub refresh would
-    replay it (latest_published_release's last-good fallback) and the banner could
-    linger. Dropping the disk cache makes latest read None in that offline case,
-    so the banner fails open (off) rather than point at the just-replaced build."""
+    """Drop the in-memory freshness caches. The no-arg form is test-only. With ``drop_disk = True`` also delete the on-disk 24h release cache, used by the post-install/update path: clearing memory alone leaves the stale same-version value on disk, so an offline post-install GitHub refresh would replay it (latest_published_release's last-good fallback) and the banner could linger. Dropping the disk cache makes latest read None in that offline case, so the banner fails open rather than pointing at the just-replaced build."""
     _flow.reset_caches(
         (_marker_cache, _release_memo, _assets_memo),
         drop_disk = drop_disk,

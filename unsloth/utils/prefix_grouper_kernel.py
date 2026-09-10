@@ -1,15 +1,12 @@
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Affero General Public License for more details.
-#
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
@@ -101,9 +98,6 @@ _PAD_GROUP = -99  # sentinel group id / suffix id for pad tokens
 
 def _pad_len(T: int) -> int:
     return ((T + _PAD_MULTIPLE - 1) // _PAD_MULTIPLE) * _PAD_MULTIPLE
-
-
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -256,7 +250,6 @@ def build_seg_info_multigroup(
 # Block-mask builder and cache, keyed on (signature, device): the mask depends only on the per-token
 # labels and T, so it is reused across layers and steps.
 
-# ---------------------------------------------------------------------------
 
 _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
@@ -369,9 +362,6 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             scale = scale,
         )
     return out[:, :, :T, :]
-
-
-# ---------------------------------------------------------------------------
 
 
 def flex_shared_prefix_attention(
