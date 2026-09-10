@@ -9079,7 +9079,6 @@ class LlamaCppBackend:
             visible = LlamaCppBackend._resolve_visible_physical_ids()
             if visible is None:
                 import torch
-
                 visible = list(range(torch.cuda.device_count()))
             return bool(visible) and all(_i in integrated for _i in visible)
         except Exception:
