@@ -6478,6 +6478,8 @@ class LlamaCppBackend:
         self._sliding_window: Optional[int] = None
         self._sliding_window_pattern: Optional[list[bool]] = None
         self._full_attention_interval: Optional[int] = None
+        self._recurrent_layers: Optional[list[bool]] = None
+        self._feed_forward_length_by_layer: Optional[list[int]] = None
         self._kv_lora_rank: Optional[int] = None
         self._key_length_mla: Optional[int] = None
         self._value_length_mla: Optional[int] = None
@@ -12483,7 +12485,7 @@ class LlamaCppBackend:
         # path 3 is a shape this vector cannot describe.
         if self._uses_mla_cache():
             return []
-        if self._ssm_inner_size is not None and self._full_attention_interval is not None:
+        if self._ssm_inner_size is not None and self._hybrid_layer_split(n_layers) is not None:
             return []
         swa = self._sliding_window or 0
         if swa <= 0:
@@ -12539,6 +12541,28 @@ class LlamaCppBackend:
         if self._n_kv_heads_by_layer is not None and layer_idx < len(self._n_kv_heads_by_layer):
             return self._n_kv_heads_by_layer[layer_idx]
         return fallback
+
+    def _hybrid_layer_split(self, n_layers: int) -> "Optional[tuple[int, int]]":
+        """``(n_attention, n_recurrent)`` for a hybrid, or None when the file says nothing.
+
+        Shares offload_layout.hybrid_layer_split with the layout reader so the two
+        cannot answer differently for the same GGUF. They did, in opposite directions,
+        on every hybrid whose file omits full_attention_interval: this side read the
+        absent key as "not a hybrid" and charged the whole model an attention cache
+        with no state at all (Qwen3-Next-80B: +187%), while the layout read the same
+        file exactly off the architecture default or the per-layer head-count mask.
+        """
+        from core.inference.offload_layout import hybrid_layer_split
+
+        n_attn, n_recurrent, known = hybrid_layer_split(
+            str(getattr(self, "_architecture", None) or ""),
+            n_layers,
+            recurrent_layers = getattr(self, "_recurrent_layers", None),
+            n_kv_head = getattr(self, "_n_kv_heads_by_layer", None),
+            full_attention_interval = getattr(self, "_full_attention_interval", None) or 0,
+            feed_forward_length = getattr(self, "_feed_forward_length_by_layer", None),
+        )
+        return (n_attn, n_recurrent) if known else None
 
     def _recurrent_state_bytes(self, n_parallel: int = 1) -> int:
         """VRAM for the conv + recurrent state of linear-attention layers.
@@ -12614,7 +12638,6 @@ class LlamaCppBackend:
         d_state_raw = getattr(self, "_ssm_state_size", None)
         n_group_raw = getattr(self, "_ssm_group_count", None)
         d_conv_raw = getattr(self, "_ssm_conv_kernel", None)
-        fai_raw = getattr(self, "_full_attention_interval", None)
         if not all(
             value is not None
             for value in (
@@ -12623,7 +12646,6 @@ class LlamaCppBackend:
                 d_state_raw,
                 n_group_raw,
                 d_conv_raw,
-                fai_raw,
             )
         ):
             return 0
@@ -12633,9 +12655,10 @@ class LlamaCppBackend:
             0,
             int(n_layers_raw or 0) - int(getattr(self, "_nextn_predict_layers", None) or 0),
         )
-        fai = int(fai_raw or 0)
-        n_attn = -(-n_layers // fai) if fai > 0 else n_layers
-        n_recurrent = max(0, n_layers - n_attn)
+        split = self._hybrid_layer_split(n_layers)
+        if split is None:
+            return 0
+        n_recurrent = split[1]
         if n_recurrent == 0:
             return 0
         d_inner = int(d_inner_raw or 0)
@@ -12773,10 +12796,14 @@ class LlamaCppBackend:
         val_len = self._kv_value_length
 
         # Path 2: Hybrid Mamba/Attention (Qwen3.5-27B, Qwen3.5-35B-A3B)
-        # Only 1 in N layers is attention; the rest are Mamba (no KV cache).
-        if self._ssm_inner_size is not None and self._full_attention_interval is not None:
-            fai = self._full_attention_interval
-            n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
+        # Only 1 in N layers is attention; the rest are Mamba (no KV cache). The split
+        # is the layout reader's, so a file that omits full_attention_interval is still
+        # a hybrid here rather than a model with an attention cache on every layer.
+        hybrid_split = (
+            self._hybrid_layer_split(n_layers) if self._ssm_inner_size is not None else None
+        )
+        if hybrid_split is not None:
+            n_attn = hybrid_split[0]
             recurrent = self._mamba_recurrent_state_bytes(n_parallel)
             if key_len is not None and val_len is not None:
                 v_width = n_kv * val_len if flash_attn else self._max_kv_value_width(val_len)
@@ -12891,6 +12918,8 @@ class LlamaCppBackend:
                 "_ssm_group_count",
                 "_ssm_conv_kernel",
                 "_full_attention_interval",
+                "_recurrent_layers",
+                "_feed_forward_length_by_layer",
                 "_key_length_mla",
                 "_value_length_mla",
                 "_n_kv_heads_by_layer",
@@ -14086,6 +14115,8 @@ class LlamaCppBackend:
         self._sliding_window = None
         self._sliding_window_pattern = None
         self._full_attention_interval = None
+        self._recurrent_layers = None
+        self._feed_forward_length_by_layer = None
         self._kv_lora_rank = None
         self._key_length_mla = None
         self._value_length_mla = None
@@ -14212,6 +14243,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.key_length_swa": "kv_key_length_swa",
                                         f"{arch}.attention.value_length_swa": "kv_value_length_swa",
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
+                                        f"{arch}.attention.recurrent_layers": "recurrent_layers",
                                         f"{arch}.ssm.inner_size": "ssm_inner_size",
                                         f"{arch}.ssm.state_size": "ssm_state_size",
                                         f"{arch}.ssm.group_count": "ssm_group_count",
@@ -14264,6 +14296,12 @@ class LlamaCppBackend:
                                 elif attr == "sliding_window_pattern" and val_a is not None:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
+                                elif attr == "recurrent_layers" and val_a is not None:
+                                    self._recurrent_layers = [bool(x) for x in val_a]
+                                elif attr == "feed_forward_length" and val_a is not None:
+                                    # Kept apart from the scalar _feed_forward_length the compute-buffer
+                                    # estimate reads: nemotron_h's is a per-layer array.
+                                    self._feed_forward_length_by_layer = [int(x) for x in val_a]
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -27150,6 +27188,8 @@ class LlamaCppBackend:
             self._sliding_window = None
             self._sliding_window_pattern = None
             self._full_attention_interval = None
+            self._recurrent_layers = None
+            self._feed_forward_length_by_layer = None
             self._kv_lora_rank = None
             self._key_length_mla = None
             self._value_length_mla = None

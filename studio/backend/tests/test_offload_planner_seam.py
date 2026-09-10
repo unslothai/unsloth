@@ -31,6 +31,11 @@ from core.inference.llama_cpp import _linux_math_core_count
 import core.inference.llama_cpp as llama_mod
 import inspect
 import sys
+from pathlib import Path
+
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
 
 
 class _SmtHost:
@@ -2911,4 +2916,78 @@ def test_the_lora_rank_alone_does_not_take_the_latent_path():
     assert (
         half._estimate_kv_cache_bytes(8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False)
         == full
+    )
+
+
+def _qwen3next_backend(**extra):
+    """unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF: hybrid, and no interval key."""
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._architecture = "qwen3next"
+    b._n_layers = 48
+    b._n_kv_heads = 2
+    b._n_heads = 16
+    b._embedding_length = 2048
+    b._kv_key_length = 256
+    b._kv_value_length = 256
+    b._kv_key_length_swa = None
+    b._kv_value_length_swa = None
+    b._sliding_window = None
+    b._sliding_window_pattern = None
+    b._n_kv_heads_by_layer = None
+    b._recurrent_layers = None
+    b._feed_forward_length_by_layer = None
+    b._shared_kv_layers = None
+    b._nextn_predict_layers = None
+    b._kv_lora_rank = None
+    b._key_length_mla = None
+    b._value_length_mla = None
+    b._kda_head_dim = None
+    b._ssm_inner_size = 4096
+    b._ssm_state_size = 128
+    b._ssm_group_count = 16
+    b._ssm_conv_kernel = 4
+    b._full_attention_interval = None
+    for key, value in extra.items():
+        setattr(b, key, value)
+    return b
+
+
+def test_a_hybrid_without_the_interval_key_is_still_a_hybrid_to_the_estimator():
+    """llama.cpp does not need the key: models/qwen3next.cpp falls back to the
+    ARCHITECTURE's own default, and nemotron-h.cpp / falcon-h1.cpp derive the mask
+    from the head counts. Reading its absence as "not a hybrid" charged Qwen3-Next-80B
+    an attention cache on all 48 rows instead of 12 and priced the recurrent state at
+    0 -- +187%, an over-count hiding an under-count, and the layout read the same file
+    exactly. Both readers now take one derivation, so they cannot disagree."""
+    from test_offload_planner import (
+        _StubReader,
+        _StubTensor,
+        _layout_from_reader,
+        _qwen3next_fields,
+    )
+
+    b = _qwen3next_backend()
+    total = b._estimate_kv_cache_bytes(
+        8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    # 12 attention layers of 2 heads x (256 + 256) f16, plus 36 rows of Mamba state.
+    assert total == 12 * 8192 * 2 * (256 + 256) * 2 + 36 * (24576 + 524288) * 4
+    assert b._mamba_recurrent_state_bytes(1) == 36 * (24576 + 524288) * 4
+
+    layout = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(**{"qwen3next.attention.head_count": 16}),
+            [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(48)],
+        )
+    )
+    assert layout.n_attention_layers == 12
+    assert total == layout.kv_bytes(8192) + layout.recurrent_bytes
+
+    # Spelling the key out changes nothing.
+    spelled = _qwen3next_backend(_full_attention_interval = 4)
+    assert (
+        spelled._estimate_kv_cache_bytes(
+            8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+        )
+        == total
     )

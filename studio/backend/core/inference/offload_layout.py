@@ -294,6 +294,69 @@ _KDA_STATE_ARCHS: frozenset[str] = frozenset({"kimi-k3", "glm5next"})
 _RECURRENT_NEEDS_ZERO_FFN: frozenset[str] = frozenset({"nemotron_h", "nemotron_h_moe"})
 
 
+def hybrid_layer_split(
+    arch: str,
+    n_layers: int,
+    *,
+    recurrent_layers = None,
+    n_kv_head = None,
+    full_attention_interval: int = 0,
+    feed_forward_length = None,
+) -> tuple[int, int, bool]:
+    """``(n_attention, n_recurrent, known)`` over a hybrid's ``n_layers`` target rows.
+
+    The one derivation both readers use, so the layout's cache product and the
+    estimator's path 2 cannot disagree about the same file. llama.cpp resolves it in
+    three steps (models/qwen3next.cpp:load_arch_hparams, and the identical block in
+    qwen35, qwen35moe and minimax-01): an explicit per-layer mask first, then
+    ``full_attention_interval``, then the ARCHITECTURE's built-in default for it.
+
+    A per-layer ``attention.head_count_kv`` list with zeros beats all three: those rows
+    hold no attention cache at all, and llama.cpp reads is_recr straight off them
+    (models/nemotron-h.cpp:load_arch_hparams, models/falcon-h1.cpp). ``known`` is False
+    only when nothing above said anything, which is the caller's cue to abstain rather
+    than call every row attention.
+    """
+    if n_layers <= 0:
+        return 0, 0, False
+    known = False
+    n_recurrent = 0
+    if isinstance(recurrent_layers, (list, tuple)) and len(recurrent_layers) >= n_layers:
+        n_recurrent = sum(1 for flag in list(recurrent_layers)[:n_layers] if flag)
+        known = True
+    else:
+        fai = int(full_attention_interval or 0)
+        if fai <= 0:
+            fai = _FULL_ATTENTION_INTERVAL_DEFAULT.get(arch, 0)
+        if fai > 0:
+            n_recurrent = max(0, n_layers - -(-n_layers // fai))
+            known = True
+    n_attention = n_layers - n_recurrent
+
+    if isinstance(n_kv_head, (list, tuple)):
+        heads = [int(h) for h in n_kv_head]
+        if heads:
+            padded = [heads[i] if i < len(heads) else heads[-1] for i in range(n_layers)]
+            attention_rows = sum(1 for h in padded if h > 0)
+            if 0 < attention_rows < n_layers:
+                n_attention = attention_rows
+                n_recurrent = n_layers - n_attention
+                known = True
+                # ...except on nemotron_h, where a zero-head row is recurrent only if its FFN is 0 too. The MLP-only
+                # rows are neither attention nor recurrent, so the two counts stop summing to n_layers here.
+                if arch in _RECURRENT_NEEDS_ZERO_FFN and isinstance(
+                    feed_forward_length, (list, tuple)
+                ):
+                    ffs = [int(f) for f in feed_forward_length]
+                    if ffs:
+                        n_recurrent = sum(
+                            1
+                            for i in range(n_layers)
+                            if padded[i] <= 0 and (ffs[i] if i < len(ffs) else ffs[-1]) <= 0
+                        )
+    return n_attention, n_recurrent, known
+
+
 def _layout_from_reader(reader) -> ModelLayout:
     return _layout_from_readers([reader])
 
@@ -322,25 +385,6 @@ def _layout_from_readers(readers) -> ModelLayout:
     nextn = int(_field(reader, f"{arch}.nextn_predict_layers") or 0)
     n_layers = max(0, blocks_total - nextn)
 
-    # Hybrid: only 1 in full_attention_interval layers carries a KV cache, the rest are recurrent. llama.cpp resolves
-    # that in three steps (models/qwen3next.cpp:21-27, and the identical block in qwen35, qwen35moe and minimax-01): an
-    # explicit per-layer mask first, then the interval key, then the ARCHITECTURE's built-in default for it. Absent from
-    # all three, every layer is attention, which is why the ssm.* check below abstains instead.
-    recurrent_known = False
-    n_recurrent = 0
-    mask = _field(reader, f"{arch}.attention.recurrent_layers")
-    if isinstance(mask, (list, tuple)) and n_layers > 0 and len(mask) >= n_layers:
-        n_recurrent = sum(1 for flag in list(mask)[:n_layers] if flag)
-        recurrent_known = True
-    else:
-        fai = int(_field(reader, f"{arch}.full_attention_interval") or 0)
-        if fai <= 0:
-            fai = _FULL_ATTENTION_INTERVAL_DEFAULT.get(arch, 0)
-        if fai > 0:
-            n_recurrent = max(0, n_layers - -(-n_layers // fai))
-            recurrent_known = True
-    n_attention = n_layers - n_recurrent
-
     n_kv_head = _field(reader, f"{arch}.attention.head_count_kv")
     n_head = _field(reader, f"{arch}.attention.head_count")
     n_embd = _field(reader, f"{arch}.embedding_length")
@@ -353,30 +397,24 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not n_kv_head or not key_len or not val_len:
         return ModelLayout()
 
+    n_attention, n_recurrent, recurrent_known = hybrid_layer_split(
+        arch,
+        n_layers,
+        recurrent_layers = _field(reader, f"{arch}.attention.recurrent_layers"),
+        n_kv_head = n_kv_head,
+        full_attention_interval = int(_field(reader, f"{arch}.full_attention_interval") or 0),
+        feed_forward_length = _field(reader, f"{arch}.feed_forward_length"),
+    )
+
     # A per-layer list with zeros names the rows that carry NO attention cache (a KDA /
     # linear-attention hybrid); summing them away would let a multi-device check spread the
     # cache over rows that hold none of it.
-    if isinstance(n_kv_head, (list, tuple)) and n_layers > 0:
+    if isinstance(n_kv_head, (list, tuple)) and n_attention < n_layers:
         _heads = [int(h) for h in n_kv_head]
         if _heads:
             _padded = [_heads[i] if i < len(_heads) else _heads[-1] for i in range(n_layers)]
-            _attention_rows = sum(1 for h in _padded if h > 0)
-            if 0 < _attention_rows < n_layers:
-                n_attention = _attention_rows
-                n_recurrent = n_layers - n_attention
+            if 0 < sum(1 for h in _padded if h > 0) < n_layers:
                 n_kv_head = [h for h in _padded if h > 0]
-                recurrent_known = True
-                # ...except on nemotron_h, where a zero-head row is recurrent only if its FFN is 0 too. The MLP-only
-                # rows are neither attention nor recurrent, so the two counts stop summing to n_layers here.
-                if arch in _RECURRENT_NEEDS_ZERO_FFN:
-                    _ff = _field(reader, f"{arch}.feed_forward_length")
-                    if isinstance(_ff, (list, tuple)) and len(_ff) > 0:
-                        _ffs = [int(f) for f in _ff]
-                        n_recurrent = sum(
-                            1
-                            for i in range(n_layers)
-                            if _padded[i] <= 0 and (_ffs[i] if i < len(_ffs) else _ffs[-1]) <= 0
-                        )
 
     kv_heads_total = _kv_heads_total(n_kv_head, int(n_attention))
     if not kv_heads_total:
