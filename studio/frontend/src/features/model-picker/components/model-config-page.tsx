@@ -47,8 +47,7 @@ import {
 } from "@/hooks/use-gpu-info";
 import {
   DEFAULT_VRAM_FRACTION,
-  aggregateUsableFreeVramGb,
-  aggregateVramReserveDeficitGb,
+  resolveFreeGpuCapacityGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -2615,64 +2614,41 @@ export function ModelConfigPage({
     0,
     2 - (inferenceGpu.systemRamAvailableHostGb || 0),
   );
+  // The rule itself lives in gpu-vram.ts, beside the aggregates it is built from and
+  // reachable from the test runner: memory-unified-apu.test.ts exercises the non-Apple
+  // unified path directly rather than reading these lines back as text, which is what
+  // broke twice as the block around them moved.
   const {
     gb: memoryFreeGpuCapacityGb,
     known: memoryFreeGpuCapacityKnown,
     reserveDeficitGb: memoryFreeGpuReserveDeficitGb,
-  } = useMemo(() => {
-    const pinned =
-      pinnedGpuIds && pinnedGpuIds.length > 0
-        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
-        : gpuDevices;
-    // Per device, and by the loader's absolute-reserve rule rather than a multiplication: the
-    // budget is subtracted from the card, not applied to what happens to be free. Aggregated
-    // with the same count-the-shared-pool-once rule the TOTALS use, since a plain sum over a
-    // mixed inventory counted the iGPU's share of host RAM twice.
-    const freeVram = aggregateUsableFreeVramGb(
-      pinned,
+  } = useMemo(
+    () =>
+      resolveFreeGpuCapacityGb({
+        devices: gpuDevices,
+        pinnedGpuIds,
+        budgetFraction: memoryEffectiveBudgetFraction,
+        unifiedMemory: hasUnifiedMemory,
+        unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
+        usableSystemRamGb: memoryUsableSystemRamGb,
+        systemRamReserveDeficitGb: memorySystemRamReserveDeficitGb,
+        systemRamAvailableKnown: inferenceGpu.systemRamAvailableKnown,
+        loadedGpuIds,
+        loadedGpuIndexKind,
+      }),
+    [
+      gpuDevices,
+      pinnedGpuIds,
       memoryEffectiveBudgetFraction,
-    );
-    const freeVramKnown =
-      pinned.length > 0 &&
-      pinned.every((device) => device.memoryFreeKnown === true);
-    // On a ROCm APU this figure is the free space inside a BIOS-carved window, and resolveMemoryFit
-    // asks it the WHOLE-LOAD question as soon as the pool is single, so together they warned
-    // that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free. The pool's real free
-    // memory is the host's; Apple's GPU figure already IS the pool.
-    // Those two together warned that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free,
-    // purely because it exceeds a 48 GiB window.
-    if (hasUnifiedMemory && !isAppleUnifiedMemory) {
-      return {
-        gb: inferenceGpu.systemRamAvailableKnown ? memoryUsableSystemRamGb : 0,
-        known: inferenceGpu.systemRamAvailableKnown === true,
-        reserveDeficitGb: memorySystemRamReserveDeficitGb,
-      };
-    }
-    const residentDevices = loadedGpuIds?.length
-      ? pinned.filter((device) =>
-          device.indexKind === loadedGpuIndexKind &&
-          loadedGpuIds.includes(device.index))
-      : pinned;
-    return {
-      gb: freeVram,
-      known: freeVramKnown,
-      reserveDeficitGb: aggregateVramReserveDeficitGb(
-        residentDevices,
-        memoryEffectiveBudgetFraction,
-      ),
-    };
-  }, [
-    gpuDevices,
-    pinnedGpuIds,
-    memoryEffectiveBudgetFraction,
-    hasUnifiedMemory,
-    isAppleUnifiedMemory,
-    memoryUsableSystemRamGb,
-    memorySystemRamReserveDeficitGb,
-    inferenceGpu.systemRamAvailableKnown,
-    loadedGpuIds,
-    loadedGpuIndexKind,
-  ]);
+      hasUnifiedMemory,
+      isAppleUnifiedMemory,
+      memoryUsableSystemRamGb,
+      memorySystemRamReserveDeficitGb,
+      inferenceGpu.systemRamAvailableKnown,
+      loadedGpuIds,
+      loadedGpuIndexKind,
+    ],
+  );
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
     totalCapacityGb: memoryTotalCapacityGb,

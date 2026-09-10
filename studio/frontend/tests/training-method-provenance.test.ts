@@ -96,6 +96,9 @@ test("switching away from CPT restores pre-CPT target modules", () => {
       modelAdapterLearningRate: null,
       datasetFormatBeforeCpt: "chatml" as const,
       targetModulesBeforeCpt: ["all-linear"],
+      loraRankBeforeCpt: null,
+      loraAlphaBeforeCpt: null,
+      loraVariantBeforeCpt: null,
     },
   };
   const patch = buildTrainingMethodPatch(state, "qlora");
@@ -103,4 +106,28 @@ test("switching away from CPT restores pre-CPT target modules", () => {
   assert.deepEqual(patch.targetModules, ["all-linear"]);
   assert.equal(patch.datasetFormat, "chatml");
   assert.equal(patch.trainingMethodProvenance?.targetModulesBeforeCpt, null);
+});
+
+test("switching away from CPT restores the pre-CPT LoRA rank, alpha and variant", () => {
+  const state = {
+    ...initialTrainingConfigState,
+    trainingMethod: "qlora" as const,
+    loraRank: 8,
+    loraAlpha: 8,
+    loraVariant: "lora" as const,
+  };
+  const cptState = { ...state, ...buildTrainingMethodPatch(state, "cpt") };
+
+  assert.equal(cptState.loraRank, 128);
+  assert.equal(cptState.trainingMethodProvenance.loraRankBeforeCpt, 8);
+
+  const restored = {
+    ...cptState,
+    ...buildTrainingMethodPatch(cptState, "qlora"),
+  };
+
+  assert.equal(restored.loraRank, 8);
+  assert.equal(restored.loraAlpha, 8);
+  assert.equal(restored.loraVariant, "lora");
+  assert.equal(restored.trainingMethodProvenance.loraRankBeforeCpt, null);
 });
