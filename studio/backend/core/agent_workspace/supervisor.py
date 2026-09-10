@@ -41,6 +41,7 @@ from utils.process_lifetime import (
     child_popen_kwargs,
     forget_pid,
     initialize_parent_lifetime,
+    is_process_shutting_down,
     spawn_on_lifetime_thread,
 )
 
@@ -1461,6 +1462,8 @@ def _run_project_process(
     if cancel_event is not None and cancel_event.is_set():
         return ProjectProcessResult("cancelled", None, "", 0, False)
 
+    if is_process_shutting_down():
+        raise ProjectExecutionUnavailable("Studio is shutting down; not starting project commands.")
     status = supervised_process_status()
     if not status.available:
         raise ProjectExecutionUnavailable(
@@ -1542,12 +1545,22 @@ def _run_project_process(
             spawn_ownership.adopted = True
             lifecycle.after_spawn(spawned)
             spawn_ownership.after_spawn_done = True
+            # If shutdown swept before adoption, the normal failure cleanup
+            # must prove this late child's tree dead before releasing ownership.
+            if is_process_shutting_down():
+                raise ProjectExecutionUnavailable(
+                    "Studio is shutting down; project command stopped."
+                )
 
         def spawn_checked_process():
             # Revalidate after the mutation-slot wait and lifetime-thread queue.
             # This callback can refuse a command but cannot replace its boundary.
             if before_start is not None:
                 before_start(workspace, command)
+            if is_process_shutting_down():
+                raise ProjectExecutionUnavailable(
+                    "Studio is shutting down; not starting project commands."
+                )
             return subprocess.Popen(wrapped, **options)
 
         spawn_attempt = _SpawnAttempt(
@@ -1592,6 +1605,8 @@ def _run_project_process(
 
         if bound_without_cancellation and before_start is not None:
             before_start(workspace, command)
+        if is_process_shutting_down():
+            raise ProjectExecutionUnavailable("Studio is shutting down; project command stopped.")
         if not bound_without_cancellation or not lifecycle.release(cancel_event):
             result_status = "cancelled"
         else:

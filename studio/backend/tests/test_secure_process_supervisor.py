@@ -1483,3 +1483,72 @@ def test_project_script_cleanup_preserves_a_replacement_file(local_supervisor):
         assert path.read_text() == "replacement"
     finally:
         os.close(root_fd)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_supervisor_shutdown_refuses_prepared_spawn(local_supervisor, monkeypatch, queued):
+    workspace, lease_active, boundaries = local_supervisor
+    shutting_down = threading.Event()
+    if not queued:
+        shutting_down.set()
+    monkeypatch.setattr(supervisor, "is_process_shutting_down", shutting_down.is_set, raising = False)
+    monkeypatch.setattr(
+        supervisor.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("shutdown must refuse the process launch"),
+    )
+
+    with pytest.raises(ProjectExecutionUnavailable, match = "shutting down"):
+        supervisor.run_project_process(
+            workspace.project_id,
+            [sys.executable, "-c", "pass"],
+            before_start = lambda *_args: shutting_down.set(),
+        )
+
+    assert lease_active["value"] is False
+    assert all(boundary.closed and not boundary.slot for boundary in boundaries)
+
+
+@pytest.mark.parametrize("phase", ["adoption", "release"])
+def test_supervisor_shutdown_reaps_before_releasing_workspace(local_supervisor, monkeypatch, phase):
+    workspace, lease_active, boundaries = local_supervisor
+    shutting_down = threading.Event()
+    monkeypatch.setattr(supervisor, "is_process_shutting_down", shutting_down.is_set, raising = False)
+    observed = {}
+    real_popen = supervisor.subprocess.Popen
+    release_calls = []
+    preparation_calls = []
+
+    def capture_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        observed["process"] = process
+        return process
+
+    def before_start(*_args):
+        preparation_calls.append(True)
+        if phase == "release" and len(preparation_calls) == 2:
+            shutting_down.set()
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", capture_popen)
+    if phase == "adoption":
+        monkeypatch.setattr(supervisor, "adopt_pid", lambda _pid: shutting_down.set())
+    monkeypatch.setattr(
+        _LocalLifecycle,
+        "release",
+        lambda *_args: release_calls.append(True) or True,
+    )
+
+    with pytest.raises(ProjectExecutionUnavailable, match = "shutting down"):
+        supervisor.run_project_process(
+            workspace.project_id,
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout_seconds = 0.05,
+            before_start = before_start,
+        )
+
+    assert observed["process"].poll() is not None
+    assert release_calls == []
+    assert lease_active["value"] is False
+    assert boundaries[-1].closed is True
+    assert boundaries[-1].slot is False
+    assert all(lifecycle.closed for lifecycle in _LocalLifecycle.instances)

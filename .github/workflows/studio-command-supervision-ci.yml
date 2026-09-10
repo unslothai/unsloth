@@ -18,6 +18,7 @@ on:
       - 'studio/backend/tests/test_process_lifetime.py'
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_secure_process_supervisor.py'
+      - 'studio/backend/tests/test_orchestrator_unload_cancel.py'
       - 'studio/backend/tests/test_project_command_boundaries.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/studio-command-supervision-ci.yml'
@@ -36,6 +37,7 @@ on:
       - 'studio/backend/tests/test_process_lifetime.py'
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_secure_process_supervisor.py'
+      - 'studio/backend/tests/test_orchestrator_unload_cancel.py'
       - 'studio/backend/tests/test_project_command_boundaries.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/studio-command-supervision-ci.yml'
@@ -129,5 +131,6 @@ jobs:
           tests/test_project_command_boundaries.py
           tests/test_edit_file_tool.py
           tests/test_secure_process_supervisor.py
+          tests/test_orchestrator_unload_cancel.py::test_every_long_lived_spawner_consults_the_shutdown_latch
           tests/test_studio_pid_files.py tests/test_process_lifetime.py
           -q --tb=short --timeout=60 --maxfail=5
