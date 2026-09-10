@@ -263,7 +263,13 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
             self.rows = [{"index": index} for index in range(12_500)]
             self.calls: list[tuple[int, int]] = []
 
-        def get_dataset(self, job_id: str, *, limit: int, offset: int = 0):
+        def get_dataset(
+            self,
+            job_id: str,
+            *,
+            limit: int,
+            offset: int = 0,
+        ):
             self.calls.append((limit, offset))
             page = self.rows[offset : offset + limit]
             return {"dataset": page, "total": len(self.rows)}

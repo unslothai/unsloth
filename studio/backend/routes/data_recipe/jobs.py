@@ -550,10 +550,7 @@ _IN_MEMORY_DOWNLOAD_PAGE_SIZE = 10_000
 
 
 def _build_in_memory_job_dataset_download(
-    mgr,
-    job_id: str,
-    *,
-    filename_stem: str,
+    mgr, job_id: str, *, filename_stem: str
 ) -> tuple[Path, str, str]:
     tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".jsonl")
     tmp.close()

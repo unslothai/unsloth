@@ -68,11 +68,7 @@ def _json_dumps_row(row: dict[str, Any]) -> str:
 
 
 def _drop_parquet_helper_columns(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in row.items()
-        if key not in {"filename", "__row_num__"}
-    }
+    return {key: value for key, value in row.items() if key not in {"filename", "__row_num__"}}
 
 
 def _write_jsonl_rows(handle, rows: list[dict[str, Any]]) -> None:
@@ -106,10 +102,7 @@ def _count_parquet_rows_with_duckdb(parquet_glob: str) -> int | None:
 
 
 def _fetch_parquet_page_with_duckdb(
-    *,
-    parquet_glob: str,
-    limit: int,
-    offset: int,
+    *, parquet_glob: str, limit: int, offset: int
 ) -> list[dict[str, Any]] | None:
     try:
         import duckdb  # type: ignore
@@ -132,11 +125,7 @@ def _fetch_parquet_page_with_duckdb(
     return [_drop_parquet_helper_columns(to_preview_jsonable(row)) for row in rows]
 
 
-def _stream_jsonl_from_parquet_with_duckdb(
-    *,
-    parquet_dir: Path,
-    destination: Path,
-) -> bool:
+def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Path) -> bool:
     parquet_glob = _parquet_glob(parquet_dir)
     total = _count_parquet_rows_with_duckdb(parquet_glob)
     if total is None:
@@ -226,10 +215,7 @@ def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None
 
 
 def build_dataset_download(
-    *,
-    artifact_path: str,
-    export_format: ExportFormat,
-    filename_stem: str,
+    *, artifact_path: str, export_format: ExportFormat, filename_stem: str
 ) -> tuple[Path, str, str]:
     """Return ``(temp_path, media_type, download_filename)``.
 
@@ -261,9 +247,7 @@ def build_dataset_download(
 
 
 def build_in_memory_dataset_download(
-    rows: list[dict[str, Any]],
-    *,
-    filename_stem: str,
+    rows: list[dict[str, Any]], *, filename_stem: str
 ) -> tuple[Path, str, str]:
     """Export rows already held in memory to a temporary JSONL file."""
     stem = _safe_filename_stem(filename_stem)
