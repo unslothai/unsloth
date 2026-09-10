@@ -57,17 +57,16 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
-# Only a UI session may define a local command; API keys keep http(s) MCP.
-# Annotated, not a Depends default: these routes are also called directly by the
-# tests, where a Depends object is truthy and would read as "API key".
+# Only a UI session may define a local command; API keys keep http(s) MCP. Annotated, not a Depends default:
+# these routes are also called directly by the tests, where a Depends object is truthy and would read as "API key".
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 
 
 def _looks_like_command(value: str) -> bool:
-    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so
-    a value with whitespace is definitely a command. No whitespace proves
-    nothing (a lone token may be a single-arg command or a scheme-less URL)."""
+    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so a value with whitespace is
+    definitely a command. No whitespace proves nothing (a lone token may be a single-arg command or a
+    scheme-less URL)."""
     return any(ch.isspace() for ch in value)
 
 
@@ -306,9 +305,8 @@ def list_mcp_servers(
 ):
     rows = mcp_servers_db.list_servers()
     if via_api_key or no_credential:
-        # Drop the row, not just its fields: `url` is the argv (carries
-        # credentials), `headers` is the subprocess env, and a blanked url would
-        # round-trip into update as a bogus command.
+        # Drop the row, not just its fields: `url` is the argv (carries credentials), `headers` is the subprocess
+        # env, and a blanked url would round-trip into update as a bogus command.
         rows = [row for row in rows if not is_stdio(row["url"])]
     return [_row_to_response(row, include_headers = not no_credential) for row in rows]
 
@@ -392,14 +390,13 @@ async def update_mcp_server(
             )
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
-    # Both directions, so an API key can neither repoint an http row at a command
-    # nor edit a stdio row's env/name/enabled flag. Before every side effect, so a
-    # refusal leaves the row, its OAuth tokens, cache and sessions untouched.
+    # Both directions, so an API key can neither repoint an http row at a command nor edit a stdio row's
+    # env/name/enabled flag. Before every side effect, so a refusal leaves the row, its OAuth tokens, cache and
+    # sessions untouched.
     if is_stdio(old["url"]) or is_stdio(changes.get("url", old["url"])):
         require_ui_session_for_local_commands(via_api_key)
-    # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
-    # switch with no new headers, drop the old ones so env secrets aren't
-    # re-sent as HTTP headers (or vice versa).
+    # headers == HTTP headers (remote) or env vars (stdio). On a transport-type switch with no new headers, drop
+    # the old ones so env secrets aren't re-sent as HTTP headers (or vice versa).
     if (
         "url" in changes
         and is_stdio(changes["url"]) != is_stdio(old["url"])
@@ -487,9 +484,9 @@ async def refresh_mcp_server_tools(
         if current is not None and not any(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
-            # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row
-            # changed while the probe was awaiting, the FAILURE belongs to the old config and must not park
-            # the newly edited server.
+            # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row changed
+            # while the probe was awaiting, the FAILURE belongs to the old config and must not park the newly edited
+            # server.
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 

@@ -46,9 +46,9 @@ from utils.paths.path_utils import is_appledouble_metadata
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Resolved on first use, not at module scope: the plugin package pulls the data
-# designer engine, pandas and pyarrow, delaying uvicorn binding the port.
-# False means "probed once, not installed", so callers still just see None.
+# Resolved on first use, not at module scope: the plugin package pulls the data designer engine, pandas and
+# pyarrow, delaying uvicorn binding the port. False means "probed once, not installed", so callers still just see
+# None.
 _CHUNKING: Any = None
 
 
@@ -501,17 +501,12 @@ def _require_unstructured_ext(filename: str) -> str:
 
 
 def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
-    """Read a desktop drop; returns (filename, content).
-
-    The webview never names a path directly: Rust signs what the OS handed it,
-    and this re-verifies and re-stats that grant before reading a byte. Same
-    contract as the RAG route's ``_save_native_path_upload``.
-
-    ``budget`` is what is still allowed for this block. The path is a local file
-    of any size, so it is refused on its stat rather than after a multi-gigabyte
-    read, and the read itself stops one byte past the budget in case the file
-    grew between the two.
-    """
+    """Read a desktop drop; returns (filename, content). The webview never names a path directly: Rust
+    signs what the OS handed it, and this re-verifies and re-stats that grant before reading a byte.
+    Same contract as the RAG route's ``_save_native_path_upload``. ``budget`` is what is still
+    allowed for this block. The path is a local file of any size, so it is refused on its stat
+    rather than after a multi-gigabyte read, and the read itself stops one byte past the budget in
+    case the file grew between the two."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -554,9 +549,8 @@ async def upload_unstructured_file(
     # an upload that is about to be refused.
     budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
 
-    # Desktop drops arrive as a signed path.
-    # Tauri hands the webview a path, never a File (#9036); isinstance, not a truth test, since an unfilled Form param
-    # is still truthy.
+    # Desktop drops arrive as a signed path: Tauri hands the webview a path, never a File (#9036); isinstance,
+    # not a truth test, since an unfilled Form param is still truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
         original_filename, content = _read_native_drop(lease, budget)

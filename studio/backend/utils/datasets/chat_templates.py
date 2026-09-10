@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat template utilities for dataset processing.
-
-Apply chat templates to datasets and generate dataset info summaries.
-"""
+"""Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
 
 import warnings as python_warnings
 
@@ -59,16 +56,7 @@ def _chat_template_kwargs() -> dict:
 
 
 def get_tokenizer_chat_template(tokenizer, model_name):
-    """Apply a chat template to the tokenizer, using Unsloth's
-    get_chat_template when the model class name is in the mapper.
-
-    Args:
-        tokenizer: HuggingFace tokenizer
-        model_name: Model class name (e.g., "Gemma3ForCausalLM")
-
-    Returns:
-        tokenizer with the chat template applied
-    """
+    """Apply a chat template to ``tokenizer``, using Unsloth's get_chat_template when ``model_name`` (a model class name such as "Gemma3ForCausalLM") is in the mapper. Returns the tokenizer with the template applied."""
     try:
         from unsloth.chat_templates import get_chat_template
     except ImportError:
@@ -151,21 +139,9 @@ def apply_chat_template_to_dataset(
     num_proc = None,
     progress_callback = None,
 ):
-    """Apply the chat template to a dataset based on its format.
+    """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
 
-    Args:
-        dataset_info: Output from format_dataset() with metadata
-        tokenizer: Tokenizer with chat template
-        custom_prompt_template: Deprecated. Non-None values are rejected because Studio cannot
-            persist a matching inference template.
-        add_eos_token: If True, append tokenizer.eos_token to each text
-        remove_bos_prefix: If True, remove '<bos>' prefix (Gemma, etc.)
-        custom_format_mapping: Dict mapping custom columns to standard format
-        batch_size: Batch size for processing
-        num_proc: Number of processes
-
-    Returns:
-        dict with dataset, success status, warnings, and errors
+    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends tokenizer.eos_token to each text, ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
     """
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
@@ -195,7 +171,6 @@ def apply_chat_template_to_dataset(
     # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
         if custom_format_mapping is None and auto_detect_mapping:
-            # Skip if format_dataset already tried and failed.
             if not dataset_info.get("auto_detection_attempted", False):
                 custom_format_mapping = detect_custom_format_heuristic(dataset)
                 if custom_format_mapping:
@@ -209,7 +184,6 @@ def apply_chat_template_to_dataset(
                         "errors": errors
                     }
             else:
-                # Already failed once in format_dataset; don't retry.
                 errors.append(
                     "Format remains unknown after detection attempts. "
                     "Please provide custom_format_mapping to specify column roles manually."
@@ -264,13 +238,11 @@ def apply_chat_template_to_dataset(
                 return result
 
             try:
-                # Mirror the other call sites: omit eager-only kwargs (num_proc/desc)
-                # for streaming IterableDatasets, whose .map() rejects them.
+                # Mirror the other call sites: omit eager-only kwargs (num_proc/desc) for streaming IterableDatasets, whose .map() rejects them.
                 custom_map_kwargs = {"batched": True, "batch_size": batch_size}
                 if not is_streaming_dataset(dataset):
                     custom_map_kwargs["desc"] = "Applying custom ChatML mapping"
                 dataset = dataset.map(_apply_custom_mapping, **custom_map_kwargs)
-                # Update to use conversations format
                 final_format = "chatml_conversations"
                 chat_column = "conversations"
                 is_standardized = True
@@ -287,7 +259,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        # Set alpaca chat template (if unset) so it's saved for inference.
+        # Set the alpaca chat template if unset, so it is saved for inference.
         if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
             try:
                 from unsloth.chat_templates import get_chat_template
@@ -356,7 +328,6 @@ def apply_chat_template_to_dataset(
         if not is_standardized:
             warnings.append("Dataset may not be fully standardized")
 
-        # Apply Unsloth chat template if the model matches.
         if model_name:
             tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
 
@@ -401,7 +372,6 @@ def apply_chat_template_to_dataset(
                 dataset_map_kwargs['num_proc'] = num_proc
                 dataset_map_kwargs['desc'] = f"Applying chat template to {final_format}"
 
-            # Monitor dataset.map() tqdm progress and relay it.
             _tqdm_monitor_stop = None
             if progress_callback and not is_iterable:
                 import threading
