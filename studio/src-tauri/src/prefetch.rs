@@ -225,13 +225,31 @@ fn effective_update_cache(home: &Path, explicit_cache: Option<&str>) -> Option<P
     Some(PathBuf::from(recorded))
 }
 
-fn same_cache(a: &Path, b: &Path) -> bool {
+/// Whether `expected` (the live UV_CACHE_DIR, or the install's record) names the
+/// cache the marker recorded.
+///
+/// The marker records the cache resolved the way uv resolves it, against the setup
+/// script's working directory; a relative UV_CACHE_DIR in this process's environment
+/// is the same cache when the recorded absolute path ends with it. This process
+/// cannot resolve the relative spelling itself: its working directory is not the one
+/// the update's uv runs from.
+fn same_cache(expected: &Path, recorded: &Path) -> bool {
     let trim = |p: &Path| {
         p.to_string_lossy()
             .trim_end_matches(['/', '\\'])
             .to_string()
     };
-    trim(a) == trim(b)
+    if trim(expected) == trim(recorded) {
+        return true;
+    }
+    if expected.is_relative() && recorded.is_absolute() {
+        let relative: PathBuf = expected
+            .components()
+            .filter(|component| !matches!(component, std::path::Component::CurDir))
+            .collect();
+        return !relative.as_os_str().is_empty() && recorded.ends_with(&relative);
+    }
+    false
 }
 
 fn cache_holds_plan(
@@ -418,6 +436,12 @@ mod tests {
             status_for(&home, Some(&warm.to_string_lossy())).state,
             "ready"
         );
+        // A relative UV_CACHE_DIR: the marker recorded it resolved against the setup
+        // script's directory, which this process cannot repeat; the recorded path
+        // ending with the relative spelling is the same cache.
+        assert_eq!(status_for(&home, Some("warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("./warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("other-cache")).state, "stale");
         let _ = fs::remove_dir_all(&home);
     }
 

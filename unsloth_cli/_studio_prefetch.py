@@ -854,6 +854,25 @@ def _filesystem_id(path: Path) -> Optional[object]:
         return None
 
 
+def resolved_cache_dir(cache_dir: Optional[str], cwd: Optional[Path] = None) -> Optional[str]:
+    """The uv cache as an absolute path, or None when no UV_CACHE_DIR is set.
+
+    uv resolves a relative UV_CACHE_DIR against ITS working directory, which is the
+    setup script's, not the desktop shell's: a marker that recorded the relative
+    spelling was checked by the shell against a directory under its own cwd, found
+    cold, and reported stale on every launch, so the prefetch ran again each time.
+    The marker records the path resolved the way uv resolves it, and every reader
+    that compares a live setting against it resolves the setting the same way.
+    """
+    value = (cache_dir or "").strip()
+    if not value:
+        return None
+    cache = Path(value)
+    if not cache.is_absolute():
+        cache = Path(cwd if cwd is not None else (_RUN_CWD or os.getcwd())) / cache
+    return os.path.normpath(str(cache))
+
+
 def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
     """The prefetch root, plus the uv cache when it lives on another filesystem.
 
@@ -1151,7 +1170,7 @@ def _run_unguarded(
         raise PrefetchSkipped(f"uv is not available (looked on PATH and in {where})")
 
     root = prefetch_root(studio_home)
-    cache_dir = child_env.get("UV_CACHE_DIR")
+    cache_dir = resolved_cache_dir(child_env.get("UV_CACHE_DIR"))
     for volume in _volumes_to_check(root, cache_dir):
         free = _free_bytes(volume)
         if free is not None and free < MIN_FREE_BYTES:

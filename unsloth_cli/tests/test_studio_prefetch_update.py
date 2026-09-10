@@ -1357,3 +1357,18 @@ def test_a_relative_cache_is_anchored_where_uv_runs(monkeypatch):
     monkeypatch.setattr(_studio_prefetch, "_filesystem_id", lambda path: None)
     monkeypatch.setattr(_studio_prefetch, "_RUN_CWD", "/uv/cwd")
     assert _studio_prefetch._volumes_to_check(root, "rel/uv") == [root, Path("/uv/cwd/rel/uv")]
+
+
+def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path):
+    """uv anchors a relative UV_CACHE_DIR at ITS working directory (the setup script's),
+    not the desktop shell's: recorded as spelled, the shell checked a directory under
+    its own cwd, found it cold and reported the prefetch stale on every launch."""
+    assert _studio_prefetch.resolved_cache_dir(None) is None
+    assert _studio_prefetch.resolved_cache_dir("  ") is None
+    absolute = tmp_path / "cache"
+    assert _studio_prefetch.resolved_cache_dir(str(absolute), tmp_path / "elsewhere") == str(absolute)
+    assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "uv-cache")
+    assert _studio_prefetch.resolved_cache_dir("./uv-cache", tmp_path) == str(tmp_path / "uv-cache")
+    # Without an explicit anchor, the working directory the prefetch's uv calls run from.
+    with _studio_prefetch._working_directory(tmp_path / "script"):
+        assert _studio_prefetch.resolved_cache_dir("uv-cache") == str(tmp_path / "script" / "uv-cache")

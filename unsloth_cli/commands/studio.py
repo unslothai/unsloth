@@ -3231,7 +3231,7 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         pass
 
 
-def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
+def _with_prefetched_core_pins(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
     """Name the core pins a current prefetch cached, for the installer's core step.
 
     The swap after a prefetch is the ordinary update, and its core step asks the index
@@ -3247,7 +3247,10 @@ def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
     if marker is None:
         return env
     python = _studio_venv_python()
-    cache_dir = ((env or os.environ).get("UV_CACHE_DIR") or "").strip()
+    # Resolved as uv will resolve it from the setup script's directory: the marker
+    # records the cache that way, and a relative setting compared as spelled would
+    # never match it.
+    cache_dir = _studio_prefetch.resolved_cache_dir((env or os.environ).get("UV_CACHE_DIR"), cwd)
     if python is None or not cache_dir:
         return env
     # The floor too: a marker an older shell left behind names pins below what this
@@ -3355,7 +3358,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
-    env = _with_prefetched_core_pins(env)
+    env = _with_prefetched_core_pins(env, cwd = setup_cwd)
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.
