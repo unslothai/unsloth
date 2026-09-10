@@ -6020,6 +6020,15 @@ class VideoBackend:
                         raise _VideoGenerationCancelled()
                     _tick(done)
 
+                # The NVFP4 per-step precision lever, driven off scheduler.step for the duration
+                # of this generation. A no-op context (nothing wrapped, nothing counted) unless
+                # UNSLOTH_NVFP4_PROTECT_STEPS names steps, so it costs an armed load one attribute
+                # read per step and every other load nothing at all. It goes through the scheduler
+                # rather than the callback below because only some families expose a callback and
+                # the step index has to be right for all of them.
+                from .diffusion_nvfp4_protect import protect_generation
+                protect_ctx = protect_generation(pipe, steps, logger = logger)
+
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
                     progress_ctx = contextlib.nullcontext()
@@ -6056,7 +6065,7 @@ class VideoBackend:
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:
-                    with torch.inference_mode(), progress_ctx, sigma_ctx:
+                    with torch.inference_mode(), protect_ctx, progress_ctx, sigma_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would

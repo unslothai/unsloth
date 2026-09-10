@@ -149,6 +149,29 @@ def _nvfp4_flashinfer_linears(module: Any) -> list:
     return found
 
 
+def _protect_keyed(module: Any) -> bool:
+    """Does this module need the per-step precision branch in its graph key?
+
+    Only when the lever is armed AND the module actually holds FlashInfer NVFP4 layers: an fp8 or
+    bf16 load that happens to run in a process with the env set must not double its graph count for
+    a branch none of its layers can take.
+    """
+    try:
+        from .diffusion_nvfp4_protect import protect_controller
+
+        if not protect_controller().armed:
+            return False
+        return bool(_nvfp4_flashinfer_linears(module))
+    except Exception:  # noqa: BLE001 - a tree we cannot walk simply keys the way it always did
+        return False
+
+
+def protect_graph_key() -> tuple:
+    """The branch in flight as a key suffix. Imported lazily; ``()`` when the lever is off."""
+    from .diffusion_nvfp4_protect import protect_graph_key as _key
+    return _key()
+
+
 def _unbaked_nvfp4_layers(layers: list) -> list:
     """The fqns among ``layers`` whose activation global scale is not a baked, constant one.
 
@@ -232,6 +255,10 @@ class GraphedForward:
         self.capture_error: Optional[dict] = None
         self.cache: dict = {}
         self.cap_hit = False
+        # Whether this module's cache key has to carry the NVFP4 per-step precision branch.
+        # Resolved on the first call, not here: the layers are converted before the graph is armed
+        # but the walk is O(modules) and must not run per call.
+        self.protect_keyed: Optional[bool] = None
         self.stats = {
             "captures": 0,
             "replays": 0,
@@ -350,6 +377,13 @@ class GraphedForward:
 
         try:
             key = graph_key((args, kwargs))
+            if self.protect_keyed is None:
+                self.protect_keyed = _protect_keyed(self.module)
+            if self.protect_keyed:
+                # One graph per branch. A graph recorded at a W4A4 step replayed at a W4A16 one
+                # would run the 4-bit kernels the capture baked in and report the lever as
+                # measured while it never fired.
+                key = key + protect_graph_key()
             entry = self.cache.get(key)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
