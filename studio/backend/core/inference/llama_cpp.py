@@ -8930,6 +8930,39 @@ class LlamaCppBackend:
         except Exception:
             return False
 
+    # PHYSICAL integrated ids per visibility mask, filled by the probe below and read
+    # by _integrated_cuda_probe_is_free. Integratedness is a property of the silicon,
+    # so it cannot change under a fixed mask; the mask is the key because it decides
+    # WHICH devices the answer is about.
+    _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
+
+    @staticmethod
+    def _integrated_cuda_mask_key() -> tuple:
+        return tuple(
+            os.environ.get(name)
+            for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+        )
+
+    @staticmethod
+    def _integrated_cuda_probe_is_free() -> bool:
+        """True when ``_integrated_cuda_gpu_ids()`` costs no NEW CUDA context.
+
+        That probe calls ``get_device_properties`` on every visible card, which
+        initialises CUDA and pins a ~700 MiB primary context per device for the life of
+        this process. The launch preflight runs AFTER the VRAM budget was snapshotted,
+        so paying it there can OOM a tightly fitted child against a stale budget, on a
+        host whose answer is False regardless.
+
+        So the preflight never probes: it reads the answer only if one is already
+        cached for this mask. ``_get_gpu_memory`` fills that cache on its torch arm,
+        BEFORE it reads any free/total figure, so the cost is inside the snapshot that
+        follows it. That arm is the one an integrated SoC takes anyway: nvidia-smi
+        reports ``[N/A]`` for both memory columns on a Spark, so the CLI probe parses
+        nothing and falls through. A host whose nvidia-smi answers never reaches the
+        probe and never pays for it, which includes an ARM host with discrete cards.
+        """
+        return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
+
     @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:
         """PHYSICAL ids of visible CUDA GPUs whose "VRAM" is shared system RAM.
@@ -8967,6 +9000,12 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
+            # Remembered so the launch preflight can read it without a second probe.
+            # Only a completed probe is cached: a torch that raised says nothing about
+            # the hardware, and caching its empty answer would make the miss permanent.
+            LlamaCppBackend._INTEGRATED_CUDA_IDS[
+                LlamaCppBackend._integrated_cuda_mask_key()
+            ] = integrated
             return integrated
         except Exception:
             return set()
@@ -8985,34 +9024,6 @@ class LlamaCppBackend:
             if gpu_indices is None:
                 return bool(integrated)
             return any(_i in integrated for _i in gpu_indices)
-        except Exception:
-            return False
-
-    @staticmethod
-    def _integrated_cuda_probe_is_free() -> bool:
-        """True when asking ``_integrated_cuda_gpu_ids()`` costs no NEW CUDA context.
-
-        ``get_device_properties()`` initialises CUDA, which pins a ~700 MiB primary
-        context per visible card in this long-lived process (see ``_get_gpu_memory``).
-        The launch preflight runs AFTER the VRAM budget was snapshotted, so paying it
-        there can OOM a tightly fitted child on a discrete host that was never going to
-        answer True in the first place.
-
-        Free in two cases. Either torch already initialised CUDA earlier in this load,
-        so the context exists and the probe adds nothing; or the machine is one where
-        an integrated CUDA part can exist at all. ``cudaDeviceProp::integrated`` is set
-        only by Tegra and GB10 class SoCs, which are ARM, so on x86 the answer is False
-        without touching a device. An ARM host with discrete cards (GH200) still pays,
-        which is correct: there the probe is the only way to tell the two apart.
-        """
-        try:
-            import platform
-
-            import torch
-
-            if getattr(torch.cuda, "is_initialized", lambda: False)():
-                return True
-            return platform.machine().lower() in {"aarch64", "arm64"}
         except Exception:
             return False
 

@@ -223,50 +223,74 @@ def test_a_discrete_cuda_host_reaches_no_unified_preflight(monkeypatch):
     assert LlamaCppBackend._integrated_cuda_unified_memory(None) is False
 
 
-def test_the_preflight_probe_is_skipped_on_a_discrete_x86_host(monkeypatch):
-    """The gate that keeps an ordinary NVIDIA load from paying for a CUDA context.
+def test_the_preflight_never_probes_a_device_itself(monkeypatch):
+    """An unprobed host answers "not free" rather than paying for a CUDA context.
 
-    ``_integrated_cuda_gpu_ids`` calls ``get_device_properties`` on every visible card,
-    which initialises CUDA and pins a primary context per device in this long-lived
-    process. The launch preflight runs after the VRAM budget was taken, so a probe there
-    can OOM a tightly fitted child on a host whose answer is False regardless.
+    _integrated_cuda_gpu_ids calls get_device_properties on every visible card, which
+    pins a primary context per device for the life of this process. The preflight runs
+    after the VRAM budget was taken, so a probe there can OOM a tightly fitted child
+    against a stale budget, on a host whose answer is False regardless. Covers an ARM
+    host with discrete cards and an x86 host that initialised CUDA on one GPU only:
+    neither is evidence that every per-device probe is already paid for.
     """
-    import platform as _platform
-    import sys as _sys
-
     from core.inference.llama_cpp import LlamaCppBackend
 
-    torch_module = _spark_torch(29509, 81559)
-    torch_module.cuda.is_initialized = lambda: False
-
-    def _refuse(ordinal):
-        raise AssertionError("the preflight touched a device on an x86 discrete host")
-
-    torch_module.cuda.get_device_properties = _refuse
-    monkeypatch.setitem(_sys.modules, "torch", torch_module)
-    monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
 
     assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
 
 
-def test_the_preflight_probe_runs_on_arm_and_once_cuda_is_up(monkeypatch):
-    """ARM is where an integrated part can exist, and an initialised CUDA is free."""
-    import platform as _platform
+def test_the_memory_probe_pays_for_the_classification_up_front(monkeypatch):
+    """_get_gpu_memory's torch arm classifies BEFORE it reads any free figure.
+
+    That is the arm a Spark takes: nvidia-smi reports [N/A] for both memory columns
+    there, so the CLI probe parses nothing and falls through. Whatever the property
+    probe costs is therefore inside the snapshot that follows it, and the preflight
+    later reads the answer for nothing.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    _spark_gpu_memory(monkeypatch, driver_free_mib = 29509, available_mib = 118451)
+
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is True
+    assert LlamaCppBackend._integrated_cuda_unified_memory([0]) is True
+
+
+def test_a_different_mask_is_a_different_question(monkeypatch):
+    """The cache is keyed by the visibility mask, which decides which devices it is
+    about. A cached answer for one mask must not be read as an answer for another."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    _spark_gpu_memory(monkeypatch, driver_free_mib = 29509, available_mib = 118451)
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is True
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
+
+
+def test_a_failed_probe_is_not_remembered(monkeypatch):
+    """A torch that raised says nothing about the hardware, so caching its empty answer
+    would make the miss permanent for the life of the process."""
     import sys as _sys
 
     from core.inference.llama_cpp import LlamaCppBackend
 
-    torch_module = _spark_torch(29509, 124609)
-    torch_module.cuda.is_initialized = lambda: False
-    monkeypatch.setitem(_sys.modules, "torch", torch_module)
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    broken = types.ModuleType("torch")
+    broken.version = types.SimpleNamespace(hip = None)
 
-    monkeypatch.setattr(_platform, "machine", lambda: "aarch64")
-    assert LlamaCppBackend._integrated_cuda_probe_is_free() is True
+    def _raise():
+        raise RuntimeError("driver not loaded")
 
-    # Already paid for: the context exists, so the reading costs nothing new.
-    monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
-    torch_module.cuda.is_initialized = lambda: True
-    assert LlamaCppBackend._integrated_cuda_probe_is_free() is True
+    broken.cuda = types.SimpleNamespace(is_available = _raise)
+    monkeypatch.setitem(_sys.modules, "torch", broken)
+
+    assert LlamaCppBackend._integrated_cuda_gpu_ids() == set()
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
 
 
 def test_repricing_keeps_the_soc_wording(monkeypatch):
