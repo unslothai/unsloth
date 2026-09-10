@@ -2647,6 +2647,12 @@ def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
     try:
         os.makedirs(staging, exist_ok = True)
         if not _install_to_dir(pkg, staging):
+            # The caller came here because the package is absent or only partly there
+            # (a payload directory an interrupted top-up moved in without its
+            # dist-info). Left as it is, that partial tree would sit ahead of
+            # site-packages for the whole retry backoff and shadow a working ambient
+            # copy; absent is the only safe shape until the next attempt.
+            _remove_optional_remnants(venv_dir, pkg)
             return False
         entries = sorted(os.listdir(staging), key = lambda name: name.endswith(".dist-info"))
         # An interrupted install can have left `<pkg>-<old>.dist-info` with no RECORD.
