@@ -598,13 +598,26 @@ def _matplotlib_defaults(root: Path) -> dict[str, str]:
     core/training/training.py draws. matplotlib creates the directory on import, so contents
     decide, not existence.
     """
+    managed = root / "matplotlib"
+    pinned = {"MPLCONFIGDIR": str(managed)}
+    # Our own configuration first, for the reason _data_designer_defaults gives: the legacy probe
+    # re-runs every launch, so on its own it hands a matplotlibrc written HERE to a
+    # ~/.config/matplotlib created later by some other tool. Measured across four launches: dpi
+    # 177 from the managed config, then 222 once a legacy rc appeared, then 177 again when it was
+    # removed, with the managed rc present throughout. A style that changes on a later launch and
+    # changes back is worse than either choice made once.
+    if not (
+        _nothing_at(managed / "matplotlibrc")
+        and _nothing_at(managed / "stylelib", ending = ".mplstyle")
+    ):
+        return pinned
     config_dir = _matplotlib_config_dir()
     if config_dir is not None and not (
         _nothing_at(config_dir / "matplotlibrc")
         and _nothing_at(config_dir / "stylelib", ending = ".mplstyle")
     ):
         return {}
-    return {"MPLCONFIGDIR": str(root / "matplotlib")}
+    return pinned
 
 
 def _data_designer_in_use(home: Path) -> bool:

@@ -1050,3 +1050,54 @@ def test_torch_runtime_tag_never_imports_torch(tmp_path):
         assert "torch" not in sys.modules, "torch was imported to build the cache tag"
 
     assert "cu128" in tag
+
+
+def test_a_managed_matplotlibrc_is_not_displaced_by_a_later_legacy_one(tmp_path):
+    """The legacy probe re-runs every launch, so on its own it hands a matplotlibrc written
+    HERE to a ~/.config/matplotlib created later by some other tool.
+
+    Measured across four launches before the fix: dpi 177 from the managed config, then 222 once
+    a legacy rc appeared, then 177 again when it was removed, with the managed rc present
+    throughout. A style that changes on a later launch and changes back is worse than either
+    choice made once. _data_designer_defaults already applies this rule to its own home.
+    """
+    managed = tmp_path / "studio" / "cache" / "matplotlib"
+    managed.mkdir(parents = True)
+    (managed / "matplotlibrc").write_text("figure.dpi: 177\n", encoding = "utf-8")
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["MPLCONFIGDIR"] == str(managed)
+
+
+def test_a_managed_style_library_is_not_displaced_either(tmp_path):
+    managed = tmp_path / "studio" / "cache" / "matplotlib"
+    (managed / "stylelib").mkdir(parents = True)
+    (managed / "stylelib" / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["MPLCONFIGDIR"] == str(managed)
+
+
+def test_an_empty_managed_dir_still_defers_to_a_user_matplotlibrc(tmp_path):
+    """The pre-existing rule, which the one above must not swallow. _setup_cache_env creates the
+    managed directory on the first launch, so existence alone would pin a directory nobody has
+    configured and drop a real user matplotlibrc."""
+    (tmp_path / "studio" / "cache" / "matplotlib" / "stylelib").mkdir(parents = True)
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
