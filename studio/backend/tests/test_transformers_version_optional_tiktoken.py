@@ -306,6 +306,23 @@ def test_a_failed_top_up_is_remembered_across_processes_and_retried_later(tmp_pa
     assert not (root / tv._OPTIONAL_TOP_UP_FAILED).exists()
 
 
+def test_a_partial_live_tree_goes_when_the_top_up_install_itself_fails(tmp_path, monkeypatch):
+    """An earlier top-up moved tiktoken/ in and was interrupted before its dist-info; the
+    next one finds the package "absent", and its install fails (no network). The partial
+    payload must not stay ahead of site-packages for the six-hour backoff."""
+    root = tmp_path / ".venv_t5_550"
+    (root / "tiktoken").mkdir(parents = True)
+    (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+    (root / "tiktoken_ext").mkdir()
+    (root / "tiktoken_ext" / "openai_public.py").write_text("", encoding = "utf-8")
+    assert tv._optional_package_absent(str(root), "tiktoken==0.12.0") is True
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target_dir: False)
+    assert tv._stage_optional_package("tiktoken==0.12.0", str(root)) is False
+    assert not (root / "tiktoken").exists()
+    assert not (root / "tiktoken_ext").exists()
+    assert not (root / ".top-up-staging").exists()
+
+
 def test_an_interrupted_top_up_is_finished_by_the_next_one(tmp_path, monkeypatch):
     """A process killed between moving tiktoken/ in and its dist-info left a payload no
     scan could judge and no activation would complete: a package counts as present only

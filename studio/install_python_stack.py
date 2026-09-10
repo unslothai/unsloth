@@ -8658,7 +8658,11 @@ def _triton_kernels_step() -> None:
     # Provenance alone is not a build: the ref can still point at the resident commit
     # with triton_kernels/ deleted or truncated underneath its dist-info, and a forced
     # pass (UNSLOTH_STUDIO_FULL_DEPS) asked for every step to run.
-    if asked["current"] and not _full_deps_requested() and _payload_recorded_intact("triton_kernels"):
+    if (
+        asked["current"]
+        and not _full_deps_requested()
+        and _payload_recorded_intact("triton_kernels")
+    ):
         _note("triton kernels: the installed build is what the requirement's ref points at -- kept")
         _record_step(_pass_input_key(req) or str(req), "skipped")
         return
