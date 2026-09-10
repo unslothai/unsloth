@@ -3432,19 +3432,9 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
 
     Routed through ``credentials_for_token`` so a scope that covers this path serves it
     without a key, the way the routes behind ``security`` already do."""
-    auth_header = request.headers.get("authorization") or ""
-    header_token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
-    # A blank header is the absent header, so the `?token=` an <img src> sends is still owed.
-    jwt_token = header_token.strip() or token or None
-    from auth.authentication import credentials_for_token
+    from auth.authentication import subject_for_header_or_query_token
 
-    creds = await credentials_for_token(request, jwt_token)
-    if creds is None:
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Missing authentication token",
-        )
-    return await get_current_subject(creds)
+    return await subject_for_header_or_query_token(request, token)
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)

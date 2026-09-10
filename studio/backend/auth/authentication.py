@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
@@ -352,6 +352,29 @@ async def credentials_for_token(
             credentials = token,
         )
     return _KEYLESS_CREDENTIALS if keyless else None
+
+
+async def subject_for_header_or_query_token(request: Any, token: Optional[str]) -> str:
+    """Resolve the bearer from ``Authorization`` or, failing that, from a ``?token=`` the route read
+    for itself, and return its subject. An ``<img src>``, an ``<a download>`` and the native save
+    command all fetch without a header, so the query is the only place their token can ride."""
+    header = request.headers.get("authorization") or ""
+    header_token = header[7:] if header.lower().startswith("bearer ") else ""
+    # A blank header is the absent header, so the `?token=` such a caller sends is still owed.
+    credentials = await credentials_for_token(request, header_token.strip() or token or None)
+    if credentials is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing authentication token",
+        )
+    return await get_current_subject(credentials)
+
+
+async def get_current_subject_or_query_token(
+    request: Request, token: Optional[str] = Query(default = None)
+) -> str:
+    """Dependency form of the above, for a route whose URL the browser or the OS fetches itself."""
+    return await subject_for_header_or_query_token(request, token)
 
 
 async def authenticated_without_credential(

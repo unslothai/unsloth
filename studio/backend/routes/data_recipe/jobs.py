@@ -19,6 +19,7 @@ from auth.authentication import (
     allow_ambient_hf_token,
     authenticated_via_api_key,
     get_current_credential,
+    get_current_subject_or_query_token,
     require_ui_session_for_local_commands,
 )
 from auth.storage import CredentialRotated
@@ -50,6 +51,11 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# The dataset download is fetched by the browser's own download machinery and by the native save
+# command, neither of which can set an Authorization header, so it carries its own guard instead of
+# the header-only one the rest of the package sits behind.
+download_router = APIRouter(dependencies = [Depends(get_current_subject_or_query_token)])
 
 # Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
 _KEEPALIVE_EVERY_S = 15.0
@@ -557,31 +563,36 @@ def _build_in_memory_job_dataset_download(
     jsonl_path = Path(tmp.name)
     offset = 0
     total: int | None = None
-    with jsonl_path.open("w", encoding = "utf-8") as handle:
-        while True:
-            result = mgr.get_dataset(
-                job_id,
-                limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
-                offset = offset,
-            )
-            if result is None:
-                raise HTTPException(status_code = 404, detail = "dataset not ready")
-            if "error" in result:
-                raise HTTPException(status_code = 422, detail = result["error"])
-            rows = result.get("dataset")
-            if not isinstance(rows, list):
-                raise HTTPException(status_code = 404, detail = "dataset not ready")
-            if total is None:
-                total_value = result.get("total")
-                total = int(total_value) if isinstance(total_value, int) else len(rows)
-            if not rows:
-                break
-            _write_jsonl_rows(handle, rows)
-            offset += len(rows)
-            if offset >= total:
-                break
-    if offset == 0:
-        raise HTTPException(status_code = 404, detail = "dataset not ready")
+    # Nothing has registered the temp file for cleanup yet, so an early return has to unlink it.
+    try:
+        with jsonl_path.open("w", encoding = "utf-8") as handle:
+            while True:
+                result = mgr.get_dataset(
+                    job_id,
+                    limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
+                    offset = offset,
+                )
+                if result is None:
+                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                if "error" in result:
+                    raise HTTPException(status_code = 422, detail = result["error"])
+                rows = result.get("dataset")
+                if not isinstance(rows, list):
+                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                if total is None:
+                    total_value = result.get("total")
+                    total = int(total_value) if isinstance(total_value, int) else len(rows)
+                if not rows:
+                    break
+                _write_jsonl_rows(handle, rows)
+                offset += len(rows)
+                if offset >= total:
+                    break
+        if offset == 0:
+            raise HTTPException(status_code = 404, detail = "dataset not ready")
+    except BaseException:
+        jsonl_path.unlink(missing_ok = True)
+        raise
     stem = _safe_filename_stem(filename_stem.strip() or job_id)
     return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
 
@@ -604,7 +615,7 @@ def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -
     return resolved
 
 
-@router.get("/jobs/{job_id}/download")
+@download_router.get("/jobs/{job_id}/download")
 def download_job_dataset(
     job_id: str,
     background_tasks: BackgroundTasks,

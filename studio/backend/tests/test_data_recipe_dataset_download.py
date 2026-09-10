@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import secrets
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -17,7 +19,6 @@ from core.data_recipe.export import (
     _json_dumps_row,
     _sanitize_json_value,
     build_dataset_download,
-    build_in_memory_dataset_download,
 )
 
 
@@ -28,21 +29,6 @@ def _write_parquet_rows(parquet_dir: Path, rows: list[dict]) -> None:
 
     parquet_dir.mkdir(parents = True, exist_ok = True)
     pd.DataFrame(rows).to_parquet(parquet_dir / "batch_00000.parquet", index = False)
-
-
-def test_build_in_memory_dataset_download_writes_jsonl(tmp_path: Path):
-    rows = [{"instruction": "Say hi", "output": "Hello"}]
-    file_path, media_type, download_name = build_in_memory_dataset_download(
-        rows,
-        filename_stem = "preview-run",
-    )
-    try:
-        assert media_type == "application/x-ndjson"
-        assert download_name == "preview-run.jsonl"
-        lines = file_path.read_text(encoding = "utf-8").strip().splitlines()
-        assert json.loads(lines[0]) == rows[0]
-    finally:
-        file_path.unlink(missing_ok = True)
 
 
 def test_build_dataset_download_jsonl_from_artifact(tmp_path: Path, monkeypatch):
@@ -116,6 +102,70 @@ def test_build_dataset_download_preserves_row_order_within_shard(tmp_path: Path,
         assert sequences == ["first", "second", "third"]
     finally:
         file_path.unlink(missing_ok = True)
+
+
+def test_build_dataset_download_exports_every_row_once_across_shards(tmp_path: Path, monkeypatch):
+    """A dataset bigger than one fetch chunk still comes out whole, in artifact order.
+
+    Reading it a page at a time re-derived the row order per page, and DuckDB's parallel parquet
+    scan does not repeat it, so the pages overlapped and gapped: 120k rows exported as 72k
+    distinct ones.
+    """
+    pytest.importorskip("duckdb")
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("pandas")
+    import pandas as pd
+
+    dataset_path = tmp_path / "recipe-datasets" / "job-big"
+    parquet_dir = dataset_path / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    shard_size = 40_000
+    for shard, start in enumerate(range(0, 2 * shard_size, shard_size)):
+        pd.DataFrame({"i": range(start, start + shard_size)}).to_parquet(
+            parquet_dir / f"batch_{shard:05d}.parquet",
+            index = False,
+            row_group_size = 5_000,
+        )
+
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "big",
+    )
+    try:
+        exported = [
+            json.loads(line)["i"] for line in file_path.read_text(encoding = "utf-8").splitlines()
+        ]
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert exported == list(range(2 * shard_size))
+
+
+def test_build_dataset_download_leaves_no_temp_file_when_export_fails(tmp_path: Path, monkeypatch):
+    dataset_path = tmp_path / "recipe-datasets" / "job-fails"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"col": "value"}])
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+    monkeypatch.setattr(
+        "core.data_recipe.export._write_jsonl_from_parquet",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("export blew up")),
+    )
+
+    before = set(Path(tempfile.gettempdir()).glob("*.jsonl"))
+    with pytest.raises(RuntimeError):
+        build_dataset_download(
+            artifact_path = str(dataset_path),
+            export_format = "jsonl",
+            filename_stem = "leaky",
+        )
+    assert set(Path(tempfile.gettempdir()).glob("*.jsonl")) == before
 
 
 def test_build_dataset_download_parquet_zip_includes_images(tmp_path: Path, monkeypatch):
@@ -263,6 +313,10 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
             self.rows = [{"index": index} for index in range(12_500)]
             self.calls: list[tuple[int, int]] = []
 
+        def get_status(self, job_id: str):
+            # A preview run: completed, but with nothing persisted to export from.
+            return {"status": "completed", "artifact_path": None}
+
         def get_dataset(
             self,
             job_id: str,
@@ -292,3 +346,113 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
     lines = Path(response.path).read_text(encoding = "utf-8").strip().splitlines()
     assert len(lines) == 12_500
     assert json.loads(lines[-1]) == {"index": 12_499}
+
+
+def _download_app(monkeypatch, tmp_path: Path, jobs_route):
+    """The real /api/data-recipe mount, with an auth database of its own."""
+    from fastapi import FastAPI
+
+    from auth import storage
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+    monkeypatch.setattr(storage, "_bootstrap_password", None)
+    storage._reset_api_key_hash_cache()
+    storage.create_initial_user(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        password = "human-password-123",
+        jwt_secret = secrets.token_urlsafe(64),
+    )
+
+    from auth.authentication import create_access_token
+    from routes.data_recipe import router as data_recipe_router
+
+    def fake_build_dataset_download(**_kwargs):
+        jsonl_path = tmp_path / "out.jsonl"
+        jsonl_path.write_text('{"ok": true}\n', encoding = "utf-8")
+        return jsonl_path, "application/x-ndjson", "run.jsonl"
+
+    class _FakeManager:
+        def get_status(self, job_id: str):
+            return {"status": "completed", "artifact_path": "/tmp/artifacts/job-1"}
+
+    monkeypatch.setattr(jobs_route, "build_dataset_download", fake_build_dataset_download)
+    monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
+
+    app = FastAPI()
+    app.include_router(data_recipe_router, prefix = "/api/data-recipe")
+    return app, create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+
+
+def test_download_route_accepts_the_bearer_from_the_query(monkeypatch, tmp_path: Path):
+    """Neither an <a download> nor the native save command can set a header, so ?token= is the
+    only credential this URL can carry. Behind the package's header-only guard it answered 401."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    jobs_route = pytest.importorskip("routes.data_recipe.jobs")
+    app, token = _download_app(monkeypatch, tmp_path, jobs_route)
+    client = TestClient(app)
+
+    query = client.get("/api/data-recipe/jobs/job-1/download", params = {"token": token})
+    assert query.status_code == 200
+
+    header = client.get(
+        "/api/data-recipe/jobs/job-1/download",
+        headers = {"Authorization": f"Bearer {token}"},
+    )
+    assert header.status_code == 200
+
+
+def test_download_route_refuses_a_caller_with_no_token(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    jobs_route = pytest.importorskip("routes.data_recipe.jobs")
+    app, _token = _download_app(monkeypatch, tmp_path, jobs_route)
+
+    anonymous = TestClient(app).get("/api/data-recipe/jobs/job-1/download")
+    assert anonymous.status_code == 401
+    bad = TestClient(app).get(
+        "/api/data-recipe/jobs/job-1/download",
+        params = {"token": "not-a-real-token"},
+    )
+    assert bad.status_code == 401
+
+
+def test_build_dataset_download_refuses_a_path_outside_the_dataset_roots():
+    """An absolute path from outside every dataset root is refused the same way one merely outside
+    the recipe root is. It used to escape as a bare ValueError, which the route answered 500 to."""
+    with pytest.raises(RecipeDatasetExportError):
+        build_dataset_download(
+            artifact_path = "/etc",
+            export_format = "jsonl",
+            filename_stem = "escape",
+        )
+
+
+def test_build_dataset_download_falls_back_when_duckdb_cannot_read(tmp_path: Path, monkeypatch):
+    """No duckdb (or a duckdb that refuses the query) still exports the whole dataset."""
+    dataset_path = tmp_path / "recipe-datasets" / "job-fallback"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"i": 0}, {"i": 1}, {"i": 2}])
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+    monkeypatch.setattr(
+        "core.data_recipe.export._stream_jsonl_from_parquet_with_duckdb",
+        lambda **kwargs: False,
+    )
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "fallback",
+    )
+    try:
+        exported = [
+            json.loads(line)["i"] for line in file_path.read_text(encoding = "utf-8").splitlines()
+        ]
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert exported == [0, 1, 2]

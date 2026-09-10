@@ -20,13 +20,16 @@ from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
 
 ExportFormat = Literal["jsonl", "parquet"]
 
-_JSONL_EXPORT_BATCH_SIZE = 5_000
-_PARQUET_ROW_ORDER_SQL = (
-    "SELECT * EXCLUDE (__row_num__) FROM ("
-    "SELECT *, row_number() OVER (PARTITION BY filename) AS __row_num__ "
-    "FROM read_parquet(?, filename=true)"
-    ") ORDER BY filename, __row_num__ "
-    "LIMIT ? OFFSET ?"
+# A DuckDB vector is 2048 rows, so this fetches ~8k rows at a time.
+_JSONL_EXPORT_VECTORS_PER_CHUNK = 4
+# file_row_number is the row's ordinal inside its own shard, so this is a total order that matches
+# the generated artifact. row_number() OVER (PARTITION BY filename) is not: DuckDB leaves a window
+# with no ORDER BY undefined, and its parallel parquet scan then numbers the rows differently on
+# every query, which paged reads turn into dropped and duplicated rows.
+_PARQUET_EXPORT_SQL = (
+    "SELECT * EXCLUDE (filename, file_row_number) "
+    "FROM read_parquet(?, filename=true, file_row_number=true) "
+    "ORDER BY filename, file_row_number"
 )
 
 
@@ -67,10 +70,6 @@ def _json_dumps_row(row: dict[str, Any]) -> str:
     )
 
 
-def _drop_parquet_helper_columns(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in row.items() if key not in {"filename", "__row_num__"}}
-
-
 def _write_jsonl_rows(handle, rows: list[dict[str, Any]]) -> None:
     for row in rows:
         handle.write(_json_dumps_row(row))
@@ -81,70 +80,34 @@ def _parquet_glob(parquet_dir: Path) -> str:
     return str((parquet_dir / "*.parquet").resolve())
 
 
-def _count_parquet_rows_with_duckdb(parquet_glob: str) -> int | None:
-    try:
-        import duckdb  # type: ignore
-    except Exception:
-        return None
-
-    try:
-        conn = duckdb.connect(":memory:")
-        try:
-            total_row = conn.execute(
-                "SELECT COUNT(*) FROM read_parquet(?)",
-                [parquet_glob],
-            ).fetchone()
-        finally:
-            conn.close()
-    except (RuntimeError, ValueError, duckdb.Error):
-        return None
-    return int(total_row[0] if total_row else 0)
-
-
-def _fetch_parquet_page_with_duckdb(
-    *, parquet_glob: str, limit: int, offset: int
-) -> list[dict[str, Any]] | None:
-    try:
-        import duckdb  # type: ignore
-    except Exception:
-        return None
-
-    try:
-        conn = duckdb.connect(":memory:")
-        try:
-            dataframe = conn.execute(
-                _PARQUET_ROW_ORDER_SQL,
-                [parquet_glob, int(limit), int(offset)],
-            ).fetchdf()
-        finally:
-            conn.close()
-    except (RuntimeError, ValueError, duckdb.Error):
-        return None
-
-    rows = dataframe.to_dict(orient = "records")
-    return [_drop_parquet_helper_columns(to_preview_jsonable(row)) for row in rows]
-
-
 def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Path) -> bool:
-    parquet_glob = _parquet_glob(parquet_dir)
-    total = _count_parquet_rows_with_duckdb(parquet_glob)
-    if total is None:
+    try:
+        import duckdb  # type: ignore
+    except Exception:
         return False
 
-    offset = 0
-    with destination.open("w", encoding = "utf-8") as handle:
-        while offset < total:
-            page = _fetch_parquet_page_with_duckdb(
-                parquet_glob = parquet_glob,
-                limit = _JSONL_EXPORT_BATCH_SIZE,
-                offset = offset,
-            )
-            if page is None:
-                return False
-            if not page:
-                break
-            _write_jsonl_rows(handle, page)
-            offset += len(page)
+    try:
+        conn = duckdb.connect(":memory:")
+    except Exception:
+        return False
+    try:
+        # One cursor for the whole export: the chunked fetches keep memory bounded, and the single
+        # ORDER BY is what keeps every row present exactly once. Re-running the query per page
+        # instead re-derives the order each time, so the pages overlap and gap.
+        conn.execute(_PARQUET_EXPORT_SQL, [_parquet_glob(parquet_dir)])
+        with destination.open("w", encoding = "utf-8") as handle:
+            while True:
+                dataframe = conn.fetch_df_chunk(_JSONL_EXPORT_VECTORS_PER_CHUNK)
+                if dataframe.empty:
+                    break
+                _write_jsonl_rows(
+                    handle,
+                    [to_preview_jsonable(row) for row in dataframe.to_dict(orient = "records")],
+                )
+    except Exception:
+        return False
+    finally:
+        conn.close()
     return True
 
 
@@ -167,7 +130,7 @@ def _read_all_rows_with_pandas(parquet_dir: Path) -> list[dict[str, Any]] | None
         return None
 
     rows = dataframe.to_dict(orient = "records")
-    return [_drop_parquet_helper_columns(to_preview_jsonable(row)) for row in rows]
+    return [to_preview_jsonable(row) for row in rows]
 
 
 def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]:
@@ -175,7 +138,7 @@ def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]
 
     dataframe = read_parquet_dataset(parquet_dir)
     rows = dataframe.to_dict(orient = "records")
-    return [_drop_parquet_helper_columns(to_preview_jsonable(row)) for row in rows]
+    return [to_preview_jsonable(row) for row in rows]
 
 
 def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
@@ -188,11 +151,6 @@ def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
     rows = _read_all_rows_with_pandas(parquet_dir)
     if rows is None:
         rows = _read_all_rows_with_data_designer(parquet_dir)
-    with destination.open("w", encoding = "utf-8") as handle:
-        _write_jsonl_rows(handle, rows)
-
-
-def _write_jsonl_file(rows: list[dict[str, Any]], destination: Path) -> None:
     with destination.open("w", encoding = "utf-8") as handle:
         _write_jsonl_rows(handle, rows)
 
@@ -233,26 +191,24 @@ def build_dataset_download(
         tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
         tmp.close()
         zip_path = Path(tmp.name)
-        with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
-            for parquet_file in sorted(parquet_dir.glob("*.parquet")):
-                archive.write(parquet_file, arcname = parquet_file.name)
-            _add_images_to_archive(archive, dataset_path)
+        # Only the caller of a successful build knows to delete the temp file, so a failed one
+        # has to take its own away.
+        try:
+            with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
+                for parquet_file in sorted(parquet_dir.glob("*.parquet")):
+                    archive.write(parquet_file, arcname = parquet_file.name)
+                _add_images_to_archive(archive, dataset_path)
+        except BaseException:
+            zip_path.unlink(missing_ok = True)
+            raise
         return zip_path, "application/zip", f"{stem}.parquet.zip"
 
     tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".jsonl")
     tmp.close()
     jsonl_path = Path(tmp.name)
-    _write_jsonl_from_parquet(parquet_dir, jsonl_path)
-    return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
-
-
-def build_in_memory_dataset_download(
-    rows: list[dict[str, Any]], *, filename_stem: str
-) -> tuple[Path, str, str]:
-    """Export rows already held in memory to a temporary JSONL file."""
-    stem = _safe_filename_stem(filename_stem)
-    tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".jsonl")
-    tmp.close()
-    jsonl_path = Path(tmp.name)
-    _write_jsonl_file(rows, jsonl_path)
+    try:
+        _write_jsonl_from_parquet(parquet_dir, jsonl_path)
+    except BaseException:
+        jsonl_path.unlink(missing_ok = True)
+        raise
     return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
