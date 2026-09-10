@@ -43,15 +43,24 @@ def _code_lines(name: str):
     for number, line in enumerate(_text(name).splitlines(), start = 1):
         stripped = line.strip()
         if in_here_string:
-            if stripped in ("'@", '"@'):
+            # PowerShell wants the terminator in column 0, and install.ps1 has
+            # indented `"@echo off",` array entries that a stripped comparison
+            # closes on.
+            if line.startswith(("'@", '"@')):
                 in_here_string = False
             continue
-        if re.search(r"@[\"']$", stripped):
+        # Quoted literals first. Both install.ps1 and studio/setup.ps1 redact
+        # credentials with `-replace ..., '$1<redacted>@'`, whose raw line ends
+        # in `@'`; opening a here-string there swallowed everything up to the
+        # next terminator -- 780 lines of setup.ps1, 740 of install.ps1 -- and
+        # every check below silently stopped looking at them.
+        blanked = _QUOTED.sub('""', line)
+        if re.search(r"@[\"']$", blanked.strip()):
             in_here_string = True
             continue
         if stripped.startswith("#"):
             continue
-        yield number, _QUOTED.sub('""', line)
+        yield number, blanked
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
