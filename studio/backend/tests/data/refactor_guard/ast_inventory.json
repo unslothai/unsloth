@@ -179,6 +179,9 @@
       "_EMPTY_MARKUP_SKELETON": {
         "kind": "assign"
       },
+      "_EXACT_HOST_SHORT_AFTER_LOAD": {
+        "kind": "assign"
+      },
       "_FAILURE_QUOTE_CHARS": {
         "kind": "assign"
       },
