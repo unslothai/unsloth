@@ -2302,7 +2302,10 @@ def test_a_hyphenated_upstream_pin_keeps_its_suffix_when_matching_packagings(mon
     assert newest == "v1.9.2-rc1-unsloth.2"
     # And a plain pin still does not take a longer tag that merely starts with it.
     releases.append({"tag_name": "v1.9.20-unsloth.1", "published_at": "2026-04-01T00:00:00Z"})
-    assert M._api_newest_release_tag_for_upstream("r/w", "v1.9.2", "v1.9.2-unsloth.5") == "v1.9.2-unsloth.5"
+    assert (
+        M._api_newest_release_tag_for_upstream("r/w", "v1.9.2", "v1.9.2-unsloth.5")
+        == "v1.9.2-unsloth.5"
+    )
 
 
 def test_whisper_current_install_needs_no_release_fetch(tmp_path, monkeypatch):
