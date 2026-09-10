@@ -8541,6 +8541,44 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     return remote == commit_id or remote.startswith(commit_id) or commit_id.startswith(remote)
 
 
+def _triton_kernels_step() -> None:
+    """Install triton kernels, or keep the build that is there.
+
+    The requirement is a git branch, so this step's evidence is asked of the remote right
+    now (`_direct_reference_is_installed` runs one ls-remote) rather than read from a
+    record. It therefore holds on a pass that may use no recorded evidence too: a full
+    pass has no reason to rebuild a checkout the branch still points at, and an update run
+    with the git host unreachable must not die here for a speedup that is already
+    installed (it did, since the step ran on every pass and the fetch failed).
+    """
+    req = REQ_ROOT / "triton-kernels.txt"
+    if not _has_working_git():
+        _progress("triton kernels (skipped, no git)")
+        _note("no working git -- skipping triton kernels (training speedup only)")
+        return
+    asked: dict = {}
+
+    def _ref_current() -> bool:
+        asked["current"] = _direct_reference_is_installed(req, "triton_kernels")
+        return asked["current"]
+
+    if _skip_step(req, "triton kernels", no_deps = True, constrain = False, extra_check = _ref_current):
+        return
+    if "current" not in asked:
+        _ref_current()
+    if asked["current"]:
+        _note("triton kernels: the installed build is what the requirement's ref points at -- kept")
+        _record_step(_pass_input_key(req) or str(req), "skipped")
+        return
+    pip_install(
+        "Installing triton kernels",
+        "--no-deps",
+        "--no-cache-dir",
+        req = req,
+        constrain = False,
+    )
+
+
 def _recorded_direct_url(dist_name: str) -> "dict | None":
     """The direct_url.json pip and uv wrote for *dist_name*, or None when there is none
     that parses. This is the only place a git install's ref and commit survive."""
@@ -9095,25 +9133,7 @@ def install_python_stack() -> int:
     #    and without git (the requirement is a git+https URL); a training speedup
     #    only, so warn rather than fail the install.
     if not IS_WINDOWS and not IS_MACOS:
-        if not _has_working_git():
-            _progress("triton kernels (skipped, no git)")
-            _note("no working git -- skipping triton kernels (training speedup only)")
-        elif not _skip_step(
-            REQ_ROOT / "triton-kernels.txt",
-            "triton kernels",
-            no_deps = True,
-            constrain = False,
-            extra_check = lambda: _direct_reference_is_installed(
-                REQ_ROOT / "triton-kernels.txt", "triton_kernels"
-            ),
-        ):
-            pip_install(
-                "Installing triton kernels",
-                "--no-deps",
-                "--no-cache-dir",
-                req = REQ_ROOT / "triton-kernels.txt",
-                constrain = False,
-            )
+        _triton_kernels_step()
 
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")

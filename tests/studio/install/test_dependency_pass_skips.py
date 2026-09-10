@@ -494,6 +494,64 @@ def test_a_mutable_git_ref_is_evidence_only_while_the_remote_still_points_at_it(
     assert stack._direct_reference_is_installed(req, "triton_kernels") is False
 
 
+def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, capsys) -> None:
+    """With no usable recorded evidence `_skip_step` says "run"; the step still asks the
+    remote and keeps the resident build when the branch has not moved (or cannot be
+    asked), and installs only when it has. Nothing is asked twice."""
+    installs: list = []
+    recorded: list = []
+    asked: list = []
+    monkeypatch.setattr(stack, "_has_working_git", lambda: True)
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: installs.append((a, k)))
+    monkeypatch.setattr(stack, "_record_step", lambda key, outcome: recorded.append((key, outcome)))
+    monkeypatch.setattr(stack, "_progress", lambda *_a, **_k: None)
+
+    def _skip(req, label, *, no_deps, constrain, extra_check = None):
+        # A full pass: the requirement is not counted as satisfied, extra_check unasked.
+        return False
+
+    monkeypatch.setattr(stack, "_skip_step", _skip)
+
+    def _current(answer):
+        def _ask(req, dist):
+            asked.append((req.name, dist))
+            return answer
+
+        return _ask
+
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(True))
+    stack._triton_kernels_step()
+    assert installs == []
+    assert asked == [("triton-kernels.txt", "triton_kernels")]
+    assert recorded and recorded[-1][1] == "skipped"
+    assert "kept" in capsys.readouterr().out
+
+    asked.clear()
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(False))
+    stack._triton_kernels_step()
+    assert len(installs) == 1 and installs[0][0][0] == "Installing triton kernels"
+    assert installs[0][1]["req"].name == "triton-kernels.txt" and installs[0][1]["constrain"] is False
+    assert asked == [("triton-kernels.txt", "triton_kernels")]
+
+    # Evidence available and the extra check consulted by _skip_step: one question, no install.
+    installs.clear()
+    asked.clear()
+
+    def _skip_asking(req, label, *, no_deps, constrain, extra_check = None):
+        return bool(extra_check())
+
+    monkeypatch.setattr(stack, "_skip_step", _skip_asking)
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(True))
+    stack._triton_kernels_step()
+    assert installs == [] and len(asked) == 1
+
+    # No git at all: nothing asked, nothing installed.
+    asked.clear()
+    monkeypatch.setattr(stack, "_has_working_git", lambda: False)
+    stack._triton_kernels_step()
+    assert installs == [] and asked == []
+
+
 def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -> None:
     """`git ls-remote -- URL REF` answers `sha<TAB>ref` rows; a peeled tag wins over the tag
     object and a branch over a tag, and any failure (no git, non-zero exit, timeout, no
