@@ -379,27 +379,7 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
 
     rec = {"ok": False, "reason": "", "capability": capability, "name": name}
     try:
-        import flashinfer
-
-        with torch.cuda.device(dev):
-            x = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.05
-            w = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.02
-            a_gsf, w_gsf = global_scale(x), global_scale(w)
-            xq, x_sf = flashinfer.nvfp4_quantize(x, a_gsf, do_shuffle = False)
-            wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
-            out = torch.zeros(128, 128, device = dev, dtype = torch.bfloat16)
-            y = flashinfer.mm_fp4(
-                xq,
-                wq.T,
-                x_sf,
-                w_sf.T,
-                (1.0 / (a_gsf * w_gsf)).float(),
-                torch.bfloat16,
-                out = out,
-                backend = DEFAULT_MM_BACKEND,
-            )
-            torch.cuda.synchronize(dev)
-            finite = bool(torch.isfinite(y).all().item())
+        finite = _preflight_probe(dev)
         rec["ok"] = finite
         rec["reason"] = "ok" if finite else "mm_fp4 produced a non-finite result"
         if finite:
@@ -411,10 +391,54 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
             rec["fast_dispatch_reason"] = fast_reason
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        if _transient_preflight_failure(exc):
+            # Not memoised: the probe runs during AUTO planning while the model the arbiter is about
+            # to evict still owns the card, so an allocation failure says "not now", not "not here".
+            return dict(rec)
 
     with _PREFLIGHT_LOCK:
         _PREFLIGHT[index] = rec
     return dict(rec)
+
+
+def _preflight_probe(dev: Any) -> bool:
+    """The guarded probe: True when ``mm_fp4`` ran and produced a finite result."""
+    import flashinfer
+    import torch
+
+    with torch.cuda.device(dev):
+        x = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.05
+        w = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.02
+        a_gsf, w_gsf = global_scale(x), global_scale(w)
+        xq, x_sf = flashinfer.nvfp4_quantize(x, a_gsf, do_shuffle = False)
+        wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
+        out = torch.zeros(128, 128, device = dev, dtype = torch.bfloat16)
+        y = flashinfer.mm_fp4(
+            xq,
+            wq.T,
+            x_sf,
+            w_sf.T,
+            (1.0 / (a_gsf * w_gsf)).float(),
+            torch.bfloat16,
+            out = out,
+            backend = DEFAULT_MM_BACKEND,
+        )
+        torch.cuda.synchronize(dev)
+        return bool(torch.isfinite(y).all().item())
+
+
+def _transient_preflight_failure(exc: BaseException) -> bool:
+    """Allocation failures only; an import or JIT failure is a property of the host and stays cached."""
+    if isinstance(exc, MemoryError):
+        return True
+    try:
+        import torch
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            return True
+    except Exception:  # noqa: BLE001 - no torch to ask means fall through to the text
+        pass
+    text = str(exc).lower()
+    return "out of memory" in text or "cudaerrormemoryallocation" in text
 
 
 def reset_preflight_cache() -> None:

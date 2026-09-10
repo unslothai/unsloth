@@ -9276,3 +9276,17 @@ def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatc
     assert "transformer/diffusion_pytorch_model.safetensors" in staged
     assert "transformer_2/diffusion_pytorch_model.safetensors" in staged
     assert not any(f.endswith(".pt") for f in staged)
+
+
+def test_the_video_status_response_carries_the_nvfp4_backend_label():
+    """The same field the image status exposes: on Wan2.2-T2V-A14B the auto ladder puts nvfp4
+    first only where flashinfer serves it, so 'NVFP4' alone does not say what ran."""
+    from models.inference import VideoStatusResponse
+
+    resp = VideoStatusResponse(
+        loaded = True,
+        transformer_quant = "nvfp4",
+        transformer_quant_backend = "flashinfer",
+    )
+    assert resp.model_dump()["transformer_quant_backend"] == "flashinfer"
+    assert VideoStatusResponse(loaded = True).model_dump()["transformer_quant_backend"] is None

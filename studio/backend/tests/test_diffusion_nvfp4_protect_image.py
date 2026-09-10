@@ -99,6 +99,19 @@ class _CachedScheduler:
         return "stepped"
 
 
+class _CapableLayer:
+    """A stand-in for a converted flashinfer Linear: weak-referenceable, which is all the
+    controller's registry asks of it."""
+
+
+def _capable(ctl):
+    """Register one, which is what makes a controller willing to arm. The caller must keep the
+    returned object alive: the registry is weak."""
+    layer = _CapableLayer()
+    ctl.register_layer(layer)
+    return layer
+
+
 class _CachingPipe:
     """A denoise loop with an FBCache-shaped skip: the blocks are skipped, the LOOP is not."""
 
@@ -116,6 +129,7 @@ class _CachingPipe:
 def test_a_cached_step_is_simply_not_protected():
     """The index still counts scheduler steps, so the lever protects the steps that are COMPUTED."""
     ctl = pr.NVFP4StepController("0,4,-1")
+    layer = _capable(ctl)
     pipe = _CachingPipe(skip_steps = {4})  # step 4 is protected AND cached away
     seen: list = []
     with pr.protect_generation(pipe, 9, controller = ctl):
@@ -145,6 +159,7 @@ def test_the_cache_marker_and_the_lever_do_not_fight():
 
 def test_each_chunk_restarts_the_schedule_at_step_zero():
     ctl = pr.NVFP4StepController("0,-1")
+    layer = _capable(ctl)
     first: list = []
     second: list = []
     for sink in (first, second):

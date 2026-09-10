@@ -4992,6 +4992,11 @@ class VideoStatusResponse(BaseModel):
         "mxfp8 | null (null = the DiT(s) run at their loaded bf16 precision). For a dual-expert "
         "MoE family both experts share the reported scheme.",
     )
+    transformer_quant_backend: Optional[str] = Field(
+        None,
+        description = "Which NVFP4 kernel path the loaded DiT(s) run: flashinfer | torchao | null "
+        "(null for every scheme but nvfp4).",
+    )
     text_encoder_quant: Optional[str] = Field(
         None,
         description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "

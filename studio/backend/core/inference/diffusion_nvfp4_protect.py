@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import weakref
 from typing import Any, Optional
 
 PROTECT_STEPS_ENV = "UNSLOTH_NVFP4_PROTECT_STEPS"
@@ -85,7 +86,20 @@ class NVFP4StepController:
         self.protected: bool = False
         self.protected_steps_seen: int = 0
         self.generations: int = 0
+        # Weak, so an unloaded model's layers stop counting on their own.
+        self._layers: "weakref.WeakSet" = weakref.WeakSet()
         self.configure(protect_steps_env() if spec is None else spec)
+
+    def register_layer(self, layer: Any) -> None:
+        """Record that ``layer`` can take the W4A16 branch."""
+        try:
+            self._layers.add(layer)
+        except TypeError:  # an unweakrefable layer simply is not counted
+            pass
+
+    def capable_layers(self) -> int:
+        """How many live layers can take the protected branch."""
+        return len(self._layers)
 
     def configure(self, spec: Any) -> "NVFP4StepController":
         """Set the schedule. ``armed`` is read as a compile guard, so it must not move once a load
@@ -105,6 +119,7 @@ class NVFP4StepController:
             "protected_steps": list(self.steps),
             "protected_steps_seen": self.protected_steps_seen,
             "generations": self.generations,
+            "capable_layers": self.capable_layers(),
         }
 
     def begin(
@@ -179,6 +194,19 @@ def protect_generation(
     no-op when the lever is off, and a pipeline with no scheduler to count protects NOTHING."""
     ctl = controller if controller is not None else protect_controller()
     if not ctl.armed:
+        yield ctl
+        return
+    if not ctl.capable_layers():
+        # Only NVFP4FlashInferLinear consults the controller: a torchao load runs W4A4 at every step
+        # whatever the schedule says, and must not be reported as protected.
+        if logger is not None:
+            logger.warning(
+                "[nvfp4] protect schedule %r requested but no protect-capable NVFP4 layer is "
+                "loaded (the torchao backend has no W4A16 branch); the lever stays off for this "
+                "generation",
+                ctl.spec,
+            )
+        ctl.reset()
         yield ctl
         return
     scheduler = getattr(pipe, "scheduler", None)
@@ -266,4 +294,5 @@ def attach_controller(module: Any, controller: NVFP4StepController) -> int:
     layers = protect_layers(module)
     for _, layer in layers:
         layer.protect = controller
+        controller.register_layer(layer)
     return len(layers)

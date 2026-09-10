@@ -951,6 +951,32 @@ def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _video_transformer_quant_backend(state: Any) -> Optional[str]:
+    """Which NVFP4 kernel path the loaded denoiser(s) run, read from the module tree, or None.
+    Both experts share one backend, so the first answer stands. Never raises."""
+    if getattr(state, "transformer_quant", None) != "nvfp4":
+        return None
+    try:
+        pipe = getattr(state, "pipe", None)
+        if pipe is None:
+            return None
+        from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+
+        for name in _transformer_names(pipe, state.family):
+            denoiser = getattr(pipe, name, None)
+            if denoiser is None:
+                continue
+            declared = getattr(denoiser, "_unsloth_nvfp4_backend", None)
+            if declared:
+                return str(declared)
+            for module in denoiser.modules():
+                if is_nvfp4_flashinfer_linear(module):
+                    return "flashinfer"
+        return "torchao"
+    except Exception:  # noqa: BLE001 -- a poll must not fail on a probe
+        return None
+
+
 class _SecondDiTView:
     """A thin proxy that makes ``pipe.transformer_2`` look like ``pipe.transformer`` to a
     helper that hardcodes ``getattr(pipe, "transformer")``, while every other attribute
@@ -6606,6 +6632,7 @@ class VideoBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "transformer_quant": None,
+                "transformer_quant_backend": None,
                 "text_encoder_quant": None,
                 "has_audio": False,
                 "supports_cfg": True,
@@ -6647,6 +6674,7 @@ class VideoBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
+            "transformer_quant_backend": _video_transformer_quant_backend(state),
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
             "supports_cfg": fam.supports_cfg,
