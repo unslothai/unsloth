@@ -448,6 +448,20 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
 
+      - name: Drive MTP companion download visibility
+        if: matrix.shard == 'picker'
+        env:
+          PW_SIDE: AFTER
+          PW_ART_DIR: logs/playwright_mtp
+        run: |
+          # A restored dist does not include the dependencies for the Vite fixture.
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm ci --prefix studio/frontend
+          fi
+          python -m pip install 'pillow>=10,<13'
+          export PW_BACKEND_PYTHON="$HOME/.unsloth/studio/unsloth_studio/bin/python"
+          python tests/studio/playwright_mtp_download_visibility.py
+
       - name: Reset auth + boot Unsloth
         if: matrix.shard == 'chat'
         run: |
@@ -840,6 +854,7 @@ jobs:
             logs/install.log
             logs/server-logs/
             logs/playwright
+            logs/playwright_mtp
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_mcp_arguments

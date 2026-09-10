@@ -24,6 +24,17 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    pending_drafter_filename: Optional[str] = Field(
+        None,
+        description = (
+            "The sole missing MTP/DSpark/DFlash companion when the main GGUF and any "
+            "vision projector are already cached. Lets the download UI name the artifact "
+            "it is actually transferring instead of presenting it as the whole model."
+        ),
+    )
+    pending_drafter_size_bytes: int = Field(
+        0, description = "Remote size of pending_drafter_filename"
+    )
     shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,

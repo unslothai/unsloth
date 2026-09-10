@@ -709,6 +709,7 @@ export async function startJob(
     completedBytes: seedCompleted,
     completeOnDisk: false,
     expectedBytes: expected,
+    ...(req.presentation ? { presentation: req.presentation } : {}),
     fraction: seedFraction,
     bytesPerSec: 0,
     error: null,

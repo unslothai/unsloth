@@ -221,6 +221,7 @@ import {
   h3PickerHasOnlyPrunedBuilds,
   preferredGgufVariantByGroup,
 } from "./variant-presentation";
+import { pendingDrafterPresentation } from "./variant-download-presentation";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -1333,6 +1334,13 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
         candidate.shard_count >= 0)) &&
     (candidate.downloaded === undefined ||
       typeof candidate.downloaded === "boolean") &&
+    (candidate.pending_drafter_filename === undefined ||
+      candidate.pending_drafter_filename === null ||
+      typeof candidate.pending_drafter_filename === "string") &&
+    (candidate.pending_drafter_size_bytes === undefined ||
+      (typeof candidate.pending_drafter_size_bytes === "number" &&
+        Number.isFinite(candidate.pending_drafter_size_bytes) &&
+        candidate.pending_drafter_size_bytes >= 0)) &&
     // Carried through so each row can look up its own dependency group's footprint. Absent on an
     // older backend, which groups the repo as one, so it must never reject the row.
     (candidate.dependency_key === undefined ||
@@ -1669,6 +1677,7 @@ function GgufVariantExpander({
       filename: string,
       downloaded?: boolean,
       sizeBytes?: number,
+      downloadPresentation?: ModelSelectorChangeMeta["downloadPresentation"],
     ) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
@@ -1680,6 +1689,7 @@ function GgufVariantExpander({
         ggufFilename: filename,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
+        downloadPresentation,
         contextLength: isAvailable ? nativeContext : undefined,
         isGguf: true,
         pipelineTag,
@@ -2045,6 +2055,7 @@ function GgufVariantExpander({
                 v.filename,
                 v.downloaded,
                 expectedBytes,
+                pendingDrafterPresentation(v),
               )
             }
             className={cn(
