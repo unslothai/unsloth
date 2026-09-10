@@ -56,6 +56,31 @@ def _sidecar(
     (root / tv._STUDIO_OWNED_MARKER).touch()
 
 
+def test_a_failed_optional_install_leaves_no_partial_payload(tmp_path, monkeypatch):
+    """pip or uv exiting nonzero after copying part of tiktoken: the sidecar is still
+    accepted (the package is optional), but nothing of the package may stay, or the
+    half-copied tree ahead of site-packages shadows the ambient one at tokenization."""
+    root = tmp_path / ".venv_t5_550"
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    optional = [p for p in tv._VENV_T5_550_PACKAGES if p.startswith("tiktoken")]
+    assert optional and tv._sidecar_package_is_optional(optional[0])
+
+    def fake_install(pkg, target):
+        if pkg.startswith("tiktoken"):
+            (Path(target) / "tiktoken").mkdir()
+            (Path(target) / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+            (Path(target) / "tiktoken-0.9.0.dist-info").mkdir()
+            (Path(target) / "tiktoken-0.9.0.dist-info" / "METADATA").write_text("", encoding = "utf-8")
+            return False
+        return True
+
+    monkeypatch.setattr(tv, "_install_to_dir", fake_install)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert not (root / "tiktoken").exists()
+    assert not list(root.glob("tiktoken-*.dist-info"))
+    assert tv._optional_package_absent(str(root), "tiktoken") is True
+
+
 def test_a_sidecar_without_tiktoken_is_still_valid(tmp_path):
     root = tmp_path / ".venv_t5_550"
     _sidecar(
