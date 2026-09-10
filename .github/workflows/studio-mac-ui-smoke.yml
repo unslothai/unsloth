@@ -58,6 +58,11 @@ on:
       # so an edit to the action changes what this workflow actually runs.
       # The frontend-dist actions are not listed: this workflow never uses them.
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'
@@ -109,6 +114,11 @@ on:
       # so an edit to the action changes what this workflow actually runs.
       # The frontend-dist actions are not listed: this workflow never uses them.
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'

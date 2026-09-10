@@ -117,17 +117,31 @@ SIBLING = re.compile(
 def _executed_github_paths(doc) -> set[str]:
     """The .github/scripts and .github/actions files the steps reach.
 
-    One level of indirection is followed: run-studio-ui-lane.sh boots Studio and drives
-    the permission and indicator browsers through sibling scripts, and
-    agent-guides-drive.sh reads its prompts from sibling text files. An edit to any of
-    those changes what the job runs just as surely as an edit to the script the step
-    names, so the filter has to list them too.
+    Indirection is followed: run-studio-ui-lane.sh boots Studio and drives the
+    permission and indicator browsers through sibling scripts, agent-guides-drive.sh
+    reads its prompts from sibling text files, and install-unsloth-local `uses:` the
+    dist and uv cache actions. An edit to any of those changes what the job runs just
+    as surely as an edit to the script or action the step names, so the filter has to
+    list them too.
     """
     found = set()
     for match in EXECUTED.findall(_step_text(doc)):
         path = _normalise(match)
         if (REPO / path).is_file():
             found.add(path)
+    # A local composite action that `uses:` another local action pulls that one in.
+    pending = [p for p in found if p.startswith(".github/actions/")]
+    while pending:
+        text = (REPO / pending.pop()).read_text(encoding = "utf-8", errors = "replace")
+        for match in EXECUTED.findall(text):
+            nested = _normalise(match)
+            if (
+                nested.startswith(".github/actions/")
+                and (REPO / nested).is_file()
+                and nested not in found
+            ):
+                found.add(nested)
+                pending.append(nested)
     for path in sorted(found):
         if not path.startswith(".github/scripts/"):
             continue
@@ -200,10 +214,9 @@ def test_executed_path_detection_is_not_vacuous():
     executed = _executed_github_paths(doc)
     assert ".github/scripts/boot-studio-api-only.sh" in executed
     assert ".github/actions/install-unsloth-local/action.yml" in executed
-    assert ".github/actions/frontend-dist-restore/action.yml" not in executed, (
-        "studio-ui-smoke.yml does not use the dist cache; if it now does, the paths list "
-        "above must gain the action and this assertion must move"
-    )
+    # Reached through install-unsloth-local, which `uses:` the dist and uv cache pairs.
+    assert ".github/actions/frontend-dist-restore/action.yml" in executed
+    assert ".github/actions/uv-cache-restore/action.yml" in executed
     windows = _executed_github_paths(_load("studio-windows-ui-smoke.yml"))
     assert ".github/actions/frontend-dist-restore/action.yml" in windows
 
