@@ -2,8 +2,9 @@
 
 This source split contains the command supervisor, its execution and process-fence
 support, Python/terminal routing, and focused native tests. Confined file edits are
-owned by #10577, which this PR requires. Shutdown retry integration and approval UI
-are separate follow-ups; neither is included in this source diff.
+owned by #10577, which this PR requires. Supervisor-specific shutdown retries live
+with their implementation here. The standalone survivor-gated breadcrumb fix is
+#10641, and approval UI remains separate.
 
 ## User-visible behavior
 
@@ -12,6 +13,12 @@ bubblewrap plus an identity-verified PID namespace and pidfd lifecycle support.
 The namespace restricts filesystem access and networking. Workspace admission and
 mutation locks remain held until descendant cleanup is proven. Cleanup failures
 retain their locks in quarantine.
+
+When a command times out, its captured output remains in the completed tool result,
+followed by the timeout status. Truncation notices and artifact cards remain visible.
+The same bounded-output helper serves ordinary and supervised commands. Native
+cleanup tests also confirm that the child ran before checking that no detached
+descendant survives workspace lease and mutation-slot release.
 
 On native macOS, a sandboxed project Python or terminal call returns:
 
