@@ -200,7 +200,9 @@ def test_a_remnant_that_will_not_go_fails_the_build_instead_of_shadowing(tmp_pat
 
     monkeypatch.setattr(tv.shutil, "rmtree", stuck_rmtree)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
-    assert (root / "tiktoken").is_dir()
+    # A failed build wipes the partial tree here (so an offline run does not keep it);
+    # whether or not the remnant itself survived that, nothing reads as a usable sidecar.
+    assert tv._venv_dir_is_valid_and_undamaged(str(root), tv._VENV_T5_550_PACKAGES) is False
     monkeypatch.setattr(tv.shutil, "rmtree", real_rmtree)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert not (root / "tiktoken").exists()
