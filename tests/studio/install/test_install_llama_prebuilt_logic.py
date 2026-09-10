@@ -6745,10 +6745,25 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     )
     monkeypatch.setattr(M, "_host_is_blackwell", lambda _h: False)
     monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda13", "cuda12"], {}))
-    assert M._runtime_preference_moved({"runtime_line": "cuda12", "torch_runtime_preference": "cuda12"}, host) is True
-    assert M._runtime_preference_moved({"runtime_line": "cuda13", "torch_runtime_preference": "cuda12"}, host) is False
+    assert (
+        M._runtime_preference_moved(
+            {"runtime_line": "cuda12", "torch_runtime_preference": "cuda12"}, host
+        )
+        is True
+    )
+    assert (
+        M._runtime_preference_moved(
+            {"runtime_line": "cuda13", "torch_runtime_preference": "cuda12"}, host
+        )
+        is False
+    )
     monkeypatch.setattr(M, "_host_is_blackwell", lambda _h: True)
-    assert M._runtime_preference_moved({"runtime_line": "cuda12", "torch_runtime_preference": "cuda12"}, host) is False
+    assert (
+        M._runtime_preference_moved(
+            {"runtime_line": "cuda12", "torch_runtime_preference": "cuda12"}, host
+        )
+        is False
+    )
     monkeypatch.setattr(M, "_host_is_blackwell", lambda _h: False)
     monkeypatch.setattr(
         M,

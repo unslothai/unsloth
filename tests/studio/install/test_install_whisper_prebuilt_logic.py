@@ -2270,7 +2270,9 @@ def _installed_cpu_tree(
     monkeypatch.setattr(
         M.llama,
         "github_releases",
-        lambda _repo, max_pages = 1: [{"tag_name": RELEASE_TAG, "published_at": "2026-01-01T00:00:00Z"}],
+        lambda _repo, max_pages = 1: [
+            {"tag_name": RELEASE_TAG, "published_at": "2026-01-01T00:00:00Z"}
+        ],
     )
     monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
     return install_dir, host, calls
@@ -2353,8 +2355,10 @@ def test_whisper_an_upstream_pin_still_takes_a_newer_packaging_revision(tmp_path
     monkeypatch.setattr(
         M.llama,
         "github_releases",
-        lambda _repo, max_pages = 1: [{"tag_name": tag, "published_at": f"2026-01-0{i + 1}T00:00:00Z"}
-                                      for i, tag in enumerate(listed["tags"])],
+        lambda _repo, max_pages = 1: [
+            {"tag_name": tag, "published_at": f"2026-01-0{i + 1}T00:00:00Z"}
+            for i, tag in enumerate(listed["tags"])
+        ],
     )
 
     def no_head(_repo):
