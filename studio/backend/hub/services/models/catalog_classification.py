@@ -41,7 +41,7 @@ _MAX_TASK_CLASSIFY_GGUFS = 64
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 _TASK_CLASSIFY_READ_SECONDS = 1.5
 _QWEN3_ASR_HINT = re.compile(
-    r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. ]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
+    r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. :]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
 )
 _ORPHEUS_GGUF_HINT = re.compile(

@@ -336,3 +336,37 @@ def test_ollama_speech_blob_keeps_task_and_codec_without_materializing(store):
     assert catalog_classification._local_model_task(row) == "text-to-speech"
     assert catalog_classification._local_model_audio_type(row) == "snac"
     assert not (store / ".studio_links").exists()
+
+
+@pytest.mark.parametrize("size", ["0.6b", "1.7b"])
+def test_ollama_asr_size_tag_is_excluded_from_chat(store, size, monkeypatch):
+    from hub.services.models import catalog_classification
+
+    manifest = store / "manifests/registry.ollama.ai/library/llama3/latest"
+    speech_manifest = store / "manifests/registry.ollama.ai/library/qwen3-asr" / size
+    speech_manifest.parent.mkdir(parents = True)
+    manifest.rename(speech_manifest)
+    blob = store / "blobs" / ("sha256-" + "b" * 64)
+
+    def gguf_string(value):
+        raw = value.encode()
+        return struct.pack("<Q", len(raw)) + raw
+
+    blob.write_bytes(
+        b"GGUF"
+        + struct.pack("<IQQ", 3, 0, 1)
+        + gguf_string("general.architecture")
+        + struct.pack("<I", 8)
+        + gguf_string("qwen3")
+    )
+    row = models_route._scan_ollama_dir(store)[0]
+    assert catalog_classification._local_model_task(row) == "automatic-speech-recognition"
+    monkeypatch.setattr(inf, "_openai_model_objects", lambda: [])
+    app = FastAPI()
+    app.include_router(inf.router, prefix = "/v1")
+    app.dependency_overrides[inf.get_current_subject] = lambda: "test"
+    with TestClient(app) as client:
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        assert response.json()["data"] == []
+    assert not (store / ".studio_links").exists()
