@@ -942,6 +942,10 @@ def load_prequantized_transformer(
             convert_nvfp4_backend(
                 transformer, metadata, select_nvfp4_backend(device), logger = logger
             )
+        # assign=True gave the module the checkpoint's own tensors; a second reference would keep every CPU copy
+        # alive across to(device), which on a unified-memory host doubles the transient peak.
+        del state_dict
+        del ckpt
 
         transformer = transformer.to(device)
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
