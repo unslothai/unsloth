@@ -2476,6 +2476,33 @@ def test_existing_install_matches_plan_windows_cpu_requires_llama_dll(tmp_path: 
     assert existing_install_matches_plan(install_dir, host, plan) is False
 
 
+def test_existing_install_matches_plan_windows_rejects_an_empty_executable(tmp_path: Path):
+    """Windows has no executable-image preflight and an older marker carries no runtime
+    record, so a zero-byte llama-server.exe passed every other check and was reused."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_windows_install_shape(install_dir, include_llama_dll = True)
+
+    host = windows_host()
+    choice = asset_choice(
+        name = "llama-b9001-bin-win-cpu-x64.zip",
+        url = "https://example.com/x.zip",
+        source_label = "published",
+        install_kind = "windows-cpu",
+    )
+    checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
+    plan = release_plan([choice], checksums)
+    write_metadata(install_dir, choice, checksums)
+
+    assert existing_install_matches_plan(install_dir, host, plan) is True
+    server = install_dir / "build" / "bin" / "Release" / "llama-server.exe"
+    saved = server.read_bytes()
+    server.write_bytes(b"")
+    assert existing_install_matches_plan(install_dir, host, plan) is False
+    server.write_bytes(saved)
+    assert existing_install_matches_plan(install_dir, host, plan) is True
+
+
 def test_existing_install_matches_plan_windows_cuda_requires_cuda_dll(tmp_path: Path):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()

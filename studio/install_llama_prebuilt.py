@@ -8111,11 +8111,17 @@ def existing_install_matches_choice(
     if not runtime_payload_is_healthy(install_dir, host, choice):
         return False
 
-    # Verify primary executables still exist (catches partial deletion)
+    # Verify primary executables still exist (catches partial deletion). Non-empty
+    # too: the Linux and macOS preflights below read the executable image, but a
+    # zero-byte llama-server.exe under a marker that predates the runtime record
+    # passed every other check here and was reused as current.
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
     for binary in ("llama-server", "llama-quantize"):
-        if not (runtime_dir / f"{binary}{ext}").exists():
+        try:
+            if (runtime_dir / f"{binary}{ext}").stat().st_size == 0:
+                return False
+        except OSError:
             return False
     # The sizes and digests the install recorded, when it recorded them. The Linux and
     # macOS preflights below read the executable images; Windows has no such probe, so
