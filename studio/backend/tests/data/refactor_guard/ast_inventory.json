@@ -1717,7 +1717,7 @@
       "_mistral_region_end": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, idx: int"
+        "signature": "text: str, idx: int, *, open_envelope_runs_to_eof: bool=False"
       },
       "_next_top_level_comma": {
         "decorators": [],

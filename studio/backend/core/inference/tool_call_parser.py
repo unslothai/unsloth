@@ -1013,6 +1013,18 @@ def _inference_wrapper_spans(text: str) -> list:
     for m in _ATTR_FUNC_OPEN_RE.finditer(text):
         close = text.find("</function>", m.end())
         spans.append((m.end(), len(text) if close < 0 else close))
+    # A Mistral array still streaming has no closing ``]``, so the closed-span patterns do not
+    # see it, yet ``_parse_mistral_tool_calls`` accepts it under allow_incomplete. The envelope
+    # is trusted through EOS, or a blocked shape quoted in a GENUINE argument was masked before
+    # that parser ran and the tool received U+E000 in place of the model's text.
+    pos = text.find(_MISTRAL_TRIGGER)
+    while pos != -1:
+        i = pos + len(_MISTRAL_TRIGGER)
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i < len(text) and text[i] == "[" and _balanced_bracket_end(text, i) is None:
+            spans.append((i + 1, len(text)))
+        pos = text.find(_MISTRAL_TRIGGER, pos + 1)
     return spans
 
 
@@ -2081,20 +2093,34 @@ def _marker_inside_leading_envelope(content: str, enabled_tool_names: Optional[s
     return opener is not None and opener.start() < marker.start()
 
 
-def _mistral_region_end(text: str, idx: int) -> int | None:
+def _mistral_region_end(
+    text: str,
+    idx: int,
+    *,
+    open_envelope_runs_to_eof: bool = False,
+) -> int | None:
     """Exclusive end of the balanced ``[TOOL_CALLS]`` call starting at ``idx``,
     or ``None`` when truncated/unrecognised (same shapes as the strip scan:
-    array, single-object, and named ``name [CALL_ID]? [ARGS]? {json}``)."""
+    array, single-object, and named ``name [CALL_ID]? [ARGS]? {json}``).
+
+    ``open_envelope_runs_to_eof`` treats a still-streaming ``[``/``{`` envelope as reaching
+    EOF. ``_parse_mistral_tool_calls`` accepts that form under allow_incomplete, so refusing
+    it here handed the turn to a wrapper QUOTED in its arguments: the outer call was dropped
+    and the quoted one executed in its place."""
     n = len(text)
     i = idx + len(_MISTRAL_TRIGGER)
     while i < n and text[i] in " \t\n\r":
         i += 1
     if i < n and text[i] == "[":
         end = _balanced_bracket_end(text, i)
-        return None if end is None else end + 1
+        if end is None:
+            return n if open_envelope_runs_to_eof else None
+        return end + 1
     if i < n and text[i] == "{":
         end = _balanced_brace_end(text, i)
-        return None if end is None else end + 1
+        if end is None:
+            return n if open_envelope_runs_to_eof else None
+        return end + 1
     name_match = _MISTRAL_V11_NAME_RE.match(text, i)
     if not name_match:
         return None
@@ -2123,7 +2149,7 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     # Only plain prose precedes the trigger: a visible preface must not hand the turn to a later XML literal
     # (preamble-tolerant, like the wrapperless-Gemma guard). Prose that merely mentions the marker has no parseable
     # region and keeps the normal order.
-    return _mistral_region_end(content, trig) is not None
+    return _mistral_region_end(content, trig, open_envelope_runs_to_eof = True) is not None
 
 
 def _parse_bare_rehearsals(

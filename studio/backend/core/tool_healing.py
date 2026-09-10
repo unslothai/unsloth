@@ -184,15 +184,27 @@ def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
     if _markerless_promotable(m.group(1), enabled_tool_names) and not _in_code(spans, m.start()):
         return ""
     # The kept call's own argument object; a match inside it is that call's arguments.
+    # Resolved LAZILY: this scans the whole body, which for an unterminated blocked call is
+    # the whole growing buffer, and the streaming path re-strips every snapshot. Computing it
+    # before knowing a sibling match exists made a long blocked call quadratic in the display
+    # path (16KB streamed 4 chars at a time: 10.3s, against 2.7s with it deferred).
     reh = _REHEARSAL_RE.search(text, m.start(), m.end())
-    body_end = _balanced_json_span(text, reh.end()) if reh is not None else None
+    cached_body_end: list = []
+
+    def body_end():
+        if not cached_body_end:
+            cached_body_end.append(
+                _balanced_json_span(text, reh.end()) if reh is not None else None
+            )
+        return cached_body_end[0]
+
     pos = m.start()
     while True:
         nxt = pat.search(text, pos + 1)
         if nxt is None or nxt.start() >= m.end():
             return m.group(0)
         if (
-            (body_end is None or nxt.start() > body_end)
+            (body_end() is None or nxt.start() > body_end())
             and not _in_code(spans, nxt.start())
             and _markerless_promotable(nxt.group(1), enabled_tool_names)
         ):
@@ -292,6 +304,11 @@ def _balanced_json_span(text: str, start: int) -> int | None:
     or ``None`` if the braces don't balance. Honors escapes and strings.
     """
     if start >= len(text) or text[start] != "{":
+        return None
+    # A span can only close on a ``}``, so with none at all the scan below is guaranteed to
+    # fall through. Worth the check because the streaming path re-scans a growing UNTERMINATED
+    # body once per snapshot, and ``find`` runs in C while the loop does not.
+    if text.find("}", start) < 0:
         return None
     depth = 0
     in_string = False

@@ -237,7 +237,7 @@
       "_markerless_promotable": "core.tool_healing._markerless_promotable(name, enabled_tool_names) -> 'bool'",
       "_mask_blocked_bodies": "core.inference.tool_call_parser._mask_blocked_bodies(text: 'str', enabled_tool_names, *, think: 'bool' = False) -> 'tuple'",
       "_merge_spans": "core.inference.tool_call_parser._merge_spans(spans: 'list') -> 'list'",
-      "_mistral_region_end": "core.inference.tool_call_parser._mistral_region_end(text: 'str', idx: 'int') -> 'int | None'",
+      "_mistral_region_end": "core.inference.tool_call_parser._mistral_region_end(text: 'str', idx: 'int', *, open_envelope_runs_to_eof: 'bool' = False) -> 'int | None'",
       "_next_top_level_comma": "core.inference.tool_call_parser._next_top_level_comma(text: 'str', start: 'int', end: 'int') -> \"'int | None'\"",
       "_normalize_for_repeat": "core.inference.tool_call_parser._normalize_for_repeat(text: 'str') -> 'str'",
       "_only_a_code_fence": "core.inference.tool_call_parser._only_a_code_fence(between: 'str') -> 'bool'",

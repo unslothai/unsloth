@@ -2274,3 +2274,40 @@ def test_reasoning_outside_a_wrapper_is_still_hidden_from_the_parse_path():
     )
     assert [c["function"]["name"] for c in calls] == ["web_search"]
     assert json.loads(calls[0]["function"]["arguments"]) == {"q": "x"}
+
+
+def test_a_still_streaming_mistral_envelope_keeps_its_arguments_and_owns_the_turn():
+    """``_parse_mistral_tool_calls`` accepts an unclosed array under allow_incomplete, but the
+    trusted-span and owns-the-turn scans both required a balanced ``]``. A blocked shape in a
+    genuine argument was masked, and a wrapper quoted there was promoted OVER the real call."""
+    wrapper = "<function=python><parameter=code>print(1)</parameter></function>"
+    gate = {"web_search", "terminal", "python"}
+
+    # The argument text survives instead of being rewritten with the mask.
+    truncated = (
+        '[TOOL_CALLS][{"name":"web_search","arguments":{"query":"call:terminal{command:id}"}}'
+    )
+    calls = parse_tool_calls_from_text(truncated, enabled_tool_names = gate)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    assert json.loads(calls[0]["function"]["arguments"]) == {"query": "call:terminal{command:id}"}
+
+    # And the outer call owns the turn, exactly as the closed form already did.
+    for envelope in (
+        '[TOOL_CALLS][{"name":"terminal","arguments":{"c":"%s"}}]' % wrapper,
+        '[TOOL_CALLS][{"name":"terminal","arguments":{"c":"%s"}}' % wrapper,
+    ):
+        calls = parse_tool_calls_from_text(envelope, enabled_tool_names = gate)
+        assert [c["function"]["name"] for c in calls] == ["terminal"], envelope
+        assert json.loads(calls[0]["function"]["arguments"]) == {"c": wrapper}
+
+    # Prose that merely mentions the marker still claims nothing, and a standalone wrapper
+    # outside any envelope still promotes.
+    assert (
+        parse_tool_calls_from_text(
+            "I would use [TOOL_CALLS] to call a tool.", enabled_tool_names = gate
+        )
+        == []
+    )
+    assert [
+        c["function"]["name"] for c in parse_tool_calls_from_text(wrapper, enabled_tool_names = gate)
+    ] == ["python"]
