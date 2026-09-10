@@ -95,18 +95,14 @@ def _availability(available: bool) -> dict:
     }
 
 
-def _sanitize_filename(name: str) -> str:
+def _document_label(name: str) -> str:
     # A display label, never a path: the bytes are stored at uploads/<uuid><ext>.
     base = "".join(
-        " " if ch.isspace() else "" if unicodedata.category(ch) in ("Cc", "Cf") else ch
+        (" " if ch.isspace() else "") if unicodedata.category(ch) in ("Cc", "Cf") else ch
         for ch in name or ""
     )
-    # Split on the separators themselves, not ntpath.basename: that reads any single
-    # character before a colon as a drive, and macOS stores a Finder "/" as ":" on disk,
-    # so a dropped "P/L statement.pdf" arrives here as "P:L statement.pdf" and would come
-    # out as "L statement.pdf".
-    base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    base = re.sub(r"\s+", " ", base).strip() or "document"
+    # Not \s+: U+3000 and the other Zs spaces belong to the name.
+    base = re.sub(r" +", " ", base).strip() or "document"
     if len(base) <= 200:
         return base
     # Trim the stem, not the extension: _save_upload gates on the extension, so
@@ -115,6 +111,21 @@ def _sanitize_filename(name: str) -> str:
     if not ext or len(ext) > 32:
         return base[:200]
     return stem[: 200 - len(ext)] + ext
+
+
+# Names treated as Windows paths. Each is also a legal POSIX filename; the list stays
+# narrow because splitting a real name loses part of it. One leading backslash counts as
+# UNC because multipart parsing unescapes "\\" to "\".
+_LOOKS_LIKE_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\?|\.{1,2}\\)")
+
+
+def _sanitize_filename(name: str) -> str:
+    """Label a browser upload, whose client-supplied name may carry a path."""
+    # Not ntpath.basename: it reads "P:L statement.pdf", how macOS stores a Finder "/",
+    # as drive "P:". Classify first: splitting on "/" would strip the drive from "C:/a\b".
+    raw = name or ""
+    parts = re.split(r"[\\/]", raw) if _LOOKS_LIKE_WINDOWS_PATH.match(raw) else raw.split("/")
+    return _document_label(parts[-1])
 
 
 def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str, str]:
@@ -189,7 +200,8 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
-    filename = _sanitize_filename(grant.canonical_path.name)
+    # Path.name is one component, so a "\" in it is part of the name, as in "AC\DC.pdf".
+    filename = _document_label(grant.canonical_path.name)
     try:
         with open(grant.canonical_path, "rb") as source:
             return _persist_upload_stream(
