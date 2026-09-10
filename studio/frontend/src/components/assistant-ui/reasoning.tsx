@@ -6,6 +6,7 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import {
+  MarkdownCodeHighlightingContext,
   MarkdownText,
   SearchImagesEnabledContext,
 } from "@/components/assistant-ui/markdown-text";
@@ -327,7 +328,15 @@ function ReasoningText({
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => (
   <SearchImagesEnabledContext.Provider value={false}>
-    <MarkdownText />
+    {/*
+     * Thinking traces are skimmed, not read, and they are mostly code. Highlighting them is what
+     * makes opening the panes on a long thread slow: 5.4 effective fps at 92% busy against 25.5
+     * fps at 61% busy, measured on a 100K-character thread in WebKitGTK on a gfx1151. The code is
+     * still all there and still copyable; it just has no colours.
+     */}
+    <MarkdownCodeHighlightingContext.Provider value="plain">
+      <MarkdownText />
+    </MarkdownCodeHighlightingContext.Provider>
   </SearchImagesEnabledContext.Provider>
 );
 
