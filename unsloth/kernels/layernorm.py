@@ -108,6 +108,9 @@ class Fast_Layernorm(torch.autograd.Function):
         shape = X.shape
         dim = shape[-1]
         X = X.reshape(-1, dim).contiguous()
+        # The kernels read W and b at unit stride, and these are the ones saved for backward.
+        W = W.contiguous()
+        b = b.contiguous()
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
         device = X.device

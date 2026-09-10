@@ -99,6 +99,53 @@ def test_layernorm_gradient_reaches_a_live_strided_source(source_layout):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
+@pytest.mark.parametrize("layout", ["contiguous", "columns", "expanded"])
+@pytest.mark.parametrize(
+    "dtype", [torch.float32, torch.float16, torch.bfloat16], ids = ["float32", "float16", "bfloat16"]
+)
+def test_layernorm_weight_and_bias_layout(layout, dtype):
+    # The kernels read W and b with plain column offsets, no parameter stride, so a
+    # strided affine parameter is mis-read the same way a strided input is. This is the
+    # LayerNorm half of the materialization that #10617 added to the RMSNorm kernel.
+    from unsloth.kernels.layernorm import fast_layernorm
+
+    torch.manual_seed(42)
+    shape = (2, 4, 80)
+    dim = shape[-1]
+    layer = torch.nn.LayerNorm(dim, device = "cuda", dtype = dtype)
+    layer.requires_grad_(False)
+    with torch.no_grad():
+        if layout == "columns":
+            weight = (torch.rand(2 * dim, device = "cuda", dtype = dtype) + 0.5)[::2]
+            bias = (torch.rand(2 * dim, device = "cuda", dtype = dtype) - 0.5)[::2]
+        elif layout == "expanded":
+            weight = torch.rand(1, device = "cuda", dtype = dtype).expand(dim)
+            bias = torch.rand(1, device = "cuda", dtype = dtype).expand(dim)
+        else:
+            weight = torch.rand(dim, device = "cuda", dtype = dtype) + 0.5
+            bias = torch.rand(dim, device = "cuda", dtype = dtype) - 0.5
+        layer.weight = torch.nn.Parameter(weight, requires_grad = False)
+        layer.bias = torch.nn.Parameter(bias, requires_grad = False)
+    assert layer.weight.is_contiguous() == (layout == "contiguous")
+
+    inputs = torch.randn(shape, device = "cuda", dtype = dtype)
+    grad = torch.randn(shape, device = "cuda", dtype = dtype)
+    reference_grad = grad.clone()
+
+    reference_inputs = inputs.clone().requires_grad_()
+    expected = torch.nn.functional.layer_norm(
+        reference_inputs.float(), (dim,), layer.weight.float(), layer.bias.float(), layer.eps
+    ).to(dtype)
+    expected.backward(reference_grad)
+
+    actual_inputs = inputs.detach().requires_grad_()
+    actual = fast_layernorm(layer, actual_inputs)
+    actual.backward(grad)
+    torch.testing.assert_close(actual, expected, rtol = 1e-2, atol = 1e-3)
+    torch.testing.assert_close(actual_inputs.grad, reference_inputs.grad, rtol = 2e-2, atol = 1e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("layout", ["columns", "rows", "transposed", "expanded"])
 @pytest.mark.parametrize(
     "no_grad", [torch.no_grad, torch.inference_mode], ids = ["no_grad", "inference_mode"]
