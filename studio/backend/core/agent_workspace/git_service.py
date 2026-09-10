@@ -886,19 +886,40 @@ def _attached_head(repository: Path) -> tuple[str, str]:
     branch_ref = branch_output.strip()
     if not branch_ref.startswith("refs/heads/") or not _SAFE_PATH.fullmatch(branch_ref):
         raise AgentWorkspaceError("Git returned an invalid branch identity.")
-    head, _ = _git(
+    head_code, head, truncated = _run_git(
         repository,
-        ["rev-parse", "--verify", "HEAD^{commit}"],
+        ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
         output_limit = 256,
         timeout_seconds = 5,
     )
+    if head_code == 1 and not head.strip() and not truncated:
+        ref_code, ref_output, ref_truncated = _run_git(
+            repository,
+            ["show-ref", "--verify", "--quiet", branch_ref],
+            output_limit = 256,
+            timeout_seconds = 5,
+        )
+        if ref_code == 1 and not ref_output.strip() and not ref_truncated:
+            return branch_ref, ""
     head_sha = head.strip()
-    if not _SAFE_OBJECT_ID.fullmatch(head_sha):
+    if head_code != 0 or truncated or not _SAFE_OBJECT_ID.fullmatch(head_sha):
         raise AgentWorkspaceError("Git returned an invalid HEAD identity.")
     return branch_ref, head_sha
 
 
-def _selected_change_preview(repository: Path, paths: list[str]) -> dict:
+def _empty_tree(repository: Path) -> str:
+    tree, truncated = _git(
+        repository,
+        ["hash-object", "-t", "tree", "--stdin"],
+        output_limit = 256,
+        timeout_seconds = 5,
+    )
+    if truncated or not _SAFE_OBJECT_ID.fullmatch(tree.strip()):
+        raise AgentWorkspaceError("Git returned an invalid empty tree identity.")
+    return tree.strip()
+
+
+def _selected_change_preview(repository: Path, paths: list[str], head_sha: str) -> dict:
     pathspecs = _literal_pathspecs(paths)
     porcelain, status_truncated = _git(
         repository,
@@ -941,7 +962,7 @@ def _selected_change_preview(repository: Path, paths: list[str]) -> dict:
         repository,
         [
             "diff",
-            "HEAD",
+            head_sha or _empty_tree(repository),
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
@@ -1027,7 +1048,7 @@ def prepare_commit(project_id: str, owned_paths: list[str], message: str) -> dic
                 )
             if status["counts"]["conflicted"]:
                 raise AgentWorkspaceError("Resolve repository conflicts before preparing a commit.")
-            preview = _selected_change_preview(repository, paths)
+            preview = _selected_change_preview(repository, paths, head_sha)
             source_fingerprint = workspace_fingerprint(root)
             if not workspace_common.workspace_fingerprint_complete(source_fingerprint):
                 raise AgentWorkspaceError(
@@ -1091,7 +1112,7 @@ def confirm_prepared_commit(project_id: str, preparation_id: str, confirmation_t
                         "The branch or HEAD changed after commit preparation. Prepare it again."
                     )
                 paths = _owned_paths(root, list(record["ownedPaths"]))
-                _selected_change_preview(repository, paths)
+                _selected_change_preview(repository, paths, head_sha)
                 current = workspace_fingerprint(root)
                 if (
                     not workspace_common.workspace_fingerprint_complete(current)
@@ -1105,14 +1126,17 @@ def confirm_prepared_commit(project_id: str, preparation_id: str, confirmation_t
                     repository,
                     paths,
                     record["message"],
-                    parent_sha = record["headSha"],
+                    parent_sha = record["headSha"] or None,
                 )
-                head_tree, _ = _git(
-                    repository,
-                    ["rev-parse", f"{record['headSha']}^{{tree}}"],
-                    output_limit = 256,
-                    timeout_seconds = 5,
-                )
+                if not head_sha:
+                    head_tree = _empty_tree(repository)
+                else:
+                    head_tree, _ = _git(
+                        repository,
+                        ["rev-parse", f"{head_sha}^{{tree}}"],
+                        output_limit = 256,
+                        timeout_seconds = 5,
+                    )
                 if tree_sha == head_tree.strip():
                     raise AgentWorkspaceError("Selected paths have no changes to prepare.")
                 if workspace_fingerprint(root) != record["sourceFingerprint"]:

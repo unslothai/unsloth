@@ -3,6 +3,7 @@
 
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,6 +91,68 @@ def _budget(**updates) -> dict:
         "wallSeconds": 120,
         **updates,
     }
+
+
+@pytest.mark.parametrize("max_workers", [1, 2])
+def test_waiting_parents_leave_capacity_for_delegated_children(tmp_path, monkeypatch, max_workers):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _project(repository)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "worktrees"))
+    manager = BackgroundTaskManager(max_workers = max_workers)
+    parents_ready = threading.Barrier(max_workers)
+    worktrees = [create_worktree("project") for _ in range(2 * max_workers)]
+    children = {}
+
+    def executor(context, event):
+        if context.parent_task_id:
+            return {"output": "child finished"}
+        parents_ready.wait(timeout = 10)
+        child = manager.start(children[context.task_id]["id"])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not event.wait(0.01):
+            status = get_background_task(child["id"])["status"]
+            if status == "completed":
+                return {"output": "parent collected child"}
+            assert status in {"queued", "running"}, status
+        raise AssertionError("Child starved while its parent occupied a worker.")
+
+    manager.register_agent_executor(executor)
+    parents = []
+    try:
+        for index in range(max_workers):
+            parent = manager.enqueue_agent(
+                "project",
+                "Coordinate",
+                runtime_selection = _runtime(),
+                worktree_id = worktrees[2 * index]["id"],
+                delegation_policy = _policy(),
+                start = False,
+            )
+            children[parent["id"]] = manager.enqueue_child_agent(
+                "project",
+                parent["id"],
+                "Inspect",
+                role = "explorer",
+                budget = _budget(),
+                worktree_id = worktrees[2 * index + 1]["id"],
+                start = False,
+            )
+            parents.append(parent)
+        for parent in parents:
+            manager.start(parent["id"])
+        with manager._lock:
+            futures = list(manager._futures.values())
+        for future in futures:
+            future.result(timeout = 15)
+        for task in parents + list(children.values()):
+            result = get_background_task(task["id"])
+            assert result["status"] == "completed", result
+    finally:
+        manager.prepare_for_app_exit(timeout_seconds = 2)
+        manager._executor.shutdown(wait = True)
+    for worktree in worktrees:
+        cleanup_worktree("project", worktree["id"])
 
 
 def test_child_agents_have_real_lineage_inherited_runtime_and_completion_fence(

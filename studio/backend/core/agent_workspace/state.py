@@ -244,6 +244,14 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
         current = now_ms()
         conn.execute(
             """
+            UPDATE agent_verification_runs
+            SET status = 'interrupted', completed_at = ?
+            WHERE status IN ('running', 'cancelling')
+            """,
+            (current,),
+        )
+        conn.execute(
+            """
             UPDATE agent_background_tasks
             SET status = 'interrupted', updated_at = ?, completed_at = ?,
                 error = COALESCE(error, 'Studio restarted while the task was active.')

@@ -116,13 +116,43 @@ def _bounded_agent_result(result: dict[str, Any]) -> dict[str, Any]:
     return bounded
 
 
+class _TaskExecutor:
+    """Keep bounded child capacity available while root agents wait for it."""
+
+    def __init__(self, max_workers: int):
+        self._roots = ThreadPoolExecutor(
+            max_workers = max_workers, thread_name_prefix = "studio-agent-task"
+        )
+        self._children = ThreadPoolExecutor(
+            max_workers = max_workers, thread_name_prefix = "studio-agent-child"
+        )
+
+    def submit(
+        self,
+        target,
+        *args,
+        delegated = False,
+    ):
+        pool = self._children if delegated else self._roots
+        return pool.submit(target, *args)
+
+    def shutdown(
+        self,
+        wait = True,
+        *,
+        cancel_futures = False,
+    ):
+        try:
+            self._roots.shutdown(wait = wait, cancel_futures = cancel_futures)
+        finally:
+            self._children.shutdown(wait = wait, cancel_futures = cancel_futures)
+
+
 class BackgroundTaskManager:
     """Runs durable verification and agent tasks with a bounded scheduler."""
 
     def __init__(self, max_workers: int = 2):
-        self._executor = ThreadPoolExecutor(
-            max_workers = max_workers, thread_name_prefix = "studio-agent-task"
-        )
+        self._executor = _TaskExecutor(max_workers)
         self._lock = threading.Lock()
         self._futures: dict[str, Future] = {}
         self._cancellations: dict[str, threading.Event] = {}
@@ -498,7 +528,9 @@ class BackgroundTaskManager:
                 elif task["kind"] == "dream":
                     target = self._run_dream
                     args = (task_id, event)
-                future = self._executor.submit(target, *args)
+                future = self._executor.submit(
+                    target, *args, delegated = bool(task.get("parentTaskId"))
+                )
                 self._futures[task_id] = future
             except Exception as exc:
                 self._cancellations.pop(task_id, None)

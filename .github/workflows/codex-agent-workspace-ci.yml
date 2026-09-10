@@ -223,6 +223,7 @@ jobs:
           studio/backend/tests/test_agent_workspace_background_inference.py
           studio/backend/tests/test_agent_workspace_context.py
           studio/backend/tests/test_agent_workspace_durable_agents.py
+          studio/backend/tests/test_agent_workspace_delegation.py
           studio/backend/tests/test_agent_workspace_discovery_routes.py
           studio/backend/tests/test_agent_workspace_execution.py
           studio/backend/tests/test_agent_workspace_github_handoff.py

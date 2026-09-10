@@ -917,6 +917,34 @@ def test_restart_recovery_interrupts_running_but_preserves_queued(tmp_path):
     assert get_background_task(running["id"])["status"] == "interrupted"
 
 
+def test_restart_recovery_interrupts_verification_and_preserves_results(tmp_path):
+    _folder_project(tmp_path)
+    active = state.begin_verification_run("project", "before")
+    completed = state.begin_verification_run("project", "before")
+    completed = finish_verification_run(completed["id"], "passed", "after", [{"status": "passed"}])
+    progress = [{"name": "first check", "status": "passed"}]
+    conn = state.connection()
+    try:
+        key = state._database_key(conn)
+        conn.execute(
+            "UPDATE agent_verification_runs SET results_json = ? WHERE id = ?",
+            (json.dumps(progress), active["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    state._READY_DATABASES.discard(key)
+    recovered = state.get_verification_run(active["id"])
+    assert recovered["status"] == "interrupted"
+    assert recovered["completedAt"] is not None
+    assert recovered["results"] == progress
+    assert recovered["finalFingerprint"] is None
+    assert state.get_verification_run(completed["id"]) == completed
+    # Recovery is once per process/database, not every connection.
+    new_run = state.begin_verification_run("project", "current")
+    assert state.get_verification_run(new_run["id"])["status"] == "running"
+
+
 def test_restart_recovery_cancels_queued_descendants_of_terminal_parent(tmp_path):
     _folder_project(tmp_path)
     parent = create_background_task("project", "agent", {})

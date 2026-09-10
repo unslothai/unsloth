@@ -426,6 +426,45 @@ def test_checkpoint_captures_only_owned_changes_and_preserves_user_state(tmp_pat
     assert missing_secret.returncode != 0
 
 
+@pytest.mark.parametrize("head_changes", [False, True])
+def test_prepared_commit_on_unborn_branch_preserves_index_and_checks_head(tmp_path, head_changes):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+    _folder_project(tmp_path)
+    (tmp_path / "first.txt").write_text("staged\n")
+    (tmp_path / "unrelated.txt").write_text("unrelated\n")
+    _git(tmp_path, "add", ".")
+    (tmp_path / "first.txt").write_text("reviewed working content\n")
+    index = (tmp_path / ".git/index").read_bytes()
+    preview = prepare_commit("project", ["first.txt"], "First prepared commit")
+    assert preview["baseHead"] == ""
+    assert "reviewed working content" in preview["diff"]
+    if head_changes:
+        _git(tmp_path, "commit", "-qm", "External first commit")
+        with pytest.raises(AgentWorkspaceError, match = "HEAD changed"):
+            confirm_prepared_commit("project", preview["id"], preview["confirmationToken"])
+        assert get_preparation(preview["id"])["status"] == "failed"
+        return
+    result = confirm_prepared_commit("project", preview["id"], preview["confirmationToken"])
+    assert (
+        _git(tmp_path, "rev-list", "--parents", "-n", "1", result["commitSha"])
+        == result["commitSha"]
+    )
+    assert _git(tmp_path, "ls-tree", "--name-only", result["commitSha"]) == "first.txt"
+    assert _git(tmp_path, "show", f"{result['commitSha']}:first.txt") == "reviewed working content"
+    assert _git(tmp_path, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert git_service_module._attached_head(tmp_path) == ("refs/heads/main", "")
+    assert (tmp_path / ".git/index").read_bytes() == index
+
+
+def test_unresolvable_existing_branch_is_not_treated_as_unborn(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / ".git/refs/heads/main").write_text("a" * 40 + "\n")
+    with pytest.raises(AgentWorkspaceError):
+        git_service_module._attached_head(tmp_path)
+
+
 def test_prepared_commit_confirmation_preserves_head_index_and_worktree(tmp_path):
     _repository(tmp_path)
     _folder_project(tmp_path)
