@@ -1377,6 +1377,7 @@ def _sidecar_damaged_files(
     root: Path,
     limit: int = 3,
     budget_seconds: float = SIDECAR_SCAN_BUDGET_SECONDS,
+    required: Sequence[str] = (),
 ) -> List[str]:
     """RECORD rows under a sidecar that are gone, truncated, or built for another CPython.
 
@@ -1392,6 +1393,8 @@ def _sidecar_damaged_files(
     ext_tag = _current_ext_tag()
     entries: List[Tuple[str, str, Optional[int], Path, str]] = []
     owners: Dict[str, int] = {}
+    required_names = {_canonical(name) for name in required if name}
+    recordless: List[str] = []
     try:
         dist_infos = sorted(root.glob("*.dist-info"))
     except OSError:
@@ -1403,8 +1406,16 @@ def _sidecar_damaged_files(
         # _sidecar_scan_impl in studio/backend/utils/transformers_version.py.
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
+        except FileNotFoundError:
+            # No RECORD under a pinned package's dist-info is an interrupted install
+            # (pip and uv write it last), and every truncation of that payload is then
+            # invisible to the size check below; an optional package's is cleared by
+            # its top-up instead, so only the pins are held to it.
+            if _canonical(name) in required_names:
+                recordless.append(f"{name}: RECORD is missing")
+            continue
         except OSError:
-            # Absent or unreadable RECORD says nothing about damage.
+            # Unreadable RECORD says nothing about damage.
             continue
         try:
             rows = list(csv.reader(io.StringIO(record)))
@@ -1441,7 +1452,9 @@ def _sidecar_damaged_files(
                     recorded = None
             entries.append((name, rel, recorded, target, key))
 
-    found: List[str] = []
+    found: List[str] = list(recordless[:limit])
+    if len(found) >= limit:
+        return found
     for name, rel, recorded, target, key in entries:
         # Every row: batching a deadline let one slow mount overrun it by a minute.
         if deadline is not None and time.monotonic() > deadline:
@@ -1525,7 +1538,11 @@ def sidecar_is_current(
             return False, problem
     if _sidecar_file_check_disabled():
         return True, ""
-    damaged = _sidecar_damaged_files(root, budget_seconds = budget_seconds)
+    damaged = _sidecar_damaged_files(
+        root,
+        budget_seconds = budget_seconds,
+        required = [spec.split("==")[0] for spec in pins if "==" in spec],
+    )
     if damaged:
         return False, "; ".join(damaged)
     return True, ""
