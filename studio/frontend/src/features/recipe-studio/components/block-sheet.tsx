@@ -352,15 +352,24 @@ export function BlockSheet({
         if (group.kind === "processor") {
           return matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION);
         }
-        return getBlocksForKind(group.kind).some((item) =>
+        const blockKind = VIEW_KIND[group.kind];
+        if (!blockKind) {
+          return false;
+        }
+        return getBlocksForKind(blockKind).some((item) =>
           matchesSearch(item.title, item.description),
         );
       }),
     ];
   }, [hasSearch, matchesSearch]);
+  const visibleScopedBlocks =
+    sheetView === "model" ? modelSetupBlocks : scopedBlocks;
   const showNoMatches =
-    (isRootView && hasSearch && rootSearchBlocks.length === 0) ||
-    (isScopedBlockView && scopedBlocks.length === 0) ||
+    (isRootView &&
+      hasSearch &&
+      rootSearchBlocks.length === 0 &&
+      rootGroups.length === 0) ||
+    (isScopedBlockView && visibleScopedBlocks.length === 0) ||
     (isProcessorView &&
       hasSearch &&
       !matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION));
@@ -527,7 +536,6 @@ export function BlockSheet({
                   />
                 ))}
               {isRootView &&
-                !hasSearch &&
                 rootGroups.map((item) => (
                   <BlockSheetButton
                     key={item.kind}
