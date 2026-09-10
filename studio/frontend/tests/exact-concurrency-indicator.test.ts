@@ -223,3 +223,17 @@ test("the chip reads the flag for the conversation on screen", () => {
   assert.match(STORE, /preemptRecomputedByThreadId: Record<string, boolean>/);
   assert.match(CHIP, /preemptRecomputedByThreadId\[s\.activeThreadId/);
 });
+
+test("the settings selector says what exact mode needs before offering it", () => {
+  // Preemption is off by default and exact mode cannot run without the server parking, so
+  // Auto came up unavailable and On failed the load from a selector that offered both.
+  const section = read(
+    "src/features/settings/components/llama-backend-section.tsx",
+  );
+  const api = read("src/features/settings/api/exact-concurrency.ts");
+  assert.match(api, /parkingAvailable: value\.parking_available \?\? true/);
+  assert.match(api, /parkingPrerequisite: value\.parking_prerequisite \?\? null/);
+  assert.match(section, /disabled=\{!parkingAvailable && setting !== "off"\}/);
+  assert.match(section, /exactConcurrency\.parkingRequired/);
+  assert.match(section, /data-testid="exact-concurrency-parking-required"/);
+});

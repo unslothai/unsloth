@@ -1161,6 +1161,7 @@ export const ptBR = {
           on: "Ligado",
           envLocked: "Definido pela variável de ambiente UNSLOTH_LLAMA_EXACT_CONCURRENCY, então esta escolha não é usada.",
           reloadRequired: "Recarregue o modelo para aplicar a nova configuração.",
+          parkingRequired: "Exige que o llama-server estacione os chats, desativado por padrão: inicie o Studio com {variable}. Até lá, apenas Desativado se aplica.",
         },
         title: "GGUF inference engine",
         label: "Compute backend",

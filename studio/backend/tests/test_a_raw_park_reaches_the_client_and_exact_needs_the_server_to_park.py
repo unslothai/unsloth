@@ -126,6 +126,22 @@ class TestExactNeedsTheServerToPark:
     def test_off_stays_off_whatever_the_server_does(self):
         assert self._state(setting = "off", server_parks = False) == exact.EXACT_STATE_OFF
 
+    def test_the_settings_page_is_told_what_parking_needs(self, monkeypatch):
+        # Off by default: Auto came up unavailable and On failed the load from a selector
+        # that offered both. The response names the variable that turns parking on.
+        from core.inference import llama_preemption as preemption
+        from routes import settings as settings_mod
+
+        monkeypatch.delenv(preemption.PREEMPT_ENV, raising = False)
+        monkeypatch.delenv(preemption.PREEMPT_MODE_ENV, raising = False)
+        assert settings_mod._exact_parking_prerequisite() == f"{preemption.PREEMPT_ENV}=1"
+        monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
+        assert settings_mod._exact_parking_prerequisite() is None
+        monkeypatch.setenv(preemption.PREEMPT_MODE_ENV, "studio")
+        assert settings_mod._exact_parking_prerequisite() == f"{preemption.PREEMPT_MODE_ENV}=server"
+        fields = settings_mod.ExactConcurrencyResponse.model_fields
+        assert "parking_available" in fields and "parking_prerequisite" in fields
+
     def test_the_launch_hands_both_answers_over(self):
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "server_parks = self.server_preempts_kv" in source

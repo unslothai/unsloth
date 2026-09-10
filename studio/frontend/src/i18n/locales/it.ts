@@ -1144,6 +1144,7 @@ export const it = {
           on: "Attivo",
           envLocked: "Impostato dalla variabile d'ambiente UNSLOTH_LLAMA_EXACT_CONCURRENCY, quindi questa scelta non viene usata.",
           reloadRequired: "Ricarica il modello per applicare la nuova impostazione.",
+          parkingRequired: "Richiede che llama-server parcheggi le chat, disattivato per impostazione predefinita: avvia Studio con {variable}. Fino ad allora vale solo Disattivato.",
         },
         title: "Motore di inferenza GGUF",
         label: "Backend di calcolo",

@@ -1133,6 +1133,7 @@ export const ja = {
           on: "オン",
           envLocked: "環境変数 UNSLOTH_LLAMA_EXACT_CONCURRENCY で設定されているため、この選択は使われません。",
           reloadRequired: "新しい設定を適用するにはモデルを読み込み直してください。",
+          parkingRequired: "llama-server がチャットを退避できる必要があり、既定では無効です。{variable} を設定して Studio を起動してください。それまでは「オフ」のみ有効です。",
         },
         title: "GGUF 推論エンジン",
         label: "計算バックエンド",

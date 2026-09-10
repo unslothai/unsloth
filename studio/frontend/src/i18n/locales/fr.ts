@@ -1177,6 +1177,7 @@ export const fr = {
           on: "Activé",
           envLocked: "Défini par la variable d'environnement UNSLOTH_LLAMA_EXACT_CONCURRENCY, ce choix n'est donc pas utilisé.",
           reloadRequired: "Rechargez le modèle pour appliquer le nouveau réglage.",
+          parkingRequired: "Nécessite que llama-server mette les conversations en pause, désactivé par défaut : lancez Studio avec {variable}. D'ici là, seul Désactivé s'applique.",
         },
         title: "Moteur d'inférence GGUF",
         label: "Backend de calcul",

@@ -246,6 +246,40 @@ def test_stream_stall_timeout_callable_re_resolved_each_read():
     asyncio.run(_run())
 
 
+def test_park_notices_before_the_first_token_keep_the_first_token_window():
+    # A request parked during its prefill relays `: preempted` and `: resumed` before any
+    # token. Taken as the first item, they armed the short stall clock over the prefill the
+    # resume goes back into, and a large one was cut off as a stall.
+    async def _run():
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
+        items = iter([": preempted", ": resumed", "data: {}", "data: {}"])
+        seen = []
+
+        class _Items:
+            async def __anext__(self):
+                try:
+                    return next(items)
+                except StopIteration:
+                    raise StopAsyncIteration from None
+
+        async for item in inf_mod._aiter_llama_stream_items(
+            _Items(),
+            cancel_event = threading.Event(),
+            request = _Request(),
+            response = response,
+            first_token_deadline = time.monotonic() + 100,
+            post_first_item_read_timeout_s = lambda: 2.0,
+        ):
+            seen.append((item, response.request.extensions["timeout"].get("read")))
+
+        assert [item for item, _ in seen] == [": preempted", ": resumed", "data: {}", "data: {}"]
+        # The notices leave the first-token window armed; the first token arms the stall clock.
+        assert seen[0][1] > 50 and seen[1][1] > 50
+        assert all(abs(read - 2.0) < 0.05 for _, read in seen[2:])
+
+    asyncio.run(_run())
+
+
 def test_stream_stall_timeout_disabled_clears_read_timeout():
     # UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT=0 disables the stall guard, so
     # the callable returns None. Once a chunk has arrived the leftover

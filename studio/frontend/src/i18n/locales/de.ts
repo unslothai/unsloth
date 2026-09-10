@@ -1178,6 +1178,7 @@ export const de = {
           on: "An",
           envLocked: "Durch die Umgebungsvariable UNSLOTH_LLAMA_EXACT_CONCURRENCY gesetzt, diese Auswahl wird daher nicht verwendet.",
           reloadRequired: "Modell neu laden, um die neue Einstellung anzuwenden.",
+          parkingRequired: "Erfordert, dass llama-server Chats parkt, was standardmäßig aus ist: Studio mit {variable} starten. Bis dahin gilt nur Aus.",
         },
         title: "GGUF-Inferenz-Engine",
         label: "Compute-Backend",

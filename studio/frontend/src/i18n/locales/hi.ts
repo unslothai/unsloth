@@ -1154,6 +1154,7 @@ export const hi = {
           on: "चालू",
           envLocked: "यह UNSLOTH_LLAMA_EXACT_CONCURRENCY एनवायरनमेंट वेरिएबल से तय है, इसलिए यह चयन उपयोग नहीं होता।",
           reloadRequired: "नई सेटिंग लागू करने के लिए मॉडल फिर से लोड करें।",
+          parkingRequired: "इसके लिए llama-server को चैट पार्क करनी होती है, जो डिफ़ॉल्ट रूप से बंद है: Studio को {variable} के साथ शुरू करें। तब तक केवल बंद लागू होता है।",
         },
         title: "GGUF इनफ़रेंस इंजन",
         label: "कंप्यूट बैकएंड",

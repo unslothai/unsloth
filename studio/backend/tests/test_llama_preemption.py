@@ -1024,6 +1024,10 @@ class TestTheResumeWait:
 
     def test_the_hard_backstop_outlasts_the_slowest_answer_measured(self):
         bound = DEFAULT_RESUME_WAIT_TIMEOUT_S * MAX_RESUME_WAIT_MULTIPLE
+        # The admission wait nested inside it must not give up first.
+        from core.inference import llama_admission
+
+        assert llama_admission._MAX_REPARK_WAIT_MULTIPLE == MAX_RESUME_WAIT_MULTIPLE
         assert bound >= 2 * (8192 / 2.3), f"the backstop is {bound}s, shorter than two answers"
 
 

@@ -34,6 +34,11 @@ export interface ExactConcurrencySettings {
   /** What the RUNNING server does: on, off or unavailable. */
   active: string;
   reloadRequired: boolean;
+  /** Exact mode needs the server to own parking, which the environment opts into; until then
+   *  Auto reports unavailable and On fails the load. */
+  parkingAvailable: boolean;
+  /** The setting that turns parking on, when it is off. */
+  parkingPrerequisite: string | null;
 }
 
 interface ApiExactConcurrencySettings {
@@ -46,6 +51,10 @@ interface ApiExactConcurrencySettings {
   active: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   reload_required: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  parking_available?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  parking_prerequisite?: string | null;
 }
 
 function fromApi(value: ApiExactConcurrencySettings): ExactConcurrencySettings {
@@ -60,6 +69,8 @@ function fromApi(value: ApiExactConcurrencySettings): ExactConcurrencySettings {
     envOverride: value.env_override ?? null,
     active: value.active,
     reloadRequired: value.reload_required,
+    parkingAvailable: value.parking_available ?? true,
+    parkingPrerequisite: value.parking_prerequisite ?? null,
   };
 }
 

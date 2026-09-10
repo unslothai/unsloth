@@ -1123,6 +1123,7 @@ export const zhCN = {
           on: "开启",
           envLocked: "由环境变量 UNSLOTH_LLAMA_EXACT_CONCURRENCY 设置，因此此处的选择不会生效。",
           reloadRequired: "重新加载模型以应用新设置。",
+          parkingRequired: "需要 llama-server 能暂存对话，默认关闭：请以 {variable} 启动 Studio。在此之前仅“关闭”生效。",
         },
         title: "GGUF 推理引擎",
         label: "计算后端",

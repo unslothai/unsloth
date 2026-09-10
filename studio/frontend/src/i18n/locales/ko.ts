@@ -1147,6 +1147,7 @@ export const ko = {
           on: "켜기",
           envLocked: "UNSLOTH_LLAMA_EXACT_CONCURRENCY 환경 변수로 설정되어 있어 이 선택은 사용되지 않습니다.",
           reloadRequired: "새 설정을 적용하려면 모델을 다시 로드하세요.",
+          parkingRequired: "llama-server가 채팅을 대기시킬 수 있어야 하며 기본값은 꺼져 있습니다. {variable}로 Studio를 시작하세요. 그때까지는 끄기만 적용됩니다.",
         },
         title: "GGUF 추론 엔진",
         label: "연산 백엔드",

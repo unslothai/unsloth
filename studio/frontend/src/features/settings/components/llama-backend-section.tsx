@@ -275,6 +275,9 @@ function ExactConcurrencyRow() {
     settings?.envOverride ?? settings?.stored ?? settings?.effective ?? null;
   const value = shown !== null && isExactConcurrencySetting(shown) ? shown : "";
   const envLocked = settings?.envOverride != null;
+  // Auto and On need the server to park, which is off until the environment says so: offered
+  // anyway, Auto came up unavailable and On failed the load. Off is always a real choice.
+  const parkingAvailable = settings?.parkingAvailable ?? true;
 
   return (
     <>
@@ -306,7 +309,11 @@ function ExactConcurrencyRow() {
           </SelectTrigger>
           <SelectContent>
             {EXACT_CONCURRENCY_SETTINGS.map((setting) => (
-              <SelectItem key={setting} value={setting}>
+              <SelectItem
+                key={setting}
+                value={setting}
+                disabled={!parkingAvailable && setting !== "off"}
+              >
                 {t(EXACT_CONCURRENCY_LABELS[setting])}
               </SelectItem>
             ))}
@@ -317,6 +324,18 @@ function ExactConcurrencyRow() {
       {envLocked ? (
         <p className="pb-3 text-xs text-amber-600 dark:text-amber-400">
           {t("settings.resources.llamaBackend.exactConcurrency.envLocked")}
+        </p>
+      ) : null}
+
+      {!envLocked && settings && !parkingAvailable ? (
+        <p
+          className="pb-3 text-xs text-muted-foreground"
+          data-testid="exact-concurrency-parking-required"
+        >
+          {t(
+            "settings.resources.llamaBackend.exactConcurrency.parkingRequired",
+            { variable: settings.parkingPrerequisite ?? "" },
+          )}
         </p>
       ) : null}
 

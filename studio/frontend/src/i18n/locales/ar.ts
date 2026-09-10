@@ -1151,6 +1151,7 @@ export const ar = {
           on: "تشغيل",
           envLocked: "مضبوط عبر متغير البيئة UNSLOTH_LLAMA_EXACT_CONCURRENCY، لذلك لا يُستخدم هذا الاختيار.",
           reloadRequired: "أعد تحميل النموذج لتطبيق الإعداد الجديد.",
+          parkingRequired: "يتطلب أن يوقف llama-server المحادثات مؤقتًا، وهو معطل افتراضيًا: شغّل Studio مع {variable}. حتى ذلك الحين يسري خيار إيقاف فقط.",
         },
         title: "محرك استدلال GGUF",
         label: "خلفية الحوسبة",

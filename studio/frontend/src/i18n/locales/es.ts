@@ -1173,6 +1173,7 @@ export const es = {
           on: "Activado",
           envLocked: "Definido por la variable de entorno UNSLOTH_LLAMA_EXACT_CONCURRENCY, así que esta elección no se usa.",
           reloadRequired: "Recarga el modelo para aplicar la nueva configuración.",
+          parkingRequired: "Requiere que llama-server aparque los chats, desactivado por defecto: inicia Studio con {variable}. Hasta entonces solo se aplica Desactivado.",
         },
         title: "Motor de inferencia GGUF",
         label: "Backend de cómputo",

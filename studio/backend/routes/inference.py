@@ -4447,6 +4447,14 @@ async def _aiter_llama_stream_items(
                         last_item_at = now
                         continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+        if last_item_at is None and _server_park_sse(item) is not None:
+            # A park notice before any token is not the first token: the request was parked
+            # during its prefill, and the prefill it resumes into still needs the first-token
+            # window, not the stall clock. Fed to the excuse and relayed, nothing else.
+            if park_above is not None:
+                park_above.feed_line(item)
+            yield item
+            continue
         if last_item_at is None and response is not None:
             # The first-token read deadline no longer applies once a chunk has
             # arrived: switch to the stall timeout, or clear the read timeout
@@ -35847,14 +35855,14 @@ async def _openai_passthrough_stream_admitted(
 
         def _repriced_passthrough_cap(fitted):
             """The bound for what survives the drop, not for the history it removed. Raw, as the
-            first bound was: a retry priced as preemptable would take the whole window back."""
+            first bound was: a retry priced as pausable would take the whole window back."""
             return _openai_llama_admission_enforced_max_tokens(
                 payload,
                 request = request,
                 llama_backend = llama_backend,
                 conversation = fitted,
                 injected_tools = body.get("tools"),
-                preemptable = False,
+                pausable = False,
             )
 
         def _apply_passthrough_truncation(err_text: str) -> bool:
@@ -36826,14 +36834,14 @@ async def _openai_passthrough_non_streaming_upstream(
 
     def _repriced_passthrough_cap(fitted):
         """The bound for what survives the drop, not for the history it removed. Raw, as the
-        first bound was: a retry priced as preemptable would take the whole window back."""
+        first bound was: a retry priced as pausable would take the whole window back."""
         return _openai_llama_admission_enforced_max_tokens(
             payload,
             request = request,
             llama_backend = llama_backend,
             conversation = fitted,
             injected_tools = body.get("tools"),
-            preemptable = False,
+            pausable = False,
         )
 
     def _apply_nonstream_truncation(err_text: str) -> bool:

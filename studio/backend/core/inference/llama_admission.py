@@ -75,8 +75,9 @@ _log = logging.getLogger(__name__)
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
 # How much longer than its patience a reparking lease may wait while the pool is visibly
-# draining. Matches the preemptor's MAX_RESUME_WAIT_MULTIPLE; the two waits are the same wait.
-_MAX_REPARK_WAIT_MULTIPLE = 20
+# draining. Matches the preemptor's MAX_RESUME_WAIT_MULTIPLE; the two waits are the same wait,
+# and at 20 this one gave up at 30 minutes inside an outer wait raised to two hours.
+_MAX_REPARK_WAIT_MULTIPLE = 80
 
 
 def _executor_workers() -> int:

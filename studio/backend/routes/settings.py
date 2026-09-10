@@ -697,6 +697,11 @@ class ExactConcurrencyResponse(BaseModel):
     # What the RUNNING llama-server does: on, off, or unavailable.
     active: str
     reload_required: bool
+    # Exact mode needs the server to own parking, which is off until the environment opts in:
+    # without it Auto reports unavailable and On fails the load. `parking_prerequisite` names
+    # the setting that would turn it on.
+    parking_available: bool = True
+    parking_prerequisite: Optional[str] = None
 
 
 class VramBudgetPayload(BaseModel):
@@ -1345,15 +1350,31 @@ def _exact_concurrency_reload_required(effective: str) -> bool:
     return str(getattr(backend, "requested_exact_concurrency", EXACT_OFF)) != effective
 
 
+def _exact_parking_prerequisite() -> Optional[str]:
+    """What has to be set before the server can park, else None. Preemption is off by default
+    and exact mode cannot run without the server parking, so a selector offering Auto and On
+    on a default install offered two choices that could not work."""
+    from core.inference import llama_preemption as _preemption
+
+    if not _preemption.preemption_enabled():
+        return f"{_preemption.PREEMPT_ENV}=1"
+    if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
+        return f"{_preemption.PREEMPT_MODE_ENV}={_preemption.PREEMPT_MODE_SERVER}"
+    return None
+
+
 def _exact_concurrency_response() -> ExactConcurrencyResponse:
     stored = get_exact_concurrency()
     effective = resolve_exact_setting(None, stored = stored)
+    prerequisite = _exact_parking_prerequisite()
     return ExactConcurrencyResponse(
         exact_concurrency = stored,
         effective = effective,
         env_override = exact_setting_env(),
         active = _exact_concurrency_active(),
         reload_required = _exact_concurrency_reload_required(effective),
+        parking_available = prerequisite is None,
+        parking_prerequisite = prerequisite,
     )
 
 
