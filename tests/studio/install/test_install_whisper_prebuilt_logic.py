@@ -2300,8 +2300,10 @@ def test_a_hyphenated_upstream_pin_keeps_its_suffix_when_matching_packagings(mon
     monkeypatch.setattr(M.llama, "github_releases", lambda _repo, max_pages = 1: releases)
     newest = M._api_newest_release_tag_for_upstream("r/w", "v1.9.2-rc1", "v1.9.2-rc1-unsloth.1")
     assert newest == "v1.9.2-rc1-unsloth.2"
-    # And a plain pin still does not take a longer tag that merely starts with it.
+    # And a plain pin takes neither a longer tag that merely starts with it nor a
+    # prerelease of it: the manifest match the full path makes would refuse both.
     releases.append({"tag_name": "v1.9.20-unsloth.1", "published_at": "2026-04-01T00:00:00Z"})
+    releases.append({"tag_name": "v1.9.2-rc1-unsloth.9", "published_at": "2026-05-01T00:00:00Z"})
     assert (
         M._api_newest_release_tag_for_upstream("r/w", "v1.9.2", "v1.9.2-unsloth.5")
         == "v1.9.2-unsloth.5"

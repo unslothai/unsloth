@@ -6859,3 +6859,32 @@ def test_the_host_profile_carries_the_cuda_runtimes_on_disk(monkeypatch):
     # Off CUDA hosts no selector reads it, and the key is a constant None.
     cpu = linux_host(has_physical_nvidia = False, has_usable_nvidia = False)
     assert M.host_profile(cpu)["cuda_runtime_lines"] is None
+
+
+def test_the_host_profile_records_the_rocm_runtime_the_upstream_selector_reads(monkeypatch):
+    """resolve_upstream_asset_choice picks among ROCm 6.4 and 7.2 assets by the runtime's
+    major.minor; a profile without it kept the old asset current across a ROCm move."""
+    import dataclasses
+    from types import SimpleNamespace
+
+    M = INSTALL_LLAMA_PREBUILT
+    host = linux_host()
+    try:
+        rocm_host = dataclasses.replace(host, has_rocm = True)
+    except TypeError:
+        rocm_host = SimpleNamespace(
+            **{k: getattr(host, k) for k in dir(host) if not k.startswith("_")}
+        )
+        rocm_host.has_rocm = True
+    monkeypatch.setattr(M, "_detect_host_rocm_version", lambda: (6, 4))
+    assert M.host_profile(rocm_host)["rocm_runtime"] == [6, 4]
+    monkeypatch.setattr(M, "_detect_host_rocm_version", lambda: (7, 2))
+    assert M.host_profile(rocm_host)["rocm_runtime"] == [7, 2]
+    monkeypatch.setattr(M, "_detect_host_rocm_version", lambda: None)
+    assert M.host_profile(rocm_host)["rocm_runtime"] is None
+    # Never probed off ROCm hosts.
+    monkeypatch.setattr(
+        M, "_detect_host_rocm_version", lambda: pytest.fail("probed the runtime")
+    )
+    assert M.host_profile(host)["rocm_runtime"] is None
+

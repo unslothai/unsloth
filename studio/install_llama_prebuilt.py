@@ -6598,6 +6598,12 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         ),
         "compute_caps": _sorted_labels(host.compute_caps),
         "has_rocm": bool(host.has_rocm),
+        # The upstream ROCm assets are chosen by the runtime's major.minor
+        # (resolve_upstream_asset_choice reads _detect_host_rocm_version), which the
+        # GPU fields do not carry: a ROCm upgrade or downgrade with the same card and
+        # release changes the selection, and a marker that did not record the runtime
+        # would keep the old asset current.
+        "rocm_runtime": _rocm_runtime_for_profile(host),
         "rocm_gfx_target": host.rocm_gfx_target or None,
         "rocm_gfx_targets": _sorted_labels(host.rocm_gfx_targets),
         "has_intel_gpu": bool(host.has_intel_gpu),
@@ -6609,6 +6615,16 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         # other field equal. None off CUDA hosts, where no selector reads it.
         "cuda_runtime_lines": _detected_cuda_runtime_lines(host),
     }
+
+
+def _rocm_runtime_for_profile(host: HostInfo) -> "list[int] | None":
+    if not host.has_rocm:
+        return None
+    try:
+        version = _detect_host_rocm_version()
+    except Exception:  # noqa: BLE001 - an unreadable runtime is "cannot tell", recorded as such
+        return None
+    return list(version) if version else None
 
 
 def _detected_cuda_runtime_lines(host: HostInfo) -> "list[str] | None":

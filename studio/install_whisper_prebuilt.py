@@ -1561,6 +1561,10 @@ def _existing_install_is_intact(
     return marker
 
 
+# What the fork appends to the upstream tag it packages: v1.9.2 -> v1.9.2-unsloth.17.
+_PACKAGING_SUFFIX = "-unsloth."
+
+
 def _api_newest_release_tag_for_upstream(
     repo: str, whisper_tag: str, recorded_release: str
 ) -> "str | None":
@@ -1582,12 +1586,17 @@ def _api_newest_release_tag_for_upstream(
         tag = release.get("tag_name") if isinstance(release, dict) else None
         if not isinstance(tag, str):
             continue
-        # The packaged tag is the upstream tag plus "-<packaging>"; the upstream part
-        # can itself carry a hyphen (v1.9.2-rc1), so it is matched as a prefix rather
-        # than cut at the first hyphen, which would read v1.9.2-rc1-unsloth.2 as a
-        # packaging of v1.9.2 and leave a newer revision out of the answer.
+        # The packaged tag is the upstream tag plus the fork's packaging suffix
+        # (-unsloth.N). The upstream part can itself carry a hyphen (v1.9.2-rc1), so
+        # the tag is neither cut at its first hyphen (which read v1.9.2-rc1-unsloth.2 as
+        # a packaging of v1.9.2) nor matched on any hyphen (which read it as a packaging
+        # of v1.9.2 the other way round, and named an RC the manifest match would refuse).
         packaged = _normalized_upstream_tag(tag)
-        if tag == recorded_release or packaged == wanted or packaged.startswith(wanted + "-"):
+        if (
+            tag == recorded_release
+            or packaged == wanted
+            or packaged.startswith(wanted + _PACKAGING_SUFFIX)
+        ):
             matching.append(release)
     return llama._newest_release_tag_from_releases(matching)
 
