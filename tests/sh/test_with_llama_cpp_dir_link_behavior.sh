@@ -41,6 +41,11 @@ setup_fail() { exit "$1"; }
 _assert_studio_owned_or_absent() { :; }
 C_ERR=""
 _STUDIO_HOME_IS_CUSTOM=false
+# The runtime children took their own ownership flag when UNSLOTH_HOME arrived: with no master
+# root it carries _STUDIO_HOME_IS_CUSTOM, which is what this fixture is about. Unseeded it is an
+# unbound variable under set -u, and the block dies before printing anything, which reads here as
+# every state assertion getting an empty value rather than as a broken harness.
+_RUNTIME_ROOT_IS_CUSTOM=false
 _NEED_LLAMA_SOURCE_BUILD=UNSET
 _SKIP_PREBUILT_INSTALL=UNSET
 '
@@ -54,10 +59,23 @@ SNIP="$PREAMBLE"$'\n'"$block"$'\n'"$EPILOGUE"
 
 # run_link <local_dir> <canonical_llama_cpp_dir> -> prints state lines; RC in $RC
 run_link() {
+    # stderr kept on failure: the block runs under set -u, so a variable this preamble does not
+    # seed kills it silently and every val() below returns empty. That looked like seven wrong
+    # answers rather than one missing seed, so say which it is.
     OUT="$(env -i PATH="$PATH" HOME="$T" \
         UNSLOTH_LOCAL_LLAMA_CPP_DIR="$1" LLAMA_CPP_DIR="$2" \
-        bash -c "$SNIP" 2>/dev/null)"
+        bash -c "$SNIP" 2>"$T/.stderr")"
     RC=$?
+    # Only when the block claims it succeeded: some fixtures below expect setup_fail, and those
+    # legitimately exit before the epilogue.
+    if [ "$RC" -eq 0 ]; then
+        case "$OUT" in
+            *LINKED=*) : ;;
+            *) echo "FAIL: the block exited 0 and printed no state; stderr was:" >&2
+               sed 's/^/    /' "$T/.stderr" >&2
+               exit 1 ;;
+        esac
+    fi
 }
 val() { printf '%s\n' "$OUT" | grep "^$1=" | head -1 | cut -d= -f2-; }
 

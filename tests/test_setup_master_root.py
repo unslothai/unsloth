@@ -390,8 +390,118 @@ def test_every_runtime_ownership_guard_uses_the_runtime_flag():
         ), line
 
 
+def test_the_windows_node_guard_covers_a_master_root():
+    """setup.ps1's Node ownership guard and its marker both hung off $NodeOverride alone.
+
+    $NodeOverride is set only in the UNSLOTH_STUDIO_HOME / STUDIO_HOME branch. The master-root
+    branch sets $NodeParent and leaves it null, so <master>\\node reached the whole-directory
+    os.replace() in install_node_prebuilt.py with no ownership evidence at all, and the tree the
+    run then created stayed unmarked, which makes the uninstaller decline to remove it later.
+    setup.sh had already moved these two sites to _RUNTIME_ROOT_IS_CUSTOM.
+
+    The sibling test above only rejects $StudioHomeIsCustom beside $NodeDir, which this bug
+    never wrote: it named a third variable. So the rule here is positive, not a denial.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    guards = [
+        line for line in ps.splitlines()
+        if "$NodeDir" in line and ".unsloth-studio-owned" not in line
+        and ("$NodeOverride" in line or "$RuntimeRootIsCustom" in line)
+    ]
+    # The guard's `if`, and the marker's `if`. Fewer means the block was restructured and this
+    # test would otherwise pass by finding nothing.
+    assert len(guards) >= 2, guards
+    for line in guards:
+        assert "$RuntimeRootIsCustom" in line, line
+
+
 UNINSTALL_SH = REPO_ROOT / "scripts" / "uninstall.sh"
 UNINSTALL_PS1 = REPO_ROOT / "scripts" / "uninstall.ps1"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not available")
+def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
+    """setup.ps1 resolves through PowerShell's own location; uninstall.ps1 used
+    [IO.Path]::GetFullPath, which anchors at [Environment]::CurrentDirectory.
+
+    PowerShell does not keep those two in step, so after a Set-Location a relative UNSLOTH_HOME
+    named one install to setup and a different one to the uninstaller. The owner marker does not
+    save you there: it spares trees that are not Unsloth's, and the wrongly resolved path is
+    another Unsloth install, marker and all.
+
+    Runs the shipped function rather than matching its text, so a rewrite that keeps the words
+    and loses the behaviour still fails.
+    """
+    initial = tmp_path / "initial"
+    chosen = tmp_path / "chosen"
+    (chosen / "portable").mkdir(parents = True)
+    initial.mkdir()
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        f'''$txt = Get-Content -Raw "{UNINSTALL_PS1}"
+foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
+    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
+    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
+    Invoke-Expression $m.Value
+}}
+[System.Environment]::CurrentDirectory = "{initial}"
+Set-Location "{chosen}"
+$env:UNSLOTH_HOME = "portable"
+$env:USERPROFILE = "{tmp_path}/profile"
+Write-Output (_MasterRoot)
+''',
+        encoding = "utf-8",
+    )
+    out = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(script)],
+        capture_output = True, text = True, check = True,
+    ).stdout.strip()
+    assert "EXTRACT-FAILED" not in out, out
+    assert out == str(chosen / "portable"), out
+
+
+def test_neither_uninstaller_recurses_into_an_install_lock_path():
+    """A lock is always a regular file, so a directory at one of those fixed names is the user's.
+
+    prebuilt_core.install_lock creates it with os.open(O_CREAT | O_EXCL). Both uninstallers
+    reached the lock names through their recursive remover, which in a user-chosen master root
+    deletes a whole tree with none of the owner-marker proof the runtime children require.
+    Behaviour is covered by tests/sh/test_uninstall_master_root.sh for the POSIX half; this
+    holds the PowerShell twin, which has no runner here.
+    """
+    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+
+    assert "_remove_lock_file() {" in sh
+    assert "function _RemoveLockFile" in ps
+
+    # The call sites do not all spell the lock out: the PowerShell ones iterate $lockName over a
+    # list built on the line above, and both sweep a $stale from a glob. Matching only on
+    # "install.lock" let the master-root loop keep the recursive remover and still pass.
+    lockish = ("install.lock", "lockName", "$stale", "_stale", "_mr_lock")
+    for text, remover, shape in (
+        (sh, "_remove_path ", "_remove_lock_file"),
+        (ps, "_RemovePath ", "_RemoveLockFile"),
+    ):
+        hits = 0
+        for line in text.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            if remover not in line and shape not in line:
+                continue
+            if not any(token in line for token in lockish):
+                continue
+            hits += 1
+            assert shape in line, line
+        # Counts the call sites found, not the ones left wrong: once they are all correct the
+        # remover no longer appears beside a lock at all, and a count of zero would mean the
+        # tokens above had stopped matching and this loop proved nothing.
+        assert hits >= 4, (remover, hits)
+
+    # The rename install_node_prebuilt makes keeps the leading dot, so a glob without one also
+    # matches names the user owns in their own root.
+    assert '".*.install.lock.stale.*"' in ps
+    assert '"*.install.lock.stale.*"' not in ps
 
 
 def test_both_uninstallers_clear_the_master_root_children():

@@ -734,6 +734,36 @@ def _torch_runtime_tag() -> str:
     return tag
 
 
+# Caches whose path is pasted into a compiler command line by somebody else's code, unquoted.
+#
+# torch/_inductor/cpp_builder.py builds the g++/clang++ invocation with " ".join(sources) and an
+# unquoted output path, then reparses it with shlex.split. A root containing a space therefore
+# splits into two arguments and the build fails outright:
+#
+#   g++: fatal error: input file .../my is the same as output file
+#
+# Nothing here can fix that: the quoting is in PyTorch. What we can do is not create the
+# situation. Left unset, Inductor uses its own whitespace-free temporary directory, which is
+# exactly what happened before this file started pinning these, so skipping the pin is a return
+# to the behaviour that shipped rather than a new fallback.
+#
+# It is not a rare shape. The default Studio root hangs off the profile directory, and
+# "C:\Users\First Last" is an ordinary Windows account name.
+_TOOLCHAIN_PATH_KEYS = frozenset({
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TORCH_EXTENSIONS_DIR",
+    "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
+    "TRITON_HOME",
+    "CUDA_CACHE_PATH",
+})
+
+
+def _toolchain_unsafe(key: str, value: str) -> bool:
+    """Whether pinning *key* to *value* would hand a compiler a path it cannot parse."""
+    return key in _TOOLCHAIN_PATH_KEYS and any(ch.isspace() for ch in value)
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -771,6 +801,15 @@ def _setup_cache_env() -> None:
         # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
         # sys.path and sends the compiler to the system temp directory instead.
         if not (os.environ.get(key) or "").strip():
+            # An explicit value is still honoured above: the caller chose it, and only a default
+            # we invented is ours to withhold.
+            if _toolchain_unsafe(key, value):
+                logger.debug(
+                    "leaving %s unset: %s contains whitespace, which the C++ builders "
+                    "paste into a command line unquoted",
+                    key, value,
+                )
+                continue
             os.environ[key] = value
             # Best-effort: a non-writable custom HF_HOME must not crash startup
             try:

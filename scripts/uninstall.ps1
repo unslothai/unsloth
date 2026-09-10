@@ -119,6 +119,28 @@ Environment:
         }
     }
 
+    # An install lock, and only an install lock.
+    #
+    # prebuilt_core.install_lock creates these with os.open(O_CREAT | O_EXCL) and writes a pid,
+    # so the lock is always a regular file. _RemovePath deletes recursively, which in a
+    # user-chosen master root would take a whole tree that merely happens to carry one of these
+    # fixed names, with none of the owner-marker proof the runtime children beside it require.
+    # uninstall.sh's _remove_lock_file is the same rule.
+    function _RemoveLockFile {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        # A reparse point at a lock name is not a lock either, and following one would delete
+        # whatever it points at.
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item -and -not $item.PSIsContainer -and
+            -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            _RemovePath $Path
+        } else {
+            _Substep "keeping non-file at an install-lock path: $Path" "Yellow"
+        }
+    }
+
     # LOCALAPPDATA / APPDATA are dropped in service and CI contexts, so fall back to the known
     # folder; $null only if that fails too, which callers treat as incomplete cleanup.
     function _AppDataRoot {
@@ -569,7 +591,18 @@ Environment:
         if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
         $expanded = _ExpandTilde $env:UNSLOTH_HOME.Trim()
         $norm = $null
-        try { $norm = [System.IO.Path]::GetFullPath($expanded).TrimEnd('\','/') } catch { return $null }
+        # The provider path first, exactly as setup.ps1's Get-CanonicalDir resolves it.
+        # [IO.Path]::GetFullPath anchors a RELATIVE root at [Environment]::CurrentDirectory,
+        # which PowerShell does not keep in step with its own location: after a Set-Location the
+        # two disagree, so a relative UNSLOTH_HOME named one install to setup and a different one
+        # here. Nothing downstream would notice -- process selection, the marker check and the
+        # removal all just operate on the wrong root, and the marker only spares trees that are
+        # not Unsloth's, not another Unsloth install.
+        try {
+            $norm = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($expanded)
+        } catch { $norm = $null }
+        try { $norm = [System.IO.Path]::GetFullPath($(if ($norm) { $norm } else { $expanded })).TrimEnd('\','/') }
+        catch { return $null }
         if (-not $norm) { return $null }
         # The default root is left to the blocks that own it, which remove it unconditionally.
         if ($env:USERPROFILE -and ($norm -ieq (Join-Path $env:USERPROFILE ".unsloth").TrimEnd('\','/'))) {
@@ -1024,7 +1057,7 @@ Environment:
         }
         foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock",
                                 ".whisper.cpp.install.lock", ".sd.cpp.install.lock")) {
-            _RemovePath (Join-Path $masterRoot $lockName)
+            _RemoveLockFile (Join-Path $masterRoot $lockName)
         }
         # The prebuilt installers SHARE <root>\.staging and prune it only when empty, so
         # anything left in it here is not ours: remove the directory only, never its contents.
@@ -1034,9 +1067,12 @@ Environment:
             _RemovePath $masterStaging
         }
         if (Test-Path -LiteralPath $masterRoot) {
+            # ".*" and not "*": install_node_prebuilt renames <root>\.<name>.install.lock, so the
+            # leading dot is part of the name. Without it this also matches, say, a user's
+            # "backup.install.lock.stale.copy", which is not ours to delete in their own root.
             foreach ($stale in @(Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue |
-                                 Where-Object { $_.Name -like "*.install.lock.stale.*" })) {
-                _RemovePath $stale.FullName
+                                 Where-Object { $_.Name -like ".*.install.lock.stale.*" })) {
+                _RemoveLockFile $stale.FullName
             }
         }
         # Only when nothing of the user's is left.
@@ -1066,15 +1102,15 @@ Environment:
     # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
     if ($defaultUnslothHome) {
         foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock", ".whisper.cpp.install.lock")) {
-            _RemovePath (Join-Path $defaultUnslothHome $lockName)
+            _RemoveLockFile (Join-Path $defaultUnslothHome $lockName)
         }
         # Taking over an abandoned lock renames it to .stale.<pid> before unlinking; a crash
         # between the two strands the rename, so sweep any leftovers. -Force sees dotted names.
         if (Test-Path -LiteralPath $defaultUnslothHome) {
             # -like, not -Filter: the Win32 filter is unreliable for names with several dots.
             foreach ($stale in @(Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue |
-                                 Where-Object { $_.Name -like "*.install.lock.stale.*" })) {
-                _RemovePath $stale.FullName
+                                 Where-Object { $_.Name -like ".*.install.lock.stale.*" })) {
+                _RemoveLockFile $stale.FullName
             }
         }
     }

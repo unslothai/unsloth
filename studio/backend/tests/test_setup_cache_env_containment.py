@@ -106,6 +106,63 @@ def test_regenerable_caches_are_pinned_under_the_studio_root(tmp_path):
         assert value.startswith(root), f"{key} escaped the studio root: {value}"
 
 
+# Pinned to a path a compiler is handed on a command line. torch/_inductor/cpp_builder.py joins
+# its arguments with spaces, interpolates the output path unquoted, and reparses the result with
+# shlex.split, so a root containing a space splits mid-path and the C++ build fails outright.
+_TOOLCHAIN_PINNED = (
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TORCH_EXTENSIONS_DIR",
+    "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
+    "CUDA_CACHE_PATH",
+)
+
+
+def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypatch, tmp_path):
+    """"C:\\Users\\First Last" is an ordinary Windows account name, so the DEFAULT Studio root
+    contains a space for a large share of installs. Before this file pinned these, Inductor used
+    its own whitespace-free temporary directory and the build worked; pinning it into a spaced
+    root broke torch.compile outright. Unset is the behaviour that shipped, so that is the
+    fallback: the rest of the caches, which nobody pastes into a command line, still move."""
+    spaced = tmp_path / "my home" / "studio"
+    spaced.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(spaced))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    for key in _TOOLCHAIN_PINNED:
+        assert key not in os.environ, f"{key} was pinned to a path with a space"
+    # Non-vacuity, and the point of the guard being narrow: everything else is still contained.
+    for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "MPLCONFIGDIR", "UNSLOTH_COMPILE_LOCATION"):
+        assert os.environ[key].startswith(str(spaced.parent)), key
+
+
+def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_path):
+    """The other half of the guard: it must fire on whitespace and nothing else."""
+    plain = tmp_path / "plain_home" / "studio"
+    plain.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(plain))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    for key in _TOOLCHAIN_PINNED:
+        assert os.environ.get(key, "").startswith(str(plain)), key
+
+
+def test_an_explicit_spaced_compiler_cache_is_left_alone(monkeypatch, tmp_path):
+    """Only a default we invented is ours to withhold. A caller who set the variable chose it,
+    and silently dropping it would send their cache somewhere they did not ask for."""
+    chosen = tmp_path / "their choice"
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(chosen)
+
+
 def test_default_install_leaves_the_shared_hf_cache_alone(monkeypatch, tmp_path):
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))

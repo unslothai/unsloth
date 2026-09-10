@@ -136,6 +136,22 @@ echo "== a deny-listed root is refused =="
 got=$( ( HOME="$HOME"; UNSLOTH_HOME="/"; export HOME UNSLOTH_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "/ yields nothing" "$got" ""
 
+echo "== a root that is gone does not end the uninstall =="
+# uninstall.sh runs under set -e, and the canonicalizing `cd` fails whenever the root is absent:
+# a second uninstall, or a portable install on an unplugged drive. A bare assignment takes that
+# exit status. Ordinary bash hides it by clearing errexit inside command substitution, so this
+# runs the shells the advertised `| sh` one-liner actually reaches instead. REACHED_END is the
+# assertion: the value _master_root returns matters less than the rest of the cleanup running.
+for _shell in dash "bash --posix" sh; do
+    command -v ${_shell%% *} > /dev/null 2>&1 || continue
+    # || true: this harness runs under set -e too, so without it the failing child takes the
+    # whole test file down and the check below never reports which shell broke.
+    out=$( env -i HOME="$HOME" PATH="$PATH" UNSLOTH_HOME="$_TMP_ROOT/never-existed" \
+        $_shell -c "set -e; . \"$HELPERS_FILE\"; r=\$(_master_root); echo REACHED_END" 2>&1 \
+        || true )
+    assert_eq "$_shell keeps going past a missing root" "$out" "REACHED_END"
+done
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

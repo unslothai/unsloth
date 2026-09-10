@@ -496,7 +496,14 @@ _master_root() {
         "~/"*) _mr="$HOME/${_mr#'~/'}" ;;
     esac
     # shellcheck disable=SC1007
-    _mr_canon=$(CDPATH= cd -P -- "$_mr" 2>/dev/null && pwd -P)
+    # || _mr_canon="": a bare assignment takes the substitution's exit status, and this script
+    # runs under set -e. A root that is already gone, or on a disconnected drive, is the ordinary
+    # case here -- a second uninstall, a portable install on an unplugged disk -- and without the
+    # guard it killed the whole run before any of the rest of the cleanup. Ordinary bash hides
+    # this by clearing errexit inside command substitution; dash and `sh` in POSIX mode, which
+    # is what the advertised `| sh` one-liner uses on Debian, Ubuntu and WSL, do not.
+    # setup.sh's master-root block already guards the same call this way.
+    _mr_canon=$(CDPATH= cd -P -- "$_mr" 2>/dev/null && pwd -P) || _mr_canon=""
     [ -n "$_mr_canon" ] && _mr="$_mr_canon"
     case "$_mr" in "$HOME/.unsloth"|/|"") return 0 ;; esac
     printf '%s\n' "$_mr"
@@ -765,14 +772,14 @@ _unsloth_uninstall_main() {
     _remove_path "$HOME/.unsloth/whisper.cpp"
     # Prebuilt install locks: every prebuilt serializes on <parent>/.<name>.install.lock
     # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
-    _remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
-    _remove_path "$HOME/.unsloth/.node.install.lock"
-    _remove_path "$HOME/.unsloth/.whisper.cpp.install.lock"
+    _remove_lock_file "$HOME/.unsloth/.llama.cpp.install.lock"
+    _remove_lock_file "$HOME/.unsloth/.node.install.lock"
+    _remove_lock_file "$HOME/.unsloth/.whisper.cpp.install.lock"
     # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
     # (install_node_prebuilt.py); a crash between the two strands the rename, and a stranded one
     # blocks the rmdir below. Unmatched globs stay literal, hence the existence test.
     for _stale in "$HOME"/.unsloth/.*.install.lock.stale.*; do
-        [ -e "$_stale" ] && _remove_path "$_stale"
+        [ -e "$_stale" ] && _remove_lock_file "$_stale"
     done
     # ROCm-on-WSL helper artifacts (librocdxg clone, smoke-test venv); removing them frees the rmdir.
     _remove_path "$HOME/.unsloth/librocdxg"
