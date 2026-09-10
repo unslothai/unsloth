@@ -391,12 +391,16 @@ def test_a_mismatched_device_order_refuses_the_join(monkeypatch):
     # The resolver refuses outright rather than handing back a mapping to guess with.
     assert hw._integrated_cuda_inventory([0]) == ({}, "index")
 
-    # The endpoint then answers from ONE source, the torch inventory, instead of an
-    # SMI row wearing another card's capacity. Nothing is classified unified.
+    # ...and the endpoint keeps the nvidia-smi rows rather than reaching the torch
+    # fallback. That fallback labels its rows with physical ids taken from the mask, so
+    # here it would publish one card's name and capacity under another card's index,
+    # which is the same wrong join by another route and is what GPU selection reads.
+    # An SMI row missing a total is the lesser answer, and the one this host had before
+    # the repair existed.
     device = hw.get_backend_visible_gpu_info()["devices"][0]
-    assert device["name"] == "NVIDIA GB200"
-    assert device["memory_total_gb"] == 183.0
-    assert device["unified_memory"] is False
+    assert device["name"] == "NVIDIA GB10"
+    assert device["memory_total_gb"] is None
+    assert device.get("unified_memory") is not True
 
 
 def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
@@ -431,3 +435,32 @@ def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
 
     assert len(result["devices"]) == 2
     assert [d["name"] for d in result["devices"]] == ["NVIDIA GB10", "NVIDIA GB10"]
+
+
+def test_a_repaired_spark_row_is_marked_shared(monkeypatch):
+    """gpu-vram.ts splits the dedicated and shared pools on `shared_memory` alone.
+
+    The host-backed figure is read only after that split, so a repaired row that carries
+    the figure without the flag lands in the dedicated total and is then counted a
+    second time beside the same system RAM, which is the double count this repair
+    exists to prevent.
+    """
+    _cuda_host(monkeypatch, _SparkProps())
+    _smi_rows(monkeypatch, None)
+
+    device = hw.get_backend_visible_gpu_info()["devices"][0]
+
+    assert device["shared_memory"] is True
+    assert device["unified_memory"] is True
+    assert device["shared_memory_host_backed_gb"] == SPARK_TOTAL_GB
+
+
+def test_a_discrete_card_is_never_marked_shared(monkeypatch):
+    """The flag follows the integrated property, not the repair."""
+    _cuda_host(monkeypatch, _DiscreteProps())
+    _smi_rows(monkeypatch, None)
+
+    device = hw.get_backend_visible_gpu_info()["devices"][0]
+
+    assert device.get("shared_memory") is not True
+    assert device.get("unified_memory") is not True

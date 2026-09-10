@@ -5116,6 +5116,20 @@ def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: 
         _apply_unified_memory_correction(dev, td)
 
 
+def _cuda_join_is_unsafe(device_indices: Optional[list[int]]) -> bool:
+    """Whether a torch row cannot be attached to an nvidia-smi row on this host.
+
+    CUDA enumerates FASTEST_FIRST by default while nvidia-smi reports PCI order, and
+    equal-sized cards defeat every other check, so with a NUMERIC mask the join is only
+    safe behind ``_cuda_order_matches_smi``. A UUID or MIG mask has no physical ids to
+    disagree about: nvidia.py resolves the mask itself and torch enumerates that same
+    mask in the same order, so ``visible_ordinal`` joins them whatever the order says.
+    """
+    if not device_indices:
+        return False
+    return not _cuda_order_matches_smi()
+
+
 def _integrated_cuda_inventory(
     device_indices: Optional[list[int]],
 ) -> tuple[Dict[Any, Dict[str, Any]], str]:
@@ -5139,7 +5153,7 @@ def _integrated_cuda_inventory(
         return {
             td["visible_ordinal"]: td for td in _torch_get_device_inventory(ordinals)
         }, "visible_ordinal"
-    if not _cuda_order_matches_smi():
+    if _cuda_join_is_unsafe(device_indices):
         # Refusing beats guessing: the caller keeps whatever the CLI reported.
         return {}, "index"
     inventory = _torch_get_device_inventory(
@@ -6989,6 +7003,11 @@ def _repair_smi_visible_devices(
             dev["memory_total_gb"] = td["total_gb"]
         if td.get("_cuda_integrated"):
             dev["unified_memory"] = True
+            # `shared_memory` as well, not just the host-backed figure: gpu-vram.ts
+            # splits the pools on THAT flag alone and only then reads the figure, so a
+            # row carrying one without the other is added to the dedicated total and
+            # counted a second time beside the same system RAM.
+            dev["shared_memory"] = True
             dev["shared_memory_host_backed_gb"] = dev["memory_total_gb"]
     return all(dev.get("memory_total_gb") is not None for dev in devices)
 
@@ -7018,7 +7037,21 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                         result["backend"] = _backend_label(device)
                         return result
                     # Falls through to the torch inventory rather than publishing an
-                    # unknown the frontend reads as zero.
+                    # unknown the frontend reads as zero -- unless the reason the repair
+                    # failed is that the two sources cannot be joined at all. The torch
+                    # fallback labels its rows with physical ids taken from the mask, so
+                    # under FASTEST_FIRST it would publish one card's name and capacity
+                    # under another card's index and send GPU selection at the wrong
+                    # hardware. The SMI rows are coherent; one of them is missing a
+                    # total, which is the lesser answer and the one this host had before
+                    # the repair existed.
+                    if _cuda_join_is_unsafe(parent_visible_spec["numeric_ids"]):
+                        logger.debug(
+                            "Keeping the nvidia-smi rows: CUDA_DEVICE_ORDER does not "
+                            "match nvidia-smi, so no torch row can be trusted here."
+                        )
+                        result["backend"] = _backend_label(device)
+                        return result
                     unrepaired_smi_result = result
             except Exception as e:
                 logger.warning("Backend GPU visibility query failed: %s", e)
@@ -7054,7 +7087,9 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "visible_ordinal": td["visible_ordinal"],
                     "name": td["name"],
                     "memory_total_gb": td["total_gb"],
-                    "shared_memory": bool(td.get("shared_memory")),
+                    "shared_memory": bool(
+                        td.get("shared_memory") or td.get("_cuda_integrated")
+                    ),
                     # An integrated part's total IS host memory; publishing it here is
                     # what stops a consumer adding the two pools together.
                     "shared_memory_host_backed_gb": (
