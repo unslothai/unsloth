@@ -35,10 +35,12 @@ class _Tensor:
         shape,
         dtype,
         device = None,
+        storage = None,
     ):
         self.shape = (shape,) if isinstance(shape, int) else tuple(shape)
         self.dtype = dtype
         self.device = device or SimpleNamespace(type = "cuda", index = DEVICE_INDEX)
+        self.storage = storage if storage is not None else object()
 
     def numel(self):
         total = 1
@@ -49,8 +51,21 @@ class _Tensor:
     def __iadd__(self, _other):
         return self
 
+    def __getitem__(self, item):
+        assert isinstance(item, slice)
+        start = 0 if item.start is None else item.start
+        stop = self.numel() if item.stop is None else item.stop
+        return _Tensor((max(0, stop - start),), self.dtype, self.device, self.storage)
+
+    def resize_(self, size):
+        self.shape = (size,) if isinstance(size, int) else tuple(size)
+        return self
+
     def t(self):
         return self
+
+    def view(self, shape):
+        return _Tensor(shape, self.dtype, self.device, self.storage)
 
 
 def _production_functions(name: str) -> dict[str, ast.FunctionDef]:
@@ -75,7 +90,11 @@ def _load_function(name: str, backend: str, namespace: dict):
     return namespace[name]
 
 
-def _mock_namespace(backend: str, stream_values = LIVE_STREAMS):
+def _mock_namespace(
+    backend: str,
+    stream_values = LIVE_STREAMS,
+    cached_stream = CACHED_STREAM,
+):
     device_type = "xpu" if backend == "xpu" else "cpu" if backend == "fallback" else backend
     device = SimpleNamespace(type = device_type, index = DEVICE_INDEX)
     fp8_dtype = object()
@@ -83,6 +102,7 @@ def _mock_namespace(backend: str, stream_values = LIVE_STREAMS):
     bfloat16 = object()
     native_calls = []
     stream_lookups = []
+    device_contexts = []
     matmul_result = object()
     fp8_result = object()
     streams = iter(stream_values)
@@ -107,7 +127,8 @@ def _mock_namespace(backend: str, stream_values = LIVE_STREAMS):
 
     @contextlib.contextmanager
     def torch_gpu_device(selected_device):
-        assert selected_device is device
+        assert selected_device.type == device.type
+        device_contexts.append(selected_device.index)
         yield
 
     def torch_matmul(*_args, **_kwargs):
@@ -119,7 +140,7 @@ def _mock_namespace(backend: str, stream_values = LIVE_STREAMS):
     namespace = {
         "DEVICE_TYPE": device_type,
         "Float8Tensor": _Float8Tensor,
-        "torch": SimpleNamespace(float8_e4m3fn = fp8_dtype),
+        "torch": SimpleNamespace(float8_e4m3fn = fp8_dtype, float32 = object()),
         "torch_float16": float16,
         "torch_bfloat16": bfloat16,
         "torch_float32": object(),
@@ -136,11 +157,11 @@ def _mock_namespace(backend: str, stream_values = LIVE_STREAMS):
         "cdequantize_blockwise_bf16_nf4": record("nf4_bf16"),
         "cgemm_4bit_inference_naive_fp16": record("gemv_fp16"),
         "cgemm_4bit_inference_naive_bf16": record("gemv_bf16"),
-        # Deliberately valid-looking snapshots: production execution must ignore them.
-        "CUDA_STREAMS": tuple(ctypes.c_void_p(CACHED_STREAM) for _ in range(DEVICE_INDEX + 1)),
-        "XPU_STREAMS": tuple(ctypes.c_void_p(CACHED_STREAM) for _ in range(DEVICE_INDEX + 1)),
-        "WEIGHT_BUFFERS": [None] * (DEVICE_INDEX + 1),
-        "ABSMAX_BUFFERS": [None] * (DEVICE_INDEX + 1),
+        # Snapshots gate scratch ownership but must not select native execution streams.
+        "CUDA_STREAMS": tuple(ctypes.c_void_p(cached_stream) for _ in range(DEVICE_INDEX + 2)),
+        "XPU_STREAMS": tuple(ctypes.c_void_p(cached_stream) for _ in range(DEVICE_INDEX + 2)),
+        "WEIGHT_BUFFERS": [None] * (DEVICE_INDEX + 2),
+        "ABSMAX_BUFFERS": [None] * (DEVICE_INDEX + 2),
     }
     controls = SimpleNamespace(
         device = device,
@@ -149,6 +170,7 @@ def _mock_namespace(backend: str, stream_values = LIVE_STREAMS):
         bfloat16 = bfloat16,
         native_calls = native_calls,
         stream_lookups = stream_lookups,
+        device_contexts = device_contexts,
         matmul_result = matmul_result,
         fp8_result = fp8_result,
     )
@@ -179,10 +201,18 @@ def _quant_state(controls, representation: str, dtype):
     return [absmax, shape, dtype, blocksize, [offset, state2], "nf4", stats]
 
 
-def _invoke(name: str, function, controls, quant_state):
-    weight = _Tensor((4, 3), object(), controls.device)
+def _invoke(
+    name: str,
+    function,
+    controls,
+    quant_state,
+    use_global_buffer = False,
+    device = None,
+):
+    device = controls.device if device is None else device
+    weight = _Tensor((4, 3), object(), device)
     if name == "fast_dequantize":
-        return function(weight, quant_state)
+        return function(weight, quant_state, use_global_buffer = use_global_buffer)
     activation = _Tensor(
         (1, 1, 6),
         quant_state.dtype if hasattr(quant_state, "dtype") else quant_state[2],
@@ -264,6 +294,120 @@ def test_quant_state_formats_and_dtype_specific_native_symbols(
         final_name,
     ]
     assert _stream_values(controls.native_calls) == list(LIVE_STREAMS)
+
+
+@pytest.mark.parametrize("backend", ("cuda", "hip", "xpu"))
+def test_global_scratch_reuses_same_device_and_stream(backend):
+    owner_stream = LIVE_STREAMS[0]
+    namespace, controls = _mock_namespace(
+        backend,
+        (owner_stream,) * 6,
+        cached_stream = owner_stream,
+    )
+    function = _load_function("fast_dequantize", backend, namespace)
+    state = _quant_state(controls, "object", controls.float16)
+
+    first = _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+    second = _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+
+    assert first.storage is second.storage
+    nested_calls = [call for call in controls.native_calls if call[0] == "nested_absmax"]
+    assert nested_calls[0][1][3].storage is nested_calls[1][1][3].storage
+    assert namespace["WEIGHT_BUFFERS"][DEVICE_INDEX].storage is first.storage
+    assert namespace["ABSMAX_BUFFERS"][DEVICE_INDEX].storage is nested_calls[0][1][3].storage
+    assert _stream_values(controls.native_calls) == [owner_stream] * 4
+
+
+@pytest.mark.parametrize("backend", ("cuda", "hip", "xpu"))
+def test_cached_snapshot_only_gates_scratch_not_native_stream_selection(backend):
+    owner_stream = LIVE_STREAMS[0]
+    nested_stream = LIVE_STREAMS[1]
+    final_stream = CACHED_STREAM
+    namespace, controls = _mock_namespace(
+        backend,
+        (owner_stream, nested_stream, final_stream),
+        cached_stream = owner_stream,
+    )
+    function = _load_function("fast_dequantize", backend, namespace)
+    state = _quant_state(controls, "object", controls.float16)
+
+    _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+
+    assert namespace["WEIGHT_BUFFERS"][DEVICE_INDEX] is not None
+    assert namespace["ABSMAX_BUFFERS"][DEVICE_INDEX] is not None
+    assert _stream_values(controls.native_calls) == [nested_stream, final_stream]
+
+
+@pytest.mark.parametrize("backend", ("cuda", "hip", "xpu"))
+def test_global_scratch_is_bypassed_for_nonowning_streams(backend):
+    stream_a, stream_b = LIVE_STREAMS
+    namespace, controls = _mock_namespace(
+        backend,
+        (stream_a, stream_a, stream_a, stream_b, stream_b, stream_b),
+        cached_stream = CACHED_STREAM,
+    )
+    function = _load_function("fast_dequantize", backend, namespace)
+    state = _quant_state(controls, "object", controls.float16)
+
+    first = _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+    second = _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+
+    assert first.storage is not second.storage
+    nested_calls = [call for call in controls.native_calls if call[0] == "nested_absmax"]
+    assert nested_calls[0][1][3].storage is not nested_calls[1][1][3].storage
+    final_calls = [call for call in controls.native_calls if call[0].startswith("nf4_")]
+    assert final_calls[0][1][3].storage is not final_calls[1][1][3].storage
+    assert namespace["WEIGHT_BUFFERS"][DEVICE_INDEX] is None
+    assert namespace["ABSMAX_BUFFERS"][DEVICE_INDEX] is None
+    assert _stream_values(controls.native_calls) == [stream_a, stream_a, stream_b, stream_b]
+
+
+@pytest.mark.parametrize("backend", ("cuda", "hip", "xpu"))
+def test_global_scratch_isolated_by_device_even_for_same_stream(backend):
+    stream = LIVE_STREAMS[0]
+    namespace, controls = _mock_namespace(backend, (stream,) * 6, cached_stream = stream)
+    function = _load_function("fast_dequantize", backend, namespace)
+    state = _quant_state(controls, "object", controls.float16)
+    other_device = SimpleNamespace(type = controls.device.type, index = DEVICE_INDEX + 1)
+
+    first = _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+    second = _invoke(
+        "fast_dequantize",
+        function,
+        controls,
+        state,
+        use_global_buffer = True,
+        device = other_device,
+    )
+
+    assert first.storage is not second.storage
+    nested_calls = [call for call in controls.native_calls if call[0] == "nested_absmax"]
+    assert nested_calls[0][1][3].storage is not nested_calls[1][1][3].storage
+    assert (
+        namespace["WEIGHT_BUFFERS"][DEVICE_INDEX].storage
+        is not namespace["WEIGHT_BUFFERS"][DEVICE_INDEX + 1].storage
+    )
+    assert (
+        namespace["ABSMAX_BUFFERS"][DEVICE_INDEX].storage
+        is not namespace["ABSMAX_BUFFERS"][DEVICE_INDEX + 1].storage
+    )
+    assert controls.stream_lookups == [DEVICE_INDEX] * 3 + [DEVICE_INDEX + 1] * 3
+    assert controls.device_contexts == [DEVICE_INDEX, DEVICE_INDEX + 1]
+
+
+@pytest.mark.parametrize("backend", ("cuda", "hip", "xpu"))
+def test_default_stream_zero_is_a_reusable_scratch_key(backend):
+    namespace, controls = _mock_namespace(backend, (0,) * 6, cached_stream = 0)
+    function = _load_function("fast_dequantize", backend, namespace)
+    state = _quant_state(controls, "object", controls.bfloat16)
+
+    first = _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+    second = _invoke("fast_dequantize", function, controls, state, use_global_buffer = True)
+
+    assert first.storage is second.storage
+    assert namespace["WEIGHT_BUFFERS"][DEVICE_INDEX].storage is first.storage
+    nested_calls = [call for call in controls.native_calls if call[0] == "nested_absmax"]
+    assert namespace["ABSMAX_BUFFERS"][DEVICE_INDEX].storage is nested_calls[0][1][3].storage
 
 
 @pytest.mark.parametrize("backend", ("cuda", "hip", "xpu"))
@@ -360,6 +504,9 @@ def test_xpu_and_cuda_hip_native_symbol_bindings_remain_distinct():
 def test_accelerator_paths_ignore_cached_snapshots_and_add_no_coordination():
     assert "CUDA_STREAMS = tuple(CUDA_STREAMS)" in UTILS_SOURCE
     assert "XPU_STREAMS = tuple(XPU_STREAMS)" in UTILS_SOURCE
+    assert UTILS_SOURCE.count("WEIGHT_BUFFERS = [None] *") == 2
+    assert UTILS_SOURCE.count("ABSMAX_BUFFERS = [None] *") == 2
+    assert ".get(stream_key)" not in UTILS_SOURCE
     forbidden_calls = {
         "Event",
         "record_event",
@@ -367,6 +514,9 @@ def test_accelerator_paths_ignore_cached_snapshots_and_add_no_coordination():
         "synchronize",
         "wait_event",
         "wait_stream",
+        "Lock",
+        "RLock",
+        "sleep",
     }
     for name in ("fast_dequantize", "fast_gemv"):
         for backend in ("xpu", "cuda"):
@@ -402,6 +552,16 @@ def test_accelerator_paths_ignore_cached_snapshots_and_add_no_coordination():
                 assert len(stream_argument.args) == 1
                 assert isinstance(stream_argument.args[0], ast.Name)
                 assert stream_argument.args[0].id == "W"
-            assert names.isdisjoint({"CUDA_STREAMS", "XPU_STREAMS"})
+                native_names = {
+                    node.id for node in ast.walk(native_call) if isinstance(node, ast.Name)
+                }
+                assert native_names.isdisjoint({"CUDA_STREAMS", "XPU_STREAMS"})
+            if name == "fast_dequantize":
+                expected_snapshot = "XPU_STREAMS" if backend == "xpu" else "CUDA_STREAMS"
+                other_snapshot = "CUDA_STREAMS" if backend == "xpu" else "XPU_STREAMS"
+                assert expected_snapshot in names
+                assert other_snapshot not in names
+            else:
+                assert names.isdisjoint({"CUDA_STREAMS", "XPU_STREAMS"})
             assert attributes.isdisjoint(forbidden_calls)
             assert calls.isdisjoint(forbidden_calls)
