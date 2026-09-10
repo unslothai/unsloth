@@ -240,6 +240,7 @@ export function installAccountTransitionListener(
     );
     if (isSameAccount(previous, parseAccountMarker(event.newValue))) return;
     reloading = true;
+    clearAccountSessionStorage(browser);
     browser.location.reload();
   });
 }

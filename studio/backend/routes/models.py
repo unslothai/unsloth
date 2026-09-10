@@ -2476,12 +2476,28 @@ async def get_model_config(
     if local_path:
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, local_path)
-    if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, model_name)
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
+    if account_access.managed_account():
+        try:
+            await asyncio.to_thread(account_access.require_model_access, model_name)
+        except HTTPException as exc:
+            # A remote preflight precedes the first download and its grant; the caller's
+            # own token stands in. Local and cache selections keep the account check.
+            if (
+                exc.status_code != 404
+                or local_path
+                or prefer_local_cache
+                or is_local_path(model_name)
+                or not isinstance(hf_token, str)
+                or not hf_token.strip()
+            ):
+                raise
+            await asyncio.to_thread(
+                account_access.authorize_download, model_name, "model", hf_token
+            )
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
     from utils.models.model_config import shared_hub_model_info
     from utils.utils import pinned_hf_reachability

@@ -484,9 +484,9 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     record = storage.get_user_and_secret(username)
     if record is None:
-        # Record under one sentinel key per IP so attacker-controlled username
-        # cardinality can't allocate unbounded buckets.
-        _record_login_failure(unknown_key)
+        # Use the same bounded per-name buckets as existing accounts. A shared
+        # unknown-name bucket makes another name's lockout an existence oracle.
+        _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = _login_failure_detail(),
