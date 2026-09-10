@@ -3,10 +3,8 @@
 
 /**
  * A give-up is not always how the turn ended: a tool run sends the notice and then BREAKS
- * INTO the final answering pass, which usually stops normally on `finish_reason: "stop"`.
- *
- * `length` must keep the old behaviour exactly, since it is the shape a give-up really does
- * end on and a `length` chunk after the notice is the case the override exists for.
+ * INTO the final answering pass, which usually stops normally, so a completed answer was
+ * stamped `paused`. `length` must keep the old behaviour, being the shape a give-up ends on.
  */
 
 import assert from "node:assert/strict";
@@ -26,14 +24,12 @@ test("a finished answer clears the give-up, a length stop does not", () => {
     false,
     "a give-up ends on length, so reading it as success would erase the real case",
   );
-  // Nothing terminal has arrived yet, so nothing is decided.
   assert.equal(completedAfterGivingUp(null), false);
   assert.equal(completedAfterGivingUp(undefined), false);
   assert.equal(completedAfterGivingUp(""), false);
 });
 
-/** The adapter's own two steps, in order: latch what the chunks say, then apply the
- *  give-up override once the stream has ended. */
+/** The adapter's own two steps over a stream, in the order it runs them. */
 function replay(
   chunks: readonly { finishReason?: string; gaveUp?: boolean }[],
 ): IncompleteReason | null {
@@ -83,8 +79,8 @@ test("a turn that gave up and stopped there is still paused", () => {
 });
 
 test("a give-up after an answer still wins", () => {
-  // A notice AFTER a pass that stopped normally is a give-up in the final pass itself,
-  // which really did end the turn early.
+  // The order that matters: the notice arrives AFTER a pass that stopped normally when the
+  // give-up happened in the final pass itself, which really did end the turn early.
   assert.equal(replay([{ finishReason: "stop" }, { gaveUp: true }]), "paused");
 });
 
@@ -95,7 +91,6 @@ test("nothing else about the length latch changes", () => {
 });
 
 test("the adapter clears the latch where it latches the finish reason", () => {
-  // Structural, because the absence is the defect: both halves behaved correctly alone.
   const source = readFileSync(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     "utf8",

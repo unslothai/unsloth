@@ -233,8 +233,8 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        # The property is that nothing was INSERTED, not that one name is last: pinning the
-        # literal tail fails the moment a second hook is appended, which is the safe move.
+        # The property is that nothing was INSERTED, not that one name is last: pinning
+        # the literal tail fails the moment a second hook is appended, which is safe.
         assert "on_conversation_grew" in names
         hook_at = names.index("on_conversation_grew")
         assert names[hook_at - 1] == "tool_choice", (

@@ -4,15 +4,9 @@
 /**
  * The queue and pause signals the local llama-server path sends as SSE comments.
  *
- * N chats share one KV cache, so a chat spends real time waiting for room and a chat that
- * started can be paused so another finishes. Both are otherwise invisible on the wire: a 200
- * that produces nothing for a while, indistinguishable from a wedged backend.
- *
- * Sent as SSE *comments* rather than data events, so no chunk schema changes and a reader
- * that predates them sees the silence it saw before.
- *
- * A plain `.ts` because the test runner is `node --experimental-strip-types`, which does NOT
- * transform JSX: nothing reachable only from a `.tsx` can be unit-tested.
+ * N chats share one `--kv-unified` cache while each is told it has all of it, so a chat waits for
+ * room and can be paused mid-answer, both invisible on the wire: a 200 that produces nothing for a
+ * while. Sent as SSE *comments*, so every reader that predates them ignores them for free.
  */
 
 /** Queued: the request is admitted to the queue but holds no slot yet. */
@@ -27,29 +21,32 @@ export const ADMISSION_COMMENT_PAUSED = "preempt-paused";
 /** The upstream request has been re-opened and tokens are flowing again. */
 export const ADMISSION_COMMENT_RESUMED = "preempt-resumed";
 
-/**
- * What the stream last said about this run's access to the model.
- *
- * `waiting` and `paused` are deliberately distinct: queued-before-start has produced nothing,
- * while paused-mid-answer has visible text on screen, and collapsing them would put "waiting
- * for a free slot" under a half-written answer.
- */
-export type AdmissionStatus = "waiting" | "admitted" | "paused" | "resumed";
+/** Follows the resume: the park could not be held, so the answer was re-prefilled instead of
+ *  restored and is no longer byte-identical under exact concurrency. */
+export const ADMISSION_COMMENT_RECOMPUTED = "preempt-recomputed";
+
+/** What the stream last said about this run's access to the model. `waiting` and `paused` are
+ *  deliberately distinct: queued-before-start promises nothing, while paused-mid-answer has
+ *  visible text on screen that the user needs told is not lost. `recomputed` is not a state the
+ *  run is IN: it qualifies the resume that preceded it. */
+export type AdmissionStatus =
+  | "waiting"
+  | "admitted"
+  | "paused"
+  | "resumed"
+  | "recomputed";
 
 const BY_COMMENT: Record<string, AdmissionStatus> = {
   [ADMISSION_COMMENT_WAIT]: "waiting",
   [ADMISSION_COMMENT_DONE]: "admitted",
   [ADMISSION_COMMENT_PAUSED]: "paused",
   [ADMISSION_COMMENT_RESUMED]: "resumed",
+  [ADMISSION_COMMENT_RECOMPUTED]: "recomputed",
 };
 
-/**
- * Read one raw SSE line as an admission signal, or null for anything else.
- *
- * Matched after an optional single space rather than on the whole line: SSE treats
- * `:comment` and `: comment` alike and an intermediary may rewrite that space. Unknown
- * comments return null and are left to whoever else is reading them.
- */
+/** Read one raw SSE line as an admission signal, or null for anything else. Matched on the
+ *  payload after an optional single space, the SSE grammar allowing `:comment` and `: comment`
+ *  to mean the same thing. */
 export function readAdmissionComment(line: string): AdmissionStatus | null {
   if (!line.startsWith(":")) {
     return null;
@@ -58,12 +55,8 @@ export function readAdmissionComment(line: string): AdmissionStatus | null {
   return BY_COMMENT[body] ?? null;
 }
 
-/**
- * The line shown while a run is not generating, or null once it is.
- *
- * "Waiting" alone reads as a stall, so both name the cause, and neither uses failure
- * vocabulary: neither state is an error.
- */
+/** The line shown while a run is not generating, or null once it is. "Waiting" alone reads as a
+ *  stall; naming the cause tells the user the wait is bounded by the other chats. */
 export function admissionStatusLabel(status: AdmissionStatus): string | null {
   switch (status) {
     case "waiting":

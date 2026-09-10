@@ -264,3 +264,29 @@ class TestAHolderWhoseToolCameBackDuringTheErases:
         assert lease.yield_parked_commitment(charged_at = lease.charge_seq) == 6200
         assert queue.yielded == [6200]
         assert lease.yield_parked_commitment() == 0
+
+    def test_a_round_restated_at_the_same_size_moves_the_epoch_too(self):
+        """A yield planned before the tool came back finds the charge restated, even at
+        the same figure, and hands nothing back."""
+        from core.inference.llama_admission import LlamaAdmissionLease
+
+        class _Queue:
+            def __init__(self):
+                self.yielded = []
+
+            def try_recost(self, old, new):
+                return True
+
+            def yield_commitment(self, tokens):
+                self.yielded.append(tokens)
+
+            def abandon_repark(self, restore = 0):
+                pass
+
+        queue = _Queue()
+        lease = LlamaAdmissionLease(queue, slot = 0, tokens = 6000)
+        decided_on = lease.charge_seq
+        assert lease.recost(6000) is True
+        assert lease.charge_seq == decided_on + 1
+        assert lease.yield_parked_commitment(charged_at = decided_on) == 0
+        assert queue.yielded == []

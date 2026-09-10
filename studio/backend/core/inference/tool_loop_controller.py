@@ -1109,6 +1109,20 @@ class ToolLoopController:
             noop_result = noop,
         )
 
+    def call_key(self, tool_call: Mapping[str, Any]) -> str:
+        """The key ``prepare_call`` will file this call under, healed the same way. A round's
+        parallel gate compares these: keyed on raw arguments, two calls healing to one key both ran."""
+        function = tool_call.get("function")
+        function = function if isinstance(function, Mapping) else {}
+        tool_name = str(function.get("name") or "").strip()
+        coerced = coerce_tool_arguments(
+            function.get("arguments", {}),
+            heal = self._auto_heal_tool_calls,
+            tool_name = tool_name,
+            tool_schemas = self._tools,
+        )
+        return canonical_tool_call_key(tool_name, coerced.arguments)
+
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)

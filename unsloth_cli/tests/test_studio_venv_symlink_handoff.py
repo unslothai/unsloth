@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A Studio home whose venv is a symlink must not launch the CLI into a loop.
-
-Two rules, pinned separately: the hand-off check resolves symlinks, and a second hand-off
-is refused with a message rather than attempted.
-"""
+"""A Studio home whose venv is a symlink must not launch the CLI into a loop."""
 
 from __future__ import annotations
 
@@ -59,8 +55,8 @@ class TestTheVenvCheckResolvesSymlinks:
 class TestTheSecondHandOffIsRefused:
     def test_the_first_hand_off_marks_the_environment(self, monkeypatch):
         studio = _studio()
-        # setenv, so the marker the guard writes is restored at teardown and cannot leak
-        # into the re-exec tests after this one.
+        # setenv, so the marker the guard writes is restored at teardown and cannot leak into
+        # the re-exec tests that run after this one.
         monkeypatch.setenv(studio._REEXEC_DEPTH_ENV, "0")
         studio._guard_reexec_loop("/some/home/unsloth_studio")
         assert os.environ.get(studio._REEXEC_DEPTH_ENV) == "1"

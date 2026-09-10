@@ -179,6 +179,9 @@
       "_EMPTY_MARKUP_SKELETON": {
         "kind": "assign"
       },
+      "_EXACT_HOST_SHORT_AFTER_LOAD": {
+        "kind": "assign"
+      },
       "_FAILURE_QUOTE_CHARS": {
         "kind": "assign"
       },
@@ -365,10 +368,19 @@
       "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
         "kind": "assign"
       },
+      "_PARKING_MARGIN_MIB": {
+        "kind": "assign"
+      },
       "_PERMANENT_HUB_ERRORS": {
         "kind": "assign"
       },
       "_PREEMPT_KEEPALIVE_S": {
+        "kind": "assign"
+      },
+      "_PREEMPT_RAM_DEFAULT_MIB": {
+        "kind": "assign"
+      },
+      "_PREEMPT_RAM_UNSIZED_MIB": {
         "kind": "assign"
       },
       "_PROC_ROOT": {
@@ -387,6 +399,24 @@
         "kind": "assign"
       },
       "_RESPAWN_REAP_GRACE_S": {
+        "kind": "assign"
+      },
+      "_SERVER_KEEPALIVE_COMMENT": {
+        "kind": "assign"
+      },
+      "_SERVER_PARKED_COMMENT": {
+        "kind": "assign"
+      },
+      "_SERVER_PARK_COMMENTS": {
+        "kind": "assign"
+      },
+      "_SERVER_PARK_STALL_CAP_S": {
+        "kind": "assign"
+      },
+      "_SERVER_RECOMPUTED_COMMENT": {
+        "kind": "assign"
+      },
+      "_SERVER_RESUMED_COMMENT": {
         "kind": "assign"
       },
       "_SHARD_FULL_RE": {
@@ -536,6 +566,9 @@
       "_auto_mode_drops_mtp": {
         "kind": "def"
       },
+      "_available_host_memory_mib": {
+        "kind": "def"
+      },
       "_await_resume": {
         "kind": "def"
       },
@@ -590,6 +623,12 @@
       "_canonicalize_spec_mode": {
         "kind": "def"
       },
+      "_child_parking_stand_down_reason": {
+        "kind": "def"
+      },
+      "_child_parking_stands_down": {
+        "kind": "def"
+      },
       "_child_spec_env": {
         "kind": "def"
       },
@@ -611,7 +650,7 @@
       "_cpu_runtime_owner_alive": {
         "kind": "def"
       },
-      "_decline_preemption": {
+      "_decline_the_pause": {
         "kind": "def"
       },
       "_device_selection_is_cpu": {
@@ -630,6 +669,9 @@
         "kind": "def"
       },
       "_drive_tool_stream": {
+        "kind": "def"
+      },
+      "_drop_exact_for_no_flash": {
         "kind": "def"
       },
       "_effective_headroom_ratio": {
@@ -660,6 +702,24 @@
         "kind": "def"
       },
       "_env_sets_mmproj_offload": {
+        "kind": "def"
+      },
+      "_exact_auto_blocker": {
+        "kind": "def"
+      },
+      "_exact_host_shortfall_after_load": {
+        "kind": "def"
+      },
+      "_exact_parking_budget_mib": {
+        "kind": "def"
+      },
+      "_exact_parking_need_mib": {
+        "kind": "def"
+      },
+      "_exact_parking_shortfall_mib": {
+        "kind": "def"
+      },
+      "_exact_preflight_env": {
         "kind": "def"
       },
       "_extra_args_device": {
@@ -926,6 +986,9 @@
       "_mtp_head_borrows": {
         "kind": "def"
       },
+      "_named_preempt_ram_mib": {
+        "kind": "def"
+      },
       "_native_linux_system_rocm_lib_dirs": {
         "kind": "def"
       },
@@ -977,10 +1040,19 @@
       "_planned_scratch_cache_type": {
         "kind": "def"
       },
-      "_preempt_charge": {
+      "_preempt_gave_up_event": {
         "kind": "def"
       },
-      "_preempt_gave_up_event": {
+      "_preempt_ram_disabled_in": {
+        "kind": "def"
+      },
+      "_preempt_ram_switched_off_in": {
+        "kind": "def"
+      },
+      "_preempt_ram_value_is_zero": {
+        "kind": "def"
+      },
+      "_preempt_switch_spelling": {
         "kind": "def"
       },
       "_prefix_user_text": {
@@ -1040,6 +1112,9 @@
       "_scale_diffusion_required_gb": {
         "kind": "def"
       },
+      "_server_owned_parking_budget_mib": {
+        "kind": "def"
+      },
       "_shim_supports_ngl": {
         "kind": "def"
       },
@@ -1068,6 +1143,9 @@
         "kind": "def"
       },
       "_split_mode_confines_to_one_device": {
+        "kind": "def"
+      },
+      "_stand_down_child_parking": {
         "kind": "def"
       },
       "_start_tool_call": {

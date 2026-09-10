@@ -2813,16 +2813,11 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
 
 
 def trailing_assistant_reasoning(messages: list) -> str:
-    """Reasoning text of a trailing assistant turn that showed no prose yet.
-
-    A reasoning model preempted inside its thought block has real work and no visible
-    characters, so ``trailing_assistant_text`` reports "" and every truthiness gate built
-    on it drops the continuation.
-
-    Separate from ``trailing_assistant_text`` on purpose: that one feeds the manual prompt
-    splice, which appends its result as VISIBLE text, so handing it reasoning would paste
-    the thought into the answer.
-    """
+    """Reasoning text of a trailing assistant turn that showed no prose yet. A reasoning model
+    preempted inside its thought block has real work and no visible characters, so
+    ``trailing_assistant_text`` reports "" and every truthiness gate on it drops the continuation:
+    ten consecutive pauses with ``kept_chars=0``. Kept apart from ``trailing_assistant_text``, which
+    feeds the splice and would paste the thought into the answer."""
     if not messages:
         return ""
     last = messages[-1]
@@ -2838,7 +2833,6 @@ def trailing_assistant_reasoning(messages: list) -> str:
 
 
 def trailing_assistant_resumable(messages: list) -> bool:
-    """Whether a trailing assistant turn can be continued at all, prose or thought."""
     return bool(trailing_assistant_text(messages) or trailing_assistant_reasoning(messages))
 
 

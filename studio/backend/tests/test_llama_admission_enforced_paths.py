@@ -1329,8 +1329,8 @@ class TestARetryThatGrewItsPrompt:
             first_messages, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
         # The charge IS the first attempt's wire occupancy plus the reserve it never sends.
-        # With preemption unset -- the default here -- nothing reclaims the difference, so
-        # the ledger holds the whole share and the reserve comes out of the allowance.
+        # With preemption unset -- the default here -- nothing reclaims the difference, so the
+        # ledger holds the whole share and the reserve comes out of the allowance.
         assert charge == budget // slots
         assert first_prompt + allowance == charge - _RESERVE
 

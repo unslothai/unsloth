@@ -5056,3 +5056,55 @@ def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
     )
     assert args["enable_thinking"] is True
     assert args["reasoning_effort"] == "high"
+
+
+@pytest.mark.parametrize("surface", ["plain", "tools"])
+def test_a_park_on_an_anthropic_stream_reaches_the_client_as_comments(surface):
+    """A `preempt` event completes the timed next() and restarts the stall keepalive, so
+    dropped, a two-second keepalive cadence sent no bytes for as long as a park lasted."""
+    import threading as _threading
+
+    from routes.inference import (
+        _OPENAI_PREEMPT_SSE_BY_STATE,
+        _anthropic_plain_stream,
+        _anthropic_tool_stream,
+    )
+
+    def run_gen():
+        def gen():
+            yield {"type": "preempt", "state": "paused"}
+            yield {"type": "preempt", "state": "keepalive"}
+            yield {"type": "preempt", "state": "keepalive"}
+            yield {"type": "preempt", "state": "resumed"}
+            if surface == "plain":
+                yield "hello world"
+            else:
+                yield {"type": "content", "text": "hello world"}
+                yield {"type": "metadata", "finish_reason": "stop"}
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        if surface == "plain":
+            resp = await _anthropic_plain_stream(
+                request, _threading.Event(), run_gen, "msg_park_plain", "m"
+            )
+        else:
+            resp = await _anthropic_tool_stream(
+                request, _threading.Event(), run_gen, "msg_park_tools", "m"
+            )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    comments = [c for c in chunks if c.startswith(":")]
+    assert comments == [
+        _OPENAI_PREEMPT_SSE_BY_STATE["paused"],
+        _OPENAI_PREEMPT_SSE_BY_STATE["keepalive"],
+        _OPENAI_PREEMPT_SSE_BY_STATE["keepalive"],
+        _OPENAI_PREEMPT_SSE_BY_STATE["resumed"],
+    ]
+    assert any("hello world" in c for c in chunks)

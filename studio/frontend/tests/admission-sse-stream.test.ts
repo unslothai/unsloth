@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The admission comments, read off a real SSE byte stream. `admission-status.test.ts` covers
- * the vocabulary; this covers the seam, where an admission block carries NO `data:` line the
- * reader's fast path would skip, and where a comment can arrive split across reads.
+ * The admission comments, read off a real SSE byte stream. An admission block carries NO
+ * `data:` line and the reader's fast path skips any block that produced none, and comments can
+ * arrive split across reader chunks.
  */
 
 import assert from "node:assert/strict";
@@ -107,7 +107,8 @@ test("a queued run reports waiting, then admitted, then streams", async () => {
 });
 
 test("an admission block is not swallowed by the empty-block fast path", async () => {
-  // The reader skips blocks with no `data:` line, and an admission block is exactly that.
+  // The regression this exists for: the reader skips blocks with no `data:` line, and an
+  // admission block is exactly that.
   const chunks = await collect([": admission-wait\n\n", CONTENT, DONE]);
   assert.equal(
     chunks.filter((c) => c._admissionStatus === "waiting").length,
@@ -158,8 +159,7 @@ test("a paused run reports paused and then resumed", async () => {
 });
 
 test("repeated waits while queued are each reported", async () => {
-  // The backend re-emits the wait comment as its own keep-alive, so a reader that reported
-  // only the first would let the indicator go stale.
+  // The backend re-emits the wait comment on an interval as its own keep-alive.
   const chunks = await collect([
     ": admission-wait\n\n",
     ": admission-wait\n\n",

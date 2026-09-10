@@ -23,10 +23,10 @@ if _TESTS_DIR not in sys.path:
 import pytest  # noqa: E402
 
 from core.inference import llama_cpp as llama_mod  # noqa: E402
-from test_llama_cpp_tool_loop import _done as _gguf_done  # noqa: E402
-from test_llama_cpp_tool_loop import _make_backend  # noqa: E402
-from test_llama_cpp_tool_loop import _sse as _gguf_sse  # noqa: E402
-from test_tool_calls_within_one_turn_overlap import _gguf_round  # noqa: E402
+from .test_llama_cpp_tool_loop import _done as _gguf_done  # noqa: E402
+from .test_llama_cpp_tool_loop import _make_backend  # noqa: E402
+from .test_llama_cpp_tool_loop import _sse as _gguf_sse  # noqa: E402
+from .test_tool_calls_within_one_turn_overlap import _gguf_round  # noqa: E402
 
 _ROOM = 3000
 

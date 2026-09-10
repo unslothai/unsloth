@@ -6989,7 +6989,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
     isContinuableContent(message.content),
   );
   // The same question with the "there must be text" half dropped. Selected unconditionally
-  // because the reason is not known until below and a hook cannot be conditional.
+  // because the reason is not known until below and a hook cannot be.
   const continuableIfEmpty = useAuiState(({ message }) =>
     isContinuableContent(message.content, { allowEmpty: true }),
   );
@@ -7014,12 +7014,14 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
+  // `paused` has no assistant-ui status of its own, so `restoredAssistantStatus` maps it to
+  // `cancelled` and a reload would relabel a backend pause as "Response stopped".
   const reason =
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
-  // A turn the backend gave up on can be empty, and both content gates below assume text,
-  // so together they hid the bar on exactly the turn that most needed it.
+  // A turn the backend gave up on can be empty: the chat was evicted while still prefilling, and
+  // both content gates below are written for a turn that has text.
   const noTextIsExpected = resumesWithoutText(reason);
 
   // Every gate the bar itself answers to. Resuming without asking has to clear the same

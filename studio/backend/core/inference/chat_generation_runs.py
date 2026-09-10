@@ -351,19 +351,21 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
-# The pause comments, same origin. `_SSEDecoder` keeps data lines only, so a durable
-# follower never sees them and a paused chat simply stopped and restarted minutes later.
+# The pause comments, same origin. A durable follower never sees SSE comments (`_SSEDecoder`
+# keeps data lines only), so a chat parked to make room showed a durable run nothing at all.
 # Relayed as a chunk carrying the frontend's own `_admissionStatus` field.
 _PREEMPT_PAUSED_MARKER = ": preempt-paused"
 _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
-# Every two seconds of a pause. The lease is renewed on it: a pause longer than the lease
-# is a chat waiting its turn, not a wedged run.
+# Resumed by re-prefilling: the park did not fit, so the answer is not byte-identical.
+_PREEMPT_RECOMPUTED_MARKER = ": preempt-recomputed"
+# Still paused, every two seconds. Renewed on like a queue wait: a pause outlasting the lease
+# reaped the run waiting in it.
 _PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
 
 
 def _admission_status_chunks(text: str) -> list[dict]:
-    """The pause and resume comments in one piece of the upstream stream, as chunks a
-    durable follower renders the way the legacy stream renders the comments."""
+    """The pause and resume comments in one piece of the upstream stream, as chunks a durable
+    follower renders the way the legacy stream renders the comments."""
     chunks: list[dict] = []
     for line in text.replace("\r\n", "\n").split("\n"):
         stripped = line.strip()
@@ -371,6 +373,8 @@ def _admission_status_chunks(text: str) -> list[dict]:
             chunks.append({"_admissionStatus": "paused"})
         elif stripped == _PREEMPT_RESUMED_MARKER:
             chunks.append({"_admissionStatus": "resumed"})
+        elif stripped == _PREEMPT_RECOMPUTED_MARKER:
+            chunks.append({"_admissionStatus": "recomputed"})
     return chunks
 
 
@@ -399,7 +403,10 @@ def _minimum_lease_seconds() -> float:
             reason = "not a usable keep-alive cadence",
         )
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
-    return max(1.0, interval) * 3.0
+    # And the park probe: a swap build without the stream notices is asked at most once per
+    # _PARK_PROBE_MIN_INTERVAL_S, so a lease shorter than two of those could settle a healthy
+    # parked run between two probes.
+    return max(max(1.0, interval) * 3.0, 2.0 * _PARK_PROBE_MIN_INTERVAL_S)
 
 
 def _applied_lease_timeout(configured: float) -> float:
@@ -446,6 +453,54 @@ def _renew_interval_seconds() -> float:
     # The floor must stay UNDER the lease: a one second floor against a one second lease first renews no earlier than
     # expiry. A quarter keeps three renewals per window.
     return min(30.0, max(0.25, lease / 4.0))
+
+
+# The floor between two live `/metrics` probes. The renewal cadence derives from the lease and
+# reaches 0.25s for a very short one, which would turn a silent park into four scrapes a second.
+_PARK_PROBE_MIN_INTERVAL_S = 5.0
+# Last live probe, monotonic. Module level rather than per run: the answer is server wide, so one
+# scrape serves every silent run, and a mutable holder keeps this importable from a worker thread.
+_park_probe_at: list = [None]
+
+
+def _server_park_probe_now(backend: Any) -> bool:
+    """Ask `/metrics` ourselves whether a slot is parked right now, rate limited across runs.
+
+    The read wrapper only asks at its read deadline, and before the first token that deadline IS the
+    20 minute first-token budget, so waiting for its stamp lets the sweeper cancel a healthy
+    generation first, and a shorter UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S loses outright. Bounded
+    by the wrapper's own _SERVER_PARK_STALL_CAP_S, so this cannot keep a wedged run alive. Blocking
+    (one HTTP GET); only ever called from a worker thread.
+    """
+    if not bool(getattr(backend, "server_preempts_kv", False)):
+        return False  # nothing parks slots, so silence is a stall and /metrics is noise
+    probe = getattr(backend, "_server_park_grace", None)
+    if not callable(probe):
+        return False
+    now = time.monotonic()
+    last = _park_probe_at[0]
+    if last is not None and now - last < _PARK_PROBE_MIN_INTERVAL_S:
+        return False
+    _park_probe_at[0] = now
+    return bool(probe())
+
+
+def _server_park_excused_recently() -> bool:
+    """Whether the resident llama-server has lately excused a silent stream as parked from
+    `/metrics`, asking it ourselves when no stamp is in hand. Only a swap build predating the stream
+    notices parks in silence; one with them sends `: preempt-keepalive`, renewed on directly."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        probe = getattr(backend, "server_park_grace_recent", None)
+        if probe is not None and bool(probe(_renew_interval_seconds() * 2.0)):
+            return True
+        # No stamp: the read wrapper has not reached its deadline yet, so ask directly rather than
+        # let the lease expire waiting for it.
+        return _server_park_probe_now(backend)
+    except Exception:
+        return False
 
 
 class ChatGenerationSupervisor:
@@ -726,18 +781,26 @@ class ChatGenerationSupervisor:
                         - (time.monotonic() - last_flush),
                     )
                     if pending
-                    else None
+                    # Bounded even with nothing to flush: a silent park on a swap build without the
+                    # stream notices sends no bytes, and only here can the lease be renewed.
+                    else _renew_interval_seconds()
                 )
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
                 if not ready:
-                    await asyncio.to_thread(
-                        db.append_events,
-                        run_id,
-                        worker_token,
-                        pending,
-                    )
-                    pending = []
-                    last_flush = time.monotonic()
+                    if pending:
+                        await asyncio.to_thread(
+                            db.append_events,
+                            run_id,
+                            worker_token,
+                            pending,
+                        )
+                        pending = []
+                        last_flush = time.monotonic()
+                    elif await asyncio.to_thread(_server_park_excused_recently):
+                        now_s = time.monotonic()
+                        if now_s - last_keepalive >= _renew_interval_seconds():
+                            last_keepalive = now_s
+                            await self._try_touch_progress(run_id)
                     continue
                 try:
                     raw = next_raw_task.result()
@@ -761,8 +824,8 @@ class ChatGenerationSupervisor:
                         await self._try_touch_progress(run_id)
                 status_chunks = _admission_status_chunks(text)
                 if status_chunks:
-                    # Written at once, not batched: nothing follows a pause while it
-                    # lasts, so a batched notice would arrive with the resume.
+                    # Written at once, not batched: nothing follows a pause while it lasts, so a
+                    # batched notice would reach the follower with the resume. Also lease progress.
                     now_ms = db.now_ms()
                     pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
                     await asyncio.to_thread(db.append_events, run_id, worker_token, pending)

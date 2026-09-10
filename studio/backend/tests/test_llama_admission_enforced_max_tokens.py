@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A reservation nobody enforces is not a reservation."""
+"""A reservation nobody enforces is not a reservation: what each chat is charged, what
+it is then permitted on the wire, and why the two are deliberately different."""
 
 from types import SimpleNamespace
 
@@ -10,8 +11,12 @@ import pytest
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
     _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS as _RESERVE,
+    _openai_llama_admission_budget,
     _openai_llama_admission_enforced_max_tokens,
+    _openai_llama_admission_output_allowance,
+    _openai_llama_admission_prompt_tokens,
     _openai_llama_admission_tokens,
+    _openai_llama_preemption_will_apply,
 )
 
 
@@ -34,8 +39,8 @@ def _backend(
     slots,
     unified = True,
 ):
-    # ``_kv_cache_unified`` as the real backend sets it under --kv-unified: the window is
-    # offered only while preemption can reclaim, and that needs one shared pool.
+    # ``_kv_cache_unified`` as the real backend sets it: the window is offered only while
+    # preemption can reclaim, and that needs one shared pool.
     return SimpleNamespace(
         context_length = window,
         _kv_cache_context_total = total,
@@ -44,57 +49,61 @@ def _backend(
     )
 
 
-def _budget(backend):
-    from routes.inference import _openai_llama_admission_budget
-    return _openai_llama_admission_budget(backend)
-
-
 def _enforced(payload, backend):
     return _openai_llama_admission_enforced_max_tokens(payload, request = None, llama_backend = backend)
 
 
-class TestTheInvariant:
-    """No single request may be permitted more than the window its own slot holds."""
+def _prompt_tokens(payload):
+    return _openai_llama_admission_prompt_tokens(payload) or 0
 
-    # Opted in per class, not per module: the two classes below assert the SHARE-based
-    # bound a default install gets, and the whole-window bound asserted here exists only
-    # where a pause can reclaim it.
+
+class TestEveryChatIsPermittedItsWholeWindow:
+    """The invariant MOVED. It is no longer arithmetic, it is eviction."""
+
+    # Opted in per class, not per module: other classes here assert the SHARE-based bound a
+    # default install gets, and the whole-window bound asserted here exists only where a pause
+    # can reclaim it.
     pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
-    def test_no_request_may_exceed_its_own_window(self):
-        for total in (2048, 4096, 8192, 16384, 65536, 262144):
-            backend = _backend(window = total, total = total, slots = 4)
-            payload = _chat(max_tokens = total)
-            enforced = _enforced(payload, backend)
-            assert enforced is not None
-            assert (
-                _prompt_tokens(payload) + enforced <= total
-            ), f"{total}: a single request may occupy more than the whole window"
-
-    def test_it_holds_for_a_long_prompt(self):
-        backend = _backend(window = 16384, total = 16384, slots = 4)
-        payload = _chat("word " * 600, max_tokens = 16384)
+    @pytest.mark.parametrize("total", [2048, 4096, 8192, 16384, 65536, 262144])
+    def test_no_request_may_exceed_its_own_window(self, total):
+        backend = _backend(window = total, total = total, slots = 4)
+        payload = _chat(max_tokens = total)
         enforced = _enforced(payload, backend)
         assert enforced is not None
-        assert _prompt_tokens(payload) + enforced <= 16384
-
-    def test_the_whole_window_is_offered_not_a_share(self):
-        """The point of the change: a chat is no longer rationed by the slot count."""
-        backend = _backend(window = 16384, total = 16384, slots = 4)
-        enforced = _enforced(_chat(max_tokens = 16384), backend)
         assert (
-            enforced > 16384 // 4 * 3
-        ), f"permitted {enforced} still looks like a share of the cache"
+            _prompt_tokens(payload) + enforced <= total
+        ), f"{total}: a single request may occupy more than the whole window"
 
-    def test_it_holds_at_other_slot_counts(self):
+    def test_the_whole_window_is_offered_not_a_share_whatever_the_slot_count(self):
+        enforced = _enforced(_chat(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 4))
+        assert enforced > 16384 // 4 * 3, f"permitted {enforced} still looks like a share"
         for slots in (2, 3, 4, 8):
             backend = _backend(window = 32768, total = 32768, slots = slots)
             payload = _chat(max_tokens = 32768)
             enforced = _enforced(payload, backend)
-            assert enforced is not None
             assert _prompt_tokens(payload) + enforced <= 32768
             # And unchanged by how many slots exist: the window is the window.
             assert enforced > 32768 // max(2, slots) * 1.5
+
+    @pytest.mark.parametrize(
+        ("payload", "backend"),
+        [
+            (_chat(max_tokens = 512), _backend(window = 16384, total = 16384, slots = 4)),
+            (_chat(max_completion_tokens = 2048), _backend(window = 16384, total = 16384, slots = 4)),
+            (_chat(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 1)),
+            (_Payload(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 4)),
+            (_chat(max_tokens = 4096), _backend(window = 4096, total = 16384, slots = 4)),
+            (
+                _chat(max_tokens = 4096),
+                SimpleNamespace(context_length = None, effective_parallel_slots = 4),
+            ),
+        ],
+    )
+    def test_a_stated_cap_a_single_slot_a_private_cache_and_an_unknown_budget_are_left_alone(
+        self, payload, backend
+    ):
+        assert _enforced(payload, backend) is None
 
 
 class TestThePoolIsNeverFilledToTheLastCell:
@@ -391,163 +400,186 @@ class TestTheEdges:
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         charged = _openai_llama_admission_tokens(
-            payload, budget = _budget(backend), capacity = 4, context_window = 16384
+            payload,
+            budget = _openai_llama_admission_budget(backend),
+            capacity = 4,
+            context_window = 16384,
         )
-        enforced = _enforced(payload, backend)
-        permitted = _prompt_tokens(payload) + enforced
+        permitted = _prompt_tokens(payload) + _enforced(payload, backend)
         assert permitted > charged, (
-            f"permitted {permitted} should exceed the charge {charged}: admission "
-            "reserves a share so several chats fit, while each may use the window"
+            f"permitted {permitted} should exceed the charge {charged}: admission reserves "
+            "a share so several chats fit, while each may use the window"
         )
-        assert enforced > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
-
-    def test_the_charge_never_exceeds_what_is_permitted(self):
-        """If it did, admission would be reserving room the request cannot use."""
-        backend = _backend(window = 16384, total = 16384, slots = 4)
-        payload = _chat(max_tokens = 16384)
-        charged = _openai_llama_admission_tokens(
-            payload, budget = _budget(backend), capacity = 4, context_window = 16384
-        )
-        assert charged <= _prompt_tokens(payload) + _enforced(payload, backend)
-
-
-def _prompt_tokens(payload):
-    from routes.inference import _openai_llama_admission_prompt_tokens
-    return _openai_llama_admission_prompt_tokens(payload) or 0
-
-
-class TestItReachesTheWireWithoutBecomingTheCallersCap:
-    """The bound has to land on the request and nowhere else."""
-
-    def _source(self):
-        from pathlib import Path
-
-        import core.inference.llama_cpp as llama_cpp
-        return Path(llama_cpp.__file__).read_text()
-
-    def test_both_payload_sites_apply_the_allowance(self):
-        source = self._source()
-        applied = source.count(
-            'payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)'
-        )
-        assert (
-            applied == 2
-        ), f"expected the plain stream and the tool loop to bound the wire cap, found {applied}"
-
-    def test_the_loop_budget_never_sees_it(self):
-        """`_loop_budget_left` answers "did the CALLER cap this", and an admission bound is not the
-        caller speaking.
-        """
-        lines = self._source().split("\n")
-        start = next(i for i, l in enumerate(lines) if "def _loop_budget_left" in l)
-        indent = len(lines[start]) - len(lines[start].lstrip())
-        body = []
-        for line in lines[start + 1 :]:
-            if line.strip() and (len(line) - len(line.lstrip())) <= indent:
-                break
-            body.append(line)
-        assert body, "could not read the body of _loop_budget_left"
-        assert "admission_output_allowance" not in "\n".join(
-            body
-        ), "the admission bound leaked into the caller's continuation budget"
-
-    def test_both_entry_points_accept_it(self):
-        import inspect
-
-        from core.inference.llama_cpp import LlamaCppBackend
-        for name in ("generate_chat_completion", "generate_chat_completion_with_tools"):
-            params = inspect.signature(getattr(LlamaCppBackend, name)).parameters
-            assert "admission_output_allowance" in params, name
-            assert params["admission_output_allowance"].default is None, name
+        assert charged <= permitted
+        assert _enforced(payload, backend) > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
 
 
 class TestChargedAndPermittedCannotDrift:
     """The bound is only safe if nothing is admitted on less than it may use."""
 
     def _charged(self, budget, share, prompt):
-        from routes.inference import _openai_llama_admission_output_allowance
         allowance = _openai_llama_admission_output_allowance(
-            None,
-            budget = budget,
-            prompt_tokens = prompt,
-            context_window = budget,
-            share = share,
+            None, budget = budget, prompt_tokens = prompt, context_window = budget, share = share
         )
         return max(1, min(budget, prompt + allowance))
 
     def test_the_mixed_set_that_broke_the_invariant(self):
-        """Measured before the fix: charged 258774 of 262144, permitted 385750."""
         budget, slots = 262144, 4
         share = budget // slots
-        prompts = [1, 65537, 189139, 1]
         admitted, used = [], 0
-        for prompt in prompts:
+        for prompt in (1, 65537, 189139, 1):
             charged = self._charged(budget, share, prompt)
             if len(admitted) < slots and used + charged <= budget:
                 used += charged
                 admitted.append(prompt)
         # Against what the wire ACTUALLY permits, which is the window, not the share.
-        # Computing `share - prompt` here was the test agreeing with an older design; the
-        # clamp says "THE WINDOW, not a share of it" and the permitted total therefore
-        # exceeds the cache by construction. That is the vLLM shape the goal asks for:
-        # overcommit deliberately, then preempt at a watermark.
         permitted = sum(prompt + max(1, budget - prompt) for prompt in admitted)
         assert permitted > budget, (
             "the cache is meant to be overcommitted now; if this ever holds, admission has "
             "gone back to dividing the window and preemption has nothing left to do"
         )
-        # What still has to hold is the thing that actually bounds concurrency.
         assert used <= budget, f"admitted {admitted} charged {used} of {budget}"
         assert len(admitted) <= slots
 
-    def test_the_charge_is_deliberately_less_than_the_permission(self):
-        """This asserted the opposite, and the opposite was already false.
-
-        Every prompt here fits its share WITH the wire reserve still in it. One inside that
-        band does not fit it, takes the flat allowance and is charged more than a share on
-        purpose, so the queue admits fewer of them; that is the class above's subject.
-        """
-        for budget, slots in ((16384, 4), (4096, 4), (2048, 2), (32768, 8), (262144, 4)):
-            share = budget // slots
-            for prompt in (1, 8, share // 2, share - _RESERVE - 2):
-                if prompt < 1:
-                    continue
-                charged = self._charged(budget, share, prompt)
-                # It must still be cheap enough that a full capacity fits, which is the
-                # property that actually bounds how many chats are admitted at once.
-                assert (
-                    charged * slots <= budget or charged <= share
-                ), f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
-                # And it must not silently become the permission again.
-                assert charged < prompt + max(1, budget - prompt)
-
-    def test_a_full_capacity_of_unstated_requests_still_fits(self):
-        """Charging the whole share must not cost the concurrency #10070 bought."""
-        for budget, slots in ((16384, 4), (4096, 4), (32768, 8), (262144, 4)):
-            share = budget // slots
-            charged = self._charged(budget, share, 8)
+    @pytest.mark.parametrize(
+        ("budget", "slots"), [(16384, 4), (4096, 4), (2048, 2), (32768, 8), (262144, 4)]
+    )
+    def test_the_charge_is_less_than_the_permission_and_a_full_capacity_still_fits(
+        self, budget, slots
+    ):
+        """Every prompt here fits its share WITH the wire reserve still in it. One inside
+        that band takes the flat allowance and is charged more than a share on purpose."""
+        share = budget // slots
+        for prompt in (1, 8, share // 2, share - _RESERVE - 2):
+            if prompt < 1:
+                continue
+            charged = self._charged(budget, share, prompt)
+            # Cheap enough that a full capacity fits, which is what bounds how many chats
+            # are admitted at once.
             assert (
-                charged * slots <= budget
-            ), f"budget={budget} slots={slots}: {slots} small chats charge {charged * slots}"
+                charged * slots <= budget or charged <= share
+            ), f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
+            assert charged < prompt + max(1, budget - prompt)
+        assert self._charged(budget, share, 8) * slots <= budget
 
 
 class TestWhenNothingWillReclaim:
     """The window is the ceiling only while preemption can reclaim the overcommit."""
 
-    def test_the_switch_brings_the_share_back(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
-        backend = _backend(window = 16384, total = 16384, slots = 4)
-        prompt = _prompt_tokens(_chat("hi"))
-        assert _enforced(_chat("hi"), backend) == 4096 - prompt - _RESERVE
+    def _backend(self):
+        return _backend(window = 16384, total = 16384, slots = 4)
 
     def test_with_the_switch_on_the_window_is_offered(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
-        backend = _backend(window = 16384, total = 16384, slots = 4)
         prompt = _prompt_tokens(_chat("hi"))
-        assert _enforced(_chat("hi"), backend) == 16384 - prompt - _RESERVE
+        assert _enforced(_chat("hi"), self._backend()) == 16384 - prompt - _RESERVE
 
-    def test_four_shares_fit_the_cache(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
-        backend = _backend(window = 16384, total = 16384, slots = 4)
+    def test_an_unpausable_request_is_held_to_its_share_while_the_switch_is_on(self, monkeypatch):
+        # never chosen as a victim, so nothing reclaims what it generates past its charge
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
         prompt = _prompt_tokens(_chat("hi"))
-        assert 4 * (prompt + _enforced(_chat("hi"), backend)) <= 16384
+        enforced = _openai_llama_admission_enforced_max_tokens(
+            _chat("hi"), request = None, llama_backend = self._backend(), pausable = False
+        )
+        assert enforced == 4096 - prompt - _RESERVE
+
+    def test_the_switch_off_brings_the_share_back_and_four_of_them_fit(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+        prompt = _prompt_tokens(_chat("hi"))
+        enforced = _enforced(_chat("hi"), self._backend())
+        assert enforced == 4096 - prompt - _RESERVE
+        assert 4 * (prompt + enforced) <= 16384
+
+
+# ------------------------------------------------------- a client-stated cap passes through
+
+BUDGET, SLOTS = 16384, 4
+SHARE = BUDGET // SLOTS
+
+
+def _charged(cap, prompt, *, active):
+    return _openai_llama_admission_output_allowance(
+        cap,
+        budget = BUDGET,
+        prompt_tokens = prompt,
+        context_window = BUDGET,
+        share = SHARE,
+        preemption_active = active,
+    )
+
+
+class TestAStatedCapNoLongerSerialises:
+    def test_four_chats_fit_where_one_did(self):
+        prompt, cap = 3000, 6000
+        before = _charged(cap, prompt, active = False)
+        assert before == cap, "the old behaviour was to charge the cap in full"
+        assert (
+            BUDGET // (prompt + before) == 1
+        ), "which is why four chats at max_tokens 6000 ran one at a time"
+        after = _charged(cap, prompt, active = True)
+        assert (
+            BUDGET // (prompt + after) >= SLOTS
+        ), f"charged {after}, so only {BUDGET // (prompt + after)} of {SLOTS} fit"
+        assert after == _charged(
+            None, prompt, active = True
+        ), "a stated cap is charged the same as an unstated one"
+
+    def test_the_cases_that_must_not_change(self):
+        assert _charged(50, 200, active = True) == _charged(50, 200, active = False) == 50
+        for prompt in (1, 200, 1000, 3000):
+            # Pausable: the flat allowance. Unpausable: the rest of the share, which is the cap
+            # it is sent, so its reservation covers what it may generate.
+            assert _charged(None, prompt, active = True) == min(
+                _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, SHARE - prompt
+            )
+            assert _charged(None, prompt, active = False) == SHARE - prompt
+        for cap in (BUDGET, BUDGET + 1):
+            for active in (True, False):
+                assert _charged(cap, 3000, active = active) == _charged(
+                    None, 3000, active = active
+                ), "a cap at or above the window was already unstated"
+        assert _charged(6000, BUDGET - 1, active = True) >= 1, "the charge is never zero"
+        assert _charged(1, BUDGET - 1, active = True) >= 1
+
+    def test_a_full_capacity_is_still_admitted_and_the_cache_is_deliberately_overcommitted(self):
+        prompt = 1000
+        charged = _charged(6000, prompt, active = True)
+        assert (prompt + charged) * SLOTS <= BUDGET, "a full capacity must still be admitted"
+        assert (
+            (prompt + (BUDGET - prompt)) * SLOTS > BUDGET
+        ), "the cache is meant to be overcommitted now; preemption is the enforcement"
+
+
+class TestTheGateIsTheEnforcementItself:
+    """The optimism must be switched on by exactly what makes it survivable."""
+
+    # Opted in: each case here starts from the optimism being ON and turns one switch off, so
+    # the switch under test is the reason, not the default.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
+    class _Backend:
+        def __init__(self, unified):
+            self._kv_cache_unified = unified
+
+    def test_no_kv_unified_and_no_budget_mean_no_optimism(self):
+        # Without one shared pool a paused slot's cells cannot be purged for anyone else;
+        # try_clear_idle_slots is gated on exactly this.
+        assert _openai_llama_preemption_will_apply(self._Backend(False), BUDGET) is False
+        assert _openai_llama_preemption_will_apply(self._Backend(True), 0) is False
+        assert _openai_llama_preemption_will_apply(self._Backend(True), None) is False
+
+    @pytest.mark.parametrize(
+        "switch",
+        [
+            "UNSLOTH_LLAMA_ADMISSION_PREEMPT",
+            "UNSLOTH_LLAMA_ADMISSION_KV_BUDGET",
+            "UNSLOTH_LLAMA_ADMISSION_CONTROL",
+        ],
+    )
+    def test_every_switch_that_turns_the_enforcement_off_turns_the_optimism_off(
+        self, monkeypatch, switch
+    ):
+        backend = self._Backend(True)
+        assert _openai_llama_preemption_will_apply(backend, BUDGET) is True
+        monkeypatch.setenv(switch, "0")
+        assert _openai_llama_preemption_will_apply(backend, BUDGET) is False

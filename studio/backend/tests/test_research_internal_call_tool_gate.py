@@ -127,8 +127,8 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert (before_entry, after_entry) == ("plain", "plain")
     # Both are fresh per request (a new Event, and the monitor's per-request tok/s closure), so
     # comparing them by identity would fail for any pair of requests.
-    # Fresh per request, so comparing them by identity fails for any pair. Asserted for
-    # presence below instead, exactly as perf_callback is.
+    # The preemption arguments join the same list for the same stated reason: fresh per
+    # request, so identity comparison fails for any pair. Presence is asserted below.
     drop = {
         "cancel_event",
         "perf_callback",
@@ -143,10 +143,10 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert callable(before_kwargs.get("perf_callback")) == callable(
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"
-    # Same shape for preemption, except the DEFAULT is the nothing-changes case: nothing in
-    # this test sets UNSLOTH_LLAMA_ADMISSION_PREEMPT, so neither side may be armed and the
-    # assertion is absence on both sides rather than presence. Pinned rather than dropped,
-    # because a surface that arms a default install is invisible to every other test here.
+    # Same shape for preemption, except the DEFAULT is the nothing-changes case: nothing here
+    # sets UNSLOTH_LLAMA_ADMISSION_PREEMPT, so neither side may be armed and the assertion is
+    # absence on both sides rather than presence. Pinned rather than dropped, because a surface
+    # that arms a default install is invisible to every other test here.
     assert (
         preemption_enabled() is False
     ), "this test speaks for a default install, which does not opt into preemption"
@@ -157,9 +157,9 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
         # And no sweep: `on_tokens` is the only thing that tells the controller a chat has
         # grown, and llama.cpp skips the callback outright when it is None.
         assert _kwargs.get("on_tokens") is None
-        # The policy object is still handed over, unbound, which is what it is for: it is
-        # the callback a pause would land on, and there is no pause to land. Pinned inert
-        # rather than absent, since it cannot be reached without a preempt_event.
+        # The policy object is still handed over, unbound, which is what it is for: it is the
+        # callback a pause would land on, and there is no pause to land. Pinned inert rather
+        # than absent, since it cannot be reached without a preempt_event.
         assert _kwargs["preempt_policy"].bound is False
         assert _kwargs["preempt_policy"].should_preempt() is False
         # The re-pricing hook is admission, not preemption, and it stays: without it an

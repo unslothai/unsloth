@@ -1091,6 +1091,12 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
               };
               if (chunk._admissionStatus !== undefined) {
+                if (chunk._admissionStatus === "recomputed") {
+                  // Qualifies the resume before it, so the status line stays as it is. Reaches
+                  // the chip through the message, as the live adapter's does.
+                  currentMetadata = { ...currentMetadata, preemptRecomputed: true };
+                  continue;
+                }
                 // Queued or paused: the line the live adapter shows, so a follower does
                 // not read the pause as a wedged backend. Cleared with the run below.
                 useChatRuntimeStore
@@ -2955,6 +2961,42 @@ function ThreadScopedSettingsSync({
 
 // Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
 // none, and a retried thread's newest stored leaf is not what the runtime would send.
+/** The exact-concurrency chip's recompute note follows the answer on screen. A thread-level
+ *  flag set when a turn ended conflated a thread's retry branches: a normal retry cleared the
+ *  note of its re-prefilled sibling, and switching back to that sibling showed Exact over an
+ *  answer that was not. Read from the visible branch's last assistant message, whose metadata
+ *  both adapters write and persist, so a reload and a branch switch read the same source. */
+function VisibleAnswerRecomputeSync({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  // The answer's model rides in its usage record. A note from model A must not qualify the
+  // chip for model B, loaded into the same thread before B has answered.
+  // A primitive per selector: a selector returning a fresh object re-renders on every store
+  // read and React refuses the loop (error 185, seen in the Windows UI lane).
+  const lastAnswer = useAuiState(({ thread }) => {
+    const messages = thread.messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return messages[i];
+    }
+    return null;
+  });
+  const custom = lastAnswer?.metadata?.custom as Record<string, unknown> | undefined;
+  const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
+  const answerRecomputed = custom?.preemptRecomputed === true;
+  const answerModelId = typeof usage?.modelId === "string" ? usage.modelId : null;
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const recomputed =
+    answerRecomputed && (answerModelId === null || answerModelId === checkpoint);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+
+  useEffect(() => {
+    if (!enabled) return;
+    useChatRuntimeStore.getState().setPreemptRecompute(activeThreadId, recomputed);
+  }, [activeThreadId, enabled, recomputed]);
+
+  return null;
+}
+
 function ActiveBranchRegistrar({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3395,6 +3437,9 @@ export function ChatRuntimeProvider({
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
         <ActiveBranchRegistrar
+          enabled={modelType === "base" && !pairId && !backgrounded}
+        />
+        <VisibleAnswerRecomputeSync
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
         <ThreadContextUsageRecount

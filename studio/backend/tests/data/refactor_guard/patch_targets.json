@@ -361,6 +361,10 @@
     "tests/test_diffusion_training.py",
     "tests/test_diffusion_training.py"
   ],
+  "core.inference.llama_stats.scrape_llama_metrics": [
+    "tests/test_a_raw_park_reaches_the_client_and_exact_needs_the_server_to_park.py",
+    "tests/test_server_side_preemption_handoff.py"
+  ],
   "core.inference.local_model_resolver.local_load_dir": [
     "tests/test_openai_models_servable_cache.py",
     "tests/test_openai_models_servable_cache_edges.py",
@@ -509,9 +513,9 @@
     "tests/test_safetensors_tool_loop.py"
   ],
   "core.inference.tools.execute_tool": [
-    "tests/test_a_declined_pause_unsticks_the_participant.py",
+    "tests/test_a_pause_keeps_the_thought_and_a_stop_ends_the_wait.py",
+    "tests/test_a_pause_on_a_spent_cap_ends_the_turn.py",
     "tests/test_anthropic_messages.py",
-    "tests/test_final_answer_pass_pauses_and_resumes.py",
     "tests/test_gguf_route_cursor_reset.py",
     "tests/test_length_truncated_reasoning_continuation.py",
     "tests/test_length_truncated_reasoning_continuation.py",
@@ -603,6 +607,7 @@
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_tool_loop_preempt_resume.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
@@ -616,13 +621,6 @@
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_parallel_round_divides_room_among_launched_calls.py",
-    "tests/test_preempt_resume_wastes_no_work.py",
-    "tests/test_preempt_resume_wastes_no_work.py",
-    "tests/test_the_final_pass_charges_each_attempt_once.py",
-    "tests/test_the_final_pass_stays_under_kv_control.py",
-    "tests/test_the_final_pass_stays_under_kv_control.py",
-    "tests/test_the_final_pass_stays_under_kv_control.py",
-    "tests/test_the_final_pass_stays_under_kv_control.py",
     "tests/test_tool_calls_within_one_turn_overlap.py",
     "tests/test_tool_calls_within_one_turn_overlap.py",
     "tests/test_tool_calls_within_one_turn_overlap.py",
