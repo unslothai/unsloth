@@ -327,7 +327,15 @@ def _torch_inductor_dirs() -> list[Path]:
 
 
 def _torch_extensions_dirs() -> list[Path]:
-    return _first(_env_dir("TORCH_EXTENSIONS_DIR"), _platform_cache_dir("torch_extensions"))
+    configured = _env_dir("TORCH_EXTENSIONS_DIR")
+    if configured is not None:
+        return [configured]
+    if _is_windows():
+        # get_default_build_root() is user_cache_dir(appname = "torch_extensions")
+        # with no appauthor, and torch/_appdirs defaults the author to the app
+        # name, so Windows gets the name twice before the Cache tail.
+        return [_local_app_data() / "torch_extensions" / "torch_extensions" / "Cache"]
+    return [_platform_cache_dir("torch_extensions")]
 
 
 def _triton_dirs() -> list[Path]:
@@ -1111,9 +1119,32 @@ def _release_downloads(reserved: Iterable) -> None:
             logger.warning(f"Could not release a download registry: {exc}")
 
 
+# Roots a spawned training worker reads and writes outside every registry here:
+# core/training/training.py hands it the same HF_HUB_CACHE and HF_XET_CACHE and
+# the trainer calls snapshot_download and load_dataset itself. The reason the
+# compiled cache is opt-in applies to these too, so a run is not lost to a clear.
+_WORKER_SENSITIVE_KEYS = frozenset({"hf_hub", "hf_xet", "hf_datasets"})
+
+
+def _training_refusal(key: str) -> Optional[str]:
+    if key not in _WORKER_SENSITIVE_KEYS:
+        return None
+    try:
+        from core.training import get_training_backend
+        active = bool(get_training_backend().is_training_active())
+    except Exception as exc:  # noqa: BLE001 - a broken import must not block a purge
+        logger.debug(f"Could not read the training state: {exc}")
+        return None
+    return "Stop the training run before clearing this cache." if active else None
+
+
 def purge_cache(key: str) -> dict:
     """Empty one cache by key. Never raises for a refusal; it reports it."""
     definition = definition_for(key)
+    training = _training_refusal(key)
+    if training is not None:
+        logger.warning(f"Refusing to purge the {key} cache: {training}")
+        return _purge_result(definition, PurgeOutcome(errors = [training]))
     reserved, busy = _reserve_downloads(key)
     if busy is not None:
         logger.warning(f"Refusing to purge the {key} cache: {busy}")

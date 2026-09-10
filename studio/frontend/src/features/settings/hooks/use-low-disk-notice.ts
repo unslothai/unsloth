@@ -8,10 +8,11 @@ import { useEffect } from "react";
 import { observeDiskPressure } from "../low-disk";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Disk figures come from /api/system in decimal GB, so format them the same way. */
+/** Decimal GB, as /api/system reports it and as the Resources tab renders it.
+ * The unit belongs in the value: the description interpolates it bare. */
 function formatGb(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "?";
-  return value >= 100 ? value.toFixed(0) : value.toFixed(1);
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} GB`;
 }
 
 /** Slow on purpose: a disk fills over hours. */

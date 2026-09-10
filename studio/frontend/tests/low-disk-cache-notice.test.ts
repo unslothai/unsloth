@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
+import { en } from "../src/i18n/locales/en.ts";
+
 import {
   CRITICAL_DISK_FREE_GB,
   INITIAL_LOW_DISK_STATE,
@@ -144,6 +146,16 @@ test("the notice fetches its own readings rather than waiting to be told", () =>
   assert.match(hook, /toast\.warning\(/);
   // Slow on purpose: a disk fills over hours and this runs on every route.
   assert.match(hook, /LOW_DISK_POLL_MS = 60_000/);
+  // The description interpolates {free} and {total} bare, so the unit has to be
+  // in the value or the toast reads "4.0 free of 500".
+  assert.match(
+    hook,
+    /\$\{value >= 100 \? value\.toFixed\(0\) : value\.toFixed\(1\)\} GB/,
+  );
+  assert.match(
+    en.settings.resources.storage.lowDisk.description,
+    /\{free\} free of \{total\}/,
+  );
   // The toast has to lead somewhere: the Storage section it is about.
   assert.match(hook, /scrollTarget: "resources-caches"/);
 });

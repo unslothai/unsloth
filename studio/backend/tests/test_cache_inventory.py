@@ -1294,3 +1294,57 @@ def test_a_repository_delete_and_a_whole_cache_purge_exclude_each_other():
     assert registry.begin_delete("org/model") is False
     registry.end_cache_purge()
     assert registry.begin_delete("org/model") is True
+
+
+def test_a_running_training_job_holds_off_the_model_cache_clears(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """A spawned trainer gets the same HF_HUB_CACHE and HF_XET_CACHE and calls
+    snapshot_download and load_dataset itself, outside every registry here."""
+    import core.training as training_module
+    from utils import cache_inventory as module
+
+    blob = _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
+    wheel = _write(tmp_path / "uv" / "wheel.whl", "w" * 10)
+
+    class _Backend:
+        active = True
+
+        def is_training_active(self):
+            return self.active
+
+    backend = _Backend()
+    monkeypatch.setattr(training_module, "get_training_backend", lambda: backend, raising = False)
+
+    result = purge_caches(["hf_hub"])["results"][0]
+    assert blob.exists()
+    assert result["errors"] == ["Stop the training run before clearing this cache."]
+    for key in ("hf_xet", "hf_datasets"):
+        assert module._training_refusal(key) is not None
+    # A cache no worker of ours writes into is not gated on a run.
+    assert module._training_refusal("uv") is None
+    purge_caches(["uv"])
+    assert not wheel.exists()
+
+    backend.active = False
+    purge_caches(["hf_hub"])
+    assert not blob.exists()
+
+
+def test_the_torch_extensions_cache_repeats_the_name_on_windows(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """get_default_build_root() is user_cache_dir(appname = "torch_extensions")
+    with no appauthor, which torch/_appdirs defaults to the app name."""
+    from utils import cache_inventory as module
+
+    monkeypatch.delenv("TORCH_EXTENSIONS_DIR", raising = False)
+    monkeypatch.setattr(module, "_is_windows", lambda: True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    assert module._torch_extensions_dirs() == [
+        tmp_path / "Local" / "torch_extensions" / "torch_extensions" / "Cache"
+    ]
+
+    monkeypatch.setattr(module, "_is_windows", lambda: False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert module._torch_extensions_dirs() == [tmp_path / "xdg" / "torch_extensions"]
