@@ -369,7 +369,6 @@ def _parser_first_sentinel(text: str):
 
 def _parser_first_foreign_signal(text: str):
     from core.inference import tool_call_parser
-
     return tool_call_parser._first_foreign_tool_signal(text)
 
 
