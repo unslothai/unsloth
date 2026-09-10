@@ -298,14 +298,17 @@ def test_a_default_install_is_charged_the_share(monkeypatch):
             preemption_active = active,
         ) == min(share - prompt, budget - prompt), f"prompt {prompt} is not charged its share"
     # And a stated cap is charged in full, which is what serialises rather than overruns.
-    assert inference_route._openai_llama_admission_output_allowance(
-        5000,
-        budget = budget,
-        prompt_tokens = 1000,
-        context_window = budget,
-        share = share,
-        preemption_active = active,
-    ) == 5000
+    assert (
+        inference_route._openai_llama_admission_output_allowance(
+            5000,
+            budget = budget,
+            prompt_tokens = 1000,
+            context_window = budget,
+            share = share,
+            preemption_active = active,
+        )
+        == 5000
+    )
 
 
 @pytest.mark.parametrize("tool_loop", [False, True])
