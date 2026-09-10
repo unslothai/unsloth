@@ -3,15 +3,14 @@
 
 """Guard tests for the markerless execution-class tool-call fix.
 
-Two HIGH-severity prompt-injection -> RCE findings: the markerless (bare, unwrapped)
-tool-call parsers promoted ``call:NAME{...}`` and ``NAME[ARGS]{json}`` found ANYWHERE in
-assistant text into real tool calls, gated only by "is NAME enabled". When the model quotes
-attacker-controlled content (web/RAG/pasted text) shaped like one of those, the safetensors/
-GGUF loops would execute it via ``execute_tool`` -> ``_bash_exec``/``_python_exec``.
+Two HIGH-severity prompt-injection -> RCE findings: the markerless (bare, unwrapped) parsers
+promoted ``call:NAME{...}`` and ``NAME[ARGS]{json}`` found ANYWHERE in assistant text, gated
+only by "is NAME enabled", so content the model quotes (web/RAG/pasted) shaped like one ran
+through ``execute_tool`` -> ``_bash_exec``/``_python_exec``.
 
 The fix: an execution-class tool (``python``/``terminal``/``edit_file``) or any open-vocabulary
-``mcp__*`` tool is NEVER promoted or stripped from a MARKERLESS span, regardless of
-``enabled_tool_names``. It must carry an unambiguous wrapper (``<|tool_call>``,
+``mcp__*`` tool is NEVER promoted or stripped from a MARKERLESS span, whatever
+``enabled_tool_names`` says. It must carry an unambiguous wrapper (``<|tool_call>``,
 ``[TOOL_CALLS]``, ``<function=>``) or arrive as a structured tool_call. Benign tools keep the
 bare form; the trusted wrapped/marker forms keep executing code and MCP tools.
 
@@ -311,10 +310,9 @@ def test_provisional_card_sniff_keeps_benign_and_structured_names():
 
 
 def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
-    """The per-name gate has to be an O(1) set test. ``_held_rehearsal_tail_len`` runs on every
-    streamed chunk over the whole catalog, so a membership test against the tool LIST inside that
-    loop makes it quadratic -- measurably so with the thousands of tools a large MCP catalog can
-    carry."""
+    """The per-name gate has to be an O(1) set test: ``_held_rehearsal_tail_len`` runs on every
+    streamed chunk over the whole catalog, so testing membership against the tool LIST in that
+    loop is quadratic, measurably so with a large MCP catalog's thousands of tools."""
     from core.inference import llama_cpp, safetensors_agentic
 
     class _CountingSet(frozenset):
@@ -383,10 +381,9 @@ def test_a_disabled_leading_name_still_stops_the_chain():
 
 
 def test_blocked_leading_call_is_not_markup_for_the_streaming_scans():
-    """A blocked call streams as prose, so it must not pin the incremental stripper.
-    ``_first_sentinel`` and ``_needs_whole_buffer`` treating it as markup sets ``_degenerate``
-    and re-strips the whole cumulative response on every token, which is quadratic in a long
-    quoted call. Asserted structurally rather than by wall clock so it cannot flake."""
+    """A blocked call streams as prose, so it must not pin the incremental stripper: treating it
+    as markup in ``_first_sentinel``/``_needs_whole_buffer`` sets ``_degenerate`` and re-strips
+    the whole response per token. Asserted structurally, not by wall clock, so it cannot flake."""
     from core.inference.tool_call_parser import _first_sentinel, _promotable_gemma_call_pos
 
     blocked = 'call:terminal{command:"id"}'
@@ -445,9 +442,8 @@ def test_a_disabled_call_does_not_anchor_its_neighbour():
 
 
 def test_an_open_execution_name_prefix_is_still_held_unrestricted():
-    """``terminal`` alone may still become ``terminal_logs``, which IS promotable. Releasing it the
-    moment the chunk ends leaks the first half of a real call as prose, so the hold lasts until
-    the ``[`` settles which tool it is."""
+    """``terminal`` alone may still become ``terminal_logs``, which IS promotable, so releasing it
+    when the chunk ends leaks half a real call as prose; the hold lasts until ``[`` settles it."""
     from core.inference.safetensors_agentic import _is_rehearsal_prefix
 
     tools = [{"type": "function", "function": {"name": "terminal_logs"}}]
@@ -501,10 +497,9 @@ def test_a_blocked_mcp_rehearsal_body_is_not_scanned_for_other_calls():
 
 
 def test_blocked_span_collection_is_one_forward_pass():
-    """A stream of unclosed ``terminal[ARGS]{`` must not restart a balanced scan per opener. Cheap
-    for a model to emit and quadratic to scan, so it ties up a worker. Timed rather than
-    structural because the shape of the scan is the thing under test; the budget is ~1000x the
-    observed cost, so only a return to the quadratic form can trip it."""
+    """A stream of unclosed ``terminal[ARGS]{`` must not restart a balanced scan per opener:
+    cheap to emit, quadratic to scan, so it ties up a worker. Timed because the scan's shape is
+    what is under test; the budget is ~1000x the observed cost, so only the quadratic form trips it."""
     import time
 
     text = "terminal[ARGS]{" * 3200
@@ -607,10 +602,9 @@ def test_a_completed_non_call_peer_ends_the_blocked_chain():
 
 
 def test_a_prefilled_think_opener_is_re_emitted_when_the_closer_survives():
-    """``detect_think_prefill`` drops the opener when ``</think>`` is a special token. That was
-    right while the streamer stripped the closer. Preserving tool provenance keeps it, so the
-    same rule now produces the mirrored bug: reasoning that streams with a stray ``</think>`` and
-    no opening tag."""
+    """``detect_think_prefill`` drops the opener when ``</think>`` is a special token, which was
+    right while the streamer stripped the closer. Preserving tool provenance keeps that closer, so
+    the same rule now mirrors the bug: reasoning streams with a stray ``</think>`` and no opener."""
     from core.inference.chat_template_helpers import detect_think_prefill
 
     prompt = "user turn\n<think>\n"
@@ -626,10 +620,9 @@ def test_a_prefilled_think_opener_is_re_emitted_when_the_closer_survives():
 
 
 def test_the_transformers_vision_streamer_preserves_tool_tokens():
-    """An image request carries client tools, and its streamer is built separately. Without the flag
-    the Gemma/Qwen wrapper is stripped on that route only, so a genuine call reaches the guard
-    markerless and is returned as prose. Read from source rather than driven: the real boundary
-    needs a loaded Transformers VLM, and importing the module needs torch."""
+    """An image request carries client tools and builds its streamer separately, so without the
+    flag the Gemma/Qwen wrapper is stripped on that route only and a genuine call reaches the
+    guard markerless. Read from source: the real boundary needs a loaded Transformers VLM."""
     import ast
     import pathlib
 
@@ -835,10 +828,9 @@ def test_the_attribute_form_parameter_opener_survives_decoding():
 
 
 def test_a_promotable_bare_gemma_call_is_a_streaming_boundary():
-    """Bare Gemma has no ``TOOL_XML_SIGNALS`` entry, but the parser promotes it anywhere. Without a
-    boundary the detectors cannot see a mid-prose call, so its serialization reaches the client
-    and only then executes. The boundary is the call's own start, so the prose ahead of it still
-    streams."""
+    """Bare Gemma has no ``TOOL_XML_SIGNALS`` entry, yet the parser promotes it anywhere, so
+    without a boundary the detectors miss a mid-prose call and its serialization reaches the
+    client before it executes. The boundary is the call's own start, so prose ahead still streams."""
     from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
     from core.inference.safetensors_agentic import _earliest_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS, promotable_gemma_call_pos
@@ -860,10 +852,10 @@ def test_a_promotable_bare_gemma_call_is_a_streaming_boundary():
 
 
 def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
-    """``_clean_generated_text`` trims the active stop token from every snapshot. Now that the
-    decoder preserves native controls, a marker that is BOTH the EOS and the required closer (TML
-    Inkling's ``<|end_message|>``) was being removed before the parser read it, so strict parsing
-    rejected a complete call. An ordinary EOS is not a native control and is still trimmed."""
+    """``_clean_generated_text`` trims the active stop token from every snapshot, so once the
+    decoder preserves native controls a marker that is BOTH the EOS and the required closer (TML
+    Inkling's ``<|end_message|>``) went before the parser read it and strict parsing rejected a
+    complete call. An ordinary EOS is not a native control and is still trimmed."""
     import ast
     import pathlib
 
@@ -948,11 +940,10 @@ class _ReasoningChannelTokenizer:
 
 
 def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
-    """``decode_stream_token`` drops any special id outside the preserved set. A VLM turn that
-    combines tools with a native reasoning protocol therefore loses the delimiters
-    ``normalize_reasoning_snapshots`` is waiting for, and the reasoning is emitted as ordinary
-    answer text. The whole VLM stream is exercised in
-    ``test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn``."""
+    """``decode_stream_token`` drops any special id outside the preserved set, so a VLM turn
+    combining tools with a native reasoning protocol loses the delimiters
+    ``normalize_reasoning_snapshots`` waits for and emits the reasoning as answer text. The whole
+    stream is exercised in ``test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn``."""
     from core.inference.native_tool_tokens import (
         NativeToolTokenDecoder,
         reasoning_control_tokens,
@@ -974,9 +965,9 @@ def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
 
 def test_a_gemma_peer_behind_a_blocked_json_object_is_held():
     """The end-of-turn parser searches the whole turn, so a chain can change format.
-    ``blocked_bare_json_chain_may_continue`` stopped at the first non-object suffix, but
+    ``blocked_bare_json_chain_may_continue`` stopped at the first non-object suffix, yet
     ``{"name":"terminal",..} call:web_search{..}`` still promotes ``web_search``, so the peer
-    streamed and was only promoted at end of turn."""
+    streamed and was promoted only at end of turn."""
     from core.inference.tool_call_parser import blocked_bare_json_chain_may_continue as may_continue
 
     blocked = json.dumps({"name": "terminal", "parameters": {"command": "id"}})
@@ -1000,10 +991,9 @@ def test_a_gemma_peer_behind_a_blocked_json_object_is_held():
 
 
 def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
-    """``promotable_gemma_call_pos`` only sees a call once its ``{`` has arrived. A promotable call
-    written after ordinary prose therefore streamed ``call:web`` to the client, and the completed
-    call was promoted a snapshot later. STREAMING holds the tail the same way it holds a split
-    ``NAME[ARGS]`` rehearsal."""
+    """``promotable_gemma_call_pos`` only sees a call once its ``{`` arrives, so a promotable call
+    written after prose streamed ``call:web`` to the client and was promoted a snapshot later.
+    STREAMING holds the tail as it holds a split ``NAME[ARGS]`` rehearsal."""
     from core.inference.llama_cpp import _held_rehearsal_tail_len as gguf_hold
     from core.inference.safetensors_agentic import _held_rehearsal_tail_len as st_hold
     from core.inference.tool_call_parser import held_bare_gemma_tail_len
@@ -1044,10 +1034,9 @@ def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
 
 
 def test_the_gemma_tail_hold_does_not_rescan_the_whole_response():
-    """Both loops call this for every cumulative snapshot, so an unanchored scan makes an
-    ordinary marker-free reply quadratic. The candidate can only sit at the very end, so the
-    regex takes a bounded window and the open-body branch waits for an unclosed brace. Timed,
-    with a budget ~500x the observed cost."""
+    """Both loops call this per cumulative snapshot, so an unanchored scan makes an ordinary
+    marker-free reply quadratic. The candidate can only sit at the very end, so the regex takes a
+    bounded window and the open-body branch waits for an unclosed brace. Budget ~500x observed."""
     import time
 
     from core.inference.tool_call_parser import held_bare_gemma_tail_len
@@ -1113,10 +1102,9 @@ def test_the_gemma_tail_hold_does_not_walk_the_tool_catalog_per_chunk():
 def test_the_bare_gemma_scan_skips_the_regex_when_there_is_no_call_word(monkeypatch):
     """The streaming detectors call this per chunk on the whole cumulative text.
 
-    ``_GEMMA_BARE_TC_RE`` cannot match without a literal ``call``, so an answer that never
-    says the word must not pay for a regex sweep per chunk. Counting sweeps rather than
-    timing keeps this honest on a loaded CI box: an 8k answer at 6-char chunks used to run
-    ~1300 of them and now runs none.
+    ``_GEMMA_BARE_TC_RE`` cannot match without a literal ``call``, so an answer that never says
+    the word must not pay for a regex sweep per chunk. Counting sweeps rather than timing stays
+    honest on a loaded CI box: an 8k answer at 6-char chunks ran ~1300 and now runs none.
     """
     from core.inference import tool_call_parser as tcp
 
@@ -1159,9 +1147,9 @@ def test_the_bare_gemma_scan_skips_the_regex_when_there_is_no_call_word(monkeypa
 def test_a_blocked_prefix_anchors_the_promotable_peer_in_every_markerless_format():
     """The parser scans past a blocked call and promotes the peer behind it.
 
-    The strip has to agree, or the executed call's raw serialization stays in the content
-    beside the structured ``tool_calls`` entry and the next tool iteration replays both.
-    Only the Gemma form anchored, so the rehearsal and bare-JSON prefixes leaked.
+    The strip has to agree, or the executed call's raw serialization stays in the content beside
+    the structured ``tool_calls`` entry and the next iteration replays both. Only the Gemma form
+    anchored, so the rehearsal and bare-JSON prefixes leaked.
     """
     gate = {"terminal", "web_search"}
     for prefix in (
@@ -1272,10 +1260,9 @@ def test_the_tool_catalogue_is_not_rebuilt_for_every_streamed_delta():
 
 
 def test_a_chain_separator_does_not_unanchor_the_peer_behind_a_blocked_call():
-    """``_parse_llama3_bare_json`` treats ``;`` as an inter-call separator and promotes the
-    peer behind it. The anchor check does not, so a floor left just before the ``;`` made the
-    peer unanchored and its raw serialization survived the strip, putting the executed call
-    in the content a second time."""
+    """``_parse_llama3_bare_json`` treats ``;`` as an inter-call separator and promotes the peer
+    behind it; the anchor check does not, so a floor just before the ``;`` left the peer
+    unanchored and its serialization survived the strip, duplicating the executed call."""
     gate = {"terminal", "web_search"}
     for prefix in (
         'terminal[ARGS]{"command":"x"}',
@@ -1620,10 +1607,9 @@ def test_a_real_call_outside_reasoning_is_still_a_boundary(text):
     ],
 )
 def test_an_open_blocked_body_is_not_rescanned_per_token(predicate, text):
-    """Both loops call these per cumulative snapshot while the body streams, and each call
-    restarted the walk at the opening brace: quadratic in the body, seconds at the 16 KiB the
-    buffer allows. Budgeted well above the observed cost, so only a return to the walk trips
-    it."""
+    """Both loops call these per cumulative snapshot while the body streams, and each restarted
+    the walk at the opening brace: quadratic in the body, seconds at the 16 KiB the buffer allows.
+    Budgeted well above observed, so only a return to the walk trips it."""
     import time
     from core.inference.tool_call_parser import (
         blocked_bare_json_chain_may_continue,
@@ -1665,9 +1651,8 @@ BLOCKED_INNERS = [
 @pytest.mark.parametrize("inner", BLOCKED_INNERS)
 def test_the_lightweight_parser_keeps_blocked_bodies_opaque(inner):
     """``core.tool_healing.parse_tool_calls_from_text`` is reached directly from passthrough
-    healing, bypassing the inference parser's masking, so quoted payloads still promoted
-    there. Its function-XML and bracket scans run before the rehearsal skip and did not
-    exclude the blocked body."""
+    healing, bypassing the inference parser's masking, so quoted payloads still promoted there:
+    its function-XML and bracket scans run before the rehearsal skip and skipped the blocked body."""
     from core.tool_healing import parse_tool_calls_from_text as light
     for text in _blocked_outers(inner):
         assert light(text, enabled_tool_names = {"terminal", "python"}) == [], text
