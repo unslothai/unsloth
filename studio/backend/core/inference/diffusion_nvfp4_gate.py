@@ -77,21 +77,23 @@ def load_gate_records(path: Any = None) -> tuple:
     return entries
 
 
-def nvfp4_gate_record(
+def nvfp4_gate_records(
     family: Any,
     base_repo: Any,
     policy_id: Optional[str] = None,
     *,
     path: Any = None,
-) -> Optional[dict]:
-    """The gate record for ``(family, base_repo)``, optionally pinned to ``policy_id``, or None.
-    Without a base there is no record: inheriting a sibling base's verdict is the failure this file
-    exists to prevent."""
+) -> tuple:
+    """Every gate record for ``(family, base_repo)`` in file order, optionally pinned to
+    ``policy_id``. Record identity carries the checkpoint digest, so one policy can hold several
+    rows. Without a base there are no records: inheriting a sibling base's verdict is the failure
+    this file exists to prevent."""
     fam = str(family or "").strip().lower()
     base = _canonical(base_repo)
     if not fam or not base:
-        return None
+        return ()
     wanted = str(policy_id).strip() if policy_id is not None else None
+    matched = []
     for record in load_gate_records(path):
         if str(record.get("family", "")).strip().lower() != fam:
             continue
@@ -99,8 +101,21 @@ def nvfp4_gate_record(
             continue
         if wanted is not None and str(record.get("policy_id", "")).strip() != wanted:
             continue
-        return dict(record)
-    return None
+        matched.append(dict(record))
+    return tuple(matched)
+
+
+def nvfp4_gate_record(
+    family: Any,
+    base_repo: Any,
+    policy_id: Optional[str] = None,
+    *,
+    path: Any = None,
+) -> Optional[dict]:
+    """The first gate record for ``(family, base_repo)``, optionally pinned to ``policy_id``, or
+    None. Whether nvfp4 is allowed is answered by ``_passing_record``, which reads them all."""
+    matched = nvfp4_gate_records(family, base_repo, policy_id, path = path)
+    return matched[0] if matched else None
 
 
 def _passing_record(
@@ -110,7 +125,8 @@ def _passing_record(
     path: Any = None,
 ) -> Optional[dict]:
     """The record that says PASS for this family and base at the policy this commit resolves, or
-    None. Every way of answering None means "nothing measured this model"."""
+    None. Every way of answering None means "nothing measured this model". Scans every row: a
+    failure recorded for one checkpoint must not mask a later checkpoint that passed."""
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(family, base_repo)
@@ -118,16 +134,16 @@ def _passing_record(
         return None
     if policy is None:
         return None
-    record = nvfp4_gate_record(family, base_repo, policy.policy_id, path = path)
-    if record is None or record.get("all_pass") is not True:
-        return None
-    try:
-        recorded = (str(record.get("policy_id", "")).strip(), int(record.get("policy_version")))
-    except (TypeError, ValueError):
-        return None
-    if recorded != (str(policy.policy_id), int(policy.version)):
-        return None
-    return record
+    for record in nvfp4_gate_records(family, base_repo, policy.policy_id, path = path):
+        if record.get("all_pass") is not True:
+            continue
+        try:
+            recorded = (str(record.get("policy_id", "")).strip(), int(record.get("policy_version")))
+        except (TypeError, ValueError):
+            continue
+        if recorded == (str(policy.policy_id), int(policy.version)):
+            return record
+    return None
 
 
 def nvfp4_gate_passed(

@@ -161,6 +161,43 @@ def test_a_failed_run_reads_false(tmp_path):
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False
 
 
+def test_a_recorded_failure_does_not_mask_a_later_checkpoint_that_passed(tmp_path):
+    # The writer permits several artifacts under one (family, base, policy) and records a failed
+    # run under --allow-fail, so the pass can legitimately sit behind a failure in file order.
+    path = _gate_file(
+        tmp_path,
+        _record(all_pass = False, checkpoint_sha256 = "b" * 64, backend = "torchao"),
+        _record(),
+    )
+    assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is True
+    assert nvfp4_gate_backend("z-image", ZIMAGE_BASE, path = path) == "flashinfer"
+
+
+def test_the_writer_can_produce_a_failure_before_a_pass_for_one_policy(tmp_path):
+    script = _script()
+    path = _gate_file(tmp_path)
+    failed = script.build_record(
+        _results(all_pass = False, num_passed = 26),
+        family = "z-image",
+        base_repo = ZIMAGE_BASE,
+        policy_id = "zimg_f8mod_toq34_v1",
+        checkpoint = _checkpoint(tmp_path),
+    )
+    script.append_record(path, failed, allow_fail = True)
+    corrected = tmp_path / "Z-Image-Turbo-NVFP4-GPTQ.pt"
+    corrected.write_bytes(b"gptq corrected weights")
+    passed = script.build_record(
+        _results(),
+        family = "z-image",
+        base_repo = ZIMAGE_BASE,
+        policy_id = "zimg_f8mod_toq34_v1",
+        checkpoint = corrected,
+        gptq = True,
+    )
+    script.append_record(path, passed)
+    assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is True
+
+
 def test_a_policy_version_bump_invalidates_the_verdict(tmp_path, monkeypatch):
     path = _gate_file(tmp_path, _record())
     bumped = dataclasses.replace(policy_mod.ZIMAGE_F8MOD_TOQ34, version = 2)
