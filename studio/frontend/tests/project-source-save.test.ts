@@ -2,10 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   installLocalStorageFake,
+  readSrcAsync,
   registerStoreStubResolver,
 } from "./helpers/kit.ts";
 import { setAuthFetchHandler } from "./helpers/store-stubs/auth.ts";
@@ -248,13 +248,7 @@ test("unsubscribing stops the refetch, so an unmounted panel cannot set state", 
 });
 
 test("the panel subscribes, and does not resurrect a row it just deleted", async () => {
-  const src = await readFile(
-    new URL(
-      "../src/features/rag/components/project-sources-panel.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/rag/components/project-sources-panel.tsx");
   assert.match(
     src,
     /subscribeProjectSourcesUpdated\(projectId, \(\) => \{\n\s*void refresh\(\{ quiet: true \}\);\n\s*\}\),/,

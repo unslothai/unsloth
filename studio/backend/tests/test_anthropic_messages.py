@@ -55,6 +55,14 @@ from io import BytesIO as _BytesIO
 from types import SimpleNamespace
 
 
+def _chunk(finish_reason = None, **delta):
+    """One OpenAI streaming chunk carrying ``delta`` on its single choice."""
+    choice = {"delta": delta}
+    if finish_reason is not None:
+        choice["finish_reason"] = finish_reason
+    return {"choices": [choice]}
+
+
 def _emitter_client_text(events: list[str]) -> str:
     """Concatenate the text_delta payloads an SSE event list carries."""
     text = ""
@@ -82,6 +90,43 @@ def _emitter_client_thinking(events):
             if delta.get("type") == "thinking_delta":
                 thinking += delta.get("thinking", "")
     return thinking
+
+
+def _tool_event(**overrides):
+    """A studio tool-loop event, with per-test overrides."""
+    return {
+        "type": "tool_start",
+        "tool_name": "python",
+        "tool_call_id": "call_0",
+        # Explicit: the consumer's .get("arguments", {}) fallback is the malformed-event path, so omitting it drops the real wire shape.
+        "arguments": {},
+        **overrides,
+    }
+
+
+def _tool_result_event(**overrides):
+    """A studio tool-loop result event, with per-test overrides."""
+    return {
+        "type": "tool_end",
+        "tool_name": "python",
+        "tool_call_id": "call_0",
+        "result": "done",
+        **overrides,
+    }
+
+
+def _tool_result_turn(
+    *,
+    role = "user",
+    type = "tool_result",
+    tool_use_id = "t1",
+    content = "42",
+):
+    """A turn whose content is one tool_result part, with per-test overrides."""
+    return {
+        "role": role,
+        "content": [{"type": type, "tool_use_id": tool_use_id, "content": content}],
+    }
 
 
 def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
@@ -710,18 +755,7 @@ class TestAnthropicMessagesToOpenAI:
         assert json.loads(tc["function"]["arguments"]) == {"query": "test"}
 
     def test_tool_result_maps_to_tool_role(self):
-        msgs = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tu_1",
-                        "content": "Result text",
-                    },
-                ],
-            }
-        ]
+        msgs = [_tool_result_turn(tool_use_id = "tu_1", content = "Result text")]
         result = anthropic_messages_to_openai(msgs)
         assert len(result) == 1
         assert result[0]["role"] == "tool"
@@ -1273,14 +1307,7 @@ class TestAnthropicStreamEmitter:
     def test_duplicate_tool_start_merges_into_open_tool_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        first_events = e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "render_html",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
-        )
+        first_events = e.feed(_tool_event(tool_name = "render_html"))
         second_events = e.feed(
             {
                 "type": "tool_start",
@@ -1315,14 +1342,7 @@ class TestAnthropicStreamEmitter:
     def test_tool_end_closes_tool_opens_new_text_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        start_events = e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "arguments": {},
-            }
-        )
+        start_events = e.feed(_tool_event(tool_name = "t", tool_call_id = "tc_1"))
         start_payload = next(
             json.loads(event.split("data: ")[1])
             for event in start_events
@@ -1330,14 +1350,7 @@ class TestAnthropicStreamEmitter:
         )
         tool_use_id = start_payload["content_block"]["id"]
         assert tool_use_id.startswith("toolu_")
-        events = e.feed(
-            {
-                "type": "tool_end",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "result": "done",
-            }
-        )
+        events = e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1"))
         # content_block_stop (tool) + tool_result; the next text opens its own block.
         assert len(events) == 2
         assert "content_block_stop" in events[0]
@@ -1405,23 +1418,9 @@ class TestAnthropicStreamEmitter:
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Before"})
         assert e.block_index == 0
-        e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "arguments": {},
-            }
-        )
+        e.feed(_tool_event(tool_name = "t", tool_call_id = "tc_1"))
         assert e.block_index == 1
-        e.feed(
-            {
-                "type": "tool_end",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "result": "ok",
-            }
-        )
+        e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1", result = "ok"))
         e.feed({"type": "content", "text": "After"})
         assert e.block_index == 2
 
@@ -1429,22 +1428,8 @@ class TestAnthropicStreamEmitter:
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Before tool"})
-        e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "arguments": {},
-            }
-        )
-        e.feed(
-            {
-                "type": "tool_end",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "result": "ok",
-            }
-        )
+        e.feed(_tool_event(tool_name = "t", tool_call_id = "tc_1"))
+        e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1", result = "ok"))
         # After tool_end, prev_text should be reset; the content opens a fresh
         # text block and diffs against an empty baseline.
         events = e.feed({"type": "content", "text": "After tool"})
@@ -1611,24 +1596,14 @@ class TestAnthropicToolNonStreaming:
 
     def test_duplicate_tool_start_replaces_provisional_tool_block(self):
         def _run_gen():
-            yield {
-                "type": "tool_start",
-                "tool_name": "render_html",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            yield _tool_event(tool_name = "render_html")
             yield {
                 "type": "tool_start",
                 "tool_name": "render_html",
                 "tool_call_id": "call_0",
                 "arguments": {"code": "<!doctype html><html></html>"},
             }
-            yield {
-                "type": "tool_end",
-                "tool_name": "render_html",
-                "tool_call_id": "call_0",
-                "result": "Rendered HTML canvas.",
-            }
+            yield _tool_result_event(tool_name = "render_html", result = "Rendered HTML canvas.")
 
         response = asyncio.run(
             _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
@@ -1707,22 +1682,16 @@ class TestAnthropicPassthroughEmitter:
     def test_tool_call_opens_tool_use_block(self):
         e = AnthropicPassthroughEmitter()
         e.start("msg_1", "m")
-        chunk = {
-            "choices": [
+        chunk = _chunk(
+            tool_calls = [
                 {
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "call_1",
-                                "type": "function",
-                                "function": {"name": "Bash", "arguments": ""},
-                            }
-                        ]
-                    }
-                }
-            ]
-        }
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": ""},
+                },
+            ],
+        )
         events = e.feed_chunk(chunk)
         assert len(events) == 1
         parsed = self._parse(events[0])
@@ -1736,37 +1705,23 @@ class TestAnthropicPassthroughEmitter:
         e.start("msg_1", "m")
         # Open the tool call
         e.feed_chunk(
-            {
-                "choices": [
+            _chunk(
+                tool_calls = [
                     {
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": "c1",
-                                    "type": "function",
-                                    "function": {"name": "Bash", "arguments": ""},
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
+                        "index": 0,
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": ""},
+                    },
+                ],
+            )
         )
         # Stream argument fragments
         events1 = e.feed_chunk(
-            {
-                "choices": [
-                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"cmd'}}]}}
-                ]
-            }
+            _chunk(tool_calls = [{"index": 0, "function": {"arguments": '{"cmd'}}])
         )
         events2 = e.feed_chunk(
-            {
-                "choices": [
-                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '": "ls"}'}}]}}
-                ]
-            }
+            _chunk(tool_calls = [{"index": 0, "function": {"arguments": '": "ls"}'}}])
         )
         parsed1 = self._parse(events1[0])
         parsed2 = self._parse(events2[0])
@@ -1779,22 +1734,16 @@ class TestAnthropicPassthroughEmitter:
         e.start("msg_1", "m")
         e.feed_chunk({"choices": [{"delta": {"content": "Let me check."}}]})
         events = e.feed_chunk(
-            {
-                "choices": [
+            _chunk(
+                tool_calls = [
                     {
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": "c1",
-                                    "type": "function",
-                                    "function": {"name": "Bash", "arguments": ""},
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
+                        "index": 0,
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": ""},
+                    },
+                ],
+            )
         )
         # Should close text block and open tool_use block
         assert "content_block_stop" in events[0]
@@ -1805,22 +1754,16 @@ class TestAnthropicPassthroughEmitter:
         e = AnthropicPassthroughEmitter()
         e.start("msg_1", "m")
         e.feed_chunk(
-            {
-                "choices": [
+            _chunk(
+                tool_calls = [
                     {
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": "c1",
-                                    "type": "function",
-                                    "function": {"name": "Bash", "arguments": "{}"},
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
+                        "index": 0,
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    },
+                ],
+            )
         )
         e.feed_chunk({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
         events = e.finish()
@@ -1892,41 +1835,29 @@ class TestAnthropicPassthroughEmitter:
         e.start("msg_1", "m")
         # First tool call
         e.feed_chunk(
-            {
-                "choices": [
+            _chunk(
+                tool_calls = [
                     {
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": "c1",
-                                    "type": "function",
-                                    "function": {"name": "Bash", "arguments": "{}"},
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
+                        "index": 0,
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    },
+                ],
+            )
         )
         # Second tool call (different index)
         events = e.feed_chunk(
-            {
-                "choices": [
+            _chunk(
+                tool_calls = [
                     {
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 1,
-                                    "id": "c2",
-                                    "type": "function",
-                                    "function": {"name": "Read", "arguments": "{}"},
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
+                        "index": 1,
+                        "id": "c2",
+                        "type": "function",
+                        "function": {"name": "Read", "arguments": "{}"},
+                    },
+                ],
+            )
         )
         # Should close block 0, open block 1
         assert "content_block_stop" in events[0]
@@ -2282,10 +2213,7 @@ class TestAnthropicReasoningArgs:
                         {"type": "tool_use", "id": "toolu_1", "name": "ls", "input": {}},
                     ],
                 },
-                {
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}],
-                },
+                _tool_result_turn(tool_use_id = "toolu_1", content = "ok"),
             ],
         )
         converted = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
@@ -2632,10 +2560,7 @@ class TestAnthropicMessagesToolRouting:
                     "role": "assistant",
                     "content": [{"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}],
                 },
-                {
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
-                },
+                _tool_result_turn(role = "user"),
             ]
         )
 
@@ -2739,10 +2664,7 @@ class TestAnthropicMessagesToolRouting:
                             {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
                         ],
                     },
-                    {
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
-                    },
+                    _tool_result_turn(role = "user"),
                 ]
             },
         ],
@@ -3824,27 +3746,12 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
 
     def run_gen():
         def gen():
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            yield _tool_event(type = "tool_start")
             yield {"type": "heartbeat"}
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "result": "r1",
-            }
+            yield _tool_result_event(result = "r1")
             # Second call: dropped by disable_parallel_tool_use, still executed
             # server-side (heartbeats + live output).
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "arguments": {},
-            }
+            yield _tool_event(tool_call_id = "call_1")
             yield {"type": "heartbeat"}
             yield {
                 "type": "tool_output",
@@ -3853,12 +3760,7 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
                 "text": "x",
             }
             yield {"type": "heartbeat"}
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "result": "r2",
-            }
+            yield _tool_result_event(tool_call_id = "call_1", result = "r2")
             yield {"type": "content", "text": "final answer"}
 
         return gen()
@@ -3924,12 +3826,7 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
 
     def run_gen():
         def gen():
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            yield _tool_event(type = "tool_start")
             # Chatty streamed stdout, no heartbeats.
             for i in range(n_output):
                 yield {
@@ -3938,12 +3835,7 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
                     "tool_call_id": "call_0",
                     "text": f"line {i}\n",
                 }
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "result": "done",
-            }
+            yield _tool_result_event(type = "tool_end")
             yield {"type": "content", "text": "final answer"}
 
         return gen()
@@ -4004,26 +3896,11 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
     def run_gen():
         def gen():
             # First (kept) call.
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "result": "r1",
-            }
+            yield _tool_event(type = "tool_start")
+            yield _tool_result_event(result = "r1")
             # Second call: dropped whole by disable_parallel_tool_use but still
             # executed server-side, streaming chatty stdout with no heartbeats.
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "arguments": {},
-            }
+            yield _tool_event(tool_call_id = "call_1")
             for i in range(n_output):
                 yield {
                     "type": "tool_output",
@@ -4031,12 +3908,7 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
                     "tool_call_id": "call_1",
                     "text": f"line {i}\n",
                 }
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "result": "r2",
-            }
+            yield _tool_result_event(tool_call_id = "call_1", result = "r2")
             yield {"type": "content", "text": "final answer"}
 
         return gen()
