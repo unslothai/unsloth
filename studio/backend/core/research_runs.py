@@ -362,9 +362,9 @@ def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | Non
     Mirrors routes.inference._monitor_context_length (llama.cpp backend, else the inference
     orchestrator) so grounding sizes evidence to the same context the API layer serves. The ML
     backends live in a worker subprocess, so the core.inference.inference singleton is unpopulated
-    here and importing it pulls in the ML stack; read the orchestrator the routes use instead.
-
-    A run carrying a providerType runs on that connection, not on either local backend."""
+    here and importing it pulls in the ML stack; read the orchestrator the routes use instead. A run
+    carrying a providerType runs on that connection, not on either local backend.
+    """
     if _external_provider_run(inference):
         return None
     try:
@@ -603,13 +603,13 @@ async def _response_format_unsupported(response: httpx.Response) -> bool:
 async def _model_unloaded(response: httpx.Response) -> str | None:
     """Which "not servable right now" refusal this is, or None for any other failure.
 
-    All three are transient for a durable run -- the model can be loaded again -- unlike any
-    other 4xx. ``"empty"`` is routes.inference's 400 for a backend with nothing loaded.
-    ``"named"`` is its 404 model_not_found, which the same condition produces when auto-switch
-    is on and the name resolves to nothing local: a model mid-load or mid-update looks exactly
-    like a model that will never resolve, so the caller waits on it far more briefly.
-    ``"switching"`` is its 503 model_switch_failed, raised while a swap to the run's model is
-    still loading; the generic 5xx backoff gave up in three seconds, well inside a real load.
+    All three are transient for a durable run, unlike any other 4xx. ``"empty"`` is
+    routes.inference's 400 for a backend with nothing loaded. ``"named"`` is its 404
+    model_not_found, which the same condition produces when auto-switch is on and the name resolves
+    to nothing local: a model mid-load or mid-update looks exactly like a model that will never
+    resolve, so the caller waits on it far more briefly. ``"switching"`` is its 503
+    model_switch_failed, raised while a swap to the run's model is still loading; the generic 5xx
+    backoff gave up in three seconds, well inside a real load.
     """
     if response.status_code not in (400, 404, 503):
         return None
@@ -1000,13 +1000,12 @@ def _preferred_step_error(current: str, candidate: str) -> str:
 def _run_moved_on(fresh: dict | None, attempt: int) -> bool:
     """Whether the run this worker was running has since been re-pointed at a newer question.
 
-    A thread reuses its one run row for its lifetime, so between committing a terminal status
-    and writing the terminal reply the user can stop the run and ask something else: the row
-    is reset, its assistant binding moves, and the reply below -- resolved by run id -- would
-    stamp "Research cancelled." and researchStatus cancelled onto the NEW question's
-    placeholder, where it stays until that question reaches its own terminal write.
-
-    retryCount is the attempt epoch, which rebind_cancelled advances for exactly this reason.
+    A thread reuses its one run row for its lifetime, so between committing a terminal status and
+    writing the terminal reply the user can stop the run and ask something else: the row is reset,
+    its assistant binding moves, and the reply below (resolved by run id) would stamp "Research
+    cancelled." and researchStatus cancelled onto the NEW question's placeholder, where it stays
+    until that question reaches its own terminal write. retryCount is the attempt epoch, which
+    rebind_cancelled advances for exactly this reason.
     """
     if not fresh:
         return True
@@ -1335,14 +1334,15 @@ class ResearchSupervisor:
     ) -> bool:
         """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
 
-        A durable run resumes after an Unsloth restart and is approved long after it was created,
-        so the model it was started with can be gone. Waiting keeps the run alive instead of
-        ending it on a non-retryable 400 that discards every step and source it gathered.
+        A durable run resumes after an Unsloth restart and is approved long after it was created, so
+        the model it was started with can be gone. Waiting keeps the run alive instead of ending it
+        on a non-retryable 400 that discards every step and source it gathered.
 
-        ``max_seconds`` bounds the wait for refusals that name the model rather than report an
-        empty backend. A load already in flight finishes inside it; anything else (an ejected
-        model, a llama.cpp update, a name that no longer resolves) needs a user action that no
-        wait can outlast, so surfacing the refusal beats burning the whole budget first."""
+        ``max_seconds`` bounds the wait for refusals that name the model rather than report an empty
+        backend. A load already in flight finishes inside it; anything else (an ejected model, a
+        llama.cpp update, a name that no longer resolves) needs a user action that no wait can
+        outlast, so surfacing the refusal beats burning the whole budget first.
+        """
         loop = asyncio.get_running_loop()
         # Share the model budget across the allowed waits: spending it all on one lets the enclosing wall
         # clock fire first and bury the real refusal.
@@ -1784,12 +1784,10 @@ class ResearchSupervisor:
                                 else:
                                     await asyncio.sleep(delay)
                                 attempt += 1
-                                # re-check the lease and cancellation before re-sending.
                                 await self._check_active(run["id"])
                             continue
-                        # A proxied provider 429 arrives as a 200 whose first line is the refusal, so the
-                        # status cannot see
-                        # it; no body byte is used yet.
+                        # A proxied provider 429 arrives as a 200 whose first line is the refusal, so the status
+                        # cannot see it; no body byte is used yet.
                         stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
                         head = await _peek_stream_head(stream)
                         throttled = _stream_rate_limit_delay(head)
@@ -1808,12 +1806,11 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
-                            # Queueing has no timeout by design, so suspend for it and start the budget when the slot is
-                            # granted.
+                            # Queueing has no timeout by design, so suspend for it and start the budget when the slot
+                            # is granted.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
-                                # Unlimited has no wall clock behind this, so bound the gap between queue
-                                # notices; each notice
-                                # refreshes it.
+                                # Unlimited has no wall clock behind this, so bound the gap between queue notices;
+                                # each notice refreshes it.
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
@@ -1827,14 +1824,12 @@ class ResearchSupervisor:
                             continue
                         # Arming research in the composer is the approval, so the plan is queued as it is stored
                         # rather than parked for a second confirmation.
-                        # revoked before the phase event, so a cancel there cannot leak a live key.
                         try:
                             chunk = json.loads(data)
                             _stream_error = stream_error_from_chunk(chunk)
                             if _stream_error is not None:
-                                # The server's own text names the cause and both token counts; flattening it to
-                                # a fixed string left
-                                # the user nothing to act on.
+                                # The server's own text names the cause and both token counts; flattening it to a
+                                # fixed string left the user nothing to act on.
                                 raise _stream_error
                             normalized_usage = _normalize_completion_usage(
                                 chunk.get("usage") if isinstance(chunk, dict) else None
@@ -1897,9 +1892,8 @@ class ResearchSupervisor:
                         try:
                             await response.aclose()
                         except Exception:
-                            # Closing a broken stream is best-effort and must not replace the generation result
-                            # or the error
-                            # that caused teardown.
+                            # Closing a broken stream is best-effort and must not replace the generation result or the
+                            # error that caused teardown.
                             logger.warning(
                                 "research.stream_cleanup_failed run_id=%s",
                                 run["id"],
