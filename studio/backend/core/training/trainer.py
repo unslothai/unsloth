@@ -3532,7 +3532,7 @@ class UnslothTrainer:
 
         try:
             text_field = config_args.get("dataset_text_field", "text") or "text"
-            max_length = int(config_args.get("max_seq_length") or 2048)
+            max_length = int(config_args.get("max_length") or 2048)
             # The generated __init__ clamps max_seq_length to the model's cap and derives max_length from it, but runs
             # after this: apply the same cap here or the transform truncates wider than the eager map it replaces.
             model_cap = getattr(self.model, "max_seq_length", None)
@@ -4005,7 +4005,8 @@ class UnslothTrainer:
                     1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else None,
                     serial_as_none = False,
                 ),
-                "max_seq_length": training_args.get("max_seq_length", 2048),
+                # TRL >=0.20 renamed SFTConfig.max_seq_length -> max_length.
+                "max_length": training_args.get("max_seq_length", 2048),
             }
             if training_args.get("enable_tensorboard", False):
                 config_args["logging_dir"] = str(
@@ -4226,7 +4227,7 @@ class UnslothTrainer:
                         logger.info("CPT packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
-                        "tokenizer": sft_tokenizer,
+                        "processing_class": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
                         "args": cpt_args,
@@ -4237,7 +4238,7 @@ class UnslothTrainer:
                 else:
                     trainer_kwargs = {
                         "model": self.model,
-                        "tokenizer": sft_tokenizer,
+                        "processing_class": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
                         "args": SFTConfig(**config_args),
