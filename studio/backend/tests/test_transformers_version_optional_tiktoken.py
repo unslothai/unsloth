@@ -347,6 +347,34 @@ def test_offline_still_clears_a_partial_optional_payload(tmp_path, monkeypatch):
     assert not (root / "tiktoken").exists()
 
 
+def test_a_partial_payload_behind_an_unobtainable_lock_withholds_the_sidecar(tmp_path, monkeypatch):
+    """The lock could not be taken (held too long, or the file cannot be opened) and a
+    payload without its RECORD is there: nothing is touched, and the sidecar is not
+    activated with that payload shadowing the ambient copy. Nothing there: usable."""
+    import contextlib
+
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    _partial_tiktoken(root)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target_dir: False)
+
+    @contextlib.contextmanager
+    def not_held(venv_dir):
+        yield False
+
+    monkeypatch.setattr(tv, "_optional_top_up_lock", not_held)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    assert tv._top_up_optional_packages(str(root), tv._VENV_T5_550_PACKAGES) is False
+    assert (root / "tiktoken").is_dir()
+    import shutil as _shutil
+    _shutil.rmtree(root / "tiktoken")
+    _shutil.rmtree(root / "tiktoken_ext")
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    assert tv._top_up_optional_packages(str(root), tv._VENV_T5_550_PACKAGES) is True
+
+
 def test_a_sidecar_whose_top_up_remnants_will_not_go_is_not_activated(tmp_path, monkeypatch):
     """The top-up failed and the cleanup could not remove the partial tree (a locked
     file, a permission): the sidecar the cleanup itself calls unusable is not activated."""
