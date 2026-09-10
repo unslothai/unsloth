@@ -3,40 +3,36 @@
 
 """Joint video + audio LoRA training for MiniMax-H3.
 
-MiniMax-H3 is rectified flow like every family in ``diffusion_dit_trainer``, but three things
-put it outside that trainer's ``_FamilySpec`` seams rather than inside them, so it gets its
-own loop here and shares ``diffusion_train_common`` (config, events, stop, trust gate,
-publishing, EMA, the 8-bit optimizer) with everything else:
+MiniMax-H3 is rectified flow like every family in ``diffusion_dit_trainer``, but three things put it
+outside that trainer's ``_FamilySpec`` seams, so it gets its own loop here and shares
+``diffusion_train_common`` (config, events, stop, trust gate, publishing, EMA, the 8-bit optimizer)
+with everything else:
+1. **One packed sequence, two modalities.** H3 runs a single block stack over one 1-D sequence
+holding ``[text | audio | video]`` rows with full self-attention. There is no cross-attention, no
+per-modality block weights and no ``isolate_modalities`` escape hatch, so a LoRA on the
+attention/MLP projections is applied to the audio rows as well as the video ones, and the audio rows
+are keys and values for every video row. Audio therefore cannot be excluded from the adapter, and
+the only honest objective is the model's own: regress BOTH velocities. That is why the dataset unit
+is a clip with sound (``diffusion_h3_clips``) and why there is no still-image milestone here.
 
-1. **One packed sequence, two modalities.** H3 runs a single block stack over one 1-D
-   sequence holding ``[text | audio | video]`` rows with full self-attention. There is no
-   cross-attention, no per-modality block weights and no ``isolate_modalities`` escape hatch
-   (LTX-2 has all three). So a LoRA on the attention/MLP projections is applied to the audio
-   rows as well as the video ones, and the audio rows are keys and values for every video
-   row. Audio therefore cannot be excluded from the adapter, and the only honest objective is
-   the model's own: regress BOTH velocities. That is why the dataset unit is a clip with
-   sound (``diffusion_h3_clips``) and why there is no still-image milestone here.
-
-2. **Two coupled schedules.** Video is noised through an exponential shift of 12.0 and audio
-   through 3.0. At inference both are indexed by the same step, so the pair
-   ``(sigma_video, sigma_audio)`` traverses one curve. Training draws ONE base ``u`` and
-   pushes it through both shifts, which reproduces that curve exactly; drawing the two
-   independently would train pairs the sampler never visits. ``MiniMaxH3Scheduler`` is also
-   not a ``FlowMatchEulerDiscreteScheduler`` (reversed velocity sign, ``t = 1 - sigma`` in
-   [0, 1], a different sigma grid), so the shared trainer's sigma table does not apply.
+2. **Two coupled schedules.** Video is noised through an exponential shift of 12.0 and audio through
+3.0. At inference both are indexed by the same step, so the pair ``(sigma_video, sigma_audio)``
+traverses one curve; training draws ONE base ``u`` and pushes it through both shifts, which
+reproduces that curve exactly, where drawing the two independently would train pairs the sampler
+never visits. ``MiniMaxH3Scheduler`` is also not a ``FlowMatchEulerDiscreteScheduler`` (reversed
+velocity sign, ``t = 1 - sigma`` in [0, 1], a different sigma grid), so the shared trainer's sigma
+table does not apply.
 
 3. **It is modular-only.** There is no ``MiniMaxH3Pipeline``; the integration is a
-   ``ModularPipeline`` plus blocks. The trainer never builds one: the two layout builders it
-   needs are ``@staticmethod``s, and the components load individually -- which is a better fit
-   for the phased load than the ``transformer = None`` trick, since ``load_components`` takes
-   the component names outright.
+``ModularPipeline`` plus blocks. The trainer never builds one: the two layout builders it needs are
+``@staticmethod``s, and the components load individually, which fits the phased load better than the
+``transformer = None`` trick.
 
 Velocity sign: H3 predicts a DATA-ward velocity (``x0 = x_t + sigma * v``), i.e. the target is
 ``latents - noise``, the negation of the convention in ``diffusion_dit_trainer``.
 
-Memory: the Qwen3-VL-32B conditioner is 63 GiB on disk, so captions are encoded once up front
-and it is freed before the VAEs encode and long before the 66 GB transformer loads -- the same
-phased load the DiT trainer uses, expressed through ``load_components``.
+Memory: the Qwen3-VL-32B conditioner is 63 GiB on disk, so captions are encoded once up front and it
+is freed before the VAEs encode and long before the 66 GB transformer loads.
 """
 
 from __future__ import annotations
@@ -538,8 +534,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     to_encode = sorted(set(captions))
 
-    # Phase 1: the 63 GiB Qwen3-VL conditioner and both VAEs are resident here and nowhere else.
-    # ── phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident
+    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident here and nowhere else.
     pipe = _load_conditioners(cfg, device)
     caption_embeds = {cap: _encode_prompt(pipe, cap, device) for cap in to_encode}
     _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
@@ -550,9 +545,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    # One canvas for the run, from the FIRST clip's aspect ratio: every other clip is cover-cropped
-    # onto it, so a mixed-aspect dataset trains on one geometry.
-    # ── phase 2: the clip cache. One canvas for the run, taken from the FIRST clip's aspect
+    # Phase 2: the clip cache. One canvas for the run, from the FIRST clip's aspect ratio: every other clip is
+    # cover-cropped onto it, so a mixed-aspect dataset trains on one geometry.
     width, height = _dataset_canvas(clip_paths[0], cfg.resolution)
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
     cache: list[tuple[Any, Any, Any]] = []
@@ -605,7 +599,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    # ── phase 3: the denoiser.
+    # Phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
     if base_precision in ("fp8", "mxfp8"):
         raise ValueError(

@@ -34,9 +34,9 @@ _MIN_REPEAT_COUNT = 5
 # The share of the fragment repeated windows must cover before it counts as dominated.
 _DOMINANCE_RATIO = 0.5
 
-# ceiling so the scan cannot grow with an arbitrarily long input
-# Ceiling on distinct windows held while scanning. Every fragment a context window can actually produce stays well under
-# this, so the judgement is unchanged in practice; it exists so the scan cannot grow with an arbitrarily long input.
+# Ceiling on distinct windows held while scanning. Every fragment a context window can actually produce stays well
+# under this, so the judgement is unchanged in practice; it exists so the scan cannot grow with an arbitrarily long
+# input.
 _MAX_TRACKED_WINDOWS = 100_000
 
 
@@ -56,13 +56,10 @@ def is_repetition_dominated(text: str) -> bool:
         return True
     # Sliding exact-repeat windows, for echoes that do not align to line boundaries.
     needed = max(_MIN_REPEAT_COUNT, math.ceil(length * _DOMINANCE_RATIO / _REPEAT_WINDOW))
-    # keyed by HASH: retaining the 60-char slices held ~180 MB for an 800,000-character fragment
-    # Keyed by HASH, not by the window itself. Retaining the 60-character slices meant one entry per starting offset, so
-    # an 800,000-character fragment held roughly 180 MB of substrings alive purely to decide whether to send one more
-    # continuation.
+    # Keyed by HASH, not by the window itself. Retaining the 60-character slices meant one entry per starting offset,
+    # so an 800,000-character fragment held roughly 180 MB of substrings alive purely to decide whether to send one
+    # more continuation.
     counts: dict[int, int] = {}
-    # occurrences must not overlap, else one repeated character counts as many (a 64-char rule tripped the threshold at
-    # 16% coverage)
     # Occurrences must not overlap, or a single run of one character counts as many. A 64-character rule inside a
     # 400-character answer yields five overlapping 60-character windows and tripped the threshold at 16 percent
     # coverage, abandoning a valid answer.

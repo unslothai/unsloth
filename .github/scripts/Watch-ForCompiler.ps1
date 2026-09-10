@@ -18,8 +18,17 @@ is not the code under test:
   2. New *.dll, *.cmdline, *.rsp and *.?.cs files under every temporary directory
      in play. The artefact half of the same shape, and it survives auditing being
      silently overridden by machine policy. csc.exe writes the source and the
-     response file next to the assembly, so those names are watched too: an
-     assembly cleaned up leaves nothing to show, and a .cmdline still names it.
+     response file next to the assembly, so those names are watched too.
+
+     Watched live, with a FileSystemWatcher, and not only by comparing a listing
+     taken before the action against one taken after. CodeDom deletes its whole
+     intermediate directory once the assembly is loaded, so on a hosted runner the
+     before-and-after diff saw nothing at all while 4688 recorded
+
+         csc.exe /noconfig /fullpaths @"...\Temp\vpmyd5eq\vpmyd5eq.cmdline"
+
+     which is a compile this half missed entirely. The two are unioned: the listing
+     catches what was left behind, the watcher catches what was cleaned up.
 
 Both are reported. The positive control requires both to fire, and the real
 measurement requires neither to.
@@ -70,6 +79,82 @@ function Get-StudioTempArtifacts {
     # caller casts this into a HashSet whose two-argument constructor rejects null.
     # On a clean runner that killed the watcher before the positive control ran.
     return ,[string[]]$found
+}
+
+$script:ArtifactPattern = '\.(dll|cmdline|rsp|cs|err|out)$'
+$script:LibraryPattern = '\.(dll|cmdline|rsp)$'
+
+function Start-StudioTempWatch {
+    <#
+    .SYNOPSIS
+    Begin recording file creations under every temp root, and return the handles.
+    .DESCRIPTION
+    Register-ObjectEvent without an -Action: the events queue in the session's event
+    manager as they are raised, and Stop-StudioTempWatch drains them afterwards. An
+    -Action block would have to run for anything to be recorded, and there is nothing
+    to run it while a synchronous installer holds the pipeline.
+
+    A root that cannot be watched is skipped rather than fatal. The listing half still
+    covers it, and on a machine where none of them can be watched the positive control
+    is what says so.
+    #>
+    $handles = @()
+    foreach ($root in (Get-StudioTempRoots)) {
+        try {
+            $watcher = New-Object System.IO.FileSystemWatcher
+            $watcher.Path = $root
+            $watcher.IncludeSubdirectories = $true
+            $watcher.NotifyFilter = [System.IO.NotifyFilters]::FileName
+            # The default 8 KB buffer overflows on a busy temp directory, and an
+            # overflow drops events silently, which here reads as a clean run.
+            $watcher.InternalBufferSize = 65536
+            $identifier = "StudioTempWatch-" + [guid]::NewGuid().ToString('N')
+            $null = Register-ObjectEvent -InputObject $watcher -EventName Created `
+                -SourceIdentifier $identifier
+            $watcher.EnableRaisingEvents = $true
+            $handles += [pscustomobject]@{
+                Watcher          = $watcher
+                SourceIdentifier = $identifier
+                Root             = $root
+            }
+        } catch {
+            continue
+        }
+    }
+    return ,[object[]]$handles
+}
+
+function Stop-StudioTempWatch {
+    <#
+    .SYNOPSIS
+    Stop recording and return every path created while the handles were live.
+    .DESCRIPTION
+    Always unregisters and disposes, including on a path that saw nothing: a leaked
+    subscription keeps firing into the next measurement's queue.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Handle)
+
+    # Delivery is asynchronous, so the last few creations before the action returned may
+    # still be in flight. Settle first, then stop raising: draining immediately dropped
+    # exactly the events that matter, the ones from the end of a compile.
+    Start-Sleep -Milliseconds 750
+
+    $seen = @()
+    foreach ($entry in $Handle) {
+        try { $entry.Watcher.EnableRaisingEvents = $false } catch { }
+        try {
+            foreach ($record in @(Get-Event -SourceIdentifier $entry.SourceIdentifier `
+                    -ErrorAction SilentlyContinue)) {
+                $path = ''
+                try { $path = [string]$record.SourceEventArgs.FullPath } catch { }
+                if (-not [string]::IsNullOrWhiteSpace($path)) { $seen += $path }
+                Remove-Event -EventIdentifier $record.EventIdentifier -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        Unregister-Event -SourceIdentifier $entry.SourceIdentifier -ErrorAction SilentlyContinue
+        try { $entry.Watcher.Dispose() } catch { }
+    }
+    return ,[string[]]$seen
 }
 
 function Get-StudioProcessImageName {
@@ -212,8 +297,12 @@ function Invoke-WithCompilerWatch {
     # of the sweep above, so a compiler started in that second is counted: a deliberate
     # trade towards a loud false alarm rather than a dropped real compile.
     $since = (Get-Date).AddSeconds(-1)
+    # Opened here, with the 4688 window, and not before the baseline: a file the
+    # machine creates during that recursive sweep predates the action.
+    $watch = Start-StudioTempWatch
 
     $failure = $null
+    $live = @()
     try {
         # Out-Host, not the success stream. The installer action tees its log, and those
         # lines would be emitted as function output ahead of the result hashtable, making
@@ -224,6 +313,9 @@ function Invoke-WithCompilerWatch {
         # Recorded and re-thrown below. The detectors still report, because "the
         # installer died AND spawned a compiler" beats either half alone.
         $failure = $_
+    } finally {
+        # In the finally, so an action that threw still closes its subscriptions.
+        $live = @(Stop-StudioTempWatch -Handle $watch)
     }
 
     # Closed before the temp sweep, which can take seconds: anything the machine
@@ -232,8 +324,16 @@ function Invoke-WithCompilerWatch {
     $compilers = @(Get-StudioCompilerEvents -Since $since -Until $until)
 
     $after = Get-StudioTempArtifacts
-    $newArtifacts = @($after | Where-Object { -not $before.Contains($_) })
-    $newLibraries = @($newArtifacts | Where-Object { $_ -match '\.(dll|cmdline|rsp)$' })
+    $left = @($after | Where-Object { -not $before.Contains($_) })
+    # Only the names the compiler writes, because the watcher reports every creation
+    # under temp and most of them are nobody's business.
+    $transient = @($live | Where-Object { $_ -match $script:ArtifactPattern })
+    $union = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $newArtifacts = @()
+    foreach ($path in ($left + $transient)) {
+        if ($union.Add($path)) { $newArtifacts += $path }
+    }
+    $newLibraries = @($newArtifacts | Where-Object { $_ -match $script:LibraryPattern })
 
     $stem = Join-Path $EvidenceRoot $Name
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8
