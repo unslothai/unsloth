@@ -119,6 +119,7 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # A model that keeps disappearing would re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
+_NO_GRAMMAR_ENGINE_DETAIL = "needs the llama.cpp grammar engine"
 # routes.inference reports the same unloaded state this way when auto-switch finds no local match.
 _MODEL_NOT_FOUND_CODE = "model_not_found"
 # routes.inference 503s with this while an auto-switch to the run's model is still loading.
@@ -578,6 +579,25 @@ def _synthesis_length_limit_error(
             "Increase Context Length in chat settings or reduce the research evidence size."
         )
     return "Local model report reached its output limit before completion"
+
+
+async def _response_format_unsupported(response: httpx.Response) -> bool:
+    """Only the API's explicit guided-decoding refusal permits a prompt-only retry."""
+    if response.status_code != 400:
+        return False
+    try:
+        await response.aread()
+        body = response.json()
+    except Exception:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("code") == "unsupported_parameter"
+        and error.get("param") == "response_format"
+        # Code and param alone also match the audio and tool-loop refusals, which no re-send fixes.
+        and _NO_GRAMMAR_ENGINE_DETAIL in str(error.get("message") or "")
+    )
 
 
 async def _model_unloaded(response: httpx.Response) -> str | None:
@@ -1670,7 +1690,11 @@ class ResearchSupervisor:
                             "POST",
                             self._endpoint(),
                             json = payload,
-                            headers = {"Authorization": f"Bearer {token}"},
+                            headers = {
+                                "Authorization": f"Bearer {token}",
+                                # Keep text-only intent across retries and model switches.
+                                "X-Unsloth-Require-Text": "1",
+                            },
                         )
                         try:
                             send_task = asyncio.create_task(client.send(request, stream = True))
@@ -1687,6 +1711,19 @@ class ResearchSupervisor:
                             first_output_deadline = loop.time() + first_output_budget
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched, so a re-send cannot duplicate report text.
+                            if (
+                                not _external_provider_run(inference)
+                                and payload.get("response_format") == {"type": "json_object"}
+                                and isinstance(exc, httpx.HTTPStatusError)
+                                and await _response_format_unsupported(exc.response)
+                            ):
+                                # No grammar engine here, but the prompts ask for JSON and the
+                                # output is validated. Retry once without it, after routing.
+                                del payload["response_format"]
+                                await exc.response.aclose()
+                                response = None
+                                await self._check_active(run["id"])
+                                continue
                             unloaded = (
                                 await _model_unloaded(exc.response)
                                 if isinstance(exc, httpx.HTTPStatusError)
