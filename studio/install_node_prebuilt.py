@@ -754,10 +754,12 @@ def load_metadata(install_dir: Path) -> dict | None:
 
 def _file_record(path: Path) -> dict | None:
     """size, mtime_ns and sha256 for one file, or None when it cannot be read."""
+    # Streamed: node is ~110 MB, and reading it whole to hash it was a transient
+    # allocation of that size on every fresh record, on hosts that may not have it.
     try:
         info = path.stat()
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
+        digest = sha256_file(path)
+    except (OSError, MemoryError):
         return None
     return {"size": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": digest}
 

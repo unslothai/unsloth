@@ -7693,11 +7693,12 @@ def _expected_release_tag_without_plan(
         recorded_release = marker.get("release_tag")
         if not isinstance(recorded_release, str) or not recorded_release:
             return None
-        if repo != DEFAULT_PUBLISHED_REPO:
+        if repo == UPSTREAM_REPO:
             # Upstream publishes one release per build under the build's own tag.
             return recorded_release
-        # The fork can package the same upstream build more than once, and the selector
-        # installs the newest packaging; a pinned build therefore still asks the API.
+        # The fork, and any other repo the selector orders by published_at, can package
+        # the same upstream build more than once, and the selector installs the newest
+        # packaging; a pinned build therefore still asks the API.
         return _api_newest_release_tag_for_upstream(repo, requested, recorded_release)
     # On a Mac below the floor the selector answers "latest" for the upstream repo with
     # the pinned fallback release (resolve_simple_install_release_plans), never with the

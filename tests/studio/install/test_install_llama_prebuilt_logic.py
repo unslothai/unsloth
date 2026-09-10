@@ -6697,6 +6697,22 @@ def test_a_pinned_upstream_build_expects_the_newest_fork_packaging_of_it(monkeyp
         )
         == "b9596"
     )
+    # Any other repo is ordered by published_at like the fork, and can package one build
+    # more than once: the newest packaging is asked for, the recorded release counting.
+    monkeypatch.setattr(
+        M,
+        "github_releases",
+        lambda repo, **kw: [
+            {"tag_name": "b9596-mix-1", "published_at": "2026-01-01T00:00:00Z"},
+            {"tag_name": "b9596-mix-2", "published_at": "2026-01-02T00:00:00Z"},
+        ],
+    )
+    assert (
+        M._expected_release_tag_without_plan(
+            {"tag": "b9596", "release_tag": "b9596-mix-1"}, "b9596", "someone/else", ""
+        )
+        == "b9596-mix-2"
+    )
 
 
 def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch):
