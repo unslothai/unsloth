@@ -2899,7 +2899,12 @@ class TestTheVulkanProbeMemoIsScopedToALoad:
     through vulkan_device_inventory and needs LIVE free/used VRAM."""
 
     @staticmethod
-    def _count_probes(monkeypatch, m, *, raising = False):
+    def _count_probes(
+        monkeypatch,
+        m,
+        *,
+        raising = False,
+    ):
         calls = []
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
         monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
@@ -2998,7 +3003,6 @@ class TestALoadableGpuPluginIsRequired:
 
     def test_a_non_cuda_build_is_never_missing(self, tmp_path):
         from core.inference.llama_cpp import LlamaCppBackend
-
         (tmp_path / "ggml-vulkan.dll").write_text("")
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [])
 
