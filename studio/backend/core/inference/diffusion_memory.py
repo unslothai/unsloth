@@ -399,11 +399,30 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         # A ROCm APU sets the same integrated flag and reaches `unified_memory` too, but
         # its free reading is wrong in the OPPOSITE direction (Windows HIP reports
         # free == total, #7072): crediting host memory would enlarge an over-report.
-        if kind == "unified_memory" and not getattr(getattr(torch, "version", None), "hip", None):
+        if kind == "unified_memory" and not _torch_is_rocm(torch):
             free_mib, total_mib = _unified_reclaimable_memory_mib(free_mib, total_mib)
         return free_mib, total_mib, kind
     except Exception:
         return None, None, "discrete_vram"
+
+
+def _torch_is_rocm(torch) -> bool:
+    """Whether this torch is a ROCm build.
+
+    ``version.hip`` alone is not the test: AMD SDK and Radeon wheels leave it unset and
+    encode "rocm" in ``__version__`` only, and reading them as CUDA would credit host
+    memory onto an APU's already optimistic free reading. Same rule as
+    ``LlamaCppBackend._torch_is_rocm``, taken from there so the two cannot drift, with
+    the rule restated inline for an import that cannot be satisfied.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._torch_is_rocm(torch)
+    except Exception:  # noqa: BLE001 - the answer still has to be right
+        return (
+            getattr(getattr(torch, "version", None), "hip", None) is not None
+            or "rocm" in getattr(torch, "__version__", "").lower()
+        )
 
 
 def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int, int]:

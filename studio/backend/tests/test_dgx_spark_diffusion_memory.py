@@ -169,6 +169,10 @@ def test_unified_free_is_bounded_by_an_enforcing_cgroup(
 ):
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: available_mib)
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: cgroup_mib)
+    # The capacity probe is a THIRD read of the host and has to be stubbed with the
+    # other two, or a runner with a real memory.max decides the "no enforcing limit"
+    # case and this file stops being hermetic.
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: cgroup_mib)
 
     assert (
         diffusion_memory._unified_reclaimable_memory_mib(driver_free_mib, 124609)[0] == expected_mib
@@ -329,3 +333,42 @@ def test_free_memory_above_a_finite_limit_is_not_free():
          dm._cgroup_memory_limit_mib) = saved
 
     assert answer == (32 * 1024, 32 * 1024)
+
+
+def test_a_rocm_wheel_without_version_hip_is_still_rocm(monkeypatch):
+    """AMD SDK and Radeon wheels leave version.hip unset and only tag __version__.
+
+    Reading one as CUDA credits host memory onto an APU's free reading, which is
+    already an over-report on Windows HIP (free == total, #7072), so the guard would
+    approve a load the OS then kills.
+    """
+    import sys as _sys
+
+    class _ApuProps:
+        name = "AMD Radeon 8060S Graphics"
+        total_memory = 96 * GIB
+        is_integrated = 1
+
+    torch_stub = types.SimpleNamespace(
+        __version__ = "2.9.0+rocm6.4",
+        version = types.SimpleNamespace(),
+        cuda = types.SimpleNamespace(
+            current_device = lambda: 0,
+            get_device_properties = lambda ordinal: _ApuProps(),
+        ),
+    )
+    monkeypatch.setitem(_sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 115 * 1024)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
+    hardware_stub = types.ModuleType("utils.hardware")
+    hardware_stub.trusted_mem_get_info = lambda: (90 * 1024 * MIB, 96 * 1024 * MIB)
+    monkeypatch.setitem(_sys.modules, "utils.hardware", hardware_stub)
+
+    memory = diffusion_memory.snapshot_device_memory(
+        types.SimpleNamespace(device = "cuda", backend = "cuda")
+    )
+
+    assert memory.memory_kind == "unified_memory"
+    # Untouched: 90 GiB as the driver reported it, not talked up to 96.
+    assert memory.free_mib == 90 * 1024
