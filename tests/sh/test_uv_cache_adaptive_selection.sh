@@ -15,6 +15,7 @@
 #   * a bucket too big for one pipe read -> still warm, pipefail or not
 #   * a caller's set -f                  -> the scan still expands its own globs
 #   * a dangling bucket link             -> studio; mkdir(2) answers EEXIST on it
+#   * a bucket-name lookalike            -> ignored; only <kind>-v<N> is uv's to write
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
 set -e
@@ -130,6 +131,14 @@ mkdir -p "$_alien/archive-v0/torch" "$_alien/lost+found"
 : > "$_alien/archive-v0/torch/libtorch.so"
 : > "$_alien/CACHEDIR.TAG"
 chmod 000 "$_alien/lost+found"
+# A bucket NAME needs the whole suffix to be the version: a backup copy or a tarball beside
+# the real bucket is not uv's to write, and must not condemn the cache.
+_lookalike="$_TMP/uvlookalike"
+mkdir -p "$_lookalike/archive-v0/torch"
+: > "$_lookalike/archive-v0/torch/libtorch.so"
+: > "$_lookalike/CACHEDIR.TAG"
+: > "$_lookalike/archive-v0.tar.gz"
+: > "$_lookalike/archive-v0.backup"
 # uv mutates interpreter-v4 too, so the verdict cannot stop at the five artifact families.
 _denied_meta="$_TMP/uvmeta2"
 mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
@@ -188,6 +197,8 @@ else
     _out=$(_run "$_TMP/q" '' "$_alien")
     assert_eq "lost+found does not condemn it" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
+_out=$(_run "$_TMP/r" '' "$_lookalike")
+assert_eq "a bucket lookalike is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 chmod 700 "$_alien/lost+found"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \

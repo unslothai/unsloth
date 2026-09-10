@@ -706,9 +706,15 @@ _configure_uv_cache() {
                 # .gitignore are its own files, and a cache-dir pointed at a mount point has
                 # a root-owned lost+found that must not condemn the whole cache.
                 if [ "$_uv_probe_dir" != "$_uv_candidate" ]; then
-                    case "${_uv_probe_dir##*/}" in
+                    _uv_probe_base="${_uv_probe_dir##*/}"
+                    case "$_uv_probe_base" in
                         *-v[0-9]*) ;;
                         *) continue ;;
+                    esac
+                    # The whole suffix has to be the version, or `archive-v0.backup` and
+                    # `archive-v0.tar.gz` read as buckets and one stray file condemns the cache.
+                    case "${_uv_probe_base##*-v}" in
+                        *[!0-9]*) continue ;;
                     esac
                 fi
                 if [ ! -d "$_uv_probe_dir" ]; then
@@ -721,9 +727,14 @@ _configure_uv_cache() {
                 fi
                 _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
                     || _uv_cand_writable=false
-                [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
+                # Creating is not enough: an ACL that grants create but denies unlink (NFSv4,
+                # CIFS) leaves uv's own renames to fail later, and leaks the probe. rm -f
+                # exits 0 on a missing file, so a failure here is a real one.
+                if [ -n "$_uv_probe" ] && ! rm -f "$_uv_probe" 2>/dev/null; then
+                    _uv_cand_writable=false
+                fi
             done
-            unset _uv_probe _uv_probe_dir
+            unset _uv_probe _uv_probe_dir _uv_probe_base
 
             # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
             # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
