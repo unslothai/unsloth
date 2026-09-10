@@ -27,7 +27,10 @@ import { ExecutionDataTab } from "./execution-data-tab";
 import { ExecutionOverviewTab } from "./execution-overview-tab";
 import { ExecutionRawTab } from "./execution-raw-tab";
 import { ExecutionSidebar } from "./execution-sidebar";
-import { downloadExecutionDataset } from "./download-execution-dataset";
+import {
+  type DownloadOutcome,
+  downloadExecutionDataset,
+} from "./download-execution-dataset";
 import { PublishExecutionDialog } from "./publish-execution-dialog";
 import {
   PREVIEW_DATASET_PAGE_SIZE,
@@ -48,6 +51,13 @@ type ExecutionsViewProps = {
   onCancelExecution: (id: string) => void;
   onLoadDatasetPage: (id: string, page: number) => void;
 };
+
+function downloadOutcomeMessage(outcome: DownloadOutcome): string {
+  if (outcome === "saved") return "Dataset downloaded";
+  if (outcome === "started") return "Dataset download started";
+  // The server no longer has this run, so what was written is whatever this client still holds.
+  return "Downloaded the rows still loaded for this run";
+}
 
 export function ExecutionsView({
   executions,
@@ -480,11 +490,7 @@ export function ExecutionsView({
                         setDownloadingDataset(true);
                         downloadExecutionDataset(selectedExecution)
                           .then((outcome) => {
-                            toastSuccess(
-                              outcome === "saved"
-                                ? "Dataset downloaded"
-                                : "Dataset download started",
-                            );
+                            toastSuccess(downloadOutcomeMessage(outcome));
                           })
                           .catch((error: unknown) => {
                             const message =
@@ -551,11 +557,7 @@ export function ExecutionsView({
                     setDownloadingDataset(true);
                     downloadExecutionDataset(selectedExecution)
                       .then((outcome) => {
-                        toastSuccess(
-                          outcome === "saved"
-                            ? "Dataset downloaded"
-                            : "Dataset download started",
-                        );
+                        toastSuccess(downloadOutcomeMessage(outcome));
                       })
                       .catch((error: unknown) => {
                         const message =

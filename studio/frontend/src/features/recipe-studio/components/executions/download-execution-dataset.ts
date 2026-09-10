@@ -10,9 +10,10 @@ import {
 import { downloadRecipeJobDataset } from "../../api";
 import type { RecipeExecutionRecord } from "../../execution-types";
 
-/** Whether the bytes are known to have landed: a browser anchor click resolves before the
- * request is even sent, while the native downloader streams and rejects a non-2xx. */
-export type DownloadOutcome = "saved" | "started";
+/** Whether the bytes are known to have landed: a browser anchor click resolves before the request
+ * is even sent, while the native downloader streams and rejects a non-2xx. "partial" is the rows
+ * this client still holds, written when the server no longer has the run. */
+export type DownloadOutcome = "saved" | "started" | "partial";
 
 function sanitizeFilenameStem(value: string): string {
   const cleaned = value
@@ -30,7 +31,10 @@ function buildDownloadFilename(execution: RecipeExecutionRecord): string {
   return sanitizeFilenameStem(execution.id);
 }
 
-/** Whether the rows held on the client are the whole dataset rather than one page of it. */
+/** Whether the rows held on the client are known to be the whole dataset rather than one page.
+ * A record written before the tracker recorded the produced count carries the REQUESTED count, so
+ * a complete preview that produced fewer rows than asked reads as partial here. It is reported
+ * rather than refused: refusing made those runs impossible to download at all. */
 function hasCompleteLocalDataset(execution: RecipeExecutionRecord): boolean {
   const total = execution.datasetTotal;
   return typeof total !== "number" || execution.dataset.length >= total;
@@ -64,9 +68,9 @@ export async function downloadExecutionDataset(
       if (isDownloadCancelled(error)) {
         throw error;
       }
-      // Only a stale preview lands here, and only worth writing whole. An artifact-backed run
-      // must not: its images live beside the parquet, and a bare JSONL loses them.
-      if (execution.artifact_path || !hasCompleteLocalDataset(execution)) {
+      // An artifact-backed run must not fall through here: its images live beside the parquet,
+      // and a bare JSONL loses them.
+      if (execution.artifact_path) {
         throw error;
       }
     }
@@ -75,12 +79,7 @@ export async function downloadExecutionDataset(
   if (execution.dataset.length === 0) {
     throw new Error("This run does not have a dataset to download yet.");
   }
-  if (!hasCompleteLocalDataset(execution)) {
-    throw new Error(
-      "Only part of this dataset is loaded. Reopen the run and try again.",
-    );
-  }
 
   await triggerClientJsonlDownload(execution.dataset, filenameStem);
-  return "saved";
+  return hasCompleteLocalDataset(execution) ? "saved" : "partial";
 }
