@@ -162,9 +162,7 @@ def _parse_ssh_option_token(tok: str) -> tuple[Optional[str], Optional[str]]:
     return tok.strip().lower(), None
 
 
-def _consume_ssh_flag(
-    flag: str, tokens: list[str], index: int
-) -> tuple[int, set[str], bool]:
+def _consume_ssh_flag(flag: str, tokens: list[str], index: int) -> tuple[int, set[str], bool]:
     """Advance past one ssh flag and return any hosts it names."""
     hosts: set[str] = set()
     dynamic = False
@@ -411,13 +409,23 @@ def _resolve_ssh_call(
 
     if isinstance(func.value, ast.Call):
         inner = func.value.func
-        if isinstance(inner, ast.Attribute) and inner.attr in {"SSHClient", "Transport", "Connection"}:
-            receiver_root = _fq_name(inner.value).split(".", 1)[0] if isinstance(inner.value, ast.AST) else ""
+        if isinstance(inner, ast.Attribute) and inner.attr in {
+            "SSHClient",
+            "Transport",
+            "Connection",
+        }:
+            receiver_root = (
+                _fq_name(inner.value).split(".", 1)[0] if isinstance(inner.value, ast.AST) else ""
+            )
             if receiver_root in _SSH_PY_ROOT_MODULES or receiver_root in bindings:
                 return f"{receiver_root}.{func.attr}"
         if isinstance(inner, ast.Name):
             root = bindings.get(inner.id, inner.id).split(".", 1)[0]
-            if root in _SSH_PY_ROOT_MODULES and inner.id in {"SSHClient", "Transport", "Connection"}:
+            if root in _SSH_PY_ROOT_MODULES and inner.id in {
+                "SSHClient",
+                "Transport",
+                "Connection",
+            }:
                 return f"{root}.{func.attr}"
 
     if isinstance(func.value, ast.Attribute) and func.value.attr in {
@@ -609,9 +617,7 @@ def check_ssh_python_access(code: str, session_id: Optional[str]) -> Optional[st
             "the target server first."
         )
     if uses_ssh and not hosts and not dynamic:
-        return (
-            "Blocked: SSH usage detected without a literal, approved target server."
-        )
+        return "Blocked: SSH usage detected without a literal, approved target server."
     unapproved = _unapproved(hosts, session_id)
     if unapproved:
         listed = ", ".join(sorted(unapproved))
@@ -653,9 +659,6 @@ def filter_ssh_approved_network_blocks(
     filtered["network_calls"] = [
         item
         for item in analysis_info.get("network_calls", [])
-        if not (
-            item.get("type") == "untrusted_host_blocked"
-            and item.get("line") in approved_lines
-        )
+        if not (item.get("type") == "untrusted_host_blocked" and item.get("line") in approved_lines)
     ]
     return filtered

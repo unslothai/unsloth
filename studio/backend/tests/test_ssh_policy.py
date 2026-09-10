@@ -20,7 +20,12 @@ from core.inference.ssh_policy import (
     extract_ssh_hosts_from_python,
     filter_ssh_approved_network_blocks,
 )
-from core.inference.tools import _bash_exec, _check_code_safety, _check_signal_escape_patterns, _find_blocked_commands
+from core.inference.tools import (
+    _bash_exec,
+    _check_code_safety,
+    _check_signal_escape_patterns,
+    _find_blocked_commands,
+)
 from state.ssh_approvals import approve_hosts, approved_hosts, clear_session, reset_ssh_approvals
 
 

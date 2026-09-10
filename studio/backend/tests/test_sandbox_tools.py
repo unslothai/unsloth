@@ -1609,7 +1609,6 @@ class TestBashBlocklistPosition:
     # ---- ANSI-C quoting must not hide a blocked command name ----
     def test_ansi_c_quoted_command_blocked(self):
         from core.inference.ssh_policy import check_ssh_command_access
-
         assert check_ssh_command_access("$'ssh' user@host", "sess-1") is not None
         assert "source" in self._find()("$'source' ./payload")
 
