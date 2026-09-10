@@ -298,6 +298,19 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     return "error"
 
 
+def _cleanup_worker_files_manifest(proc: subprocess.Popen) -> None:
+    args = getattr(proc, "args", None)
+    if not isinstance(args, (list, tuple)) or "--files-json" not in args:
+        return
+    index = args.index("--files-json") + 1
+    if index >= len(args) or proc.poll() is None:
+        return
+    try:
+        Path(args[index]).unlink(missing_ok = True)
+    except OSError:
+        logger.warning("Could not remove the exited worker's download files manifest")
+
+
 def finalize_worker_exit(
     registry: download_registry.DownloadRegistry,
     key: str,
@@ -316,6 +329,7 @@ def finalize_worker_exit(
     """Block until *proc* exits, then record the job's terminal state in *registry*. Drains and scrubs stderr first, then classifies the exit code. A no-op when the process was already dropped (e.g. superseded). No stall watchdog: huggingface_hub already times out chunk reads and raises a resumable error on a dead connection, so the worker's exit code is the single source of truth."""
     stderr_data = drain_stderr_excerpt(proc.stderr)
     rc = proc.wait()
+    _cleanup_worker_files_manifest(proc)
     cancel_requested = registry.cancel_requested(key)
     if not registry.drop_process(key, proc):
         return "idle"
@@ -712,6 +726,7 @@ def kill_and_reap_process(
         logger.warning(f"Cancelled worker for {label} did not exit after SIGKILL")
     except Exception:
         pass
+    _cleanup_worker_files_manifest(proc)
 
 
 def _record_xet_failure(reason: str, logger) -> None:

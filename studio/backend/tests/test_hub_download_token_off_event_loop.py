@@ -313,3 +313,71 @@ def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failu
     if failure_at == "token":
         assert created == []
     assert len(commands) == (1 if failure_at in (None, "popen") else 0)
+
+
+@pytest.mark.parametrize(
+    "phase", ["registration_rejected", "cancelled_after_registration", "kill_failed"]
+)
+def test_exited_worker_releases_unread_scoped_manifest(monkeypatch, tmp_path, phase):
+    import io
+    import logging
+    import subprocess
+    from pathlib import Path
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    path = Path(download_lifecycle.write_files_manifest(["weights.safetensors"]))
+    registry = download_registry.DownloadRegistry()
+    key = models._download_job_key("fixture/public", "@diffusion")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = "fixture/public",
+        variant = "@diffusion",
+        hub_cache = str(tmp_path / "hub"),
+    )[0]
+    exited = False
+
+    def kill():
+        nonlocal exited
+        if phase == "kill_failed":
+            raise PermissionError("fixture kill failed")
+        exited = True
+
+    def wait(timeout = None):
+        if not exited:
+            raise subprocess.TimeoutExpired("fixture-worker", timeout or 0)
+        return -9
+
+    proc = SimpleNamespace(
+        pid = 4242,
+        args = ["python", "worker", "--files-json", str(path)],
+        stderr = io.BytesIO(),
+        kill = kill,
+        wait = wait,
+        poll = lambda: -9 if exited else None,
+    )
+    kwargs = dict(
+        hf_token = None,
+        label = "fixture/public",
+        log_prefix = "Download",
+        logger = logging.getLogger(__name__),
+        repo_type = "model",
+        repo_id = "fixture/public",
+        transport = download_registry.TRANSPORT_HTTP,
+    )
+    if phase == "cancelled_after_registration":
+        assert registry.register_process(key, proc)
+        assert registry.request_cancel(key, proc, registry.current_generation(key))
+        proc.kill()
+        assert download_lifecycle.finalize_worker_exit(registry, key, proc, **kwargs) == "cancelled"
+    else:
+        assert registry.mark_pending_cancel(key, registry.current_generation(key))
+        assert (
+            download_lifecycle.register_worker(
+                registry, key, proc, watch_name = "fixture-watch", **kwargs
+            )
+            is False
+        )
+    assert path.exists() is (phase == "kill_failed")
