@@ -266,6 +266,12 @@ def test_download_job_dataset_route_uses_artifact_path(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr(jobs_route, "build_dataset_download", fake_build_dataset_download)
     monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
+    # These tests are about who may fetch the link, not about what the export is called.
+    monkeypatch.setattr(
+        jobs_route,
+        "download_filename",
+        lambda *, artifact_path, export_format, stem: f"{stem}.jsonl",
+    )
 
     response = jobs_route.download_job_dataset(
         "job-1",
@@ -378,6 +384,12 @@ def _download_app(monkeypatch, tmp_path: Path, jobs_route):
 
     monkeypatch.setattr(jobs_route, "build_dataset_download", fake_build_dataset_download)
     monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
+    # These tests are about who may fetch the link, not about what the export ends up called.
+    monkeypatch.setattr(
+        jobs_route,
+        "download_filename",
+        lambda *, artifact_path, export_format, stem: f"{stem}.jsonl",
+    )
 
     app = FastAPI()
     app.include_router(data_recipe_router, prefix = "/api/data-recipe")
@@ -571,9 +583,8 @@ def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path,
     from decimal import Decimal
 
     from core.data_recipe.export import (
-        _read_all_rows_with_pandas,
         _stream_jsonl_from_parquet_with_duckdb,
-        _write_jsonl_rows,
+        _write_jsonl_with_pandas,
     )
 
     parquet_dir = tmp_path / "parquet-files"
@@ -588,13 +599,11 @@ def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path,
         parquet_dir = parquet_dir,
         destination = streamed,
     )
-    import io
-
-    buffer = io.StringIO()
-    _write_jsonl_rows(buffer, _read_all_rows_with_pandas(parquet_dir))
+    from_pandas = tmp_path / "pandas.jsonl"
+    assert _write_jsonl_with_pandas(parquet_dir, from_pandas)
 
     assert json.loads(streamed.read_text().strip()) == {"price": 1.2}
-    assert json.loads(buffer.getvalue().strip()) == {"price": 1.2}
+    assert json.loads(from_pandas.read_text().strip()) == {"price": 1.2}
 
 
 def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
@@ -639,3 +648,88 @@ def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Pat
         file_path.unlink(missing_ok = True)
     assert rows[0]["seen_at"].startswith("2020-01-01")
     assert rows[1] == {"seen_at": None, "score": None}
+
+
+def test_jsonl_export_ships_the_images_its_rows_reference(tmp_path: Path, monkeypatch):
+    """Rows carry relative image paths, which is why the publish path uploads the images folder
+    alongside the parquet. A bare JSONL handed over a multimodal dataset with every image missing."""
+    dataset_path = tmp_path / "recipe-datasets" / "job-multimodal"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"image": "images/nested/pic.png"}])
+    nested = dataset_path / "images" / "nested"
+    nested.mkdir(parents = True)
+    (nested / "pic.png").write_bytes(b"png-bytes")
+
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    from core.data_recipe.export import download_filename
+
+    assert (
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "run")
+        == "run.jsonl.zip"
+    )
+
+    file_path, media_type, download_name = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "run",
+    )
+    try:
+        assert media_type == "application/zip"
+        assert download_name == "run.jsonl.zip"
+        with zipfile.ZipFile(file_path) as archive:
+            names = sorted(archive.namelist())
+            rows = archive.read("run.jsonl").decode("utf-8")
+            assert archive.read("images/nested/pic.png") == b"png-bytes"
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["images/nested/pic.png", "run.jsonl"]
+    assert json.loads(rows.strip()) == {"image": "images/nested/pic.png"}
+
+
+def test_jsonl_export_stays_a_plain_file_without_images(tmp_path: Path, monkeypatch):
+    dataset_path = tmp_path / "recipe-datasets" / "job-text-only"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"text": "hello"}])
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    from core.data_recipe.export import download_filename
+
+    assert (
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "run")
+        == "run.jsonl"
+    )
+    file_path, media_type, download_name = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "run",
+    )
+    try:
+        assert (media_type, download_name) == ("application/x-ndjson", "run.jsonl")
+    finally:
+        file_path.unlink(missing_ok = True)
+
+
+def test_pandas_fallback_exports_a_schema_duckdb_will_not_take(tmp_path: Path):
+    """A dataset carrying its own `filename` column is one DuckDB refuses, because read_parquet
+    wants that name for its own. The shard-at-a-time pandas writer takes it, columns intact."""
+    pytest.importorskip("duckdb")
+    from core.data_recipe.export import (
+        _stream_jsonl_from_parquet_with_duckdb,
+        _write_jsonl_from_parquet,
+    )
+
+    parquet_dir = tmp_path / "parquet-files"
+    _write_parquet_rows(parquet_dir, [{"filename": "a.png", "text": "x"}])
+
+    assert not _stream_jsonl_from_parquet_with_duckdb(
+        parquet_dir = parquet_dir,
+        destination = tmp_path / "unused.jsonl",
+    )
+    destination = tmp_path / "out.jsonl"
+    _write_jsonl_from_parquet(parquet_dir, destination)
+    assert json.loads(destination.read_text().strip()) == {"filename": "a.png", "text": "x"}

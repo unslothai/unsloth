@@ -331,19 +331,6 @@ export async function getRecipeJobDataset(
 
 export type RecipeJobDownloadFormat = "jsonl" | "parquet";
 
-function buildRecipeJobDownloadFilename(
-  jobId: string,
-  options?: {
-    format?: RecipeJobDownloadFormat;
-    filename?: string | null;
-  },
-): string {
-  const stem = options?.filename?.trim() || jobId;
-  const extension =
-    options?.format === "parquet" ? "parquet.zip" : "jsonl";
-  return `${stem}.${extension}`;
-}
-
 export async function downloadRecipeJobDataset(
   jobId: string,
   options?: {
@@ -361,15 +348,13 @@ export async function downloadRecipeJobDataset(
     params.set("filename", options.filename);
   }
   // Minted over authFetch, which is what refreshes an expired session, and what surfaces a run
-  // that cannot be exported before the save dialog opens. The link it returns carries a signed
-  // capability for this one export, so the session bearer never reaches the URL.
-  const { url } = await getJson<{ url: string }>(
+  // that cannot be exported before the save dialog opens. The link carries a signed capability
+  // for this one export, so the session bearer never reaches the URL, and the server names the
+  // file: whether a JSONL export comes back zipped depends on the artifact having images.
+  const { url, filename } = await getJson<{ url: string; filename: string }>(
     `/jobs/${jobId}/download-url?${params.toString()}`,
   );
-  return {
-    url: apiUrl(url),
-    filename: buildRecipeJobDownloadFilename(jobId, options),
-  };
+  return { url: apiUrl(url), filename };
 }
 
 export async function cancelRecipeJob(

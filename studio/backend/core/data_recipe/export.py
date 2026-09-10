@@ -118,26 +118,26 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
     return True
 
 
-def _read_all_rows_with_pandas(parquet_dir: Path) -> list[dict[str, Any]] | None:
+def _write_jsonl_with_pandas(parquet_dir: Path, destination: Path) -> bool:
+    """Shard at a time, so a dataset DuckDB would not take does not have to fit in memory. It
+    declines the job outright rather than leaving a half-written file behind."""
     try:
         import pandas as pd  # type: ignore
     except Exception:
-        return None
+        return False
 
     parquet_files = _parquet_files(parquet_dir)
     if not parquet_files:
-        return None
+        return False
 
     try:
-        dataframe = pd.concat(
-            [pd.read_parquet(path) for path in parquet_files],
-            ignore_index = True,
-        )
+        with destination.open("w", encoding = "utf-8") as handle:
+            for path in parquet_files:
+                rows = pd.read_parquet(path).to_dict(orient = "records")
+                _write_jsonl_rows(handle, [to_preview_jsonable(row) for row in rows])
     except Exception:
-        return None
-
-    rows = dataframe.to_dict(orient = "records")
-    return [to_preview_jsonable(row) for row in rows]
+        return False
+    return True
 
 
 def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]:
@@ -149,23 +149,46 @@ def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]
 
 
 def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
+    # DuckDB streams it; pandas streams it a shard at a time when DuckDB will not take the schema
+    # (a dataset carrying its own `filename` or `file_row_number` column is one); the Data Designer
+    # reader is the last resort and is the only one that materializes everything.
     if _stream_jsonl_from_parquet_with_duckdb(
         parquet_dir = parquet_dir,
         destination = destination,
     ):
         return
+    if _write_jsonl_with_pandas(parquet_dir, destination):
+        return
 
-    rows = _read_all_rows_with_pandas(parquet_dir)
-    if rows is None:
-        rows = _read_all_rows_with_data_designer(parquet_dir)
     with destination.open("w", encoding = "utf-8") as handle:
-        _write_jsonl_rows(handle, rows)
+        _write_jsonl_rows(handle, _read_all_rows_with_data_designer(parquet_dir))
 
 
 def _safe_filename_stem(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.strip())
     cleaned = cleaned.strip("-_")
     return cleaned or "recipe-dataset"
+
+
+def _artifact_image_files(dataset_path: Path) -> list[Path]:
+    images_dir = dataset_path / "images"
+    if not images_dir.is_dir():
+        return []
+    return [
+        path for path in drop_appledouble_metadata(sorted(images_dir.rglob("*"))) if path.is_file()
+    ]
+
+
+def download_filename(*, artifact_path: str, export_format: ExportFormat, stem: str) -> str:
+    """The name the export will actually have. Whether the JSONL comes back zipped depends on the
+    artifact, so the server settles it and the client is told rather than guessing."""
+    try:
+        dataset_path = _resolve_recipe_artifact_path(artifact_path)
+    except RecipeDatasetPublishError as exc:
+        raise RecipeDatasetExportError(str(exc)) from exc
+    if export_format == "parquet":
+        return f"{stem}.parquet.zip"
+    return f"{stem}.jsonl.zip" if _artifact_image_files(dataset_path) else f"{stem}.jsonl"
 
 
 def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None:
@@ -176,7 +199,13 @@ def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None
         if not image_file.is_file():
             continue
         relative_path = image_file.relative_to(images_dir)
-        archive.write(image_file, arcname = str(Path("images") / relative_path))
+        # Stored, not deflated: on 500 MB of PNGs that cost 8.6s and saved 0 MB, and the desktop
+        # downloader gives the whole build 30s before it gives up waiting for headers.
+        archive.write(
+            image_file,
+            arcname = str(Path("images") / relative_path),
+            compress_type = zipfile.ZIP_STORED,
+        )
 
 
 def build_dataset_download(
@@ -215,7 +244,23 @@ def build_dataset_download(
     jsonl_path = Path(tmp.name)
     try:
         _write_jsonl_from_parquet(parquet_dir, jsonl_path)
+        image_files = _artifact_image_files(dataset_path)
+        if not image_files:
+            return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
+        # Rows reference these by relative path, the way the publish path uploads them, so a bare
+        # JSONL would hand over a multimodal dataset whose images are all missing.
+        zip_tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
+        zip_tmp.close()
+        zip_path = Path(zip_tmp.name)
+        try:
+            with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
+                archive.write(jsonl_path, arcname = f"{stem}.jsonl")
+                _add_images_to_archive(archive, dataset_path)
+        except BaseException:
+            zip_path.unlink(missing_ok = True)
+            raise
     except BaseException:
         jsonl_path.unlink(missing_ok = True)
         raise
-    return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
+    jsonl_path.unlink(missing_ok = True)
+    return zip_path, "application/zip", f"{stem}.jsonl.zip"

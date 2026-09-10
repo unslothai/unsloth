@@ -35,6 +35,7 @@ from core.data_recipe.export import (
     _safe_filename_stem,
     _write_jsonl_rows,
     build_dataset_download,
+    download_filename,
 )
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
@@ -680,12 +681,40 @@ def create_job_dataset_download_url(
     artifact_path: str | None = Query(default = None),
     filename: str | None = Query(default = None),
 ):
-    """Mint the signed link the browser or the native downloader then fetches. Bearer-gated like
-    the rest of the package, and it resolves the run first so an incomplete one fails here rather
-    than after the chooser has already opened.
+    """Mint the signed link the browser or the native downloader then fetches.
 
-    Relative, so it survives whatever proxy the page itself came through."""
-    _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
+    Bearer-gated like the rest of the package. It settles here whether the run can be exported at
+    all, and under what name, so a failure lands in the UI instead of after the save dialog has
+    opened. The URL is relative, so it survives whatever proxy the page itself came through."""
+    resolved = _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
+    stem = _safe_filename_stem(
+        filename.strip() if isinstance(filename, str) and filename.strip() else job_id
+    )
+    if resolved:
+        try:
+            name = download_filename(
+                artifact_path = resolved, export_format = export_format, stem = stem
+            )
+        except RecipeDatasetExportError as exc:
+            raise log_and_http_error(
+                exc,
+                400,
+                safe_curated_detail(exc),
+                event = "data_recipe.jobs.download_url_failed",
+                log = logger,
+            ) from exc
+    else:
+        if export_format == "parquet":
+            raise HTTPException(
+                status_code = 400,
+                detail = "Parquet download requires persisted recipe artifacts.",
+            )
+        # An in-memory preview only survives while its job is the current one. Ask now, so a run
+        # the manager has moved past fails here rather than after the chooser has opened.
+        if get_job_manager().get_dataset(job_id, limit = 1, offset = 0) is None:
+            raise HTTPException(status_code = 404, detail = "dataset not ready")
+        name = f"{stem}.jsonl"
+
     token = _sign_download_link(
         job_id = job_id,
         export_format = export_format,
@@ -697,7 +726,10 @@ def create_job_dataset_download_url(
         query["artifact_path"] = artifact_path
     if filename:
         query["filename"] = filename
-    return {"url": f"/api/data-recipe/jobs/{job_id}/download?{urlencode(query)}"}
+    return {
+        "url": f"/api/data-recipe/jobs/{job_id}/download?{urlencode(query)}",
+        "filename": name,
+    }
 
 
 @download_router.get("/jobs/{job_id}/download")

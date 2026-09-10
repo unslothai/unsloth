@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
-import { downloadFile, downloadUrlStreaming } from "@/lib/native-files";
+import {
+  downloadFile,
+  downloadUrlStreaming,
+  isDownloadCancelled,
+} from "@/lib/native-files";
 import { downloadRecipeJobDataset } from "../../api";
 import type { RecipeExecutionRecord } from "../../execution-types";
 
@@ -29,6 +33,12 @@ function buildDownloadFilename(execution: RecipeExecutionRecord): string {
   return sanitizeFilenameStem(execution.id);
 }
 
+/** Whether the rows held on the client are the whole dataset rather than one page of it. */
+function hasCompleteLocalDataset(execution: RecipeExecutionRecord): boolean {
+  const total = execution.datasetTotal;
+  return typeof total !== "number" || execution.dataset.length >= total;
+}
+
 function triggerClientJsonlDownload(
   rows: Record<string, unknown>[],
   filenameStem: string,
@@ -43,19 +53,39 @@ export async function downloadExecutionDataset(
 ): Promise<DownloadOutcome> {
   const filenameStem = buildDownloadFilename(execution);
 
-  if (execution.kind === "full" && execution.jobId) {
-    // Minting the link is a real authenticated request, so a run that cannot be exported fails
-    // here, before anything is reported as downloaded.
-    const { url, filename } = await downloadRecipeJobDataset(execution.jobId, {
-      artifactPath: execution.artifact_path,
-      filename: filenameStem,
-    });
-    await downloadUrlStreaming(url, filename);
-    return isTauri ? "saved" : "started";
+  // Whenever the run is still addressable, the backend export is the one that is complete: it
+  // pages the whole dataset. The rows held here are only ever the current page, and when the
+  // completion event is missed the tracker fills them from a 20-row fetch, so serializing them
+  // produced a successful but silently truncated download.
+  if (execution.jobId) {
+    try {
+      // Minting the link is a real authenticated request, so a run that cannot be exported fails
+      // here, before anything is reported as downloaded.
+      const { url, filename } = await downloadRecipeJobDataset(execution.jobId, {
+        artifactPath: execution.artifact_path,
+        filename: filenameStem,
+      });
+      await downloadUrlStreaming(url, filename);
+      return isTauri ? "saved" : "started";
+    } catch (error) {
+      if (isDownloadCancelled(error)) {
+        throw error;
+      }
+      // A preview the job manager has moved past is gone from the server; the rows still here are
+      // all there is, and they are only worth writing when they are the whole dataset.
+      if (!hasCompleteLocalDataset(execution)) {
+        throw error;
+      }
+    }
   }
 
   if (execution.dataset.length === 0) {
     throw new Error("This run does not have a dataset to download yet.");
+  }
+  if (!hasCompleteLocalDataset(execution)) {
+    throw new Error(
+      "Only part of this dataset is loaded. Reopen the run and try again.",
+    );
   }
 
   await triggerClientJsonlDownload(execution.dataset, filenameStem);
