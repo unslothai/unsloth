@@ -587,7 +587,7 @@ def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path,
 
     from core.data_recipe.export import (
         _stream_jsonl_from_parquet_with_duckdb,
-        _write_jsonl_with_pandas,
+        _write_jsonl_with_pyarrow,
     )
 
     parquet_dir = tmp_path / "parquet-files"
@@ -602,11 +602,11 @@ def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path,
         parquet_dir = parquet_dir,
         destination = streamed,
     )
-    from_pandas = tmp_path / "pandas.jsonl"
-    assert _write_jsonl_with_pandas(parquet_dir, from_pandas)
+    from_pyarrow = tmp_path / "pyarrow.jsonl"
+    assert _write_jsonl_with_pyarrow(parquet_dir, from_pyarrow)
 
     assert json.loads(streamed.read_text().strip()) == {"price": 1.2}
-    assert json.loads(from_pandas.read_text().strip()) == {"price": 1.2}
+    assert json.loads(from_pyarrow.read_text().strip()) == {"price": 1.2}
 
 
 def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
@@ -753,3 +753,54 @@ def test_minting_refuses_a_run_whose_shards_are_gone(tmp_path: Path, monkeypatch
 
     with pytest.raises(RecipeDatasetExportError, match = "parquet"):
         download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "swept")
+
+
+def test_minting_is_refused_for_a_keyless_caller(monkeypatch, tmp_path: Path):
+    """The capability outlives the setting that admitted the caller and travels off the origin
+    keyless access is scoped to, so it is not something a keyless request may mint. Same refusal
+    the signed gallery-video links make."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    jobs_route = pytest.importorskip("routes.data_recipe.jobs")
+    app, token = _download_app(monkeypatch, tmp_path, jobs_route)
+
+    app.dependency_overrides[jobs_route.request_admitted_without_credential] = lambda: True
+    refused = TestClient(app).get(
+        "/api/data-recipe/jobs/job-1/download-url",
+        headers = {"Authorization": f"Bearer {token}"},
+    )
+    assert refused.status_code == 403
+    app.dependency_overrides.clear()
+
+
+def test_download_link_outlasts_the_native_save_dialog():
+    """The chooser opens before the request is made and waits on the user, so a link that expired
+    while it sat open would 401 after the destination had been picked."""
+    jobs_route = pytest.importorskip("routes.data_recipe.jobs")
+
+    assert jobs_route._DOWNLOAD_LINK_TTL >= 15 * 60
+
+
+def test_pyarrow_fallback_streams_a_merged_shard_by_row_group(tmp_path: Path):
+    """merge_batches collapses a whole run into one file, so a shard is not a safe unit to read."""
+    pytest.importorskip("pandas")
+    pyarrow_parquet = pytest.importorskip("pyarrow.parquet")
+    import pandas as pd
+
+    from core.data_recipe.export import _JSONL_EXPORT_BATCH_ROWS, _write_jsonl_with_pyarrow
+
+    parquet_dir = tmp_path / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    rows = _JSONL_EXPORT_BATCH_ROWS * 2 + 5
+    pd.DataFrame({"i": range(rows)}).to_parquet(
+        parquet_dir / "batch_00000.parquet",
+        index = False,
+        row_group_size = 1_000,
+    )
+    assert pyarrow_parquet.ParquetFile(parquet_dir / "batch_00000.parquet").num_row_groups > 1
+
+    destination = tmp_path / "out.jsonl"
+    assert _write_jsonl_with_pyarrow(parquet_dir, destination)
+    exported = [json.loads(line)["i"] for line in destination.read_text().splitlines()]
+    assert exported == list(range(rows))

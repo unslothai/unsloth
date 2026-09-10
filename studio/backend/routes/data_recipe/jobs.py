@@ -22,6 +22,7 @@ from auth.authentication import (
     allow_ambient_hf_token,
     authenticated_via_api_key,
     get_current_credential,
+    request_admitted_without_credential,
     require_ui_session_for_local_commands,
     subject_for_header_or_query_token,
 )
@@ -61,7 +62,10 @@ router = APIRouter()
 # by the bearer-gated route below rather than the session token itself, which would otherwise sit
 # in download history and proxy logs holding every API the session can reach. Same shape as the
 # signed gallery-video links.
-_DOWNLOAD_LINK_TTL = 300
+# The native save dialog opens before the request is made and waits on the user, so the clock has
+# to outlast someone leaving that dialog open. Still far short of the 12h the gallery video links
+# carry, and this one names a single export.
+_DOWNLOAD_LINK_TTL = 30 * 60
 _DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
 
 
@@ -680,12 +684,20 @@ def create_job_dataset_download_url(
     export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
     artifact_path: str | None = Query(default = None),
     filename: str | None = Query(default = None),
+    no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
 ):
     """Mint the signed link the browser or the native downloader then fetches.
 
     Bearer-gated like the rest of the package. It settles here whether the run can be exported at
     all, and under what name, so a failure lands in the UI instead of after the save dialog has
     opened. The URL is relative, so it survives whatever proxy the page itself came through."""
+    if no_credential:
+        # The capability outlives the setting that admitted this caller, and travels off the origin
+        # keyless access is scoped to. Same refusal the signed video links make.
+        raise HTTPException(
+            status_code = 403,
+            detail = "Dataset download links can only be created from the Unsloth UI or with an API key.",
+        )
     resolved = _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
     stem = _safe_filename_stem(
         filename.strip() if isinstance(filename, str) and filename.strip() else job_id

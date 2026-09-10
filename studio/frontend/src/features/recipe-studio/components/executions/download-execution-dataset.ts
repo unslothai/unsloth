@@ -72,8 +72,10 @@ export async function downloadExecutionDataset(
         throw error;
       }
       // A preview the job manager has moved past is gone from the server; the rows still here are
-      // all there is, and they are only worth writing when they are the whole dataset.
-      if (!hasCompleteLocalDataset(execution)) {
+      // all there is, and they are only worth writing when they are the whole dataset. A run with
+      // persisted artifacts is never served from here: its images live beside the parquet, and a
+      // bare JSONL would hand over the references without the files.
+      if (execution.artifact_path || !hasCompleteLocalDataset(execution)) {
         throw error;
       }
     }

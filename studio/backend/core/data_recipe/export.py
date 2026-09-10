@@ -23,6 +23,7 @@ ExportFormat = Literal["jsonl", "parquet"]
 
 # A DuckDB vector is 2048 rows, so this fetches ~8k rows at a time.
 _JSONL_EXPORT_VECTORS_PER_CHUNK = 4
+_JSONL_EXPORT_BATCH_ROWS = 8192
 # file_row_number is the row's ordinal inside its own shard, so this is a total order that matches
 # the generated artifact. row_number() OVER (PARTITION BY filename) is not: DuckDB leaves a window
 # with no ORDER BY undefined, and its parallel parquet scan then numbers the rows differently on
@@ -118,11 +119,14 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
     return True
 
 
-def _write_jsonl_with_pandas(parquet_dir: Path, destination: Path) -> bool:
-    """Shard at a time, so a dataset DuckDB would not take does not have to fit in memory. It
-    declines the job outright rather than leaving a half-written file behind."""
+def _write_jsonl_with_pyarrow(parquet_dir: Path, destination: Path) -> bool:
+    """Row group at a time, so a dataset DuckDB will not take does not have to fit in memory.
+
+    A shard is not a safe unit here: ``merge_batches`` collapses a whole run into one file, and a
+    full run goes up to 200,000 rows. It declines the job outright rather than leaving a
+    half-written file behind."""
     try:
-        import pandas as pd  # type: ignore
+        import pyarrow.parquet as pyarrow_parquet  # type: ignore
     except Exception:
         return False
 
@@ -133,8 +137,12 @@ def _write_jsonl_with_pandas(parquet_dir: Path, destination: Path) -> bool:
     try:
         with destination.open("w", encoding = "utf-8") as handle:
             for path in parquet_files:
-                rows = pd.read_parquet(path).to_dict(orient = "records")
-                _write_jsonl_rows(handle, [to_preview_jsonable(row) for row in rows])
+                parquet_file = pyarrow_parquet.ParquetFile(path)
+                for batch in parquet_file.iter_batches(batch_size = _JSONL_EXPORT_BATCH_ROWS):
+                    _write_jsonl_rows(
+                        handle,
+                        [to_preview_jsonable(row) for row in batch.to_pylist()],
+                    )
     except Exception:
         return False
     return True
@@ -149,15 +157,15 @@ def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]
 
 
 def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
-    # DuckDB streams it; pandas streams it a shard at a time when DuckDB will not take the schema
-    # (a dataset carrying its own `filename` or `file_row_number` column is one); the Data Designer
-    # reader is the last resort and is the only one that materializes everything.
+    # DuckDB streams it; pyarrow streams it a row group at a time when DuckDB will not take the
+    # schema (a dataset carrying its own `filename` or `file_row_number` column is one); the Data
+    # Designer reader is the last resort and is the only one that materializes everything.
     if _stream_jsonl_from_parquet_with_duckdb(
         parquet_dir = parquet_dir,
         destination = destination,
     ):
         return
-    if _write_jsonl_with_pandas(parquet_dir, destination):
+    if _write_jsonl_with_pyarrow(parquet_dir, destination):
         return
 
     with destination.open("w", encoding = "utf-8") as handle:
