@@ -24388,9 +24388,7 @@ class LlamaCppBackend:
                     _stand_down_why = _child_parking_stand_down_reason(
                         bool(server_caps.get("supports_preempt_ram"))
                     )
-                    logger.info(
-                        "%s, so the server's own parking is off as well", _stand_down_why
-                    )
+                    logger.info("%s, so the server's own parking is off as well", _stand_down_why)
                     if _parking_overridden:
                         self._record_load_warning(
                             f"{_stand_down_why} switches the server's own parking off, so "

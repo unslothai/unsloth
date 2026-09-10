@@ -849,9 +849,8 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
         # variable nobody wrote.
         assert why and f"{preemption_mod.PREEMPT_ENV} is not set" in why
         monkeypatch.setenv(preemption_mod.PREEMPT_ENV, "0")
-        assert (
-            f"{preemption_mod.PREEMPT_ENV}=0"
-            in llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {})
+        assert f"{preemption_mod.PREEMPT_ENV}=0" in llama_mod._exact_auto_blocker(
+            exact.EXACT_AUTO, ["llama-server"], {}
         )
         monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
         # A named budget does not buy the child a park either: `_stand_down_child_parking`
@@ -1329,7 +1328,15 @@ class TestParkingIsOffUntilTheLaunchAsksForIt:
     _ARGV = ["llama-server", "--kv-unified"]
 
     @staticmethod
-    def _plan(argv, env, *, supported = True, unified = True, pool = 0, parallel = 1):
+    def _plan(
+        argv,
+        env,
+        *,
+        supported = True,
+        unified = True,
+        pool = 0,
+        parallel = 1,
+    ):
         """The launch's decision, taken with the helpers and in the order load_model takes it.
 
         ``test_the_launch_takes_the_decision_this_way`` pins that this is that order.
@@ -1352,9 +1359,7 @@ class TestParkingIsOffUntilTheLaunchAsksForIt:
                 cmd.extend(["--preempt-ram", str(budget)])
         parks = owned and not llama_mod._preempt_ram_disabled_in(cmd, env = env)
         child_env = dict(env)
-        overridden = llama_mod._stand_down_child_parking(
-            child_env, cmd, server_supports = supported
-        )
+        overridden = llama_mod._stand_down_child_parking(child_env, cmd, server_supports = supported)
         return cmd, child_env, budget, parks, overridden
 
     def test_a_default_install_launches_a_stock_llama_server(self, monkeypatch):
@@ -1443,10 +1448,7 @@ class TestParkingIsOffUntilTheLaunchAsksForIt:
         assert "kv_unified = _kv_unified_from_args(cmd)," in window
         assert 'cmd.extend(["--preempt-ram", str(_exact_budget)])' in window
         # Read off what this launch turned on, not off what the build could do.
-        assert (
-            "self._server_preempts_kv = _park_owned and not _preempt_ram_disabled_in("
-            in source
-        )
+        assert "self._server_preempts_kv = _park_owned and not _preempt_ram_disabled_in(" in source
         assert 'self._server_preempts_kv = bool(server_caps.get("supports_preempt_ram"))' not in (
             source
         )

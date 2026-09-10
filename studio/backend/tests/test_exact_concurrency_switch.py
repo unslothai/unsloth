@@ -438,13 +438,11 @@ class TestTheParkingBudgetHoldsTheWholePool:
 
     def test_a_pool_the_old_default_would_have_held_is_named_too(self):
         from core.inference.llama_cpp import _exact_parking_budget_mib, _exact_parking_need_mib
-
         pool = 2 * 1024 * 1024 * 1024
         assert _exact_parking_budget_mib(pool, args = [], env = {}) == _exact_parking_need_mib(pool)
 
     def test_an_unknown_pool_is_named_the_unsized_budget(self):
         from core.inference.llama_cpp import _PREEMPT_RAM_UNSIZED_MIB, _exact_parking_budget_mib
-
         assert _exact_parking_budget_mib(0, args = [], env = {}) == _PREEMPT_RAM_UNSIZED_MIB
 
     @pytest.mark.parametrize(
