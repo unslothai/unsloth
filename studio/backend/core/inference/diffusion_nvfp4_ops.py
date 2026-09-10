@@ -348,11 +348,13 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
 
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         return {"ok": False, "reason": "cuda unavailable", "capability": None, "name": ""}
-    dev = (
-        torch.device(device)
-        if device is not None
-        else torch.device("cuda", torch.cuda.current_device())
-    )
+    if device is None:
+        dev = torch.device("cuda", torch.cuda.current_device())
+    elif isinstance(device, int):
+        # torch.device(int) asks the accelerator API, which raises on a host without one.
+        dev = torch.device("cuda", device)
+    else:
+        dev = torch.device(device)
     if dev.type != "cuda":
         return {"ok": False, "reason": f"device {dev} is not cuda", "capability": None, "name": ""}
     index = dev.index if dev.index is not None else torch.cuda.current_device()
