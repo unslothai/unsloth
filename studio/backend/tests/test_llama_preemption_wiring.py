@@ -1176,6 +1176,8 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         """An idle slot's residue plus a prompt still to be sent are different cells."""
         controller = PreemptionController("resident")
         controller.configure(budget = 16384, kv_unified = True)
+        clock = [100.0]
+        controller._clock = lambda: clock[0]
         controller.register("a", tokens = 2000, signal = PreemptSignal())
         assert controller.committed_tokens() == 2000
         controller.note_resident(16383)
@@ -1184,6 +1186,13 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert (
             controller.committed_tokens() == 18383
         ), "the cache is full and the ledger does not know it"
+        controller.note_resident(None)
+        assert (
+            controller.committed_tokens() == 18383
+        ), "one failed read must not turn a full cache into an estimate"
+        from core.inference import llama_preemption
+
+        clock[0] += llama_preemption._RESIDENT_HOLD_S + 1
         controller.note_resident(None)
         assert controller.committed_tokens() == 2000, "a failed read falls back, not to zero"
 

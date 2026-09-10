@@ -579,6 +579,13 @@ class PreemptionSnapshot:
     holders: int = 0
 
 
+# How long the last good `/slots` reading outlives a failed one. A probe that times out once
+# must not turn what the cache was known to hold into the ledger's estimate, which is lower
+# whenever finished requests left residue: a resume granted on that gap overflows the pool.
+# A probe that keeps failing past this is gone, and the ledger is all that is left.
+_RESIDENT_HOLD_S = 5.0
+
+
 class PreemptionController:
     """Victim choice and the epoch, for one llama-server backend.
 
@@ -599,6 +606,8 @@ class PreemptionController:
         "_resident",
         "_resident_seq",
         "_last_sample_seq",
+        "_resident_at",
+        "_clock",
         "_resume_tickets",
         "_reclaimable",
         "_residency_probe",
@@ -634,6 +643,9 @@ class PreemptionController:
         # The clock as it stood when the last reading was recorded: a probe that started
         # before that is older than what is already here.
         self._last_sample_seq = 0
+        # When the last good reading was taken, on `_clock` (monotonic; tests swap it).
+        self._resident_at = 0.0
+        self._clock = time.monotonic
         # Resume order, taken BEFORE the room test: gen_id -> tokens it is coming back for,
         # in the order the waits started. Without it a later, smaller resume books the space
         # an older one is waiting for and the older one waits out its deadline. The
@@ -1012,6 +1024,14 @@ class PreemptionController:
             if started_at_seq is not None and started_at_seq < self._last_sample_seq:
                 return
             if resident is None:
+                if (
+                    self._resident is not None
+                    and self._clock() - self._resident_at <= _RESIDENT_HOLD_S
+                ):
+                    # One failed read keeps what the cache was known to hold; only the idle
+                    # residue it reported stops counting as room, since it may be gone.
+                    self._reclaimable = 0
+                    return
                 self._resident = None
                 self._reclaimable = 0
                 return
@@ -1022,6 +1042,7 @@ class PreemptionController:
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
             self._resident_seq += 1
             self._last_sample_seq = self._resident_seq
+            self._resident_at = self._clock()
             for participant in self._participants.values():
                 if participant.measured_at_seq is None:
                     continue
