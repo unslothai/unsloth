@@ -1010,13 +1010,17 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
             # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp
             # and whisper.cpp pins can legitimately differ from the checkout's: it may
             # rebuild or download any of them, so nothing below can be asserted of it.
-            pytest.skip("installed version is not PyPI's latest; the desktop no-op path was not taken")
+            pytest.skip(
+                "installed version is not PyPI's latest; the desktop no-op path was not taken"
+            )
         if PYPI_UNREACHABLE_MARKER in run.log or not latest:
             # The product runs the pass on purpose when it cannot ask PyPI: correct
             # behaviour, and nothing this case can judge.
             pytest.skip("PyPI was unreachable; the desktop no-op path could not be judged")
         if installed and latest and installed != latest:
-            pytest.skip("installed version is not PyPI's latest; the desktop no-op path was not taken")
+            pytest.skip(
+                "installed version is not PyPI's latest; the desktop no-op path was not taken"
+            )
         # Equal versions and a reachable index, and the pass still ran: that is the
         # regression this case exists to catch, not a reason to look away.
         pytest.fail(
