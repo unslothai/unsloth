@@ -70,6 +70,13 @@ export function toolOutputKey(paneScope: string, toolCallId: string): string {
 // backend tools._truncate). Marks where the result stops being a copy of the stream.
 const TRUNCATION_FOOTER_MARKER = "\n\n... (truncated";
 
+// A timed-out python/terminal call returns the output it had already printed and then
+// says so (see backend tools._python_exec). Past the model's cap that status lands AFTER
+// the footer above, and the live stdout never carries it -- only the backend writes it --
+// so substituting the fuller stream for the result drops it and the card reads as a
+// command that finished normally.
+const TIMEOUT_STATUS_TAIL = /\nExecution timed out after \d+ seconds\.$/;
+
 /** Whether the live stdout holds more real output than the model-visible `result` and should be
  *  preserved for the finished card. Shared by writer and reader so they agree. True when the
  *  result is truncated, OR the stream is longer. Truncation cannot fall back to length: a
@@ -103,7 +110,10 @@ export function preferFullToolOutput(full: string, result: string): string {
   const marker = result.indexOf(TRUNCATION_FOOTER_MARKER);
   const core = marker === -1 ? result : result.slice(0, marker);
   if (!core || full === result || full.startsWith(core)) {
-    return full;
+    // The stream is the better copy of the OUTPUT, but it is not the whole result: keep
+    // the timeout status the backend put after the footer.
+    const status = result.match(TIMEOUT_STATUS_TAIL)?.[0];
+    return status ? `${full.replace(/\s+$/, "")}\n\n${status.trimStart()}` : full;
   }
   // Failed executions prefix the result, not the stream, with "Exit code N:", so
   // `full.startsWith(core)` misses and a plain append would duplicate the stdout. Re-attach
