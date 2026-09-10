@@ -53,7 +53,7 @@ def _run(monkeypatch, *, device_count, capable_by_ordinal):
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", fake_quant)
 
-    namespace: dict = {"functools": types.SimpleNamespace(lru_cache = lambda maxsize: (lambda f: f))}
+    namespace: dict = {}
     exec(_src("_dense_quant_supported"), namespace)  # noqa: S102 -- the real body, not a copy of it
     return namespace["_dense_quant_supported"](), scoped
 
@@ -104,11 +104,32 @@ def test_the_wiring_stays_in_place(needle):
     assert needle in _src("_dense_quant_supported")
 
 
-def test_the_probe_is_cached_and_published():
-    """The capability is cached and included in ``/api/system``."""
+def test_the_capability_is_published_and_never_memoised():
+    """`/api/system` carries the bit, and it must be recomputed on every poll.
+
+    `dense_quant_host_capable` counts an UNPROBED scheme as usable, so a cold backend answers yes
+    and the first real load can then record a kernel failure. Memoising here would pin that
+    optimistic answer for the life of the process.
+    """
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
-    assert "@functools.lru_cache(maxsize = 1)\ndef _dense_quant_supported" in src
     assert '"dense_quant_supported": _dense_quant_supported()' in src
+    node = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "_dense_quant_supported"
+    )
+    assert node.decorator_list == []
+    assert "lru_cache" not in src.split("def _dense_quant_supported")[0][-400:]
+
+
+def test_the_published_bit_follows_the_probe_as_it_warms(monkeypatch):
+    """A verdict the loader has since paid for must reach the next poll."""
+    answers = {None: True}
+    result, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = answers)
+    assert result is True
+    answers[None] = False
+    result, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = answers)
+    assert result is False
 
 
 def test_only_the_capability_bit_is_published():

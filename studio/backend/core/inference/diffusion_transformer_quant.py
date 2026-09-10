@@ -519,7 +519,9 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
     look.
 
     Headers only, and only under a directory we already have: no download, no tensor read, and no
-    verdict at all when there is no local snapshot -- which is the behaviour without this check."""
+    verdict at all when there is no local snapshot -- which is the behaviour without this check. A
+    hub id is not a directory and answers None, so the caller can hand over whichever of the staged
+    snapshot or the load's own base it has."""
     if not local_dir:
         return None
     try:
@@ -698,6 +700,13 @@ def dense_quant_host_capable(target: Any) -> bool:
     ``auto``, not "any scheme": the ladder leaves nvfp4 out on purpose, so a host that can only run
     nvfp4 honours an explicit request and has nothing automatic to offer."""
     if not dense_transformer_supported(target):
+        return False
+    # The loader keeps a pipeline dense when nothing can compile the result, so a host that cannot
+    # run inductor at all has no fast path to advertise. Host-level only: the per-family and
+    # per-request halves of that decision belong to the load, not to a row.
+    from .diffusion_speed import compile_eligible
+
+    if not compile_eligible(target, is_gguf = False, family = None):
         return False
     # Not redundant with the arch floor: `_scheme_supported` imports torchao and rejects every
     # scheme when that import fails, so a torch/torchao ABI skew would advertise a fast path every

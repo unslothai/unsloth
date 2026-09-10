@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import functools
 import os
 import sys
 import threading
@@ -1998,13 +1997,17 @@ def _get_cached_system_gpu_info(
         return combined_info
 
 
-@functools.lru_cache(maxsize = 1)
 def _dense_quant_supported() -> bool:
     """Whether an ``auto`` request could engage a dense quant on EVERY visible card.
 
     The picker cannot see which card a load will land on, so a mixed host answers for the least
-    capable one. Cached because hardware capability is static and this endpoint is polled; the
-    reader is non-allocating and never runs the smoke probe itself."""
+    capable one.
+
+    Deliberately NOT cached: the answer sharpens. ``dense_quant_host_capable`` treats an unprobed
+    scheme as usable, so the first poll on a cold backend can say yes and the first real load can
+    then record a kernel failure in ``_SMOKE_CACHE``. A process-lifetime cache would pin the
+    optimistic answer and keep labelling rows fast on a host where every load falls back to bf16.
+    Each call is a capability read plus dict lookups; nothing here probes or allocates."""
     try:
         from core.inference.diffusion_device import (
             diffusion_device_scope,

@@ -4308,7 +4308,10 @@ class DiffusionBackend:
                     # A raw fp8/int8 checkpoint is widened to bf16 by from_pretrained, which erases the one thing
                     # the blocker below reads. Ideogram's loader stamps its own; recover it from the shard header
                     # for every family that reaches the generic path.
-                    source_precision = stored_denoiser_precision(_base_local_dir)
+                    # `fetch_base` too: a LOCAL diffusers directory is loaded straight from it and the prefetch
+                    # deliberately stages nothing, so `_base_local_dir` is None exactly where a hand-converted
+                    # fp8 checkpoint is most likely to be. The probe ignores anything that is not a directory.
+                    source_precision = stored_denoiser_precision(_base_local_dir or fetch_base)
                     if source_precision is not None:
                         for _attr, denoiser in denoiser_modules(pipe):
                             mark_source_precision(denoiser, source_precision)

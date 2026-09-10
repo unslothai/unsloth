@@ -1747,44 +1747,20 @@ def test_the_ideogram_fp8_loader_stamps_what_it_widened():
 # Advertised host capability.
 
 
-def _capable_host(monkeypatch, *, torchao_reason = None):
-    """A CUDA host past the arch floor, with torchao's import verdict pinned."""
-    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(tq, "_capability", lambda: (9, 0))
-    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (torchao_reason,))
-
-
-def test_a_capable_host_advertises_dense_quant(monkeypatch):
-    _capable_host(monkeypatch)
-    assert tq.dense_quant_host_capable(_target()) is True
-
-
-def test_a_host_whose_torchao_cannot_import_advertises_nothing(monkeypatch):
-    """An unimportable torchao makes every scheme decline, so the capability must be false.
-
-    dense_transformer_supported only catches the Windows-ROCm stub, and _capability reads the
-    card; without this the picker would label rows Fast while every load fell back to bf16.
-    """
-    _capable_host(monkeypatch, torchao_reason = "ImportError: cannot import name 'ScalingType'")
-    assert tq.dense_quant_host_capable(_target()) is False
-
-
-def test_an_unsupported_device_advertises_nothing(monkeypatch):
-    _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
-    assert tq.dense_quant_host_capable(_target(device = "cpu")) is False
-
-
-# Advertised host capability.
-
-
 def _capable_host(
     monkeypatch,
     *,
     torchao_reason = None,
     cap = (8, 9),
 ):
-    """A CUDA host past the arch floor, with torchao's import verdict and the probe cache pinned."""
+    """A CUDA host past the arch floor, with torchao, the probe cache and the compiler pinned.
+
+    ``compile_eligible`` is stubbed true because these targets are namespaces without the real
+    ``supports_default_torch_compile`` and torch dtype a card carries; the test that cares about
+    the compile term overrides it."""
+    from core.inference import diffusion_speed
+
+    monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(tq, "_capability", lambda: cap)
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (torchao_reason,))
@@ -1917,3 +1893,17 @@ def test_a_recovered_source_precision_blocks_the_quant(tmp_path):
     tq.mark_source_precision(widened, tq.stored_denoiser_precision(str(tmp_path)))
     blocker = tq.dense_quant_blocker(pipe)
     assert blocker is not None and "fp8" in blocker and "widened to bf16" in blocker
+
+
+def test_a_host_that_cannot_compile_advertises_nothing(monkeypatch):
+    """The loader keeps a pipeline dense when nothing can compile it, so there is no path to sell.
+
+    Reachable on a normal Windows CUDA install with no Triton wheel, and under TORCHDYNAMO_DISABLE.
+    """
+    from core.inference import diffusion_speed
+
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: False)
+    assert tq.dense_quant_host_capable(_target()) is False
+    monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
+    assert tq.dense_quant_host_capable(_target()) is True

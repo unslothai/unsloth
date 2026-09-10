@@ -10605,3 +10605,29 @@ def test_a_bf16_pipeline_is_unaffected_by_the_header_probe(fake_runtime, tmp_pat
     assert len(calls) == 1
     assert status["transformer_quant"] == "fp8"
     backend.unload()
+
+
+def test_a_local_fp8_directory_is_scanned_through_the_load_base(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """A local diffusers dir stages nothing, so the probe must read the base the load reads."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    seen: list = []
+
+    def _stored(local_dir):
+        seen.append(local_dir)
+        return "fp8" if local_dir else None
+
+    monkeypatch.setattr(dmod, "stored_denoiser_precision", _stored)
+    status = backend.load_pipeline(
+        "unsloth/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = None
+    )
+    # Not None: the fallback handed the probe the base the pipeline was actually loaded from.
+    assert seen and seen[0]
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "fp8" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
