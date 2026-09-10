@@ -620,6 +620,21 @@ def _matplotlib_defaults(root: Path) -> dict[str, str]:
     return pinned
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """A Windows junction, which is_symlink() answers False for.
+
+    os.path.isjunction arrived in 3.12 and the Studio venv can be 3.11, so its absence means
+    "no junctions to worry about" rather than an error.
+    """
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is None:
+        return False
+    try:
+        return bool(isjunction(path))
+    except (OSError, ValueError):
+        return False
+
+
 def _data_designer_in_use(home: Path) -> bool:
     """Whether the managed Data Designer home holds work worth keeping.
 
@@ -636,7 +651,15 @@ def _data_designer_in_use(home: Path) -> bool:
         return True
     for entry in entries:
         try:
-            if entry.name != "managed-assets" or not entry.is_dir():
+            if entry.name != "managed-assets":
+                return True
+            # A link here is the user redirecting their assets somewhere else, which is state
+            # worth as much as a file. _setup_cache_env only ever makes a plain directory, and
+            # is_dir() follows a link, so an empty target read as the untouched layout Unsloth
+            # creates: the pin was dropped and the redirect went with it.
+            if entry.is_symlink() or _is_reparse_point(entry):
+                return True
+            if not entry.is_dir():
                 return True
             if any(entry.iterdir()):
                 return True

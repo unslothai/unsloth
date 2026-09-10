@@ -1151,3 +1151,41 @@ def test_a_usable_managed_inductor_path_is_still_published(tmp_path):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(
         tmp_path / "studio" / "cache" / "torchinductor"
     )
+
+
+def test_a_redirected_managed_assets_link_counts_as_use(tmp_path):
+    """A link at managed-assets is the user sending their assets somewhere else.
+
+    _setup_cache_env only ever creates a plain directory there, so a link is state that was put
+    there deliberately. entry.is_dir() follows it, and an empty target therefore read as the
+    untouched layout Unsloth creates: the pin was dropped in favour of a standalone
+    ~/.data-designer and the redirect went with it.
+    """
+    managed = tmp_path / "studio" / "data-designer"
+    managed.mkdir(parents = True)
+    elsewhere = tmp_path / "big-disk" / "assets"
+    elsewhere.mkdir(parents = True)  # empty, which is the whole point
+    (managed / "managed-assets").symlink_to(elsewhere, target_is_directory = True)
+    legacy = tmp_path / "home" / ".data-designer"
+    (legacy / "managed-assets").mkdir(parents = True)
+    (legacy / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
+
+
+def test_the_layout_unsloth_creates_still_defers_to_a_legacy_home(tmp_path):
+    """The rule above must not swallow the pre-existing one: a plain empty managed-assets is
+    what the first launch makes, and existence alone must not pin a home nobody has used."""
+    managed = tmp_path / "studio" / "data-designer"
+    (managed / "managed-assets").mkdir(parents = True)
+    legacy = tmp_path / "home" / ".data-designer"
+    (legacy / "managed-assets").mkdir(parents = True)
+    (legacy / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "DATA_DESIGNER_HOME" not in os.environ
