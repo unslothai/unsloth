@@ -136,6 +136,11 @@ class ModelLayout:
     # llama-model.cpp pins dev_input to the CPU unconditionally, so this is never charged to VRAM. Tracked because it IS
     # charged to host RAM.
     token_embd_bytes: int = 0
+    # The per_layer_token_embd slice of token_embd_bytes above, NOT a second charge. Separate because gemma4
+    # (models/gemma4.cpp:llama_model_gemma4::load_arch_tensors) and qwen4exp
+    # (models/qwen4exp.cpp:llama_model_qwen4exp::load_arch_tensors) create it TENSOR_READ_LAZY, so llama.cpp serves it
+    # from the mapping instead of holding it resident; gemma3n does not, and keeps the full charge.
+    per_layer_embd_bytes: int = 0
     # output_norm and friends: GPU-resident, too small to be worth spilling.
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
@@ -498,6 +503,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd + per_layer_embd,
+        per_layer_embd_bytes = per_layer_embd,
         other_resident_bytes = other_resident,
         kv_bytes_per_token_f16 = kv_per_token,
         recurrent_bytes = recurrent,
