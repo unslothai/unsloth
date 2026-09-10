@@ -1338,9 +1338,12 @@ def _validate_checkpoint(
         return False
     # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). An old checkpoint omits
     # ``fp8_granularity`` or records non-per-row, so reject and let the loader re-quantise.
+    from .diffusion_nvfp4_policy import declares_policy
     from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
 
-    if scheme == TQ_FP8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
+    # A policy checkpoint is declared nvfp4 but is mostly fp8, so both fp8 invariants govern it too.
+    holds_fp8 = scheme == TQ_FP8 or declares_policy(meta)
+    if holds_fp8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
         _warn(
             logger,
             scheme,
@@ -1356,7 +1359,7 @@ def _validate_checkpoint(
     # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
     # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
     # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
-    if scheme == TQ_FP8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
+    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
         return False
     ckpt_base = meta.get("base_model_id")
     if base:
