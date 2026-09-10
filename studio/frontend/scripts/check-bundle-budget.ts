@@ -42,20 +42,17 @@ export const BUDGET = {
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
   //
-  // Raised again at d4ef69f84, which measures 1,585.6 KB transfer (1,623,641 bytes)
-  // and 5,306.4 KB raw. Nothing became eager that should not be: across the whole
-  // window the eager chunk set gained no member, and main crossed the old 1,620,000
-  // ceiling at 7b9bb0395 -- whose only frontend change is one English sentence in a
-  // settings panel, rewritten shorter -- by ONE byte, its parent sitting 14 bytes
-  // inside. What ran out was headroom, against a measured 3.7 KB of transfer a day
-  // since 17363f8a2.
+  // Raised again after a second squeeze. main measures 1,585.6 KB transfer and passed
+  // 1,645,000 by 20.9 KB, which is 1.3% and about six days at the 3.7 KB/day this file
+  // has drifted since 17363f8a2. That is the same margin the previous raise left, and it
+  // lasted six days before main went red again on a commit whose only frontend change was
+  // one English sentence rewritten shorter.
   //
-  // 1,690,000 puts the ceiling 64.8 KB (4.1%) above that build. That is the margin
-  // this file shipped with in #8964 -- 67.9 KB, 4.4% -- which absorbed 17 days of
-  // ordinary work; the 19.4 KB the audio raise left absorbed six. So this expires in
-  // roughly 17 days at the measured rate, and rawBytes is deliberately left alone at
-  // 64.7 KB spare, about 16 days, so the two come up for one re-measure together
-  // instead of each dragging main red on its own.
+  // Nothing became eager that should not be: across the whole window the eager chunk set
+  // gained no member, so there is nothing here to lazy-load. What runs out is headroom.
+  // 1,690,000 leaves 64.8 KB (4.1%), the proportion #8964 shipped with, which absorbed 17
+  // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
+  // together instead of each dragging main red on its own.
   transferBytes: 1_690_000,
   rawBytes: 5_500_000,
 };
