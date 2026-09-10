@@ -310,3 +310,32 @@ def test_the_top_up_is_staged_and_lands_dist_info_last(tmp_path, monkeypatch):
     assert order[-1] == "tiktoken-0.9.0.dist-info"
     assert set(order) == {"tiktoken", "tiktoken_ext", "tiktoken-0.9.0.dist-info"}
     assert (root / "tiktoken" / "marker").is_file() and not (root / ".top-up-staging").exists()
+
+
+def test_the_top_up_removes_the_recordless_dist_info_an_interrupted_install_left(
+    tmp_path, monkeypatch
+):
+    """uv cannot uninstall a dist-info with no RECORD and lands the new version beside
+    it; both validators skip the recordless one, but importlib.metadata would keep
+    answering its version. Every other dist-info of the project goes before the new
+    metadata lands, and a dist-info of another project stays."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    stale = root / "tiktoken-0.7.0.dist-info"
+    stale.mkdir()
+    (stale / "METADATA").write_text("Name: tiktoken\nVersion: 0.7.0\n", encoding = "utf-8")
+    other = root / "regex-2024.11.6.dist-info"
+    other.mkdir()
+    (other / "RECORD").write_text("", encoding = "utf-8")
+
+    def fake_install(pkg, target):
+        for d in ("tiktoken", "tiktoken-0.9.0.dist-info"):
+            (pathlib.Path(target) / d).mkdir()
+            (pathlib.Path(target) / d / "marker").write_text(d, encoding = "utf-8")
+        return True
+
+    monkeypatch.setattr(tv, "_install_to_dir", fake_install)
+    assert tv._stage_optional_package("tiktoken", str(root)) is True
+    assert not stale.exists()
+    assert (root / "tiktoken-0.9.0.dist-info" / "marker").is_file()
+    assert (other / "RECORD").is_file()
