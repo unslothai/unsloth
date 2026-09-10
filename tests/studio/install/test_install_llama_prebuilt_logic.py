@@ -2754,7 +2754,9 @@ def test_a_reused_bundle_records_whether_it_is_this_runs_fallback(tmp_path: Path
     )
     assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is True
     # Not asked: left alone.
-    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice = _rocm_choice(), backend_request = None)
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir, choice = _rocm_choice(), backend_request = None
+    )
     assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is True
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
         install_dir, choice = _rocm_choice(), backend_request = None, prebuilt_fallback_used = False
