@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   DEFAULT_APP_WINDOW_SIZE_BOUNDS,
+  MINIMUM_APP_WINDOW_SIZE,
   PREFERRED_SETUP_WINDOW_SIZE,
   calculateCenteredPosition,
   calculateFirstAppWindowSize,
@@ -39,11 +40,40 @@ test("waits for the first native restore event before settling", () => {
 test("keeps the nominal minimum and preferred size on a roomy work area", () => {
   const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
 
-  assert.deepEqual(bounds.minimum, { width: 900, height: 600 });
+  // The resize floor is a companion width, not the size a first launch opens.
+  assert.deepEqual(bounds.minimum, MINIMUM_APP_WINDOW_SIZE);
   assert.deepEqual(calculateFirstAppWindowSize(bounds), {
     width: 1440,
     height: 884,
   });
+});
+
+test("lets a window stay squeezed to a companion width", () => {
+  const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
+  const squeezed = { width: 480, height: 700 };
+
+  // Nothing widens it back to a desktop size once the user has narrowed it.
+  assert.deepEqual(
+    constrainWindowSize(squeezed, bounds.minimum, bounds),
+    squeezed,
+  );
+});
+
+test("keeps the resize floor a CSS-pixel floor under webview zoom", () => {
+  const workAreaSize = { width: 1920, height: 1040 };
+
+  // Windows text scaling: the window measures in logical pixels but lays out
+  // in fewer CSS pixels, so the floor has to grow by the same ratio.
+  const zoomed = calculateWindowSizeBounds(workAreaSize, 1.5);
+  assert.deepEqual(zoomed.minimum, {
+    width: MINIMUM_APP_WINDOW_SIZE.width * 1.5,
+    height: MINIMUM_APP_WINDOW_SIZE.height * 1.5,
+  });
+  // No zoom, no change: every platform without text scaling.
+  assert.deepEqual(
+    calculateWindowSizeBounds(workAreaSize, 1).minimum,
+    MINIMUM_APP_WINDOW_SIZE,
+  );
 });
 
 test("fits a 1366x768 panel at 125% scaling above the taskbar", () => {
@@ -290,10 +320,9 @@ test("remeasures a restored window after show on its compact secondary", async (
     "constraints",
     "enforce",
   ]);
-  assert.deepEqual(constrainedMinimum, { width: 900, height: 494 });
-  assert.deepEqual(enforcementBounds, {
-    minimum: { width: 900, height: 494 },
-  });
+  assert.deepEqual(constrainedMinimum, MINIMUM_APP_WINDOW_SIZE);
+  assert.deepEqual(enforcementBounds, { minimum: MINIMUM_APP_WINDOW_SIZE });
+  // The restored size survives: the floor no longer inflates a saved window.
   assert.deepEqual(savedSize, { width: 900, height: 556 });
 });
 

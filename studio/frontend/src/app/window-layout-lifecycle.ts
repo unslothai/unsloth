@@ -38,10 +38,17 @@ type WindowMonitorReader<Monitor extends WorkAreaMonitor> = {
   outerSize?: () => Promise<PhysicalWindowSize>;
 };
 
-/** Size bounds the window has to stay within on its current monitor. */
+/**
+ * Size bounds the window has to stay within on its current monitor.
+ *
+ * `logicalPerCssPx` reports the webview's zoom above a monitor's display scale,
+ * keeping the resize floor a CSS-pixel floor under Windows text scaling. It
+ * defaults to a no-op, which is every platform without it.
+ */
 export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
   reader: WindowMonitorReader<Monitor>,
   isCurrent: WindowLayoutGuard,
+  logicalPerCssPx: (monitorScale: number) => number = () => 1,
 ): Promise<MeasuredWindowLayout<Monitor> | null> {
   // Some platforms cannot resolve the monitor for a hidden window.
   const monitor =
@@ -75,7 +82,10 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
   }
 
   const bounds = availableInnerSize
-    ? calculateWindowSizeBounds(availableInnerSize)
+    ? calculateWindowSizeBounds(
+        availableInnerSize,
+        monitor ? logicalPerCssPx(monitor.scaleFactor) : 1,
+      )
     : DEFAULT_APP_WINDOW_SIZE_BOUNDS;
   return { bounds, monitor, frameSize };
 }

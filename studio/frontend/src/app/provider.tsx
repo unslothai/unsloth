@@ -174,6 +174,7 @@ function measureTauriWindowLayout(
       outerSize: () => win.outerSize(),
     },
     isCurrent,
+    logicalPerCssPx,
   );
 }
 
