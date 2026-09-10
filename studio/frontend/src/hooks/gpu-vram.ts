@@ -430,6 +430,103 @@ export interface FreeVramDevice {
   unifiedMemory?: boolean;
 }
 
+/** A device as the free-capacity resolver sees it: the free-VRAM shape plus the
+ *  identity the resident-model filter matches on. Structural like the rest of this
+ *  module, so a SystemGpuDevice fits without importing it. */
+export interface FreeCapacityDevice extends FreeVramDevice {
+  index: number;
+  indexKind?: string | null;
+  /** Whether free memory was reported, including a real zero. */
+  memoryFreeKnown?: boolean;
+}
+
+export interface FreeCapacityInput {
+  /** Every GPU on the host; the pin narrows it. */
+  devices: FreeCapacityDevice[];
+  pinnedGpuIds?: number[] | null;
+  budgetFraction: number;
+  /** Every governing device is one pool with the host: Apple Silicon, or a ROCm APU. */
+  unifiedMemory: boolean;
+  /** ...and that pool's size is what the GPU itself reports, which is true of Apple
+   *  and false of a ROCm APU, whose figure is a BIOS-carved window onto system RAM. */
+  unifiedPoolReportedAsGpuMemory: boolean;
+  /** Host RAM a load may claim, already less the loader's reserve. */
+  usableSystemRamGb: number;
+  systemRamReserveDeficitGb: number;
+  /** False while the host RAM reading is unavailable. */
+  systemRamAvailableKnown?: boolean;
+  /** The devices the resident model occupies, when one is loaded. */
+  loadedGpuIds?: number[] | null;
+  loadedGpuIndexKind?: string | null;
+}
+
+export interface FreeCapacityGb {
+  gb: number;
+  /** False when the figure is a placeholder rather than a reading. */
+  known: boolean;
+  reserveDeficitGb: number;
+}
+
+/**
+ * Free memory a prospective load may claim, and whether that figure was actually read.
+ *
+ * On a non-Apple unified pool the per-device free reading is the space inside a
+ * BIOS-carved window, and `resolveMemoryFit` asks it the WHOLE-LOAD question as soon
+ * as the pool is single: together they warned that a 60 GiB load does not fit a 96 GiB
+ * machine with 60+ GiB free, purely because it exceeds a 48 GiB window. That pool's
+ * free memory is the HOST's, so this path answers from the host view and reports
+ * `known: false` when the host reading is missing. Substituting the window there is
+ * the same double count with a friendlier face: it answers a whole-load question with
+ * a figure that describes a part of the pool.
+ *
+ * Apple is left on the ordinary path, because its GPU figure already IS the pool.
+ */
+export function resolveFreeGpuCapacityGb({
+  devices,
+  pinnedGpuIds,
+  budgetFraction,
+  unifiedMemory,
+  unifiedPoolReportedAsGpuMemory,
+  usableSystemRamGb,
+  systemRamReserveDeficitGb,
+  systemRamAvailableKnown,
+  loadedGpuIds,
+  loadedGpuIndexKind,
+}: FreeCapacityInput): FreeCapacityGb {
+  if (unifiedMemory && !unifiedPoolReportedAsGpuMemory) {
+    return {
+      gb: systemRamAvailableKnown ? usableSystemRamGb : 0,
+      known: systemRamAvailableKnown === true,
+      reserveDeficitGb: systemRamReserveDeficitGb,
+    };
+  }
+  const pinned =
+    pinnedGpuIds && pinnedGpuIds.length > 0
+      ? devices.filter((device) => pinnedGpuIds.includes(device.index))
+      : devices;
+  // Per device, and by the loader's absolute-reserve rule rather than a multiplication:
+  // the budget is subtracted from the card, not applied to what happens to be free.
+  // Aggregated with the same count-the-shared-pool-once rule the TOTALS use, since a
+  // plain sum over a mixed inventory counted the iGPU's share of host RAM twice.
+  const residentDevices = loadedGpuIds?.length
+    ? pinned.filter(
+        (device) =>
+          device.indexKind === loadedGpuIndexKind &&
+          loadedGpuIds.includes(device.index),
+      )
+    : pinned;
+  return {
+    gb: aggregateUsableFreeVramGb(pinned, budgetFraction),
+    known:
+      pinned.length > 0 &&
+      pinned.every((device) => device.memoryFreeKnown === true),
+    reserveDeficitGb: aggregateVramReserveDeficitGb(
+      residentDevices,
+      budgetFraction,
+    ),
+  };
+}
+
 /** Reserve still unmet before unloading; per-device reclaimed amounts are unknown. */
 export function aggregateVramReserveDeficitGb(
 	devices: FreeVramDevice[],
