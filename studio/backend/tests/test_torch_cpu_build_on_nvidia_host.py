@@ -1202,7 +1202,9 @@ def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
 
     # The other direction still holds: RDNA 1 is declined on purpose, so it must stay quiet
     # rather than offer a repair that reinstalls the same CPU wheel.
-    declined = [{"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}]
+    declined = [
+        {"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}
+    ]
     assert hw._devices_that_can_establish_a_mismatch(declined) == []
 
 
