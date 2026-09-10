@@ -308,7 +308,12 @@ def test_reasoning_budget_schema_contract():
 
 
 def test_reasoning_budget_is_part_of_backend_dedupe():
-    backend = _loaded_backend(_reasoning_budget = 64, _reasoning_budget_message = "limit")
+    backend = _loaded_backend(
+        _reasoning_budget = 64,
+        _reasoning_budget_message = "limit",
+        _requested_reasoning_budget = 64,
+        _requested_reasoning_budget_message = "limit",
+    )
     common = dict(
         model_identifier = "owner/repo",
         hf_variant = "Q4_K_M",
@@ -325,7 +330,11 @@ def test_reasoning_budget_is_part_of_backend_dedupe():
     assert _matches(backend, **{**common, "reasoning_budget": 32}) is False
     flags = ["--reasoning-budget", "64", "--reasoning-budget-message", "limit"]
     backend = _loaded_backend(
-        _reasoning_budget = 64, _reasoning_budget_message = "limit", _extra_args = flags
+        _reasoning_budget = 64,
+        _reasoning_budget_message = "limit",
+        _requested_reasoning_budget = 64,
+        _requested_reasoning_budget_message = "limit",
+        _extra_args = flags,
     )
     assert (
         _matches(
@@ -484,3 +493,58 @@ def test_reasoning_budget_rejects_booleans(model):
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         model(model_path = "unsloth/x", reasoning_budget = True)
     assert model(model_path = "unsloth/x", reasoning_budget = 1).reasoning_budget == 1
+
+
+def test_the_reuse_check_compares_the_request_not_the_environment():
+    """An inherited LLAMA_ARG_THINK_BUDGET* cannot be sent or cleared by any request, so comparing
+    the live EFFECTIVE value against a resolved request tore down a healthy server on every load."""
+    source = inspect.getsource(LlamaCppBackend._runtime_matches_intent)
+    assert "self._requested_reasoning_budget" in source
+    assert (
+        "resolve_reasoning_budget_with_env" not in source
+    ), "the reuse check must not fold the environment into the request"
+
+    launch = inspect.getsource(LlamaCppBackend.load_model)
+    assert "self._requested_reasoning_budget = reasoning_budget" in launch
+    # A probe that could not be read says nothing about the flag, and the child still applies
+    # the environment, so only a conclusive "unsupported" may drop it.
+    assert "reasoning_budget_probe_inconclusive" in launch
+
+
+def test_requested_reasoning_budget_is_reported_separately():
+    from models.inference import InferenceStatusResponse
+
+    fields = InferenceStatusResponse.model_fields
+    for name in ("requested_reasoning_budget", "requested_reasoning_budget_message"):
+        assert name in fields, name
+    assert fields["requested_reasoning_budget"].default == -1
+    assert fields["requested_reasoning_budget_message"].default == ""
+
+
+def test_an_inherited_env_budget_does_not_force_a_reload():
+    """The live EFFECTIVE value carries LLAMA_ARG_THINK_BUDGET*, which no request can send or
+    clear. Comparing against it tore down a healthy server on every load and never converged."""
+    backend = _loaded_backend(
+        # What the environment gave the child...
+        _reasoning_budget = 512,
+        _reasoning_budget_message = "from env",
+        # ...against a load that asked for nothing.
+        _requested_reasoning_budget = -1,
+        _requested_reasoning_budget_message = "",
+    )
+    assert (
+        _matches(
+            backend,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            reasoning_budget = -1,
+            reasoning_budget_message = "",
+        )
+        is True
+    )

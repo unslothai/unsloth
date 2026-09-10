@@ -1168,6 +1168,15 @@ class _InferenceRuntimeFields(BaseModel):
     reasoning_budget_message: str = Field(
         "", description = "Effective llama-server reasoning-budget exhaustion message."
     )
+    # The effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no client can send or clear, so a
+    # caller comparing its own request against it reads a machine-wide default as a difference and
+    # reloads forever. These echo what the load ASKED for, which a client can reproduce.
+    requested_reasoning_budget: int = Field(
+        -1, description = "Reasoning token budget this load requested, before the environment."
+    )
+    requested_reasoning_budget_message: str = Field(
+        "", description = "Reasoning-budget message this load requested, before the environment."
+    )
     supports_preserve_thinking: bool = Field(
         False,
         description = "Whether the template understands the optional preserve_thinking kwarg",

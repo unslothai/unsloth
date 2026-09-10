@@ -6417,6 +6417,9 @@ class LlamaCppBackend:
         self._reasoning_always_on: bool = False
         self._reasoning_budget: int = -1
         self._reasoning_budget_message: str = ""
+        # What the load asked for, before the environment. See _runtime_matches_intent.
+        self._requested_reasoning_budget: int = -1
+        self._requested_reasoning_budget_message: str = ""
         self._reasoning_style: str = "enable_thinking"
         self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
@@ -7335,15 +7338,14 @@ class LlamaCppBackend:
             return False
 
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
-        # Effective against effective: the live value already folded in a pass-through
-        # flag or LLAMA_ARG_THINK_BUDGET*, so the request is resolved the same way.
+        # Request against request. The live EFFECTIVE value can carry an inherited
+        # LLAMA_ARG_THINK_BUDGET* that no request can express, so comparing against it would
+        # tear down a healthy server on every load and never converge.
         if not self._is_diffusion and (
-            self._reasoning_budget
-            != resolve_reasoning_budget_with_env(extra_args, intent.reasoning_budget)
-            or self._reasoning_budget_message
-            != resolve_reasoning_budget_message_with_env(
-                extra_args, intent.reasoning_budget_message
-            )
+            self._requested_reasoning_budget
+            != resolve_reasoning_budget(extra_args, intent.reasoning_budget)
+            or self._requested_reasoning_budget_message
+            != resolve_reasoning_budget_message(extra_args, intent.reasoning_budget_message)
         ):
             return False
         # A request omitting the extras field inherits the LAUNCHED list; anything else is
@@ -15176,6 +15178,8 @@ class LlamaCppBackend:
         self._cache_type_kv = None
         self._reasoning_budget = -1
         self._reasoning_budget_message = ""
+        self._requested_reasoning_budget = -1
+        self._requested_reasoning_budget_message = ""
         self._swa_full = False
         self._kv_cache_unified = False
         self._memory_state = None
@@ -23718,9 +23722,19 @@ class LlamaCppBackend:
                         server_caps, reasoning_budget, reasoning_budget_message
                     )
                 )
+                # What was asked for, pass-through flags folded in but not the environment: the
+                # value a client can resend, and the one the reuse check compares against.
+                self._requested_reasoning_budget = reasoning_budget
+                self._requested_reasoning_budget_message = reasoning_budget_message
+                # Only a CONCLUSIVE "no such flag" means the child ignores the environment. A probe
+                # that timed out says nothing, and the child still applies LLAMA_ARG_THINK_BUDGET*,
+                # so recording the bare request there would misreport the running server.
+                _budget_env_applies = server_caps.get(
+                    "supports_reasoning_budget"
+                ) or server_caps.get("reasoning_budget_probe_inconclusive")
                 reasoning_budget = (
                     resolve_reasoning_budget_with_env(extra_args, reasoning_budget, env)
-                    if server_caps.get("supports_reasoning_budget")
+                    if _budget_env_applies
                     else reasoning_budget
                 )
                 reasoning_budget_message = (
@@ -23728,6 +23742,7 @@ class LlamaCppBackend:
                         extra_args, reasoning_budget_message, env
                     )
                     if server_caps.get("supports_reasoning_budget_message")
+                    or server_caps.get("reasoning_budget_probe_inconclusive")
                     else reasoning_budget_message
                 )
                 self._reasoning_budget = reasoning_budget
@@ -27463,6 +27478,8 @@ class LlamaCppBackend:
             self._reasoning_always_on = False
             self._reasoning_budget = -1
             self._reasoning_budget_message = ""
+            self._requested_reasoning_budget = -1
+            self._requested_reasoning_budget_message = ""
             self._reasoning_style = "enable_thinking"
             self._reasoning_effort_levels = []
             self._reasoning_default = True

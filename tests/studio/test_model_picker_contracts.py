@@ -2748,14 +2748,38 @@ def test_a_recipe_restores_the_previous_model_at_its_reasoning_budget():
     """Captured from /status beside the context request and replayed the same way; a recipe's
     own target carries neither and runs at the defaults."""
     src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
-    assert src.count("reasoningBudget: status.reasoning_budget ?? -1,") == 2, src
-    assert src.count('reasoningBudgetMessage: status.reasoning_budget_message ?? "",') == 2, src
+    assert src.count("reasoningBudget: status.requested_reasoning_budget ?? -1,") == 2, src
+    assert (
+        src.count('reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",') == 2
+    ), src
     assert "reasoning_budget: reasoningBudget ?? -1," in src
     assert 'reasoning_budget_message: reasoningBudgetMessage ?? "",' in src
     assert "(left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1)" in src
 
     api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert "mirrors_reasoning_budget: true," in api
+
+
+def test_reasoning_settings_hydrate_from_a_server_authored_override():
+    """A row written by another browser or an API client carries the pair, and fromApiOverride has
+    to copy it or the panel shows local defaults and the next save writes them back."""
+    api = _read("features/model-picker/api/model-overrides.ts")
+    hydrate = api.split("export function fromApiOverride", 1)[1]
+    hydrate = hydrate[: hydrate.index("\n}")]
+    assert "reasoningBudget: override.reasoning_budget ?? local.reasoningBudget" in hydrate
+    assert "override.reasoning_budget_message ?? local.reasoningBudgetMessage" in hydrate
+
+
+def test_a_recipe_compares_the_requested_reasoning_budget():
+    """Requested, never effective: the effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no
+    request can express, so comparing it would reload the weights on every run forever."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    reuse = src.split("async function isLocalModelAlreadyLoaded", 1)[1]
+    reuse = reuse[: reuse.index("\n}")]
+    assert "status.requested_reasoning_budget" in reuse
+    assert (
+        "status.reasoning_budget" not in reuse
+    ), "the reuse check must compare the request, never the environment-resolved value"
 
 
 def test_validate_sends_reasoning_controls_before_the_runtime_unloads():

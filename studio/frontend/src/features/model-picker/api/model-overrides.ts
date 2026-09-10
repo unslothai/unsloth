@@ -308,6 +308,9 @@ export function fromApiOverride(
     specDraftCacheDtype:
       override.spec_draft_cache_type ?? local.specDraftCacheDtype,
     nParallel: override.n_parallel ?? local.nParallel,
+    reasoningBudget: override.reasoning_budget ?? local.reasoningBudget,
+    reasoningBudgetMessage:
+      override.reasoning_budget_message ?? local.reasoningBudgetMessage,
     nBatch: override.n_batch ?? local.nBatch,
     nUbatch: override.n_ubatch ?? local.nUbatch,
     loadMode: override.load_mode ?? local.loadMode,

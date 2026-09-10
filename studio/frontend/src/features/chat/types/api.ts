@@ -284,6 +284,11 @@ export interface LoadModelResponse {
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
+  /** What the load ASKED for, before LLAMA_ARG_THINK_BUDGET*: the value a client can resend. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null for non-GGUF loads. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
@@ -390,6 +395,11 @@ export interface InferenceStatusResponse {
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
+  /** What the load ASKED for, before LLAMA_ARG_THINK_BUDGET*: the value a client can resend. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */

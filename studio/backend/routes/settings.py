@@ -1517,6 +1517,40 @@ def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
     return False
 
 
+def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
+    """Whether a load for this model would still pick a reasoning flag off another entry.
+
+    The -1/"" pair is stored rather than dropped so a qualified row survives as a tombstone that
+    shadows such a flag. A later save leaving the controls at their defaults omits the pair, and
+    without this the row can empty out, be deleted, and hand the reset value straight back.
+    """
+    from core.inference.llama_server_args import (
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
+    )
+    from utils.openai_auto_switch_settings import get_model_override
+
+    for candidate in (
+        _bare_model_id(model_id),
+        _legacy_standalone_gguf_key(model_id),
+    ):
+        if not candidate or candidate == target_id:
+            continue
+        stored_args = get_model_override(candidate).get("llama_extra_args")
+        if not stored_args:
+            continue
+        try:
+            if (
+                parse_reasoning_budget_override(stored_args) is not None
+                or parse_reasoning_budget_message_override(stored_args) is not None
+            ):
+                return True
+        except ValueError:
+            # A malformed stored flag is the loader's problem, not this save's.
+            continue
+    return False
+
+
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
     """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
     own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
@@ -1783,6 +1817,18 @@ def update_openai_auto_switch_override(
                 and not payload.fill_absent_fields
                 and _fallback_supplies_extra_args(payload.model_id, target_id)
             )
+            # A default the caller did not send still has to be written while a broader entry
+            # would otherwise answer with the flag this row exists to shadow.
+            _kept_reasoning_budget = _kept_tuning["reasoning_budget"]
+            _kept_reasoning_budget_message = _kept_tuning["reasoning_budget_message"]
+            if (
+                not payload.fill_absent_fields
+                and _kept_reasoning_budget is None
+                and _kept_reasoning_budget_message is None
+                and _fallback_supplies_reasoning_flag(payload.model_id, target_id)
+            ):
+                _kept_reasoning_budget = -1
+                _kept_reasoning_budget_message = ""
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
@@ -1797,12 +1843,12 @@ def update_openai_auto_switch_override(
                 reasoning_budget = (
                     None
                     if payload.fill_absent_fields and reset_reasoning_budget
-                    else _kept_tuning["reasoning_budget"]
+                    else _kept_reasoning_budget
                 ),
                 reasoning_budget_message = (
                     None
                     if payload.fill_absent_fields and reset_reasoning_budget_message
-                    else _kept_tuning["reasoning_budget_message"]
+                    else _kept_reasoning_budget_message
                 ),
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
