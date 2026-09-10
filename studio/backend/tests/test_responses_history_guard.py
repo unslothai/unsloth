@@ -29,9 +29,17 @@ def responses_client():
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("previous_response_id", ["resp_previous", ""])
-def test_previous_response_id_is_rejected_before_any_processing(
-    monkeypatch, responses_client, stream, previous_response_id
+@pytest.mark.parametrize(
+    "history_param,history_reference",
+    [
+        ("previous_response_id", "resp_previous"),
+        ("previous_response_id", ""),
+        ("conversation", "conv_previous"),
+        ("conversation", {"id": "conv_previous"}),
+    ],
+)
+def test_history_reference_is_rejected_before_any_processing(
+    monkeypatch, responses_client, stream, history_param, history_reference
 ):
     normalise = Mock(side_effect = AssertionError("normalization reached"))
     switch = AsyncMock(side_effect = AssertionError("model switch reached"))
@@ -46,7 +54,7 @@ def test_previous_response_id_is_rejected_before_any_processing(
         json = {
             "model": "different/model",
             "input": "What was my project code?",
-            "previous_response_id": previous_response_id,
+            history_param: history_reference,
             "stream": stream,
         },
     )
@@ -55,7 +63,8 @@ def test_previous_response_id_is_rejected_before_any_processing(
     error = response.json()["error"]
     assert error["type"] == "invalid_request_error"
     assert error["code"] == "unsupported_parameter"
-    assert error["param"] == "previous_response_id"
+    assert error["param"] == history_param
+    assert history_param in error["message"]
     assert "full conversation history" in error["message"]
     assert "input" in error["message"]
     normalise.assert_not_called()
@@ -64,8 +73,16 @@ def test_previous_response_id_is_rejected_before_any_processing(
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("previous", [{}, {"previous_response_id": None}])
-def test_full_history_without_previous_id_preserves_dispatch(
+@pytest.mark.parametrize(
+    "previous",
+    [
+        {},
+        {"previous_response_id": None},
+        {"conversation": None},
+        {"previous_response_id": None, "conversation": None},
+    ],
+)
+def test_full_history_without_history_reference_preserves_dispatch(
     monkeypatch, responses_client, stream, previous
 ):
     switch = AsyncMock()
