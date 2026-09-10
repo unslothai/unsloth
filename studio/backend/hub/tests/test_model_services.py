@@ -2215,6 +2215,14 @@ def _diffusion_scan(
         target = snapshot / f.file_name
         target.parent.mkdir(parents = True, exist_ok = True)
         target.write_bytes(b"\0" * min(int(f.size_on_disk), 4096))
+    if any(f.file_name == "model_index.json" for f in files):
+        manifest = {
+            key.rstrip("/").split("/")[0]: ["stub", "Stub"]
+            for key in {f.file_name.split("/")[0] for f in files if f.file_name != "model_index.json"}
+        }
+        if "transformer" not in manifest and "unet" not in manifest:
+            manifest["transformer"] = ["stub", "Stub"]
+        (snapshot / "model_index.json").write_text(json.dumps(manifest), encoding = "utf-8")
     if modular_manifest is not None:
         (snapshot / "modular_model_index.json").write_text(
             json.dumps(modular_manifest), encoding = "utf-8"
@@ -2273,9 +2281,13 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
         task = "text-to-image",
     )
 
-    assert row["partial"] is True
+    assert row["partial"] is False
+    assert row["companion_prefetch"] is True
+    assert sorted(row["cached_components"]) == ["text_encoder", "vae"]
+    assert row["capabilities"]["can_chat"] is False
     # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
+    assert row["partial_resumable"] is False
 
 
 def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_path):
@@ -7001,7 +7013,16 @@ def test_every_row_key_the_scanner_emits_survives_the_response_schema():
     # Each scanner against ITS OWN schema: a union would let a key emitted on a model row pass because
     # the GGUF schema happens to declare it, which is not what response_model does.
     emitted = literal_keys("_cache_inventory_fields") | literal_keys("_scan_cached_models")
-    watched = ("diffusers", "companion", "single_file", "partial", "load_id", "task")
+    watched = (
+        "diffusers",
+        "companion",
+        "companion_prefetch",
+        "cached_components",
+        "single_file",
+        "partial",
+        "load_id",
+        "task",
+    )
     for flag in watched:
         if flag in emitted:
             assert flag in CachedModelRepo.model_fields, (

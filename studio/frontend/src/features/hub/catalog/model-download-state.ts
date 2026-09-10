@@ -8,15 +8,20 @@ export type ModelDownloadState = {
   isPartial: boolean;
   partialTransport: string | null;
   partialResumable: boolean;
+  companionPrefetch: boolean;
+  cachedComponents?: string[];
 };
 
 export function modelDownloadState(
   model: SelectedModelView,
 ): ModelDownloadState {
+  const companionPrefetch = model.companionPrefetch === true;
   return {
-    isDownloaded: model.isDownloaded,
+    isDownloaded: model.isDownloaded && !companionPrefetch,
     isPartial: model.isPartial ?? false,
     partialTransport: model.partialTransport ?? null,
     partialResumable: model.partialResumable === true,
+    companionPrefetch,
+    cachedComponents: model.cachedComponents,
   };
 }

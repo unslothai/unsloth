@@ -59,6 +59,8 @@ export interface CachedInventoryRow {
   // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
   // run to tens of GB and the row is how they are seen and deleted, but never a pick.
   companion?: boolean;
+  companionPrefetch?: boolean;
+  cachedComponents?: string[];
   tags?: string[];
   libraryName?: string | null;
   quantMethod?: string | null;

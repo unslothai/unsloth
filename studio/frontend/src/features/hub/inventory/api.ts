@@ -88,6 +88,10 @@ export interface CachedModelRepo {
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
+  single_file?: boolean;
+  companion?: boolean;
+  companion_prefetch?: boolean;
+  cached_components?: string[] | null;
 }
 
 export interface CachedInventoryResponse<Repo> {

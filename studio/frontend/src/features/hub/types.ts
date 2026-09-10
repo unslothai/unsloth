@@ -65,6 +65,8 @@ export interface SelectedModelView {
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  companionPrefetch?: boolean;
+  cachedComponents?: string[];
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;

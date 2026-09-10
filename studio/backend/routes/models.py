@@ -96,6 +96,8 @@ class CachedModelRepo(BaseModel):
     # True for an sd.cpp companion mirror (VAE / text encoders, no denoiser). Declared here or
     # response_model drops it and the flag never reaches the picker that has to filter on it.
     companion: Optional[bool] = None
+    companion_prefetch: Optional[bool] = None
+    cached_components: Optional[List[str]] = None
     # Snapshot path for a copy its bare repo id cannot reach (legacy/default cache while
     # another is active); undeclared, response_model drops it and the picker uses the active cache.
     load_id: Optional[str] = None
@@ -5464,13 +5466,15 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 )
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
-                is_partial = _cached_repo_partial(
+                download_partial = _cached_repo_partial(
                     repo_id, Path(repo_info.repo_path), selected
-                ) or _repo_pipeline_missing_denoiser(repo_info, selected)
+                )
+                companion_only = _repo_pipeline_missing_denoiser(repo_info, selected)
+                companion_prefetch = companion_only and not download_partial
                 # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
-                if existing is None or (not is_partial, total_size) > (
+                if existing is None or (not download_partial, not companion_prefetch, total_size) > (
                     not bool(existing.get("partial")),
+                    not bool(existing.get("companion_prefetch")),
                     existing["size_bytes"],
                 ):
                     row_task = _cached_repo_task(repo_info, selected)
@@ -5494,8 +5498,15 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     # pipeline, and None is what every chat repo carries, so say it plainly.
                     if is_diffusers:
                         row["diffusers"] = True
-                    if is_partial:
+                    if download_partial:
                         row["partial"] = True
+                    if companion_prefetch:
+                        row["companion_prefetch"] = True
+                        from hub.utils.inventory_scan import snapshot_cached_pipeline_components
+
+                        components = snapshot_cached_pipeline_components(selected)
+                        if components:
+                            row["cached_components"] = list(components)
                     # Listed, so tens of GB of companion weights stay visible and deletable,
                     # but flagged, so no picker offers a denoiser-less repo as a load.
                     if _is_sd_cpp_companion_repo(repo_id):
