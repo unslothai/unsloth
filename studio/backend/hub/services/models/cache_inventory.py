@@ -1047,9 +1047,7 @@ def _scan_cached_models(
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory serves the row and it would reach for the Hub.
                 missing_payload = not payload.payload_snapshots
                 snapshot_partial = download_partial or missing_payload
-                companion_prefetch = (
-                    companion_only and not download_partial and not missing_payload
-                )
+                companion_prefetch = companion_only and not download_partial and not missing_payload
                 cached_components = (
                     list(hf_cache_scan.snapshot_cached_pipeline_components(load_snapshot))
                     if companion_prefetch
