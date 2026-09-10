@@ -394,6 +394,28 @@ def test_seeded_tool_loop_keeps_prompt_cache_after_the_first_round(monkeypatch):
         assert "cache_prompt" not in later, later
 
 
+def test_seeded_zero_tool_iterations_keeps_cold_cache_on_the_final_pass(monkeypatch):
+    """max_tool_iterations=0 never sends an in-loop request; the final pass is round 0."""
+    backend, payloads = _backend_and_payloads(
+        monkeypatch,
+        [[_sse({"content": "no tools this turn"}), _done()]],
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "just answer"}],
+            tools = [],
+            seed = 3407,
+            max_tool_iterations = 0,
+            permission_mode = "off",
+        )
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+
+
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
     stream = [
         _progress(processed = 512, cached = 0, time_ms = 64),

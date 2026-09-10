@@ -30220,6 +30220,10 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # True once an in-loop llama-server body has been built. max_tool_iterations=0
+        # breaks before that and falls straight into the final pass, which must keep
+        # #9979's cold-cache pin for a fixed seed.
+        _in_loop_request_sent = False
         iteration = -1
         while True:
             iteration += 1
@@ -30476,6 +30480,7 @@ class LlamaCppBackend:
             # re-prompt after the first request) extend a prefix already in the slot, so
             # disabling reuse would re-prefill the entire context after every tool call.
             _apply_seeded_llama_request(payload, seed, reuse_prompt_cache = iteration > 0)
+            _in_loop_request_sent = True
 
             _respawn_truncations: list[dict] = []
 
@@ -32946,8 +32951,12 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
-        # Reached only after at least one in-loop request left KV in the slot.
-        _apply_seeded_llama_request(stream_payload, seed, reuse_prompt_cache = True)
+        # Reuse only when an in-loop request already left KV in the slot. A
+        # max_tool_iterations=0 run never enters the loop and this pass is the first
+        # request, so it must keep the cold-cache pin for a fixed seed.
+        _apply_seeded_llama_request(
+            stream_payload, seed, reuse_prompt_cache = _in_loop_request_sent
+        )
         stream_payload["stream_options"] = {"include_usage": True}
 
         # Progress events feed the first-token deadline; timings stay opt-in.
