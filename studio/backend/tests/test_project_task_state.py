@@ -288,7 +288,10 @@ def runners(task_db):
     created = []
 
     def create(executor, **kwargs):
-        runner = ProjectTaskRunner(executor, heartbeat_seconds = 0.01, drain_seconds = 0.2, **kwargs)
+        # Cooperative cleanup may need more than 200 ms on loaded CI hosts.
+        # Only the explicit drain-timeout test should depend on a short window.
+        kwargs.setdefault("drain_seconds", 2)
+        runner = ProjectTaskRunner(executor, heartbeat_seconds = 0.01, **kwargs)
         created.append(runner)
         return runner
 
@@ -340,13 +343,15 @@ def test_cancelled_queued_task_never_executes(runners):
     assert calls == ["First"]
 
 
-def test_parent_failure_cancels_and_drains_its_child(runners):
+@pytest.mark.parametrize("cleanup_delay", [0, 0.25])
+def test_parent_failure_cancels_and_drains_its_child(runners, cleanup_delay):
     child_started = threading.Event()
 
     def execute(context):
         if context.task["parentId"]:
             child_started.set()
             assert context.cancel_event.wait(3)
+            threading.Event().wait(cleanup_delay)
             context.check()
         context.delegate("Child", role = "implementer", max_output_tokens = 10)
         assert child_started.wait(3)
@@ -354,7 +359,7 @@ def test_parent_failure_cancels_and_drains_its_child(runners):
 
     runner = runners(execute)
     parent = runner.submit("one", "Parent", {}, child_limit = 1, child_budget = 10)
-    result = runner.wait("one", parent["id"], timeout = 3)
+    result = runner.wait("one", parent["id"], timeout = 5)
     assert result["status"] == "failed"
     assert "secret-value" not in str(result)
     assert state.list_children("one", parent["id"])[0]["status"] == "cancelled"
@@ -535,7 +540,7 @@ def test_parent_drain_timeout_does_not_claim_project_idle(runners):
         assert child_started.wait(3)
         return {}
 
-    runner = runners(execute)
+    runner = runners(execute, drain_seconds = 0.2)
     parent = runner.submit("one", "Parent", {}, child_limit = 1, child_budget = 10)
     try:
         result = runner.wait("one", parent["id"], timeout = 2)
