@@ -22388,6 +22388,9 @@ class LlamaCppBackend:
                             _idx: max(0.0, _gpu_usable((_idx, _free), _pin_fraction))
                             for _idx, _free in (gpus or ())
                         },
+                        # Read back against free, so a card reporting more free than
+                        # it has (#12138) is caught before the plan is pinned.
+                        "gpu_total_mib": dict(total_by_idx),
                         "gpu_indices": gpu_indices,
                         "soft_overhead": _soft_overhead,
                         # What the usable budget above already withheld from each card, priced into
@@ -28315,6 +28318,51 @@ class LlamaCppBackend:
             return False
         return True
 
+    # Devices already warned about, so an over-report is reported once per process
+    # rather than on every load. Class level, because the probe is.
+    _free_over_total_reported: "set[int]" = set()
+
+    @classmethod
+    def _free_vram_at_most_total(
+        cls,
+        rows: "Sequence[tuple[int, float]]",
+        total_mib: "Optional[Mapping[int, float]]" = None,
+    ) -> "list[tuple[int, float]]":
+        """``rows`` of ``(device, free MiB)`` with any free figure clamped to that
+        device's reported total.
+
+        Free above total is a broken reading, not headroom: ggml-org/llama.cpp#12138
+        is a Windows RTX 4080 reporting "abnormally large" free VRAM, on which
+        offload never triggers because every fit looks like it has room. The planner
+        is the one caller that cannot recover from believing it -- it pins its answer
+        with ``--fit off``, so nothing re-fits the launch afterwards.
+
+        A total of 0 or one this probe never reported means "not stated" and clamps
+        nothing: Vulkan reports total 0 for an iGPU, and the AMD/HIP unified path
+        deliberately credits a pool larger than any card's own total. Logged once per
+        device per process.
+        """
+        if not total_mib:
+            return list(rows)
+        out: list[tuple[int, float]] = []
+        for idx, free in rows:
+            total = total_mib.get(idx, 0) or 0
+            if total > 0 and free > total:
+                if idx not in cls._free_over_total_reported:
+                    cls._free_over_total_reported.add(idx)
+                    logger.warning(
+                        "GPU %s reports %.0f MiB free against %.0f MiB total; "
+                        "treating the free figure as the total (see "
+                        "ggml-org/llama.cpp#12138)",
+                        idx,
+                        float(free),
+                        float(total),
+                    )
+                out.append((idx, total))
+                continue
+            out.append((idx, free))
+        return out
+
     def _planned_tensor_spill(
         self,
         inputs: Optional[dict],
@@ -28358,7 +28406,13 @@ class LlamaCppBackend:
 
         model_size = int(inputs.get("model_size") or 0)
         kv_cache_bytes = int(inputs.get("kv_cache_bytes") or 0)
-        rows = list(inputs.get("gpus") or ())
+        # Clamped before anything is credited: a free reading above the card's own
+        # total is the #12138 over-report, and every budget below is derived from it.
+        # Through the class, not self, like the probes above: it holds no instance
+        # state, and the seam tests borrow this method onto a stub.
+        rows = LlamaCppBackend._free_vram_at_most_total(
+            list(inputs.get("gpus") or ()), inputs.get("gpu_total_mib")
+        )
         if not model_size or not kv_cache_bytes or not rows:
             return None
         if not self._can_estimate_kv():
@@ -28444,8 +28498,12 @@ class LlamaCppBackend:
                 ", ".join(f"GPU {idx} (sm_{sm})" for idx, sm in _blocked),
             )
             return None
+        # min(), because gpu_usable_mib was computed from the SAME free reading the
+        # clamp above may have just cut: usable is free minus a reserve, so it is
+        # never the smaller of the two on a card that reported itself sanely.
         vram_per_device = [
-            int(usable_mib.get(idx, free_mib) * 1024 * 1024) for idx, free_mib in kept
+            int(min(usable_mib.get(idx, free_mib), free_mib) * 1024 * 1024)
+            for idx, free_mib in kept
         ]
         # llama.cpp sizes its row ranges from RAW free VRAM (llama-model.cpp:1433),
         # so the split must be modelled on the raw numbers. The budget subtracts a

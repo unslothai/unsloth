@@ -184,6 +184,7 @@ def _inputs(
     mtp = None,
     shared = None,
     gpus = None,
+    gpu_total_mib = None,
     n_parallel = 1,
     n_threads = None,
     compute_flat = 0,
@@ -209,6 +210,7 @@ def _inputs(
         "env_mmproj_bytes": env_mmproj,
         "env_mmproj_unsized": env_mmproj_unsized,
         "gpu_indices": indices,
+        "gpu_total_mib": gpu_total_mib,
         "soft_overhead": 0,
         "reserve_floor_bytes": reserve_floor,
         "model_path": "/models/stub.gguf",
@@ -545,6 +547,88 @@ def test_repeated_ot_flags_rather_than_a_joined_value():
     tokens = [tok for pat in plan.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
     assert tokens.count("-ot") == 2
     assert ";" not in " ".join(tokens)
+
+
+# ------------------------------------------ free VRAM that exceeds the card
+
+
+def _warnings_of(monkeypatch) -> list:
+    """Collect logger.warning messages; the logger is structlog, not stdlib, so
+    caplog never sees them."""
+    seen: list[str] = []
+    monkeypatch.setattr(
+        llama_mod.logger, "warning", lambda msg, *a, **kw: seen.append(str(msg)), raising = False
+    )
+    return seen
+
+
+def test_a_free_reading_above_the_cards_total_is_clamped(monkeypatch):
+    """More free than the card has is a broken reading, not headroom.
+
+    ggml-org/llama.cpp#12138: a Windows RTX 4080 reports an abnormally large free
+    figure and offload never triggers, because every fit looks like it has room.
+    The 0.97 fraction and the 512 MiB floor only cushion it. The planner is the
+    caller that cannot recover from believing it -- it pins its answer with --fit
+    off, so nothing re-fits the launch -- so free is capped at total before a byte
+    of it is credited, and the usable budget derived from the same reading is
+    capped with it.
+    """
+    LlamaCppBackend._free_over_total_reported.clear()
+
+    # 14 GiB free on a card whose total says 14 GiB: a real spill.
+    honest = _plan(_Stub(), free_mib = 14 * 1024, gpu_total_mib = {0: 14 * 1024})
+    assert honest is not None and honest.spills_anything
+
+    # The same card reporting 64 GiB free. Believed, the load "fits" and nothing
+    # is spilled -- #12138's symptom exactly, and the plan then pins it.
+    believed = _plan(_Stub(), free_mib = 64 * 1024)
+    assert believed is not None and not believed.spills_anything
+
+    # Clamped, it is budgeted as the card it is, and the plan is the honest one.
+    over = _plan(_Stub(), free_mib = 64 * 1024, gpu_total_mib = {0: 14 * 1024})
+    assert over is not None
+    assert over.ot_patterns == honest.ot_patterns
+    assert over.vram_bytes == honest.vram_bytes, "the clamped card is budgeted as itself"
+
+    # gpu_usable_mib comes off the same reading (the VRAM fraction and the reserve
+    # floor applied to free), so the budget is capped with it rather than left as
+    # the only unclamped way in.
+    over_usable = _plan(
+        _Stub(), free_mib = 64 * 1024, usable_mib = 63 * 1024, gpu_total_mib = {0: 14 * 1024}
+    )
+    assert over_usable is not None
+    assert over_usable.ot_patterns == honest.ot_patterns
+
+    # Once per device, not once per load.
+    warned = _warnings_of(monkeypatch)
+    for _ in range(3):
+        _plan(_Stub(), free_mib = 64 * 1024, gpu_total_mib = {0: 14 * 1024})
+    assert len(warned) == 0, "the first plan above already reported this device"
+
+
+def test_the_clamp_leaves_an_honest_or_unstated_total_alone(monkeypatch):
+    """Nothing may move on a card that reports itself sanely, and a total of 0
+    means "not stated": Vulkan reports 0 for an iGPU, and the unified AMD path
+    deliberately credits a pool larger than any one card's total."""
+    LlamaCppBackend._free_over_total_reported.clear()
+    rows = [(0, 12.0 * 1024), (1, 8.0 * 1024)]
+    assert LlamaCppBackend._free_vram_at_most_total(rows, None) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {}) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {0: 0, 1: 0}) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {0: 24 * 1024}) == rows
+    assert LlamaCppBackend._free_vram_at_most_total(rows, {0: 12 * 1024}) == rows
+
+    warned = _warnings_of(monkeypatch)
+    clamped = LlamaCppBackend._free_vram_at_most_total(rows, {0: 6 * 1024, 1: 8 * 1024})
+    again = LlamaCppBackend._free_vram_at_most_total(rows, {0: 6 * 1024, 1: 8 * 1024})
+    assert clamped == [(0, 6 * 1024), (1, 8.0 * 1024)]
+    assert again == clamped
+    assert len(warned) == 1, "warned once per device, not once per probe"
+    assert "12138" in warned[0]
+
+    # And the seam hands the totals over in the first place.
+    compact = "".join(_load_model_source().split())
+    assert '"gpu_total_mib":dict(total_by_idx)' in compact
 
 
 # ------------------------------------------------ the split the plan modelled
