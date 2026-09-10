@@ -164,12 +164,26 @@ def _download(
     dest: Path,
     *,
     attempts: int = _DOWNLOAD_ATTEMPTS,
+    timeout: float = _DOWNLOAD_TIMEOUT,
 ) -> bool:
-    """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool."""
+    """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool.
+
+    One deadline covers every attempt and the pauses between them, so the retries can
+    never stretch a bad transfer past the single-attempt worst case this launch path had
+    before they existed: a transfer that stalls and then resets gets the time it has
+    left, not a fresh budget. A timeout and a permanent 4xx are terminal, since neither
+    changes on the next attempt.
+    """
     import tempfile
+    import urllib.error
     import urllib.request
 
+    deadline = time.monotonic() + timeout
+    last_error: Optional[BaseException] = None
     for attempt in range(1, attempts + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         tmp_path: Optional[Path] = None
         try:
             dest.parent.mkdir(parents = True, exist_ok = True)
@@ -179,13 +193,14 @@ def _download(
                 tmp_path = Path(handle.name)
                 # GitHub's CDN 403s the default Python-urllib User-Agent.
                 req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-                with urllib.request.urlopen(req, timeout = _DOWNLOAD_TIMEOUT) as response:
+                with urllib.request.urlopen(req, timeout = remaining) as response:
                     shutil.copyfileobj(response, handle)
             if tmp_path.stat().st_size == 0:
                 raise RuntimeError("empty download")
             os.replace(tmp_path, dest)
             return True
         except Exception as exc:
+            last_error = exc
             if tmp_path is not None:
                 try:
                     tmp_path.unlink(missing_ok = True)
@@ -194,15 +209,24 @@ def _download(
             timed_out = isinstance(exc, TimeoutError) or isinstance(
                 getattr(exc, "reason", None), TimeoutError
             )
-            if attempt >= attempts or timed_out:
-                print(
-                    f"[cloudflare] could not download cloudflared from {url} ({exc}); "
-                    "install cloudflared on PATH to use a public tunnel",
-                    file = sys.stderr,
-                    flush = True,
-                )
-                return False
-            time.sleep(1.5 * attempt)
+            # 408 and 429 are the two 4xx a retry can change; the rest are permanent.
+            permanent = (
+                isinstance(exc, urllib.error.HTTPError)
+                and 400 <= exc.code < 500
+                and exc.code not in (408, 429)
+            )
+            if timed_out or permanent or attempt >= attempts:
+                break
+            pause = 1.5 * attempt
+            if time.monotonic() + pause >= deadline:
+                break
+            time.sleep(pause)
+    print(
+        f"[cloudflare] could not download cloudflared from {url} ({last_error}); "
+        "install cloudflared on PATH to use a public tunnel",
+        file = sys.stderr,
+        flush = True,
+    )
     return False
 
 
