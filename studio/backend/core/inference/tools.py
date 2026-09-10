@@ -202,6 +202,10 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
+# ssh/slogin/scp/sftp are gated by ssh_policy (approved-server allowlist) instead
+# of the unconditional blocklist, but still scanned at command position.
+_SSH_GATED_COMMANDS = frozenset({"ssh", "slogin", "scp", "sftp"})
+
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
@@ -1434,6 +1438,142 @@ def _is_start_title(token: str) -> bool:
         or any(char.isspace() for char in token)
         or (len(token) >= 2 and token[0] == '"' and token[-1] == '"')
     )
+
+
+def _find_ssh_command_segments(command: str, _depth: int = 0) -> "list[tuple[str, list[str]]]":
+    """Return ``(cmd_name, arg_tokens)`` for each ssh/scp/sftp/slogin at command position.
+
+    Uses the same ANSI-C decode and shlex tokenization as ``_find_blocked_commands``.
+    """
+    if not command or not command.strip() or _depth > 8:
+        return []
+    segments: "list[tuple[str, list[str]]]" = []
+
+    decoded = _decode_ansi_c(command, keep_one_word = True)
+    lexed_posix = _shell_is_posix()
+    try:
+        if not lexed_posix:
+            tokens = shlex.split(decoded, posix = False)
+        else:
+            lexer = shlex.shlex(decoded, posix = True, punctuation_chars = ";&|()`")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+    except ValueError:
+        tokens = decoded.split()
+        lexed_posix = False
+    quoted_separators = (
+        _quoted_separator_indexes(decoded, tokens, ";&|()`") if lexed_posix else frozenset()
+    )
+    quoted_redirects = (
+        _quoted_redirection_indexes(decoded, tokens, ";&|()`") if lexed_posix else frozenset()
+    )
+    _exec_flag_indexes, _invocation_stops, redirect_indexes = _exec_scan_layout(
+        tokens, quoted_separators, quoted_redirects
+    )
+
+    def _token_basename(tok: str) -> str:
+        tok = tok.strip(";&|()`{}")
+        base = os.path.basename(tok).lower()
+        stem, ext = os.path.splitext(base)
+        if ext in {".exe", ".com", ".bat", ".cmd"}:
+            base = stem
+        return base
+
+    expect_command = True
+    prefix_pending = False
+    prefix_command = ""
+    skip_operand = False
+    for token_index, token in enumerate(tokens):
+        if skip_operand:
+            skip_operand = False
+            continue
+        if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+            skip_operand = token.lower() != "not"
+            continue
+        if prefix_pending and token == "-a":
+            skip_operand = True
+            continue
+        if token_index in redirect_indexes:
+            continue
+        if (_looks_like_separator(token) and token_index not in quoted_separators) or (
+            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+        ):
+            expect_command = True
+            prefix_pending = False
+            prefix_command = ""
+            continue
+        if token.startswith("-"):
+            if prefix_pending and token in _WRAPPER_VALUE_FLAGS_BY_CMD.get(
+                prefix_command, frozenset()
+            ):
+                skip_operand = True
+                continue
+            if not prefix_pending:
+                expect_command = False
+            continue
+        if not expect_command:
+            continue
+        if _REDIR_PREFIX_RE.match(token):
+            continue
+        if _ASSIGNMENT_RE.match(token):
+            continue
+        if prefix_pending and token.lstrip("-").isdigit():
+            continue
+        base = _token_basename(token)
+        if base in _SSH_GATED_COMMANDS:
+            arg_tokens: "list[str]" = []
+            j = token_index + 1
+            while j < len(tokens):
+                if j in redirect_indexes:
+                    j += 1
+                    continue
+                nxt = tokens[j]
+                if (_looks_like_separator(nxt) and j not in quoted_separators) or (
+                    nxt in _SHELL_KEYWORDS_AS_SEP
+                ):
+                    break
+                arg_tokens.append(nxt)
+                j += 1
+            segments.append((base, arg_tokens))
+            expect_command = False
+            prefix_pending = False
+            prefix_command = ""
+            continue
+        if base in _COMMAND_PREFIXES:
+            prefix_pending = True
+            prefix_command = base
+            continue
+        expect_command = False
+        prefix_pending = False
+        prefix_command = ""
+
+    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    _SHELLS_WIN = {"cmd", "cmd.exe"}
+    for i, token in enumerate(tokens):
+        tok_lower = token.lower()
+        is_unix_c = tok_lower == "-c" or (
+            tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
+        )
+        is_win_c = _win_switch(tok_lower) in ("/c", "/k")
+        if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
+            continue
+        for j in range(i - 1, -1, -1):
+            prev = tokens[j]
+            if prev.startswith("-"):
+                continue
+            if is_win_c and _CMD_SWITCH_RE.fullmatch(_win_switch(prev)):
+                continue
+            prev_base = os.path.basename(prev).lower()
+            if is_unix_c and prev_base in _SHELLS:
+                segments.extend(_find_ssh_command_segments(tokens[i + 1], _depth + 1))
+            elif is_win_c and prev_base in _SHELLS_WIN:
+                payload = tokens[i + 1]
+                if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
+                    payload = payload[1:-1]
+                segments.extend(_find_ssh_command_segments(payload, _depth + 1))
+            break
+
+    return segments
 
 
 def _find_blocked_commands(command: str) -> set[str]:

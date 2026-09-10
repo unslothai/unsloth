@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import ast
 import re
-import shlex
 from typing import Iterable, Optional
 
 from state.ssh_approvals import approved_hosts, is_host_approved, normalize_host
@@ -33,21 +32,6 @@ _SSH_PY_CONNECT_FQ = (
     "fabric.connection.Connection",
 )
 
-_SSH_SEGMENT_RE = re.compile(
-    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?P<cmd>(?:\S*/)?(?P<name>ssh|slogin|scp|sftp))\b(?P<rest>[^\n;&|()]*)",
-    re.IGNORECASE,
-)
-
-_USER_AT_HOST_RE = re.compile(
-    r"(?:^|[\s'\"])"
-    r"(?:(?P<user>[^@\s/\\:]+)@)?"
-    r"(?P<host>[^@\s/\\:]+)"
-    r"(?::(?P<path>[^\s'\"]+))?"
-    r"(?:[\s'\"]|$)"
-)
-
-
 def _parse_host_token(token: str) -> Optional[str]:
     token = token.strip().strip("'\"")
     if not token or token.startswith("-") or token.startswith("$") or token.startswith("${"):
@@ -66,14 +50,10 @@ def _parse_host_token(token: str) -> Optional[str]:
     return host
 
 
-def _hosts_from_ssh_segment(name: str, rest: str) -> tuple[set[str], bool]:
+def _hosts_from_ssh_segment(name: str, tokens: list[str]) -> tuple[set[str], bool]:
     """Extract literal hosts from one ssh/scp/sftp command segment."""
     literal_hosts: set[str] = set()
     dynamic = False
-    try:
-        tokens = shlex.split(rest, posix = True)
-    except ValueError:
-        tokens = rest.split()
     skip_next = False
     host_tokens: list[str] = []
     for tok in tokens:
@@ -120,13 +100,15 @@ def extract_ssh_hosts_from_command(command: str) -> tuple[set[str], bool]:
     """Return literal SSH hosts and whether a dynamic/unparsed target exists."""
     if not command or not command.strip():
         return set(), False
+    # Lazy import: tools imports ssh_policy at module load.
+    from core.inference.tools import _find_ssh_command_segments
+
     hosts: set[str] = set()
     dynamic = False
-    for match in _SSH_SEGMENT_RE.finditer(command):
-        name = match.group("name").lower()
+    for name, arg_tokens in _find_ssh_command_segments(command):
         if name not in _SSH_COMMANDS:
             continue
-        segment_hosts, segment_dynamic = _hosts_from_ssh_segment(name, match.group("rest") or "")
+        segment_hosts, segment_dynamic = _hosts_from_ssh_segment(name, arg_tokens)
         hosts.update(segment_hosts)
         dynamic = dynamic or segment_dynamic
     return hosts, dynamic

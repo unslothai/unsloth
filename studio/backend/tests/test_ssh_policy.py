@@ -48,6 +48,14 @@ class TestSshCommandExtraction:
         assert hosts == set()
         assert dynamic is True
 
+    def test_ansi_c_quoted_ssh_command(self):
+        hosts, dynamic = extract_ssh_hosts_from_command("$'ssh' deploy@prod.example.com")
+        assert hosts == {"prod.example.com"}
+        assert dynamic is False
+        err = check_ssh_command_access("$'ssh' deploy@prod.example.com", "sess-1")
+        assert err is not None
+        assert "unapproved" in err
+
 
 class TestSshPythonExtraction:
     def test_paramiko_literal_host(self):
