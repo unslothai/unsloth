@@ -20,7 +20,8 @@ const adapter = readSrc("features/chat/api/chat-adapter.ts");
 const transport = readSrc("features/chat/api/chat-api.ts");
 
 test("local chat opts into the rolling context policy", () => {
-  assert.match(adapter, /isGguf === true/);
+  assert.match(adapter, /isGgufForCompaction/);
+  assert.match(adapter, /runtime\.loadedIsGguf/);
   assert.match(adapter, /autoCompactEnabled/);
   assert.match(adapter, /ggufCompactionRequestFields\(/);
   assert.match(adapter, /This conversation was compacted/);
@@ -119,7 +120,7 @@ test("a record with no boundary never guesses one from a summed drop count", () 
 
 test("a rescued turn cannot silence the compactions that follow it", () => {
   // The `showsNotice` scan in thread.tsx, which only announces a boundary that ROSE.
-  const boundariesShown = (records: any[]) => {
+  const boundariesShown = (records: ContextTruncation[]) => {
     let high = 0;
     const shown: number[] = [];
     records.forEach((rec, index) => {

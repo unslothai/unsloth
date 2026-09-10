@@ -89,8 +89,6 @@ export function isOpenWebUIRecord(value: unknown): boolean {
   return blob.messages.some(looksLikeOpenWebUIMessage);
 }
 
-// Content
-
 // A closed fence first, then an opener that never closed: an answer cut off inside a code
 // block still quotes code. The unclosed form is anchored to line start, where markdown
 // requires a fence; unanchored, a stray ``` swallowed the rest of the message.
@@ -453,8 +451,6 @@ function messageParts(
 
   return { content: parts, attachments };
 }
-
-// Message graph
 
 /** Message ids from `currentId` back to the root: the branch the user had open. */
 function activePath(byId: Map<string, Node>, currentId: unknown): Set<string> {
