@@ -78,7 +78,9 @@ from core.inference.tool_stream_exec import (
     search_images_kwargs,
     stream_tool_execution,
 )
+from core.inference.ssh_policy import collect_ssh_hosts_for_approval
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
+from state.ssh_approvals import approve_hosts
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -1723,6 +1725,9 @@ async def stream_with_studio_tools(
                 if verdict == "deny":
                     decision_slot = None
                     denied = True
+                elif verdict == "allow":
+                    approve_hosts(session_id, collect_ssh_hosts_for_approval(name, arguments))
+                    yield _status_sse(decision.status_text)
                 elif verdict is not None:
                     yield _status_sse(decision.status_text)
                 if not denied:

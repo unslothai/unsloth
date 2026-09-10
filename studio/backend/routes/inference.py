@@ -3039,6 +3039,8 @@ from models.inference import (
     ChatCompletionChunk,
     ChatCompletion,
     ToolConfirmRequest,
+    SshApproveRequest,
+    SshApprovedHostsResponse,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -16716,6 +16718,26 @@ async def confirm_tool_call(
     if not matched:
         raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
     return {"resolved": True}
+
+
+@studio_router.post("/ssh-approve", response_model = SshApprovedHostsResponse)
+async def approve_ssh_hosts(
+    request: SshApproveRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Explicitly approve SSH deployment targets for a sandbox session."""
+    from core.inference.ssh_policy import list_approved_ssh_hosts
+    from state.ssh_approvals import approve_hosts
+
+    approve_hosts(request.session_id, request.hosts)
+    return SshApprovedHostsResponse(hosts = list_approved_ssh_hosts(request.session_id))
+
+
+@studio_router.get("/ssh-approved", response_model = SshApprovedHostsResponse)
+async def list_ssh_approved_hosts(
+    session_id: str | None = None, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference.ssh_policy import list_approved_ssh_hosts
+    return SshApprovedHostsResponse(hosts = list_approved_ssh_hosts(session_id))
 
 
 @studio_router.get("/monitor")
