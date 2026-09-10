@@ -77,7 +77,7 @@ on:
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/codex-agent-workspace-ci.yml'
   push:
-    branches: [main]
+    branches: [main, 'codex/agent-memory-dreaming']
     paths:
       - 'studio/backend/core/agent_workspace/**'
       - 'studio/backend/core/research_runs.py'
