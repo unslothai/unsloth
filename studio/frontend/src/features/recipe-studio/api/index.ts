@@ -354,7 +354,10 @@ export async function downloadRecipeJobDataset(
     `/jobs/${jobId}/download-url?${params.toString()}`,
   );
   // The same base every other call here uses, so a repointed VITE_DATA_DESIGNER_API is honoured.
-  return { url: apiUrl(`${DATA_DESIGNER_API_BASE}${path}`), filename };
+  // Its trailing slash is dropped: authFetch survives the // via FastAPI's redirect, but the
+  // native downloader refuses every 3xx, and only after the save location has been chosen.
+  const base = DATA_DESIGNER_API_BASE.replace(/\/+$/, "");
+  return { url: apiUrl(`${base}${path}`), filename };
 }
 
 export async function cancelRecipeJob(

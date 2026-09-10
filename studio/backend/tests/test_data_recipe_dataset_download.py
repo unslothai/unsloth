@@ -841,3 +841,51 @@ def test_both_readers_produce_the_same_bytes_for_the_same_artifact(tmp_path: Pat
     assert first["i64"] == 1
     assert first["day"] == "2020-01-01"
     assert first["price"] == 1.2
+
+
+def test_a_row_is_not_mistaken_for_an_image(tmp_path: Path):
+    """to_preview_jsonable's Hugging Face image detection matches any mapping carrying `bytes` or
+    `path`, and a row is one. Passing whole rows in replaced every column, labels included, with a
+    single JPEG preview payload."""
+    pytest.importorskip("duckdb")
+    pyarrow = pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pyarrow_parquet
+    from PIL import Image
+
+    from core.data_recipe.export import _stream_jsonl_from_parquet_with_duckdb
+
+    picture = tmp_path / "pic.png"
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(picture)
+
+    for columns in (
+        {"path": pyarrow.array([str(picture)]), "label": pyarrow.array(["keep-me"])},
+        {"bytes": pyarrow.array([picture.read_bytes()]), "label": pyarrow.array(["keep-me"])},
+    ):
+        parquet_dir = tmp_path / f"shard-{'path' if 'path' in columns else 'bytes'}"
+        parquet_dir.mkdir()
+        pyarrow_parquet.write_table(pyarrow.table(columns), parquet_dir / "batch_00000.parquet")
+
+        destination = tmp_path / "out.jsonl"
+        assert _stream_jsonl_from_parquet_with_duckdb(
+            parquet_dir = parquet_dir,
+            destination = destination,
+        )
+        row = json.loads(destination.read_text().splitlines()[0])
+        assert row["label"] == "keep-me"
+        assert sorted(row) == sorted(columns)
+
+
+def test_to_preview_jsonable_row_converts_each_column(tmp_path: Path):
+    from PIL import Image
+
+    from core.data_recipe.jsonable import to_preview_jsonable_row
+
+    picture = tmp_path / "pic.png"
+    Image.new("RGB", (4, 4), (0, 255, 0)).save(picture)
+
+    row = {"path": str(picture), "label": "keep-me"}
+    assert to_preview_jsonable_row(row) == row
+    assert to_preview_jsonable_row([row, row]) == [row, row]
+    # A column that really is an image dict is still rendered as a preview payload.
+    cell = to_preview_jsonable_row({"image": {"path": str(picture)}})["image"]
+    assert cell["type"] == "image" and cell["mime"] == "image/jpeg"

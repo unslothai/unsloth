@@ -148,3 +148,16 @@ def to_preview_jsonable(value: Any) -> Any:
     if isinstance(converted, (bytes, bytearray)):
         return base64.b64encode(bytes(converted)).decode("ascii")
     return str(converted)
+
+
+def to_preview_jsonable_row(row: Any) -> Any:
+    """A dataset row, converted a column at a time.
+
+    ``to_preview_jsonable`` answers about a VALUE, and its Hugging Face image detection matches any
+    mapping carrying ``bytes`` or ``path`` -- which a row can be. Handing it a whole row replaced
+    every column, labels included, with one JPEG preview payload."""
+    if isinstance(row, list):
+        return [to_preview_jsonable_row(item) for item in row]
+    if not isinstance(row, dict):
+        return to_preview_jsonable(row)
+    return {str(key): to_preview_jsonable(value) for key, value in row.items()}

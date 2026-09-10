@@ -16,7 +16,7 @@ from typing import Any
 
 import multiprocessing as mp
 
-from ..jsonable import to_preview_jsonable
+from ..jsonable import to_preview_jsonable_row
 from .constants import (
     EVENT_JOB_CANCELLING,
     EVENT_JOB_CANCELLED,
@@ -376,7 +376,7 @@ class JobManager:
                 dataframe = dataframe.drop(columns = [helper_col])
 
         rows = dataframe.to_dict(orient = "records")
-        return {"dataset": to_preview_jsonable(rows), "total": total}
+        return {"dataset": to_preview_jsonable_row(rows), "total": total}
 
     @staticmethod
     def _load_dataset_page_with_data_designer(
@@ -387,7 +387,7 @@ class JobManager:
         dataframe = read_parquet_dataset(parquet_dir)
         total = int(len(dataframe.index))
         rows = dataframe.iloc[offset : offset + limit].to_dict(orient = "records")
-        return {"dataset": to_preview_jsonable(rows), "total": total}
+        return {"dataset": to_preview_jsonable_row(rows), "total": total}
 
     def subscribe(
         self,

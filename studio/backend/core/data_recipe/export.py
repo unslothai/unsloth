@@ -16,7 +16,7 @@ from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
     _resolve_recipe_artifact_path,
 )
-from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
+from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable_row
 from utils.paths.path_utils import drop_appledouble_metadata
 
 ExportFormat = Literal["jsonl", "parquet"]
@@ -101,7 +101,7 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
         reader = conn.to_arrow_reader(_JSONL_EXPORT_BATCH_ROWS)
         with destination.open("w", encoding = "utf-8") as handle:
             for batch in reader:
-                _write_jsonl_rows(handle, [to_preview_jsonable(row) for row in batch.to_pylist()])
+                _write_jsonl_rows(handle, to_preview_jsonable_row(batch.to_pylist()))
     except Exception:
         return False
     finally:
@@ -128,7 +128,7 @@ def _write_jsonl_with_pyarrow(parquet_dir: Path, destination: Path) -> bool:
                 for batch in parquet_file.iter_batches(batch_size = _JSONL_EXPORT_BATCH_ROWS):
                     _write_jsonl_rows(
                         handle,
-                        [to_preview_jsonable(row) for row in batch.to_pylist()],
+                        to_preview_jsonable_row(batch.to_pylist()),
                     )
     except Exception:
         return False
@@ -140,7 +140,7 @@ def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]
 
     dataframe = read_parquet_dataset(parquet_dir)
     rows = dataframe.to_dict(orient = "records")
-    return [to_preview_jsonable(row) for row in rows]
+    return to_preview_jsonable_row(rows)
 
 
 def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
