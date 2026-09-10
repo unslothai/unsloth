@@ -89,5 +89,5 @@ Exact prerequisites used by this layer's CI:
 | #10633 lifecycle | `10eec87e411ee03fed1999fd3df3971bf0c8d632` |
 | #10577 secure edits | `c6118ec5a653e94158bd637bc59bc18656ca6257` |
 | #10594 Git/worktrees | `016da23650c227ccfb99d8e3fca16473143f5bb9` |
-| #10658 task execution/UI | `262876e93d6dd1f579018f2c0db5fdef8a03af58` |
+| #10658 task execution/UI | `d844c4b8c123e8f2d09927ebfbd8a3049305016f` |
 | #10636 command supervisor | `61de31296e406f1e0dc5af4ac07c96fff1343cf5` |
