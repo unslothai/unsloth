@@ -49,6 +49,8 @@ def reset_nvfp4_state() -> None:
     _ops.reset_barriers()
     # Also holds transposed VIEWS of the weight buffers, so keeping it would pin a freed model.
     _dispatch.reset()
+    # verify() runs only inside the preflight; a memoised preflight would leave the next load with _VERIFIED empty.
+    _ops.reset_preflight_cache()
 
 
 @lru_cache(maxsize = 1)

@@ -1717,6 +1717,12 @@ class VideoBackend:
                 return
             logger.error("video.load_failed: %s", exc)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
+            # NVFP4 first: its transposed-weight cache holds VIEWS of the denoiser, which clear_gpu_cache() cannot free.
+            try:
+                from .diffusion_nvfp4_linear import reset_nvfp4_state
+                reset_nvfp4_state()
+            except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                pass
             try:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001 -- cleanup is best-effort

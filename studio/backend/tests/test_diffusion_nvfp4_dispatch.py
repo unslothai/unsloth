@@ -241,6 +241,53 @@ def test_describe_reports_what_is_cached(monkeypatch):
     assert record["transposed"] == 1
 
 
+def test_a_quantiser_built_for_a_failed_verify_is_never_handed_out(monkeypatch):
+    """verify() builds the quantiser with force BEFORE it knows the answer, so a cache read ahead
+    of the gate handed the failed device the very quantiser its verify rejected."""
+    _fake_flashinfer(monkeypatch)
+    monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
+    dispatch._QUANT_FN[0] = ("fn", True)
+    dispatch._VERIFIED[0] = (False, "the cached quantiser is not bit-identical to nvfp4_quantize")
+    assert dispatch.enabled(0) is False
+    assert dispatch.quant_fn(0) is None
+    x = types.SimpleNamespace(device = 0, is_contiguous = lambda: True)
+    assert dispatch._fast_quantize(x, None) == (None, None)
+
+
+def test_the_unload_reset_also_forgets_the_preflight_that_ran_verify():
+    """verify() runs ONLY from inside the preflight, and the preflight is memoised per device: a
+    reset that keeps it leaves the next load on flashinfer with the cached dispatch off."""
+    from core.inference import diffusion_nvfp4_linear as nl
+    try:
+        ops._PREFLIGHT[0] = {"ok": True, "fast_dispatch": True}
+        dispatch._VERIFIED[0] = (True, "ok")
+        nl.reset_nvfp4_state()
+        assert not ops._PREFLIGHT
+        assert not dispatch._VERIFIED
+    finally:
+        ops.reset_preflight_cache()
+
+
+def _block_after(source: str, marker: str, lines: int) -> str:
+    return "\n".join(source[source.index(marker) :].splitlines()[:lines])
+
+
+def test_an_aborted_load_drops_the_caches_that_pin_the_failed_model():
+    """A load that reached nvfp4_prewarm and then failed leaves the transposed-weight cache holding
+    a view of every warmed weight, and a view is not something clear_gpu_cache() can free."""
+    import inspect
+
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+
+    load = inspect.getsource(DiffusionBackend.load_pipeline)
+    assert "reset_nvfp4_state()" in _block_after(load, "diffusion.transformer_quant_fallback", 30)
+    assert "reset_nvfp4_state()" in _block_after(load, "if not state_committed:", 20)
+    assert "reset_nvfp4_state()" in _block_after(
+        inspect.getsource(VideoBackend._run_load), "video.load_failed", 15
+    )
+
+
 CUDA_SHAPES = (
     (32, 2560, 3840),
     (1056, 3840, 3840),

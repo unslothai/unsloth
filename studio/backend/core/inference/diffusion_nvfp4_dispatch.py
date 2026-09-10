@@ -165,12 +165,13 @@ def quant_fn(device: Any, *, force: bool = False):
     """The bound pybind quantiser and its ``enable_pdl`` flag for ``device``, or None."""
     from .diffusion_nvfp4_ops import _device_index
 
+    # Gate before the cache read: verify() builds this entry with force BEFORE it knows the quantiser is bit-identical.
+    if not (force or enabled(device)):
+        return None
     index = _device_index(device)
     got = _QUANT_FN.get(index)
     if got is not None:
         return got
-    if not (force or enabled(device)):
-        return None
     try:
         return _build_quant_fn(device, index)
     except Exception:  # noqa: BLE001 - a quantiser that will not bind means the public API
