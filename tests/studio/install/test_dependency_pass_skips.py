@@ -1693,9 +1693,18 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
         files = [_Entry("mlx_lm/sample_utils.py"), _Entry("mlx_lm/__pycache__/x.pyc")],
         locate_file = lambda f: tmp_path / str(f),
     )
+    asked: list[str] = []
+
+    def distribution(name):
+        asked.append(name)
+        return dist
+
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: dist)
+    monkeypatch.setattr(importlib.metadata, "distribution", distribution)
     assert stack._mlx_payload_present() is True
+    # Every pinned MLX distribution, the Metal library included: a truncated
+    # mlx.metallib leaves mlx's own RECORD intact.
+    assert set(asked) >= {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"}
     payload.write_bytes(b"x" * 3)
     assert stack._mlx_payload_present() is False
     payload.unlink()

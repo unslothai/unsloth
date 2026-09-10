@@ -7921,7 +7921,10 @@ def _mlx_payload_present() -> bool:
         for name in ("mlx", "mlx_lm", "mlx_vlm", "transformers"):
             if importlib.util.find_spec(name) is None:
                 return False
-        for dist_name in ("mlx", "mlx-lm", "mlx-vlm"):
+        # mlx-metal is a pinned component too: its payload is the Metal library the
+        # import probe would exercise, and a truncated one leaves every other RECORD
+        # intact.
+        for dist_name in ("mlx", "mlx-metal", "mlx-lm", "mlx-vlm"):
             dist = importlib.metadata.distribution(dist_name)
             for entry in dist.files or []:
                 if entry.size is None or str(entry).endswith(".pyc"):
