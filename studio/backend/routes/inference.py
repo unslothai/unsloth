@@ -3685,6 +3685,33 @@ def _sf_reasoning_prefill_mode(
     return _generation_prompt_opens_think(tpl, enable_thinking, reasoning_effort, messages)
 
 
+def _sf_parse_think_markers(
+    features: dict,
+    enable_thinking: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+) -> bool:
+    """Whether <think> markup in a safetensors/MLX reply can be genuine reasoning.
+
+    Both raw fields reach the template, which reads only the dial it branches on; a
+    hybrid sent both reads enable_thinking first (Kimi-K3).
+    """
+    if features.get("reasoning_always_on"):
+        return True
+    if not features.get("supports_reasoning"):
+        return False
+    style = features.get("reasoning_style")
+    resolved: dict = {}
+    if style == "reasoning_effort":
+        if reasoning_effort is not None:
+            resolved["reasoning_effort"] = reasoning_effort
+    elif enable_thinking is not None:
+        resolved["enable_thinking"] = enable_thinking
+    elif style == "enable_thinking_effort" and reasoning_effort is not None:
+        resolved["reasoning_effort"] = reasoning_effort
+    # No launch default on this backend: an empty dict leaves the template's own.
+    return _resolved_kwargs_think(None, resolved)
+
+
 def _effective_enable_tools(payload) -> Optional[bool]:
     """Resolve `payload.enable_tools` against the process-level tool policy.
 
@@ -24223,6 +24250,11 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
+    # Transformers vision generation drops both reasoning fields; MLX forwards them.
+    _sf_vision_drops_reasoning = image is not None and not _sf_model_info.get("is_mlx", False)
+    _sf_gate_enable_thinking = None if _sf_vision_drops_reasoning else payload.enable_thinking
+    _sf_gate_reasoning_effort = None if _sf_vision_drops_reasoning else payload.reasoning_effort
+
     def _sf_response_protocol(
         tools = None,
         template = None,
@@ -24247,8 +24279,10 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
-        parse_think = bool(
-            features.get("supports_reasoning") or features.get("reasoning_always_on")
+        parse_think = _sf_parse_think_markers(
+            features,
+            _sf_gate_enable_thinking,
+            _sf_gate_reasoning_effort,
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
