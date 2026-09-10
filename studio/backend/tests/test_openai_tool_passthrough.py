@@ -2531,6 +2531,142 @@ class TestChatCompletionRequestToolFields:
         assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
         assert monitor.active_count() == 0
 
+    @pytest.mark.parametrize(
+        "sentinel",
+        [
+            pytest.param({"role": "assistant", "content": None}, id = "explicit_none"),
+            pytest.param({"role": "assistant", "content": ""}, id = "empty_string"),
+            pytest.param({"role": "assistant"}, id = "no_content_key"),
+            pytest.param({"role": "assistant", "content": []}, id = "empty_parts"),
+        ],
+    )
+    def test_studio_tool_history_under_guided_decoding_survives_a_stopped_turn(
+        self, monkeypatch, sentinel
+    ):
+        """Stop, pressed on the answer a Studio tool just fed, leaves an empty assistant turn
+        between the tool result and the next question. The fold cannot coalesce across it, and
+        the passthrough drops it downstream without coalescing, so the two user turns end up
+        adjacent again and Gemma 400s the request -- the same failure the coalesce above exists
+        to prevent, one Stop later. Dropping the sentinels before the fold is what holds it."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.stopped-fold.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("a response_format request must use the passthrough")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            captured["body"] = inference_route._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(inference_route, "_openai_passthrough_non_streaming", fake_passthrough)
+        messages = self._studio_tool_history_messages()
+        messages.insert(-1, sentinel)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": messages,
+                "studio_tool_history": True,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "answer",
+                        "schema": {"type": "object", "properties": {}},
+                    },
+                },
+            },
+        )
+
+        assert resp.status_code == 200
+        roles = [m.get("role") for m in captured["body"]["messages"]]
+        assert "tool" not in roles
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+        assert monitor.active_count() == 0
+
+    def test_studio_fold_drops_a_provider_synthetic_card_rather_than_folding_it(self):
+        """Downstream, a Gemini server-side tool card is dropped by matching its role="tool"
+        reply to the synthetic call. Folding destroys that handle, so a thread switched from
+        Gemini to a local GGUF would carry code_execution into the prompt as user prose forever.
+        The fold has to strip before it folds, which is the order /v1/messages already uses."""
+        from routes.inference import _folded_studio_tool_messages
+
+        folded = _folded_studio_tool_messages(
+            [
+                ChatMessage.model_validate(message)
+                for message in [
+                    *self._studio_tool_history_messages()[:3],
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "code_execution",
+                                    "arguments": '{"_server_tool": true, "code": "print(1)"}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_2",
+                        "name": "code_execution",
+                        "content": "1",
+                    },
+                    {"role": "user", "content": "and now?"},
+                ]
+            ]
+        )
+
+        rendered = json.dumps([m.model_dump(exclude_none = True) for m in folded])
+        assert "code_execution" not in rendered, rendered
+        # The Studio result is the one that must survive: it is what recall depends on.
+        assert "search_conversation" in rendered
+        roles = [m.role for m in folded]
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+
+    def test_studio_fold_keeps_an_audio_only_follow_up_validatable(self):
+        """``_normalise_chat_content_parts`` lifts an input_audio part onto ``audio_base64`` and
+        leaves ``content = []`` for ``_inject_audio_part`` to refill. Nothing re-validated a
+        message after that lift until this fold did, and ChatMessage rejects the placeholder, so
+        speaking the next turn of a folded thread raised out of the route instead of answering."""
+        from routes.inference import _folded_studio_tool_messages
+
+        messages = [
+            ChatMessage.model_validate(message)
+            for message in [
+                *self._studio_tool_history_messages()[:3],
+                {"role": "assistant", "content": "we said 3407"},
+                {"role": "user", "content": [{"type": "text", "text": "placeholder"}]},
+            ]
+        ]
+        # Exactly what the audio lift leaves behind on the latest user turn.
+        messages[-1].content = []
+
+        folded = _folded_studio_tool_messages(messages)
+        assert folded[-1].role == "user"
+        assert folded[-1].content == ""
+
     def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
         import routes.inference as inference_route
 
