@@ -1021,13 +1021,17 @@ def test_requirement_passes_resolve_under_the_fetched_wheels_override(managed, m
     core plan and the fetched wheel's for the requirement files, or a changed override
     resolves different pins than the update will and leaves them uncached."""
     site = managed / _studio_prefetch.VENV_NAME / "lib" / "python3.12" / "site-packages"
-    live = site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    live = (
+        site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    )
     live.write_text("transformers>=5.5.0,<=5.5.0\n", encoding = "utf-8")
     monkeypatch.setattr(_studio_prefetch.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_studio_prefetch.platform, "machine", lambda: "arm64")
     monkeypatch.delenv("UV_OVERRIDE", raising = False)
     target = _studio_prefetch.site_dir(managed)
-    fetched = target / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    fetched = (
+        target / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    )
     seen = []
 
     def respond(cmd, env):
@@ -1048,7 +1052,11 @@ def test_requirement_passes_resolve_under_the_fetched_wheels_override(managed, m
     payload = _studio_prefetch.run(studio_home = managed, floor = "2026.9.2", echo = lambda line: None)
     assert payload["state"] == "ready"
     core = [env for cmd, env in seen if any(a.startswith("unsloth>=") for a in cmd)]
-    later = [env for cmd, env in seen if "--dry-run" in cmd and not any(a.startswith("unsloth>=") for a in cmd)]
+    later = [
+        env
+        for cmd, env in seen
+        if "--dry-run" in cmd and not any(a.startswith("unsloth>=") for a in cmd)
+    ]
     assert core and all(env.get("UV_OVERRIDE") == str(live) for env in core)
     assert later and all(env.get("UV_OVERRIDE") == str(fetched) for env in later)
 
