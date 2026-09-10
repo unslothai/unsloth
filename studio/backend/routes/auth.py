@@ -46,11 +46,9 @@ router = APIRouter()
 
 
 def _require_a_credential_of_its_own(what: str):
-    """Refuse a caller that nothing but keyless API access let in.
-
-    For effects that outlive the setting: turning keyless access back off does not
-    withdraw a key it handed out, restore one it destroyed, or undo a sign-out it
-    forced. Listing keys is refused with them because it names the key to revoke.
+    """Refuse a caller that nothing but keyless API access let in. For effects that outlive the setting: turning
+    keyless access back off does not withdraw a key it handed out, restore one it destroyed, or undo a sign-out
+    it forced. Listing keys is refused with them because it names the key to revoke.
     """
 
     def dependency(no_credential: bool = Depends(authenticated_without_credential)) -> None:
@@ -72,12 +70,9 @@ _CLI_BOOTSTRAP = (
 
 
 def _cli_is_inside(prefix: str) -> bool:
-    """Whether unsloth_cli lives under *prefix*, so -I would still find it.
-
-    Located rather than imported: this runs in a request handler, and a spec
-    lookup answers the only question asked here, which is where the package is
-    on disk and not whether it starts.
-    """
+    """Whether unsloth_cli lives under *prefix*, so -I would still find it. Located rather than
+    imported: this runs in a request handler, and a spec lookup answers the only question asked
+    here, which is where the package is on disk and not whether it starts."""
     try:
         spec = importlib.util.find_spec("unsloth_cli")
         origin = getattr(spec, "origin", None)
@@ -92,29 +87,24 @@ def _cli_is_inside(prefix: str) -> bool:
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
-    Prefer the absolute path to this install's ``unsloth`` launcher (sibling of
-    the running interpreter) so the hint works even when its dir isn't on PATH.
+    Prefer the absolute path to this install's ``unsloth`` launcher (sibling of the running interpreter) so the
+    hint works even when its dir isn't on PATH. POSIX paths are shell-quoted. On Windows we use the bare
+    absolute path only when it has no spaces (a quoted path differs between cmd and PowerShell); otherwise, or
+    if the launcher can't be located, fall back to the PATH form.
 
-    POSIX paths are shell-quoted. On Windows we use the bare absolute path only
-    when it has no spaces (a quoted path differs between cmd and PowerShell);
-    otherwise, or if the launcher can't be located, fall back to the PATH form.
+    Windows never names unsloth.exe here, present or not. Existing is not the same as runnable: an Application
+    Control policy leaves the generated, unsigned unsloth.exe on disk and denies it at CreateProcess (issue
+    #8490), and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE ahead of the .cmd shim.
+    Whoever is locked out of Unsloth is exactly who needs this command to work, so it must not be the one a
+    policy refuses. Preference order is therefore the interpreter's module entry, which needs no quoting in cmd
+    or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops PATHEXT reaching for the
+    executable.
 
-    Windows never names unsloth.exe here, present or not. Existing is not the
-    same as runnable: an Application Control policy leaves the generated,
-    unsigned unsloth.exe on disk and denies it at CreateProcess (issue #8490),
-    and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE
-    ahead of the .cmd shim. Whoever is locked out of Unsloth is exactly who needs
-    this command to work, so it must not be the one a policy refuses. Preference
-    order is therefore the interpreter's module entry, which needs no quoting in
-    cmd or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops
-    PATHEXT reaching for the executable.
-
-    -I only when the package is inside this interpreter's own prefix. -I implies
-    -s, so a ``pip install --user`` install would be told to run a command that
-    cannot find itself; unsloth_cli/__main__.py documents that exception and the
-    bootstrap to use instead, and this prints that bootstrap. It is safe to show
-    to either shell: the trampoline contains single quotes only, so one pair of
-    double quotes wraps it identically in cmd and in PowerShell.
+    -I only when the package is inside this interpreter's own prefix. -I implies -s, so a ``pip install --user``
+    install would be told to run a command that cannot find itself; unsloth_cli/__main__.py documents that
+    exception and the bootstrap to use instead, and this prints that bootstrap. It is safe to show to either
+    shell: the trampoline contains single quotes only, so one pair of double quotes wraps it identically in cmd
+    and in PowerShell.
     """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
@@ -137,9 +127,8 @@ def _reset_password_command() -> str:
     return "unsloth studio reset-password"
 
 
-# Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's
-# typos from blocking others; the aggregate stops username-rotation spray.
-# Single-process only; multi-worker deployments need a shared store.
+# Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's typos from blocking others; the
+# aggregate stops username-rotation spray. Single-process only; multi-worker deployments need a shared store.
 _LOGIN_BUCKETS: dict[tuple[str, str], deque] = {}
 _LOGIN_IP_BUCKETS: dict[str, deque] = {}
 _LOGIN_BUCKETS_LOCK = threading.Lock()
@@ -152,9 +141,8 @@ _LOGIN_LOCKOUT_SECONDS = 60
 _LOGIN_MAX_BUCKETS = 4096
 # Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
 _LAST_IP_PRUNE = 0.0
-# Sharded overflow for per-IP failures that can't get their own bucket
-# Each shard is a fixed-capacity dict ``ip -> [count, window_start]``; when full, a new IP evicts the lowest-count entry
-# and starts clean.
+# Sharded overflow for per-IP failures that can't get their own bucket. Each shard is a fixed-capacity dict
+# ``ip -> [count, window_start]``; when full, a new IP evicts the lowest-count entry and starts clean.
 _LOGIN_IP_OVERFLOW_SHARDS = 256
 _LOGIN_IP_OVERFLOW_MAX = 64
 _LOGIN_IP_OVERFLOW: list[dict] = [dict() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
@@ -214,10 +202,8 @@ _UNKNOWN_LOGIN_USER = "\x00unknown-user"
 
 
 def _trust_forwarded_for() -> bool:
-    """Honour X-Forwarded-For only when UNSLOTH_STUDIO_TRUST_FORWARDED is set.
-
-    Off by default so a direct caller can't spoof the header.
-    """
+    """Honour X-Forwarded-For only when UNSLOTH_STUDIO_TRUST_FORWARDED is set. Off by default so a
+    direct caller can't spoof the header."""
     return os.environ.get("UNSLOTH_STUDIO_TRUST_FORWARDED", "").lower() in (
         "1",
         "true",
@@ -301,10 +287,8 @@ def _prune_stale_buckets(now: float) -> None:
 
 
 def _prune_stale_ip_buckets(now: float) -> None:
-    """Drop empty / expired per-IP buckets to bound memory under spray.
-
-    The dict is otherwise reclaimed only on a successful login, so a failure-only
-    spray from many (or spoofed) IPs would grow it without bound.
+    """Drop empty / expired per-IP buckets to bound memory under spray. The dict is otherwise reclaimed only on a
+    successful login, so a failure-only spray from many (or spoofed) IPs would grow it without bound.
     """
     stale: list[str] = []
     for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
@@ -320,25 +304,22 @@ def _record_login_failure(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        # Keep the dict bounded without disabling throttling and without letting a
-        # spray reset a hot bucket: for a new IP at the cap, reclaim expired buckets
-        # (rate-limited) to make room.
+        # Keep the dict bounded without disabling throttling and without letting a spray reset a hot bucket: for a new
+        # IP at the cap, reclaim expired buckets (rate-limited) to make room.
         ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             if now - _LAST_IP_PRUNE >= 1.0:
                 _prune_stale_ip_buckets(now)
                 _LAST_IP_PRUNE = now
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
-            # Still full -- every bucket is hot. Count this failure in the IP's
-            # bounded overflow shard instead of evicting a live one, so the spray
-            # stays throttled but can't push out (and reset) any IP's own counter.
+            # Still full -- every bucket is hot. Count this failure in the IP's bounded overflow shard instead of
+            # evicting a live one, so the spray stays throttled but can't push out (and reset) any IP's own counter.
             ip_fails = _overflow_record(ip, now)
         else:
             if ip_bucket is None:
                 ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
-                # Carry over any overflow failures this IP accrued while the dict
-                # was saturated, so straddling the overflow -> bucket transition
-                # can't double the effective per-IP limit.
+                # Carry over any overflow failures this IP accrued while the dict was saturated, so straddling the
+                # overflow -> bucket transition can't double the effective per-IP limit.
                 carried, start = _overflow_take(ip, now)
                 ip_bucket.extend([start] * carried)
             _prune_bucket(ip_bucket, now)
@@ -383,9 +364,8 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         _LOGIN_IP_BUCKETS.pop(ip, None)
-        # A successful login resets the IP's throttle, including any overflow it
-        # accumulated during saturation (drop only this IP's entry, so a
-        # shard-mate's throttle is untouched).
+        # A successful login resets the IP's throttle, including any overflow it accumulated during saturation (drop
+        # only this IP's entry, so a shard-mate's throttle is untouched).
         _overflow_shard(ip).pop(ip, None)
 
 
@@ -408,9 +388,8 @@ def identity(nonce: str, request: Request) -> dict:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must decode to 16-128 bytes"
         )
-    # The address + port the connection actually landed on.
-    # request.scope is getsockname, so this is the real local address even when bound to 0.0.0.0, never the client-
-    # controlled Host header.
+    # The address + port the connection actually landed on. request.scope is getsockname, so this is the real local
+    # address even when bound to 0.0.0.0, never the client-controlled Host header.
     server = request.scope.get("server") or ("", 0)
     host = server[0] or ""
     port = server[1] if server[1] is not None else 0
@@ -645,9 +624,9 @@ async def change_password(
             detail = "New password must be different from the current password",
         )
 
-    # Single transaction: a separate refresh-token purge could fail after the password commit,
-    # leaving pre-change tokens able to mint access tokens. Conditional on the hash just
-    # verified, so a concurrent reset-password cannot be overwritten by it.
+    # Single transaction: a separate refresh-token purge could fail after the password commit, leaving pre-change
+    # tokens able to mint access tokens. Conditional on the hash just verified, so a concurrent reset-password
+    # cannot be overwritten by it.
     new_secret = storage.update_password(
         current_subject,
         payload.new_password,
@@ -676,10 +655,6 @@ async def change_password(
         token_type = "bearer",
         must_change_password = False,
     )
-
-
-# API key management
-# ---------------------------------------------------------------------------
 
 
 def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
