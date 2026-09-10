@@ -5142,9 +5142,7 @@ async def _select_request_tools(
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
     tools = [
-        tool
-        for tool in tools
-        if tool["function"]["name"] not in {"read_skill", "create_skill"}
+        tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
     ]
     enabled_skills = _enabled_agent_skills() if tools_on else []
     if enabled_skills:
@@ -29761,7 +29759,6 @@ def _select_anthropic_server_tools(
     available = list(all_tools)
     if _enabled_agent_skills():
         from core.inference.tools import READ_SKILL_TOOL
-
         available.append(READ_SKILL_TOOL)
     if not requested_studio_tools and enabled_tools is None:
         return available

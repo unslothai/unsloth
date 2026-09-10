@@ -95,7 +95,6 @@ def test_discovers_both_roots_with_agents_precedence(isolated_skills):
     assert records[2]["shadowed_by"] == "agents"
 
 
-
 def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills, monkeypatch):
     home, _ = isolated_skills
     roots = (
@@ -313,7 +312,6 @@ def test_skill_directory_name_must_match_exactly(isolated_skills):
     assert "match its parent directory" in record["error"]
 
 
-
 def test_create_skill_writes_valid_manifest_without_overwriting(isolated_skills):
     home, _ = isolated_skills
 
@@ -327,7 +325,9 @@ def test_create_skill_writes_valid_manifest_without_overwriting(isolated_skills)
     assert record["name"] == "release-notes"
     assert record["source"] == "agents"
     created = home / ".agents" / "skills" / "release-notes" / "SKILL.md"
-    assert skills._validate_skill_dir(created.parent)["description"] == "Draft concise release notes."
+    assert (
+        skills._validate_skill_dir(created.parent)["description"] == "Draft concise release notes."
+    )
     with pytest.raises(skills.SkillError, match = "already exists"):
         skills.create_skill("release-notes", "Different", "Do something else.", home = home)
     assert "Different" not in created.read_text(encoding = "utf-8")
@@ -374,10 +374,7 @@ def test_create_skill_tool_invalidates_the_inference_cache(isolated_skills, monk
     assert inference_routes._AGENT_SKILLS_CACHE == (0.0, [])
 
 
-
-def test_create_skill_tool_does_not_commit_when_override_clear_fails(
-    isolated_skills, monkeypatch
-):
+def test_create_skill_tool_does_not_commit_when_override_clear_fails(isolated_skills, monkeypatch):
     from core.inference import tools as tools_module
 
     home, studio = isolated_skills
@@ -487,14 +484,11 @@ def test_skill_tool_selection_honors_explicit_allowlist(isolated_skills, monkeyp
     )
     assert names == ["read_skill"]
 
-    local_default = read_only.model_copy(
-        update = {"enabled_tools": ["read_skill", "create_skill"]}
-    )
+    local_default = read_only.model_copy(update = {"enabled_tools": ["read_skill", "create_skill"]})
     selected = asyncio.run(
         inference_routes._select_request_tools(local_default, tools_on = True, mcp_allowed = False)
     )
     assert [tool["function"]["name"] for tool in selected] == ["read_skill", "create_skill"]
-
 
 
 def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypatch):
@@ -552,7 +546,6 @@ def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypa
     )
     with pytest.raises(skills.SkillError, match = "disabled"):
         skills.read_skill_resource("skill-creator", home = home)
-
 
     skills.set_skill_enabled("guided", False, home = home)
     selected = asyncio.run(

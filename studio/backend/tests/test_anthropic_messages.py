@@ -1203,7 +1203,6 @@ class TestAnthropicToolsToOpenAI:
 
         assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
 
-
     @pytest.mark.parametrize(
         ("requested_studio_tools", "enabled_tools"),
         [({"web_search"}, None), (set(), ["web_search"])],
@@ -3436,7 +3435,6 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls == []
 
     def test_permission_mode_gating_for_server_tools(self, monkeypatch):
-
         import routes.inference as inf_mod
 
         # The bundled skill-creator is enabled by default, but an Anthropic web-search
