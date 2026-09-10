@@ -1318,8 +1318,16 @@ def _video_auto(
     """``_video_auto_denoiser_scheme`` with the device selector stubbed to ``scheme``."""
     from core.inference import video as vid
 
-    def _select(target, requested, family = None, base_repo = None, **kw):
-        _video_auto.calls.append(dict(requested = requested, family = family, base_repo = base_repo, **kw))
+    def _select(
+        target,
+        requested,
+        family = None,
+        base_repo = None,
+        **kw,
+    ):
+        _video_auto.calls.append(
+            dict(requested = requested, family = family, base_repo = base_repo, **kw)
+        )
         probe = kw.get("has_prequant")
         if scheme is not None and requested == "auto" and probe is not None and not probe(scheme):
             return None
@@ -1389,7 +1397,13 @@ def test_the_conventional_coverage_probe_reads_every_component():
     assert not VideoBackend._denoiser_prequant_covered(half, "nvfp4", "org/test-video")
 
 
-def _a14b_auto(monkeypatch, *, backend, fam = None, allowed = None):
+def _a14b_auto(
+    monkeypatch,
+    *,
+    backend,
+    fam = None,
+    allowed = None,
+):
     """``_video_auto_denoiser_scheme`` for the SHIPPED Wan2.2-T2V-A14B family, with the real
     selector, the real preference table and the real coverage resolver."""
     import types
@@ -1412,17 +1426,18 @@ def _a14b_auto(monkeypatch, *, backend, fam = None, allowed = None):
     base = fam.base_repo
     return (
         vid._video_auto_denoiser_scheme(
-            fam, target = types.SimpleNamespace(device = "cuda:0", dtype = "bfloat16"),
-            requested = "auto", base_repo = base, speed_mode = None,
+            fam,
+            target = types.SimpleNamespace(device = "cuda:0", dtype = "bfloat16"),
+            requested = "auto",
+            base_repo = base,
+            speed_mode = None,
         ),
         tq.select_transformer_quant_scheme(
             types.SimpleNamespace(device = "cuda:0", dtype = "bfloat16"),
             "auto",
             family = fam.name,
             base_repo = base,
-            has_prequant = lambda scheme: (
-                denoiser_prequant_sources(fam, scheme, base) is not None
-            ),
+            has_prequant = lambda scheme: (denoiser_prequant_sources(fam, scheme, base) is not None),
         ),
     )
 
@@ -1450,9 +1465,7 @@ def test_the_a14b_auto_plan_stays_on_fp8_with_only_one_expert_hosted(monkeypatch
     full = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     half = dataclasses.replace(
         full,
-        prequant_filenames = tuple(
-            row for row in full.prequant_filenames if len(row) == 2
-        ),
+        prequant_filenames = tuple(row for row in full.prequant_filenames if len(row) == 2),
     )
     seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer", fam = half)
     assert seeded is None
@@ -1460,8 +1473,6 @@ def test_the_a14b_auto_plan_stays_on_fp8_with_only_one_expert_hosted(monkeypatch
 
 
 def test_the_a14b_auto_plan_falls_through_when_the_fp4_kernel_is_missing(monkeypatch):
-    seeded, chosen = _a14b_auto(
-        monkeypatch, backend = "flashinfer", allowed = {"fp8", "mxfp8", "int8"}
-    )
+    seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer", allowed = {"fp8", "mxfp8", "int8"})
     assert seeded is None
     assert chosen == "fp8"

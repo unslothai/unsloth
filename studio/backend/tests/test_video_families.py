@@ -481,9 +481,7 @@ def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
     for fam in _FAMILIES:
         if fam.name not in expected:
             continue
-        assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(
-            expected[fam.name]
-        )
+        assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(expected[fam.name])
 
 
 def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
@@ -501,7 +499,9 @@ def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
         if measured is None or not fam.bf16_components_gb:
             continue
         seen += 1
-        assert 0.2 * fam.bf16_components_gb[0] < measured < 0.4 * fam.bf16_components_gb[0], fam.name
+        assert (
+            0.2 * fam.bf16_components_gb[0] < measured < 0.4 * fam.bf16_components_gb[0]
+        ), fam.name
     assert seen == 4
 
 

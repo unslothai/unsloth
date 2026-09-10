@@ -27,8 +27,6 @@ def _hessian_error(weight, candidate, hessian) -> float:
     return gq.hessian_weighted_error(weight.float() - candidate.float(), hessian)
 
 
-
-
 def test_the_correction_lands_on_the_same_grid_as_round_to_nearest():
     """GPTQ's output must be exactly representable in NVFP4 or the packing undoes the correction."""
     weight = torch.randn(64, 128, dtype = torch.bfloat16) * 0.05
@@ -89,8 +87,6 @@ def test_the_damping_escalates_and_then_raises_rather_than_falling_back_to_rtn()
         gq.gptq_quantize_to_nvfp4 = real
 
 
-
-
 def test_a_full_schedule_samples_the_named_steps_and_a_short_one_the_same_places():
     assert gq.sampled_steps(38, (0, 12, 25, 37)) == (0, 12, 25, 37)
     assert gq.sampled_steps(50, (0, 12, 25, 37)) == (0, 12, 25, 37)
@@ -98,8 +94,6 @@ def test_a_full_schedule_samples_the_named_steps_and_a_short_one_the_same_places
     assert gq.sampled_steps(4, (0, 12, 25, 37)) == (0, 1, 2, 3)
     assert gq.sampled_steps(1, (0, 12, 25, 37)) == (0,)
     assert gq.sampled_steps(0, (0, 12, 25, 37)) == (0,)
-
-
 
 
 def _two_linears():
@@ -156,8 +150,6 @@ def test_a_layer_set_that_does_not_fit_the_budget_is_refused_before_it_allocates
     assert acc.hessians == {}
 
 
-
-
 def test_only_the_layers_that_measure_better_take_their_correction():
     scores = {
         "a": {"err_rtn": 1.0, "err_gptq": 0.5, "ratio": 0.5, "improved": True},
@@ -170,8 +162,6 @@ def test_only_the_layers_that_measure_better_take_their_correction():
     relaxed = gq.plan_corrections(scores, max_regressions = 1)
     assert relaxed["apply"] == ["a", "b"]
     assert relaxed["counts"] == {"applied": 2, "applied_regressed": 1, "skipped_no_gain": 1}
-
-
 
 
 def test_the_baked_scale_is_the_running_max_over_every_forward():
@@ -202,8 +192,6 @@ def test_a_non_finite_forward_never_becomes_the_baked_scale():
         assert acc.global_scales()["blocks.0.attention.to_q"] == pytest.approx(6.0 * 448.0 / 2.0)
     finally:
         acc.detach()
-
-
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
