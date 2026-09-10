@@ -743,7 +743,9 @@ def test_the_windows_setup_records_the_master_root_for_the_uninstaller():
     stale. This is the same rule setup.sh applies.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    block = _slice(ps, "# Record the master root inside the Studio tree", "$WithLlamaCppDir = $null")
+    block = _slice(
+        ps, "# Record the master root inside the Studio tree", "$WithLlamaCppDir = $null"
+    )
     assert "(Get-MasterRootOverride)" in block
     assert "-not $StageRoot" in block
     assert '".unsloth-master-root"' in block
@@ -763,14 +765,14 @@ def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
     shared C:\\tc fallback is not install specific and is not deleted here either.
     """
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
-    block = _slice(ps, "# Clear the persisted Inductor cache path", "# Remove HKCU\\Software\\Unsloth")
+    block = _slice(
+        ps, "# Clear the persisted Inductor cache path", "# Remove HKCU\\Software\\Unsloth"
+    )
     assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in block
     assert "[NullString]::Value, 'User'" in block
     # Scoped to what this run owns. $knownRoots includes roots the gates refused to delete.
     assert "$ownedRoots" in block and "$knownRoots" not in block
     # Comments stripped first: this block explains why C:\tc is spared, and a comment saying so
     # is not the same thing as code naming it.
-    code = "\n".join(
-        line for line in block.splitlines() if not line.lstrip().startswith("#")
-    )
+    code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
     assert "C:\\tc" not in code
