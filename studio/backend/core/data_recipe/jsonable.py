@@ -59,12 +59,28 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
     return None
 
 
+def _is_pandas_missing(value: Any) -> bool:
+    """pandas' own missing sentinels. Identity, not ``pd.isna``, which answers element-wise for a
+    list or an array; these two are singletons, so there is nothing to broadcast over."""
+    try:
+        import pandas as pd  # type: ignore
+    except ImportError:  # pragma: no cover
+        return False
+    return value is pd.NA or value is pd.NaT
+
+
 def to_jsonable(value: Any) -> Any:
     """Convert numpy/pandas-ish values into plain JSON-safe values."""
     try:
         import numpy as np  # type: ignore
     except ImportError:  # pragma: no cover
         np = None  # type: ignore
+
+    # Ahead of everything below: NaT answers hasattr(isoformat) and returns the string "NaT", and
+    # NA reaches to_preview_jsonable's str() fallback as "<NA>". Both turn a missing value into a
+    # real one.
+    if _is_pandas_missing(value):
+        return None
 
     if np is not None:
         if isinstance(value, np.ndarray):

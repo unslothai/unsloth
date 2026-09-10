@@ -456,3 +456,47 @@ def test_build_dataset_download_falls_back_when_duckdb_cannot_read(tmp_path: Pat
     finally:
         file_path.unlink(missing_ok = True)
     assert exported == [0, 1, 2]
+
+
+def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
+    """NaT answers hasattr(isoformat) and isoformat()s to the string "NaT"; NA reaches the str()
+    fallback as "<NA>". Either one writes a real value where the dataset had none."""
+    pd = pytest.importorskip("pandas")
+    from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
+
+    for sentinel in (pd.NA, pd.NaT):
+        assert to_jsonable(sentinel) is None
+        assert to_preview_jsonable(sentinel) is None
+
+
+def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Path, monkeypatch):
+    pytest.importorskip("duckdb")
+    pytest.importorskip("pyarrow")
+    pd = pytest.importorskip("pandas")
+
+    dataset_path = tmp_path / "recipe-datasets" / "job-nat"
+    parquet_dir = dataset_path / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    pd.DataFrame(
+        {
+            "seen_at": pd.to_datetime(["2020-01-01", None]),
+            "score": pd.array([1, None], dtype = "Int64"),
+        }
+    ).to_parquet(parquet_dir / "batch_00000.parquet", index = False)
+
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "nat",
+    )
+    try:
+        rows = [json.loads(line) for line in file_path.read_text(encoding = "utf-8").splitlines()]
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert rows[0]["seen_at"].startswith("2020-01-01")
+    assert rows[1] == {"seen_at": None, "score": None}
