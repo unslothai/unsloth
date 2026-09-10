@@ -2449,7 +2449,7 @@ def _openai_llama_admission_charged_prompt_tokens(
             markup = markup,
         ) + _openai_llama_admission_transport_tokens(payload)
     return _openai_llama_admission_prompt_tokens(
-        payload, image_tokens = image_tokens, injected_tools = injected_tools
+        payload, image_tokens = image_tokens, injected_tools = injected_tools, markup = markup
     )
 
 
