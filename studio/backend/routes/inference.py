@@ -1780,6 +1780,11 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     return _positive_int_or_none(slots) or 1
 
 
+def _openai_llama_admission_markup(llama_backend):
+    """The loaded model's markup profile, which is what the builders neutralise against."""
+    return getattr(llama_backend, "markup_profile", None)
+
+
 def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     """KV tokens the running llama-server actually allocated, or None if unknown.
 
@@ -2078,12 +2083,20 @@ def _openai_llama_admission_prompt_tokens(
     *,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
+    markup = None,
 ) -> Optional[int]:
-    """Estimated prompt KV, or None with no messages. Shared by the charge and the cap."""
+    """Estimated prompt KV, or None with no messages. Shared by the charge and the cap.
+
+    Neutralised like the wire figure next door: the builders break markup before sending,
+    and a marker in the user's text costs about four real tokens once it is words (#7066).
+    """
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
     messages = getattr(payload, "messages", None)
     if not isinstance(messages, list) or not messages:
         return None
     try:
+        messages = neutralize_control_markup_in_messages(messages, None, markup)
         estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
             messages
         )
@@ -2256,6 +2269,7 @@ def _openai_llama_admission_wire_prompt_tokens(
     *,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
+    markup = None,
 ) -> int:
     """What the NEXT request carries, which is not what the ledger charges.
 
@@ -2263,7 +2277,15 @@ def _openai_llama_admission_wire_prompt_tokens(
     ``system``/``tools`` a translating route folded in, the catalogue on a pass that sends
     none, and audio/video transport, and prices media from the conversation, where a legacy
     image is already spliced in.
+
+    Neutralised first, because that is the list every builder sends (#7066). A marker in the
+    user's own text becomes ordinary words, which cost about four real tokens each where the
+    marker cost one, so pricing the raw list hands back an allowance the prompt has already
+    spent. ``markup`` is the loaded model's profile, as the builders pass.
     """
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    conversation = neutralize_control_markup_in_messages(conversation, None, markup)
     conversation = _openai_llama_admission_messages_without_transport(conversation)
     estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
         conversation
@@ -2275,14 +2297,23 @@ def _openai_llama_admission_wire_prompt_tokens(
     )
 
 
-# Cells a sequence needs beyond what it writes. llama-server stops on
-# `prompt.n_tokens() + 1 >= slot.n_ctx` (server-context.cpp process_token and pre_decode), so
-# a sequence held to exactly its share leaves the pool nothing to place its next token in.
-# Filling a `--kv-unified` pool to exactly `capacity * share` failed 3 of 6 and 4 of 8
-# concurrent waves on b10840 at `-c 16384 --parallel 4`, and every failure is the whole-pool
-# kill this bound exists to prevent. 2 was the measured floor; 8 keeps margin for a build that
-# needs another cell, and costs 0.2% of a 4096 share.
-_OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS = 8
+# Cells a sequence needs beyond what this module can price. Two measured costs, both bounded
+# and both per request, on b10840 at `-c 16384 --parallel 4 --kv-unified`:
+#
+#   - llama-server stops on `prompt.n_tokens() + 1 >= slot.n_ctx` (server-context.cpp
+#     process_token and pre_decode), so a sequence held to exactly its share leaves the pool
+#     nothing to place its next token in. Filling the pool to exactly `capacity * share` lost
+#     every chat in 3 of 6, 4 of 8 and 7 of 12 waves. The floor was 2 cells a request.
+#   - The estimator prices the MESSAGE LIST; llama-server prices the RENDERED template, whose
+#     role markers it never sees. Measured worst case 38 tokens, on a conversation of one
+#     short message. The gap shrinks as the conversation grows and turns into a large
+#     over-count by about 300 characters, so it only bites the empty-chat case -- which is
+#     the four fresh chats this change exists for, and which failed 6 of 6 waves at 8.
+#
+# 64 covers both with margin, at 1.6% of a 4096 share. It does NOT cover the estimator's
+# under-count on dense ASCII (base64 0.34x, hex 0.28x, logs 0.47x of real): that is unbounded
+# and predates the wire bound, since the charge has always been an estimate.
+_OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS = 64
 
 
 def _openai_llama_admission_wire_output_bound(
@@ -2351,12 +2382,14 @@ def _openai_llama_admission_enforced_max_tokens(
             conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
+            markup = _openai_llama_admission_markup(llama_backend),
         )
     if prompt_tokens is None:
         prompt_tokens = _openai_llama_admission_prompt_tokens(
             payload,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
+            markup = _openai_llama_admission_markup(llama_backend),
         )
     if prompt_tokens is None:
         return None
@@ -2394,6 +2427,7 @@ def _openai_llama_admission_retry_max_tokens(
         retry_body.get("messages") or [],
         image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         injected_tools = injected_tools,
+        markup = _openai_llama_admission_markup(llama_backend),
     )
     budget = _openai_llama_admission_budget(llama_backend)
     bound = _openai_llama_admission_wire_output_bound(
@@ -2407,6 +2441,7 @@ def _openai_llama_admission_retry_max_tokens(
             first_messages,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
+            markup = _openai_llama_admission_markup(llama_backend),
         )
         growth = max(0, prompt_tokens - first_prompt_tokens)
         bound = max(1, min(bound, admission_output_allowance - growth))
@@ -2501,12 +2536,14 @@ def _openai_llama_admission_recost(
             conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
+            markup = _openai_llama_admission_markup(llama_backend),
         ) + _openai_llama_admission_transport_tokens(payload)
         # Not the parts above: the charge counts three things this request does not send.
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = wire_tools,
+            markup = _openai_llama_admission_markup(llama_backend),
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.

@@ -80,12 +80,16 @@ class TestTheInvariant:
 
 
 class TestThePoolIsNeverFilledToTheLastCell:
-    """llama-server stops a sequence on `prompt.n_tokens() + 1 >= slot.n_ctx`, so a request
-    held to exactly its share leaves the pool nothing to place its next token in.
+    """Two measured costs this module cannot price, both covered by the reserve.
 
-    Measured on b10840 at `-c 16384 --parallel 4 --kv-unified`: four chats summing to
-    exactly 16384 cells lost every chat in 3 of 6 and 4 of 8 waves, which is the whole-pool
-    kill this bound exists to prevent. A reserve of 2 cells a request was the floor.
+    llama-server stops a sequence on `prompt.n_tokens() + 1 >= slot.n_ctx`, so a request held
+    to exactly its share leaves the pool nothing to place its next token in; and the
+    estimator prices the message list while llama-server prices the rendered template.
+
+    Measured on b10840 at `-c 16384 --parallel 4 --kv-unified`: four chats summing to exactly
+    16384 cells lost every chat in 3 of 6, 4 of 8 and 7 of 12 waves. Four fresh chats on a
+    one-line question lost every chat in 6 of 6 with an 8-token reserve, and none in 8 with
+    64, which is the measured 38-token template envelope plus margin.
     """
 
     def test_a_full_capacity_leaves_the_pool_room_to_step(self):
@@ -116,6 +120,48 @@ class TestThePoolIsNeverFilledToTheLastCell:
         payload = _chat("word " * 4000, max_tokens = 16384)
         enforced = _enforced(payload, backend)
         assert enforced is not None and enforced > 512, enforced
+
+
+class TestTheMarkupTheBuilderRewrites:
+    """Every builder sends `neutralize_control_markup_in_messages(...)`, not the list the
+    route priced. A marker in the user's own text becomes ordinary words, so the prompt the
+    wire carries is longer than the raw one.
+
+    Measured on b10840 with Qwen3: 32 markers cost 128 more REAL tokens after the rewrite
+    (185 -> 313), and 200 cost 800 (857 -> 1657). Pricing the raw list therefore hands back
+    an allowance the prompt has already spent, and a full capacity of such requests puts the
+    pool back over its budget.
+    """
+
+    _MARKER = "<|im_start|>"
+
+    def _bound(self, markers):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        text = "explain this template: " + (self._MARKER + "user hello ") * markers
+        return _enforced(_chat(text, max_tokens = 16384), backend)
+
+    def test_a_prompt_full_of_markers_is_priced_after_the_rewrite(self):
+        """The rewrite only grows the prompt, so the allowance only shrinks."""
+        clean = self._bound(0)
+        marked = self._bound(64)
+        assert marked < clean, (clean, marked)
+
+    def test_the_wire_figure_counts_the_rewrite(self):
+        from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+        raw = [{"role": "user", "content": (self._MARKER + "user hello ") * 64}]
+        plain = [{"role": "user", "content": ("user hello ") * 64}]
+        assert wire(raw) > wire(plain), "the neutralised marker is not being charged"
+
+    def test_the_invariant_survives_a_prompt_full_of_markers(self):
+        for markers in (0, 32, 64, 200):
+            backend = _backend(window = 16384, total = 16384, slots = 4)
+            text = "explain this template: " + (self._MARKER + "user hello ") * markers
+            payload = _chat(text, max_tokens = 16384)
+            bound = _enforced(payload, backend)
+            assert bound is not None
+            from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+            sent = wire([{"role": "user", "content": text}])
+            assert (sent + bound) * 4 < 16384, f"{markers} markers occupy {(sent + bound) * 4}"
 
 
 class TestWhatIsLeftAlone:
