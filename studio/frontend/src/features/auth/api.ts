@@ -177,39 +177,6 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
-/** Seconds of remaining life below which a bearer is treated as spent. */
-const URL_TOKEN_MIN_LIFETIME_S = 60;
-
-function accessTokenExpiry(token: string): number | null {
-  try {
-    const payload = token.split(".")[1];
-    if (!payload) return null;
-    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-    const parsed = JSON.parse(atob(padded)) as { exp?: unknown };
-    return typeof parsed.exp === "number" ? parsed.exp : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * A bearer fit to ride in a URL. `authFetch` refreshes on the 401 and retries, but a token handed
- * to an `<a download>` or to the native downloader gets no second chance: the browser saves the
- * 401 body under the file's name. So the refresh happens here, before the URL is built. An
- * unreadable exp counts as spent, since one request costs less than a failed download.
- */
-export async function getAuthTokenForUrl(): Promise<string | null> {
-  const token = getAuthToken();
-  if (!token) return null;
-  const expiry = accessTokenExpiry(token);
-  if (expiry !== null && expiry - Date.now() / 1000 > URL_TOKEN_MIN_LIFETIME_S) {
-    return token;
-  }
-  await refreshSession();
-  return getAuthToken();
-}
-
 export async function refreshSession(): Promise<boolean> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return false;

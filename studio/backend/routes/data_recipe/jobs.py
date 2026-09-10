@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import hmac
+import secrets
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
@@ -19,8 +22,8 @@ from auth.authentication import (
     allow_ambient_hf_token,
     authenticated_via_api_key,
     get_current_credential,
-    get_current_subject_or_query_token,
     require_ui_session_for_local_commands,
+    subject_for_header_or_query_token,
 )
 from auth.storage import CredentialRotated
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -52,10 +55,65 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 logger = get_logger(__name__)
 router = APIRouter()
 
-# The dataset download is fetched by the browser's own download machinery and by the native save
-# command, neither of which can set an Authorization header, so it carries its own guard instead of
-# the header-only one the rest of the package sits behind.
-download_router = APIRouter(dependencies = [Depends(get_current_subject_or_query_token)])
+# The dataset link is handed to the browser's own download machinery and to the native save
+# command, neither of which can set an Authorization header. It carries an HMAC capability minted
+# by the bearer-gated route below rather than the session token itself, which would otherwise sit
+# in download history and proxy logs holding every API the session can reach. Same shape as the
+# signed gallery-video links.
+_DOWNLOAD_LINK_TTL = 300
+_DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
+
+
+def _download_link_payload(
+    *, job_id: str, export_format: str, artifact_path: str | None, filename: str | None
+) -> str:
+    # Every parameter the export reads is signed. A token naming only the job would still let its
+    # holder swap artifact_path and pull down a different recipe's dataset.
+    parts = [job_id, export_format, artifact_path or "", filename or ""]
+    return "\x1f".join(parts)
+
+
+def _sign_download_link(**parts: Any) -> str:
+    expires_at = int(time.time()) + _DOWNLOAD_LINK_TTL
+    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+    signature = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{expires_at}.{signature}"
+
+
+def _download_link_authorizes(token: str, **parts: Any) -> bool:
+    try:
+        expires_at, signature = token.rsplit(".", 1)
+        if int(expires_at) < int(time.time()):
+            return False
+    except ValueError:
+        return False
+    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+    expected = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+async def _authorize_dataset_download(
+    request: Request,
+    job_id: str,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+    token: str | None = Query(default = None),
+) -> None:
+    """A signed link for exactly this export, or the ordinary Authorization header for an API
+    client. The session bearer is deliberately not read from the query."""
+    if token and _download_link_authorizes(
+        token,
+        job_id = job_id,
+        export_format = export_format,
+        artifact_path = artifact_path,
+        filename = filename,
+    ):
+        return
+    await subject_for_header_or_query_token(request, None)
+
+
+download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)])
 
 # Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
 _KEEPALIVE_EVERY_S = 15.0
@@ -613,6 +671,33 @@ def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -
         if isinstance(status_artifact, str) and status_artifact.strip():
             resolved = status_artifact.strip()
     return resolved
+
+
+@router.get("/jobs/{job_id}/download-url")
+def create_job_dataset_download_url(
+    job_id: str,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+):
+    """Mint the signed link the browser or the native downloader then fetches. Bearer-gated like
+    the rest of the package, and it resolves the run first so an incomplete one fails here rather
+    than after the chooser has already opened.
+
+    Relative, so it survives whatever proxy the page itself came through."""
+    _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
+    token = _sign_download_link(
+        job_id = job_id,
+        export_format = export_format,
+        artifact_path = artifact_path,
+        filename = filename,
+    )
+    query = {"format": export_format, "token": token}
+    if artifact_path:
+        query["artifact_path"] = artifact_path
+    if filename:
+        query["filename"] = filename
+    return {"url": f"/api/data-recipe/jobs/{job_id}/download?{urlencode(query)}"}
 
 
 @download_router.get("/jobs/{job_id}/download")

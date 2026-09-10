@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import io
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,11 @@ def to_jsonable(value: Any) -> Any:
     # real one.
     if _is_pandas_missing(value):
         return None
+
+    # A DECIMAL column arrives as Decimal from pandas and as a float from DuckDB. Without this the
+    # two readers disagree about the same artifact: one writes 1.2, the other the string "1.20".
+    if isinstance(value, Decimal):
+        return float(value)
 
     if np is not None:
         if isinstance(value, np.ndarray):

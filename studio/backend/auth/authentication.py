@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-from fastapi import Depends, HTTPException, Query, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
@@ -368,13 +368,6 @@ async def subject_for_header_or_query_token(request: Any, token: Optional[str]) 
             detail = "Missing authentication token",
         )
     return await get_current_subject(credentials)
-
-
-async def get_current_subject_or_query_token(
-    request: Request, token: Optional[str] = Query(default = None)
-) -> str:
-    """Dependency form of the above, for a route whose URL the browser or the OS fetches itself."""
-    return await subject_for_header_or_query_token(request, token)
 
 
 async def authenticated_without_credential(

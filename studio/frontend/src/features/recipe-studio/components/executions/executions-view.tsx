@@ -479,8 +479,12 @@ export function ExecutionsView({
                         }
                         setDownloadingDataset(true);
                         downloadExecutionDataset(selectedExecution)
-                          .then(() => {
-                            toastSuccess("Dataset downloaded");
+                          .then((outcome) => {
+                            toastSuccess(
+                              outcome === "saved"
+                                ? "Dataset downloaded"
+                                : "Dataset download started",
+                            );
                           })
                           .catch((error: unknown) => {
                             const message =
@@ -546,8 +550,12 @@ export function ExecutionsView({
                     }
                     setDownloadingDataset(true);
                     downloadExecutionDataset(selectedExecution)
-                      .then(() => {
-                        toastSuccess("Dataset downloaded");
+                      .then((outcome) => {
+                        toastSuccess(
+                          outcome === "saved"
+                            ? "Dataset downloaded"
+                            : "Dataset download started",
+                        );
                       })
                       .catch((error: unknown) => {
                         const message =

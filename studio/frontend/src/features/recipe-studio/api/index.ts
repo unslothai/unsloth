@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthTokenForUrl } from "@/features/auth";
+import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import {
   formatFastApiDetail,
@@ -360,17 +360,14 @@ export async function downloadRecipeJobDataset(
   if (options?.filename) {
     params.set("filename", options.filename);
   }
-  // The bearer rides in the URL, and neither the anchor nor the native downloader retries a 401,
-  // so it is refreshed before it goes in.
-  const token = await getAuthTokenForUrl();
-  if (token) {
-    params.set("token", token);
-  }
-  const url = apiUrl(
-    `${DATA_DESIGNER_API_BASE}/jobs/${jobId}/download?${params.toString()}`,
+  // Minted over authFetch, which is what refreshes an expired session, and what surfaces a run
+  // that cannot be exported before the save dialog opens. The link it returns carries a signed
+  // capability for this one export, so the session bearer never reaches the URL.
+  const { url } = await getJson<{ url: string }>(
+    `/jobs/${jobId}/download-url?${params.toString()}`,
   );
   return {
-    url,
+    url: apiUrl(url),
     filename: buildRecipeJobDownloadFilename(jobId, options),
   };
 }

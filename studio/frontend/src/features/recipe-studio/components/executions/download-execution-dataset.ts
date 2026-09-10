@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
 import { downloadFile, downloadUrlStreaming } from "@/lib/native-files";
 import { downloadRecipeJobDataset } from "../../api";
 import type { RecipeExecutionRecord } from "../../execution-types";
+
+/**
+ * Whether the bytes are known to have landed. The native downloader streams the response and
+ * rejects a non-2xx, so "saved" is the truth there. In the browser the save is an anchor click
+ * that resolves before the request is even sent, so the most that can be claimed is "started".
+ */
+export type DownloadOutcome = "saved" | "started";
 
 function sanitizeFilenameStem(value: string): string {
   const cleaned = value
@@ -32,16 +40,18 @@ function triggerClientJsonlDownload(
 
 export async function downloadExecutionDataset(
   execution: RecipeExecutionRecord,
-): Promise<void> {
+): Promise<DownloadOutcome> {
   const filenameStem = buildDownloadFilename(execution);
 
   if (execution.kind === "full" && execution.jobId) {
+    // Minting the link is a real authenticated request, so a run that cannot be exported fails
+    // here, before anything is reported as downloaded.
     const { url, filename } = await downloadRecipeJobDataset(execution.jobId, {
       artifactPath: execution.artifact_path,
       filename: filenameStem,
     });
     await downloadUrlStreaming(url, filename);
-    return;
+    return isTauri ? "saved" : "started";
   }
 
   if (execution.dataset.length === 0) {
@@ -49,4 +59,5 @@ export async function downloadExecutionDataset(
   }
 
   await triggerClientJsonlDownload(execution.dataset, filenameStem);
+  return "saved";
 }

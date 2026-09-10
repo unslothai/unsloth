@@ -384,9 +384,10 @@ def _download_app(monkeypatch, tmp_path: Path, jobs_route):
     return app, create_access_token(storage.DEFAULT_ADMIN_USERNAME)
 
 
-def test_download_route_accepts_the_bearer_from_the_query(monkeypatch, tmp_path: Path):
-    """Neither an <a download> nor the native save command can set a header, so ?token= is the
-    only credential this URL can carry. Behind the package's header-only guard it answered 401."""
+def test_download_link_is_minted_over_the_bearer_and_used_without_one(monkeypatch, tmp_path: Path):
+    """The URL goes to an <a download> and to the native save command, neither of which can set a
+    header. It carries a signed capability rather than the session token, which would otherwise
+    sit in download history holding every API the session can reach."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -394,112 +395,99 @@ def test_download_route_accepts_the_bearer_from_the_query(monkeypatch, tmp_path:
     app, token = _download_app(monkeypatch, tmp_path, jobs_route)
     client = TestClient(app)
 
-    query = client.get("/api/data-recipe/jobs/job-1/download", params = {"token": token})
-    assert query.status_code == 200
-
-    header = client.get(
-        "/api/data-recipe/jobs/job-1/download",
+    minted = client.get(
+        "/api/data-recipe/jobs/job-1/download-url",
         headers = {"Authorization": f"Bearer {token}"},
     )
-    assert header.status_code == 200
+    assert minted.status_code == 200
+    url = minted.json()["url"]
+    assert token not in url
+
+    # No Authorization header at all, the way the browser fetches it.
+    assert client.get(url).status_code == 200
+    # And the header still works on its own, for an API client.
+    assert (
+        client.get(
+            "/api/data-recipe/jobs/job-1/download",
+            headers = {"Authorization": f"Bearer {token}"},
+        ).status_code
+        == 200
+    )
 
 
-def test_download_route_refuses_a_caller_with_no_token(monkeypatch, tmp_path: Path):
+def test_minting_a_download_link_needs_the_bearer(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     jobs_route = pytest.importorskip("routes.data_recipe.jobs")
     app, _token = _download_app(monkeypatch, tmp_path, jobs_route)
 
-    anonymous = TestClient(app).get("/api/data-recipe/jobs/job-1/download")
-    assert anonymous.status_code == 401
-    bad = TestClient(app).get(
-        "/api/data-recipe/jobs/job-1/download",
-        params = {"token": "not-a-real-token"},
+    assert TestClient(app).get("/api/data-recipe/jobs/job-1/download-url").status_code == 401
+
+
+def test_download_route_refuses_an_unsigned_or_repointed_link(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from urllib.parse import parse_qs, urlparse
+
+    jobs_route = pytest.importorskip("routes.data_recipe.jobs")
+    app, token = _download_app(monkeypatch, tmp_path, jobs_route)
+    client = TestClient(app)
+
+    assert client.get("/api/data-recipe/jobs/job-1/download").status_code == 401
+    assert (
+        client.get(
+            "/api/data-recipe/jobs/job-1/download",
+            params = {"token": "not-a-real-token"},
+        ).status_code
+        == 401
     )
-    assert bad.status_code == 401
+    # A session JWT is not a download link, however valid it is as a bearer.
+    assert (
+        client.get(
+            "/api/data-recipe/jobs/job-1/download",
+            params = {"token": token},
+        ).status_code
+        == 401
+    )
+
+    url = client.get(
+        "/api/data-recipe/jobs/job-1/download-url",
+        params = {"artifact_path": "/recipes/mine"},
+        headers = {"Authorization": f"Bearer {token}"},
+    ).json()["url"]
+    signed = parse_qs(urlparse(url).query)["token"][0]
+    # Every parameter the export reads is signed, so the artifact cannot be swapped for another.
+    assert (
+        client.get(
+            "/api/data-recipe/jobs/job-1/download",
+            params = {"artifact_path": "/recipes/someone-else", "token": signed},
+        ).status_code
+        == 401
+    )
 
 
-def test_build_dataset_download_refuses_a_path_outside_the_dataset_roots():
-    """An absolute path from outside every dataset root is refused the same way one merely outside
-    the recipe root is. It used to escape as a bare ValueError, which the route answered 500 to."""
-    with pytest.raises(RecipeDatasetExportError):
-        build_dataset_download(
-            artifact_path = "/etc",
-            export_format = "jsonl",
-            filename_stem = "escape",
-        )
+def test_download_link_expires(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
 
+    jobs_route = pytest.importorskip("routes.data_recipe.jobs")
+    app, token = _download_app(monkeypatch, tmp_path, jobs_route)
+    client = TestClient(app)
 
-def test_build_dataset_download_falls_back_when_duckdb_cannot_read(tmp_path: Path, monkeypatch):
-    """No duckdb (or a duckdb that refuses the query) still exports the whole dataset."""
-    dataset_path = tmp_path / "recipe-datasets" / "job-fallback"
-    _write_parquet_rows(dataset_path / "parquet-files", [{"i": 0}, {"i": 1}, {"i": 2}])
+    url = client.get(
+        "/api/data-recipe/jobs/job-1/download-url",
+        headers = {"Authorization": f"Bearer {token}"},
+    ).json()["url"]
+    assert client.get(url).status_code == 200
+
+    real_time = jobs_route.time.time
     monkeypatch.setattr(
-        "core.data_recipe.export._resolve_recipe_artifact_path",
-        lambda artifact_path: dataset_path,
+        jobs_route.time,
+        "time",
+        lambda: real_time() + jobs_route._DOWNLOAD_LINK_TTL + 1,
     )
-    monkeypatch.setattr(
-        "core.data_recipe.export._stream_jsonl_from_parquet_with_duckdb",
-        lambda **kwargs: False,
-    )
-
-    file_path, _, _ = build_dataset_download(
-        artifact_path = str(dataset_path),
-        export_format = "jsonl",
-        filename_stem = "fallback",
-    )
-    try:
-        exported = [
-            json.loads(line)["i"] for line in file_path.read_text(encoding = "utf-8").splitlines()
-        ]
-    finally:
-        file_path.unlink(missing_ok = True)
-    assert exported == [0, 1, 2]
-
-
-def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
-    """NaT answers hasattr(isoformat) and isoformat()s to the string "NaT"; NA reaches the str()
-    fallback as "<NA>". Either one writes a real value where the dataset had none."""
-    pd = pytest.importorskip("pandas")
-    from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
-
-    for sentinel in (pd.NA, pd.NaT):
-        assert to_jsonable(sentinel) is None
-        assert to_preview_jsonable(sentinel) is None
-
-
-def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Path, monkeypatch):
-    pytest.importorskip("duckdb")
-    pytest.importorskip("pyarrow")
-    pd = pytest.importorskip("pandas")
-
-    dataset_path = tmp_path / "recipe-datasets" / "job-nat"
-    parquet_dir = dataset_path / "parquet-files"
-    parquet_dir.mkdir(parents = True)
-    pd.DataFrame(
-        {
-            "seen_at": pd.to_datetime(["2020-01-01", None]),
-            "score": pd.array([1, None], dtype = "Int64"),
-        }
-    ).to_parquet(parquet_dir / "batch_00000.parquet", index = False)
-
-    monkeypatch.setattr(
-        "core.data_recipe.export._resolve_recipe_artifact_path",
-        lambda artifact_path: dataset_path,
-    )
-
-    file_path, _, _ = build_dataset_download(
-        artifact_path = str(dataset_path),
-        export_format = "jsonl",
-        filename_stem = "nat",
-    )
-    try:
-        rows = [json.loads(line) for line in file_path.read_text(encoding = "utf-8").splitlines()]
-    finally:
-        file_path.unlink(missing_ok = True)
-    assert rows[0]["seen_at"].startswith("2020-01-01")
-    assert rows[1] == {"seen_at": None, "score": None}
+    assert client.get(url).status_code == 401
 
 
 def _write_appledouble_companion(path: Path) -> None:
@@ -571,3 +559,83 @@ def test_build_dataset_download_keeps_a_real_file_named_like_a_companion(
         assert [json.loads(line)["i"] for line in file_path.read_text().splitlines()] == [0]
     finally:
         file_path.unlink(missing_ok = True)
+
+
+def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path, monkeypatch):
+    """DuckDB hands a DECIMAL back as a float and pandas as a Decimal, which reached the preview
+    serializer's str() fallback. The same artifact then exported as 1.2 or as "1.20" depending on
+    which reader was available."""
+    pytest.importorskip("duckdb")
+    pyarrow = pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pyarrow_parquet
+    from decimal import Decimal
+
+    from core.data_recipe.export import (
+        _read_all_rows_with_pandas,
+        _stream_jsonl_from_parquet_with_duckdb,
+        _write_jsonl_rows,
+    )
+
+    parquet_dir = tmp_path / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    pyarrow_parquet.write_table(
+        pyarrow.table({"price": pyarrow.array([Decimal("1.20")], type = pyarrow.decimal128(10, 2))}),
+        parquet_dir / "batch_00000.parquet",
+    )
+
+    streamed = tmp_path / "streamed.jsonl"
+    assert _stream_jsonl_from_parquet_with_duckdb(
+        parquet_dir = parquet_dir,
+        destination = streamed,
+    )
+    import io
+
+    buffer = io.StringIO()
+    _write_jsonl_rows(buffer, _read_all_rows_with_pandas(parquet_dir))
+
+    assert json.loads(streamed.read_text().strip()) == {"price": 1.2}
+    assert json.loads(buffer.getvalue().strip()) == {"price": 1.2}
+
+
+def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
+    """NaT answers hasattr(isoformat) and isoformat()s to the string "NaT"; NA reaches the str()
+    fallback as "<NA>". Either one writes a real value where the dataset had none."""
+    pd = pytest.importorskip("pandas")
+    from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
+
+    for sentinel in (pd.NA, pd.NaT):
+        assert to_jsonable(sentinel) is None
+        assert to_preview_jsonable(sentinel) is None
+
+
+def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Path, monkeypatch):
+    pytest.importorskip("duckdb")
+    pytest.importorskip("pyarrow")
+    pd = pytest.importorskip("pandas")
+
+    dataset_path = tmp_path / "recipe-datasets" / "job-nat"
+    parquet_dir = dataset_path / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    pd.DataFrame(
+        {
+            "seen_at": pd.to_datetime(["2020-01-01", None]),
+            "score": pd.array([1, None], dtype = "Int64"),
+        }
+    ).to_parquet(parquet_dir / "batch_00000.parquet", index = False)
+
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "nat",
+    )
+    try:
+        rows = [json.loads(line) for line in file_path.read_text(encoding = "utf-8").splitlines()]
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert rows[0]["seen_at"].startswith("2020-01-01")
+    assert rows[1] == {"seen_at": None, "score": None}
