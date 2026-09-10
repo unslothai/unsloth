@@ -2448,8 +2448,7 @@ def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
     if not any((root / d / "__init__.py").is_file() for d in (name, name.replace("_", "-"))):
         return True
     return not any(
-        (root / entry / "RECORD").is_file()
-        for entry in _dist_info_entries(venv_dir, name)
+        (root / entry / "RECORD").is_file() for entry in _dist_info_entries(venv_dir, name)
     )
 
 
