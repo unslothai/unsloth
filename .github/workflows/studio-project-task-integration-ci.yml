@@ -76,16 +76,17 @@ jobs:
       - name: Verify the source split refuses unavailable prerequisites
         working-directory: studio/backend
         run: python -m pytest tests/test_project_task_integration.py -q --tb=short --timeout=120
-      - name: Compose exact task, lifecycle, edit and Git prerequisites
+      - name: Compose exact lifecycle, edit and Git prerequisites
         shell: bash
         env:
-          TASK_REVISION: 191ac8ba86943eb0bd54a9f1532c5d2ed384c6c5
-          LIFECYCLE_REVISION: 41e6153ddfce1ed41a6b4e32e9e1ded8c8042e2b
+          LIFECYCLE_REVISION: 10eec87e411ee03fed1999fd3df3971bf0c8d632
           EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
-          GIT_REVISION: 0e174c1ac4b808b14c37389a987f7c3a23bdfd1d
+          GIT_REVISION: 016da23650c227ccfb99d8e3fca16473143f5bb9
         run: |
-          for revision in "$TASK_REVISION" "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION"; do
-            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$revision"
+          for revision in "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION"; do
+            if ! git cat-file -e "$revision^{commit}" 2>/dev/null; then
+              git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$revision"
+            fi
             git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$revision"
           done
       - name: Qualify the composed task workflow and adjacent boundaries
@@ -95,7 +96,8 @@ jobs:
           tests/test_project_task_integration.py tests/test_project_task_runtime.py
           tests/test_project_task_state.py tests/test_studio_tool_loop.py
           tests/test_tool_loop_controller.py
-          tests/test_project_retirement.py tests/test_agent_workspace_worktrees_focused.py
+          tests/test_project_retirement.py tests/test_chat_history_routes.py
+          tests/test_agent_workspace_worktrees_focused.py
           tests/test_secure_cross_platform_tools.py
           -q --tb=short --timeout=120 --maxfail=5
 

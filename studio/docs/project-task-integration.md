@@ -1,15 +1,16 @@
 # Project task execution and review
 
-This layer connects the durable engine in #10655 to model execution, owned Git
-worktrees, authenticated HTTP routes and a project task panel. It is a separate
-source split. Install these prerequisite layers before exposing task execution:
+This PR includes the durable task engine together with its first real consumer:
+model execution, owned Git worktrees, authenticated HTTP routes and a project task
+panel. The engine from #10655 is folded into this branch, with its runtime and
+state regressions in the integration matrix instead of a second engine workflow.
+Install these prerequisite layers before exposing task execution:
 
 | Prerequisite | Exact revision used in CI |
 | --- | --- |
-| #10655 task engine | `191ac8ba86943eb0bd54a9f1532c5d2ed384c6c5` |
-| #10633 project lifecycle | `41e6153ddfce1ed41a6b4e32e9e1ded8c8042e2b` |
+| #10633 project lifecycle | `10eec87e411ee03fed1999fd3df3971bf0c8d632` |
 | #10577 secure edits | `c6118ec5a653e94158bd637bc59bc18656ca6257` |
-| #10594 Git and worktrees | `0e174c1ac4b808b14c37389a987f7c3a23bdfd1d` |
+| #10594 Git and worktrees | `016da23650c227ccfb99d8e3fca16473143f5bb9` |
 
 The task endpoints return 503 when prerequisites are missing or their protocol
 versions are incompatible. Shutdown also tolerates an unavailable task service. The integration

@@ -107,3 +107,7 @@ Windows, and macOS with Python 3.11 and 3.12.
 Model/tool adapters, owned child worktrees, renderer controls, and real-model
 qualification are subsequent integration layers. These tests do not certify
 model admission, tool confinement, or an end-to-end background coding workflow.
+
+The engine is now included with the task execution/UI consumer in #10658. Its
+state and runner tests run in that integration matrix; no standalone engine
+workflow is needed in the combined branch.
