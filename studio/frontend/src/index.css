@@ -2073,8 +2073,8 @@ html[data-chat-font] .aui-root {
 
 		/* Send's own inset stacks on the gap above; drop it. The running state
 		   puts that inset on a wrapper div instead of the button. */
-		.unsloth-composer-line .aui-composer-send,
-		.unsloth-composer-line .aui-composer-cancel,
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-send,
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-cancel,
 		.unsloth-composer-line .aui-composer-run-controls {
 			margin-left: 0;
 		}
@@ -2113,10 +2113,13 @@ html[data-chat-font] .aui-root {
 		/* 32px to 28px for every control, and 36px to 28px for plus and send,
 		   which were the row's only oversized ends. Each selector has to
 		   outrank the compact pill rules, hence the longer shapes. */
+		/* Scoped to the right-control cluster. The dictation bar also renders
+		   an .aui-composer-send inside this line, and its stop button carries
+		   neither of our classes, so a looser selector shrinks one of that
+		   pair and not the other. */
 		.unsloth-composer-left > .unsloth-composer-plus,
 		.unsloth-composer-line .aui-composer-action-wrapper > button,
-		.unsloth-composer-line .aui-composer-send,
-		.unsloth-composer-line .aui-composer-cancel {
+		.unsloth-composer-line .aui-composer-run-controls > button {
 			width: 1.75rem;
 			height: 1.75rem;
 			/* The thinking pill reserves a text line; that would win over height. */
@@ -2126,7 +2129,9 @@ html[data-chat-font] .aui-root {
 		/* Tool pills only once the fit hook has collapsed their labels. Applied
 		   unconditionally, a 28px box makes a labelled pill measure as if it
 		   fit, and the hook keeps labels that then overflow it. */
-		.unsloth-composer-left[data-pill-compact="true"] > button.composer-pill-btn {
+		.unsloth-composer-left[data-pill-compact="true"] > button.composer-pill-btn,
+		.unsloth-composer-left[data-pill-compact="first"]
+			> button.composer-pill-btn.composer-pill-permissions {
 			width: 1.75rem;
 			height: 1.75rem;
 			min-height: 1.75rem;
@@ -2232,8 +2237,9 @@ html[data-chat-font] .aui-root {
 			margin-left: -0.5rem;
 			margin-right: -0.5rem;
 			/* w-full would pin the width and the margins would only shift the
-			   box left; auto lets it widen into the gutter on both sides. */
-			width: auto;
+			   box left. An explicit width widens it into the gutter instead;
+			   auto would shrink-wrap, since the parent centres its children. */
+			width: calc(100% + 1rem);
 		}
 
 		.unsloth-welcome-title {
