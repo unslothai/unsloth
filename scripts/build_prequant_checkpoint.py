@@ -453,6 +453,31 @@ def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional
     )
 
 
+def base_id_refusal(base: str, base_id: Optional[str]) -> Optional[str]:
+    """Why ``--base-id`` may not stand in for ``--base``, or None. It exists for a LOCAL mirror;
+    with a remote ``--base`` the weights come from one repo while the family, filename and stamped
+    ``base_model_id`` follow another (HunyuanVideo-1.5 480p vs 720p share shapes and a repo)."""
+    declared = (base_id or "").strip()
+    if not declared:
+        return None
+    base = (base or "").strip()
+    if os.path.isdir(os.path.expanduser(base)):
+        return None
+    try:
+        from core.inference.diffusion_prequant import _same_base_model
+        same = _same_base_model(base, declared)
+    except Exception:  # noqa: BLE001 -- no registry to ask means no evidence they match
+        same = base.lower() == declared.lower()
+    if same:
+        return None
+    return (
+        f"--base-id {declared} names a different model than --base {base}, which is not a local "
+        "directory. The weights would come from --base while the family, the published filename "
+        "and the recorded base_model_id all follow --base-id, so the artifact would carry another "
+        "model's identity. Point --base at the local mirror --base-id declares, or drop --base-id."
+    )
+
+
 def upload_gate_refusal(upload_repo: Optional[str], verify_path: Optional[str]) -> Optional[str]:
     """Why this build may not publish, or None. No escape hatch by design.
 
@@ -582,6 +607,7 @@ def main(argv = None) -> int:
         upload_gate_refusal(args.upload_repo, args.verify_against),
         verify_target_refusal(args.out, args.verify_against),
         gptq_scheme_refusal(scheme, args.gptq_dir),
+        base_id_refusal(args.base, args.base_id),
         # ConvRot rotates the weight before quantize_, which a GPTQ weight has not been corrected for: the correction was solved against the UNROTATED activation covariance.
         (
             "--gptq-dir and --convrot-groupsize cannot be combined: the correction was solved "
