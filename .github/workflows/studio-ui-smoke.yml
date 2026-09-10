@@ -19,13 +19,24 @@ name: Unsloth UI CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # The two halves Playwright drives, the backend and the React bundle, plus the
+      # installer and CLI that put them on the box. Not studio/** and unsloth/**: the
+      # install is --no-torch, so unsloth/** cannot reach the venv under test, and
+      # studio/src-tauri is never built here.
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
       # The Playwright test files themselves -- a PR that ONLY edits
-      # the test must still trigger UI CI.
+      # the test must still trigger UI CI. Kept as a directory glob, which
+      # test_stt_model_search_locator_contract.py asserts.
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
@@ -35,17 +46,19 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # And for the GGUF download that primes HF_HOME in every shard.
+      - '.github/scripts/hf-download-with-retry.sh'
       # Both apt steps in this workflow shell out to it, so an edit to it changes
       # what this workflow actually runs.
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
   workflow_dispatch:
@@ -73,7 +86,7 @@ jobs:
   ui-smoke:
     name: Chat UI Tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # Left at 30 even though each shard now carries a quarter of the work.
+    # Left at 30 even though each shard carries about half of the work.
     #
     # It was briefly cut to 20 on the reasoning that a quarter of the job needs a quarter
     # of the budget. Staging then cancelled three shards at 20m0s inside "Linux deps", an
@@ -83,21 +96,22 @@ jobs:
     # catch a hang, not to police the mean.
     timeout-minutes: 30
     strategy:
-      # Four shards, split where the job already split itself.
+      # Two shards, split where the job already split itself.
       #
       # This is 11 Playwright scripts run one after another against four Unsloth instances booted
       # one after another, and at 22.1 minutes on average it was the largest job in the
       # repo. The setup every shard has to repeat is small -- checkout, Linux deps,
-      # Install Unsloth, Playwright browsers, about 2.6 minutes -- so splitting it is
-      # nearly all profit in wall-clock, which is the thing being optimised. Runner
-      # minutes go up. That is the trade, taken deliberately.
+      # Install Unsloth, Playwright browsers, about 2.6 minutes -- so splitting it was
+      # nearly all profit in wall-clock. Four shards went too far: the queue wait for an
+      # ubuntu-latest runner dwarfs a six-minute shard, so `banner` is folded into `chat`
+      # (both install the three engines) and `picker` into `extra` (both chromium only).
       #
       # The boundaries are the Unsloth instances, not an even division of scripts: a
       # Unsloth boot, its health wait, its bootstrap password and the scripts that drive
       # it have to stay on one machine. So `chat` takes 18892 and the cross-browser
-      # permission pass, `extra` and `banner` each boot their own 18894 (the two banner
-      # engines alone were 7.25 of the 17.6 minutes, which is why they are a shard), and
-      # `picker` takes 18898 and 18896, which are small and adjacent.
+      # permission pass, then boots 18894 for the two banner passes once 18892 is down;
+      # `extra` boots its own 18894, then 18898 and 18896 for the picker suites. One
+      # Unsloth at a time on each runner, on its own port.
       #
       # In-machine parallelism is deliberately NOT used here. These are separate runners,
       # so each still boots one Unsloth at a time and nothing competes for RAM.
@@ -106,33 +120,27 @@ jobs:
         # The shard list stays a list: test_chat_ui_shards_cover_everything reads it
         # to prove every Playwright step lands on some shard, and an include-only
         # matrix hides it from that guard.
-        shard: [chat, extra, banner, picker]
+        shard: [chat, extra]
         # include: entries that match an existing combination ADD fields to it rather
         # than creating new jobs, which is how each shard gets the engines it drives
         # without changing the shard set.
         #
-        # `extra` and `picker` name no engine but chromium anywhere in their steps.
-        # Installing webkit's system libraries for them is 181 packages and 102 MB of
-        # apt, which is what timed this job out on 2026-08-19:
+        # `extra` names no engine but chromium anywhere in its steps. Installing webkit's
+        # system libraries for it is 181 packages and 102 MB of apt, which is what timed
+        # this job out on 2026-08-19:
         #
         #   0 upgraded, 181 newly installed
         #   Need to get 102 MB/114 MB of archives
         #   Get:2 .../fonts-wqy-zenhei [7472 kB]   -> 4m51s, then the attempt died
         #
-        # Fonts, X fonts and a soundfont, fetched so that two shards which never
-        # launch webkit could fail to fetch them. test_ui_shard_engines.py keeps this
-        # honest against the steps rather than against this comment.
+        # Fonts, X fonts and a soundfont, fetched so that a shard which never launches
+        # webkit could fail to fetch them. test_ui_shard_engines.py keeps this honest
+        # against the steps rather than against this comment.
         include:
-          - shard: chat      # Cross-browser permission controls drives all three
-            engines: chromium firefox webkit
-            engine_key: cfw
-          - shard: banner    # "other engines" step drives firefox and webkit
+          - shard: chat      # permission controls + banner "other engines" drive all three
             engines: chromium firefox webkit
             engine_key: cfw
           - shard: extra
-            engines: chromium
-            engine_key: c
-          - shard: picker
             engines: chromium
             engine_key: c
     env:
@@ -515,19 +523,19 @@ jobs:
       # second one on a different port. Boot is fast (~3-5s on the
       # warm install we already did) so this adds little wall time.
       - name: Reset auth + boot Unsloth for extra UI tests (port 18894)
-        if: matrix.shard == 'extra' || matrix.shard == 'banner'
+        if: matrix.shard == 'extra' || matrix.shard == 'chat'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18894 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18894
-        if: matrix.shard == 'extra' || matrix.shard == 'banner'
+        if: matrix.shard == 'extra' || matrix.shard == 'chat'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18894 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
-        if: matrix.shard == 'extra' || matrix.shard == 'banner'
+        if: matrix.shard == 'extra' || matrix.shard == 'chat'
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
@@ -586,7 +594,7 @@ jobs:
           python tests/studio/playwright_ui_font_scale.py
 
       - name: Update banner layout regression (Playwright)
-        if: matrix.shard == 'banner'
+        if: matrix.shard == 'chat'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -603,7 +611,7 @@ jobs:
       # this runner gets to Safari. Cut down to `spot` because a third full
       # pass would spend minutes re-answering the first pass's questions.
       - name: Update banner layout, other engines (Playwright)
-        if: matrix.shard == 'banner'
+        if: matrix.shard == 'chat'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -684,7 +692,7 @@ jobs:
           python tests/studio/playwright_declared_polls.py
 
       - name: Stop second Unsloth
-        if: (always()) && (matrix.shard == 'extra' || matrix.shard == 'banner')
+        if: (always()) && (matrix.shard == 'extra' || matrix.shard == 'chat')
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
@@ -695,26 +703,26 @@ jobs:
       # Reset clears the stored override (never pins it), and the infra models
       # (RAG embedder + llama.cpp probe) stay hidden from the picker.
       - name: Reset auth + boot Unsloth for model-config tests (port 18898)
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18898 --log logs/studio_modelcfg.log --pid-var STUDIO_MODELCFG_PID
 
       - name: Wait for /api/health on 18898
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18898 --log logs/studio_modelcfg.log --tmp /tmp/health4.json
 
       - name: Pass bootstrap pw for model-config test
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         run: |
           NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
           echo "::add-mask::$NEW"
           echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive model-picker per-model-config with Playwright
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18898
           STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
@@ -741,7 +749,7 @@ jobs:
       # /change-password itself: the bootstrap password on this instance has already been
       # rotated by then, so there is no first-boot flow left to drive.
       - name: Estimated Memory Usage row (Playwright)
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18898
           STUDIO_LOGIN_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
@@ -754,7 +762,7 @@ jobs:
           python tests/studio/playwright_memory_estimate.py
 
       - name: Stop fourth Unsloth
-        if: (always()) && (matrix.shard == 'picker')
+        if: (always()) && (matrix.shard == 'extra')
         run: |
           kill "${STUDIO_MODELCFG_PID}" 2>/dev/null || true
           sleep 2
@@ -763,19 +771,19 @@ jobs:
       # Third Unsloth on its own port so a hang here cannot poison the
       # earlier UI tests. No GGUF -- the bug surface is the composer.
       - name: Reset auth + boot Unsloth for IME / i18n tests (port 18896)
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18896 --log logs/studio_ime.log --pid-var STUDIO_IME_PID
 
       - name: Wait for /api/health on 18896
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18896 --log logs/studio_ime.log --tmp /tmp/health3.json
 
       - name: Pass bootstrap pw for IME / i18n test
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         # IME smoke does the change-password against the bootstrap that
         # Unsloth's frontend injects into the page, so it only needs the
         # NEW password.
@@ -785,7 +793,7 @@ jobs:
           echo "STUDIO_IME_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive IME + multilingual paste regression with Playwright
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18896
           STUDIO_NEW_PW: ${{ env.STUDIO_IME_NEW_PW }}
@@ -796,7 +804,7 @@ jobs:
           python tests/studio/playwright_chat_ime_i18n.py
 
       - name: Stop third Unsloth
-        if: (always()) && (matrix.shard == 'picker')
+        if: (always()) && (matrix.shard == 'extra')
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
           sleep 2

@@ -41,11 +41,12 @@ Output is identical to the console script, which takes three things:
 
 import sys
 
-# Before the import, so a direct `python .../__main__.py` run takes the console-script gate in __init__.
-sys.argv[0] = "unsloth"
+if __name__ == "__main__":
+    # Worker processes import this file as __mp_main__; they must not launch the CLI.
+    sys.argv[0] = "unsloth"
 
-import unsloth_cli  # noqa: E402
+    import unsloth_cli
 
-unsloth_cli._prepare_entry_point()
-# A returned value must become the exit status, like the console script's `sys.exit(app())`.
-sys.exit(unsloth_cli.app(prog_name = "unsloth"))
+    unsloth_cli._prepare_entry_point()
+    # A returned value must become the exit status, like the console script's sys.exit(app()).
+    sys.exit(unsloth_cli.app(prog_name = "unsloth"))

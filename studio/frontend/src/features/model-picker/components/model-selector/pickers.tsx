@@ -241,7 +241,6 @@ function isUnslothPublisherRepoId(repoId: string): boolean {
   return isUnslothOwner(splitRepoLabel(repoId).owner);
 }
 
-/** Lowercase and strip separators for fuzzy search. */
 function normalizeForSearch(s: string): string {
   return s.toLowerCase().replace(/[\s_.-]/g, "");
 }
@@ -415,7 +414,6 @@ function ListLabel({
   action?: ReactNode;
   collapsed?: boolean;
   onToggle?: () => void;
-  /** Draw a divider line above to separate it from the section above (omit on the first section). */
   divider?: boolean;
 }) {
   return (
@@ -452,14 +450,12 @@ function ListLabel({
   );
 }
 
-/** Format bytes to a human-readable size string. */
 function formatBytes(bytes: number): string {
   // Guard non-positive / non-finite sizes so we never render "NaN undefined".
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   // Decimal (base-1000) units to match Hugging Face's reported sizes; the GPU-fit math stays
-  // base-1024. Divide iteratively, not via Math.log, which is off at exact powers of 1000.
-  // Divide iteratively rather than via Math.log, which has float error at exact powers of 1000
-  // (mislabeling 1 TB as "1000 GB") and could run off the end of units.
+  // base-1024. Divide iteratively, not via Math.log, which is off at exact powers of 1000 and could
+  // run off the end of units.
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let value = bytes;
@@ -560,14 +556,11 @@ function VisionBadge() {
   );
 }
 
-/** Parameter count chip ("27B"). */
 function ParamChip({ label }: { label: string }) {
   return (
-    // h-[18px], the height every other chip in the row band already pins (quant, vision, the disk
-    // mark, the Loaded tag). py-px left this one sized by its line box instead, which is the only
-    // height here that scales with --ui-font-scale: at 1.0 it stood 1px PROUDER than the quant and
-    // vision chips beside it and at 0.8125 it sat 1.8px shorter, so the row only looked level at
-    // the one scale where the two happened to cross. A shared height is level at every scale.
+    // h-[18px], the height every other chip in the row band pins (quant, vision, the disk mark, the
+    // Loaded tag). py-px sized this one by its line box instead, the one height here that scales with
+    // --ui-font-scale, so the row only looked level at the scale where the two happened to cross.
     <span className="inline-flex h-[18px] shrink-0 items-center whitespace-nowrap rounded-md border border-border/60 px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
       {label}
     </span>
@@ -665,8 +658,6 @@ interface FitVerdict {
 const AMBER = "!text-yellow-600 dark:!text-yellow-400";
 const ORANGE = "!text-orange-600 dark:!text-orange-300";
 
-/** Over budget but still card-sized. `_select_gpus` scores against FREE VRAM, so whether this
- *  lands on the GPU depends on what else is resident; missing it costs speed, not the load. */
 /** Over the VRAM Budget, still smaller than the card. Not conditional: `_vram_usable_mib`
  *  gives `free - reserve`, which on an idle card IS the budget this tier passed, so
  *  `_select_gpus` hands it to --fit every time. Raising the budget is the lever. */
@@ -792,7 +783,6 @@ function VramBadge({
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
 
-/** A size in mono: the dot pulled in, a hair of air before the unit. */
 function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
   if (!parts) {
@@ -868,7 +858,6 @@ export function GgufDownloadFootprintExplanation({
   );
 }
 
-/** The one quant a row loads, as a compact mono chip. */
 function QuantChip({ label }: { label: string }) {
   return (
     <span className="inline-flex h-[18px] max-w-full items-center overflow-hidden rounded-md bg-black/[0.06] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-white/[0.1]">
@@ -907,10 +896,9 @@ function artifactBudget(gpu: {
 const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
-  // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand
-  // the slot and shift every column after it.
-  // The slot holds capability glyphs (18px), the vision badge (24px) and the "on disk" mark (14px),
-  // gap-1 between them. Scope draws no glyph: the vision badge alone, or the disk mark alone.
+  // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
+  // slot and shift every column after it. This slot holds capability glyphs (18px), the vision badge
+  // (24px) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
   badge: "min-w-min min-[560px]:w-[24px]",
   // One glyph plus the disk mark (18 + 4 + 14).
   badgeMid: "min-w-min min-[560px]:w-[36px]",
@@ -922,13 +910,10 @@ const META_COLUMN = {
   badgeWide: "min-w-min min-[560px]:w-[36px]",
   // The fit mark (Hub rows), one 18px glyph.
   vram: "min-w-min min-[560px]:w-[18px]",
-  // Device rows reserve the slot rather than hug the chip. This is the last variable column on the
-  // right, so hugging it let each row's meta cluster set its own width: a "1B" row, and more so a
-  // row with no param at all, gave its name group the leftover and carried its quant chip that much
-  // further right, leaving the quant column ragged down the list. 4.4em is the widest these lists
-  // draw, measured at text-ui-10 -- "235B" is 38.4px, a 5-char "0.35B" 40.9px -- so nothing routine
-  // trips min-w-min and shifts the row back out of line. The slack now sits in front of the chip,
-  // as its gap to the modality mark. Hub keeps its own width for "2779.5B".
+  // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
+  // hugging it let each row's meta cluster set its own width and left the quant column ragged. 4.4em
+  // is the widest these lists draw at text-ui-10 ("235B" 38.4px, "0.35B" 40.9px), so nothing routine
+  // trips min-w-min. Hub keeps its own width for "2779.5B".
   param: "min-w-min min-[560px]:w-[4.4em]",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
   // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a spaced "536 MB" needs.
@@ -942,11 +927,9 @@ const META_COLUMN = {
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
-// Partial rows keep their buttons on screen. Everywhere else the gutter hides until the row is
-// hovered because the row itself is the action -- click it and the model loads, so the menu is a
-// secondary path. A partial cannot be loaded at all: the menu IS the row's only affordance, and
-// hiding the one control that reaches a stalled multi-GB download behind a hover reads as the
-// download having no controls at all.
+// Partial rows keep their buttons on screen. Everywhere else the gutter hides until hover because
+// the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
+// affordance, and hiding it reads as the stalled download having no controls.
 const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 
 function ModelRow({
@@ -1215,12 +1198,10 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                // Device leads the chip, Hub trails it. Both columns are fixed, so the choice is
-                // only where the column's slack falls: trailing it put the slack in FRONT of the
-                // chip, where it read as part of the gap to the modality mark and grew or shrank
-                // with the label -- 6.9px after a "217B", 19px after a "1B". Leading the chip
-                // leaves that gap as the cluster's own gap-1, the same 4px the quant chip keeps
-                // to the same mark, and the slack falls back toward the size instead.
+                // Device leads the chip, Hub trails it. Both columns are fixed, so the choice is only where the
+                // slack falls: trailing put it in FRONT of the chip, where it read as part of the gap to the
+                // modality mark and grew with the label (6.9px after "217B", 19px after "1B"). Leading leaves that
+                // gap as the cluster's own gap-1.
                 "flex shrink-0 items-center text-ui-10",
                 alignMeta === "hub"
                   ? cn("justify-end", META_COLUMN.paramWide)
@@ -1887,10 +1868,9 @@ function GgufVariantExpander({
       })
         .then((footprint) => {
           if (cancelled || !footprint) return;
-          // A checkpoint already on disk is not part of required_bytes, so nothing may be subtracted for
-          // it: subtracting drove the total to zero and hid a multi-GB companion set. Only a hub pick
-          // carries its checkpoint inside the total.
-          // expectedBytes stands in when the planner could not size it.
+          // A checkpoint already on disk is not part of required_bytes, so nothing may be subtracted for it:
+          // subtracting drove the total to zero and hid a multi-GB companion set. Only a hub pick carries
+          // its checkpoint inside the total; expectedBytes stands in when the planner could not size it.
           const checkpoint = checkpointIsLocal
             ? 0
             : footprint.checkpointBytes > 0
@@ -2228,9 +2208,8 @@ function GgufVariantExpander({
                             if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
                               togglePinnedQuant(repoId, v.quant);
                             }
-                            // Re-fetch this expander's variants so the deleted quant stops showing as
-                            // downloaded while other cached quants remain.
-                            // repo still has other cached quants.
+                            // Re-fetch this expander's variants so the deleted quant stops showing as downloaded while the
+                            // repo's other cached quants remain.
                             setRefreshKey((key) => key + 1);
                           },
                         }
@@ -2376,14 +2355,10 @@ let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
 
-/** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
- * custom-folder model) is known. Reads the module caches, which persist across
- * popover mounts, so the selector can default to the On Device tab.
- *
- * Partials do not count. The cached lists carry them so they can be seen and
- * removed, but a machine whose only cached row is a cancelled download has
- * nothing to load, and opening on that tab shows one unusable row instead of
- * the list that would get the user a model. */
+/** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or custom-folder model)
+ * is known. Reads the module caches, which persist across popover mounts, so the selector can
+ * default to the On Device tab. Partials do not count: a machine whose only cached row is a
+ * cancelled download has nothing to load. */
 export function hasDownloadedModels(): boolean {
   return (
     _cachedGgufCache.some((c) => !c.partial) ||
@@ -2616,14 +2591,12 @@ export function HubModelPicker({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
-  /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "connected";
-  /** Section toggle rendered under the search bar. */
   sectionToggle?: ReactNode;
   onEject?: () => void;
   /** Restrict results to a pipeline task; undefined = all tasks (the chat default). */
@@ -3109,12 +3082,9 @@ export function HubModelPicker({
     void refreshInventoryIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
   }, [refreshInventoryIfOlderThan]);
 
-  // Hide downloaded models from the recommended list. Case-insensitive
-  // since the HF cache lowercases repo IDs.
-  // Complete downloads only. This set answers "can this id load right now": it decides
-  // isDownloaded on a search pick, which is what skips download staging, and it paints the
-  // on-disk dot. A partial is on disk but not loadable, so admitting one here would send a
-  // torn snapshot straight to the loader from the Hub and Recommended lists.
+  // Hide downloaded models from the recommended list, case-insensitively since the HF cache
+  // lowercases repo ids. Complete downloads only: this set answers "can this id load right now", so
+  // admitting a partial would send a torn snapshot straight to the loader.
   const downloadedSet = useMemo(
     () =>
       new Set(
@@ -4164,10 +4134,8 @@ export function HubModelPicker({
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
-  // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state logic must use this
-  // or the picker can go blank. A task-scoped picker is exempt.
-  // Not visibleCachedModels, or the picker can go blank. A task-scoped picker (Images) is exempt:
-  // the image backend loads local diffusers/safetensors pipelines even on chat-only hosts.
+  // Non-GGUF cached rows are hidden in chat-only mode, so the empty-state logic must use this or the
+  // picker can go blank. A task-scoped picker is exempt: the image backend loads local pipelines.
   const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
@@ -4432,7 +4400,6 @@ export function HubModelPicker({
     ],
   );
 
-  // Recommended models that match the current search query.
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
     const q = normalizeForSearch(debouncedQuery.trim());
@@ -4826,7 +4793,6 @@ export function HubModelPicker({
     },
   );
 
-  // Recompute the top/bottom edge fades from the scroll position.
   const updateListFades = useCallback((el: HTMLDivElement) => {
     const scrolled = el.scrollTop > 0;
     setListScrolled((prev) => (prev === scrolled ? prev : scrolled));
@@ -4834,7 +4800,6 @@ export function HubModelPicker({
     setListMoreBelow((prev) => (prev === moreBelow ? prev : moreBelow));
   }, []);
 
-  // Keep the fades in sync when rows are added, removed, or filtered.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -4894,7 +4859,7 @@ export function HubModelPicker({
     scrollRef,
   ]);
 
-  /** Handle clicking a model row — GGUF repos expand, others load directly. */
+  /** Handle clicking a model row: GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
       if (isKnownGgufRepo(id)) {
@@ -4961,7 +4926,6 @@ export function HubModelPicker({
       </TooltipContent>
     </Tooltip>
   );
-  // Sort icon + selected label inside the trigger pill.
   const sortTriggerContent = (label: ReactNode) => (
     <span className="flex items-center gap-1">
       <HugeiconsIcon
@@ -5019,7 +4983,6 @@ export function HubModelPicker({
       />
     );
 
-  // Connected models grouped by provider, filtered by the shared search query.
   const connectedGroups = useMemo(() => {
     const needle = normalizeForSearch(debouncedQuery.trim());
     const byProvider = new Map<
@@ -5249,18 +5212,11 @@ export function HubModelPicker({
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={ggufQuantChipLabel(variant.quant)}
             partial={isPartial}
-            // No verdict to pass, so the mark takes its cautious wording:
-            // /api/models/gguf-variants builds models.models.GgufVariantDetail, which carries no
-            // partial_resumable. A sole-quant row is never partial anyway -- readSoleQuant only
-            // picks a clean quant -- so this mark is defensive to begin with.
-            // Only for models the llama.cpp path actually loads. The Images and
-            // Video pickers deliberately keep diffusion GGUFs listed, and those
-            // run on the diffusion planner with different runtime buffers, on a
-            // single torch device rather than the aggregate inference pool. The
-            // KV estimator has nothing to say about them, and when it returns
-            // unsized the bar falls back to the file size and draws a
-            // weights-only verdict anyway -- a confident number about the wrong
-            // runtime, which is the failure this bar exists to avoid.
+            // No verdict to pass, so the mark takes its cautious wording: /api/models/gguf-variants carries no
+            // partial_resumable, and a sole-quant row is never partial anyway. Only for models the llama.cpp
+            // path loads: Images and Video keep diffusion GGUFs listed, and those run on the diffusion planner
+            // with different runtime buffers on a single torch device, so the KV estimator falls back to the
+            // file size and draws a confident number about the wrong runtime.
             memory={
               mediaPageForTask(c.task)
                 ? undefined
@@ -6757,9 +6713,8 @@ export function HubModelPicker({
                               id.toLowerCase(),
                             )}
                             capabilities={capsById.get(id)}
-                            // Same meta the unfiltered Recommended row shows, so a model keeps its size
-                            // chip when reached by typing.
-                            // because it was reached by typing.
+                            // Same meta the unfiltered Recommended row shows, so a model keeps its size chip when reached by
+                            // typing.
                             meta={
                               isKnownGgufRepo(id)
                                 ? (recommendedMeta.get(id)?.meta ?? "GGUF")
