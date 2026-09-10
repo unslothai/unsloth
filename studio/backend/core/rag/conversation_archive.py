@@ -282,21 +282,12 @@ def _without_retrieval(group: list[dict]) -> list[dict]:
 
 def _without_folded_retrieval(message: dict, names: frozenset):
     """The message with any folded retrieval result cut out of its text, or None if that was all
-    it was.
+    it was. Matched on the shape the fold emits, since it rewrote the role the id match needs.
 
-    A toolless template gets its ``role="tool"`` turns rewritten to user text by
-    ``fold_tool_results_into_user``, so the id match above stops firing and the retrieved passage
-    is archived as new conversation -- the self-nesting this whole helper exists to stop, back
-    again by another door. Matched on the shape the fold emits rather than on the role.
-
-    Cut rather than drop: every route folds before it coalesces, so the passage usually arrives
-    already merged with the question the user asked after it, and dropping the message would take
-    that question with it. ``json.dumps(..., indent = 2)`` never emits a blank line, so the
-    ``"\\n\\n"`` the coalesce joins on cannot occur inside one folded block.
-
-    Both content shapes, because the merge decides which one: coalescing a folded passage with a
-    plain question leaves a string, but with an image-bearing question it leaves a part list, and
-    reading only strings would archive the passage on exactly the turns that carry an image.
+    Cut, not dropped: the coalesce usually merges the passage with the question asked after it.
+    Both content shapes, because that merge yields a string for a plain question and a part list
+    for an image-bearing one. Split on "\\n\\n": ``json.dumps(indent = 2)`` emits no blank line,
+    so one folded block can never contain it.
     """
     if str(message.get("role") or "") != "user":
         return message
