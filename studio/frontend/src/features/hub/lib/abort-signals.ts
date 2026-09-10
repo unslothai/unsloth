@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// WebView-compatibility shims. AbortSignal.timeout (WebKitGTK < 2.38) and
-// AbortSignal.any (WebKitGTK < 2.44) are missing on older engines Tauri embeds
-// and throw synchronously if called. These ponyfills delegate to the native
-// impl when present, else fall back to an AbortController.
+// WebView-compatibility shims. AbortSignal.timeout (WebKitGTK < 2.38) and AbortSignal.any
+// (WebKitGTK < 2.44) are missing on older engines Tauri embeds and throw synchronously if called.
+// These ponyfills delegate to the native impl when present, else fall back to an AbortController.
 
 export interface PollSignal {
   signal: AbortSignal;

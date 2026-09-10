@@ -6,25 +6,23 @@
 Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Z-Image, Krea 2. Video: LTX-2 (from a
 still-image dataset; see the ``_LTX2_TARGETS`` block for what a video family adds).
 
-These are rectified-flow transformers, not the SDXL U-Net, so they share only the plumbing
-in ``diffusion_train_common`` (config, dataset discovery, events, stop, publishing). The
-training math here is flow matching: sample a sigma with the logit-normal density used by
-the diffusers dreambooth scripts, form ``noisy = (1 - sigma) * latents + sigma * noise``,
-predict the velocity, and regress it onto ``target = noise - latents``.
+These are rectified-flow transformers, not the SDXL U-Net, so they share only the plumbing in
+``diffusion_train_common`` (config, dataset discovery, events, stop, publishing). The training math
+here is flow matching: sample a sigma with the logit-normal density used by the diffusers dreambooth
+scripts, form ``noisy = (1 - sigma) * latents + sigma * noise``, predict the velocity, and regress
+it onto ``target = noise - latents``. The per-family differences (latent normalisation + packing,
+the transformer forward signature, embedding collation, and the LoRA save entrypoint) live in small
+``_FamilySpec`` objects; the loop itself is family-agnostic. Verified against diffusers 0.38.0.
 
-The per-family differences (latent normalisation + packing, the transformer forward
-signature, embedding collation, and the LoRA save entrypoint) live in small ``_FamilySpec``
-objects; the loop itself is family-agnostic. Verified against diffusers 0.38.0.
-
-Memory: the text encoder(s) are the largest module (T5-XXL ~9 GB for FLUX, Qwen2.5-VL ~7 GB
-for Qwen-Image, Qwen3 for Z-Image), so captions are encoded ONCE up front and the encoders
-are freed before the loop. VAE latents are likewise precomputed into a small CPU cache
-(``cache_latents``) and the VAE freed: the cache stores the posterior's affine parameters
-(mean/std folded through the family's latent normalisation), so every step still draws a
-fresh VAE sample -- distribution-identical to encoding in the loop, without keeping the VAE
-resident or paying a per-step encode. The transformer trains as a QLoRA (nf4) adapter by
-default with gradient checkpointing and 8-bit AdamW, so only the (small) LoRA params +
-optimizer state and the frozen 4-bit base sit in VRAM during the loop.
+Memory: the text encoder(s) are the largest module (T5-XXL ~9 GB for FLUX, Qwen2.5-VL ~7 GB for
+Qwen-Image, Qwen3 for Z-Image), so captions are encoded ONCE up front and the encoders are freed
+before the loop. VAE latents are likewise precomputed into a small CPU cache (``cache_latents``) and
+the VAE freed: the cache stores the posterior's affine parameters (mean/std folded through the
+family's latent normalisation), so every step still draws a fresh VAE sample --
+distribution-identical to encoding in the loop, without keeping the VAE resident or paying a
+per-step encode. The transformer trains as a QLoRA (nf4) adapter by default with gradient
+checkpointing and 8-bit AdamW, so only the (small) LoRA params + optimizer state and the frozen
+4-bit base sit in VRAM during the loop.
 """
 
 from __future__ import annotations
@@ -83,8 +81,8 @@ from core.training.diffusion_train_extras import (
     save_ema_adapter,
 )
 
-# Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks also
-# carry added-kv projections; Z-Image is single-stream.
+# Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks also carry added-kv
+# projections; Z-Image is single-stream.
 _FLUX_TARGETS = (
     "to_q",
     "to_k",
@@ -97,8 +95,8 @@ _FLUX_TARGETS = (
 )
 _QWEN_TARGETS = _FLUX_TARGETS
 _ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0")
-# The Krea 2 authors' recommended defaults (their DreamBooth script): attention + SwiGLU + text-
-# fusion projector + conditioning embedders. For long runs they suggest narrowing to attention.
+# The Krea 2 authors' recommended defaults (their DreamBooth script): attention + SwiGLU + text-fusion projector +
+# conditioning embedders. For long runs they suggest narrowing to attention.
 _KREA2_TARGETS = (
     "img_in",
     "final_layer.linear",
@@ -121,12 +119,11 @@ _KREA2_TARGETS = (
 def _select_lora_targets(
     cfg_targets: tuple[str, ...], spec_targets: tuple[str, ...]
 ) -> tuple[str, ...]:
-    """Pick the LoRA target modules for a DiT run.
-
-    ``normalized()`` always fills ``lora_target_modules`` with the generic
-    ``DEFAULT_LORA_TARGETS`` when a caller does not set it, so that value means "unset"
-    here: prefer the family's ``spec.lora_targets`` (which add the DiT-specific
-    projections). Any OTHER explicit tuple is a deliberate override and still wins."""
+    """Pick the LoRA target modules for a DiT run. ``normalized()`` always fills
+    ``lora_target_modules`` with the generic ``DEFAULT_LORA_TARGETS`` when a caller does not set
+    it, so that value means "unset" here: prefer the family's ``spec.lora_targets`` (which add
+    the DiT-specific projections). Any OTHER explicit tuple is a deliberate override and still
+    wins."""
     if tuple(cfg_targets) == DEFAULT_LORA_TARGETS:
         return tuple(spec_targets)
     return tuple(cfg_targets)
@@ -140,38 +137,37 @@ class _FamilySpec:
     lora_targets: tuple[str, ...]
     # bf16 only (Z-Image overflows fp16 and its RoPE/embedder run in fp32).
     force_bf16: bool
-    # Used by base_precision="auto" to pick a mode that fits free VRAM; a family covering more than one
-    # size (flux.2-klein is 4B and 9B) must not be sized off this alone -- see _dense_bf16_gb.
+    # Used by base_precision="auto" to pick a mode that fits free VRAM; a family covering more than one size
+    # (flux.2-klein is 4B and 9B) must not be sized off this alone -- see _dense_bf16_gb.
     dense_bf16_gb: float
-    # Phased load so the multi-GB transformer never coexists with the text encoders + VAE:
-    # load_conditioners builds the pipeline WITHOUT it and returns (pipe, vae), then load_transformer
-    # loads it alone once the conditioners are freed.
+    # Phased load so the multi-GB transformer never coexists with the text encoders + VAE: load_conditioners builds
+    # the pipeline WITHOUT it and returns (pipe, vae), then load_transformer loads it alone once the conditioners are
+    # freed.
     load_conditioners: Callable[..., tuple[Any, Any]]
     load_transformer: Callable[..., Any]
     # Encode a list of captions -> a per-caption tuple of CPU tensors (the family's embeds).
     encode_prompts: Callable[..., list[tuple]]
     # Encode a pixel tensor [B,3,H,W] in [-1,1] -> latents (family-normalised, on device).
     encode_latents: Callable[..., Any]
-    # Encode pixels to (A, B) affine posterior params so a per-step sample is A + B * randn. B is None
-    # for a deterministic family.
+    # Encode pixels to (A, B) affine posterior params so a per-step sample is A + B * randn. B is None for a
+    # deterministic family.
     encode_latent_stats: Callable[..., tuple]
-    # Collate per-caption embed tuples into one batched tuple on device. ``pad_to`` pins a fixed text
-    # length for variable-length embeds (compile).
+    # Collate per-caption embed tuples into one batched tuple on device. ``pad_to`` pins a fixed text length for
+    # variable-length embeds (compile).
     collate: Callable[..., tuple]
-    # One transformer forward: (transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype)
-    # -> model_pred aligned with target = noise - latents.
+    # One transformer forward: (transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype) ->
+    # model_pred aligned with target = noise - latents.
     forward: Callable[..., Any]
     # Save the LoRA in diffusers format via the family pipeline's save_lora_weights.
     save: Callable[..., None]
 
 
-# ── shared flow-matching helpers ──────────────────────────────────────────────
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
-    """Gather per-sample sigmas for schedule ``indices`` and broadcast to ``n_dim``.
-    Index-based (no per-item search): ``indices`` are the positions ``_sample_timesteps``
-    drew from ``scheduler.timesteps``, and ``sigma_table`` (the scheduler's own sigmas, or
-    the shifted copy from ``_training_sigma_table``) is aligned with it, so the identity
-    table returns exactly what the diffusers ``get_sigmas`` helper would."""
+    """Gather per-sample sigmas for schedule ``indices`` and broadcast to ``n_dim``. Index-based (no
+    per-item search): ``indices`` are the positions ``_sample_timesteps`` drew from
+    ``scheduler.timesteps``, and ``sigma_table`` (the scheduler's own sigmas, or the shifted copy
+    from ``_training_sigma_table``) is aligned with it, so the identity table returns exactly
+    what the diffusers ``get_sigmas`` helper would."""
     sigma = sigma_table[indices].to(device = device, dtype = dtype).flatten()
     while sigma.ndim < n_dim:
         sigma = sigma.unsqueeze(-1)
@@ -179,19 +175,17 @@ def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
 
 
 def _training_sigma_table(scheduler, flow_shift):
-    """The sigma table training draws index into, per ``cfg.flow_shift``.
-
-    ``1.0`` (every non-Qwen family's default) returns ``scheduler.sigmas`` unchanged: the
-    historical behavior, correct for the families whose schedule already matches training
-    convention. ``"auto"`` (the qwen-image default) reproduces the family's INFERENCE sigma
-    distribution, which the scheduler never bakes into ``sigmas`` when
-    ``use_dynamic_shifting`` is true (the static ``shift`` at init is skipped, so Qwen-Image
-    otherwise trains on unshifted uniform sigmas): apply the scheduler's own ``time_shift``
-    at mu = ``max_shift`` (Qwen pins base_shift = max_shift = log 3, so the inference mu is
-    constant at every resolution) followed by its ``stretch_shift_to_terminal`` -- using the
-    scheduler's methods keeps the transform faithful across diffusers versions. A numeric
-    value applies the standard linear shift s*u/(1+(s-1)*u) (musubi/kohya style
-    discrete_flow_shift)."""
+    """The sigma table training draws index into, per ``cfg.flow_shift``. ``1.0`` (every non-Qwen
+    family's default) returns ``scheduler.sigmas`` unchanged: the historical behavior, correct
+    for the families whose schedule already matches training convention. ``"auto"`` (the
+    qwen-image default) reproduces the family's INFERENCE sigma distribution, which the scheduler
+    never bakes into ``sigmas`` when ``use_dynamic_shifting`` is true (the static ``shift`` at
+    init is skipped, so Qwen-Image otherwise trains on unshifted uniform sigmas): apply the
+    scheduler's own ``time_shift`` at mu = ``max_shift`` (Qwen pins base_shift = max_shift = log
+    3, so the inference mu is constant at every resolution) followed by its
+    ``stretch_shift_to_terminal`` -- using the scheduler's methods keeps the transform faithful
+    across diffusers versions. A numeric value applies the standard linear shift s*u/(1+(s-1)*u)
+    (musubi/kohya style discrete_flow_shift)."""
     sigmas = scheduler.sigmas
     if flow_shift == "auto":
         sc = scheduler.config
@@ -200,8 +194,8 @@ def _training_sigma_table(scheduler, flow_shift):
         mu = float(getattr(sc, "max_shift", None) or math.log(3.0))
         shifted = scheduler.time_shift(mu, 1.0, sigmas)
         if getattr(sc, "shift_terminal", None):
-            # The stretch scales off the table's own final sigma, so it must see the full descending schedule,
-            # never a batch.
+            # The stretch scales off the table's own final sigma, so it must see the full descending schedule, never a
+            # batch.
             shifted = scheduler.stretch_shift_to_terminal(shifted)
         return shifted
     s = float(flow_shift)
@@ -211,9 +205,9 @@ def _training_sigma_table(scheduler, flow_shift):
 
 
 def _bell_loss_weights(num_train_timesteps):
-    """bsmntw-style bell loss-weight table over the training schedule: a Gaussian bell
-    centered mid-schedule, floored at 0 and normalized to mean 1 (so the expected loss
-    scale is unchanged). Indexed by round(sigma * num_train_timesteps)."""
+    """bsmntw-style bell loss-weight table over the training schedule: a Gaussian bell centered
+    mid-schedule, floored at 0 and normalized to mean 1 (so the expected loss scale is
+    unchanged). Indexed by round(sigma * num_train_timesteps)."""
     import torch
 
     steps = num_train_timesteps
@@ -242,11 +236,10 @@ def _sample_timesteps(scheduler, batch_size, device):
 
 
 def _encoders_to_device(pipe, device) -> None:
-    """Move the pipeline's (non-quantized) text encoders to ``device`` before encoding.
-
-    A QLoRA FLUX load places the nf4 transformer on GPU but leaves the text encoders on
-    CPU, so encode_prompt would mix devices. Best-effort per encoder: a 4-bit encoder that
-    is already placed raises on .to() and is left as-is."""
+    """Move the pipeline's (non-quantized) text encoders to ``device`` before encoding. A QLoRA FLUX
+    load places the nf4 transformer on GPU but leaves the text encoders on CPU, so encode_prompt
+    would mix devices. Best-effort per encoder: a 4-bit encoder that is already placed raises on
+    .to() and is left as-is."""
     for attr in ("text_encoder", "text_encoder_2", "text_encoder_3"):
         enc = getattr(pipe, attr, None)
         if enc is None:
@@ -264,14 +257,14 @@ def _bnb_4bit_config():
         load_in_4bit = True,
         bnb_4bit_quant_type = "nf4",
         bnb_4bit_compute_dtype = torch.bfloat16,
-        # Double quantization compresses the per-block absmax scales with a second 8-bit pass: ~0.4 bits/param
-        # off the frozen base at no fidelity cost, which matters most on the 20B+ DiTs.
+        # Double quantization compresses the per-block absmax scales with a second 8-bit pass: ~0.4 bits/param off the
+        # frozen base at no fidelity cost, which matters most on the 20B+ DiTs.
         bnb_4bit_use_double_quant = True,
     )
 
 
-# The heuristic moved to diffusion_train_common so config validation can use it without importing
-# this module; the name is kept for existing callers.
+# The heuristic moved to diffusion_train_common so config validation can use it without importing this module; the
+# name is kept for existing callers.
 _repo_is_prequantized = repo_is_prequantized
 
 
@@ -288,9 +281,9 @@ def _load_quantized_transformer(transformer_cls, cfg):
 
 
 def _load_pipe_without_transformer(pipe_cls, cfg, device):
-    """Load a pipeline for conditioning only: ``transformer = None`` skips the multi-GB
-    denoiser entirely (the documented diffusers pattern), leaving just the text encoders +
-    tokenizers + VAE + scheduler. The transformer loads later, after these are freed."""
+    """Load a pipeline for conditioning only: ``transformer = None`` skips the multi-GB denoiser
+    entirely (the documented diffusers pattern), leaving just the text encoders + tokenizers +
+    VAE + scheduler. The transformer loads later, after these are freed."""
     import torch
 
     pipe = pipe_cls.from_pretrained(
@@ -304,14 +297,12 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
 
 
 def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
-    """Load the transformer alone in the resolved ``base_precision``:
-
-    - nf4: a prequant (bnb-4bit) repo carries its quantization config and loads 4-bit
-      as-is; a dense base is quantized to nf4 on the fly. The memory floor.
-    - bf16 / fp8 / mxfp8: the dense transformer (fp8/mxfp8 convert its frozen linears to
-      float8 training compute AFTER the LoRA attaches; storage stays bf16).
-    - int8: the dense transformer quantized in place to torchao weight-only int8 (the
-      PEFT-attachable scheme), roughly halving the bf16 weight footprint."""
+    """Load the transformer alone in the resolved ``base_precision``. nf4: a prequant (bnb-4bit)
+    repo carries its quantization config and loads 4-bit as-is, while a dense base is quantized
+    to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer (fp8/mxfp8
+    convert its frozen linears to float8 training compute AFTER the LoRA attaches; storage stays
+    bf16). int8: the dense transformer quantized in place to torchao weight-only int8 (the
+    PEFT-attachable scheme), roughly halving the bf16 weight footprint."""
     import torch
 
     if base_precision == "nf4":
@@ -328,8 +319,8 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
             transformer = transformer.to(device)
         return transformer
 
-    # int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear,
-    # whose peft-0.18 constructor rejects the torchao-0.16 config API.
+    # int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18
+    # constructor rejects the torchao-0.16 config API.
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
@@ -339,22 +330,23 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
 
 
 def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
-    """torchao weight-only int8 on the big frozen linears, applied after add_adapter so
-    the base_layer inside each LoRA wrapper quantizes while the adapters stay high
-    precision. ``make_filter_fn`` (shared with the inference quant layer) keeps only
-    Linears with >= 512 features -- which also naturally skips the rank-sized LoRA
-    matrices -- and drops the M=1 modulation projections int8 kernels reject.
+    """torchao weight-only int8 on the big frozen linears, applied after add_adapter so the base_layer
+    inside each LoRA wrapper quantizes while the adapters stay high precision. ``make_filter_fn``
+    (shared with the inference quant layer) keeps only Linears with >= 512 features -- which also
+    naturally skips the rank-sized LoRA matrices -- and drops the M=1 modulation projections int8
+    kernels reject.
 
-    ``family`` selects the per-family small-M exclusions on top of those. Passing it is what
-    keeps training and inference on the same list: without it LTX-2's one-token audio stream
-    (and Qwen-Image's unpadded text stream) is quantized here and the first forward raises,
-    after the whole base has been loaded.
+    ``family`` selects the per-family small-M exclusions on top of those. Passing it is what keeps
+    training and inference on the same list: without it LTX-2's one-token audio stream (and
+    Qwen-Image's unpadded text stream) is quantized here and the first forward raises, after the
+    whole base has been loaded.
 
     The family's PAD list is applied for the same reason, and the same way the inference path
     applies it: a small-M Linear is either excluded or padded, and a family that chose padding
-    (MiniMax-H3's context_embedder and token_refiner blocks) has those names in neither the
-    generic nor the family exclusions, so without this they are quantized bare and raise on the
-    first forward exactly like an unexcluded one."""
+    (MiniMax-H3's context_embedder and token_refiner blocks) has those names in neither the generic
+    nor the family exclusions, so without this they are quantized bare and raise on the first
+    forward exactly like an unexcluded one.
+    """
     from core.inference.diffusion_transformer_quant import (
         _quiet_config,
         apply_small_m_padding,
@@ -371,16 +363,16 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
             512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
         ),
     )
-    # After quantize_, as the helper requires (it reparents the Linears it wraps). Not best-effort: a
-    # raise means the base is quantized but not safely runnable.
+    # After quantize_, as the helper requires (it reparents the Linears it wraps). Not best-effort: a raise means the
+    # base is quantized but not safely runnable.
     apply_small_m_padding(transformer, "int8", family)
 
 
 def _fp8_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get float8 training compute: skip anything LoRA-owned (the
-    adapters must stay high precision -- PEFT has no float8 base support), the output
-    projection, and shapes float8 kernels reject (dims not divisible by 16), matching the
-    diffusers FLUX2 reference filter."""
+    """Which frozen linears get float8 training compute: skip anything LoRA-owned (the adapters must
+    stay high precision, since PEFT has no float8 base support), the output projection, and
+    shapes float8 kernels reject (dims not divisible by 16), matching the diffusers FLUX2
+    reference filter."""
     import torch.nn as nn
 
     if not isinstance(mod, nn.Linear):
@@ -393,15 +385,14 @@ def _fp8_module_filter(mod, fqn: str) -> bool:
 
 
 def _fp8_training_config():
-    """The float8 training config: per-ROW (rowwise) scaling when this torchao build ships
-    the recipe, else the tensorwise default. The DiT families carry extreme activation
-    outliers (Z-Image MLP activations peak near 6.6e4, the same range that forced per-row
-    scaling in the inference quant layer): one tensor-wide dynamic scale pushes normal
-    values (~1-30) below fp8 resolution, so the frozen base's forward -- the signal the
-    LoRA regresses against -- degrades. Per-row scaling confines each outlier to its own
-    token/channel. The tensorwise fallback keeps pad_inner_dim so a non-16-aligned inner
-    dim never aborts the scaled_mm (the rowwise recipe manages its own padding rules and
-    rejects the knob, hence the split)."""
+    """The float8 training config: per-ROW (rowwise) scaling when this torchao build ships the
+    recipe, else the tensorwise default. The DiT families carry extreme activation outliers
+    (Z-Image MLP activations peak near 6.6e4, the same range that forced per-row scaling in the
+    inference quant layer): one tensor-wide dynamic scale pushes normal values (~1-30) below fp8
+    resolution, so the frozen base's forward -- the signal the LoRA regresses against --
+    degrades. Per-row scaling confines each outlier to its own token/channel. The tensorwise
+    fallback keeps pad_inner_dim so a non-16-aligned inner dim never aborts the scaled_mm (the
+    rowwise recipe manages its own padding rules and rejects the knob, hence the split)."""
     from torchao.float8 import Float8LinearConfig
     try:
         return Float8LinearConfig.from_recipe_name("rowwise")
@@ -410,9 +401,9 @@ def _fp8_training_config():
 
 
 def _apply_fp8_training(transformer, on_event) -> bool:
-    """Convert the frozen base linears to torchao float8 training compute (dynamic scaling;
-    weights stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the
-    LoRA modules. Never fatal: on any failure the run continues in bf16 with a warning."""
+    """Convert the frozen base linears to torchao float8 training compute (dynamic scaling; weights
+    stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the LoRA modules.
+    Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
         from torchao.float8 import convert_to_float8_training
         convert_to_float8_training(
@@ -427,9 +418,9 @@ def _apply_fp8_training(transformer, on_event) -> bool:
 
 
 def _mx_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get mxfp8 training compute: skip anything LoRA-owned (the
-    adapters must stay high precision), the output projection (same guard as fp8), and
-    shapes the 32-wide MX block scaling cannot tile (dims not divisible by 32)."""
+    """Which frozen linears get mxfp8 training compute: skip anything LoRA-owned (the adapters must
+    stay high precision), the output projection (same guard as fp8), and shapes the 32-wide MX
+    block scaling cannot tile (dims not divisible by 32)."""
     import torch.nn as nn
 
     if not isinstance(mod, nn.Linear):
@@ -438,16 +429,16 @@ def _mx_module_filter(mod, fqn: str) -> bool:
         return False
     if fqn.endswith("proj_out") or ".proj_out." in fqn:
         return False
-    # Skip biased linears: the torchao 0.17 MX path swaps the weight for a wrapper that drops the bias,
-    # changing the output the LoRA regresses against.
+    # Skip biased linears: the torchao 0.17 MX path swaps the weight for a wrapper that drops the bias, changing the
+    # output the LoRA regresses against.
     if getattr(mod, "bias", None) is not None:
         return False
     return mod.in_features % 32 == 0 and mod.out_features % 32 == 0
 
 
 def _mxfp8_training_config():
-    """The torchao MX training config across the prototype API's revisions: torchao 0.16
-    ships ``MXLinearConfig`` in ``prototype.mx_formats``; 0.17 removed it in favour of the
+    """The torchao MX training config across the prototype API's revisions: torchao 0.16 ships
+    ``MXLinearConfig`` in ``prototype.mx_formats``; 0.17 removed it in favour of the
     ``MXFP8TrainingOpConfig`` recipe API shared with MoE training. Both feed ``quantize_``.
     Raises ImportError when neither API exists (mxfp8 then falls back to bf16)."""
     try:
@@ -463,12 +454,12 @@ def _mxfp8_training_config():
 
 def _apply_mxfp8_training(transformer, on_event) -> bool:
     """Swap the frozen base linears to torchao MX float8 training compute (mxfp8, the
-    Blackwell-native block-scaled format; the swap is in place and the weights stay bf16
-    in memory, so like fp8 this is a speed mode, not a memory mode). Applied AFTER
-    add_adapter so the filter can exclude the LoRA modules. Only competitive under
-    torch.compile and only ahead of compiled bf16 at large token counts (high resolution
-    or batch), which is why it stays an explicit opt-in rather than an "auto" pick.
-    Never fatal: on any failure the run continues in bf16 with a warning."""
+    Blackwell-native block-scaled format; the swap is in place and the weights stay bf16 in
+    memory, so like fp8 this is a speed mode, not a memory mode). Applied AFTER add_adapter so
+    the filter can exclude the LoRA modules. Only competitive under torch.compile and only ahead
+    of compiled bf16 at large token counts (high resolution or batch), which is why it stays an
+    explicit opt-in rather than an "auto" pick. Never fatal: on any failure the run continues in
+    bf16 with a warning."""
     try:
         from torchao.quantization import quantize_
         quantize_(
@@ -491,19 +482,18 @@ def _pick_auto_precision(
     has_fp8,
     has_torchao = True,
 ) -> str:
-    """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the
-    fastest dense mode whose weights + headroom (activations, optimizer, cache) fit the
-    free VRAM at decision time. bf16 + regional compile is the measured speed winner
-    (2.3-2.6x over nf4 on B200); fp8 stays an explicit opt-in because torchao float8's
-    dynamic-scaling overhead made it SLOWER than compiled bf16 at LoRA-training shapes on
-    the same hardware. int8 must still materialise the full bf16 transformer before
-    ``quantize_`` shrinks it module-by-module, so its band requires the dense-load
-    transient (1.15x dense) to fit -- what int8 buys in that band is steady-state
-    headroom for activations and the latent cache, not load-time memory. int8 also needs
-    torchao at runtime (``_int8_quantize_base`` has no fallback, unlike fp8), so auto only
-    picks it when torchao is importable and drops to nf4 otherwise. ``capability``/``has_fp8``
-    remain parameters so the policy can be revisited per GPU generation without changing
-    callers."""
+    """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
+    dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
+    decision time. bf16 + regional compile is the measured speed winner (2.3-2.6x over nf4 on
+    B200); fp8 stays an explicit opt-in because torchao float8's dynamic-scaling overhead made it
+    SLOWER than compiled bf16 at LoRA-training shapes on the same hardware. int8 must still
+    materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so
+    its band requires the dense-load transient (1.15x dense) to fit -- what int8 buys in that
+    band is steady-state headroom for activations and the latent cache, not load-time memory.
+    int8 also needs torchao at runtime (``_int8_quantize_base`` has no fallback, unlike fp8), so
+    auto only picks it when torchao is importable and drops to nf4 otherwise.
+    ``capability``/``has_fp8`` remain parameters so the policy can be revisited per GPU
+    generation without changing callers."""
     _ = capability, has_fp8
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
@@ -518,18 +508,19 @@ def _dense_bf16_gb(spec, base_model: str) -> float:
     """The dense-bf16 transformer size of the base this run actually trains from.
 
     ``spec.dense_bf16_gb`` is one number per FAMILY, and flux.2-klein is a family with two
-    transformer sizes under it: the 4B default (8.1 GB) and the 9B / base-9B pair (18.2 GB).
-    Sizing a 9B run off the family number understates it by 2.3x, so base_precision="auto"
-    (the mode /info recommends, and therefore the Train tab's default) resolves to bf16 on a
-    16-24 GB GPU and the dense load OOMs -- the run fails before the first step.
+    transformer sizes under it: the 4B default (8.1 GB) and the 9B / base-9B pair (18.2 GB). Sizing
+    a 9B run off the family number understates it by 2.3x, so base_precision="auto" (the mode /info
+    recommends, and therefore the Train tab's default) resolves to bf16 on a 16-24 GB GPU and the
+    dense load OOMs -- the run fails before the first step.
 
-    The inference auto-policy already keeps per-base overrides for exactly this, so read them
-    here instead of adding a second table that can drift. Reads the per-base OVERRIDES only,
-    never the family table underneath them: this spec's own number is the family default, and
-    the two are independently maintained, so falling through to the shared family entry would
-    silently re-size every base that has no override (klein's 4B default from 8.1 to 7.8, which
-    moves the bf16 band by half a GB). Never raises: a sizing lookup must not be able to fail a
-    run that would otherwise train."""
+    The inference auto-policy already keeps per-base overrides for exactly this, so read them here
+    instead of adding a second table that can drift. Reads the per-base OVERRIDES only, never the
+    family table underneath them: this spec's own number is the family default, and the two are
+    independently maintained, so falling through to the shared family entry would silently re-size
+    every base that has no override (klein's 4B default from 8.1 to 7.8, which moves the bf16 band
+    by half a GB). Never raises: a sizing lookup must not be able to fail a run that would otherwise
+    train.
+    """
     try:
         from core.inference.diffusion_auto_policy import base_repo_bf16_components_gb
         components = base_repo_bf16_components_gb(base_model)
@@ -541,12 +532,11 @@ def _dense_bf16_gb(spec, base_model: str) -> float:
 
 
 def _resolve_base_precision(cfg, spec, device) -> str:
-    """Resolve "auto" against the live GPU (free VRAM measured BEFORE anything loads);
-    explicit modes pass through (normalized() already validated them against the repo and
-    compute dtype) but are re-checked against the live device here: the dense modes are
-    CUDA-only, and /info never advertises them on a host without a GPU, so an explicit
-    request from a stale or direct client fails fast instead of loading a full dense
-    transformer onto the CPU."""
+    """Resolve "auto" against the live GPU (free VRAM measured BEFORE anything loads); explicit
+    modes pass through (normalized() already validated them against the repo and compute dtype)
+    but are re-checked against the live device here: the dense modes are CUDA-only, and /info
+    never advertises them on a host without a GPU, so an explicit request from a stale or direct
+    client fails fast instead of loading a full dense transformer onto the CPU."""
     mode = (cfg.base_precision or "nf4").strip().lower()
     if mode != "auto":
         if mode in ("bf16", "int8", "fp8", "mxfp8") and device != "cuda":
@@ -561,25 +551,24 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use base_precision='nf4', "
                 "'bf16', or 'auto'."
             )
-        # int8 has no runtime fallback, so gate on a FUNCTIONAL torchao here as the auto pick and /info do;
-        # find_spec is satisfied by the Windows-ROCm stub.
+        # int8 has no runtime fallback, so gate on a FUNCTIONAL torchao here as the auto pick and /info do; find_spec
+        # is satisfied by the Windows-ROCm stub.
         if mode == "int8" and not has_functional_torchao():
             raise ValueError(
                 "base_precision='int8' needs a functional torchao install; this host's "
                 "torchao is missing or the non-functional Windows-ROCm stub. Use "
                 "base_precision='nf4', 'bf16', or 'auto'."
             )
-        # The stub answers torchao.float8 / torchao.prototype.mx_formats with a no-op that reports success,
-        # so the run would report fp8 while training bf16.
-        # Keyed on the stub, not has_functional_torchao(): that probes int8's symbols, and a real-but-
-        # partial torchao must still reach the arch checks below.
+        # The stub answers torchao.float8 / torchao.prototype.mx_formats with a no-op that reports success, so the run
+        # would report fp8 while training bf16. Keyed on the stub, not has_functional_torchao(): that probes int8's
+        # symbols, and a real-but-partial torchao must still reach the arch checks below.
         if mode in ("fp8", "mxfp8") and is_stubbed("torchao"):
             raise ValueError(
                 f"base_precision={mode!r} is not available on this host: torchao is the "
                 "non-functional Windows-ROCm stub. Use base_precision='nf4', 'bf16', or 'auto'."
             )
-        # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, after a full dense
-        # load. Re-check here to fail fast for a stale client.
+        # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, after a full dense load.
+        # Re-check here to fail fast for a stale client.
         if mode == "mxfp8" and device == "cuda":
             try:
                 import torch
@@ -592,8 +581,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                     "Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
                 )
         return mode
-    # auto may only resolve to the dense modes when the run uses bf16 compute, mirroring the
-    # normalized() rule for explicit dense modes; otherwise stay on the nf4 floor.
+    # auto may only resolve to the dense modes when the run uses bf16 compute, mirroring the normalized() rule for
+    # explicit dense modes; otherwise stay on the nf4 floor.
     if getattr(cfg, "mixed_precision", "bf16") != "bf16":
         return "nf4"
     prequant = repo_is_prequantized(cfg.base_model)
@@ -606,8 +595,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         try:
             import torch
 
-            # Windows ROCm over-reports free VRAM (#8403), which would pick a dense precision the card cannot
-            # actually hold.
+            # Windows ROCm over-reports free VRAM (#8403), which would pick a dense precision the card cannot actually
+            # hold.
             from utils.hardware import trusted_mem_get_info
 
             free_gb = trusted_mem_get_info()[0] / 1e9
@@ -626,7 +615,6 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     )
 
 
-# ── FLUX.1-dev ────────────────────────────────────────────────────────────────
 def _flux_load_conditioners(cfg, device, weight_dtype):
     from diffusers import FluxPipeline
     return _load_pipe_without_transformer(FluxPipeline, cfg, device)
@@ -681,16 +669,16 @@ def _flux_collate(
 ):
     import torch
 
-    # FLUX embeds are fixed-length, so a plain cat batches them; text_ids are shared position ids,
-    # identical across prompts.
+    # FLUX embeds are fixed-length, so a plain cat batches them; text_ids are shared position ids, identical across
+    # prompts.
     pe = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
     pooled = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
     text_ids = entries[0][2].to(device = device, dtype = torch.float32)
     return (pe, pooled, text_ids)
 
 
-# Per-run cache of the step-invariant FLUX conditioning tensors: their shapes are fixed once
-# resolution and batch are. Cleared at run start.
+# Per-run cache of the step-invariant FLUX conditioning tensors: their shapes are fixed once resolution and batch are.
+# Cleared at run start.
 _FLUX_STATIC: dict[tuple, tuple] = {}
 
 
@@ -701,8 +689,8 @@ def _flux_static_inputs(bsz, h, w, device):
     key = (bsz, h, w, str(device))
     hit = _FLUX_STATIC.get(key)
     if hit is None:
-        # Position ids drive RoPE and are indices, not activations, so keep them float32 regardless of the
-        # training dtype.
+        # Position ids drive RoPE and are indices, not activations, so keep them float32 regardless of the training
+        # dtype.
         img_ids = FluxPipeline._prepare_latent_image_ids(bsz, h // 2, w // 2, device, torch.float32)
         guidance = torch.full((bsz,), 1.0, device = device, dtype = torch.float32)
         hit = _FLUX_STATIC[key] = (img_ids, guidance)
@@ -738,15 +726,14 @@ def _flux_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# ── Qwen-Image ────────────────────────────────────────────────────────────────
 def _qwen_load_conditioners(cfg, device, weight_dtype):
     from diffusers import QwenImagePipeline
     return _load_pipe_without_transformer(QwenImagePipeline, cfg, device)
 
 
 def _qwen_load_transformer(cfg, device, weight_dtype, base_precision):
-    # The prequant default ships the transformer 4-bit and loads trainable as-is under nf4; the dense
-    # modes need the 20B Qwen/Qwen-Image base.
+    # The prequant default ships the transformer 4-bit and loads trainable as-is under nf4; the dense modes need the
+    # 20B Qwen/Qwen-Image base.
     from diffusers import QwenImageTransformer2DModel
     return _load_dit_transformer(QwenImageTransformer2DModel, cfg, device, base_precision)
 
@@ -780,8 +767,8 @@ def _qwen_latent_affine(vae, ref):
 def _qwen_encode_latents(vae, pixel_values):
     import torch
 
-    # AutoencoderKLQwenImage is a 3D (video) VAE: add a temporal dim, encode, and normalise by the per-
-    # channel latents_mean / latents_std.
+    # AutoencoderKLQwenImage is a 3D (video) VAE: add a temporal dim, encode, and normalise by the per-channel
+    # latents_mean / latents_std.
     px = pixel_values.to(torch.float32).unsqueeze(2)
     with torch.no_grad():
         lat = vae.encode(px).latent_dist.sample()
@@ -808,8 +795,8 @@ def _qwen_collate(
     import torch
     import torch.nn.functional as F
 
-    # Qwen embeds are variable-length: pad to the batch max (or a pinned ``pad_to`` bucket under
-    # compile) and batch the validity mask with them.
+    # Qwen embeds are variable-length: pad to the batch max (or a pinned ``pad_to`` bucket under compile) and batch
+    # the validity mask with them.
     seqs = [e[0].shape[1] for e in entries]
     target = max(pad_to or 0, max(seqs))
     pes, masks = [], []
@@ -824,8 +811,8 @@ def _qwen_collate(
         masks.append(mask)
     pe_b = torch.cat(pes).to(device = device, dtype = weight_dtype)
     mask_b = torch.cat(masks).to(device)
-    # A single unpadded sample keeps the legacy None mask (identical math; avoids a behaviour delta for
-    # existing single-image runs).
+    # A single unpadded sample keeps the legacy None mask (identical math; avoids a behaviour delta for existing
+    # single-image runs).
     if len(entries) == 1 and entries[0][1] is None and target == seqs[0]:
         mask_b = None
     return (pe_b, mask_b)
@@ -837,8 +824,8 @@ def _qwen_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
     pe, mask = embeds_batch
     bsz, c, f, h, w = noisy.shape
     packed = QwenImagePipeline._pack_latents(noisy, bsz, c, h, w)
-    # Each batch entry is a LIST of one (frame, h/2, w/2) tuple: the transformer indexes sample[0] /
-    # sample[1:] per entry, so a flat list breaks it.
+    # Each batch entry is a LIST of one (frame, h/2, w/2) tuple: the transformer indexes sample[0] / sample[1:] per
+    # entry, so a flat list breaks it.
     img_shapes = [[(1, h // 2, w // 2)]] * bsz
     pred = transformer(
         hidden_states = packed,
@@ -860,15 +847,14 @@ def _qwen_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# ── Z-Image ───────────────────────────────────────────────────────────────────
 def _zimage_load_conditioners(cfg, device, weight_dtype):
     from diffusers import ZImagePipeline
     return _load_pipe_without_transformer(ZImagePipeline, cfg, device)
 
 
 def _zimage_load_transformer(cfg, device, weight_dtype, base_precision):
-    # Prequant default loads 4-bit as-is under nf4; the dense modes use the bf16 Tongyi-MAI base.
-    # Z-Image is bf16 only (its RoPE/embedder run fp32; fp16 overflows).
+    # Prequant default loads 4-bit as-is under nf4; the dense modes use the bf16 Tongyi-MAI base. Z-Image is bf16 only
+    # (its RoPE/embedder run fp32; fp16 overflows).
     from diffusers import ZImageTransformer2DModel
     return _load_dit_transformer(ZImageTransformer2DModel, cfg, device, base_precision)
 
@@ -900,8 +886,8 @@ def _zimage_encode_latents(vae, pixel_values):
 
 
 def _zimage_encode_latent_stats(vae, pixel_values):
-    # Z-Image trains from the posterior mode (deterministic), so the cached entry is the final latent: B
-    # is None and the loop skips the per-step draw.
+    # Z-Image trains from the posterior mode (deterministic), so the cached entry is the final latent: B is None and
+    # the loop skips the per-step draw.
     return _zimage_encode_latents(vae, pixel_values), None
 
 
@@ -919,8 +905,8 @@ def _zimage_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, de
     import torch
 
     (caps,) = embeds_batch
-    # List I/O: one [C,1,H,W] latent + one [seq,2560] caption per sample. The timestep convention is
-    # REVERSED ((1000 - t) / 1000) and the prediction is NEGATED.
+    # List I/O: one [C,1,H,W] latent + one [seq,2560] caption per sample. The timestep convention is REVERSED ((1000 -
+    # t) / 1000) and the prediction is NEGATED.
     x_list = list(noisy.unsqueeze(2).unbind(dim = 0))
     t_norm = (1000 - timesteps) / 1000
     out = transformer(x_list, t_norm, list(caps), return_dict = False)[0]
@@ -936,10 +922,9 @@ def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# ── Krea 2 ────────────────────────────────────────────────────────────────────
 def _krea2_load_conditioners(cfg, device, weight_dtype):
-    # The krea repo ships transformers-5.x style configs the pinned 4.x line cannot parse, so the
-    # conditioning pipeline is assembled per-component (diffusion_krea2.py).
+    # The krea repo ships transformers-5.x style configs the pinned 4.x line cannot parse, so the conditioning
+    # pipeline is assembled per-component (diffusion_krea2.py).
     import torch
     from core.inference.diffusion_krea2 import load_krea2_pipeline
 
@@ -951,8 +936,8 @@ def _krea2_load_conditioners(cfg, device, weight_dtype):
 
 
 def _krea2_load_transformer(cfg, device, weight_dtype, base_precision):
-    # The transformer subfolder is diffusers-format. No prequant repo yet, so nf4 quantizes the 12B
-    # transformer on the fly.
+    # The transformer subfolder is diffusers-format. No prequant repo yet, so nf4 quantizes the 12B transformer on the
+    # fly.
     from diffusers import Krea2Transformer2DModel
     return _load_dit_transformer(Krea2Transformer2DModel, cfg, device, base_precision)
 
@@ -964,8 +949,8 @@ def _krea2_encode_prompts(pipe, captions, device):
     out = []
     with torch.no_grad():
         for cap in captions:
-            # encode_prompt pads/truncates to max_sequence_length, so every embed is
-            # [1, 512, num_text_layers, 2560] with a [1, 512] mask (static shapes, padding before the suffix).
+            # encode_prompt pads/truncates to max_sequence_length, so every embed is [1, 512, num_text_layers, 2560]
+            # with a [1, 512] mask (static shapes, padding before the suffix).
             pe, mask = pipe.encode_prompt(
                 prompt = cap,
                 device = device,
@@ -1000,8 +985,8 @@ def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     from diffusers import Krea2Pipeline
 
     pe, mask = embeds_batch
-    # Krea2Pipeline._pack_latents is an instance method (it reads self.patch_size), so the packing is
-    # inlined like the reference script.
+    # Krea2Pipeline._pack_latents is an instance method (it reads self.patch_size), so the packing is inlined like the
+    # reference script.
     bsz, c, _f, h, w = noisy.shape
     packed = noisy.reshape(bsz, c, h // 2, 2, w // 2, 2)
     packed = packed.permute(0, 2, 4, 1, 3, 5).reshape(bsz, (h // 2) * (w // 2), c * 4)
@@ -1029,10 +1014,9 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# Both variants share Flux2Transformer2DModel and the upstream packing/forward conventions,
-# differing only in the conditioning stack (dev: Mistral-3-Small; Klein: Qwen3) and size. Latents
-# train patchified and batch-norm-normalised, from the posterior MODE (deterministic).
-# ── FLUX.2 (dev + Klein) ──────────────────────────────────────────────────────
+# FLUX.2 (dev + Klein). Both variants share Flux2Transformer2DModel and the upstream packing/forward conventions,
+# differing only in the conditioning stack (dev: Mistral-3-Small; Klein: Qwen3) and size. Latents train patchified and
+# batch-norm-normalised, from the posterior MODE (deterministic).
 _FLUX2_COMMON_TARGETS = (
     # Double-stream blocks: separate q/k/v plus the ModuleList out proj.
     "to_k",
@@ -1042,16 +1026,16 @@ _FLUX2_COMMON_TARGETS = (
     # Single-stream blocks use one fused qkv+mlp input projection.
     "to_qkv_mlp_proj",
 )
-# A bare "to_out" suffix also matches the double-stream ModuleList, which PEFT cannot wrap, so each
-# single block is named explicitly; missing high indexes are harmless on the Klein-4B layout.
+# A bare "to_out" suffix also matches the double-stream ModuleList, which PEFT cannot wrap, so each single block is
+# named explicitly; missing high indexes are harmless on the Klein-4B layout.
 _FLUX2_KLEIN_TARGETS = _FLUX2_COMMON_TARGETS + tuple(
     f"single_transformer_blocks.{i}.attn.to_out" for i in range(24)
 )
 _FLUX2_DEV_TARGETS = _FLUX2_COMMON_TARGETS + tuple(
     f"single_transformer_blocks.{i}.attn.to_out" for i in range(48)
 )
-# The references train dev with its guidance-distillation vector at 3.5 (Klein applies it only when
-# the variant config carries guidance_embeds).
+# The references train dev with its guidance-distillation vector at 3.5 (Klein applies it only when the variant config
+# carries guidance_embeds).
 _FLUX2_TRAIN_GUIDANCE = 3.5
 
 
@@ -1077,8 +1061,8 @@ def _flux2_encode_prompts(pipe, captions, device):
     out = []
     with torch.no_grad():
         for cap in captions:
-            # encode_prompt pads to max_sequence_length, so embeds are fixed-length and text_ids are per-caption
-            # [1, txt_len, 4]. The per-class text_encoder_out_layers defaults are left to the pipeline.
+            # encode_prompt pads to max_sequence_length, so embeds are fixed-length and text_ids are per-caption [1,
+            # txt_len, 4]. The per-class text_encoder_out_layers defaults are left to the pipeline.
             pe, text_ids = pipe.encode_prompt(
                 prompt = cap,
                 device = device,
@@ -1103,8 +1087,8 @@ def _flux2_encode_latents(vae, pixel_values):
 
 
 def _flux2_encode_latent_stats(vae, pixel_values):
-    # FLUX.2 trains from the posterior mode (deterministic): the cached entry is the final latent
-    # itself; B is None and the loop skips the per-step sampling draw.
+    # FLUX.2 trains from the posterior mode (deterministic): the cached entry is the final latent itself; B is None
+    # and the loop skips the per-step sampling draw.
     return _flux2_encode_latents(vae, pixel_values), None
 
 
@@ -1116,8 +1100,8 @@ def _flux2_collate(
 ):
     import torch
 
-    # Fixed-length embeds give a plain concat; text_ids are PER-SAMPLE (unlike FLUX.1's shared grid), so
-    # they concat too.
+    # Fixed-length embeds give a plain concat; text_ids are PER-SAMPLE (unlike FLUX.1's shared grid), so they concat
+    # too.
     pe = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
     text_ids = torch.cat([e[1] for e in entries]).to(device = device, dtype = torch.float32)
     return (pe, text_ids)
@@ -1142,8 +1126,8 @@ def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     from diffusers import Flux2Pipeline
 
     pe, text_ids = embeds_batch
-    # ``noisy`` is already in the patchified normalised space, so packing is the [B,C,H,W] to [B, H*W, C]
-    # flatten the pipeline uses.
+    # ``noisy`` is already in the patchified normalised space, so packing is the [B,C,H,W] to [B, H*W, C] flatten the
+    # pipeline uses.
     packed = Flux2Pipeline._pack_latents(noisy)
     img_ids = _flux2_static_img_ids(noisy, device)
     guidance = None
@@ -1161,8 +1145,8 @@ def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
         return_dict = False,
     )[0]
     pred = pred[:, : packed.size(1)]
-    # _unpack_latents_with_ids scatters per sample; diffusers 0.39 stacks them itself (its list
-    # annotation is stale), other builds hand back the list. Same-resolution batches align either way.
+    # _unpack_latents_with_ids scatters per sample; diffusers 0.39 stacks them itself (its list annotation is stale),
+    # other builds hand back the list. Same-resolution batches align either way.
     unpacked = Flux2Pipeline._unpack_latents_with_ids(pred, img_ids)
     if isinstance(unpacked, (list, tuple)):
         unpacked = torch.stack(unpacked)
@@ -1187,16 +1171,13 @@ def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# Milestone one trains from STILL IMAGES: a 1-frame clip is valid LTX-2 input (its VAE compresses
-# time by 8) and style LoRAs converge on 20-50 stills, so this spec reuses the image dataset layer.
-# AUDIOVISUAL: forward REQUIRES audio arguments and diffusers has no video-only escape hatch, so
-# feed a one-token audio stream with isolate_modalities=True and keep audio out of the loss and
-# out of the LoRA targets. The reason _LTX2_TARGETS names its modules in full.
-# Two-stage conditioning: the Gemma3-12B hidden states are ~370 MB per caption, so encode_prompts
-# runs both stages and caches only the small connector output.
-# Video-stream attention only, fully qualified: a bare "to_q" would also match
-# audio_attn1/audio_attn2 and the cross-modality attentions.
-# ── LTX-2 (video) ─────────────────────────────────────────────────────────────
+# LTX-2 (video). Milestone one trains from STILL IMAGES: a 1-frame clip is valid LTX-2 input (its VAE compresses time
+# by 8) and style LoRAs converge on 20-50 stills, so this spec reuses the image dataset layer. AUDIOVISUAL: forward
+# REQUIRES audio arguments and diffusers has no video-only escape hatch, so feed a one-token audio stream with
+# isolate_modalities=True and keep audio out of the loss and out of the LoRA targets -- the reason _LTX2_TARGETS names
+# its modules in full. Two-stage conditioning: the Gemma3-12B hidden states are ~370 MB per caption, so encode_prompts
+# runs both stages and caches only the small connector output. Video-stream attention only, fully qualified: a bare
+# "to_q" would also match audio_attn1/audio_attn2 and the cross-modality attentions.
 _LTX2_TARGETS = (
     "attn1.to_q",
     "attn1.to_k",
@@ -1208,8 +1189,8 @@ _LTX2_TARGETS = (
     "attn2.to_out.0",
 )
 
-# LTX-2's rotary temporal coordinate is in SECONDS, so a 1-frame clip at the native 24 fps lands
-# where a generated clip's first latent frame lands; Lightricks instead pin images to fps=1.0.
+# LTX-2's rotary temporal coordinate is in SECONDS, so a 1-frame clip at the native 24 fps lands where a generated
+# clip's first latent frame lands; Lightricks instead pin images to fps=1.0.
 _LTX2_TRAIN_FPS = 24.0
 
 
@@ -1232,8 +1213,8 @@ def _ltx2_encode_prompts(pipe, captions, device):
     import torch
 
     _encoders_to_device(pipe, device)
-    # The Gemma3 hidden states are per-LAYER stacked ([1, 1024, 3840 * layers]); only the connector output
-    # reaches the transformer, so that is what gets cached.
+    # The Gemma3 hidden states are per-LAYER stacked ([1, 1024, 3840 * layers]); only the connector output reaches the
+    # transformer, so that is what gets cached.
     out = []
     with torch.no_grad():
         for cap in captions:
@@ -1244,8 +1225,8 @@ def _ltx2_encode_prompts(pipe, captions, device):
                 max_sequence_length = 1024,
                 device = device,
             )
-            # Read AFTER encode_prompt, which sets padding_side="left" itself: the connectors build the valid-
-            # token mask from this, so a stale "right" would mask every short caption on the wrong end.
+            # Read AFTER encode_prompt, which sets padding_side="left" itself: the connectors build the valid-token
+            # mask from this, so a stale "right" would mask every short caption on the wrong end.
             padding_side = getattr(getattr(pipe, "tokenizer", None), "padding_side", "left")
             video_emb, audio_emb, conn_mask = pipe.connectors(pe, mask, padding_side = padding_side)
             out.append((video_emb.cpu(), audio_emb.cpu(), conn_mask.cpu()))
@@ -1264,8 +1245,8 @@ def _ltx2_latent_affine(vae, ref):
 def _ltx2_encode_latents(vae, pixel_values):
     import torch
 
-    # A still is a 1-frame clip: [B,3,H,W] -> [B,3,1,H,W]. The VAE compresses 32x spatially and 8x
-    # temporally, so a 512px still becomes [B,128,1,16,16].
+    # A still is a 1-frame clip: [B,3,H,W] -> [B,3,1,H,W]. The VAE compresses 32x spatially and 8x temporally, so a
+    # 512px still becomes [B,128,1,16,16].
     px = pixel_values.to(torch.float32).unsqueeze(2)
     with torch.no_grad():
         lat = vae.encode(px).latent_dist.sample()
@@ -1291,8 +1272,8 @@ def _ltx2_collate(
 ):
     import torch
 
-    # encode_prompt pads to max_sequence_length, so every connector embed is [1, 1024, 3840] and a plain concat batches
-    # them; ``pad_to`` is moot.
+    # encode_prompt pads to max_sequence_length, so every connector embed is [1, 1024, 3840] and a plain concat
+    # batches them; ``pad_to`` is moot.
     video = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
     audio = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
     mask = torch.cat([e[2] for e in entries]).to(device)
@@ -1300,13 +1281,11 @@ def _ltx2_collate(
 
 
 def _ltx2_audio_token_count(config, num_pixel_frames: int, fps: float) -> int:
-    """Audio latent tokens accompanying ``num_pixel_frames`` at ``fps``.
-
-    The pipeline derives this as ``round(duration_s * sampling_rate / hop_length /
-    temporal_compression)``; every term is on the transformer config, so the trainer does not
-    need the audio VAE resident (it never encodes audio -- see the spec comment). Floored at
-    one token: the transformer indexes the audio stream unconditionally, so an empty one
-    would trip its RoPE."""
+    """Audio latent tokens accompanying ``num_pixel_frames`` at ``fps``. The pipeline derives this
+    as ``round(duration_s * sampling_rate / hop_length / temporal_compression)``; every term is
+    on the transformer config, so the trainer does not need the audio VAE resident (it never
+    encodes audio, see the spec comment). Floored at one token: the transformer indexes the audio
+    stream unconditionally, so an empty one would trip its RoPE."""
     per_second = (
         float(config.audio_sampling_rate)
         / float(config.audio_hop_length)
@@ -1328,14 +1307,13 @@ def _ltx2_unpack(pred, f, h, w, conf):
 
 
 def _ltx2_audio_state(sigmas, bsz, audio_len, channels, device, dtype):
-    """The audio-stream input for a step at ``sigmas``.
-
-    A still-image dataset carries no audio ground truth, so the placeholder stream rides the
-    SAME flow-matching state a zero clean latent would produce: ``(1 - sigma) * 0 + sigma *
-    noise``. Zero is the mean of the normalised audio latent distribution, so this keeps the
-    stream at the right SCALE for every sigma instead of feeding unit noise at a timestep the
-    model expects nearly-clean latents at. With ``isolate_modalities = True`` it cannot reach
-    the video prediction at all; it exists only because ``forward`` requires the argument."""
+    """The audio-stream input for a step at ``sigmas``. A still-image dataset carries no audio
+    ground truth, so the placeholder stream rides the SAME flow-matching state a zero clean
+    latent would produce: ``(1 - sigma) * 0 + sigma * noise``. Zero is the mean of the normalised
+    audio latent distribution, so this keeps the stream at the right SCALE for every sigma
+    instead of feeding unit noise at a timestep the model expects nearly-clean latents at. With
+    ``isolate_modalities = True`` it cannot reach the video prediction at all; it exists only
+    because ``forward`` requires the argument."""
     import torch
 
     noise = torch.randn((bsz, audio_len, channels), device = device, dtype = dtype)
@@ -1361,8 +1339,8 @@ def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
         audio_hidden_states = audio_noisy,
         encoder_hidden_states = video_emb,
         audio_encoder_hidden_states = audio_emb,
-        # LTX-2 conditions on the UNSCALED timestep (its config carries timestep_scale_multiplier = 1000
-        # and the pipeline passes scheduler timesteps through as-is), unlike FLUX / Qwen's timestep / 1000.
+        # LTX-2 conditions on the UNSCALED timestep (its config carries timestep_scale_multiplier = 1000 and the
+        # pipeline passes scheduler timesteps through as-is), unlike FLUX / Qwen's timestep / 1000.
         timestep = timesteps,
         sigma = timesteps,
         encoder_attention_mask = mask,
@@ -1372,8 +1350,8 @@ def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
         width = w,
         fps = _LTX2_TRAIN_FPS,
         audio_num_frames = audio_len,
-        # Disable the a2v / v2a cross attention so the placeholder audio stream cannot perturb the video
-        # prediction the LoRA is regressing.
+        # Disable the a2v / v2a cross attention so the placeholder audio stream cannot perturb the video prediction
+        # the LoRA is regressing.
         isolate_modalities = True,
         return_dict = False,
     )
@@ -1465,8 +1443,8 @@ _SPECS: dict[str, _FamilySpec] = {
         family = "flux.2-dev",
         lora_targets = _FLUX2_DEV_TARGETS,
         force_bf16 = True,
-        # 32B DiT; the Mistral conditioning stack (~46 GB bf16) is loaded, encoded and freed BEFORE this lands
-        # on the device (the shared phased load).
+        # 32B DiT; the Mistral conditioning stack (~46 GB bf16) is loaded, encoded and freed BEFORE this lands on the
+        # device (the shared phased load).
         dense_bf16_gb = 64.5,
         load_conditioners = _flux2_load_conditioners,
         load_transformer = _flux2_load_transformer,
@@ -1481,8 +1459,8 @@ _SPECS: dict[str, _FamilySpec] = {
         family = "ltx-2",
         lora_targets = _LTX2_TARGETS,
         force_bf16 = True,
-        # 19B audiovisual DiT (37.76 GB bf16); the Gemma3-12B conditioning stack is loaded, encoded and
-        # freed BEFORE this lands on the device, via the shared phased load.
+        # 19B audiovisual DiT (37.76 GB bf16); the Gemma3-12B conditioning stack is loaded, encoded and freed BEFORE
+        # this lands on the device, via the shared phased load.
         dense_bf16_gb = 37.8,
         load_conditioners = _ltx2_load_conditioners,
         load_transformer = _ltx2_load_transformer,
@@ -1496,8 +1474,8 @@ _SPECS: dict[str, _FamilySpec] = {
 }
 
 
-# HF repos gating access behind a license acceptance: training needs a token whose account accepted
-# it. Checked by name (no network) so a missing token fails fast with an actionable message.
+# HF repos gating access behind a license acceptance: training needs a token whose account accepted it. Checked by
+# name (no network) so a missing token fails fast with an actionable message.
 _GATED_TRAIN_REPOS = frozenset({"black-forest-labs/flux.1-dev", "black-forest-labs/flux.2-dev"})
 
 
@@ -1506,8 +1484,8 @@ def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
     from core.inference.diffusion_families import _is_local_path
 
     name = str(base_model or "").strip().lower()
-    # A local clone named like the vendor repo is weights on disk, not a Hub fetch: refusing it by name
-    # alone is what made that documented layout untrainable.
+    # A local clone named like the vendor repo is weights on disk, not a Hub fetch: refusing it by name alone is what
+    # made that documented layout untrainable.
     if _is_local_path(base_model):
         return
     if name in _GATED_TRAIN_REPOS and not (hf_token and str(hf_token).strip()):
@@ -1518,8 +1496,8 @@ def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
 
 
 def _open_resized(path, resolution):
-    """Open + EXIF-orient + short-side resize to ``resolution`` (same geometry as the SDXL
-    loader). Returns the resized PIL image and its (rw, rh)."""
+    """Open + EXIF-orient + short-side resize to ``resolution`` (same geometry as the SDXL loader).
+    Returns the resized PIL image and its (rw, rh)."""
     from PIL import Image, ImageOps
 
     img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
@@ -1538,8 +1516,8 @@ def _to_unit_tensor(img):
 
 
 def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
-    """Load an image -> a normalised [3,H,W] tensor in [-1,1]. Same geometry as the SDXL
-    loader but without the SDXL time-ids (DiT families don't use them)."""
+    """Load an image -> a normalised [3,H,W] tensor in [-1,1]. Same geometry as the SDXL loader but
+    without the SDXL time-ids (DiT families don't use them)."""
     from PIL import Image
 
     img, rw, rh = _open_resized(path, resolution)
@@ -1555,10 +1533,10 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
 
 
 def _load_pixel_tensor_planned(path, resolution, center_crop, u_left, u_top, flip):
-    """Deterministic variant of ``_load_pixel_tensor`` for the latent cache: the crop comes
-    as unit fractions (mapped uniformly over the same inclusive integer range ``randint``
-    draws from) and the flip as a bool. ``center_crop`` reproduces the exact legacy
-    floor-div center so a cached center-crop run matches the uncached one bit-for-bit."""
+    """Deterministic variant of ``_load_pixel_tensor`` for the latent cache: the crop comes as unit
+    fractions (mapped uniformly over the same inclusive integer range ``randint`` draws from) and
+    the flip as a bool. ``center_crop`` reproduces the exact legacy floor-div center so a cached
+    center-crop run matches the uncached one bit-for-bit."""
     from PIL import Image
 
     img, rw, rh = _open_resized(path, resolution)
@@ -1585,14 +1563,14 @@ def _build_latent_cache(
     pcache = None,
     plan = None,
 ):
-    """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
-    encode once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The
-    stats stay fp32 so the per-step sample happens in fp32 and only the RESULT is cast to
-    weight_dtype, matching the in-loop path (encode fp32 -> sample/normalise fp32 ->
-    .to(weight_dtype)); fp32 doubles the cache RAM over bf16 but the cache is tiny (a handful
-    of latents per image). ``pcache`` (a PersistentConditioningCache) serves hits from disk
-    and receives every fresh encode, so the next run of the same config starts warm.
-    Returns None if the build was interrupted by a stop request."""
+    """Precompute the per-image latent posterior cache: for each planned crop/flip variant, encode
+    once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The stats stay
+    fp32 so the per-step sample happens in fp32 and only the RESULT is cast to weight_dtype,
+    matching the in-loop path (encode fp32 -> sample/normalise fp32 -> .to(weight_dtype)); fp32
+    doubles the cache RAM over bf16 but the cache is tiny (a handful of latents per image).
+    ``pcache`` (a PersistentConditioningCache) serves hits from disk and receives every fresh
+    encode, so the next run of the same config starts warm. Returns None if the build was
+    interrupted by a stop request."""
 
     if plan is None:
         plan = _plan_cache_variants(
@@ -1640,8 +1618,8 @@ def _build_latent_cache(
                         pass
             a, b = _hold(a), _hold(b)
             if not forced and not gated:
-                # Size-gate the automatic cache off the first REAL encoded variant: packed latents x variants x
-                # images can exhaust pinned RAM.
+                # Size-gate the automatic cache off the first REAL encoded variant: packed latents x variants x images
+                # can exhaust pinned RAM.
                 per_variant = a.numel() * a.element_size()
                 if b is not None:
                     per_variant += b.numel() * b.element_size()
@@ -1668,10 +1646,10 @@ def _build_latent_cache(
 
 
 def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
-    """Encode captions, serving hits from the persistent cache and writing misses back.
-    The returned list is aligned with ``to_encode``; without a cache this is exactly
-    ``spec.encode_prompts``. The cached tuples are the family's own CPU embed tuples
-    (dtype preserved by safetensors), so a hit is identical to a fresh encode."""
+    """Encode captions, serving hits from the persistent cache and writing misses back. The returned
+    list is aligned with ``to_encode``; without a cache this is exactly ``spec.encode_prompts``.
+    The cached tuples are the family's own CPU embed tuples (dtype preserved by safetensors), so
+    a hit is identical to a fresh encode."""
     if pcache is None:
         return spec.encode_prompts(pipe, to_encode, device)
     hits: dict = {}
@@ -1693,12 +1671,11 @@ def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
 
 
 def _load_warm_conditioning(pcache, image_paths, plan, to_encode, device):
-    """Load the FULL conditioning set (caption embeds + latent posterior stats) from the
-    persistent cache. Returns (caption_embeds, latent_cache) on a complete hit, else
-    (None, None) so the caller takes the cold path -- any missing/corrupt entry, and also
-    an in-memory holding that would blow the host budget (the cold path re-decides that
-    with the VAE resident and can fall back to per-step encoding). On success the VAE and
-    text encoders are never loaded."""
+    """Load the FULL conditioning set (caption embeds + latent posterior stats) from the persistent
+    cache. Returns (caption_embeds, latent_cache) on a complete hit, else (None, None) so the
+    caller takes the cold path -- any missing/corrupt entry, and also an in-memory holding that
+    would blow the host budget (the cold path re-decides that with the VAE resident and can fall
+    back to per-step encoding). On success the VAE and text encoders are never loaded."""
     embeds = []
     for cap in to_encode:
         entry = pcache.get(pcache.text_key(cap))
@@ -1743,10 +1720,10 @@ def _load_warm_conditioning(pcache, image_paths, plan, to_encode, device):
 
 
 def _sample_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
-    """Draw one latent per index from the cache: pick a variant, then sample the posterior
-    (A + B * randn) when the family is stochastic. Fresh noise per step, exactly like an
-    in-loop ``latent_dist.sample()``. The cached stats are fp32, so the sample is drawn in
-    fp32 and only the RESULT is cast to weight_dtype (matching the in-loop path's
+    """Draw one latent per index from the cache: pick a variant, then sample the posterior (A + B *
+    randn) when the family is stochastic. Fresh noise per step, exactly like an in-loop
+    ``latent_dist.sample()``. The cached stats are fp32, so the sample is drawn in fp32 and only
+    the RESULT is cast to weight_dtype (matching the in-loop path's
     ``encode_latents(...).to(weight_dtype)``)."""
     import torch
 
@@ -1772,14 +1749,14 @@ def _should_compile(
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
         return False
-    # torch.compile cannot trace the torchao int8 subclass in training (inductor rejects the aliased
-    # subclass graph outputs), so int8 always runs eager.
+    # torch.compile cannot trace the torchao int8 subclass in training (inductor rejects the aliased subclass graph
+    # outputs), so int8 always runs eager.
     if base_precision == "int8":
         return False
     if mode == "on":
         return True
-    # Regional compile is the whole point of the dense modes (2.6x measured on Z-Image bf16) but is
-    # fragile over bitsandbytes 4-bit modules, so it stays off for QLoRA.
+    # Regional compile is the whole point of the dense modes (2.6x measured on Z-Image bf16) but is fragile over
+    # bitsandbytes 4-bit modules, so it stays off for QLoRA.
     return base_precision in ("bf16", "fp8", "mxfp8")
 
 
@@ -1791,10 +1768,10 @@ def _maybe_compile_transformer(
     on_event,
     base_precision = "nf4",
 ) -> bool:
-    """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after
-    the LoRA is attached. Never fatal: a wrap failure falls back to eager with a warning
-    event, and dynamo's suppress_errors keeps a frame that fails to COMPILE at the first
-    step running eager instead of raising mid-run."""
+    """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
+    is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
+    dynamo's suppress_errors keeps a frame that fails to COMPILE at the first step running eager
+    instead of raising mid-run."""
     if not _should_compile(cfg, base_is_bnb, device, base_precision):
         if base_precision in ("fp8", "mxfp8"):
             _emit(
@@ -1817,15 +1794,15 @@ def _maybe_compile_transformer(
     try:
         dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
         if dynamo_cfg is not None:
-            # Heterogeneous-block DiTs (Z-Image: ~11 distinct block shapes) exceed dynamo's default recompile
-            # limit of 8; bump it like the inference speed layer does.
+            # Heterogeneous-block DiTs (Z-Image: ~11 distinct block shapes) exceed dynamo's default recompile limit of
+            # 8; bump it like the inference speed layer does.
             for attr in ("recompile_limit", "cache_size_limit"):
                 if hasattr(dynamo_cfg, attr):
                     setattr(dynamo_cfg, attr, max(getattr(dynamo_cfg, attr) or 0, 64))
             if hasattr(dynamo_cfg, "suppress_errors"):
                 dynamo_cfg.suppress_errors = True
-        # dynamic=True matches the inference speed layer: on torch 2.10 / B200 the dynamic=False
-        # specialisation failed with CUBLAS_STATUS_EXECUTION_FAILED.
+        # dynamic=True matches the inference speed layer: on torch 2.10 / B200 the dynamic=False specialisation failed
+        # with CUBLAS_STATUS_EXECUTION_FAILED.
         fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
@@ -1839,19 +1816,18 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2) and export it.
-
-    Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments, LR
-    position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle,
-    and the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2) and
+    export it. Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments,
+    LR position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle, and
+    the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
     ``cfg.save_steps`` interval write such a bundle."""
     cfg = config.normalized()
     spec = _SPECS.get(cfg.resolved_family)
     if spec is None:
         raise ValueError(f"No DiT trainer for family {cfg.resolved_family!r}")
 
-    # DiT families train in bf16, so an explicit fp16 request is refused, not silently upgraded.
-    # Validated before the heavy imports so a host without diffusers still sees the real error.
+    # DiT families train in bf16, so an explicit fp16 request is refused, not silently upgraded. Validated before the
+    # heavy imports so a host without diffusers still sees the real error.
     if cfg.mixed_precision == "fp16" and spec.force_bf16:
         raise ValueError(
             f"{spec.family} LoRA training requires bf16: fp16 overflows its fp32 RoPE / "
@@ -1878,8 +1854,8 @@ def run_dit_lora_training(
         return True
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since
-    # is_bf16_supported() counts emulation.
+    # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since is_bf16_supported() counts
+    # emulation.
     if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
@@ -1888,17 +1864,17 @@ def run_dit_lora_training(
     weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
-    # Check the repo this run will FETCH: the canonical id would raise for a gated base already
-    # redirected to its ungated mirror, after the route answered 200 and freed the residents.
+    # Check the repo this run will FETCH: the canonical id would raise for a gated base already redirected to its
+    # ungated mirror, after the route answered 200 and freed the residents.
     _assert_gated_access(cfg.fetch_base_model or cfg.base_model, cfg.hf_token)
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
-    # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every
-    # downstream read agrees.
+    # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream
+    # read agrees.
     cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
-    # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED
-    # LoRA targets rather than the generic default the config carries.
+    # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
+    # rather than the generic default the config carries.
     identity = identity_for_config(
         cfg,
         dataset_pairs = pairs,
@@ -1918,14 +1894,14 @@ def run_dit_lora_training(
             lora_path = None,
             stopped = True,
             steps_run = 0,
-            # A stop with save=false is a DISCARD however early it lands; without it the resume fallback offers
-            # the source bundle back as though the attempt were still live.
+            # A stop with save=false is a DISCARD however early it lands; without it the resume fallback offers the
+            # source bundle back as though the attempt were still live.
             discarded = not save_on_stop,
         )
         return str(out_dir)
 
-    # TF32 / cudnn.benchmark for the run, restored on the way out (the trainer subprocess is disposable, but
-    # restoring keeps in-process callers clean).
+    # TF32 / cudnn.benchmark for the run, restored on the way out (the trainer subprocess is disposable, but restoring
+    # keeps in-process callers clean).
     perf_snap = _apply_perf_flags(cfg, device)
     try:
         return _train_dit(
@@ -1957,8 +1933,8 @@ def _train_dit(
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    # diffusers honours no env var and is only in sys.modules from here, so its pipeline-loading bars
-    # can only be turned off now.
+    # diffusers honours no env var and is only in sys.modules from here, so its pipeline-loading bars can only be
+    # turned off now.
     try:
         from loggers.config import quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
@@ -1967,17 +1943,17 @@ def _train_dit(
 
     use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
     out_dir = Path(cfg.output_dir).expanduser()
-    # Load from the byte-identical public mirror selected during normalization, while keeping
-    # cfg.base_model canonical for the adapter sidecar, completion event and resume identity.
+    # Load from the byte-identical public mirror selected during normalization, while keeping cfg.base_model canonical
+    # for the adapter sidecar, completion event and resume identity.
     fetch_cfg = replace(cfg, base_model = cfg.fetch_base_model or cfg.base_model)
 
-    # Phase 0: the persistent conditioning cache (opt-in via cond_cache_dir). When every planned latent variant
-    # AND caption embedding is on disk, the run is "warm": the VAE and text encoders never load.
+    # Phase 0: the persistent conditioning cache (opt-in via cond_cache_dir). When every planned latent variant AND
+    # caption embedding is on disk, the run is "warm": the VAE and text encoders never load.
     image_paths = [p for p, _ in pairs]
     captions = [c for _, c in pairs]
     uniq = sorted(set(captions))
-    # CFG dropout swaps a sample's conditioning for the empty prompt, so its embedding must be
-    # precomputed alongside the captions (the encoders are freed right after).
+    # CFG dropout swaps a sample's conditioning for the empty prompt, so its embedding must be precomputed alongside
+    # the captions (the encoders are freed right after).
     cfg_dropout = float(getattr(cfg, "cfg_dropout", 0.0) or 0.0)
     to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
     use_cache = cfg.cache_latents and os.environ.get(
@@ -1986,15 +1962,15 @@ def _train_dit(
     pcache = None
     if getattr(cfg, "cond_cache_dir", None):
         try:
-            # Namespace on the CHECKPOINT, not just the family: the keys carry only caption/image content, so
-            # one cache dir reused for two checkpoints would train on the other model's embeddings.
+            # Namespace on the CHECKPOINT, not just the family: the keys carry only caption/image content, so one
+            # cache dir reused for two checkpoints would train on the other model's embeddings.
             from .diffusion_train_extras import source_revision  # noqa: PLC0415
             namespace = f"{spec.family}_{cfg.base_model}_{source_revision(fetch_cfg.base_model)}"
             pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
-    # The crop/flip variant plan is seed-deterministic, so persistent keys are stable across runs and
-    # the warm check can run before anything loads.
+    # The crop/flip variant plan is seed-deterministic, so persistent keys are stable across runs and the warm check
+    # can run before anything loads.
     plan = _plan_cache_variants(
         len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
     )
@@ -2070,8 +2046,8 @@ def _train_dit(
     # Variant picks use their own stream so the training loop index/noise draws stay seed-deterministic.
     variant_rng = random.Random(cfg.seed + 1)
 
-    # Phase 3: only now load the transformer, in the resolved base precision (nf4 QLoRA by default; bf16 / int8
-    # / fp8 / mxfp8 are the dense speed modes; "auto" picks from free VRAM).
+    # Phase 3: only now load the transformer, in the resolved base precision (nf4 QLoRA by default; bf16 / int8 / fp8
+    # / mxfp8 are the dense speed modes; "auto" picks from free VRAM).
     base_precision = _resolve_base_precision(cfg, spec, device)
     transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"
@@ -2087,8 +2063,8 @@ def _train_dit(
         )
     )
     if cfg.gradient_checkpointing:
-        # Non-reentrant checkpointing: reentrant recompute of a bnb 4-bit LoRA linear can trip an illegal
-        # memory access on the larger FLUX transformer, and it is the recommended mode anyway.
+        # Non-reentrant checkpointing: reentrant recompute of a bnb 4-bit LoRA linear can trip an illegal memory
+        # access on the larger FLUX transformer, and it is the recommended mode anyway.
         import functools
         import torch.utils.checkpoint as _ckpt
         transformer.enable_gradient_checkpointing(
@@ -2097,8 +2073,8 @@ def _train_dit(
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
-    # int8 / fp8 / mxfp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter modules
-    # are excluded and stay high precision.
+    # int8 / fp8 / mxfp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter modules are excluded
+    # and stay high precision.
     if base_precision == "int8":
         _int8_quantize_base(transformer, cfg.resolved_family)
     if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
@@ -2106,14 +2082,15 @@ def _train_dit(
     if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
         base_precision = "bf16"
 
-    # LoRA EMA (opt-in via cfg.ema_decay): shadows ONLY the trainable adapter params, initialised after
-    # the precision conversions so they track the final fp32 objects.
+    # LoRA EMA (opt-in via cfg.ema_decay): shadows ONLY the trainable adapter params, initialised after the precision
+    # conversions so they track the final fp32 objects.
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
     compiled = _maybe_compile_transformer(
         transformer, cfg, base_is_bnb, device, on_event, base_precision
     )
-    # Compiled Qwen graphs need one fixed text length across steps: pin the pad bucket to the dataset's longest caption.
+    # Compiled Qwen graphs need one fixed text length across steps: pin the pad bucket to the dataset's longest
+    # caption.
     qwen_pad_to = None
     if compiled and spec.family == "qwen-image":
         qwen_pad_to = max(e[0].shape[1] for e in caption_embeds.values())
@@ -2134,8 +2111,8 @@ def _train_dit(
         if str(getattr(cfg, "weighting_scheme", "none") or "none") == "bell"
         else None
     )
-    # The LR schedule advances once per optimizer update, so warmup/decay count optimizer steps; scaling
-    # by the accumulation factor would stretch warmup past the run.
+    # The LR schedule advances once per optimizer update, so warmup/decay count optimizer steps; scaling by the
+    # accumulation factor would stretch warmup past the run.
     lr_sched = get_scheduler(
         cfg.lr_scheduler,
         optimizer = optimizer,
@@ -2144,26 +2121,26 @@ def _train_dit(
     )
 
     _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
-    # Read the commit now the base is on disk: an identity built before the load says "unresolved",
-    # which is not comparable, so a later resume could not tell the repo had moved underneath it.
-    # Record the repo actually fetched: the canonical base is not on disk at all when the mirror was
-    # selected, and mismatch_reason only compares two revisions that came from the same repo.
+    # Read the commit now the base is on disk: an identity built before the load says "unresolved", which is not
+    # comparable, so a later resume could not tell the repo had moved underneath it. Record the repo actually fetched:
+    # the canonical base is not on disk at all when the mirror was selected, and mismatch_reason only compares two
+    # revisions that came from the same repo.
     identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
     identity = with_cache_mode(identity, latent_cache is not None)
-    # base_precision is still the request here ("auto" resolves at load, and a failed fp8/mxfp8
-    # conversion has fallen back to bf16), so without this a bundle records a base it never trained on.
+    # base_precision is still the request here ("auto" resolves at load, and a failed fp8/mxfp8 conversion has fallen
+    # back to bf16), so without this a bundle records a base it never trained on.
     identity = with_resolved_base_precision(identity, base_precision)
 
     transformer.train()
     n_images = len(image_paths)
     batch_size = cfg.train_batch_size
-    # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once per cycle,
-    # so a short run covers the whole dataset.
+    # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once per cycle, so a short
+    # run covers the whole dataset.
     index_sampler = PermutationBatchSampler(n_images, rng)
 
-    # Restore a previous run (adapter, optimizer moments, LR position, EMA shadow, sampler cycle, RNG streams)
-    # before the loop, so it picks up at `resumed + 1`. None for a fresh run.
+    # Restore a previous run (adapter, optimizer moments, LR position, EMA shadow, sampler cycle, RNG streams) before
+    # the loop, so it picks up at `resumed + 1`. None for a fresh run.
     rng_streams = {"loop": rng, "variant": variant_rng}
     restored = restore_resume_state(
         cfg,
@@ -2177,16 +2154,16 @@ def _train_dit(
         rng_streams = rng_streams,
     )
     resumed = restored.step if restored is not None else 0
-    # Resuming from directory A into a reused output_dir B leaves B's existing bundles as foreign as
-    # for a fresh run, so the first save must clear them or a higher-numbered one outranks this run.
+    # Resuming from directory A into a reused output_dir B leaves B's existing bundles as foreign as for a fresh run,
+    # so the first save must clear them or a higher-numbered one outranks this run.
     resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
     # The bundles already here when this run started, so a discard removes only what this run wrote.
     preexisting_checkpoints = snapshot_checkpoints(out_dir)
     if restored is not None:
         was = restored.progress.get("resolved_base_precision")
         if was and was != base_precision:
-            # Not fatal, since only the frozen base's numerics change, but base_precision="auto" picks from free
-            # VRAM, so this can happen silently.
+            # Not fatal, since only the frozen base's numerics change, but base_precision="auto" picks from free VRAM,
+            # so this can happen silently.
             _emit(
                 on_event,
                 "warning",
@@ -2206,9 +2183,8 @@ def _train_dit(
     done = resumed
 
     def _save_checkpoint(step: int) -> None:
-        # write_resume_checkpoint reports its own checkpoint_saved / checkpoint_failed events, so a run
-        # that crashes after a save is still known to be resumable and one whose save failed is still
-        # known to be blocked.
+        # write_resume_checkpoint reports its own checkpoint_saved / checkpoint_failed events, so a run that crashes
+        # after a save is still known to be resumable and one whose save failed is still known to be blocked.
         _written, _error = write_resume_checkpoint(
             cfg,
             step = step,
@@ -2220,18 +2196,18 @@ def _train_dit(
             ema = ema,
             sampler = index_sampler,
             rng_streams = rng_streams,
-            # "auto" resolves from free VRAM at load time, so the identity, which records the REQUESTED mode,
-            # cannot tell nf4 from bf16 across two "auto" runs.
+            # "auto" resolves from free VRAM at load time, so the identity, which records the REQUESTED mode, cannot
+            # tell nf4 from bf16 across two "auto" runs.
             progress = {"running_loss": running_loss, "resolved_base_precision": base_precision},
-            # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them
-            # before this run produced anything, so cancelling a retrain destroyed the thing being retrained.
+            # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them before
+            # this run produced anything, so cancelling a retrain destroyed the thing being retrained.
             discard_existing = False,
             # A branched resume must not prune the higher-numbered checkpoints it did not write.
             preexisting = preexisting_checkpoints,
         )
 
-    # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles
-    # the fp32 LoRA params with the bnb 4-bit base matmuls.
+    # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA
+    # params with the bnb 4-bit base matmuls.
     autocast = (
         torch.autocast(device_type = "cuda", dtype = torch.bfloat16)
         if device == "cuda"
@@ -2299,8 +2275,8 @@ def _train_dit(
 
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
-            # clip_grad_norm_ returns the total PRE-clip norm: the health signal the UI charts (an exploding
-            # norm shows even while the clip caps the update).
+            # clip_grad_norm_ returns the total PRE-clip norm: the health signal the UI charts (an exploding norm
+            # shows even while the clip caps the update).
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         optimizer.step()
         lr_sched.step()
@@ -2369,18 +2345,18 @@ def _train_dit(
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
         if not stopped:
-            # A completed run has nothing to resume and the final iteration writes no bundle, so save_steps
-            # would leave this run's own checkpoint behind for a later resume to roll back to.
+            # A completed run has nothing to resume and the final iteration writes no bundle, so save_steps would
+            # leave this run's own checkpoint behind for a later resume to roll back to.
             retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
         elif not resumed_here:
-            # A stop-with-save on a fresh retrain is a LOWER step than the earlier run's leftovers, and resume-
-            # by-directory picks the newest by step, so those would outrank the partial just saved and continue
+            # A stop-with-save on a fresh retrain is a LOWER step than the earlier run's leftovers, and
+            # resume-by-directory picks the newest by step, so those would outrank the partial just saved and continue
             # the wrong training. A run that RESUMED here instead keeps what it found.
             discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
     else:
-        # save_steps writes bundles as the run goes, so without this a discard leaves up to
-        # save_total_limit copies of the optimizer state in a directory the user got no artifact from:
-        # invisible to every scanner, unresumable, with no delete path in the UI.
+        # save_steps writes bundles as the run goes, so without this a discard leaves up to save_total_limit copies of
+        # the optimizer state in a directory the user got no artifact from: invisible to every scanner, unresumable,
+        # with no delete path in the UI.
         clear_own_checkpoints(out_dir, preexisting_checkpoints)
         try:
             out_dir.rmdir()
@@ -2400,20 +2376,19 @@ def _train_dit(
         steps_run = done if cfg.train_steps else 0,
         wall_seconds = round(time.time() - t_start, 1),
         resumed_from_step = resumed or None,
-        # "Stop without saving" discards the run, so its own periodic checkpoints must not keep offering to continue it.
+        # "Stop without saving" discards the run, so its own periodic checkpoints must not keep offering to continue
+        # it.
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
 
 
 def _make_optimizer(params, lr):
-    """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy
-    regression for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this
-    build/device lacks the fused kernel).
-
-    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW, as it does for SDXL: the
-    accuracy guard wants the reference optimizer, and a host where the override means one
-    thing for one trainer and nothing for the other cannot answer "can this checkpoint be
+    """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy regression
+    for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this build/device lacks the
+    fused kernel). UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW, as it does for
+    SDXL: the accuracy guard wants the reference optimizer, and a host where the override means
+    one thing for one trainer and nothing for the other cannot answer "can this checkpoint be
     resumed here" before the run starts."""
     import torch
 
@@ -2433,11 +2408,11 @@ def _make_optimizer(params, lr):
 
 
 def _free_text_encoders(pipe) -> None:
-    """Drop every conditioning module the pipeline holds once the embeddings are
-    precomputed, so they do not sit in VRAM during training. ``connectors`` is LTX-2's
-    second conditioning stage (~2.7 GB) and belongs here for the same reason as the text
-    encoders; ``audio_vae`` / ``vocoder`` are LTX-2 decode-side modules the trainer never
-    touches. Absent attributes are skipped, so this is a no-op for the image families."""
+    """Drop every conditioning module the pipeline holds once the embeddings are precomputed, so
+    they do not sit in VRAM during training. ``connectors`` is LTX-2's second conditioning stage
+    (~2.7 GB) and belongs here for the same reason as the text encoders; ``audio_vae`` /
+    ``vocoder`` are LTX-2 decode-side modules the trainer never touches. Absent attributes are
+    skipped, so this is a no-op for the image families."""
     for attr in (
         "text_encoder",
         "text_encoder_2",

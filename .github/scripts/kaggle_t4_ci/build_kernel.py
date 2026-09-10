@@ -1852,7 +1852,6 @@ def main() -> int:
     # The launcher needs one --notebook per kernel and the expected payload
     # count; both follow from the plan, so they are emitted here rather than
     # restated in the workflow.
-    #
     # Studio counts as ONE payload, not two, and that holds on both paths.
     # Its two notebooks are halves of one experiment: on a healthy run the
     # install half emits no report at all and the test half emits the only
@@ -1860,7 +1859,6 @@ def main() -> int:
     # the driver then SKIPS the test half. Either way the kernel produces
     # exactly one `studio-gpu` report, so counting the install half would make
     # every healthy run look like it lost one.
-    #
     # Getting this wrong in the other direction is worse and is why it is
     # derived rather than typed: a merged kernel that quietly stopped running
     # Studio would still report the four legs and go green.
