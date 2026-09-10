@@ -110,7 +110,25 @@ def test_unsupported_ollama_models_are_withheld(store, broken):
 
 
 @pytest.mark.parametrize("hardlinks", [False, True])
-def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch, hardlinks):
+@pytest.mark.parametrize("disabled_projector", [False, True])
+def test_http_catalog_id_autoloads_without_prior_ui_load(
+    store, monkeypatch, hardlinks, disabled_projector
+):
+    projector = None
+    if disabled_projector:
+        manifest = store / "manifests/registry.ollama.ai/library/llama3/latest"
+        data = json.loads(manifest.read_text())
+        data["layers"].append(
+            {"mediaType": "application/vnd.ollama.image.projector", "digest": "sha256:" + "d" * 64}
+        )
+        projector = store / "blobs" / ("sha256-" + "d" * 64)
+        projector.write_bytes(b"GGUF projector")
+        manifest.write_text(json.dumps(data))
+    monkeypatch.setattr(
+        openai_auto_switch_settings,
+        "resolve_override_for_load",
+        lambda *args: ("ollama/llama3:latest", {"disable_vision": disabled_projector}),
+    )
     if hardlinks:
 
         def no_symlinks(*args, **kwargs):
@@ -138,7 +156,10 @@ def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch, har
             result = await recorder(request, *args, **kwargs)
             from core.inference.llama_cpp import LlamaCppBackend
 
-            backend._gguf_load_identity = LlamaCppBackend._gguf_load_source_identity(resolved)
+            backend._disable_vision = request.disable_vision
+            backend._gguf_load_identity = LlamaCppBackend._gguf_load_source_identity(
+                resolved, str(projector) if projector else None
+            )
             return result
 
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)

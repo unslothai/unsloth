@@ -8890,8 +8890,6 @@ async def _maybe_auto_switch_model(
                 from core.inference.llama_cpp import LlamaCppBackend
                 try:
                     model_path, projector_path = ollama_model_ref_files(target_id)
-                    if getattr(backend, "_disable_vision", False):
-                        projector_path = None
                     return LlamaCppBackend._gguf_load_source_identity(model_path, projector_path)
                 except (OSError, ValueError):
                     return None
