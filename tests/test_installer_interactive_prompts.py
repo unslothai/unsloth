@@ -523,6 +523,11 @@ def test_helpers_the_installers_invoke_are_scanned():
             # resolves to the local copy. What resolves nowhere is a filename in a message, not an invocation.
             reference = match.group(1).replace("\\", "/")
             name = reference.rsplit("/", 1)[-1]
+            if name == "__init__.py":
+                # A package marker the installers test for presence (tiktoken/__init__.py
+                # says the payload landed), never a helper they run; by name alone it
+                # would resolve to studio/__init__.py beside setup.sh.
+                continue
             for candidate in (
                 path.parent / reference,
                 REPO_ROOT / reference,
