@@ -34,18 +34,28 @@ def _load():
     namespace = {"re": re}
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in _WANTED:
-            exec(compile(ast.Module(body = [node], type_ignores = []), CHAT_TEMPLATES_PATH, "exec"), namespace)
+            exec(
+                compile(ast.Module(body = [node], type_ignores = []), CHAT_TEMPLATES_PATH, "exec"),
+                namespace,
+            )
         elif isinstance(node, ast.Assign) and any(
             getattr(target, "id", None) in _WANTED for target in node.targets
         ):
-            exec(compile(ast.Module(body = [node], type_ignores = []), CHAT_TEMPLATES_PATH, "exec"), namespace)
+            exec(
+                compile(ast.Module(body = [node], type_ignores = []), CHAT_TEMPLATES_PATH, "exec"),
+                namespace,
+            )
     for name in ("_parse_combined_prompt", "_create_formatter"):
         if name not in namespace:
             pytest.skip(f"{name} not found in unsloth/chat_templates.py")
     return namespace
 
 
-def _render(prompt, rows, columns = ("instruction", "input")):
+def _render(
+    prompt,
+    rows,
+    columns = ("instruction", "input"),
+):
     ns = _load()
     dataset = types.SimpleNamespace(column_names = list(columns))
     possible_columns, optional_prompts = ns["_parse_combined_prompt"](prompt, dataset)
