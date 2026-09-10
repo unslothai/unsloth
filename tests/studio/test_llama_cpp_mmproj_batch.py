@@ -12,6 +12,7 @@ import pytest
 from studio.backend.core.inference.llama_cpp import (
     LlamaCppBackend,
     _batch_ubatch_for_mmproj,
+    _child_effective_mmproj,
     _mmproj_opens_images,
     _MMPROJ_DEFAULT_N_BATCH_UBATCH,
 )
@@ -55,6 +56,33 @@ class TestBatchUbatchForMmproj:
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(True, None, None, None)
         assert n_batch is None
         assert n_ubatch is None
+
+
+class TestChildEffectiveMmproj:
+    """Whose projector llama-server ends up holding."""
+
+    def test_emitted_wins_over_nothing(self):
+        assert _child_effective_mmproj("/m/own.gguf", {}) == "/m/own.gguf"
+
+    def test_url_outranks_the_emitted_flag(self):
+        # The URL download overwrites mmproj.path after argv is parsed, so a
+        # configured audio-only projector does not decide what the child opens.
+        env = {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/vision.gguf"}
+        assert _child_effective_mmproj("/m/audio.gguf", env) == env["LLAMA_ARG_MMPROJ_URL"]
+
+    def test_inherited_path_only_fills_a_gap(self, tmp_path):
+        real = tmp_path / "mmproj.gguf"
+        real.write_bytes(b"")
+        env = {"LLAMA_ARG_MMPROJ": str(real)}
+        assert _child_effective_mmproj("/m/own.gguf", env) == "/m/own.gguf"
+        assert _child_effective_mmproj(None, env) == str(real)
+
+    def test_inherited_path_must_exist(self, tmp_path):
+        env = {"LLAMA_ARG_MMPROJ": str(tmp_path / "gone.gguf")}
+        assert _child_effective_mmproj(None, env) is None
+
+    def test_nothing_anywhere(self):
+        assert _child_effective_mmproj(None, {}) is None
 
 
 class TestMmprojOpensImages:
@@ -108,6 +136,16 @@ class TestRemoteOpensVisionMmproj:
     def test_no_mmproj(self):
         assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is False
 
+    def test_no_mmproj_still_counts_an_inherited_projector(self, monkeypatch):
+        # --no-mmproj empties the command line; the child still opens the env's one.
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+        assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is True
+
+    @pytest.fixture(autouse = True)
+    def _no_inherited_projector(self, monkeypatch):
+        for var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
+            monkeypatch.delenv(var, raising = False)
+
 
 class TestLaunchVisionMmproj:
     """What the estimators must price, so panel and admission match the launch."""
@@ -133,10 +171,12 @@ class TestLaunchVisionMmproj:
 
     def test_inherited_url_survives_no_mmproj(self, monkeypatch):
         # --no-mmproj empties the command line without clearing mmproj.path, so the
-        # child still opens an inherited projector.
+        # child still opens an inherited projector, and a URL outranks even a
+        # configured projector this launch would emit.
         monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
-        got = _launch_vision_mmproj(self._config(), ["--no-mmproj"], False)
-        assert got == "https://example.invalid/mmproj.gguf"
+        for extras in (["--no-mmproj"], None):
+            got = _launch_vision_mmproj(self._config(), extras, False)
+            assert got == "https://example.invalid/mmproj.gguf"
 
     def test_inherited_path_must_exist(self, monkeypatch, tmp_path):
         monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(tmp_path / "gone.gguf"))

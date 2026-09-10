@@ -5796,6 +5796,26 @@ def _extra_args_n_ubatch(
     return effective
 
 
+def _child_effective_mmproj(
+    emitted_mmproj: Optional[str], env: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """The projector llama-server ends up with, given the one Unsloth would emit.
+
+    ``LLAMA_ARG_MMPROJ_URL`` wins outright: its download overwrites ``mmproj.path``
+    after argv is parsed, so it outranks even an emitted ``--mmproj``. A plain
+    ``LLAMA_ARG_MMPROJ`` only fills a gap, and fills it even under ``--no-mmproj``,
+    which empties the command line without clearing ``mmproj.path``.
+    """
+    source = os.environ if env is None else env
+    url = (source.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+    if url:
+        return url
+    if emitted_mmproj:
+        return emitted_mmproj
+    inherited = (source.get("LLAMA_ARG_MMPROJ") or "").strip()
+    return inherited if inherited and os.path.isfile(inherited) else None
+
+
 def _mmproj_opens_images(mmproj_path: Optional[str]) -> bool:
     """Whether the projector at *mmproj_path* can turn an image into tokens.
 
@@ -19975,7 +19995,7 @@ class LlamaCppBackend:
             # file leaves the text-only server it produces at the llama.cpp defaults.
             _fit_vision_mmproj = None
             if is_vision and not disable_vision:
-                _fit_vision_mmproj = (
+                _fit_vision_mmproj = _child_effective_mmproj(
                     None
                     if extra_args_disable_mmproj(extra_args)
                     else self._resolve_launch_mmproj_path(
@@ -19983,16 +20003,6 @@ class LlamaCppBackend:
                         mmproj_path = mmproj_path,
                     )
                 )
-                if not _fit_vision_mmproj:
-                    # arg.cpp reads LLAMA_ARG_MMPROJ(_URL) before argv, and --no-mmproj
-                    # never clears mmproj.path, so an inherited projector opens whatever
-                    # Unsloth resolved. A URL is a download this cannot open; the child
-                    # will, so it counts.
-                    _env_mmproj = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
-                    _fit_vision_mmproj = (
-                        (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
-                        or (_env_mmproj if os.path.isfile(_env_mmproj) else "")
-                    ) or None
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
                 _mmproj_opens_images(_fit_vision_mmproj),
                 n_batch,

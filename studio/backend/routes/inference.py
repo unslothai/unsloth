@@ -9961,23 +9961,24 @@ def _launch_vision_mmproj(
     inherited ``LLAMA_ARG_MMPROJ(_URL)`` counts even under ``--no-mmproj``, which
     empties the command line without clearing ``mmproj.path``.
     """
-    from core.inference.llama_cpp import _extra_args_device, extra_args_disable_mmproj
+    from core.inference.llama_cpp import (
+        _child_effective_mmproj,
+        _extra_args_device,
+        extra_args_disable_mmproj,
+    )
 
     if not getattr(config, "is_vision", False) or disable_vision:
         return None
+    emitted = None
     if not extra_args_disable_mmproj(llama_extra_args):
         # A --mmproj in the extras is appended after Studio's and last-wins at the child.
         override = _extra_args_device(llama_extra_args, {"--mmproj", "-mm"})
         if override and Path(override).is_file():
-            return str(override)
-        own = getattr(config, "gguf_mmproj_file", None)
-        if own:
-            return str(own)
-    url = (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
-    if url:
-        return url
-    inherited = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
-    return inherited if inherited and Path(inherited).is_file() else None
+            emitted = str(override)
+        else:
+            own = getattr(config, "gguf_mmproj_file", None)
+            emitted = str(own) if own else None
+    return _child_effective_mmproj(emitted)
 
 
 def _remote_opens_vision_mmproj(
@@ -9992,12 +9993,15 @@ def _remote_opens_vision_mmproj(
     Hub listing: ``_gguf_resident_file_gb`` subtracts this term and must pair with it
     without spending a listing per settings change.
     """
-    from core.inference.llama_cpp import extra_args_disable_mmproj
-    return (
-        bool(getattr(config, "is_vision", False))
-        and not disable_vision
-        and not extra_args_disable_mmproj(llama_extra_args)
-    )
+    from core.inference.llama_cpp import _child_effective_mmproj, extra_args_disable_mmproj
+
+    if not getattr(config, "is_vision", False) or disable_vision:
+        return False
+    # --no-mmproj suppresses only the repo's own projector; an inherited one still
+    # opens, exactly as it does once the files are local.
+    if not extra_args_disable_mmproj(llama_extra_args):
+        return True
+    return _child_effective_mmproj(None) is not None
 
 
 def _gguf_runtime_bytes(
