@@ -135,8 +135,19 @@ class TestTheRespawnRetryKeepsItsControls:
             '{"preempt_event": preempt_event}',
             "preempt_policy = preempt_policy,",
             "on_tokens = on_tokens,",
+            "on_prompt_fitted = on_prompt_fitted,",
         ):
             assert kwarg in retry, f"the respawn retry drops {kwarg}"
+
+    def test_the_resumed_attempt_reprices_the_prompt_it_refits(self):
+        # A resume under truncate_oldest refits the conversation with the partial in it; the
+        # bound has to be for that prompt, not the one the first attempt priced.
+        source = LLAMA_CPP.read_text(encoding = "utf-8")
+        resume = source[source.index("_preempt_resumes = _preempt_resumes + 1,") - 2500 :]
+        resume = resume[: resume.index("_preempt_resumes = _preempt_resumes + 1,")]
+        assert (
+            "on_prompt_fitted = on_prompt_fitted," in resume
+        ), "the resumed attempt drops on_prompt_fitted"
 
 
 class TestTheRoundBoundaryPublishesTheNewCharge:
