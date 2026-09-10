@@ -24,13 +24,29 @@ REDACTED = "<redacted>"
 # Order matters: OSC (\x1b]) comes before the single-character Fe class, which covers 0x5C-0x5F and would otherwise
 # swallow the "]". ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC). A colorized writer puts an escape between key
 # and value, and the "m" ending "\x1b[36m" is a word character, so every anchored rule below stops matching.
+# The three string-terminated branches exclude their own terminators rather than
+# lazily scanning for them. `[\s\S]*?` backtracks: an introducer with no
+# terminator scans to end of string, fails, and falls through to the single
+# character Fe branch, so the cost is quadratic in the record length. Measured
+# before this change, on characters of U+009D: 10k took 1.2s, 20k took 5.0s,
+# 40k took 15.8s, against 0.005s for 40k of ordinary text. An unterminated
+# introducer is not exotic; it is what a rotated log or any writer cut mid
+# sequence leaves behind. With a negated class a failed match dies at the first
+# character that cannot belong to the body, which makes it linear.
+#
+# Each body class excludes the INTRODUCERS as well as the terminators, and that
+# second part is what actually does the work: excluding only the terminators
+# still lets a run of introducers be consumed to end of string from every
+# starting position, which is the same quadratic shape. A sequence cannot nest
+# inside another anyway, so an introducer in a body means the earlier one was
+# never terminated.
 _ANSI_RE = re.compile(
-    r"\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c)"
-    r"|\x1b[P^_X][\s\S]*?(?:\x1b\\|\x9c)"
+    r"\x1b\][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)"
+    r"|\x1b[P^_X][^\x1b\x9c]*(?:\x1b\\|\x9c)"
     r"|\x1b\[[0-?]*[ -/]*[@-~]"
     r"|\x1b[@-Z\\-_]"
     r"|\x9b[0-?]*[ -/]*[@-~]"
-    r"|[\x9d\x90\x98\x9e\x9f][\s\S]*?(?:\x07|\x9c)"
+    r"|[\x9d\x90\x98\x9e\x9f][^\x07\x9c\x1b\x90\x98\x9d\x9e\x9f]*(?:\x07|\x9c)"
 )
 _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
 

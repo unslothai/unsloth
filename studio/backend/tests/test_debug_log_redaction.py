@@ -289,3 +289,41 @@ def test_studio_s3_secret_key_spellings_are_masked():
 def test_talking_about_the_s3_key_without_a_value_survives():
     line = "secret_access_key is required when use_iam_role is false"
     assert redact_log_text(line) == line
+
+
+def test_an_unterminated_ansi_introducer_does_not_cost_quadratic_time():
+    """A lazy scan for the terminator backtracks: the introducer with no
+    terminator scans to end of string, fails, and falls through to the single
+    character Fe branch, so the cost grows with the square of the record.
+
+    Before the negated body classes, 40k of these took ~15.8s against ~0.005s
+    for the same length of ordinary text, and the log viewer hands whole lines
+    to this function once a second. An unterminated introducer is not exotic; a
+    rotated log or a writer cut mid sequence leaves one behind.
+
+    Timing is asserted loosely, as a shape rather than a number: quadratic here
+    is seconds and linear is milliseconds, so any threshold in between separates
+    them on any host.
+    """
+    import time
+
+    for introducer in ("\x9d", "\x90", "\x98", "\x9e", "\x9f", "\x1b]", "\x1bP"):
+        started = time.monotonic()
+        redact_log_text(introducer * 40000)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"{introducer!r} took {elapsed:.1f}s"
+
+
+def test_terminated_ansi_sequences_are_still_stripped():
+    """The negated classes must not cost the stripping the rules depend on: an
+    escape between a key and its value stops every anchored rule matching."""
+    for text in (
+        "\x1b[36mpassword\x1b[0m=hunter2secret",
+        "\x1b]0;title\x1b\\api_key=abcdef123456",
+        "\x1bPsome dcs\x1b\\api_key=abcdef123456",
+        "\x9dbody\x9capi_key=abcdef123456",
+        "\x9bmapi_key=abcdef123456",
+    ):
+        masked = redact_log_text(text)
+        assert "abcdef123456" not in masked and "hunter2secret" not in masked, text
+        assert REDACTED in masked, text
