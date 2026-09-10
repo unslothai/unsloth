@@ -711,3 +711,35 @@ def test_a_tool_launch_after_deletion_refuses_instead_of_recreating_the_roots(ma
     assert "account has been deleted" in result
 
     assert not any(root.exists() for root in (workspace, tmp, projects, sandbox))
+
+
+def test_runtime_secret_mounts_are_excluded_from_the_system_grant(tmp_path, monkeypatch):
+    """A managed tool must not read /run/secrets or /run/credentials; the rest of /run stays readable."""
+    if sys.platform != "linux":
+        pytest.skip("Linux rule builder")
+    run = tmp_path / "run"
+    for name in ("user/1000", "secrets", "credentials", "lock"):
+        (run / name).mkdir(parents = True)
+    (run / "secrets" / "db_password").write_text("hunter2")
+    (run / "credentials" / "svc" / "token").parent.mkdir()
+    (run / "credentials" / "svc" / "token").write_text("token")
+    monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", (str(run),))
+    # The shipped list, relocated under the fake /run, so the test reads the real constant.
+    monkeypatch.setattr(
+        tool_confinement,
+        "_PRIVATE_RUNTIME_ROOTS",
+        tuple(
+            str(run / os.path.relpath(p, "/run")) for p in tool_confinement._PRIVATE_RUNTIME_ROOTS
+        ),
+    )
+    run_as(ALICE, tools._get_workdir, "chat")
+    rules = run_as(ALICE, tool_confinement._landlock_rules, 6, tools._SANDBOX_SITE_DIR)
+    granted = [p for p, _ in rules]
+    resolved = str(run.resolve())
+    print(f"granted under {resolved}: {[p for p in granted if p.startswith(resolved)]}")
+    assert f"{resolved}/lock" in granted
+    assert resolved not in granted
+    for private in ("secrets", "credentials", "user"):
+        assert not any(
+            p == f"{resolved}/{private}" or p.startswith(f"{resolved}/{private}/") for p in granted
+        ), private

@@ -56,8 +56,9 @@ _SYSTEM_READ_ROOTS = (
 )
 _DEVICE_ROOT = "/dev"
 
-# /run/user is Studio's own 0700 dir, so DAC alone does not stop a tool; rest of /run readable.
-_PRIVATE_RUNTIME_ROOTS = ("/run/user",)
+# /run/user is Studio's own 0700 dir, so DAC alone does not stop a tool; container and
+# systemd secret mounts are readable by the service user too. The rest of /run is readable.
+_PRIVATE_RUNTIME_ROOTS = ("/run/user", "/run/secrets", "/run/credentials")
 
 
 class ToolConfinementUnavailable(RuntimeError):
