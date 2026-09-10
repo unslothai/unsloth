@@ -47,9 +47,7 @@ from typing import Any, Optional, Sequence
 
 BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 
-# The denoiser subfolder built when nothing else is asked for. Mirrors
-# core.inference.diffusion_prequant.DEFAULT_PREQUANT_COMPONENT, which cannot be imported this
-# early: the backend only joins sys.path inside main().
+# Mirrors core.inference.diffusion_prequant.DEFAULT_PREQUANT_COMPONENT, which cannot be imported this early: the backend only joins sys.path inside main().
 DEFAULT_COMPONENT = "transformer"
 
 
@@ -77,15 +75,10 @@ def resolve_build_family(
     modality: str = "auto",
 ) -> Optional[Any]:
     """The registry row this build quantises against: a ``DiffusionFamily`` or a ``VideoFamily``.
-
-    Two registries, asked image-first because that is the one this script has always used and an
-    image family answering keeps its behaviour byte for byte. Everything downstream reads
-    ``fam.name``, ``fam.transformer_class`` and the prequant tables, which both dataclasses carry,
-    so the video row needs no special case past here.
-
-    ``modality`` pins one registry when the answer must not drift: the two name spaces are
-    disjoint today, and a later family named in both would otherwise silently build against
-    whichever registry is asked first."""
+    
+    Asked image-first, and ``modality`` pins one registry when the answer must not drift: the two
+    name spaces are disjoint today, and a later family named in both would otherwise build against
+    whichever is asked first."""
     from core.inference.diffusion_families import detect_family
     from core.inference.video_families import detect_video_family
 
@@ -142,10 +135,8 @@ def upload_destination(
     return preferred
 
 
-# GPTQ scoring modes. "check" decides per layer on the OUTPUT error a held-out activation sample
-# measures through torchao's own quantiser, which is the error GPTQ optimises; "meta" decides on
-# the plain Frobenius WEIGHT error the Hessian pass recorded, which GPTQ raises by construction
-# (it trades weight error for output error) and which therefore admits nothing.
+# GPTQ scoring modes. "check" decides per layer on the OUTPUT error GPTQ optimises; "meta" decides on the Frobenius
+# WEIGHT error, which GPTQ raises by construction and which therefore admits nothing.
 GPTQ_SCORE_MODES = ("check", "meta")
 
 
@@ -163,10 +154,9 @@ def gptq_sources(
     exists = os.path.exists,
 ) -> dict:
     """Where one component's GPTQ weights, Hessian meta and do-no-harm scores live.
-
-    A single-denoiser family writes ``weights/<fqn>.pt`` and ``gptq_meta.json``; a MoE family runs
-    the pass once per expert and writes ``weights/<component>/`` and ``gptq_meta_<component>.json``.
-    Both layouts are probed rather than declared, so the same --gptq-dir serves either."""
+    
+    A MoE family writes per-component paths and a single-denoiser family does not; both layouts are
+    probed rather than declared, so the same --gptq-dir serves either."""
     root = str(gptq_dir).rstrip("/")
     per_component = os.path.join(root, "weights", component)
     weights = per_component if exists(per_component) else os.path.join(root, "weights")
@@ -198,13 +188,10 @@ def plan_gptq(
     has_weight = lambda fqn: True,
 ) -> dict:
     """Which admitted linears take their GPTQ weight, and why each of the rest does not.
-
-    Do no harm, per layer: a correction is applied only where it is MEASURED to help, never
-    because the layer was in the campaign. Everything else is recorded with its reason, so an
-    artifact can always say which of its weights are GPTQ and which are plain RTN.
-
-    ``missing`` is the one that must never pass silently: a layer whose file the pass never wrote
-    (or whose name drifted) would otherwise be indistinguishable from a layer that was corrected."""
+    
+    Do no harm, per layer: a correction is applied only where it is MEASURED to help. ``missing``
+    must never pass silently, or a layer whose file the pass never wrote is indistinguishable from
+    a layer that was corrected."""
     if mode not in GPTQ_SCORE_MODES:
         raise ValueError(f"gptq score mode must be one of {GPTQ_SCORE_MODES}, not {mode!r}")
     layers: dict = {}
@@ -247,12 +234,10 @@ def plan_gptq(
 
 def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> dict:
     """Did ``quantize_`` keep the GPTQ weights it was handed, or re-round them?
-
-    The correction is only worth the GPU-hours if the packed 4-bit weight in the artifact IS the
-    corrected one. GPTQ writes a weight that already lies on the NVFP4 grid, so re-quantising it
-    should reproduce it; anything else means the quantiser and the pass disagree about the grid and
-    the artifact is a differently-rounded weight that nothing measured. Reported per build as the
-    worst absolute deviation and the fraction of elements that moved, never asserted away."""
+    
+    GPTQ writes a weight that already lies on the NVFP4 grid, so re-quantising it should reproduce
+    it; anything else means the quantiser and the pass disagree about the grid. Reported, never
+    asserted away."""
     import torch
 
     worst = {"max_abs": 0.0, "fqn": None}
@@ -282,11 +267,9 @@ def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> d
 
 def parse_key(key: str) -> tuple:
     """``'transformer_2/blocks.12.attn1.to_q.weight'`` -> ``(component, block or None, role)``.
-
-    Ported from ``scripts/g840/g840_fingerprint_diff.py``: WHERE two builds differ discriminates
-    between mechanisms that a count cannot. A handful of modules concentrated in one role is a
-    per-shape effect; a spread over every block index is something global; one block is
-    order-dependent. A bare state-dict fqn carries no component prefix, so that half is None."""
+    
+    WHERE two builds differ discriminates between mechanisms that a count cannot. A bare
+    state-dict fqn carries no component prefix, so that half is None."""
     component, sep, field = key.partition("/")
     if not sep:
         component, field = None, key
@@ -306,10 +289,9 @@ def describe_key(key: str) -> str:
 
 def fingerprint_mismatches(mine: Any, other: Any) -> list:
     """The fqns whose packed payload differs between two builds of one artifact, sorted.
-
-    A fqn present in one build and absent from the other counts as differing, so a build that
-    quantised a different SET of linears reports as loudly as one that quantised the same set to
-    different bytes: neither is the artifact the other verified."""
+    
+    A fqn present in one build and absent from the other counts as differing: a build that
+    quantised a different SET of linears is not the artifact the other verified either."""
     a = (mine or {}).get("modules") or {}
     b = (other or {}).get("modules") or {}
     return sorted(key for key in set(a) | set(b) if a.get(key) != b.get(key))
@@ -328,12 +310,10 @@ def verify_against(
     out: Any = print,
 ) -> int:
     """Diff this build's fingerprint against ``other_path``'s. 0 when identical, 3 otherwise.
-
-    The whole publishing gate: build twice in separate processes and compare the packed bytes.
+    
     Two independent quantise passes over the same weights are deterministic, so any difference is
-    a defect in one of them (a bad DMA, a flipped bit on the way to disk, a silently truncated
-    save) and not something to upload. It cannot see corruption that happens AFTER the compare,
-    which is what the loader's own fingerprint check is for."""
+    a defect in one of them. It cannot see corruption that happens AFTER the compare, which is what
+    the loader's own fingerprint check is for."""
     try:
         other = (_read_metadata(other_path) or {}).get("fingerprint") or {}
     except Exception as exc:  # noqa: BLE001 -- an unreadable comparand verifies nothing
@@ -363,9 +343,9 @@ def verify_against(
 
 def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional[str]:
     """Why ``--verify-against`` cannot answer the question it exists for, or None.
-
-    One file compared with itself matches by construction and proves nothing, so a gate that
-    accepts it is worse than no gate: it reports a verified build and publishes it."""
+    
+    One file compared with itself matches by construction, so a gate that accepts it reports a
+    verified build and publishes it."""
     if not verify_path:
         return None
     try:
@@ -383,11 +363,9 @@ def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional
 
 def upload_gate_refusal(upload_repo: Optional[str], verify_path: Optional[str]) -> Optional[str]:
     """Why this build may not publish, or None. No escape hatch by design.
-
+    
     An unverified artifact is indistinguishable from a verified one once it is hosted, and it is
-    then loaded by every auto pick that resolves the repo. The cost of the gate is one more
-    build; the cost of skipping it is a family rendering from corrupted weights with nothing in
-    the logs."""
+    then loaded by every auto pick that resolves the repo."""
     if not upload_repo:
         return None
     if not verify_path:
@@ -508,14 +486,10 @@ def main(argv = None) -> int:
     if scheme not in TQ_SCHEMES:
         print(f"error: --scheme must be one of {TQ_SCHEMES} (not 'auto')", flush = True)
         return 2
-    # Both gates BEFORE the load: they are decided by the arguments alone, and finding out after
-    # hours of GPU time that the build may not publish helps nobody.
     for refusal in (
         upload_gate_refusal(args.upload_repo, args.verify_against),
         verify_target_refusal(args.out, args.verify_against),
-        # ConvRot rotates the weight before quantize_, which a GPTQ weight has not been corrected
-        # for: the correction was solved against the UNROTATED activation covariance, so rotating
-        # it afterwards discards exactly the thing the pass computed.
+        # ConvRot rotates the weight before quantize_, which a GPTQ weight has not been corrected for: the correction was solved against the UNROTATED activation covariance.
         (
             "--gptq-dir and --convrot-groupsize cannot be combined: the correction was solved "
             "against unrotated activations, so rotating the corrected weight discards it."
@@ -566,9 +540,7 @@ def main(argv = None) -> int:
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
-    # The same GEMM tiling floor the runtime filter applies. Without it an offline fp8 / nvfp4
-    # build bakes the ragged linears the runtime leaves dense, and the mismatch does not surface
-    # until the first real matmul of the first render.
+    # The same GEMM tiling floor the runtime filter applies. Without it an offline build bakes the ragged linears the runtime leaves dense, and the mismatch surfaces only at the first real matmul.
     require_divisible = divisible_for_scheme(scheme)
     filter_fn = make_filter_fn(
         args.min_features,
@@ -577,10 +549,7 @@ def main(argv = None) -> int:
         require_divisible = require_divisible,
     )
 
-    # GPTQ, BEFORE quantize_: the corrected weight is a plain bf16 tensor that already lies on the
-    # NVFP4 grid, so it goes into module.weight and the quantiser then packs it exactly as it packs
-    # any other weight. Only the 4-bit operand is touched, which is the rule the campaign measured
-    # (+46% error when a correction also became the source of an fp8 replica).
+    # GPTQ, BEFORE quantize_: the corrected weight is a plain bf16 tensor that already lies on the NVFP4 grid, so the quantiser packs it like any other. Only the 4-bit operand is touched.
     gptq_plan: Optional[dict] = None
     gptq_pass: dict = {}
     gptq_where: dict = {}
@@ -635,8 +604,6 @@ def main(argv = None) -> int:
                 os.path.join(weights_dir, gptq_weight_filename(fqn)), weights_only = True
             )
             if tuple(corrected.shape) != tuple(module.weight.shape):
-                # A shape drift means the campaign and this base are not the same model. Applying
-                # what fits and skipping the rest would ship a half-corrected artifact.
                 print(
                     f"error: GPTQ weight for {fqn} is {tuple(corrected.shape)}, module is "
                     f"{tuple(module.weight.shape)}",
@@ -701,21 +668,17 @@ def main(argv = None) -> int:
         k: (v.detach().to("cpu") if hasattr(v, "detach") else v)
         for k, v in transformer.state_dict().items()
     }
-    # Over the SAVED state dict, so it describes the bytes that go to disk rather than the module they came from.
     fingerprint = packed_weight_fingerprint(state_dict)
     metadata = {
         "base_model_id": args.base_id or args.base,
         "family": fam.name,
         "scheme": scheme,
-        # Which denoiser this is. Both A14B experts share a family, a scheme, a base and a key set, so every other
-        # check the loader makes passes on the wrong one.
         "component": component,
         "min_features": args.min_features,
         # Let the loader reject a checkpoint that would not match the runtime path.
         "exclude_name_tokens": list(exclude_name_tokens),
         "require_bf16": require_bf16,
         "require_divisible": require_divisible,
-        # Per-weight md5 of the packed payload: the offline verify below and the loader's own check both read it.
         "fingerprint": fingerprint,
         "fast_accum": fast_accum,
         "torch_dtype": args.dtype,
@@ -729,9 +692,7 @@ def main(argv = None) -> int:
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
     if gptq_plan is not None:
-        # Provenance of every corrected weight in this artifact, and of every one that was left
-        # alone. Not part of the fingerprint's identity: the fingerprint hashes the packed payloads,
-        # so a different set of corrections already reads as a different artifact there.
+        # Provenance of every corrected weight. Not part of the fingerprint's identity: it hashes the packed payloads, so a different set of corrections already reads as a different artifact there.
         metadata["gptq"] = {
             "source": os.path.abspath(args.gptq_dir),
             "meta_path": os.path.abspath(gptq_where["meta"]),
@@ -762,8 +723,6 @@ def main(argv = None) -> int:
     torch.save(ckpt, out)
     size_gb = out.stat().st_size / 1e9
     print(f"  saved {out}  ({size_gb:.2f} GB) in {time.time() - t0:.0f}s", flush = True)
-    # The fingerprint is one line per quantized weight, so it is summarised here and printed in full only by
-    # scripts/prequant_fingerprint.py.
     shown = {k: v for k, v in metadata.items() if k != "fingerprint"}
     print(f"  metadata: {shown}", flush = True)
     print(

@@ -51,9 +51,6 @@ def test_a_rotated_upload_goes_to_the_name_the_loader_asks_for_not_the_legacy_fa
     # resolve_prequant_source asks for first. transformer_int8.pt is never asked for on this
     # family, so an upload landing there would be invisible.
     assert build.upload_destination(h3, "int8", rotated = True) == "MiniMax-H3-INT8-ConvRot.pt"
-    # A plain build goes to the DERIVED name, which is the one resolve_prequant_source asks for
-    # first; the legacy transformer_int8.pt stays resolvable as the loader's fallback for the
-    # repos that only ever carried it.
     assert (
         build.upload_destination(h3, "int8", rotated = False, repo_id = "unsloth/MiniMax-H3-FP8")
         == "MiniMax-H3-INT8.pt"
@@ -79,21 +76,15 @@ def test_a_rotated_upload_with_no_declared_name_is_refused_rather_than_published
         build.upload_destination(zimage, "fp8", rotated = False, repo_id = "unsloth/Z-Image-Turbo-FP8")
         == "Z-Image-Turbo-FP8.pt"
     )
-    # A plain build derives its name from the destination repo, so publishing without one is
-    # refused rather than guessed at.
     with pytest.raises(ValueError, match = "--upload-repo"):
         build.upload_destination(zimage, "fp8", rotated = False)
 
 
-# ── the publishing gate ──────────────────────────────────────────────────────────
 def test_a_build_may_not_publish_without_a_second_build_to_verify_against():
     build = _script()
-    # An unverified artifact is indistinguishable from a verified one once it is hosted, and every
-    # auto pick that resolves the repo then loads it. There is deliberately no escape hatch flag.
     refusal = build.upload_gate_refusal("unsloth/Wan2.2-TI2V-5B-NVFP4", None)
     assert refusal is not None and "--verify-against" in refusal
     assert build.upload_gate_refusal("unsloth/Wan2.2-TI2V-5B-NVFP4", "other.pt") is None
-    # Nothing to gate when the build is not publishing.
     assert build.upload_gate_refusal(None, None) is None
 
 
@@ -103,7 +94,6 @@ def test_verifying_an_artifact_against_itself_is_refused(tmp_path):
     out.write_bytes(b"x")
     link = tmp_path / "same.pt"
     link.symlink_to(out)
-    # A file always matches itself, so accepting this would report a verified build and publish it.
     assert build.verify_target_refusal(str(out), str(out)) is not None
     assert build.verify_target_refusal(str(out), str(link)) is not None
     assert build.verify_target_refusal(str(out), str(tmp_path / "build_b.pt")) is None
@@ -115,11 +105,9 @@ def test_the_fingerprint_diff_names_every_differing_weight_and_where_it_sits():
     mine = {"count": 2, "modules": {"blocks.3.attn1.to_q.weight": "aa", "proj_out.weight": "bb"}}
     other = {"count": 2, "modules": {"blocks.3.attn1.to_q.weight": "cc", "proj_out.weight": "bb"}}
     assert build.fingerprint_mismatches(mine, other) == ["blocks.3.attn1.to_q.weight"]
-    # A weight one build quantised and the other did not is a difference too: not the same artifact.
     fewer = {"count": 1, "modules": {"proj_out.weight": "bb"}}
     assert build.fingerprint_mismatches(mine, fewer) == ["blocks.3.attn1.to_q.weight"]
     assert build.fingerprint_mismatches(mine, mine) == []
-    # The position is what discriminates between a per-shape effect and a global one.
     assert build.parse_key("transformer_2/blocks.12.attn1.to_q.weight") == (
         "transformer_2",
         12,
@@ -142,28 +130,21 @@ def test_a_verify_against_mismatch_exits_3(monkeypatch, capsys):
     )
     assert build.verify_against("other.pt", mine) == 3
     assert "proj_out.weight" in capsys.readouterr().out
-    # The same two builds agreeing is the only thing that returns 0.
     monkeypatch.setattr(build, "_read_metadata", lambda path: {"fingerprint": mine})
     assert build.verify_against("other.pt", mine) == 0
-    # An artifact with no block verifies nothing, so it is a refusal rather than a match.
     monkeypatch.setattr(build, "_read_metadata", lambda path: {})
     assert build.verify_against("other.pt", mine) == 3
 
 
-# ── families and components ──────────────────────────────────────────────────────
 def test_a_video_base_the_image_registry_does_not_know_resolves_in_the_video_one():
     build = _script()
-    # detect_family answers None for every video family, so without the fallback the builder can
-    # only ever bake image DiTs.
     assert detect_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers", override = "wan2.2-t2v-a14b") is None
     fam = build.resolve_build_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers", override = "wan2.2-t2v-a14b")
     assert fam is not None and fam.name == "wan2.2-t2v-a14b"
     assert fam.transformer_class == "WanTransformer3DModel"
-    # An image family keeps resolving in the image registry, unchanged.
     assert (
         build.resolve_build_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image").name == "z-image"
     )
-    # --modality pins one registry, so a name in the wrong one is refused rather than guessed at.
     assert (
         build.resolve_build_family(
             "Wan-AI/Wan2.2-T2V-A14B-Diffusers", override = "wan2.2-t2v-a14b", modality = "image"
@@ -181,8 +162,6 @@ def test_each_denoiser_component_publishes_under_its_own_name():
     wan = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert wan is not None
     repo = "unsloth/Wan2.2-T2V-A14B-NVFP4"
-    # Both experts share family, scheme, base and key set, so the filename is the only thing
-    # standing between expert 2's slot and expert 1's weights.
     assert (
         build.upload_destination(wan, "nvfp4", rotated = False, repo_id = repo)
         == "Wan2.2-T2V-A14B-NVFP4.pt"
@@ -195,7 +174,6 @@ def test_each_denoiser_component_publishes_under_its_own_name():
     )
 
 
-# ── what a build stamps into the artifact ────────────────────────────────────────
 _UINT8 = object()  # the stub torch's uint8, so the fingerprint's dtype view is a no-op here
 
 
@@ -335,16 +313,11 @@ def test_a_build_stamps_the_component_the_filter_floor_and_a_fingerprint(monkeyp
         ]
     )
     assert code == 0
-    # The component drives which denoiser is loaded ...
     assert saved["from_pretrained"]["subfolder"] == "transformer_2"
     meta = saved["ckpt"]["metadata"]
-    # ... and is recorded, because both experts pass every other check the loader makes.
     assert meta["component"] == "transformer_2"
     assert meta["family"] == "wan2.2-t2v-a14b"
-    # The GEMM tiling floor the runtime filter applies, so an offline build cannot bake the ragged
-    # linears the runtime leaves dense.
     assert meta["require_divisible"] == 16
-    # One entry per quantized weight; the dense norm is skipped and the bias is not a weight.
     assert meta["fingerprint"]["algo"] == "md5-packed-v1"
     assert meta["fingerprint"]["count"] == 2
     assert set(meta["fingerprint"]["modules"]) == {
@@ -352,7 +325,6 @@ def test_a_build_stamps_the_component_the_filter_floor_and_a_fingerprint(monkeyp
         "blocks.1.attn1.to_q.weight",
     }
     assert meta["fingerprint"]["skipped"] == ["blocks.0.norm1.weight"]
-    # Different weights hash differently, which is the only property the check rests on.
     digests = set(meta["fingerprint"]["modules"].values())
     assert len(digests) == 2
 
@@ -371,7 +343,6 @@ def test_a_build_refuses_to_publish_before_it_verifies(monkeypatch, tmp_path):
         "--out",
         str(out),
     ]
-    # Refused before the load, not after the hours: the answer is in the arguments.
     assert build.main([*argv, "--upload-repo", "unsloth/Wan2.2-T2V-A14B-NVFP4"]) == 2
     assert not out.exists()
     assert build.main([*argv, "--verify-against", str(out)]) == 2
@@ -388,7 +359,6 @@ def test_a_build_whose_second_run_differs_exits_3_without_uploading(monkeypatch,
             "fingerprint": {"count": 2, "modules": {"blocks.0.attn1.to_q.weight": "deadbeef"}}
         },
     )
-    # A refused build must not reach the Hub at all, so an upload here is an import error.
     hub = types.ModuleType("huggingface_hub")
 
     def _no_upload(*a, **k):
@@ -416,12 +386,9 @@ def test_a_build_whose_second_run_differs_exits_3_without_uploading(monkeypatch,
     assert code == 3
 
 
-# ── GPTQ corrections ─────────────────────────────────────────────────────────────
 def test_a_correction_that_does_not_help_is_not_applied_and_says_so():
     build = _script()
     meta = {
-        # GPTQ raises the Frobenius weight error on every layer by construction: it trades weight
-        # error for output error, which is why the weight error cannot be the do-no-harm test.
         "blocks.0.attn1.to_q": {"err_rtn": 0.096, "err_gptq": 0.125, "damp": 0.01},
         "blocks.1.attn1.to_q": {"err_rtn": 0.095, "err_gptq": 0.121, "damp": 0.1},
     }
@@ -438,10 +405,7 @@ def test_a_correction_that_does_not_help_is_not_applied_and_says_so():
         "missing": 0,
     }
     assert plan["layers"]["blocks.1.attn1.to_q"]["reason"] == "no_gain"
-    # The weight-space rule is the one the Hessian pass recorded, and on this evidence it admits
-    # nothing at all, which is why it is not the default.
     assert build.plan_gptq(list(meta), meta, score, mode = "meta")["counts"]["applied"] == 0
-    # A layer with no score is left alone rather than applied on faith.
     plan = build.plan_gptq(["blocks.9.ffn.net.2", *meta], meta, score, mode = "check")
     assert plan["counts"]["skipped_unscored"] == 1
     assert plan["layers"]["blocks.9.ffn.net.2"]["reason"] == "unscored"
@@ -451,13 +415,10 @@ def test_a_correction_the_pass_never_wrote_is_counted_not_ignored():
     build = _script()
     meta = {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12}}
     score = {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}
-    # The correction helps, but the file is not there. Silently leaving it out would make an
-    # artifact that claims a calibration it only partly has.
     plan = build.plan_gptq(list(meta), meta, score, has_weight = lambda fqn: False)
     assert plan["apply"] == []
     assert plan["counts"]["missing"] == 1 and plan["counts"]["applied"] == 0
     assert plan["layers"]["blocks.0.attn1.to_q"]["reason"] == "missing"
-    # And the errors are still recorded, so the artifact can say what was skipped and why.
     assert plan["layers"]["blocks.0.attn1.to_q"]["out_err_gptq"] == 0.01
 
 
@@ -469,12 +430,9 @@ def test_the_gptq_layout_of_a_moe_family_resolves_per_expert(tmp_path):
     (root / "gptq_score_transformer_2.json").write_text("{}")
     (root / "gptq_meta.json").write_text("{}")
     where = build.gptq_sources(str(root), "transformer_2")
-    # Both experts share every name in the model, so the per-expert directory is the only thing
-    # keeping expert 1's corrections out of expert 2's artifact.
     assert where["weights"].endswith("weights/transformer_2")
     assert where["meta"].endswith("gptq_meta_transformer_2.json")
     assert where["score"].endswith("gptq_score_transformer_2.json")
-    # A single-denoiser family writes the flat layout, and the same directory serves it.
     flat = tmp_path / "flat"
     (flat / "weights").mkdir(parents = True)
     (flat / "gptq_meta.json").write_text("{}")
@@ -508,10 +466,7 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
     (gptq / "gptq_check.json").write_text(
         _json.dumps({"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}})
     )
-    # One admitted linear with a correction on disk, one without a file at all.
     (gptq / "weights" / "blocks_0_attn1_to_q.pt").write_bytes(b"w")
-    # The runtime filter is the admitted set, so the stub has to look like what it inspects:
-    # nn.Linear, 16-aligned, at or above the min_features floor.
     class _Linear:
         def __init__(self):
             self.in_features = 1024
@@ -536,8 +491,6 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
         classmethod(lambda cls, base, **kwargs: transformer),
     )
     loaded = types.SimpleNamespace(shape = (1024, 1024), to = lambda *a: "corrected")
-    # The idempotency check reads packed NVFP4 payloads off a real GPU; here it stands in for one,
-    # so what is asserted is that its verdict reaches the metadata.
     monkeypatch.setattr(
         build,
         "verify_gptq_idempotency",
@@ -565,8 +518,6 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
         ]
     )
     assert code == 0
-    # The corrected weight replaced the dense one BEFORE quantize_, which is the only order in
-    # which the quantiser packs the correction rather than re-deriving it.
     assert module.weight.data == "corrected"
     block = saved["ckpt"]["metadata"]["gptq"]
     assert block["applied"] == 1 and block["missing"] == 1
@@ -581,8 +532,6 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
         "max_abs_fqn": None,
         "frac_diff": 0.0,
     }
-    # The fingerprint stays a hash of the packed payloads alone, so the block never becomes part
-    # of the artifact's identity by itself.
     assert "gptq" not in saved["ckpt"]["metadata"]["fingerprint"]
 
 
@@ -606,6 +555,5 @@ def test_a_rotated_build_may_not_also_be_a_calibrated_one(monkeypatch, tmp_path)
             "128",
         ]
     )
-    # Refused from the arguments alone: the correction was solved against unrotated activations.
     assert code == 2
     assert not out.exists()

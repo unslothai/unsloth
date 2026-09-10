@@ -102,11 +102,7 @@ class VideoFamily:
     # parameters), so 0.55 x 66.3 GB over-states it by 16 GB and a hard refusal turns away a load that fits. Measured
     # from Hub file metadata (2026-08-09): MiniMax-H3-FP8.pt 20,260,192,855 bytes, MiniMax-H3-INT8.pt 20,253,894,865.
     prequant_resident_gb: Optional[float] = None
-    # The same measurement PER SCHEME, as (scheme, resident_gb). One float cannot describe a family that hosts several
-    # schemes at different sizes (an nvfp4 denoiser is ~40% smaller than the fp8 one of the same model), and the term
-    # this feeds is the one a hard unified-memory refusal is judged on, so the wrong row turns away a load that fits.
-    # A scheme with no row here falls back to ``prequant_resident_gb`` and then to the generic _QUANT_STEADY_FACTOR,
-    # which is what every family did before this field existed.
+    # The same measurement PER SCHEME, as (scheme, resident_gb), since one float cannot describe a family hosting several schemes at different sizes. No row here falls back to ``prequant_resident_gb`` then to _QUANT_STEADY_FACTOR.
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base id. A pre-quantized
     # checkpoint is baked from ONE base's weights and the loader refuses it for any other base, so a variant that ships
@@ -256,14 +252,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear, GPTQ-calibrated), fingerprint-verified
-        # across two builds before publishing. Resident sizes are measured at load and recorded per scheme.
         prequant_repos = (("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),),
         prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
-        # DENOISER term only, like bf16_components_gb[0]. Measured on a B200 (2026-09-08, 50 steps at 1280x704x121f,
-        # torch.cuda.memory_allocated at steady state): the whole pipeline sat at 15.935 GiB = 17.11 GB, and the same
-        # run at bf16 sat at 22.55 GiB = 24.21 GB against a 24.2 GB table, so the companions are the tabled 14.2 and
-        # the denoiser is 17.11 - 14.2 = 2.9.
+        # DENOISER term only, like bf16_components_gb[0].
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9),),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
@@ -292,17 +283,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear, GPTQ-calibrated), fingerprint-verified
-        # across two builds before publishing. Resident sizes are measured at load and recorded per scheme.
         prequant_repos = (("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),),
         prequant_filenames = (
             ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
             ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
         ),
-        # BOTH experts, like bf16_components_gb[0] below: the plan subtracts one denoiser term and this family builds
-        # two. Measured on a B200 (2026-09-08, 50 steps at 1280x720x81f): the whole pipeline sat at 26.179 GiB =
-        # 28.11 GB, against 38.587 GiB at fp8 and 64.573 GiB at bf16 (a 69.33 GB read of the 69.1 GB table), so the
-        # companions are the tabled 11.9 and the pair of denoisers is 28.11 - 11.9 = 16.2.
+        # BOTH experts, like bf16_components_gb[0] below: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
@@ -335,13 +321,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
-        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear, GPTQ-calibrated), fingerprint-verified
-        # across two builds before publishing. Resident sizes are measured at load and recorded per scheme.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
-        # DENOISER term only. Measured on a B200 (2026-09-08, 50 steps at 832x480x121f): the whole pipeline sat at
-        # 20.452 GiB = 21.96 GB, against 23.772 GiB at fp8 and 31.515 GiB at bf16 (a 33.84 GB read of the 33.8 GB
-        # table), so the companions are the tabled 17.2 and the denoiser is 21.96 - 17.2 = 4.8.
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
@@ -368,14 +349,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
-        # Hosted pre-quantized NVFP4 denoiser (every admitted Linear), fingerprint-verified across two builds
-        # before publishing. RTN with baked activation scales, not GPTQ: the 720p transformer is a separately
-        # trained checkpoint (shard bytes differ from 480p), so the 480p corrections do not apply to it.
+        # RTN with baked activation scales, not GPTQ: the 720p transformer is a separately trained checkpoint, so the 480p corrections do not apply to it.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
-        # DENOISER term only. Measured on a B200 (2026-09-08, 50 steps at 1280x720x121f): 20.452 GiB = 21.96 GB whole
-        # pipeline, less the tabled 17.2 of companions, is 4.8 -- the same as the 480p entry, as it must be: the two
-        # checkpoints differ in training, not in parameter count.
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
@@ -486,15 +462,7 @@ def video_family_prequant_repo(
 
 
 def video_family_prequant_resident_gb(fam: VideoFamily, scheme: str) -> Optional[float]:
-    """The MEASURED resident size, in decimal GB, of this family's hosted denoiser for ``scheme``.
-
-    Per-scheme row first, then the single ``prequant_resident_gb`` float (which predates the row
-    table and describes the one scheme family that has it), then None -- meaning nothing was
-    measured and the caller keeps its generic estimate.
-
-    Pure and never raises, like the resolvers above: it runs on the memory-planning path, where a
-    table typo must cost an estimate rather than the load.
-    """
+    """The MEASURED resident size, in decimal GB, of this family's hosted denoiser for ``scheme``, else None."""
     for entry in getattr(fam, "prequant_resident_gb_by_scheme", ()) or ():
         if not isinstance(entry, (tuple, list)) or len(entry) != 2:
             continue

@@ -197,15 +197,8 @@ def apply_small_m_padding(
     return wrapped
 
 
-# NVFP4 PER-FAMILY zero-row guard list. torchao's NVFP4 dynamic-activation path takes its global scale from
-# ``torch.max(torch.abs(x))`` over the WHOLE input, and max() over an empty tensor raises "Expected reduction dim to be
-# specified for input.numel() == 0" (measured on B200 / torch 2.12.1 / torchao 0.17.0 on a quantized Linear(1152,
-# 3072)). HunyuanVideo-1.5 reaches that state on every default t2v render: the attention trim in diffusion_attention.py
-# replaces the all-zero image stream with ``image_embeds[:, :0]``, which the image_embedder's two admitted linears
-# (1152 -> 1152 and 1152 -> 2048) then receive, and it can trim the optional byt5 stream to zero the same way, which
-# reaches context_embedder_2's three (1472 -> 2048, 2048 -> 2048, 2048 -> 2048). Small M is NOT a problem for this
-# scheme -- ``to_blocked`` pads the scale rows, and M = 1 and M = 7 both run finite -- so this is a shape guard at
-# exactly one point and not a policy: every admitted linear stays quantized.
+# NVFP4 PER-FAMILY zero-row guard list: torchao's NVFP4 dynamic-activation path reduces over the WHOLE input and
+# raises on numel() == 0, which HunyuanVideo-1.5 reaches on every default t2v render through the attention trim.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
@@ -215,11 +208,9 @@ _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 
 def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens whose quantized Linears need the empty-activation guard, per family.
-
-    nvfp4 only. fp8 reduces its per-ROW amax over dim=-1, which is well defined for zero rows and
-    returns the empty result; mxfp8 blocks along the same axis; int8 has its own answer to a
-    zero-row input (``pad_tokens_for_scheme`` and ``PadToMinM``). The whole-input reduction is
-    what makes nvfp4 the exception."""
+    
+    nvfp4 only: fp8 and mxfp8 reduce per-row along dim=-1, which is well defined for zero rows, and
+    int8 has its own answer through ``PadToMinM``."""
     if scheme != TQ_NVFP4:
         return ()
     return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
@@ -234,11 +225,10 @@ def apply_zero_row_guard(
 ) -> tuple[str, ...]:
     """Wrap this family's zero-row-reachable quantized Linears so an empty activation never
     reaches the GEMM. Returns the fqns wrapped, empty for a family with no list.
-
-    Call AFTER the weights are quantized and in place, next to ``apply_small_m_padding``, for the
-    same reason: it reparents the Linears. Not best-effort -- a raise here means the transformer
-    is quantized but crashes on the first t2v render, so the caller must treat it as a failed
-    quantise."""
+    
+    Call AFTER the weights are quantized and in place, next to ``apply_small_m_padding``, which
+    reparents the Linears too. Not best-effort: a raise here means the transformer is quantized but
+    crashes on the first t2v render."""
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -270,10 +260,8 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# GEMM tiling floors per scheme, as the number every quantized Linear's in/out features must divide by. scaled_mm
-# needs 16-aligned dims and MX block scaling 32; int8's ``_int_mm`` has no such floor and keeps the historical filter
-# (0 = no constraint). Public because the runtime filter, the offline builder and the checkpoint validator all have to
-# read the same number: a checkpoint built at a different floor holds a different set of quantized Linears.
+# GEMM tiling floors per scheme, as the number every quantized Linear's in/out features must divide by. Public because
+# the runtime filter, the offline builder and the checkpoint validator must read the same number.
 _SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
 
 
@@ -316,22 +304,17 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
 @dataclass(frozen = True)
 class _AutoPrefer:
     """A family's own head of the ``auto`` order, tried AHEAD of the global ``_AUTO_LADDER`` tier.
-
-    ``_AUTO_LADDER`` is per-arch and family-blind, so it can only carry the choice that is right
-    for the average DiT. A family whose shapes have actually been measured gets its own head here
-    instead of bending the shared ladder. The head is dropped when the GPU's capability is below
-    ``floor``, and (unless ``consumer_ok``) when the GPU is consumer-class: the measurements behind
-    a row were taken on datacenter Blackwell, and a consumer part's arithmetic rates are different
-    enough that the ordering does not carry over untested."""
+    
+    ``_AUTO_LADDER`` is per-arch and family-blind. The head is dropped below ``floor`` and, unless
+    ``consumer_ok``, on consumer-class GPUs: the measurements behind a row were taken on datacenter
+    Blackwell and the ordering does not carry over untested."""
 
     floor: tuple[int, int]
     schemes: tuple[str, ...]
     consumer_ok: bool = False
 
 
-# Keys are lowercased family names, so the 480p and 720p HunyuanVideo-1.5 tiers are separate rows (separate base repos,
-# separate measurements, separate checkpoints). A row is added for a family only once the promotion gates in this PR
-# pass for it; an empty table is the pre-measurement state and leaves the ladder exactly as it was.
+# Keys are lowercased family names, so the 480p and 720p HunyuanVideo-1.5 tiers are separate rows. An empty table is the pre-measurement state and leaves the ladder exactly as it was.
 _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {}
 
 
@@ -627,12 +610,10 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
 def _auto_scheme_order(family: Optional[str], device: Any, cap: tuple[int, int]) -> tuple[str, ...]:
     """The schemes ``auto`` would try on this GPU for this family, best first, before the deny
     list and the smoke probe have their say.
-
-    The family's ``_FAMILY_AUTO_PREFER`` head (when it applies here) followed by the matching
-    ``_AUTO_LADDER`` tier reordered for the GPU class, deduplicated. Empty when no tier matches,
-    head or not: a capability below every tier has no dense quant path at all. Shared by
-    ``select_transformer_quant_scheme`` and ``auto_scheme_candidates`` so the winner they each
-    compute comes from one walk and the two can never disagree."""
+    
+    Empty when no tier matches, head or not: a capability below every tier has no dense quant path
+    at all. Shared by ``select_transformer_quant_scheme`` and ``auto_scheme_candidates`` so the two
+    can never disagree."""
     tier: tuple[str, ...] = ()
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:

@@ -308,16 +308,12 @@ def test_is_quantized_linear_only_accepts_a_torchao_weight():
     assert is_quantized_linear(nn.LayerNorm(8)) is False
 
 
-# ── the zero-row guard ────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("shape", [(1, 0, 8), (0, 8), (2, 0, 8)])
 def test_an_empty_activation_comes_back_at_the_projected_width(bias, shape):
-    """torchao's nvfp4 path reduces over the whole input and RAISES on an empty one, so the
-    wrapper has to answer it. The answer is not an approximation: F.linear at these shapes is
-    empty too, so the two are equal element for element (there are none) at the same shape and
-    dtype."""
+    """An empty activation comes back at the projected width instead of reaching the GEMM."""
     inner = _RecordingLinear(8, 6, bias = bias).to(torch.bfloat16)
     wrapped = ZeroRowSafeLinear(inner)
     x = torch.zeros(*shape, dtype = torch.bfloat16)
@@ -330,8 +326,7 @@ def test_an_empty_activation_comes_back_at_the_projected_width(bias, shape):
 
 
 def test_the_guard_is_inert_on_a_non_empty_activation():
-    """It is a shape guard at one point, not a policy: every real call goes straight through to
-    the quantized Linear, so the layer keeps its coverage."""
+    """A non-empty call goes straight through to the inner Linear."""
     torch.manual_seed(0)
     inner = _RecordingLinear(8, 6)
     wrapped = ZeroRowSafeLinear(inner)
@@ -343,8 +338,7 @@ def test_the_guard_is_inert_on_a_non_empty_activation():
 
 
 def test_the_guard_passes_attributes_and_keys_through():
-    """Same transparency contract as PadToMinM: the DiT reads ``image_embedder.linear_1.weight``,
-    and a checkpoint must not gain an ``inner.`` level."""
+    """The wrapper passes attributes and state-dict keys through, as PadToMinM does."""
     plain, guarded = _Tiny(), _Tiny()
     guarded.context_embedder = ZeroRowSafeLinear(guarded.context_embedder)
     assert guarded.context_embedder.in_features == 8
@@ -361,8 +355,7 @@ def test_the_guard_passes_attributes_and_keys_through():
 
 
 def test_wrapping_for_zero_rows_is_idempotent_and_skips_dense_linears():
-    """One gate covers all three cases: a dense Linear has nothing to guard (``F.linear`` handles
-    an empty input), and neither wrapper is an ``nn.Linear``, so a second pass cannot nest them."""
+    """Wrapping is idempotent and skips dense Linears."""
     model = _Tiny()
     assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
     assert isinstance(model.context_embedder, nn.Linear)
@@ -375,10 +368,7 @@ def test_wrapping_for_zero_rows_is_idempotent_and_skips_dense_linears():
 
 
 def test_the_two_wrappers_never_stack():
-    """A padded Linear already answers a zero-row call itself, at the same width and without
-    reaching the GEMM, so the guard must skip it rather than wrap it a second time. In practice
-    they cannot even meet (the row floor is int8's, the empty-input raise is nvfp4's); this pins
-    the behaviour if they ever do."""
+    """The padding wrapper and the zero-row guard never stack."""
     model = _Tiny()
     model.context_embedder = _fake_quantized_linear()
     assert wrap_small_m_linears(model, ["context_embedder"]) == ("context_embedder",)
@@ -388,8 +378,7 @@ def test_the_two_wrappers_never_stack():
 
 
 def test_the_guard_list_is_read_with_the_same_substring_rule():
-    """``apply_zero_row_guard`` resolves its tokens through ``matching_linear_fqns``, so a token
-    covers a whole submodule (``image_embedder`` reaches ``image_embedder.linear_1``)."""
+    """The guard list is read with the same substring rule as the pad list."""
 
     class _Projection(nn.Module):
         def __init__(self):
@@ -430,10 +419,7 @@ def test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "nvfp4 dynamic quant needs Blackwell")
 def test_the_zero_row_guard_on_a_real_nvfp4_linear():
-    """Closes the loop the fakes leave open, on the shape that raises in production: torchao's
-    nvfp4 activation scale is ``torch.max(torch.abs(x))`` over the whole input, so an empty one
-    raises ``max(): Expected reduction dim to be specified for input.numel() == 0``. Small M is
-    fine (``to_blocked`` pads the scale rows), which is why the guard is only about zero."""
+    """A real nvfp4 Linear survives a zero-row call once wrapped."""
     pytest.importorskip("torchao")
     if torch.cuda.get_device_capability() < (10, 0):
         pytest.skip("nvfp4 needs sm_100+")
@@ -453,7 +439,6 @@ def test_the_zero_row_guard_on_a_real_nvfp4_linear():
     out = guarded(empty)
     assert out.shape == (1, 0, 3072) and out.dtype == torch.bfloat16
 
-    # And inert on the row counts the same layer actually sees on a non-trimmed render.
     torch.manual_seed(0)
     for m in (1, 5, 7):
         x = torch.randn(1, m, 1152, dtype = torch.bfloat16, device = "cuda")

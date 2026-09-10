@@ -1379,14 +1379,10 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
         apply_small_m_padding(object(), TQ_INT8, "minimax-h3")
 
 
-# ── the nvfp4 zero-row guard ──────────────────────────────────────────────────
 
 
 def test_the_zero_row_guard_is_nvfp4_only():
-    """Every other scheme reduces its activation scale along the FEATURE axis, which is well
-    defined for zero rows: fp8 takes a per-row amax, mxfp8 blocks along the same axis, and int8
-    has its own answer to a small or empty batch (``pad_tokens_for_scheme``). nvfp4 is the
-    exception because it reduces over the whole input."""
+    """The zero-row guard is nvfp4 only."""
     from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
     for scheme in (TQ_FP8, TQ_INT8, TQ_MXFP8, "auto"):
         for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
@@ -1394,9 +1390,7 @@ def test_the_zero_row_guard_is_nvfp4_only():
 
 
 def test_both_hunyuan_tiers_guard_their_trimmable_streams():
-    """The trim in diffusion_attention.py hands ``image_embeds[:, :0]`` to the image embedder on
-    every t2v render and can trim the optional byt5 stream to zero, so both tiers carry the same
-    two tokens: they are the same DiT at two resolutions."""
+    """Both HunyuanVideo-1.5 tiers guard the streams the attention trim can empty."""
     from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
     for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
         tokens = zero_row_tokens_for_scheme(TQ_NVFP4, family)
@@ -1405,16 +1399,14 @@ def test_both_hunyuan_tiers_guard_their_trimmable_streams():
 
 
 def test_an_unlisted_family_has_no_zero_row_guard():
-    """Scoped to the families whose attention path is measured to produce an empty activation.
-    Nothing else pays for a wrapper, and an unknown family is not guessed at."""
+    """Scoped to the families whose attention path is measured to produce an empty activation."""
     from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
     for family in ("z-image", "qwen-image", "wan2.2-ti2v-5b", "minimax-h3", None):
         assert zero_row_tokens_for_scheme(TQ_NVFP4, family) == ()
 
 
 def test_the_guard_list_does_not_double_up_with_the_pad_or_exclude_lists():
-    """The three tables answer the same question for different schemes, so a name may appear in
-    more than one -- but never for the SAME scheme, where one of them would be dead."""
+    """The guard list does not double up with the pad or exclude lists."""
     from core.inference.diffusion_transformer_quant import (
         _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -1429,8 +1421,7 @@ def test_the_guard_list_does_not_double_up_with_the_pad_or_exclude_lists():
 
 
 def test_quantize_transformer_guards_after_padding(monkeypatch):
-    """The guard runs on the runtime dense-quantise path, with the family, and AFTER quantize_
-    (it reparents Linears that must already hold quantized weights) and after the padding."""
+    """quantize_transformer applies the guard after the padding."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4})
     order = []
@@ -1460,8 +1451,7 @@ def test_quantize_transformer_guards_after_padding(monkeypatch):
 
 
 def test_a_guard_failure_fails_the_whole_quantise(monkeypatch):
-    """Same contract as the padding: a transformer that is quantized but crashes on its first
-    t2v render is worse than a dense one, so the caller must be sent to GGUF."""
+    """A guard failure fails the whole quantise."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4})
     tqz = types.ModuleType("torchao.quantization")
@@ -1484,8 +1474,7 @@ def test_a_guard_failure_fails_the_whole_quantise(monkeypatch):
 
 
 def test_apply_zero_row_guard_is_inert_without_a_guard_list(monkeypatch):
-    """No guard list means the wrapper module is never even IMPORTED, which is what keeps torch
-    out of this module's own import path (the smoke-probe child imports it and nothing else)."""
+    """apply_zero_row_guard is inert, and imports nothing, without a guard list."""
     from core.inference.diffusion_transformer_quant import apply_zero_row_guard
 
     stub = types.ModuleType("core.inference.diffusion_quant_pad")  # no names to import
@@ -1561,7 +1550,6 @@ def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
         assert (candidates[0] if candidates else None) == chosen, (cc, family)
 
 
-# ── the per-family auto preference head ───────────────────────────────────────
 
 
 def _prefer(
@@ -1569,8 +1557,7 @@ def _prefer(
     row,
     family = "fake-video",
 ):
-    """Install one ``_FAMILY_AUTO_PREFER`` row. The shipped table is empty, so every property
-    below is proved on a synthetic family rather than on whichever row happens to ship."""
+    """Install one ``_FAMILY_AUTO_PREFER`` row."""
     monkeypatch.setattr(tq, "_FAMILY_AUTO_PREFER", {family: row})
 
 
@@ -1579,8 +1566,6 @@ def _nvfp4_head(**kw):
 
 
 def test_a_prefer_row_leads_the_tier_on_datacenter_blackwell(monkeypatch):
-    # The head is tried BEFORE the global tier, and the tier still follows it in order, so a family
-    # whose measurements put nvfp4 first does not lose the fallbacks the ladder gives everyone else.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _prefer(monkeypatch, _nvfp4_head())
@@ -1591,14 +1576,11 @@ def test_a_prefer_row_leads_the_tier_on_datacenter_blackwell(monkeypatch):
         TQ_MXFP8,
         TQ_INT8,
     )
-    # An unlisted family keeps the plain ladder, head or no head.
     assert select_transformer_quant_scheme(_target(), "auto", family = "z-image") == TQ_FP8
     assert tq.auto_scheme_candidates(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
 
 
 def test_a_prefer_row_is_dropped_below_its_capability_floor(monkeypatch):
-    # The head names a scheme measured on Blackwell; an Ada card cannot run it, so the row must not
-    # be able to put it in front of a tier that never contained it.
     _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA L40S")
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_INT8})
     _prefer(monkeypatch, _nvfp4_head())
@@ -1607,8 +1589,6 @@ def test_a_prefer_row_is_dropped_below_its_capability_floor(monkeypatch):
 
 
 def test_a_head_the_probe_rejects_falls_through_to_the_tier(monkeypatch):
-    # The head is a preference, not an override: it goes through the same smoke probe as the tier,
-    # so a GPU whose fp4 kernels are missing still lands on fp8 rather than on nothing.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
     _prefer(monkeypatch, _nvfp4_head())
@@ -1617,8 +1597,6 @@ def test_a_head_the_probe_rejects_falls_through_to_the_tier(monkeypatch):
 
 
 def test_the_deny_list_outranks_a_prefer_row(monkeypatch):
-    # Two tables can disagree, and the deny list has to win: it records a scheme that damages the
-    # model, which no ordering preference can make safe.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _prefer(monkeypatch, _nvfp4_head(), family = "qwen-image")
@@ -1627,16 +1605,12 @@ def test_the_deny_list_outranks_a_prefer_row(monkeypatch):
 
 
 def test_a_prefer_row_needs_consumer_ok_to_apply_to_a_consumer_gpu(monkeypatch):
-    # The row's numbers were taken on datacenter Blackwell. Consumer Blackwell has different
-    # arithmetic rates (and its own int8-first reorder), so the head stays off until a row says the
-    # measurement carries over.
     _stub_torch(monkeypatch, cc = (12, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _prefer(monkeypatch, _nvfp4_head())
     assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_INT8
     _prefer(monkeypatch, _nvfp4_head(consumer_ok = True))
     assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_NVFP4
-    # The consumer reorder still applies to the tier behind the head.
     assert tq.auto_scheme_candidates(_target(), "fake-video") == (
         TQ_NVFP4,
         TQ_INT8,
@@ -1646,8 +1620,6 @@ def test_a_prefer_row_needs_consumer_ok_to_apply_to_a_consumer_gpu(monkeypatch):
 
 
 def test_a_head_already_in_the_tier_is_not_listed_twice(monkeypatch):
-    # A row that only promotes a scheme the tier already carries must reorder it, not duplicate it:
-    # the candidate list is walked in order by the prequant retry path.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
     _prefer(monkeypatch, tq._AutoPrefer(floor = (10, 0), schemes = (TQ_INT8,)))
@@ -1655,7 +1627,6 @@ def test_a_head_already_in_the_tier_is_not_listed_twice(monkeypatch):
 
 
 def test_a_capability_below_every_tier_has_no_order_even_with_a_head(monkeypatch):
-    # Below the ladder there is no dense quant path at all, so a family head cannot conjure one.
     _stub_torch(monkeypatch, cc = (7, 5))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_INT8})
     _prefer(monkeypatch, tq._AutoPrefer(floor = (7, 0), schemes = (TQ_NVFP4,)))
@@ -1678,9 +1649,6 @@ def test_a_capability_below_every_tier_has_no_order_even_with_a_head(monkeypatch
 def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
     monkeypatch, family, allowed
 ):
-    # The anti-drift invariant, now across the preference table too: whatever the head does to the
-    # order, both entry points must still walk the same one, or the retry path could propose a
-    # scheme auto itself would refuse.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, allowed)
     _prefer(monkeypatch, _nvfp4_head())
@@ -1690,9 +1658,6 @@ def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
 
 
 def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
-    # The table ships empty until a family's promotion gates pass, so auto must behave exactly as
-    # the ladder alone says. This is the test that fails first when a row is added without its
-    # own coverage.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     assert tq._FAMILY_AUTO_PREFER == {}
@@ -1700,12 +1665,10 @@ def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
         assert select_transformer_quant_scheme(_target(), "auto", family = family) == TQ_FP8
 
 
-# ── GEMM alignment floors ─────────────────────────────────────────────────────
 
 
 def test_divisible_for_scheme_matches_each_gemm():
-    """scaled_mm (fp8, and torchao's nvfp4 path) needs 16-aligned dims and MX block scaling 32.
-    ``_int_mm`` has no alignment floor, and neither has an unknown scheme, so both answer 0."""
+    """scaled_mm (fp8, and torchao's nvfp4 path) needs 16-aligned dims and MX block scaling 32."""
     from core.inference.diffusion_transformer_quant import divisible_for_scheme
 
     assert divisible_for_scheme(TQ_FP8) == 16
@@ -1716,10 +1679,7 @@ def test_divisible_for_scheme_matches_each_gemm():
 
 
 def test_quantize_transformer_filters_on_the_scheme_alignment(monkeypatch):
-    """The number the filter is built with is the one ``divisible_for_scheme`` publishes, so a
-    Linear that is 16-aligned but not 32-aligned is quantized under nvfp4 and skipped under mxfp8.
-    The offline builder reads the same function: a checkpoint built at a different floor holds a
-    different set of quantized Linears."""
+    """quantize_transformer filters on the alignment divisible_for_scheme publishes."""
     torch_stub = _stub_torch(monkeypatch, cc = (10, 0))
 
     class _Linear:
