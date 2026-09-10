@@ -8504,34 +8504,103 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     if wanted is None:
         return False
     url, revision, subdirectory = wanted
-    # Only a commit is evidence. A branch or tag ref (release/3.6.x, the ref shipped)
-    # moves without the requirements text changing, and direct_url.json records the
-    # commit that landed, not whether the ref still points at it; answering that needs
-    # the network, which is what the step itself does. So a mutable ref is never
-    # satisfied here and its step runs on every pass, as it did before the evidence.
-    if not _COMMIT_REVISION_RE.fullmatch(revision):
-        return False
-    try:
-        from importlib.metadata import distribution
-        recorded = distribution(dist_name).read_text("direct_url.json")
-    except Exception:  # noqa: BLE001 - absent metadata is a reason to install
-        return False
-    if not recorded:
-        return False
-    try:
-        payload = json.loads(recorded)
-    except ValueError:
-        return False
-    if not isinstance(payload, dict):
+    payload = _recorded_direct_url(dist_name)
+    if payload is None:
         return False
     vcs = payload.get("vcs_info")
     if not isinstance(vcs, dict):
         return False
-    return (
+    if not (
         str(payload.get("url") or "").rstrip("/") == url.rstrip("/")
         and str(vcs.get("requested_revision") or "") == revision
         and str(payload.get("subdirectory") or "") == subdirectory
-    )
+    ):
+        return False
+    if _COMMIT_REVISION_RE.fullmatch(revision):
+        return True
+    # A branch or tag ref (release/3.6.x, the ref shipped) moves without the
+    # requirements text changing, and direct_url.json records the commit that landed,
+    # not whether the ref still points at it. So ask the remote where the ref is now:
+    # one `git ls-remote`, no clone. The same commit is evidence and the step is
+    # skipped; a moved ref runs the step; a remote that cannot be reached keeps the
+    # build that is resident. Before this the step ran on every pass, and the pass
+    # died at this step whenever the git host was unreachable (a proxy that admits
+    # PyPI but not GitHub, an offline swap after a prefetch), for a training speedup
+    # that was already installed.
+    commit_id = str(vcs.get("commit_id") or "").strip().lower()
+    if not _COMMIT_REVISION_RE.fullmatch(commit_id or "x"):
+        return False
+    remote = _git_remote_commit(url, revision)
+    if remote is None:
+        _note(
+            f"{dist_name}: {url} ({revision}) is unreachable -- keeping the installed build "
+            f"{commit_id[:12]}",
+            _dim,
+        )
+        return True
+    return remote == commit_id or remote.startswith(commit_id) or commit_id.startswith(remote)
+
+
+def _recorded_direct_url(dist_name: str) -> "dict | None":
+    """The direct_url.json pip and uv wrote for *dist_name*, or None when there is none
+    that parses. This is the only place a git install's ref and commit survive."""
+    try:
+        from importlib.metadata import distribution
+        recorded = distribution(dist_name).read_text("direct_url.json")
+    except Exception:  # noqa: BLE001 - absent metadata is a reason to install
+        return None
+    if not recorded:
+        return None
+    try:
+        payload = json.loads(recorded)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _git_remote_commit(url: str, revision: str, timeout: int = 45) -> "str | None":
+    """The commit *revision* names on the remote right now (lower-case hex), or None
+    when the remote cannot be asked: no git, no network, no such ref, a timeout.
+
+    A peeled tag (`refs/tags/x^{}`) wins over the tag object, a branch over a tag of the
+    same name; pip and uv record the commit the checkout landed on, which for an
+    annotated tag is the peeled one.
+    """
+    exe = shutil.which("git")
+    if exe is None or not revision:
+        return None
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_ASKPASS", "echo")
+    try:
+        probe = subprocess.run(
+            [exe, "ls-remote", "--", url, revision],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = timeout,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    rows: dict[str, str] = {}
+    for line in probe.stdout.splitlines():
+        sha, _, ref = line.strip().partition("\t")
+        if ref and _COMMIT_REVISION_RE.fullmatch(sha):
+            rows[ref] = sha.lower()
+    for ref in (
+        f"refs/tags/{revision}^{{}}",
+        f"refs/heads/{revision}",
+        f"refs/tags/{revision}",
+        revision,
+    ):
+        if ref in rows:
+            return rows[ref]
+    return next(iter(rows.values()), None) if len(rows) == 1 else None
 
 
 def _uv_version() -> "str | None":

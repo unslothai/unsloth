@@ -424,35 +424,122 @@ def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) 
         assert stack._direct_reference_is_installed(req, "triton_kernels") is False
 
 
-def test_a_mutable_git_ref_is_never_installed_evidence(tmp_path, monkeypatch) -> None:
+def test_a_mutable_git_ref_is_evidence_only_while_the_remote_still_points_at_it(
+    tmp_path, monkeypatch, capsys
+) -> None:
     """release/3.6.x advances without the requirements text changing, and
     direct_url.json records the commit that landed, not whether the branch still points
-    at it. A requested_revision match on a branch would stop the step forever; the
-    step runs instead, as it did before any evidence existed."""
+    at it. So the remote is asked (one ls-remote): the same commit is evidence, a moved
+    branch runs the step, and a remote that cannot be reached keeps the installed build
+    rather than failing the whole update over a training speedup."""
     req = tmp_path / "t.txt"
     req.write_text(
         "triton_kernels @ git+https://example.invalid/triton.git@release/3.6.x"
         "#subdirectory=python/triton_kernels\n",
         encoding = "utf-8",
     )
+    commit = "0123456789abcdef0123456789abcdef01234567"
     recorded = {
         "url": "https://example.invalid/triton.git",
         "subdirectory": "python/triton_kernels",
-        "vcs_info": {
-            "vcs": "git",
-            "requested_revision": "release/3.6.x",
-            "commit_id": "0123456789abcdef0123456789abcdef01234567",
-        },
+        "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x", "commit_id": commit},
     }
 
     class _Dist:
+        def __init__(self, payload):
+            self._payload = payload
+
         def read_text(self, _name):
-            return json.dumps(recorded)
+            return json.dumps(self._payload)
 
     import importlib.metadata
 
-    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist())
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist(recorded))
+    asked: list = []
+
+    def _remote(answer):
+        def _ask(url, revision, timeout = 45):
+            asked.append((url, revision))
+            return answer
+
+        return _ask
+
+    # The branch still points at the installed commit: evidence, no reinstall.
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote(commit))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is True
+    assert asked == [("https://example.invalid/triton.git", "release/3.6.x")]
+
+    # The branch moved: the step runs.
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote("f" * 40))
     assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+    # The remote cannot be reached: the installed build is kept, and the log says so.
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote(None))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is True
+    assert "keeping the installed build 0123456789ab" in capsys.readouterr().out
+
+    # Without a recorded commit there is nothing to compare: the step runs, offline or not.
+    without_commit = {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x"}}
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist(without_commit))
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote(commit))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+    # A different branch recorded: not this requirement's build, whatever the remote says.
+    other_branch = {**recorded, "vcs_info": {**recorded["vcs_info"], "requested_revision": "main"}}
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist(other_branch))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+
+def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -> None:
+    """`git ls-remote -- URL REF` answers `sha<TAB>ref` rows; a peeled tag wins over the tag
+    object and a branch over a tag, and any failure (no git, non-zero exit, timeout, no
+    rows) answers None so the caller keeps the resident build."""
+    import subprocess as _sp
+
+    calls: list = []
+
+    class _Done:
+        def __init__(self, rc, out):
+            self.returncode = rc
+            self.stdout = out
+
+    def _fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return _fake_run.answer
+
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(stack.subprocess, "run", _fake_run)
+
+    _fake_run.answer = _Done(0, "aaaa000000000000000000000000000000000001\trefs/heads/release/3.6.x\n")
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") == (
+        "aaaa000000000000000000000000000000000001"
+    )
+    argv, kwargs = calls[-1]
+    assert argv[:3] == ["/usr/bin/git", "ls-remote", "--"]
+    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x"]
+    assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    _fake_run.answer = _Done(
+        0,
+        "bbbb000000000000000000000000000000000002\trefs/tags/v1\n"
+        "cccc000000000000000000000000000000000003\trefs/tags/v1^{}\n",
+    )
+    assert stack._git_remote_commit("https://example.invalid/t.git", "v1") == (
+        "cccc000000000000000000000000000000000003"
+    )
+
+    _fake_run.answer = _Done(128, "")
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+    _fake_run.answer = _Done(0, "")
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+
+    def _timeout(argv, **kwargs):
+        raise _sp.TimeoutExpired(argv, 1)
+
+    monkeypatch.setattr(stack.subprocess, "run", _timeout)
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: None)
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
 
 
 @pytest.mark.parametrize("name", ["UV_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS"])
