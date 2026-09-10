@@ -1744,7 +1744,9 @@ def test_the_parked_manifest_is_consumed_when_it_is_read_as_evidence(monkeypatch
     # leave the parked copy behind for the next ordinary run.
     planner = source[source.index("def _plan_pass(") :]
     assert planner.index("consume_previous_manifest()") < planner.index("_full_deps_requested()")
-    assert planner.index("consume_previous_manifest()") < planner.index("_foreign_resolver_inputs()")
+    assert planner.index("consume_previous_manifest()") < planner.index(
+        "_foreign_resolver_inputs()"
+    )
 
 
 def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatch, tmp_path):
