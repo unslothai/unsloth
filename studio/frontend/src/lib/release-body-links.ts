@@ -391,14 +391,12 @@ function classify(lines: string[]): Classified {
   lines.forEach((original, index) => {
     const start = offset;
     offset += original.length + 1;
-    // The quote state from the line above, which is what list tracking asks
-    // about. Only plain text below rewrites it, so every block returning early
-    // leaves no quoted paragraph open behind it.
+    // The quote state from the line above, which is what list tracking asks about. Only plain text
+    // below rewrites it, so every block returning early leaves no quoted paragraph open behind it.
     const above = quote;
     quote = NO_QUOTE;
-    // A fence, comment or HTML block runs only to the end of the container it was
-    // written in, so a line dedented out of that item or outside that quote
-    // closes both.
+    // A fence, comment or HTML block runs only to the end of the container it was written in, so a
+    // line dedented out of that item or outside that quote closes both.
     const quotes = quoteDepth(original);
     let inBlock = openFence !== null || inRawHtml || inHtmlBlock || inComment;
     if (
@@ -418,20 +416,18 @@ function classify(lines: string[]): Classified {
       endBlock();
       inBlock = false;
     }
-    // Read from the container the line is written in, so a fence three columns
-    // past a nested bullet or behind a quote marker still opens one. A block
-    // already open keeps only its own quote stripped, or a deeper marker in it
-    // would read as a closer.
+    // Read from the container the line is written in, so a fence three columns past a nested bullet
+    // or behind a quote marker still opens one. A block already open keeps only its own quote
+    // stripped, or a deeper marker in it would read as a closer.
     const container = containerContent(
       original,
       lists,
       inBlock ? blockQuotes : quotes,
     );
-    // A comment cannot open a fence and a fence hides a comment opener, so resolve
-    // them in that order or a hidden delimiter opens a phantom fence. An opener is
-    // read past a marker on the same line too, since a fence written as an item's
-    // first content opens inside it. Only an opener: fenced content is literal and
-    // a closer carries no marker.
+    // A comment cannot open a fence and a fence hides a comment opener, so resolve them in that
+    // order or a hidden delimiter opens a phantom fence. An opener is read past a marker on the
+    // same line too, since a fence written as an item's first content opens inside it. Only an
+    // opener: fenced content is literal and a closer carries no marker.
     const fenceSource = inComment
       ? null
       : FENCE.exec(
