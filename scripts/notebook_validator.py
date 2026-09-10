@@ -3090,7 +3090,10 @@ def _torchcodec_install_index_publishes_abi_stable(install_cell: str) -> bool:
 
 
 def _codec_works_above(
-    torch_floor: str, codec_minor: str, *, index_publishes_abi_stable: bool = True
+    torch_floor: str,
+    codec_minor: str,
+    *,
+    index_publishes_abi_stable: bool = True,
 ) -> bool:
     """Is there ANY torch minor at or above `torch_floor` this codec minor can pair with?
 

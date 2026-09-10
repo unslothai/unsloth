@@ -2137,7 +2137,7 @@ def test_the_abi_exemption_uses_the_codec_index_not_torchs_build_tag():
     assert [f.rule for f in flagged] == ["R-INST-004"]
 
     post_table = (
-        '!pip install --index-url https://download.pytorch.org/whl/cu128 '
+        "!pip install --index-url https://download.pytorch.org/whl/cu128 "
         '"torch==2.12.0" "torchcodec==0.12.0"'
     )
     past = nv.rule_inst_004_torchcodec_torch(post_table, colab, "nb.ipynb", 0)
@@ -2151,7 +2151,7 @@ def test_an_inexact_torch_floor_still_sees_a_missing_codec_index():
 
     older = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128"}
     cell = (
-        '!pip install --index-url https://download.pytorch.org/whl/cu128 '
+        "!pip install --index-url https://download.pytorch.org/whl/cu128 "
         '"torch>=2.11" "torchcodec==0.12.0"'
     )
     flagged = nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)
