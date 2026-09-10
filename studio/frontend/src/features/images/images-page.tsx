@@ -56,23 +56,14 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import {
-  type HostClass,
-  type RequestedPrecision,
-  effectiveRowPrecision,
-  loadControlsBlockDenseQuant,
-} from "@/features/model-picker/components/model-selector/host-artifact-policy";
+import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import {
-  useDenseQuantAutoSchemes,
-  useDenseQuantSchemes,
-  useHostClass,
-} from "@/hooks/use-host-class";
+import { useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -195,15 +186,8 @@ function sendsTransformerQuant(kind: string | null | undefined, repoId: string):
 // Curated models come from the shared catalog, one group per model with its artifacts as data and
 // the load kind per artifact from loadSpecFor. Built per render, since a host that can only run
 // the native engine is not offered pipeline rows.
-function useImageModels(
-  host: HostClass,
-  precision: RequestedPrecision,
-  autoSchemes: string[] | undefined,
-): ModelOption[] {
-  return useMemo(
-    () => catalogToModelOptions(IMAGE_CATALOG, host, precision, autoSchemes),
-    [host, precision, autoSchemes],
-  );
+function useImageModels(host: HostClass): ModelOption[] {
+  return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
 }
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) the model must
@@ -1188,8 +1172,7 @@ export function ImagesPage({
   const initialReadySent = useRef(false);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
-  const denseQuantSchemes = useDenseQuantSchemes();
-  const denseQuantAutoSchemes = useDenseQuantAutoSchemes();
+  const imageModels = useImageModels(hostClass);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
@@ -1310,23 +1293,6 @@ export function ImagesPage({
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
-  // What the next load will ask the transformer to run at, as the picker must describe it. Every
-  // load control that deterministically keeps the weights dense reads as Precision=Off here, and so
-  // does an explicit scheme this host cannot run, since both end in bf16 or a refusal rather than
-  // the fast path the row would be advertising.
-  const requestedPrecision: RequestedPrecision = effectiveRowPrecision(
-    loadControlsBlockDenseQuant({
-      precision: transformerQuant,
-      speedMode,
-      memoryMode,
-      cpuOffload,
-    })
-      ? "none"
-      : transformerQuant,
-    denseQuantSchemes,
-    denseQuantAutoSchemes,
-  );
-  const imageModels = useImageModels(hostClass, requestedPrecision, denseQuantAutoSchemes);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
@@ -3614,8 +3580,6 @@ export function ImagesPage({
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
-                requestedPrecision={requestedPrecision}
-                denseQuantAutoSchemes={denseQuantAutoSchemes}
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}

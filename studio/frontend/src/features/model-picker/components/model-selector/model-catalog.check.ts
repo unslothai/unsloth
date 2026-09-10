@@ -291,10 +291,10 @@ assert.deepEqual(
   curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"),
 );
 
-// Dense-quant rows show their runtime precision.
+// A dense-quant row earns the qualifier; its chip stays the stored precision.
 assert.deepEqual(curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant"), {
   name: "Z-Image-Turbo (Fast)",
-  tags: ["FP8 / INT8"],
+  tags: ["BF16"],
 });
 assert.equal(
   curatedDisplayNameFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant"),
@@ -309,7 +309,7 @@ assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG,
   name: "Z-Image-Turbo-GGUF",
   tags: [],
 });
-// Hosts without dense quant show the stored precision.
+// Hosts without dense quant read exactly the same, minus the qualifier.
 for (const host of ["accelerated", "gguf-only", "unknown"] as const) {
   assert.deepEqual(
     curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, host),
@@ -321,7 +321,6 @@ for (const host of ["accelerated", "gguf-only", "unknown"] as const) {
 for (const id of ["stabilityai/sdxl-turbo", "stabilityai/stable-diffusion-xl-base-1.0"]) {
   const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant");
   assert.ok(row && !row.name.includes("(Fast)"), `${id} reads "${row?.name}"`);
-  assert.equal(row?.tags.includes("FP8 / INT8"), false, id);
 }
 
 // Only eligible bf16 image pipelines claim the path.
@@ -333,7 +332,9 @@ for (const [label, catalog] of [
     for (const artifact of group.artifacts) {
       if (artifact.format !== "bf16" || artifact.loadKind !== "pipeline") continue;
       const row = curatedRowLabelFor(artifact.repoId, catalog, "dense-quant");
-      const claims = row?.name.includes("(Fast)") || row?.tags.includes("FP8 / INT8");
+      // Word boundary, not "(Fast)": `qualify` skips the bracket when the variant name already
+      // carries the word, as HiDream I1 (Fast (distilled)) does.
+      const claims = /\bFast\b/.test(row?.name ?? "");
       assert.equal(
         Boolean(claims),
         label === "image" && artifact.denseQuantable === true,
@@ -359,20 +360,21 @@ for (const [id, expected] of [
 // Unknown ids defer to the loader.
 assert.equal(curatedArtifactTakesDenseQuant("someone/pasted", IMAGE_CATALOG), undefined);
 
-// Label and request eligibility must agree.
+// A row that claims the fast path must be one the load request may actually send a precision for.
 for (const group of IMAGE_CATALOG) {
   for (const artifact of group.artifacts) {
     const row = curatedRowLabelFor(artifact.repoId, IMAGE_CATALOG, "dense-quant");
-    if (!row?.tags.includes("FP8 / INT8")) continue;
-    assert.equal(
+    if (!/\bFast\b/.test(row?.name ?? "")) continue;
+    assert.notEqual(
       curatedArtifactTakesDenseQuant(artifact.repoId, IMAGE_CATALOG),
-      true,
+      false,
       artifact.repoId,
     );
   }
 }
 
-// Single-artifact groups retain runtime precision while omitting format chips.
+// Single-artifact groups have nothing to tell apart, so they stay bare on every host; only the
+// qualifier moves.
 for (const id of [
   "krea/Krea-2-Turbo",
   "Alpha-VLLM/Lumina-Image-2.0",
@@ -380,92 +382,54 @@ for (const id of [
 ]) {
   const group = groupForRepoId(id, IMAGE_CATALOG);
   assert.equal(group?.artifacts.length, 1, id);
-  assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant")?.tags, ["FP8 / INT8"], id);
-  assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "accelerated")?.tags, [], id);
+  for (const host of ["dense-quant", "accelerated"] as const) {
+    assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, host)?.tags, [], `${id} ${host}`);
+  }
+  assert.ok(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant")?.name.includes("(Fast)"), id);
+  assert.equal(curatedRowLabelFor(id, IMAGE_CATALOG, "accelerated")?.name.includes("(Fast)"), false, id);
 }
 
-// The row names the precision the request will actually run, not the one the host could run.
+// The row states a CAPABILITY of the artifact on this host, and nothing about the request. Which
+// precision a load lands on also depends on Precision/Speed/Memory, on the family deny list and on
+// a per-card kernel probe; `resolved` reports that after the load. A row that tried to predict it
+// would have to mirror the backend selector's inputs, and that mirror is unbounded.
 {
   const id = "Tongyi-MAI/Z-Image-Turbo";
-  // Precision=Off runs the released bf16 weights, so the row must show the stored precision.
-  for (const off of ["none", "off", "None", " OFF "]) {
-    assert.deepEqual(
-      curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", off),
-      { name: "Z-Image-Turbo", tags: ["BF16"] },
-      off,
-    );
-    // Closed and open must agree, and both must read as they do on a host without the path.
-    assert.equal(
-      curatedDisplayNameFor(id, IMAGE_CATALOG, "dense-quant", off),
-      curatedDisplayNameFor(id, IMAGE_CATALOG, "accelerated"),
-      off,
-    );
+  // The chip is the STORED precision, exactly as on a host without the fast path.
+  assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant"), {
+    name: "Z-Image-Turbo (Fast)",
+    tags: ["BF16"],
+  });
+  assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "accelerated"), {
+    name: "Z-Image-Turbo",
+    tags: ["BF16"],
+  });
+  // The host capability never rewrites a chip: chips describe the artifact, so they are identical
+  // on every host, and the invented "FP8 / INT8" runtime pair appears nowhere. A stored-fp8 row
+  // still shows FP8, which is its own label and not a claim about what will run.
+  for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
+    for (const group of catalog) {
+      for (const artifact of group.artifacts) {
+        const dense = curatedRowLabelFor(artifact.repoId, catalog, "dense-quant")?.tags ?? [];
+        const plain = curatedRowLabelFor(artifact.repoId, catalog, "accelerated")?.tags ?? [];
+        assert.deepEqual(dense, plain, artifact.repoId);
+        assert.equal(dense.includes("FP8 / INT8"), false, artifact.repoId);
+      }
+    }
   }
-  // An explicit scheme names itself; auto stays the two the ladder chooses between.
-  for (const [precision, chip] of [
-    ["nvfp4", "NVFP4"],
-    ["mxfp8", "MXFP8"],
-    ["fp8", "FP8"],
-    ["int8", "INT8"],
-  ] as const) {
-    assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", precision), {
-      name: "Z-Image-Turbo (Fast)",
-      tags: [chip],
-    });
-  }
-  for (const auto of [undefined, null, "auto", ""]) {
-    assert.deepEqual(
-      curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", auto),
-      { name: "Z-Image-Turbo (Fast)", tags: ["FP8 / INT8"] },
-      String(auto),
-    );
-  }
-  // Single-artifact groups follow the same rule.
-  assert.deepEqual(
-    curatedRowLabelFor("krea/Krea-2-Turbo", IMAGE_CATALOG, "dense-quant", "none")?.tags,
-    [],
+  // Closed and open agree, which is the invariant the qualifier has to keep.
+  assert.equal(
+    curatedDisplayNameFor(id, IMAGE_CATALOG, "dense-quant"),
+    curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant")?.name,
   );
-  // The flat option list the trigger reads carries the same answer.
-  const off = catalogToModelOptions(IMAGE_CATALOG, "dense-quant", "none");
-  assert.equal(off.find((o) => o.id === id)?.name, "Z-Image-Turbo (BF16)");
-  const auto = catalogToModelOptions(IMAGE_CATALOG, "dense-quant");
-  assert.equal(auto.find((o) => o.id === id)?.name, "Z-Image-Turbo (Fast)");
-}
-
-// A scheme the model's FAMILY denies is refused on every GPU, so the row must not promise it.
-{
-  // Every catalog row the backend maps to a denying family, not just the two that were noticed.
-  for (const id of [
-    "Qwen/Qwen-Image-2512",
-    "Qwen/Qwen-Image-Edit-2511",
-    "Qwen/Qwen-Image",
-  ]) {
-    for (const denied of ["mxfp8", "nvfp4", "MXFP8", " NvFp4 "]) {
-      const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", denied);
-      assert.ok(row && !row.name.includes("(Fast)"), `${id} ${denied} reads "${row?.name}"`);
-      assert.equal(row?.tags.includes("MXFP8"), false, `${id} ${denied}`);
-      assert.equal(row?.tags.includes("NVFP4"), false, `${id} ${denied}`);
-    }
-    // The schemes it does allow are unaffected, and so is auto.
-    for (const [precision, chip] of [
-      ["fp8", "FP8"],
-      ["int8", "INT8"],
-      ["auto", "FP8 / INT8"],
-    ] as const) {
-      const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", precision);
-      assert.ok(row?.name.includes("(Fast)"), `${id} ${precision} reads "${row?.name}"`);
-      assert.deepEqual(row?.tags, [chip], `${id} ${precision}`);
-    }
-  }
-  // A model whose family denies nothing keeps every scheme.
-  const free = curatedRowLabelFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG, "dense-quant", "nvfp4");
-  assert.deepEqual(free, { name: "Z-Image-Turbo (Fast)", tags: ["NVFP4"] });
+  const rows = catalogToModelOptions(IMAGE_CATALOG, "dense-quant");
+  assert.equal(rows.find((o) => o.id === id)?.name, "Z-Image-Turbo (Fast)");
 }
 
 // Do not duplicate a qualifier already present in the variant name.
 assert.deepEqual(
   curatedRowLabelFor("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG, "dense-quant"),
-  { name: "HiDream I1 (Fast (distilled))", tags: ["FP8 / INT8"] },
+  { name: "HiDream I1 (Fast (distilled))", tags: ["BF16"] },
 );
 
 // Pre-quantised pipelines never claim dense quantisation.
@@ -475,7 +439,6 @@ for (const id of [
 ]) {
   const row = curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant");
   assert.ok(row && !row.name.includes("(Fast)"), `${id} reads "${row?.name}"`);
-  assert.equal(row?.tags.includes("FP8 / INT8"), false, id);
 }
 
 // A gguf-only host loses exactly the artifacts the backend refuses there. Non-GGUF is NOT

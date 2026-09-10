@@ -1769,9 +1769,46 @@ def test_a_host_whose_torchao_cannot_import_advertises_nothing(monkeypatch):
     assert tq.dense_quant_host_capable(_target()) is False
 
 
-def test_a_host_below_the_arch_floor_advertises_nothing(monkeypatch):
+def test_an_unsupported_device_advertises_nothing(monkeypatch):
     _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "_capability", lambda: (7, 0))
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    assert tq.dense_quant_host_capable(_target(device = "cpu")) is False
+
+
+# Advertised host capability.
+
+
+def _capable_host(
+    monkeypatch,
+    *,
+    torchao_reason = None,
+    cap = (8, 9),
+):
+    """A CUDA host past the arch floor, with torchao's import verdict and the probe cache pinned."""
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_capability", lambda: cap)
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (torchao_reason,))
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+
+
+def test_a_capable_host_advertises_dense_quant(monkeypatch):
+    _capable_host(monkeypatch)
+    assert tq.dense_quant_host_capable(_target()) is True
+
+
+def test_a_host_whose_torchao_cannot_import_advertises_nothing(monkeypatch):
+    """An unimportable torchao makes every scheme decline, so the capability must be false.
+
+    `dense_transformer_supported` only catches the Windows-ROCm stub and `_capability` reads the
+    card, so without this the picker would call rows fast while every load fell back to bf16.
+    """
+    _capable_host(monkeypatch, torchao_reason = "ImportError: cannot import name 'ScalingType'")
+    assert tq.dense_quant_host_capable(_target()) is False
+
+
+def test_a_host_below_the_arch_floor_advertises_nothing(monkeypatch):
+    _capable_host(monkeypatch, cap = (7, 0))
     assert tq.dense_quant_host_capable(_target()) is False
 
 
@@ -1781,123 +1818,21 @@ def test_an_unsupported_device_advertises_nothing(monkeypatch):
     assert tq.dense_quant_host_capable(_target(device = "cpu")) is False
 
 
-def test_the_scheme_list_narrows_with_the_arch(monkeypatch):
-    """One capability bit cannot separate an Ampere host from an Ada one."""
-    _capable_host(monkeypatch)
-    for cap, expected in [
-        ((8, 0), (TQ_INT8,)),
-        ((8, 6), (TQ_INT8,)),
-        ((8, 9), (TQ_INT8, TQ_FP8)),
-        ((9, 0), (TQ_INT8, TQ_FP8)),
-        ((10, 0), (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)),
-    ]:
-        monkeypatch.setattr(tq, "_capability", lambda _c = cap: _c)
-        assert tq.dense_quant_host_schemes(_target()) == expected, cap
-        # The bit and the list must never disagree.
-        assert tq.dense_quant_host_capable(_target()) is bool(expected), cap
-
-
-def test_an_explicit_nvfp4_is_advertised_even_though_auto_never_picks_it(monkeypatch):
-    """nvfp4 is out of the auto ladder by choice, but an explicit request is still honoured."""
-    _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
-    assert TQ_NVFP4 in tq.dense_quant_host_schemes(_target())
-    assert not any(TQ_NVFP4 in schemes for _floor, schemes in tq._AUTO_LADDER)
-
-
-def test_a_host_that_cannot_quantise_advertises_no_schemes(monkeypatch):
-    _capable_host(monkeypatch, torchao_reason = "ImportError: no torchao")
-    assert tq.dense_quant_host_schemes(_target()) == ()
-    _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
-    assert tq.dense_quant_host_schemes(_target(device = "cpu")) == ()
-    _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "_capability", lambda: None)
-    assert tq.dense_quant_host_schemes(_target()) == ()
-
-
-def test_a_cached_smoke_verdict_narrows_the_advertised_schemes(monkeypatch):
+def test_a_probed_failure_withdraws_the_capability(monkeypatch):
     """The arch floor is necessary, not sufficient: a probed failure must not stay advertised."""
     _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
-    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
-    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
-    # Cold: nothing probed yet, so the arch floor is the answer, exactly as before.
-    assert tq.dense_quant_probed_schemes(_target()) == tq.dense_quant_host_schemes(_target())
-    # The load path has since proved the prototype kernels are missing on this card.
-    tq._SMOKE_CACHE.update({(TQ_NVFP4, "cuda:0"): False, (TQ_MXFP8, "cuda:0"): False})
-    assert tq.dense_quant_probed_schemes(_target()) == (TQ_INT8, TQ_FP8)
-    # A positive verdict keeps its scheme.
-    tq._SMOKE_CACHE[(TQ_NVFP4, "cuda:0")] = True
-    assert TQ_NVFP4 in tq.dense_quant_probed_schemes(_target())
+    assert tq.dense_quant_host_capable(_target()) is True
+    # The load path has since proved this tier's schemes do not run on this card.
+    tq._SMOKE_CACHE.update({(TQ_FP8, "cuda:0"): False, (TQ_INT8, "cuda:0"): False})
+    assert tq.dense_quant_host_capable(_target()) is False
+    # One survivor is enough for auto to have something to pick.
+    tq._SMOKE_CACHE[(TQ_INT8, "cuda:0")] = True
+    assert tq.dense_quant_host_capable(_target()) is True
 
 
-def test_the_advertised_schemes_never_probe(monkeypatch):
-    """A status route must not buy the CUDA context the in-process probe leaks."""
-    _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
-    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
-    monkeypatch.setattr(
-        tq, "_smoke_probe", lambda *a, **k: pytest.fail("the status path probed in-process")
-    )
-    monkeypatch.setattr(
-        tq, "_child_probe_table", lambda device: pytest.fail("the status path spawned a child")
-    )
-    assert tq.dense_quant_probed_schemes(_target())
-
-
-def test_a_card_with_no_arch_support_advertises_nothing_whatever_the_cache_says(monkeypatch):
-    _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
-    monkeypatch.setattr(tq, "_SMOKE_CACHE", {(TQ_FP8, "cuda:0"): True})
-    assert tq.dense_quant_probed_schemes(_target(device = "cpu")) == ()
-
-
-def test_the_picker_mirrors_the_family_deny_list():
-    """EVERY catalog row whose family denies a scheme carries the deny list.
-
-    The deny list is per FAMILY and holds on every GPU, so no host capability can express it and
-    the picker has to know it. Resolved through `detect_family` per repo id rather than by counting
-    annotated groups: the count matched while `unsloth/Qwen-Image` -- a third catalog group on the
-    same `qwen-image` family -- was unannotated and still labelled fast.
-    """
-    import pathlib
-    import re
-
-    from core.inference.diffusion_families import detect_family
-
-    catalog = (
-        pathlib.Path(tq.__file__).resolve().parents[3]
-        / "frontend/src/features/model-picker/components/model-selector/model-catalog.ts"
-    ).read_text(encoding = "utf-8")
-    mirrored = re.search(r"const QWEN_DENIED_QUANT_SCHEMES = \[([^\]]*)\]", catalog)
-    assert mirrored is not None, "the catalog no longer declares the mirrored deny list"
-    schemes = set(re.findall(r'"([^"]+)"', mirrored.group(1)))
-    denied = {scheme for schemes_ in tq._FAMILY_SCHEME_DENY.values() for scheme in schemes_}
-    assert schemes == denied, (schemes, denied)
-
-    # Per group block, so a bf16 pipeline row is matched against its OWN `deniedQuantSchemes`.
-    checked = 0
-    for block in catalog.split("\n  {\n    canonicalId:")[1:]:
-        annotated = "deniedQuantSchemes:" in block
-        for repo_id in re.findall(r'bf16Pipeline\(\s*"([^"]+)"', block):
-            family = getattr(detect_family(repo_id), "name", None)
-            if family not in tq._FAMILY_SCHEME_DENY:
-                continue
-            checked += 1
-            assert annotated, f"{repo_id} resolves to '{family}', which denies schemes"
-    assert checked >= 3, f"the deny-list rows went missing from the catalog ({checked} found)"
-
-
-def test_the_auto_scheme_set_is_the_ladder_not_every_explicit_scheme(monkeypatch):
-    """`auto` cannot pick nvfp4, so a host that runs only nvfp4 offers nothing automatic."""
-    _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
-    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
-    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
-    # Cold: every ladder scheme this tier allows, in ladder order.
-    assert tq.dense_quant_auto_schemes(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
-    # Only nvfp4 survives the probe -- an explicit request works, auto has nothing.
+def test_an_explicit_only_scheme_does_not_make_auto_capable(monkeypatch):
+    """`auto` cannot pick nvfp4, so a host that runs only nvfp4 has nothing automatic to offer."""
+    _capable_host(monkeypatch, cap = (10, 0))
     tq._SMOKE_CACHE.update(
         {
             (TQ_FP8, "cuda:0"): False,
@@ -1906,27 +1841,17 @@ def test_the_auto_scheme_set_is_the_ladder_not_every_explicit_scheme(monkeypatch
             (TQ_NVFP4, "cuda:0"): True,
         }
     )
-    assert tq.dense_quant_probed_schemes(_target()) == (TQ_NVFP4,)
-    assert tq.dense_quant_auto_schemes(_target()) == ()
+    assert tq.dense_quant_host_capable(_target()) is False
+    assert not any(TQ_NVFP4 in schemes for _floor, schemes in tq._AUTO_LADDER)
 
 
-def test_the_auto_scheme_set_narrows_with_the_arch(monkeypatch):
+def test_the_capability_never_probes(monkeypatch):
+    """A polled status route must not buy the CUDA context the in-process probe leaks."""
     _capable_host(monkeypatch)
-    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
-    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
-    for cap, expected in [
-        ((8, 0), (TQ_INT8,)),
-        ((8, 9), (TQ_FP8, TQ_INT8)),
-        ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),
-    ]:
-        monkeypatch.setattr(tq, "_capability", lambda _c = cap: _c)
-        assert tq.dense_quant_auto_schemes(_target()) == expected, cap
-        # Never wider than what the host can run at all.
-        assert set(tq.dense_quant_auto_schemes(_target())) <= set(
-            tq.dense_quant_probed_schemes(_target())
-        ), cap
-
-
-def test_an_incapable_host_offers_no_auto_schemes(monkeypatch):
-    _capable_host(monkeypatch, torchao_reason = "ImportError: no torchao")
-    assert tq.dense_quant_auto_schemes(_target()) == ()
+    monkeypatch.setattr(
+        tq, "_smoke_probe", lambda *a, **k: pytest.fail("the status path probed in-process")
+    )
+    monkeypatch.setattr(
+        tq, "_child_probe_table", lambda device: pytest.fail("the status path spawned a child")
+    )
+    assert tq.dense_quant_host_capable(_target()) is True

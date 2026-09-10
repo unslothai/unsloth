@@ -10,11 +10,8 @@ import {
   classifyGgufFit as classifyGgufFitForDevice,
 } from "../../../../lib/gguf-fit.ts";
 import {
-  type DenseQuantSchemes,
   type HostClass,
-  type RequestedPrecision,
   curatedArtifactIsOfferable,
-  denseQuantPrecisionChip,
   h3PerfSuffix,
   hostRunsDenseQuant,
 } from "./host-artifact-policy.ts";
@@ -72,15 +69,7 @@ export interface CatalogGroup {
    *  `detectCapabilities` reads tags then repo-name keywords and a name like "MiniMax-H3-GGUF"
    *  says nothing about the audio track the model emits. */
   capabilities?: Partial<ModelCapabilities>;
-  /** Quant schemes the backend refuses for this model's FAMILY whatever the GPU, mirroring
-   *  `_FAMILY_SCHEME_DENY` in diffusion_transformer_quant.py. An explicit request for one of these
-   *  is refused at load, so the row must not advertise it. Absent means nothing is denied. */
-  deniedQuantSchemes?: readonly string[];
 }
-
-// The two families `_FAMILY_SCHEME_DENY` covers: both render out of bar on the same DiT. Keep in
-// step with that table; it is short, and it has changed before (fp8 was denied and then was not).
-const QWEN_DENIED_QUANT_SCHEMES = ["mxfp8", "nvfp4"] as const;
 
 
 const gguf = (repoId: string, extra?: Partial<ModelArtifact>): ModelArtifact => ({
@@ -178,7 +167,6 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     canonicalId: "unsloth/Qwen-Image-2512",
-    deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES,
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",
     scope: "image",
@@ -196,8 +184,6 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     canonicalId: "unsloth/Qwen-Image",
-    // Same `qwen-image` family as the 2512 group above, so the same schemes are denied.
-    deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES,
     displayName: "Qwen-Image",
     description: "Text-to-image",
     scope: "image",
@@ -257,7 +243,6 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     canonicalId: "unsloth/Qwen-Image-Edit-2511",
-    deniedQuantSchemes: QWEN_DENIED_QUANT_SCHEMES,
     displayName: "Qwen-Image-Edit 2511",
     description: "Image editing",
     scope: "image",
@@ -838,19 +823,14 @@ export function curatedDisplayNameFor(
   repoId: string,
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
-  precision?: RequestedPrecision,
-  autoSchemes?: DenseQuantSchemes,
 ): string | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
   // A row that earns a speed qualifier must read the same closed as open: this helper names the
   // trigger and curatedRowLabelFor names the row, so a divergence would rename the model as
   // the popover opens.
-  if (curatedPerfSuffix(hit, host, precision, autoSchemes)) {
-    return (
-      curatedRowLabelFor(repoId, catalog, host, precision, autoSchemes)?.name ??
-      hit.group.displayName
-    );
+  if (curatedPerfSuffix(hit, host)) {
+    return curatedRowLabelFor(repoId, catalog, host)?.name ?? hit.group.displayName;
   }
   return hit.group.artifacts.length > 1
     ? `${hit.group.displayName} (${hit.artifact.label})`
@@ -863,13 +843,6 @@ export function curatedDisplayNameFor(
 const LABEL_PART_SEPARATOR = " - ";
 const GGUF_SUFFIX_RE = /-gguf$/i;
 const RESOLUTION_RE = /^\d{3,4}p$/i;
-
-/** Whether this model's family refuses the requested scheme outright. The deny list is per family
- *  and holds on every GPU, so no host capability can express it. */
-function groupDeniesPrecision(group: CatalogGroup, precision: RequestedPrecision): boolean {
-  const value = (precision ?? "").trim().toLowerCase();
-  return Boolean(value) && (group.deniedQuantSchemes?.includes(value) ?? false);
-}
 
 /** Whether a known artifact can accept transformer quantisation. Unknown ids defer to the backend. */
 export function curatedArtifactTakesDenseQuant(
@@ -888,39 +861,33 @@ export function curatedArtifactTakesDenseQuant(
   );
 }
 
-/** The runtime-precision chip for this row, or null when it will not be dense-quantised. Reads the
- *  requested precision as well as the host: Precision=Off runs the released bf16 weights, so a row
- *  claiming the fast path there would point the user away from the row they actually want. */
-function artifactDenseQuantChip(
+/** Whether this row runs the dense quant path on this host.
+ *
+ *  Artifact and host only, deliberately. Which precision a load ENDS UP at also depends on the
+ *  request (Precision, Speed, Memory), on the family deny list and on a per-card kernel probe --
+ *  inputs a row that has not been clicked cannot see, and that only the backend selector combines
+ *  correctly. So the row states the capability it can be sure of, and `resolved` reports the
+ *  precision that actually ran once there is a load to report on. */
+function artifactUsesDenseQuant(
   group: CatalogGroup,
   artifact: ModelArtifact,
   host: HostClass,
-  precision: RequestedPrecision,
-  autoSchemes: DenseQuantSchemes,
-): string | null {
-  if (
-    !(
-      hostRunsDenseQuant(host) &&
-      !groupDeniesPrecision(group, precision) &&
-      group.scope === "image" &&
-      artifact.format === "bf16" &&
-      artifact.loadKind === "pipeline" &&
-      artifact.denseQuantable === true
-    )
-  ) {
-    return null;
-  }
-  return denseQuantPrecisionChip(precision, undefined, autoSchemes);
+): boolean {
+  return (
+    hostRunsDenseQuant(host) &&
+    group.scope === "image" &&
+    artifact.format === "bf16" &&
+    artifact.loadKind === "pipeline" &&
+    artifact.denseQuantable === true
+  );
 }
 
 /** Speed qualifier from the dense-quant path or an artifact-specific rule. */
 function curatedPerfSuffix(
   hit: { group: CatalogGroup; artifact: ModelArtifact },
   host: HostClass,
-  precision: RequestedPrecision,
-  autoSchemes: DenseQuantSchemes,
 ): string | null {
-  if (artifactDenseQuantChip(hit.group, hit.artifact, host, precision, autoSchemes)) return "Fast";
+  if (artifactUsesDenseQuant(hit.group, hit.artifact, host)) return "Fast";
   return h3PerfSuffix(hit.artifact.repoId, host);
 }
 
@@ -931,14 +898,12 @@ export function curatedRowLabelFor(
   repoId: string,
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
-  precision?: RequestedPrecision,
-  autoSchemes?: DenseQuantSchemes,
 ): { name: string; tags: string[] } | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
   // Only where the host can run both rows, so the qualifier compares things the user can pick
   // between rather than advertising a speed they cannot have.
-  const perf = curatedPerfSuffix(hit, host, precision, autoSchemes);
+  const perf = curatedPerfSuffix(hit, host);
   // Avoid duplicating variant names such as "Fast (distilled)".
   const qualify = (name: string) =>
     perf && !new RegExp(`\\b${perf}\\b`, "i").test(name) ? `${name} (${perf})` : name;
@@ -947,23 +912,12 @@ export function curatedRowLabelFor(
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
     return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
   }
-  // Single-artifact groups omit format chips but retain the runtime precision chip.
-  const denseQuantChip = artifactDenseQuantChip(
-    hit.group,
-    hit.artifact,
-    host,
-    precision,
-    autoSchemes,
-  );
-  if (hit.group.artifacts.length <= 1) {
-    return {
-      name: qualify(hit.group.displayName),
-      tags: denseQuantChip ? [denseQuantChip] : [],
-    };
-  }
+  // A group with one artifact has nothing to distinguish, so it stays bare.
+  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
-  // Show runtime precision for dense-quant rows and stored precision otherwise.
-  const tags = [denseQuantChip ?? format.trim()].filter(Boolean);
+  // The chip is the precision the artifact is STORED at, which is what tells two rows apart. What
+  // it RUNS at is the loader's answer, and `resolved` gives it after the load.
+  const tags = [format.trim()].filter(Boolean);
   const kept: string[] = [];
   for (const part of rest) {
     if (RESOLUTION_RE.test(part.trim())) tags.push(part.trim());
@@ -980,8 +934,6 @@ export function curatedRowLabelFor(
 export function catalogToModelOptions(
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
-  precision?: RequestedPrecision,
-  autoSchemes?: DenseQuantSchemes,
 ): ModelOption[] {
   const options: ModelOption[] = [];
   for (const group of catalog) {
@@ -992,9 +944,7 @@ export function catalogToModelOptions(
       if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
       options.push({
         id: artifact.repoId,
-        name:
-          curatedDisplayNameFor(artifact.repoId, catalog, host, precision, autoSchemes) ??
-          group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog, host) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,

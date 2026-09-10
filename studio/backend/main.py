@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import functools
 import os
 import sys
 import threading
@@ -1997,58 +1998,32 @@ def _get_cached_system_gpu_info(
         return combined_info
 
 
-def _dense_quant_schemes_shared(reader_name: str) -> tuple:
-    """``reader_name``'s answer for the least capable of the visible cards.
+@functools.lru_cache(maxsize = 1)
+def _dense_quant_supported() -> bool:
+    """Whether an ``auto`` request could engage a dense quant on EVERY visible card.
 
-    The picker cannot see the selected card, so mixed-capability hosts report the intersection.
-    Not cached, because the answer sharpens: the readers return the arch floor until the load path
-    has paid for a smoke verdict and the cached verdict afterwards, so an lru_cache would freeze the
-    cold answer for the life of the process. Each call is a capability read plus a dict lookup;
-    nothing here probes or allocates."""
+    The picker cannot see which card a load will land on, so a mixed host answers for the least
+    capable one. Cached because hardware capability is static and this endpoint is polled; the
+    reader is non-allocating and never runs the smoke probe itself."""
     try:
-        from core.inference import diffusion_transformer_quant as tq
         from core.inference.diffusion_device import (
             diffusion_device_scope,
             resolve_diffusion_device_target,
         )
+        from core.inference.diffusion_transformer_quant import dense_quant_host_capable
 
         import torch
 
-        reader = getattr(tq, reader_name)
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
-            return tuple(reader(resolve_diffusion_device_target()))
-        shared: Optional[tuple] = None
+            return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
         for ordinal in range(count):
             with diffusion_device_scope(ordinal):
-                schemes = tuple(reader(resolve_diffusion_device_target(ordinal = ordinal)))
-            shared = schemes if shared is None else tuple(s for s in shared if s in schemes)
-            if not shared:
-                return ()
-        return shared or ()
+                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                    return False
+        return True
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
-        return ()
-
-
-def _dense_quant_auto_schemes() -> tuple:
-    """The schemes an AUTO request could pick on every visible card.
-
-    Separate from the explicit list because the auto ladder omits nvfp4 on purpose: a host that can
-    only run nvfp4 honours an explicit request and has nothing automatic to offer."""
-    return _dense_quant_schemes_shared("dense_quant_auto_schemes")
-
-
-def _dense_quant_schemes() -> tuple:
-    """The explicit dense-quant schemes EVERY visible card can run."""
-    return _dense_quant_schemes_shared("dense_quant_probed_schemes")
-
-
-def _dense_quant_supported() -> bool:
-    """Whether every visible card can run dense quantisation.
-
-    The arch floors are nested, so the intersection above is the least capable card's set and is
-    empty exactly when some card cannot run any scheme."""
-    return bool(_dense_quant_schemes())
+        return False
 
 
 @app.get("/api/system")
@@ -2149,9 +2124,6 @@ def get_system_info(
         # Device backend alone cannot distinguish unsupported CUDA cards, and one bit cannot tell an
         # Ampere host (int8 only) from an Ada one, so the picker gets the scheme list too.
         "dense_quant_supported": _dense_quant_supported(),
-        "dense_quant_schemes": list(_dense_quant_schemes()),
-        # What AUTO could pick, which is not the same set: the ladder omits nvfp4 on purpose.
-        "dense_quant_auto_schemes": list(_dense_quant_auto_schemes()),
     }
 
 

@@ -630,84 +630,36 @@ def select_transformer_quant_scheme(
     return None
 
 
-# Arch floor per EXPLICIT scheme, as the module header states them. Separate from _AUTO_LADDER, which is a preference
-# order and deliberately omits nvfp4: an explicit nvfp4 is still honoured on Blackwell. Advertised capability only --
-# the smoke probe and the family deny list can each refuse one of these at load time.
-_SCHEME_MIN_CAPABILITY: dict[str, tuple[int, int]] = {
-    TQ_INT8: (8, 0),  # Ampere sm_80
-    TQ_FP8: (8, 9),  # Ada sm_89 / Hopper sm_90
-    TQ_NVFP4: (10, 0),  # Blackwell sm_100
-    TQ_MXFP8: (10, 0),
-}
-
-
-def dense_quant_host_schemes(target: Any) -> tuple[str, ...]:
-    """The explicit schemes this host's arch could run, without the allocating smoke probe.
-
-    The picker needs this because one capability bit is not enough to label a row: an Ampere card
-    clears the ladder on int8, so a bit alone says "fast" for an explicit fp8 the loader then
-    refuses. This is the set the picker must not promise BEYOND, never a guarantee."""
-    if not dense_quant_host_capable(target):
-        return ()
-    cap = _capability()
-    if cap is None:
-        return ()
-    return tuple(s for s in TQ_SCHEMES if cap >= _SCHEME_MIN_CAPABILITY[s])
-
-
-def dense_quant_probed_schemes(target: Any) -> tuple[str, ...]:
-    """``dense_quant_host_schemes`` narrowed by smoke verdicts ALREADY in the cache.
-
-    The arch floor is a necessary condition, not a sufficient one: a prototype kernel can be absent
-    on a card whose capability clears the floor, and only ``_scheme_supported``'s quantise+matmul
-    probe knows. This reads verdicts the load path has already paid for and never runs the probe
-    itself -- ``/api/system`` is polled, and the in-process fallback buys a CUDA context the backend
-    can never give back (measured: 78 MiB on top of a live context here, and the whole context on a
-    cold one). So a warm backend advertises exactly what the loader will accept, and a cold one
-    advertises the arch floor, which is what it did before.
-
-    An unprobed scheme is kept, not dropped: the cache holds no entry for a probe that hit the
-    allocator, and that is "could not tell", the same way ``unproven_ok`` treats it."""
-    arch = dense_quant_host_schemes(target)
-    if not arch:
-        return ()
-    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
-    return tuple(s for s in arch if _SMOKE_CACHE.get((s, card), True))
-
-
-def dense_quant_auto_schemes(target: Any) -> tuple[str, ...]:
-    """The schemes ``auto`` could actually pick here, without the allocating probe.
-
-    A SUBSET of ``dense_quant_probed_schemes``, and the distinction is load-bearing: the ladder
-    deliberately leaves nvfp4 out, so a host whose only usable scheme is nvfp4 runs an EXPLICIT
-    request and nothing automatic. A picker that reads "some scheme works" as "auto is fast" would
-    label such a row fast and then watch auto fall through to bf16."""
-    usable = set(dense_quant_probed_schemes(target))
-    if not usable:
-        return ()
-    cap = _capability()
-    if cap is None:
-        return ()
-    for floor, schemes in _AUTO_LADDER:
-        if cap >= floor:
-            return tuple(scheme for scheme in schemes if scheme in usable)
-    return ()
-
-
 def dense_quant_host_capable(target: Any) -> bool:
-    """Whether an ``auto`` scheme could run here, without the allocating smoke probe.
+    """Whether an ``auto`` request could engage a dense scheme on this host.
 
-    The torchao check is not redundant with the arch floor: ``_scheme_supported`` imports torchao
-    and rejects every scheme when that import fails, so a torch/torchao ABI skew on an otherwise
-    capable card would advertise a fast path that every load then falls back from."""
+    One question, one bit, because that is all the picker can honestly act on. A load's actual
+    scheme depends on the request (precision, speed, memory), on the family deny list and on the
+    smoke probe, and none of those belong on a row that has not been clicked; ``resolved`` reports
+    what ran once it has.
+
+    Cheap and non-allocating, so a polled status route can ask it: the arch floors come from
+    ``_AUTO_LADDER``, and the probe is only READ from ``_SMOKE_CACHE`` where the load path has
+    already paid for it. An unprobed scheme counts as usable, the same "could not tell" the
+    ``unproven_ok`` path takes; a probed failure does not.
+
+    ``auto``, not "any scheme": the ladder leaves nvfp4 out on purpose, so a host that can only run
+    nvfp4 honours an explicit request and has nothing automatic to offer."""
     if not dense_transformer_supported(target):
         return False
+    # Not redundant with the arch floor: `_scheme_supported` imports torchao and rejects every
+    # scheme when that import fails, so a torch/torchao ABI skew would advertise a fast path every
+    # load then falls back from.
     if torchao_unavailable_reason() is not None:
         return False
     cap = _capability()
     if cap is None:
         return False
-    return any(cap >= floor for floor, _schemes in _AUTO_LADDER)
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    for floor, schemes in _AUTO_LADDER:
+        if cap >= floor:
+            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in schemes)
+    return False
 
 
 def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[str, ...]:

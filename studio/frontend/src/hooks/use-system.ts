@@ -56,10 +56,6 @@ export interface SystemInfoResponse {
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
   /** Backend-reported dense quant capability. Absent on older backends. */
   dense_quant_supported?: boolean;
-  /** The explicit quant schemes every visible card can run. Absent on older backends. */
-  dense_quant_schemes?: string[];
-  /** The subset an AUTO request could pick. Absent on older backends. */
-  dense_quant_auto_schemes?: string[];
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;

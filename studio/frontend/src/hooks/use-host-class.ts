@@ -9,16 +9,6 @@ import {
 import { useMemo } from "react";
 import { useGpuInfo } from "./use-gpu-info";
 
-/** The explicit quant schemes this host can run, for the picker's row labels. */
-export function useDenseQuantSchemes(): string[] | undefined {
-  return useGpuInfo().denseQuantSchemes;
-}
-
-/** The subset of those an AUTO request could pick. */
-export function useDenseQuantAutoSchemes(): string[] | undefined {
-  return useGpuInfo().denseQuantAutoSchemes;
-}
-
 /** Combine platform and backend state into a media-picker host class. */
 export function useHostClass(): HostClass {
   const gpu = useGpuInfo();
