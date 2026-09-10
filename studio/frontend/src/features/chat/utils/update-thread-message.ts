@@ -85,8 +85,7 @@ export function extractTaggedText(content: any): string {
       const text = part.text || part.content || "";
       if (!text) return "";
 
-      // Trim the text first so we don't accumulate newlines
-      // around the tags on every save.
+      // Trim the text first so we don't accumulate newlines around the tags on every save.
       if (part.type === 'reasoning') {
         return `${open}THINK${close}\n${escapeMarkers(text.trim())}\n${open}/THINK${close}`;
       }

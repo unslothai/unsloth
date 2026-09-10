@@ -4,11 +4,10 @@
 /**
  * Extensions `TextAttachmentAdapter` reads inline; shared with the drop path.
  *
- * Read as UTF-8 (or BOM-marked UTF-16) and sent as text, so anything an editor
- * opens belongs here.
- * Extensions another adapter claims stay off: the composite adapter takes the
- * first match, so .html, .pdf, .ods/.odt and the media containers are theirs.
- * .ts and .mts are TypeScript here, so video cannot take them for MPEG-TS.
+ * Read as UTF-8 (or BOM-marked UTF-16) and sent as text, so anything an editor opens belongs here.
+ * Extensions another adapter claims stay off, since the composite adapter takes the first match:
+ * .html, .pdf, .ods/.odt and the media containers are theirs. .ts and .mts are TypeScript here, so
+ * video cannot take them for MPEG-TS.
  */
 export const TEXT_ATTACHMENT_EXTENSIONS = [
   // Prose and documentation
@@ -115,7 +114,6 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".jsp",
   ".tpl",
   ".qml",
-  // JavaScript and TypeScript
   ".js",
   ".jsx",
   ".mjs",
@@ -124,13 +122,11 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".tsx",
   ".mts",
   ".cts",
-  // Python
   ".py",
   ".pyi",
   ".pyx",
   ".pxd",
   ".ipynb",
-  // JVM
   ".java",
   ".kt",
   ".kts",
@@ -170,7 +166,6 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".vhdl",
   ".asm",
   ".s",
-  // .NET
   ".cs",
   ".vb",
   ".vbs",
@@ -183,7 +178,6 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".sln",
   ".props",
   ".targets",
-  // Apple platforms
   ".m",
   ".mm",
   ".swift",
@@ -239,7 +233,6 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".cairo",
   ".mojo",
   ".gd",
-  // Shells
   ".sh",
   ".bash",
   ".zsh",
@@ -290,7 +283,6 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".pri",
   ".cabal",
   ".opam",
-  // Shaders
   ".glsl",
   ".frag",
   ".vert",
@@ -310,7 +302,6 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".robot",
   ".http",
   ".rest",
-  // Diffs
   ".diff",
   ".patch",
 ];
@@ -383,10 +374,9 @@ export async function isBinaryVobSubSubtitle(file: File): Promise<boolean> {
 const TRACKER_MOD_MAGICS = new Set([
   "M.K.",
   "M!K!",
-  // ProTracker's other 4-channel marker. file(1) lists it at offset 1080
-  // alongside M.K., and the 31-sample layout puts byte 470 inside a sample name
-  // rather than the order table, so the Soundtracker fallback does not catch
-  // one either: without this the module is read as UTF-8 text.
+  // ProTracker's other 4-channel marker. file(1) lists it at offset 1080 alongside M.K., and the
+  // 31-sample layout puts byte 470 inside a sample name rather than the order table, so the
+  // Soundtracker fallback does not catch one either.
   "!PM!",
   "PATT",
   "NSMS",
@@ -596,12 +586,10 @@ const GETTEXT_CHARSET_RE =
 /**
  * The charset a gettext catalog's header entry declares.
  *
- * The entry is the first one in the file by convention, so the prefix settles
- * it without decoding a catalog that can run to megabytes. A cutoff can still
- * miss it, though: a project with more than 64 KiB of translator comments above
- * the entry pushes it past the prefix, and the catalog was then refused for
- * carrying exactly the bytes its header describes. So when the prefix holds no
- * entry, read the rest, which the attachment cap already bounds.
+ * The entry is the first one in the file by convention, so the prefix settles it without decoding a
+ * catalog that can run to megabytes. A cutoff can still miss it: more than 64 KiB of translator
+ * comments above the entry pushes it past the prefix, and the catalog was then refused for carrying
+ * exactly the bytes its header describes. So when the prefix holds no entry, read the rest.
  */
 function declaredGettextCharset(
   bytes: Uint8Array,
@@ -619,9 +607,8 @@ function declaredGettextCharset(
   if (fromPrefix || !cut) {
     return fromPrefix;
   }
-  // A cutoff can also split the entry itself, leaving a match that holds the
-  // first continuation lines but not the Content-Type one, so retry on the
-  // charset rather than on the entry.
+  // A cutoff can also split the entry itself, leaving a match that holds the first continuation
+  // lines but not the Content-Type one, so retry on the charset rather than on the entry.
   return gettextHeaderCharset(decoder.decode(bytes));
 }
 
@@ -640,10 +627,9 @@ const GETTEXT_ESCAPES: Record<string, string> = {
 /**
  * A gettext string's value: its adjacent literals joined, escapes resolved.
  *
- * PO wraps a long string across quoted pieces and concatenates them, so the
- * header is not the source text. Matching the raw entry instead read a charset
- * split across two pieces (`charset=windows-` then `1252\n`) as the truncated
- * label, and a catalog was refused for declaring a charset it does not.
+ * PO wraps a long string across quoted pieces and concatenates them, so the header is not the
+ * source text. Matching the raw entry instead read a charset split across two pieces
+ * (`charset=windows-` then `1252`) as the truncated label, and refused the catalog.
  */
 function gettextStringValue(raw: string): string {
   let out = "";
@@ -667,8 +653,7 @@ function gettextStringValue(raw: string): string {
   return out;
 }
 
-// A line that opens with anything but another quoted piece, which is where a
-// header entry ends.
+// A line that opens with anything but another quoted piece, which is where a header entry ends.
 const GETTEXT_ENTRY_ENDED_RE = /\r?\n[ \t]*[^ \t"\r\n]/;
 
 /**
@@ -691,11 +676,10 @@ function gettextHeaderCharset(text: string, truncated = false): string | null {
   return charset && charset.toUpperCase() !== "CHARSET" ? charset : null;
 }
 
-// Header block only: a body part can declare its own, but the message-level
-// charset is what an 8-bit single-part mail is written in.
-// Every Content-Type in the file, not just the first: a multipart message keeps
-// the charset on its parts, and an mbox holds one per message, which can sit
-// anywhere in the archive. Folded continuation lines start with space or tab.
+// Header block only: a body part can declare its own, but the message-level charset is what an
+// 8-bit single-part mail is written in. Every Content-Type in the file, not just the first: a
+// multipart message keeps the charset on its parts, and an mbox holds one per message. Folded
+// continuation lines start with space or tab.
 const EMAIL_CONTENT_TYPE_RE =
   /(?:^|\r?\n)Content-Type:((?:[^\r\n]*)(?:\r?\n[ \t][^\r\n]*)*)/gi;
 const CHARSET_LABEL_RE = /^[A-Za-z0-9._-]+/;
@@ -724,9 +708,9 @@ function headerParameters(value: string): string[] {
  * A header value's parameter by name, and nothing that merely looks like one.
  *
  * An unanchored search took the first match anywhere in the value, so
- * `text/plain; name="charset=windows-1251.txt"; charset=windows-1252` read the
- * filename and stopped, and a `filename="report; boundary=fake"` on any header
- * at all registered a multipart delimiter that does not exist.
+ * `text/plain; name="charset=windows-1251.txt"; charset=windows-1252` read the filename and
+ * stopped, and a `filename="report; boundary=fake"` registered a multipart delimiter that does not
+ * exist.
  */
 function headerParameter(value: string, name: string): string | undefined {
   for (const parameter of headerParameters(value)) {
@@ -743,9 +727,8 @@ function headerParameter(value: string, name: string): string | undefined {
 /**
  * A quoted-string parameter value, escapes resolved.
  *
- * `\X` stands for `X`, so a value carrying a quote reads to its real closing
- * one rather than stopping at the escaped one, and the text it yields is what a
- * delimiter line actually holds. The splitter above already honours escapes;
+ * An escape stands for the character it escapes, so a value carrying a quote reads to its real
+ * closing one rather than stopping at the escaped one. The splitter above already honours escapes;
  * this is the other half of that.
  */
 function unquoteHeaderValue(raw: string): string {
@@ -782,30 +765,26 @@ const HEADER_FOLD_RE = /\r?\n[ \t]+/g;
 /**
  * The header regions of a message or archive, body text excluded.
  *
- * One forward pass over the lines, slicing only the header regions themselves.
- * Restarting a search from each candidate boundary instead is quadratic, and a
- * body of diff hunks is all candidate boundaries: 1 MB of them took 14 seconds.
+ * One forward pass over the lines, slicing only the header regions themselves. Restarting a search
+ * from each candidate boundary is quadratic, and a body of diff hunks is all candidate boundaries:
+ * 1 MB of them took 14 seconds.
  *
- * Only a delimiter a header actually declared reopens the headers. Any line
- * starting with `--` reopened them before, so a signature marker or a quoted
- * diff put the body back into header mode, and the next body line shaped like
- * `Content-Type: ... charset=...` became a second declaration that refused the
- * file. A closing delimiter, `--boundary--`, ends its part instead of starting
- * one.
+ * Only a delimiter a header actually declared reopens the headers. Any line starting with `--`
+ * reopened them before, so a signature marker or a quoted diff put the body back into header mode
+ * and the next body line shaped like a Content-Type became a second declaration. A closing
+ * delimiter ends its part instead of starting one.
  *
- * @param mbox Whether the file is an archive of messages. A `From ` line only
- * separates messages there, and an archive escapes the one a body starts with.
- * A single `.eml` has no separator at all, so an ordinary sentence opening with
- * "From " is body text and must not reopen the headers.
+ * @param mbox Whether the file is an archive of messages. A `From ` line only separates messages
+ * there, and an archive escapes the one a body starts with; a single `.eml` has no separator, so an
+ * ordinary sentence opening with "From " is body text.
  */
 function emailHeaderBlocks(text: string, mbox: boolean): string[] {
   const blocks: string[] = [];
   const boundaries = new Set<string>();
   const closeBlock = (block: string) => {
-    // Unfolded first: a header may wrap anywhere folding whitespace is allowed,
-    // and `multipart/mixed;\r\n boundary="part"` is a common wrap. Reading the
-    // raw block missed that boundary, so the part headers below it were never
-    // scanned and the charset they declare went with them.
+    // Unfolded first: a header may wrap anywhere folding whitespace is allowed, and
+    // `multipart/mixed;` wrapping before its boundary is common. Reading the raw block missed that
+    // boundary, so the part headers below it were never scanned.
     const unfolded = block.replace(HEADER_FOLD_RE, " ");
     blocks.push(unfolded);
     for (const header of unfolded.matchAll(EMAIL_CONTENT_TYPE_RE)) {
@@ -838,9 +817,8 @@ function emailHeaderBlocks(text: string, mbox: boolean): string[] {
       // An mbox separator, or a delimiter one of the headers above declared.
       let resumes = mbox && text.startsWith("From ", position);
       if (resumes) {
-        // A boundary belongs to the message that named it. Carrying one into
-        // the next message lets a body line that happens to repeat it reopen
-        // the headers there.
+        // A boundary belongs to the message that named it. Carrying one into the next message lets
+        // a body line that happens to repeat it reopen the headers there.
         boundaries.clear();
       } else if (boundaries.size > 0 && text.startsWith("--", position)) {
         // Trailing whitespace is allowed on a delimiter line and is not part of
@@ -874,10 +852,9 @@ function emailHeaderBlocks(text: string, mbox: boolean): string[] {
 /**
  * The property-parameter sections of a vCard, values excluded.
  *
- * `FN;CHARSET=windows-1252:name` declares a charset; `NOTE:see \;CHARSET=x`
- * does not, because that text is the value. The section therefore ends at the
- * property's value delimiter: the first colon outside a quoted parameter value.
- * Folded lines, which begin with a space or tab, continue the line above.
+ * `FN;CHARSET=windows-1252:name` declares a charset; the same text after a value delimiter does
+ * not, because it is the value. The section therefore ends at the first colon outside a quoted
+ * parameter value. Folded lines, which begin with a space or tab, continue the line above.
  */
 function vCardParameterSections(text: string): string[] {
   const sections: string[] = [];
@@ -923,12 +900,10 @@ function vCardParameterSections(text: string): string[] {
   return sections;
 }
 
-// An XML prolog names the document's encoding and must be the first thing in it.
-// Read from the bytes rather than the extension, so every XML dialect here
-// (.resx, .xliff, .svg, a text .plist, the project files) is covered at once.
-// The whitespace after the target is what tells a declaration from a processing
-// instruction: `xml-stylesheet` and `xml-model` open with the same five bytes,
-// and neither states what the document is written in.
+// An XML prolog names the document's encoding and must be the first thing in it. Read from the
+// bytes rather than the extension, so every XML dialect here is covered at once. The whitespace
+// after the target is what tells a declaration from a processing instruction: `xml-stylesheet` and
+// `xml-model` open with the same five bytes.
 const XML_PROLOG_ENCODING_RE =
   /^<\?xml[ \t\r\n][^>]*?[ \t\r\n]encoding[ \t]*=[ \t]*["\']([A-Za-z0-9._-]+)["\']/i;
 // XML's own S production. `\s` would also take a form feed or a no-break space,
@@ -938,11 +913,9 @@ const XML_WHITESPACE_BYTES = new Set([0x20, 0x09, 0x0d, 0x0a]);
 /**
  * The encoding an XML declaration names, if the document opens with one.
  *
- * The declaration has to be the first thing in the document, so five bytes
- * settle whether there is one to read; everything else costs nothing. It then
- * runs to its own ">", and its grammar puts no bound on the whitespace between
- * the parts, so a fixed prefix could cut `encoding` off and leave a document
- * that states its encoding refused for holding it.
+ * The declaration has to be the first thing in the document, so five bytes settle whether there is
+ * one to read. It then runs to its own ">", and its grammar puts no bound on the whitespace between
+ * the parts, so a fixed prefix could cut `encoding` off and refuse a document that states it.
  */
 function declaredXmlEncoding(bytes: Uint8Array): string | null {
   const decoder = new TextDecoder("windows-1252");
@@ -964,13 +937,11 @@ function declaredXmlEncoding(bytes: Uint8Array): string | null {
 }
 
 /**
- * The encoding a declared label names, or the label itself when nothing decodes
- * it.
+ * The encoding a declared label names, or the label itself when nothing decodes it.
  *
- * `windows-1252`, `CP1252` and `latin1` are three spellings of one encoding, so
- * comparing the spellings called an archive multi-charset when a single decoder
- * reads every message in it. TextDecoder already knows the equivalences, and
- * reports the canonical name it settled on.
+ * `windows-1252`, `CP1252` and `latin1` are three spellings of one encoding, so comparing the
+ * spellings called an archive multi-charset when a single decoder reads every message in it.
+ * TextDecoder already knows the equivalences and reports the canonical name.
  */
 function canonicalCharset(charset: string): string {
   const label = GETTEXT_CHARSET_ALIASES[charset.toUpperCase()] ?? charset;
@@ -998,10 +969,9 @@ function charsetCollector(): { found: string[]; add: (c?: string) => void } {
   };
 }
 
-// Headers and property parameters are ASCII, so these scans cannot fail on the
-// body's own encoding. They read the whole file rather than a prefix: a
-// declaration further in is the one a cutoff would miss, leaving those messages
-// decoded as the first. The attachment cap already bounds the work.
+// Headers and property parameters are ASCII, so these scans cannot fail on the body's own encoding.
+// They read the whole file rather than a prefix: a declaration further in is the one a cutoff would
+// miss, leaving those messages decoded as the first. The attachment cap already bounds the work.
 
 /** Charsets a `.vcf` declares, one per property parameter. */
 function declaredVCardCharsets(bytes: Uint8Array, fileName: string): string[] {
@@ -1036,14 +1006,11 @@ function declaredEmailCharsets(bytes: Uint8Array, fileName: string): string[] {
 
 /** A charset this browser has no decoder for.
  *
- *  An UndecodableTextError rather than a plain one, because that is the type
- *  the composer recognises: every other refusal in TextAttachmentAdapter.add
- *  toasts before it throws, and this one went out as a bare Error, failed the
- *  `instanceof` there, and left the attachment silently missing. The labels
- *  that land here are not exotic. Six of them are standard: the Encoding
- *  Standard maps iso-2022-kr, hz-gb-2312 and the iso-2022-cn family to
- *  "replacement", which TextDecoder is required to refuse, so a Korean or
- *  Chinese .eml declaring its own charset disappeared with no message at all.
+ *  An UndecodableTextError rather than a plain one, because that is the type the composer
+ *  recognises: every other refusal in TextAttachmentAdapter.add toasts before it throws, and this
+ *  one went out as a bare Error, failed the `instanceof`, and left the attachment silently missing.
+ *  Six of the labels that land here are standard: the Encoding Standard maps iso-2022-kr,
+ *  hz-gb-2312 and the iso-2022-cn family to "replacement", which TextDecoder must refuse.
  */
 function unsupportedCharsetError(
   fileName: string,
@@ -1110,24 +1077,19 @@ const ASCII_DECODER_LABEL = "windows-1252";
 /**
  * A vCard decoded one property at a time, or null if it cannot be.
  *
- * `CHARSET` is a property parameter, so a 2.1 card may legitimately put
- * windows-1252 on `FN` and windows-1251 on `NOTE`. Reading the file as one unit
- * corrupts every property but one, which is why more than one declaration is
- * refused there; this honours each of them instead.
+ * `CHARSET` is a property parameter, so a 2.1 card may legitimately put windows-1252 on `FN` and
+ * windows-1251 on `NOTE`. Reading the file as one unit corrupts every property but one, which is
+ * why more than one declaration is refused there; this honours each of them instead.
  *
- * Only the value is decoded under the property's own charset. The name and
- * parameters ahead of the delimiter are ASCII by the grammar, and a folded line,
- * which begins with a space or tab, continues the property above under the same
- * charset. A property that declares nothing is UTF-8, strictly: this is not the
- * place to guess a code page for it.
+ * Only the value is decoded under the property's own charset: the name and parameters ahead of the
+ * delimiter are ASCII by the grammar, and a folded line continues the property above under the same
+ * charset. A property that declares nothing is UTF-8, strictly.
  *
- * Anything it cannot account for comes back as a reading with no text, so the
- * caller falls back to the whole-file one rather than emitting a partly guessed
- * one. `failure` is set when a declaration itself is the obstacle, which no
- * other reading of the file can resolve.
+ * Anything it cannot account for comes back as a reading with no text, so the caller falls back to
+ * the whole-file one rather than emitting a partly guessed one. `failure` is set when a declaration
+ * itself is the obstacle, which no other reading can resolve.
  *
- * @param truncated Whether `bytes` is a prefix. Only its last line can end
- * mid-character, so only that one is read leniently.
+ * @param truncated Whether `bytes` is a prefix. Only its last line can end mid-character.
  */
 function decodeVCardPerProperty(
   bytes: Uint8Array,
@@ -1262,15 +1224,11 @@ export function decodeTextAttachmentBytes(
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     return decodeWithCharset(bytes.subarray(2), "utf-16be", fileName, truncated);
   }
-  // A document that states its own encoding decides before UTF-8 is tried:
-  // bytes that happen to be valid UTF-8 would otherwise decode into different
-  // characters than the file says it holds. An XML prolog is that statement by
-  // specification, a gettext header and a vCard property parameter by format,
-  // and all three are written by the exporter rather than typed by a person.
-  //
-  // A mail Content-Type is the exception and stays a fallback below: clients
-  // mislabel 8-bit mail constantly, so the bytes being valid UTF-8 is the
-  // better evidence there.
+  // A document that states its own encoding decides before UTF-8 is tried: bytes that happen to be
+  // valid UTF-8 would otherwise decode into different characters than the file says it holds. An XML
+  // prolog is that statement by specification, a gettext header and a vCard property parameter by
+  // format, and all three are written by the exporter rather than typed by a person. A mail
+  // Content-Type is the exception and stays a fallback below: clients mislabel 8-bit mail constantly.
   const xmlEncoding = declaredXmlEncoding(whole);
   if (xmlEncoding) {
     return decodeWithCharset(bytes, xmlEncoding, fileName, truncated);
@@ -1281,21 +1239,17 @@ export function decodeTextAttachmentBytes(
   }
   const vCardCharsets = declaredVCardCharsets(whole, fileName);
   if (vCardCharsets.length > 0) {
-    // CHARSET is a property parameter whatever the count, so one declaration
-    // speaks for its own property and not for the file: an export holding a 2.1
-    // card beside a 3.0 one, which cannot declare anything, read the whole
-    // bundle in the 2.1 card's charset and turned the other into mojibake.
-    // A preview reads the same way, so what it shows is what gets sent.
+    // CHARSET is a property parameter whatever the count, so one declaration speaks for its own
+    // property and not for the file: an export holding a 2.1 card beside a 3.0 one read the whole
+    // bundle in the 2.1 card's charset. A preview reads the same way, so what it shows is what is sent.
     const perProperty = decodeVCardPerProperty(bytes, truncated, fileName);
     if ("text" in perProperty) {
       return perProperty.text;
     }
-    // A declaration the reading could not honour has to be reported, not read
-    // past. Falling through to UTF-8 accepted the card whenever its other
-    // properties happened to be ASCII, so one unsupported charset was refused
-    // on a card that declared it alone and ignored on a card that declared a
-    // second one beside it. The single-declaration case reports the same
-    // obstacle through the whole-unit reading below.
+    // A declaration the reading could not honour has to be reported, not read past. Falling through to
+    // UTF-8 accepted the card whenever its other properties happened to be ASCII, so one unsupported
+    // charset was refused on a card that declared it alone and ignored on a card that declared a second
+    // one beside it. The single-declaration case reports the same obstacle through the reading below.
     if (perProperty.failure && vCardCharsets.length > 1) {
       throw perProperty.failure;
     }
@@ -1306,17 +1260,15 @@ export function decodeTextAttachmentBytes(
     return decodeWithCharset(bytes, vCardCharsets[0]!, fileName, truncated);
   }
   try {
-    // A truncated read decodes with stream:true so the character the slice cut
-    // in half is dropped rather than raising. A whole file gets no such licence:
-    // there, a dangling lead byte is a bad encoding and has to be reported.
+    // A truncated read decodes with stream:true so the character the slice cut in half is dropped
+    // rather than raising. A whole file gets no such licence: a dangling lead byte is a bad encoding.
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
       stream: truncated,
     });
   } catch {
-    // An 8-bit mail says which charset it is, so honour it rather than refusing
-    // a standards-valid message. Tried only here, so a modern one is never
-    // remapped by a stale declaration. A vCard was tried above and only reaches
-    // this line when it named more than one charset.
+    // An 8-bit mail says which charset it is, so honour it rather than refusing a standards-valid
+    // message. Tried only here, so a modern one is never remapped by a stale declaration. A vCard was
+    // tried above and only reaches this line when it named more than one charset.
     const declared = vCardCharsets.length
       ? vCardCharsets
       : declaredEmailCharsets(whole, fileName);
@@ -1331,9 +1283,8 @@ export function decodeTextAttachmentBytes(
         `It declares more than one charset (${declared.join(", ")}), and is read as one unit.`,
       );
     }
-    // Otherwise a legacy code page, but which one is not knowable from the
-    // bytes: the same byte is a different letter in windows-1252, windows-1251
-    // and Shift-JIS. Guessing sends confident mojibake, so say so instead.
+    // Otherwise a legacy code page, but which one is not knowable from the bytes: the same byte is a
+    // different letter in windows-1252, windows-1251 and Shift-JIS. Guessing sends confident mojibake.
     throw new UndecodableTextError(fileName);
   }
 }
