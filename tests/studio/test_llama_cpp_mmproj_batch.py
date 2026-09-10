@@ -146,7 +146,7 @@ class TestRemoteOpensVisionMmproj:
 
     @staticmethod
     def _config(**kwargs):
-        return SimpleNamespace(**{"is_vision": True, **kwargs})
+        return SimpleNamespace(**{"is_vision": True, "gguf_hf_repo": "owner/repo", **kwargs})
 
     def test_vision_repo(self):
         assert _remote_opens_vision_mmproj(self._config(), None, False) is True
@@ -164,6 +164,20 @@ class TestRemoteOpensVisionMmproj:
         # --no-mmproj empties the command line; the child still opens the env's one.
         monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
         assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is True
+
+    def test_the_repo_projector_outranks_an_inherited_path(self, monkeypatch, tmp_path):
+        # The download emits it, so a plain inherited path only fills a gap; charging
+        # 512 here would admit a load that then launches at 2048.
+        import utils.models.gguf_metadata as meta
+
+        real = tmp_path / "audio.gguf"
+        real.write_bytes(b"")
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(real))
+        # Only the inherited file is audio-only; the unfetched repo one cannot be read.
+        monkeypatch.setattr(meta, "mmproj_accepts_image", lambda path: path != str(real))
+        assert _remote_opens_vision_mmproj(self._config(), None, False) is True
+        # ...and it is the inherited one that answers once no repo projector is emitted.
+        assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is False
 
     def test_an_inherited_audio_projector_is_classified(self, monkeypatch, tmp_path):
         # It is on this disk, so ask it rather than reserving for images it cannot make.

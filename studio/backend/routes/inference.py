@@ -9992,15 +9992,18 @@ def _remote_opens_vision_mmproj(
         extra_args_disable_mmproj,
     )
 
-    # A pass-through or inherited projector is on this disk (or is a URL), so it
-    # answers for itself and outranks the repo's own, exactly as at launch.
-    override = _child_effective_mmproj(None, llama_extra_args, {} if disable_vision else None)
-    if override:
-        return _mmproj_opens_images(override)
-    return (
+    emitted = None
+    if (
         bool(getattr(config, "is_vision", False))
         and not disable_vision
         and not extra_args_disable_mmproj(llama_extra_args)
+    ):
+        # The download will emit one, so it takes the precedence slot an emitted
+        # --mmproj holds at launch. Named by its repo because nothing has fetched it:
+        # unreadable classifies as image-capable, the direction include_mmproj takes.
+        emitted = str(getattr(config, "gguf_hf_repo", None) or getattr(config, "identifier", None))
+    return _mmproj_opens_images(
+        _child_effective_mmproj(emitted, llama_extra_args, {} if disable_vision else None)
     )
 
 

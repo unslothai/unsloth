@@ -4291,12 +4291,18 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
-# mtmd splits an image into chunks of n_batch and decodes each under non-causal
-# attention, which asserts n_ubatch >= the chunk (llama-context.cpp). At the defaults
-# above that is 2048 > 512, so any image big enough to reach a second ubatch aborts the
-# server: Gemma 4's projector caps one image at 1120 tokens (set_limit_image_tokens(70,
-# 1120) in clip.cpp), which 512 cannot hold. Equal sizes make the chunk exactly one
-# ubatch, and 2048 keeps every Gemma 4 image whole in it.
+# mtmd cuts an image into chunks of min(n_batch, its tokens) and decodes each one,
+# which asserts n_ubatch >= the chunk while attention is non-causal
+# (llama-context.cpp). At the defaults above that chunk is 1120 against a 512 ubatch
+# on Gemma 4, and the server aborts.
+#
+# 2048 is a ceiling, not a guess. mtmd_decode_use_non_causal answers True for exactly
+# gemma4v (outside E2B/E4B), gemma4uv, gemma3 and deepseek4v, and clip.cpp caps one
+# image at 1120, 1120, 256 and 384 tokens for those. Everything larger -- qwen3vl at
+# 4096, hunyuanvl, youtuvl at 62500 -- decodes causally and never reaches the assert.
+# So no image any of the affected families produces can exceed 2048, whatever
+# --batch-size is set to. Only a hand-raised --image-max-tokens can, and that flag
+# comes with its own instruction to raise -ub.
 _MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
