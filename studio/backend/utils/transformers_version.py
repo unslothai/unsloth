@@ -2803,6 +2803,8 @@ def _rebuild_lock_path(venv_dir: str) -> str:
     except OSError:
         pass
     return os.path.join(lock_dir, stem + ".lock")
+
+
 # A rebuild installs four packages; a worker that finds another mid-way waits for it
 # rather than building a second copy into the same directory.
 _REBUILD_WAIT_SECONDS = 15 * 60.0
@@ -2819,9 +2821,10 @@ def _optional_top_up_lock(venv_dir: str):
     the lock cannot be taken at all, read as "someone else's turn" rather than a
     reason to write unguarded).
     """
-    with _file_lock(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), _OPTIONAL_TOP_UP_WAIT_SECONDS) as held:
+    with _file_lock(
+        os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), _OPTIONAL_TOP_UP_WAIT_SECONDS
+    ) as held:
         yield held
-
 
 
 _UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
@@ -3029,7 +3032,6 @@ def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> b
     return True
 
 
-
 def _drop_offline_staging(staging: str) -> None:
     """The staging tree and the per-process rebuild lock _ensure_venv_dir took for it."""
     shutil.rmtree(staging, ignore_errors = True)
@@ -3037,6 +3039,7 @@ def _drop_offline_staging(staging: str) -> None:
         os.unlink(_rebuild_lock_path(staging))
     except OSError:
         pass
+
 
 def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Rebuild *venv_dir* from uv's cache into a staging directory beside it and swap

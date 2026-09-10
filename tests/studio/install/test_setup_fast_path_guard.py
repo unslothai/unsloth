@@ -370,7 +370,9 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
     itself, ahead of the fast-path guard; the runtime self-heal covers a missing tier."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
-    offline_sh = sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then')
+    offline_sh = sh.index(
+        'if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then'
+    )
     assert (
         sh.index('_sidecar_current "$VENV_T5_510_DIR"')
         < offline_sh

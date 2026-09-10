@@ -339,7 +339,9 @@ def test_offline_still_clears_a_partial_optional_payload(tmp_path, monkeypatch):
     _partial_tiktoken(root)
     monkeypatch.setenv("UV_OFFLINE", "1")
     installs = []
-    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target_dir: installs.append(pkg) or False)
+    monkeypatch.setattr(
+        tv, "_install_to_dir", lambda pkg, target_dir: installs.append(pkg) or False
+    )
     assert tv._top_up_optional_packages(str(root), tv._VENV_T5_550_PACKAGES) is True
     assert installs == []
     assert not (root / "tiktoken").exists() and not (root / "tiktoken_ext").exists()
@@ -372,6 +374,7 @@ def test_a_partial_payload_behind_an_unobtainable_lock_withholds_the_sidecar(tmp
     assert tv._top_up_optional_packages(str(root), tv._VENV_T5_550_PACKAGES) is False
     assert (root / "tiktoken").is_dir()
     import shutil as _shutil
+
     _shutil.rmtree(root / "tiktoken")
     _shutil.rmtree(root / "tiktoken_ext")
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
@@ -770,6 +773,7 @@ def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, m
     assert (users / "precious").is_file() and (unowned / "precious").is_file()
     # And with the live path empty, only an owned, exactly named tree is put back.
     import shutil as _shutil
+
     _shutil.rmtree(root)
     monkeypatch.setattr(tv, "_repair_offline_beside", lambda *a, **k: False)
     assert tv._recover_retired_sidecar(str(root)) is None
