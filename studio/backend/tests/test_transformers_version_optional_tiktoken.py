@@ -803,7 +803,7 @@ def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_p
     monkeypatch.setattr(tv, "_file_lock", recording_lock)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == [] and (root / "half").is_file()
-    assert locked == [str(root) + tv._REBUILD_LOCK_SUFFIX]
+    assert locked == [tv._rebuild_lock_path(str(root))]
     # Still incomplete under the lock: the rebuild runs, in this process, once.
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
@@ -821,6 +821,40 @@ def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_p
     monkeypatch.setattr(tv, "_file_lock", not_held)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
     assert installed == [] and (root / "half").is_file()
+
+
+def test_the_offline_repair_runs_under_the_tiers_lock_too(tmp_path, monkeypatch):
+    """Two workers activating one damaged tier offline would each build a staging tree
+    and race the two-rename swap. The offline repair now waits on the same tier lock as
+    the online rebuild, and a lock not obtained defers rather than swaps."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    (root / "keep.txt").write_text("", encoding = "utf-8")
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    repaired = []
+    monkeypatch.setattr(tv, "_repair_offline_beside", lambda d, p, l: repaired.append(d) or True)
+    locked = []
+    real_lock = tv._file_lock
+
+    @contextlib.contextmanager
+    def recording_lock(path, wait):
+        locked.append(path)
+        with real_lock(path, wait) as held:
+            yield held
+
+    monkeypatch.setattr(tv, "_file_lock", recording_lock)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert repaired == [str(root)] and locked == [tv._rebuild_lock_path(str(root))]
+
+    @contextlib.contextmanager
+    def not_held(path, wait):
+        yield False
+
+    monkeypatch.setattr(tv, "_file_lock", not_held)
+    repaired.clear()
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+    assert repaired == [] and (root / "keep.txt").is_file()
 
 
 def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
@@ -842,6 +876,12 @@ def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
     assert tv._pip_is_configured_offline() is False
     monkeypatch.setenv("PIP_FIND_LINKS", str(tmp_path))
     assert tv._pip_is_configured_offline() is True
+    for spelling in ("t", "y", "yes", "on", "TRUE"):
+        monkeypatch.setenv("PIP_NO_INDEX", spelling)
+        assert tv._pip_is_configured_offline() is True, spelling
+    monkeypatch.setenv("PIP_NO_INDEX", "0")
+    assert tv._pip_is_configured_offline() is False
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
     monkeypatch.setenv("PIP_FIND_LINKS", f"{tmp_path} file://{tmp_path}")
     assert tv._pip_is_configured_offline() is True
     # --find-links takes URLs too, and one of those is the network.

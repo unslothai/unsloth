@@ -2788,7 +2788,21 @@ def _file_lock(path: str, wait_seconds: float):
         handle.close()
 
 
-_REBUILD_LOCK_SUFFIX = ".rebuild.lock"
+_REBUILD_LOCK_DIR = ".sidecar-locks"
+
+
+def _rebuild_lock_path(venv_dir: str) -> str:
+    """The tier's lock file, in a directory beside the sidecars rather than beside the
+    tier itself: the sidecar scans (and the tests' sibling listings) key on the tier's
+    name as a prefix, and a lock file has to stay once taken."""
+    base = venv_dir.rstrip("/\\")
+    parent, stem = os.path.split(base)
+    lock_dir = os.path.join(parent or ".", _REBUILD_LOCK_DIR)
+    try:
+        os.makedirs(lock_dir, exist_ok = True)
+    except OSError:
+        pass
+    return os.path.join(lock_dir, stem + ".lock")
 # A rebuild installs four packages; a worker that finds another mid-way waits for it
 # rather than building a second copy into the same directory.
 _REBUILD_WAIT_SECONDS = 15 * 60.0
@@ -2813,12 +2827,16 @@ def _optional_top_up_lock(venv_dir: str):
 _UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
 
 
+_PIP_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
+
+
 def _pip_is_configured_offline() -> bool:
     """pip told to ignore the index and read a LOCAL wheelhouse: `--no-index` with
     `--find-links` naming only local directories or file:// URLs, through the
     environment pip reads them from. --find-links takes URLs too, and one of those
     would be fetched under UV_OFFLINE."""
-    no_index = os.environ.get("PIP_NO_INDEX", "").strip().lower() in _OFFLINE_TRUE_VALUES
+    # pip's own boolean spellings (strtobool): 1/true/t/yes/y/on.
+    no_index = os.environ.get("PIP_NO_INDEX", "").strip().lower() in _PIP_TRUE_VALUES
     if not no_index:
         return False
     entries = os.environ.get("PIP_FIND_LINKS", "").split()
@@ -2933,25 +2951,20 @@ def _recover_retired_sidecar(venv_dir: str) -> None:
 
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
-    _recover_retired_sidecar(venv_dir)
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+        # A live tree with content makes retired copies leftovers; with the tree valid
+        # there is nothing to put back, only those to sweep.
+        _recover_retired_sidecar(venv_dir)
         return _top_up_optional_packages(venv_dir, packages)
 
-    # Only an in-place repair is refused offline: it starts by deleting a tree that may
-    # still serve, and the rebuild would need the network. A directory with nothing in
-    # it (the latest sidecar's staging directory, a first install) has nothing to lose,
-    # and uv's offline mode installs from a warm cache; the pip fallback, which would
-    # reach for the network, is skipped by _install_to_dir under the same switch. So
-    # the replacement is built beside the tree, from the cache, and swapped in whole.
-    if _runtime_repair_is_offline() and _sidecar_has_content(venv_dir):
-        return _repair_offline_beside(venv_dir, packages, label)
-
-    # One rebuild of a tier at a time across processes. Workers activate tiers
-    # independently, and two that found the same directory incomplete used to build
-    # into it at once; the one that failed then found the other's finished tree and,
-    # in the window between that check and its cleanup, could delete it. Under the
-    # lock the second one waits and, if the first finished, takes the tree as it is.
-    with _file_lock(venv_dir.rstrip("/\\") + _REBUILD_LOCK_SUFFIX, _REBUILD_WAIT_SECONDS) as held:
+    # One repair of a tier at a time across processes, whichever shape it takes.
+    # Workers activate tiers independently, and two that found the same directory
+    # incomplete used to build into it at once; the one that failed then found the
+    # other's finished tree and, in the window between that check and its cleanup,
+    # could delete it. Offline, two of them could each build a staging tree and race
+    # the two-rename swap, one losing its source mid-way. Under the lock the second one
+    # waits and, if the first finished, takes the tree as it is.
+    with _file_lock(_rebuild_lock_path(venv_dir), _REBUILD_WAIT_SECONDS) as held:
         if not held:
             # Another process is still building it (or the lock cannot be taken at
             # all): a rebuild now would be the unserialised one the lock exists to
@@ -2962,9 +2975,19 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
                 venv_dir,
             )
             return False
+        _recover_retired_sidecar(venv_dir)
         if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
             logger.info("%s at %s was completed by another process", label, venv_dir)
             return _top_up_optional_packages(venv_dir, packages)
+        # Only an in-place repair is refused offline: it starts by deleting a tree that
+        # may still serve, and the rebuild would need the network. A directory with
+        # nothing in it (the latest sidecar's staging directory, a first install) has
+        # nothing to lose, and uv's offline mode installs from a warm cache; the pip
+        # fallback, which would reach for the network, is skipped by _install_to_dir
+        # under the same switch. So the replacement is built beside the tree, from the
+        # cache, and swapped in whole.
+        if _runtime_repair_is_offline() and _sidecar_has_content(venv_dir):
+            return _repair_offline_beside(venv_dir, packages, label)
         return _rebuild_venv_dir(venv_dir, packages, label)
 
 
@@ -3011,7 +3034,7 @@ def _drop_offline_staging(staging: str) -> None:
     """The staging tree and the per-process rebuild lock _ensure_venv_dir took for it."""
     shutil.rmtree(staging, ignore_errors = True)
     try:
-        os.unlink(staging + _REBUILD_LOCK_SUFFIX)
+        os.unlink(_rebuild_lock_path(staging))
     except OSError:
         pass
 
@@ -3067,7 +3090,7 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
     # The staging tree is the live one now; the lock taken for its build goes with the
     # staging name.
     try:
-        os.unlink(staging + _REBUILD_LOCK_SUFFIX)
+        os.unlink(_rebuild_lock_path(staging))
     except OSError:
         pass
     logger.info("Rebuilt %s at %s offline, from the cache", label, venv_dir)

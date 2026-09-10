@@ -6227,14 +6227,15 @@ $_DeferT5_550 = $false
 $_DeferT5_510 = $false
 # UV_OFFLINE without the fast path (the core was not verified, or PyPI still answered):
 # the same wipe followed by four fetches for a sidecar that exists, from a cache that
-# may be cold, with the pip fallback reaching for the network the caller declared
-# absent. An existing stale tier is left for the next online update; an absent tier
-# has nothing to lose and is built from the cache if the cache can.
+# may be cold, and for an absent one the same fetches through Fast-Install's pip
+# fallback, which does not read UV_OFFLINE and would reach for the network the caller
+# declared absent. Every stale or missing tier is left for the next online update; the
+# runtime self-heal builds a missing tier from the cache when a model first needs it.
 if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
-    foreach ($tier in @(@("530", "5.3.0", $VenvT5_530Dir), @("550", "5.5.0", $VenvT5_550Dir), @("510", "5.10.2", $VenvT5_510Dir))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.0"), @("510", "5.10.2"))) {
         $flag = "_NeedT5_$($tier[0])"
-        if ((Get-Variable -Name $flag -ValueOnly) -and (Test-Path -LiteralPath $tier[2] -PathType Container)) {
-            substep "transformers $($tier[1]) sidecar is stale but UV_OFFLINE is set -- left for the next online update" "Yellow"
+        if ((Get-Variable -Name $flag -ValueOnly)) {
+            substep "transformers $($tier[1]) sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update" "Yellow"
             Set-Variable -Name $flag -Value $false
             Set-Variable -Name "_DeferT5_$($tier[0])" -Value $true
         }

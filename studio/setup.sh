@@ -2470,22 +2470,20 @@ _DEFER_T5_550=false
 _DEFER_T5_510=false
 # UV_OFFLINE without the fast path (the core was not verified, or PyPI still answered):
 # the same wipe followed by four fetches for a sidecar that exists, from a cache that
-# may be cold, with the pip fallback reaching for the network the caller declared
-# absent. An existing stale tier is left for the next online update; an absent tier
-# has nothing to lose and is built from the cache if the cache can.
+# may be cold, and for an absent one the same fetches through fast_install's pip
+# fallback, which does not read UV_OFFLINE and would reach for the network the caller
+# declared absent. Every stale or missing tier is left for the next online update; the
+# runtime self-heal builds a missing tier from the cache when a model first needs it.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
-    # The tier's directory is read through its own variable, never packed into the
-    # word list: a Studio home with a space in its path would split there.
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
         set -- $_ofp
-        _ofp_dir=$(eval "printf '%s' \"\$VENV_T5_$1_DIR\"")
-        if eval "[ \"\$_NEED_T5_$1\" = true ]" && [ -d "$_ofp_dir" ]; then
-            substep "transformers $2 sidecar is stale but UV_OFFLINE is set -- left for the next online update"
+        if eval "[ \"\$_NEED_T5_$1\" = true ]"; then
+            substep "transformers $2 sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update"
             eval "_NEED_T5_$1=false"
             eval "_DEFER_T5_$1=true"
         fi
     done
-    unset _ofp _ofp_dir
+    unset _ofp
 fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do

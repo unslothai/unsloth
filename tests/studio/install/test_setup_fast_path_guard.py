@@ -365,8 +365,9 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
 def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
     """UV_OFFLINE with the core not verified (or PyPI still answering) takes the ordinary
     path, whose sidecar rebuild is a wipe followed by four fetches from a cache that may
-    be cold. Both shells defer an EXISTING stale tier under the offline request itself,
-    ahead of the fast-path guard, and leave an absent tier to be built from the cache."""
+    be cold, and an absent tier would go through the pip fallback that does not read
+    UV_OFFLINE. Both shells defer every stale or missing tier under the offline request
+    itself, ahead of the fast-path guard; the runtime self-heal covers a missing tier."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
     offline_sh = sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then')
@@ -376,10 +377,11 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
         < sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
     )
     block_sh = sh[offline_sh : offline_sh + 1100]
-    # The directory comes through its own variable: a Studio home with a space in its
-    # path must not split inside the loop's word list.
-    assert '&& [ -d "$_ofp_dir" ]; then' in block_sh
-    assert "$VENV_T5_530_DIR\"" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
+    # Stale AND missing: an absent tier would reach fast_install's pip fallback, which
+    # does not read UV_OFFLINE. No path in the loop's word list either (a Studio home
+    # with a space in its path would split there).
+    assert '[ -d "$' not in block_sh.split("for _ofp in", 1)[1].split("done", 1)[0]
+    assert "$VENV_T5_530_DIR" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
     assert 'eval "_NEED_T5_$1=false"' in block_sh and 'eval "_DEFER_T5_$1=true"' in block_sh
     offline_ps1 = ps1.index("if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {")
     assert (
@@ -388,7 +390,7 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
         < ps1.index("if ($script:OfflineFastPath) {\n    foreach ($tier in")
     )
     block_ps1 = ps1[offline_ps1 : offline_ps1 + 1100]
-    assert "Test-Path -LiteralPath $tier[2] -PathType Container" in block_ps1
+    assert "Test-Path -LiteralPath $tier[2]" not in block_ps1
     assert "Set-Variable -Name $flag -Value $false" in block_ps1
     # The tiktoken top-up stays home under the offline request too.
     top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
