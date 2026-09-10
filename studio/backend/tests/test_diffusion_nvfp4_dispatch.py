@@ -161,9 +161,12 @@ class _Ptr:
     def data_ptr(self):
         return self._pointer
 
+    def detach(self):
+        return self
+
     @property
     def T(self):
-        return ("view", self._pointer)
+        return ("view", self._pointer, self.shape)
 
 
 def test_a_cold_plan_is_never_built_during_a_capture(monkeypatch):
@@ -196,27 +199,62 @@ def test_a_backend_other_than_cutlass_has_no_cached_plan(monkeypatch):
     assert dispatch.gemm_plan(xq, None, None, None, None, None, 3072, "trtllm") is None
 
 
-def test_the_transpose_cache_holds_the_view_and_is_keyed_on_pointer_and_shape():
+def test_the_transpose_cache_holds_the_view_and_revalidates_pointer_and_shape():
     weight = _Ptr(1024)
     view = dispatch.transposed(weight)
     assert dispatch.transposed(weight) is view
     # A reallocated buffer at the same address with a different shape must not get the old view.
-    assert dispatch.transposed(_Ptr(1024, shape = (4, 8))) is not view
+    other = _Ptr(1024, shape = (4, 8))
+    assert dispatch.transposed(other) is not view
+    # Nor may the SAME object whose storage was swapped under it.
+    weight._pointer = 2048
+    assert dispatch.transposed(weight) is not view
 
 
 def test_the_transpose_cache_is_bounded():
-    for pointer in range(dispatch._TRANSPOSE_CACHE_MAX):
-        dispatch.transposed(_Ptr(pointer))
+    held = [_Ptr(pointer) for pointer in range(dispatch._TRANSPOSE_CACHE_MAX)]
+    for weight in held:
+        dispatch.transposed(weight)
     assert len(dispatch._TRANSPOSED) == dispatch._TRANSPOSE_CACHE_MAX
-    dispatch.transposed(_Ptr(10**9))
+    last = _Ptr(10**9)
+    dispatch.transposed(last)
     assert len(dispatch._TRANSPOSED) == 1
+
+
+def test_the_transpose_cache_releases_a_weight_that_was_collected():
+    """A load superseded between its prewarm and its commit returns without any reset, so the only
+    thing that can free its weights is the cache letting go of them on its own."""
+    import gc
+
+    weight = _Ptr(4096)
+    dispatch.transposed(weight)
+    assert len(dispatch._TRANSPOSED) == 1
+    del weight
+    gc.collect()
+    assert dispatch._TRANSPOSED == {}
+
+
+def test_a_live_weight_survives_a_superseded_loads_collection():
+    """The point of the weakref keying: dropping the stale load must not cost the replacement its
+    own entries, which a blanket reset would."""
+    import gc
+
+    live = _Ptr(64)
+    live_view = dispatch.transposed(live)
+    stale = _Ptr(128)
+    dispatch.transposed(stale)
+    del stale
+    gc.collect()
+    assert len(dispatch._TRANSPOSED) == 1
+    assert dispatch.transposed(live) is live_view
 
 
 def test_reset_clears_every_cache(monkeypatch):
     _fake_flashinfer(monkeypatch)
     monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
     dispatch.available()
-    dispatch.transposed(_Ptr(7))
+    held = _Ptr(7)
+    dispatch.transposed(held)
     dispatch._GEMM_PLAN[("k",)] = ("runner", 0, "ws")
     dispatch._QUANT_FN[0] = ("fn", True)
     dispatch._VERIFIED[0] = (True, "ok")
@@ -234,7 +272,8 @@ def test_describe_reports_what_is_cached(monkeypatch):
     monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
     dispatch._VERIFIED[1] = (True, "ok")
     dispatch._VERIFIED[2] = (False, "nope")
-    dispatch.transposed(_Ptr(3))
+    held = _Ptr(3)
+    dispatch.transposed(held)
     record = dispatch.describe()
     assert record["available"] is True
     assert record["verified_devices"] == [1]
@@ -364,3 +403,56 @@ def test_the_preflight_unlocks_the_fast_dispatch_and_says_so():
     assert record["fast_dispatch"] is True, record["fast_dispatch_reason"]
     assert dispatch.enabled(torch.device("cuda", 0)) is True
     ops.reset_preflight_cache()
+
+
+def test_a_collected_layer_takes_its_cached_weights_and_their_vram_with_it():
+    """The superseded-load case: the worker returns at its token check without ever reaching a
+    reset, so the cache has to release the dead layer by itself, VRAM included."""
+    torch = _cuda_or_skip()
+    import gc
+
+    import flashinfer
+
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    if flashinfer.__version__ not in dispatch._SUPPORTED:
+        pytest.skip(f"flashinfer {flashinfer.__version__} is outside the allowlist by design")
+
+    device = torch.device("cuda", 0)
+    dispatch.reset()
+    assert dispatch.verify(device)[0] is True
+    ops.register_ops()
+
+    in_features, out_features = 3072, 18432
+    torch.manual_seed(0)
+    with torch.cuda.device(device), torch.inference_mode():
+        w = torch.randn(out_features, in_features, device = device, dtype = torch.bfloat16) * 0.02
+        x = torch.randn(64, in_features, device = device, dtype = torch.bfloat16) * 0.05
+        a_gsf, w_gsf = ops.global_scale(x), ops.global_scale(w)
+        wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
+        layer = nl.nvfp4_linear_class()(
+            in_features,
+            out_features,
+            wq = wq.clone(),
+            w_sf = w_sf.clone(),
+            alpha = (1.0 / (a_gsf * w_gsf)).float(),
+            a_gsf = a_gsf,
+        )
+        del wq, w_sf, w
+        gc.collect()
+        torch.cuda.empty_cache()
+        before = torch.cuda.memory_allocated(device)
+        layer(x)
+        torch.cuda.synchronize(device)
+
+    # Both weight buffers are cached, and both entries are keyed on the buffer the layer holds.
+    assert len(dispatch._TRANSPOSED) == 2
+    assert {id(layer.wq), id(layer.w_sf)} == set(dispatch._TRANSPOSED)
+    weight_bytes = layer.wq.numel() + layer.w_sf.numel()
+
+    del layer
+    gc.collect()
+    assert dispatch._TRANSPOSED == {}
+    torch.cuda.empty_cache()
+    freed = before - torch.cuda.memory_allocated(device)
+    assert freed >= weight_bytes, f"{freed} bytes released, expected at least {weight_bytes}"

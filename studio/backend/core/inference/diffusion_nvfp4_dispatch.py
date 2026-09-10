@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
+from functools import partial
 from typing import Any, Optional
 
 # The only versions whose private layout was read and verified. Exact, never a minimum.
@@ -27,6 +29,7 @@ _AVAILABLE: Optional[tuple] = None
 _VERIFIED: dict[int, tuple] = {}
 _QUANT_FN: dict[int, tuple] = {}
 _GEMM_PLAN: dict = {}
+# id(weight) -> (weakref to the weight, (data_ptr, shape), the kept transposed view).
 _TRANSPOSED: dict = {}
 
 
@@ -212,16 +215,33 @@ def _fast_quantize(
     return xq, sf.reshape((-1, x.shape[-1] // 16))
 
 
+def _drop_transposed(key: int, ref: Any) -> None:
+    """Weakref callback: forget the collected weight's entry. No lock (a collection can land on a
+    thread already holding it); each step is one atomic dict op."""
+    entry = _TRANSPOSED.get(key)
+    if entry is not None and entry[0] is ref:
+        _TRANSPOSED.pop(key, None)
+
+
 def transposed(t: Any):
-    """A kept ``.T`` of a weight buffer, keyed on ``(data_ptr, shape)`` against a stale view."""
-    key = (t.data_ptr(), tuple(t.shape))
-    view = _TRANSPOSED.get(key)
-    if view is not None:
-        return view
+    """A kept ``.T`` of a weight buffer, released with the weight itself: keyed on the weight
+    object (revalidated against data_ptr and shape) and holding a view of ``t.detach()``, since
+    ``t.T`` would keep ``t`` alive through ``_base`` and the weakref would never fire."""
+    key = id(t)
+    stamp = (t.data_ptr(), tuple(t.shape))
+    entry = _TRANSPOSED.get(key)
+    if entry is not None and entry[0]() is t and entry[1] == stamp:
+        return entry[2]
     with _LOCK:
+        entry = _TRANSPOSED.get(key)
+        if entry is not None and entry[0]() is t and entry[1] == stamp:
+            return entry[2]
         if len(_TRANSPOSED) >= _TRANSPOSE_CACHE_MAX:
             _TRANSPOSED.clear()
-        return _TRANSPOSED.setdefault(key, t.T)
+        view = t.detach().T
+        # partial, never a closure over ``t``: a callback holding the weight would pin it forever.
+        _TRANSPOSED[key] = (weakref.ref(t, partial(_drop_transposed, key)), stamp, view)
+        return view
 
 
 def gemm_plan(
