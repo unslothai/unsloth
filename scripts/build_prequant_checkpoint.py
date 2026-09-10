@@ -827,6 +827,43 @@ def gptq_scheme_refusal(scheme: str, gptq_dir: Optional[str]) -> Optional[str]:
     )
 
 
+def gptq_meta_base(meta: Any) -> Optional[str]:
+    """The base model the calibration pass declares it ran on, or None for a meta predating the stamp."""
+    declared = (meta or {}).get("base_model_id") or (meta or {}).get("base")
+    declared = str(declared or "").strip()
+    return declared or None
+
+
+def gptq_base_refusal(base: str, meta: Any) -> Optional[str]:
+    """Why these corrections may not be replayed against ``base``, or None.
+
+    A correction is solved against ONE checkpoint's activations and scored on ONE checkpoint's
+    held-out outputs. Same-shaped variants of a model defeat every other check here: the separately
+    trained HunyuanVideo-1.5 480p and 720p transformers share every fqn and shape, so a 720p build
+    pointed at the 480p directory passes the per-layer shape check, reproduces itself under
+    ``--verify-against``, and publishes 480p corrections under a valid 720p identity.
+
+    A meta that names no base is accepted: the campaigns that predate the stamp declare nothing to
+    compare, and refusing them would refuse the artifacts already built from them."""
+    declared = gptq_meta_base(meta)
+    if not declared:
+        return None
+    base = (base or "").strip()
+    try:
+        from core.inference.diffusion_prequant import _same_base_model
+        same = _same_base_model(base, declared)
+    except Exception:  # noqa: BLE001 -- no registry to ask means no evidence they match
+        same = base.lower() == declared.lower()
+    if same:
+        return None
+    return (
+        f"the GPTQ meta was calibrated on {declared}, not on {base}. The corrections were solved "
+        "and scored against that model's activations, and a same-shaped variant passes every "
+        "shape check here, so replaying them would bake another model's corrections. Point "
+        "--gptq-dir at this base's own campaign."
+    )
+
+
 def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional[str]:
     """Why ``--verify-against`` cannot answer the question it exists for, or None.
 
@@ -1219,6 +1256,16 @@ def main(argv = None) -> int:
         except Exception as exc:  # noqa: BLE001 -- an unreadable meta decides nothing
             print(f"error: cannot read the GPTQ meta {gptq_where['meta']}: {exc}", flush = True)
             return 2
+        refusal = gptq_base_refusal(args.base_id or args.base, gptq_pass)
+        if refusal:
+            print(f"error: {refusal}", flush = True)
+            return 2
+        if not gptq_meta_base(gptq_pass):
+            print(
+                f"  warning: {gptq_where['meta']} names no base model, so nothing binds these "
+                "corrections to --base; a same-shaped variant's campaign would apply silently",
+                flush = True,
+            )
         score_layers: dict = {}
         if gptq_where["score"]:
             try:
@@ -1595,6 +1642,7 @@ def main(argv = None) -> int:
             "meta_path": os.path.basename(gptq_where["meta"]),
             "score_path": os.path.basename(gptq_where["score"]) if gptq_where["score"] else None,
             "score_mode": args.gptq_score_mode,
+            "calibrated_on": gptq_meta_base(gptq_pass),
             "prompts": gptq_pass.get("prompts"),
             "steps_sampled": gptq_pass.get("steps_sampled"),
             "base_damp": gptq_pass.get("base_damp"),
