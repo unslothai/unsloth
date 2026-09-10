@@ -517,6 +517,193 @@ def test_snapshot_cuda_reads_mem_get_info(monkeypatch):
     assert snap.free_mib == 10 * 1024 and snap.total_mib == 24 * 1024
 
 
+def _stub_cuda_snapshot(
+    monkeypatch,
+    *,
+    integrated,
+    cuda_free_mib,
+    cuda_total_mib,
+    system_free_mib,
+    system_total_mib,
+    is_integrated = None,
+):
+    """Drive the real snapshot over a faked CUDA driver and a faked host RAM pool."""
+    import core.inference.diffusion_memory as mem
+
+    props_kw = {"integrated": integrated}
+    if is_integrated is not None:
+        props_kw["is_integrated"] = is_integrated
+    props = types.SimpleNamespace(**props_kw)
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(
+        mem_get_info = lambda: (
+            int(cuda_free_mib) * 1024 * 1024,
+            int(cuda_total_mib) * 1024 * 1024,
+        ),
+        current_device = lambda: 0,
+        get_device_properties = lambda i: props,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    hardware = types.ModuleType("utils.hardware")
+    hardware.trusted_mem_get_info = lambda: (
+        int(cuda_free_mib) * 1024 * 1024,
+        int(cuda_total_mib) * 1024 * 1024,
+    )
+    monkeypatch.setitem(sys.modules, "utils.hardware", hardware)
+    monkeypatch.setattr(mem, "_system_memory_mib", lambda: (system_total_mib, system_free_mib))
+    return snapshot_device_memory(_target())
+
+
+@pytest.mark.parametrize(
+    "flag_kwargs",
+    [
+        {"integrated": True},
+        {"integrated": False, "is_integrated": True},
+    ],
+)
+@pytest.mark.parametrize(
+    "cuda_free_mib, cuda_total_mib",
+    [
+        (3 * 1024, 3 * 1024),  # both readings are the carve-out
+        (3 * 1024, 128 * 1024),  # total is the real pool, free is the carve-out
+    ],
+)
+def test_snapshot_unified_cuda_uses_system_pool_not_cuda_carveout(
+    monkeypatch, flag_kwargs, cuda_free_mib, cuda_total_mib
+):
+    """DGX Spark / GB10: CUDA mem_get_info is a few-GB carve-out of unified LPDDR.
+
+    The load is sized against the shared system pool, same as MPS. Either spelling of
+    the driver's integrated flag is enough, and either way the carve-out is reported
+    (tiny total, or full-pool total with tiny free).
+    """
+    snap = _stub_cuda_snapshot(
+        monkeypatch,
+        cuda_free_mib = cuda_free_mib,
+        cuda_total_mib = cuda_total_mib,
+        system_free_mib = 100 * 1024,
+        system_total_mib = 128 * 1024,
+        **flag_kwargs,
+    )
+    assert snap.memory_kind == "unified_memory"
+    assert snap.free_mib == 100 * 1024
+    assert snap.total_mib == 128 * 1024
+
+
+def test_snapshot_discrete_cuda_ignores_system_ram(monkeypatch):
+    """A 4090-class card keeps trusted_mem_get_info even if host RAM is tiny."""
+    snap = _stub_cuda_snapshot(
+        monkeypatch,
+        integrated = False,
+        is_integrated = False,
+        cuda_free_mib = 20 * 1024,
+        cuda_total_mib = 24 * 1024,
+        system_free_mib = 8 * 1024,
+        system_total_mib = 16 * 1024,
+    )
+    assert snap.memory_kind == "discrete_vram"
+    assert snap.free_mib == 20 * 1024
+    assert snap.total_mib == 24 * 1024
+
+
+def test_unified_cuda_spark_gb10_allows_flux2_klein_against_system_ram(monkeypatch):
+    """#9919: flux.2-klein is ~24 GB of weights. A 128 GB Spark must not refuse it
+    just because CUDA reports 3 GB free."""
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    snap = _stub_cuda_snapshot(
+        monkeypatch,
+        integrated = True,
+        cuda_free_mib = 3 * 1024,
+        cuda_total_mib = 3 * 1024,
+        system_free_mib = 100 * 1024,
+        system_total_mib = 128 * 1024,
+    )
+    # 22 GiB weights + 2 GiB base overhead = 24 GB, matching the reported refusal.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = snap,
+        model_dense_mib = 22 * 1024,
+        runtime_headroom_mib = 4096,
+    )
+    assert plan.offload_policy == OFFLOAD_NONE
+    assert unified_memory_shortfall_message(plan, family = "flux.2-klein") is None
+    # The CUDA carve-out would have produced a 0 GB budget; the system pool must not.
+    assert plan.estimates["safe_device_budget_mib"] > 22 * 1024
+
+
+def test_unified_cuda_still_refuses_when_system_ram_is_too_small(monkeypatch):
+    """A 24 GB model on a 16 GB unified box is still genuinely too large."""
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    snap = _stub_cuda_snapshot(
+        monkeypatch,
+        integrated = True,
+        cuda_free_mib = 3 * 1024,
+        cuda_total_mib = 3 * 1024,
+        system_free_mib = int(16 * 1024 * 0.80),
+        system_total_mib = 16 * 1024,
+    )
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = snap,
+        model_dense_mib = 22 * 1024,
+        runtime_headroom_mib = 4096,
+    )
+    message = unified_memory_shortfall_message(plan, family = "flux.2-klein")
+    assert message is not None
+    assert "flux.2-klein" in message
+    assert "about 24 GB of memory for its weights" in message
+    # Refused against the 16 GB host pool (~10 GB usable), not the 3 GB CUDA carve-out.
+    assert "about 10 GB is usable" in message
+    assert "13 GB currently free" in message
+
+
+def test_discrete_4090_does_not_refuse_an_oversized_load(monkeypatch):
+    """Discrete VRAM still streams from host RAM; the unified refusal must not fire."""
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    snap = _stub_cuda_snapshot(
+        monkeypatch,
+        integrated = False,
+        cuda_free_mib = 20 * 1024,
+        cuda_total_mib = 24 * 1024,
+        system_free_mib = 8 * 1024,
+        system_total_mib = 32 * 1024,
+    )
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = snap,
+        model_dense_mib = 22 * 1024,
+        runtime_headroom_mib = 4096,
+    )
+    assert snap.memory_kind == "discrete_vram"
+    assert unified_memory_shortfall_message(plan, family = "flux.2-klein") is None
+
+
+def test_unified_cuda_fails_open_when_system_ram_is_unreadable(monkeypatch):
+    """A missing host reading must not fall back to the CUDA carve-out and refuse."""
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    snap = _stub_cuda_snapshot(
+        monkeypatch,
+        integrated = True,
+        cuda_free_mib = 3 * 1024,
+        cuda_total_mib = 3 * 1024,
+        system_free_mib = None,
+        system_total_mib = None,
+    )
+    assert snap.memory_kind == "unified_memory"
+    assert snap.free_mib is None and snap.total_mib is None
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = snap,
+        model_dense_mib = 22 * 1024,
+        runtime_headroom_mib = 4096,
+    )
+    assert unified_memory_shortfall_message(plan, family = "flux.2-klein") is None
+
+
 def test_snapshot_never_raises_on_probe_failure(monkeypatch):
     import sys
 
