@@ -6704,6 +6704,18 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12", "cuda13"])
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is True
     assert M._runtime_preference_moved({"runtime_line": "cuda13"}, host) is False
+    # A marker that recorded the preference it was chosen under: the selectors may have
+    # routed away from it (Blackwell, a release without that line), so only the
+    # preference itself moving counts, whatever line was installed.
+    assert M._runtime_preference_moved(
+        {"runtime_line": "cuda12", "torch_runtime_preference": "cuda13"}, host
+    ) is False
+    assert M._runtime_preference_moved(
+        {"runtime_line": "cuda13", "torch_runtime_preference": "cuda12"}, host
+    ) is True
+    assert M._runtime_preference_moved(
+        {"runtime_line": "cuda12", "torch_runtime_preference": None}, host
+    ) is True
     # A preference the selectors cannot act on (no such runtime on disk, or a driver
     # that cannot run it) is ignored by them, and is not movement here either.
     monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12"], {}))

@@ -6708,6 +6708,10 @@ def write_prebuilt_metadata(
         "ggml_tree": recorded_ggml_tree(approved_checksums, choice),
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
+        # The torch CUDA preference this choice was made under. Read by the marker
+        # fast path, which treats only a moved preference as movement; not in the
+        # install fingerprint, so existing installs stay valid.
+        "torch_runtime_preference": _torch_runtime_preference_for_marker(host),
         "coverage_class": choice.coverage_class,
         # ROCm bundles: concrete built archs, so runtime GPU selection can gate
         # devices the binary has no kernels for (#7624). Deliberately NOT in the
@@ -6911,6 +6915,13 @@ def _marker_selection_patch(
     # match again.
     if host is not None and marker.get("host_profile") != host_profile(host):
         patch["host_profile"] = host_profile(host)
+    # Likewise the torch preference this reuse was decided under: written whenever it is
+    # missing or has moved, so the fast path compares against the preference the
+    # selectors actually saw rather than against whichever line they routed to.
+    if host is not None and (host.is_linux or host.is_windows):
+        preference = _torch_runtime_preference_for_marker(host)
+        if "torch_runtime_preference" not in marker or marker.get("torch_runtime_preference") != preference:
+            patch["torch_runtime_preference"] = preference
     return patch
 
 
@@ -7514,6 +7525,24 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
     if not isinstance(recorded_line, str) or not recorded_line.startswith("cuda"):
         return False
     preferred = detect_torch_cuda_runtime_preference(host).runtime_line
+    if "torch_runtime_preference" in marker:
+        # The preference the install was chosen under. The selectors do not always
+        # follow it (Blackwell routing, a release without a bundle for that line), so
+        # the installed line is not what it was: only the preference itself moving is
+        # movement, and a stable preference keeps the fast path however it was routed.
+        recorded_preference = marker.get("torch_runtime_preference")
+        if preferred == recorded_preference or not preferred:
+            return False
+        if not _runtime_line_selectable(host, preferred):
+            return False
+        log(
+            f"kept install rejected: torch now prefers the {preferred} runtime line, "
+            f"the install was chosen under {recorded_preference or 'no preference'}"
+        )
+        return True
+    # A marker written before the preference was recorded: the installed line is all
+    # there is to compare against. The full path this takes records the preference
+    # (write_prebuilt_metadata / sync_marker_selection), so it is paid once.
     if not preferred or preferred == recorded_line:
         return False
     # A preference the selectors cannot act on is ignored by them (they keep the line
@@ -7526,6 +7555,23 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
         f"the install is {recorded_line}"
     )
     return True
+
+
+def _torch_runtime_preference_for_marker(host: "HostInfo | None") -> "str | None":
+    """The torch CUDA preference an install is being recorded under, or None.
+
+    Read only where the selectors read it (a CUDA host on Linux or Windows), so the
+    marker says None wherever no preference took part in the choice. Never raises:
+    the marker is metadata, not the install.
+    """
+    if host is None:
+        return None
+    try:
+        if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
+            return None
+        return detect_torch_cuda_runtime_preference(host).runtime_line
+    except Exception:  # noqa: BLE001 - metadata only
+        return None
 
 
 def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
