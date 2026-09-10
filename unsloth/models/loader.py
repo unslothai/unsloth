@@ -598,6 +598,16 @@ class FastLanguageModel(FastLlamaModel):
             load_in_fp8 = False
             load_in_16bit = True
 
+        if (quantization_config is None or q_load_in_4bit or q_load_in_8bit) and (
+            int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False)
+            >= 2
+        ):
+            raise RuntimeError(
+                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
+                "Also, we by default set `load_in_4bit = True`.\n"
+                "If you want to load in 16bit, set `load_in_4bit = False` and `load_in_16bit = True`."
+            )
+
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
             model_name = snapshot_download(model_name)
