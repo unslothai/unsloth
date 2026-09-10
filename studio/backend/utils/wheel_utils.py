@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Callable
@@ -435,13 +436,38 @@ def install_wheel(
     return attempts
 
 
-def url_exists(url: str) -> bool:
-    try:
-        request = urllib.request.Request(url, method = "HEAD")
-        with urllib.request.urlopen(request, timeout = 10):
-            return True
-    except urllib.error.HTTPError as exc:
-        _logger.debug("url_exists(%s): HTTP %s", url, exc.code)
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _logger.debug("url_exists(%s): %s", url, exc)
-    return False
+def _timed_out(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def url_exists(url: str, *, attempts: int = 2) -> bool | None:
+    """True if reachable, False for a 404, None when availability cannot be checked."""
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    # Only a 404 means "not published". A refusal (403/429/5xx, dropped connection) is
+    # retried once and then reported as None: callers still take their slow path, since
+    # the wheel may well exist, but they say "could not check" rather than "not
+    # published", and never treat a refusal as proof that no prebuilt exists.
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(url, method = "HEAD")
+            with urllib.request.urlopen(request, timeout = 10):
+                return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                _logger.debug("url_exists(%s): HTTP 404", url)
+                return False
+            reason: object = f"HTTP {exc.code}"
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = exc
+            if _timed_out(exc):
+                break
+        if attempt < attempts:
+            _logger.debug("url_exists(%s): %s; retrying", url, reason)
+            time.sleep(1.5 * attempt)
+            continue
+        break
+    _logger.warning(
+        "url_exists(%s): %s; could not determine prebuilt wheel availability", url, reason
+    )
+    return None

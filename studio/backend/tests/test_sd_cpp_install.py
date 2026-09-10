@@ -3294,3 +3294,202 @@ def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "escape.txt").exists()
+
+
+# ── a rate-limited API stops the fallback ladder ──────────────────────────────
+
+
+def test_a_rate_limited_api_stops_the_fallback_ladder(monkeypatch, capsys):
+    """Every rung of the ladder is the same api.github.com quota, so after a 403 the other
+    three can only fail the same way and push the reset out."""
+    seen = []
+
+    def fake_fetch(
+        tag,
+        *,
+        repo,
+        token,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append((repo, tag))
+        raise urllib.error.HTTPError(f"https://api/{repo}", 403, "rate limited", None, None)
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    with pytest.raises(sdmod.GitHubRateLimited, match = "rate limiting.*GH_TOKEN"):
+        sdmod._resolve_with_fallback("auto", None)
+    assert len(seen) == 1
+    # install() and --print-asset both surface that message instead of "build from source".
+    assert sdmod.main(["--print-asset"]) == 2
+    assert "rate limiting" in capsys.readouterr().err
+
+
+def test_an_asset_download_retries_a_dropped_connection_but_not_a_404(monkeypatch, tmp_path):
+    attempts = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n = -1):
+            return b""
+
+    def flaky(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        if len(attempts) == 1:
+            raise urllib.error.URLError("connection reset")
+        return _Resp()
+
+    import time
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    sdmod._download("https://github.com/x/y/releases/download/t/a.zip", tmp_path / "a.zip")
+    assert len(attempts) == 2
+
+    attempts.clear()
+
+    def missing(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", None, None)
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", missing)
+    with pytest.raises(urllib.error.HTTPError):
+        sdmod._download("https://github.com/x/y/releases/download/t/a.zip", tmp_path / "b.zip")
+    assert len(attempts) == 1
+
+
+def test_a_permission_403_is_not_treated_as_a_spent_quota():
+    """The resolution ladder shares one quota, so an exhausted one stops it. A 403 whose
+    headers still report quota is a permission refusal and the next rung may answer."""
+    import email.message
+    import urllib.error
+
+    spent = email.message.Message()
+    spent["X-RateLimit-Remaining"] = "0"
+    permission = email.message.Message()
+    permission["X-RateLimit-Remaining"] = "4998"
+
+    def err(headers):
+        return urllib.error.HTTPError("https://api.github.com/x", 403, "no", headers, None)
+
+    assert sdmod._is_rate_limited(err(spent)) is True
+    assert sdmod._is_rate_limited(err(None)) is True
+    assert sdmod._is_rate_limited(err(permission)) is False
+    assert sdmod._is_rate_limited(ValueError("not http")) is False
+
+
+def test_a_429_stops_the_ladder_whatever_the_quota_header_says():
+    """X-RateLimit-* is the PRIMARY quota; a secondary limit answers 429 and leaves it
+    alone, so reading the header alone would keep hammering the rest of the ladder."""
+    import email.message
+    import urllib.error
+
+    primary_quota_left = email.message.Message()
+    primary_quota_left["X-RateLimit-Remaining"] = "4998"
+    retry_after = email.message.Message()
+    retry_after["X-RateLimit-Remaining"] = "4998"
+    retry_after["Retry-After"] = "60"
+
+    def err(code, headers):
+        return urllib.error.HTTPError("https://api.github.com/x", code, "no", headers, None)
+
+    assert sdmod._is_rate_limited(err(429, primary_quota_left)) is True
+    assert sdmod._is_rate_limited(err(403, retry_after)) is True
+    assert sdmod._is_rate_limited(err(403, primary_quota_left)) is False
+
+
+def test_a_headerless_secondary_limit_403_stops_the_ladder():
+    """A secondary limit can answer 403 with quota to spare and no Retry-After; only the
+    body names it, and the rest of the ladder shares the same throttled API."""
+    import email.message
+    import io
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+
+    def err(body):
+        return urllib.error.HTTPError(
+            "https://api.github.com/x", 403, "no", headers, io.BytesIO(body)
+        )
+
+    throttled = err(b'{"message": "You have exceeded a secondary rate limit."}')
+    permission = err(b'{"message": "Resource not accessible by personal access token"}')
+    assert sdmod._is_rate_limited(throttled) is True
+    assert sdmod._is_rate_limited(permission) is False
+
+
+def test_a_stalled_download_is_not_retried_into_a_tripled_deadline(tmp_path, monkeypatch):
+    """Three attempts at the full timeout would block an install for 15 minutes where
+    one stall used to cost 5. A timeout is terminal, exactly as url_exists treats it."""
+    import urllib.error
+
+    attempts = []
+
+    def stalls(req, timeout = None):
+        attempts.append(timeout)
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", stalls)
+    with pytest.raises(urllib.error.URLError):
+        sdmod._download("https://example.test/a.zip", tmp_path / "a.zip", timeout = 7.0)
+    assert attempts == [7.0]
+
+
+def test_an_unwritable_destination_is_not_retried(tmp_path, monkeypatch):
+    """A directory that cannot be written will not become writable on the next attempt;
+    retrying would only re-download the whole archive to fail the same way."""
+    import io
+
+    opened = []
+
+    def served(req, timeout = None):
+        opened.append(req.full_url)
+        return io.BytesIO(b"archive-bytes")
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", served)
+    missing_parent = tmp_path / "no-such-dir" / "a.zip"
+    with pytest.raises(FileNotFoundError):
+        sdmod._download("https://example.test/a.zip", missing_parent)
+    assert len(opened) == 1
+
+
+def test_a_failed_connect_leaves_no_empty_archive_behind(tmp_path, monkeypatch):
+    """The socket opens before the file, so a refused connection never creates dest."""
+    import urllib.error
+
+    def refused(req, timeout = None):
+        raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", refused)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    with pytest.raises(urllib.error.URLError):
+        sdmod._download("https://example.test/a.zip", dest, attempts = 2)
+    assert not dest.exists()
+
+
+def test_a_malformed_response_is_retried_like_a_dropped_connection(tmp_path, monkeypatch):
+    import http.client
+    import io
+
+    calls = []
+
+    def flaky(req, timeout = None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise http.client.RemoteDisconnected("closed")
+        return io.BytesIO(b"archive-bytes")
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    dest = tmp_path / "a.zip"
+    sdmod._download("https://example.test/a.zip", dest)
+    assert dest.read_bytes() == b"archive-bytes"
+    assert len(calls) == 2

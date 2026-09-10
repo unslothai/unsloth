@@ -381,3 +381,39 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
     monkeypatch.setattr(changes.urllib.request, "urlopen", lambda *_a, **_k: _Response())
 
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
+
+
+def test_a_403_records_the_shared_lockout(monkeypatch):
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    headers = email.message.Message()
+    headers["Retry-After"] = "90"
+
+    def refused(*_args, **_kwargs):
+        raise urllib.error.HTTPError("url", 403, "rate limited", headers, None)
+
+    monkeypatch.setattr(changes.urllib.request, "urlopen", refused)
+    assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
+    assert 85 < freshness_flow.github_rate_limit_remaining() <= 90
+
+
+def test_the_lockout_holds_even_for_a_forced_refresh(monkeypatch):
+    from utils.prebuilt import freshness_flow
+
+    monkeypatch.setattr(changes, "_release_memo", {})
+    monkeypatch.setattr(changes, "_release_failed_at", {})
+    monkeypatch.setattr(changes, "_release_forced_at", {})
+    monkeypatch.setattr(
+        changes,
+        "_fetch_release",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fetched into a rate limit")),
+    )
+    freshness_flow.note_github_rate_limited(_force_wait = 600)
+    assert changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh = True) is None
+    # A body still inside its TTL keeps answering; only the fetch is withheld.
+    key = ("unslothai/llama.cpp", "b2")
+    monkeypatch.setattr(changes, "_release_memo", {key: (time.monotonic(), {"body": "- x"})})
+    assert changes._release_for_tag(*key, force_refresh = True) == {"body": "- x"}

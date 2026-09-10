@@ -6082,7 +6082,8 @@ def _ensure_flash_attn() -> None:
 
     env = probe_torch_wheel_env()
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
-    if wheel_url and url_exists(wheel_url):
+    wheel_available = url_exists(wheel_url) if wheel_url else False
+    if wheel_available:
         for installer, wheel_result in install_wheel(
             wheel_url,
             python_executable = sys.executable,
@@ -6121,6 +6122,14 @@ def _ensure_flash_attn() -> None:
 
     if wheel_url is None:
         _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+    elif wheel_available is None:
+        # The release host refused the probe, which is not a 404. Calling the wheel
+        # unpublished would send the user looking for one that exists.
+        _step(
+            "warning",
+            "Could not check the flash-attn prebuilt wheel; skipped it",
+            _cyan,
+        )
     else:
         _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
 

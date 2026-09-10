@@ -316,7 +316,8 @@ def _install_kernel(
         release_base_url = release_base_url,
         env = env,
     )
-    if wheel_url and url_exists(wheel_url):
+    wheel_available = url_exists(wheel_url) if wheel_url else False
+    if wheel_available:
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
         # Keep quiet downloads and unpacks within the inactivity deadline (#9398).
         with _heartbeat(
@@ -347,6 +348,14 @@ def _install_kernel(
                     display_name,
                     getattr(result, "stdout", ""),
                 )
+    elif wheel_available is None:
+        # Refused, not a 404. Skip the prebuilt fast path but keep going: returning here
+        # would make ensure_ssm_runtime raise for a Mamba model that a source build,
+        # which needs no GitHub at all, still installs.
+        _emit(
+            status_cb,
+            f"Could not check the {display_name} prebuilt wheel; building it from source.",
+        )
     else:
         logger.info(
             "No prebuilt %s wheel for this environment (%s); building from source",

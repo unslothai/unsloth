@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import http.client
 import os
 import platform
 import re
@@ -347,6 +348,91 @@ def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0)
     return _fetch_release(None, token = token, timeout = timeout)
 
 
+class GitHubRateLimited(RuntimeError):
+    pass
+
+
+def _quota_left(headers: object) -> bool:
+    if headers is None:
+        return False
+    try:
+        return float(str(getattr(headers, "get")("X-RateLimit-Remaining") or "").strip()) > 0
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    """A refusal that throttling explains. 429 always is, whatever the quota header says:
+    X-RateLimit-* describes the PRIMARY quota and a secondary limit leaves it untouched.
+    A 403 whose headers still report quota is instead a permission or policy refusal, and
+    the other rungs of the ladder may well answer, so it must fall through."""
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code not in (403, 429):
+        return False
+    if exc.code == 429:
+        return True
+    headers = getattr(exc, "headers", None)
+    if headers is not None and _header(headers, "Retry-After"):
+        return True
+    # A secondary limit can answer 403 with the primary quota untouched and no
+    # Retry-After; only the body names it. Same markers the repo's GitHub scraper uses.
+    if _names_a_rate_limit(_error_body(exc)):
+        return True
+    return not _quota_left(headers)
+
+
+_RATE_LIMIT_BODY_MARKERS = (
+    "api rate limit exceeded",
+    "rate limit exceeded",
+    "secondary rate limit",
+    "secondary limit",
+    "abuse detection mechanism",
+    "abuse detection",
+)
+
+
+def _names_a_rate_limit(body: str) -> bool:
+    text = (body or "").lower()
+    return any(marker in text for marker in _RATE_LIMIT_BODY_MARKERS)
+
+
+def _error_body(exc: BaseException, *, limit: int = 2048) -> str:
+    """The refusal's body, read once and remembered: HTTPError is the response, so
+    reading it consumes it and the caller still prints the same object."""
+    cached = getattr(exc, "_unsloth_body", None)
+    if cached is not None:
+        return cached
+    try:
+        raw = exc.read(limit)  # type: ignore[attr-defined]
+        text = raw.decode("utf-8", errors = "replace") if isinstance(raw, bytes) else str(raw)
+    except Exception:  # noqa: BLE001 - a body we cannot read names nothing
+        text = ""
+    try:
+        exc._unsloth_body = text  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - exotic exception types
+        pass
+    return text
+
+
+def _header(headers: object, name: str) -> str:
+    try:
+        return str(getattr(headers, "get")(name) or "").strip()
+    except (AttributeError, TypeError):
+        return ""
+
+
+def _timed_out(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def _rate_limit_message() -> str:
+    hint = (
+        ""
+        if (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+        else "; set GH_TOKEN or GITHUB_TOKEN to lift the 60 requests/hour unauthenticated limit"
+    )
+    return f"GitHub API is rate limiting release lookups{hint}"
+
+
 def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
     """Verify ``path`` against a GitHub asset ``digest`` ('sha256:<hex>'). Integrity check
     against a corrupted/tampered download before we extract + execute the binary. When the
@@ -512,15 +598,49 @@ def _download(
     dest: Path,
     *,
     timeout: float = 300.0,
+    attempts: int = 3,
 ) -> None:
     """Stream ``url`` to ``dest`` with an explicit timeout. ``urlretrieve`` takes no
     timeout and can hang forever on a stalled socket. A User-Agent is set because the
-    GitHub asset CDN can reject header-less requests; the API fetch carries any token."""
+    GitHub asset CDN can reject header-less requests; the API fetch carries any token.
+    Retried on a dropped connection or a malformed response; a 404, a timeout, and a
+    destination that cannot be opened are terminal, since none of them change on the
+    next attempt."""
     import shutil
+    import time
 
-    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
-    with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
-        shutil.copyfileobj(resp, f)
+    if attempts < 1:
+        # Otherwise the loop never runs and the caller gets None with no file written.
+        raise ValueError("attempts must be at least 1")
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
+        try:
+            # Socket first, file second: a failed connect must not leave an empty dest.
+            with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
+                shutil.copyfileobj(resp, f)
+            return
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                raise
+            # A destination that cannot be opened (read-only dir, missing parent) will
+            # not open on the next attempt either; retrying would only re-download the
+            # whole archive to fail the same way. open() names the file it could not
+            # open, and a socket error never does, which tells the two apart.
+            if (
+                isinstance(exc, OSError)
+                and not isinstance(exc, urllib.error.URLError)
+                and getattr(exc, "filename", None)
+            ):
+                raise
+            # A stalled socket already spent the whole timeout; retrying it would spend
+            # the same wait again, so three attempts would triple the deadline rather
+            # than recover anything. Terminal, exactly as url_exists treats it.
+            if _timed_out(exc):
+                raise
+            if attempt >= attempts:
+                raise
+            print(f"sd-cli: download failed ({exc}); retrying {attempt}/{attempts - 1}", flush = True)
+            time.sleep(2.0 * attempt)
 
 
 # PATH_MAX: a link payload is a pathname and ``zf.read`` holds it in memory, so anything larger
@@ -799,10 +919,15 @@ def _resolve_repo_asset(
     """Fetch ``repo``'s release and pick the asset for this host. Returns
     ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release
     (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no
-    asset for this host, so the caller can fall back."""
+    asset for this host, so the caller can fall back. A fetch the API refused for
+    quota raises ``GitHubRateLimited`` instead: the other rungs share that quota, so
+    there is nothing to fall back to."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
-    except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
+    except Exception as exc:  # noqa: BLE001 - network -> fall back
+        # The whole ladder is one api.github.com quota; the other rungs would fail the same way.
+        if _is_rate_limited(exc):
+            raise GitHubRateLimited(_rate_limit_message()) from exc
         print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
         return None, None
     if release is None:
@@ -827,8 +952,9 @@ def _resolve_with_fallback(
     Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate
     repo before any repo's unpinned latest, so a mirror that is missing the pinned release
     prefers the pinned upstream build over an unpinned mirror-latest. Returns
-    ``(primary, None, None)`` when nothing serves this host. Shared by ``install`` and
-    ``--print-asset`` so both honour the same fallback."""
+    ``(primary, None, None)`` when nothing serves this host, and raises
+    ``GitHubRateLimited`` as soon as any rung is refused for quota. Shared by
+    ``install`` and ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
     primary = _repo()
     # Only substitute upstream when no UNSLOTH_SD_CPP_REPO is pinned: an explicit repo gets exactly that repo.
@@ -892,8 +1018,9 @@ def install(
     Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror can't
     serve this host (release missing, or a host we don't build) AND the default repo is
     in use, falls back to leejet upstream so native install still works. Raises
-    ``RuntimeError`` only when neither source has an asset for the host, or the archive
-    has no ``sd-cli``.
+    ``RuntimeError`` when neither source has an asset for the host or the archive has
+    no ``sd-cli``, and its subclass ``GitHubRateLimited`` when the release lookups are
+    refused for quota, in which case no source was tried past the first refusal.
     """
     target = install_dir or default_install_dir()
     # Claim ownership of `target` only if we created it, it was empty, or it is already marked: adopting a user's
@@ -1048,7 +1175,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.print_asset:
         # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a
         # false miss.
-        _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        try:
+            _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        except GitHubRateLimited as exc:
+            print(f"error: {exc}", file = sys.stderr)
+            return 2
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2
 

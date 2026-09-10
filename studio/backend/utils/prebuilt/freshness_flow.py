@@ -12,7 +12,9 @@ so the modules' monkeypatch seams keep working.
 
 from __future__ import annotations
 
+import http.client
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,169 @@ logger = structlog.get_logger(__name__)
 RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
 # Briefly memoize failed lookups so recurring status reads do not retry an unreachable GitHub endpoint on every request.
 RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
+# A rate-limited api.github.com refuses every call until the window resets, so retrying on the
+# 60s failure memo only spends the reset. Used when the response names no reset to wait for.
+GITHUB_RATE_LIMITED_DEFAULT_SECONDS = 15 * 60
+# The primary window is an hour; a skewed or proxied reset header is held to that ceiling.
+GITHUB_RATE_LIMIT_MAX_SECONDS = 60 * 60
+GITHUB_RATE_LIMIT_STATUS = (403, 429)
+
+# One lockout for the whole process: the quota is per token or per IP, not per repo, so a
+# 403 from any caller means every api.github.com call would fail the same way. Monotonic.
+# Guarded: two refusals racing here would otherwise both read the old deadline and let the
+# shorter wait store last, which is exactly what the max() below exists to prevent.
+_api_rate_limited_lock = threading.Lock()
+_api_rate_limited_until: float = 0.0
+
+
+def rate_limit_wait_seconds(headers: Any, *, now: Optional[float] = None) -> Optional[float]:
+    # GitHub's order: Retry-After (secondary limit), then X-RateLimit-Reset once the quota is 0.
+    if headers is None:
+        return None
+    now = time.time() if now is None else now
+
+    def _number(value: object) -> Optional[float]:
+        try:
+            return float(str(value or "").strip())
+        except ValueError:
+            return None
+
+    after = _number(headers.get("Retry-After"))
+    if after is None:
+        # RFC 9110 also permits an HTTP-date here; the installer already treats any
+        # Retry-After as throttling, and the two must not disagree on that input.
+        try:
+            import email.utils
+            when = email.utils.parsedate_to_datetime(str(headers.get("Retry-After") or ""))
+            after = when.timestamp() - now
+        except (TypeError, ValueError, OverflowError):
+            after = None
+    if after is not None:
+        return max(after, 0.0)
+    if str(headers.get("X-RateLimit-Remaining") or "").strip() == "0":
+        reset = _number(headers.get("X-RateLimit-Reset"))
+        if reset is not None:
+            return max(reset - now, 0.0)
+    return None
+
+
+# What GitHub says in the body when it throttles. Mirrors the marker list in
+# plugins/data-designer-github-repo-seed .../gh_client.py::_is_rate_limit_response, which
+# is this repo's existing answer to the same question. A secondary limit can answer 403
+# with the primary quota untouched and no Retry-After, and only the body names it.
+_RATE_LIMIT_BODY_MARKERS = (
+    "api rate limit exceeded",
+    "rate limit exceeded",
+    "secondary rate limit",
+    "secondary limit",
+    "abuse detection mechanism",
+    "abuse detection",
+)
+
+
+def names_a_rate_limit(body: object) -> bool:
+    if not body:
+        return False
+    if isinstance(body, (bytes, bytearray)):
+        body = bytes(body).decode("utf-8", errors = "replace")
+    text = str(body).lower()
+    return any(marker in text for marker in _RATE_LIMIT_BODY_MARKERS)
+
+
+def error_body(exc: BaseException, *, limit: int = 2048) -> str:
+    """The refusal's body, read once and remembered on the exception.
+
+    HTTPError is the response, so reading it consumes it; callers downstream still
+    want to print or inspect the same object.
+    """
+    cached = getattr(exc, "_unsloth_body", None)
+    if cached is not None:
+        return cached
+    try:
+        raw = exc.read(limit)  # type: ignore[attr-defined]
+        text = raw.decode("utf-8", errors = "replace") if isinstance(raw, bytes) else str(raw)
+    except Exception:  # noqa: BLE001 - a body we cannot read simply names nothing
+        text = ""
+    try:
+        exc._unsloth_body = text  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - exotic exception types
+        pass
+    return text
+
+
+def _quota_left(headers: Any) -> bool:
+    if headers is None:
+        return False
+    try:
+        return float(str(headers.get("X-RateLimit-Remaining") or "").strip()) > 0
+    except ValueError:
+        return False
+
+
+def rate_limit_verdict(
+    headers: Any = None,
+    *,
+    status: Optional[int] = None,
+    body: object = None,
+) -> Optional[float]:
+    """How long a refusal says to wait, bounded to one window, or None when the refusal
+    was not a rate limit at all.
+
+    The single place that decides. A 429 always is; so is a 403 that names Retry-After,
+    that reports the primary quota spent, or whose body carries GitHub's throttling
+    text. A 403 with none of those is a permission or policy refusal. Every caller,
+    shared lockout or local, must reach the same verdict for the same response.
+    """
+    wait = rate_limit_wait_seconds(headers)
+    if wait is None:
+        if status != 429 and not names_a_rate_limit(body) and _quota_left(headers):
+            return None
+        wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
+    return min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
+
+
+def note_github_rate_limited(
+    headers: Any = None,
+    *,
+    status: Optional[int] = None,
+    body: object = None,
+    _force_wait: Optional[float] = None,
+) -> float:
+    """Record the lockout and return its length; 0 when this was not a rate limit.
+
+    Never shortens a lockout already in place. A 403 whose headers report quota to spare
+    is a permission refusal, not a rate limit -- a fine-grained token without access to
+    the repo answers that way -- and locking every api.github.com call out of the process
+    for it would push the freshness checks onto the lagging redirect for nothing.
+
+    ``status`` 429 is always throttling, whatever the quota header says: X-RateLimit-*
+    describes the PRIMARY quota, and a secondary limit leaves it untouched. A secondary
+    limit can also answer 403 with quota to spare and no Retry-After, and then only
+    ``body`` names it.
+
+    ``_force_wait`` is for tests that need a lockout without a response. It skips
+    every check above, which is exactly why no production caller may use it: passing
+    a precomputed wait here is how a permission 403 once became a shared lockout.
+    """
+    global _api_rate_limited_until
+    wait = _force_wait
+    if wait is None:
+        wait = rate_limit_verdict(headers, status = status, body = body)
+    if wait is None:
+        return 0.0
+    with _api_rate_limited_lock:
+        _api_rate_limited_until = max(_api_rate_limited_until, time.monotonic() + wait)
+    return wait
+
+
+def github_rate_limit_remaining() -> float:
+    return max(_api_rate_limited_until - time.monotonic(), 0.0)
+
+
+def clear_github_rate_limit() -> None:
+    global _api_rate_limited_until
+    with _api_rate_limited_lock:
+        _api_rate_limited_until = 0.0
 
 
 def read_install_marker(
@@ -90,14 +255,20 @@ def load_disk_cache(repo: str, cache_dir: Path) -> Optional[tuple[float, Optiona
 
 
 def save_disk_cache(
-    repo: str, latest_tag: Optional[str], cache_dir: Path, *, log_message: str
+    repo: str,
+    latest_tag: Optional[str],
+    cache_dir: Path,
+    *,
+    log_message: str,
+    fetched_at: Optional[float] = None,
 ) -> None:
     path = cache_path_for(repo, cache_dir)
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".tmp")
+        stamp = time.time() if fetched_at is None else fetched_at
         tmp.write_text(
-            json.dumps({"fetched_at": time.time(), "latest_tag": latest_tag}),
+            json.dumps({"fetched_at": stamp, "latest_tag": latest_tag}),
             encoding = "utf-8",
         )
         tmp.replace(path)
@@ -137,11 +308,18 @@ def _fetch_newest_published_release_blocking(
     Resolves "latest" the way the installers do, NOT via GitHub's
     ``/releases/latest`` pointer, which sorts by commit date and can lag the
     build the installer installs (detection and apply then disagree -- the
-    downgrade/sticky-banner bug). None on any failure (offline, rate-limited)."""
+    downgrade/sticky-banner bug). None on any failure (offline, rate-limited), and
+    skipped outright while the rate-limit lockout is in force."""
     import os
     import urllib.error
     import urllib.request
 
+    remaining = github_rate_limit_remaining()
+    if remaining > 0:
+        logger.debug(
+            log_message, repo = repo, error = f"GitHub API rate limited for {int(remaining)}s more"
+        )
+        return None
     url = f"https://api.github.com/repos/{repo}/releases?per_page=30"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -154,10 +332,21 @@ def _fetch_newest_published_release_blocking(
     try:
         with urllib.request.urlopen(req, timeout = timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in GITHUB_RATE_LIMIT_STATUS:
+            wait = note_github_rate_limited(exc.headers, status = exc.code, body = error_body(exc))
+            logger.debug(
+                log_message,
+                repo = repo,
+                error = f"HTTP {exc.code}: rate limited, backing off {int(wait)}s",
+            )
+        else:
+            logger.debug(log_message, repo = repo, error = str(exc))
+        return None
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         OSError,
+        http.client.HTTPException,
         json.JSONDecodeError,
     ) as exc:
         logger.debug(log_message, repo = repo, error = str(exc))
@@ -178,15 +367,86 @@ def _fetch_newest_published_release_blocking(
     return max(published, key = lambda r: r.get("published_at") or "")
 
 
+def _download_host_latest_release_tag_blocking(repo: str, timeout: float) -> Optional[str]:
+    # github.com/<repo>/releases/latest redirects to the tag; no API quota is spent.
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
+    req = urllib.request.Request(
+        url, method = "HEAD", headers = {"User-Agent": "unsloth-studio-freshness-check"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
+            final_url = resp.geturl()
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        # HTTPException covers a malformed response (BadStatusLine, IncompleteRead)
+        # from GitHub or an intermediary: neither URLError nor OSError, and letting it
+        # escape would fail the update-status route instead of answering None.
+        return None
+    marker = "/releases/tag/"
+    index = final_url.find(marker)
+    if index == -1:
+        return None
+    tag = urllib.parse.unquote(final_url[index + len(marker) :]).strip("/")
+    return tag or None
+
+
+def download_host_latest_release_tag(
+    repo: str, timeout: float, *, log_message: str
+) -> Optional[str]:
+    from utils.utils import call_with_deadline
+    try:
+        return call_with_deadline(
+            lambda: _download_host_latest_release_tag_blocking(repo, timeout),
+            timeout + 1,
+            name = "prebuilt-freshness-redirect",
+        )
+    except TimeoutError as exc:
+        logger.debug(log_message, repo = repo, error = str(exc))
+        return None
+
+
+def fetch_latest_release_tag_with_source(
+    repo: str,
+    timeout: float = 5.0,
+    *,
+    log_message: str,
+) -> tuple[Optional[str], str]:
+    """``(tag, source)`` where source is ``api``, ``redirect`` or ``none``.
+
+    The source is reported rather than re-derived from the lockout afterwards: the
+    reset can land while the redirect request is still in flight, and a caller asking
+    the clock a second time would then bank a redirect answer as an API one.
+    """
+    if github_rate_limit_remaining() > 0:
+        return download_host_latest_release_tag(repo, timeout, log_message = log_message), "redirect"
+    newest = _fetch_newest_published_release(repo, timeout, log_message = log_message)
+    if newest:
+        return newest["tag_name"], "api"
+    if github_rate_limit_remaining() > 0:
+        return download_host_latest_release_tag(repo, timeout, log_message = log_message), "redirect"
+    return None, "none"
+
+
+# Where the tag this thread last fetched came from. Recorded beside the return value
+# rather than in it, so the components' monkeypatch seam keeps its plain-string shape.
+_fetch_source = threading.local()
+
+
 def fetch_latest_release_tag(
     repo: str,
     timeout: float = 5.0,
     *,
     log_message: str,
 ) -> Optional[str]:
-    """Newest published release tag for `repo`, by publish time. None on failure."""
-    newest = _fetch_newest_published_release(repo, timeout, log_message = log_message)
-    return newest["tag_name"] if newest else None
+    """Newest published release tag for `repo`, by publish time. None on failure.
+    Rate limited: the release page redirect answers instead. Only then, since
+    /releases/latest can lag the newest publish, and a dead network is not retried."""
+    tag, source = fetch_latest_release_tag_with_source(repo, timeout, log_message = log_message)
+    _fetch_source.value = source
+    return tag
 
 
 def fetch_latest_release_assets(
@@ -247,7 +507,10 @@ def latest_published_release(
         if disk and wall_now - disk[0] < RELEASE_CACHE_TTL_SECONDS:
             memo[repo] = disk
             return disk[1]
+    _fetch_source.value = None
     latest = fetch(repo)
+    # None when a component's fetch seam is stubbed; the clock is the fallback then.
+    source = getattr(_fetch_source, "value", None)
     if latest is None:
         if failed_at is not None:
             failed_at[repo] = time.monotonic()
@@ -259,6 +522,31 @@ def latest_published_release(
         return None
     if failed_at is not None:
         failed_at.pop(repo, None)
+    degraded = source == "redirect" if source is not None else github_rate_limit_remaining() > 0
+    if degraded:
+        # The release-page redirect answered: it sorts by commit date and can name an
+        # older release than the newest publish. Hold it only for what is left of the
+        # lockout, and never on disk, or one rate limit pins a lagging tag for the whole
+        # 24h TTL. Floored, because the reset can land while the redirect is in flight
+        # and a zero here would bank the degraded tag as a full success.
+        hold = max(github_rate_limit_remaining(), RELEASE_FAILURE_CACHE_TTL_SECONDS)
+        expires_at = wall_now - (RELEASE_CACHE_TTL_SECONDS - hold)
+        memo[repo] = (expires_at, latest)
+        # A disk entry from an earlier API answer can still be inside its own 24h. Left
+        # alone, it is what the lookup after this memo expires would reload, reverting
+        # the tag and hiding the update until it aged out. Age it to expire with the
+        # memo. Its value is kept, not replaced: it stays the last-good answer for the
+        # dead-network fallback above, which reads disk regardless of age.
+        disk = load_disk_cache(repo, cache_dir())
+        if disk and disk[0] > expires_at:
+            save_disk_cache(
+                repo,
+                disk[1],
+                cache_dir(),
+                log_message = "freshness cache age failed",
+                fetched_at = expires_at,
+            )
+        return latest
     memo[repo] = (wall_now, latest)
     save(repo, latest)
     return latest

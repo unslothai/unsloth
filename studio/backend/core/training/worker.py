@@ -1310,9 +1310,10 @@ def _attempt_package_install(
             env = env,
         )
 
+    wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_url is None:
         logger.info("No compatible %s wheel candidate", display_name)
-    elif url_exists(wheel_url):
+    elif wheel_available:
         _send_status(event_queue, f"Installing {display_name} for faster training...")
         for installer, result in install_wheel(
             wheel_url,
@@ -1339,6 +1340,13 @@ def _attempt_package_install(
                 display_name,
                 result.stdout,
             )
+    elif wheel_available is None:
+        # Refused, not a 404. Skip the prebuilt fast path and install from PyPI rather
+        # than return: a throttled release host must not cost the package entirely.
+        _send_status(
+            event_queue,
+            f"Could not check the {display_name} prebuilt wheel; installing from PyPI.",
+        )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
 

@@ -828,6 +828,246 @@ def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_release
     assert hits["count"] == 1, "refresh must not bypass a rate-limit lockout"
 
 
+@pytest.mark.parametrize("refresh", [False, True])
+def test_notes_honor_shared_github_backoff_and_resume_after_reset(
+    notes_module, monkeypatch, refresh
+):
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    now = time.monotonic()
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    freshness_flow.note_github_rate_limited(_force_wait = 60)
+    calls = []
+
+    def capture(request, **kwargs):
+        calls.append(request.full_url)
+        raise notes_module.urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    try:
+        result = notes_module.get_latest_release(refresh = refresh)
+        assert "rate limit" in result.error.lower()
+        assert calls == []
+        now += 61
+        notes_module.get_latest_release(refresh = refresh)
+        assert calls == [notes_module.RELEASES_API_URL]
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_shared_github_backoff_does_not_block_a_release_notes_mirror(notes_module, monkeypatch):
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    url = "https://mirror.example/releases"
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url)
+    freshness_flow.note_github_rate_limited(_force_wait = 60)
+    calls = []
+
+    def capture(request, **kwargs):
+        calls.append(request.full_url)
+        raise notes_module.urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    try:
+        notes_module.get_latest_release()
+        assert calls == [url]
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_a_token_is_sent_only_to_the_github_api_host(notes_module, monkeypatch):
+    """GH_TOKEN lifts the 60/hour per-IP limit, and must never travel to an
+    UNSLOTH_RELEASES_URL override."""
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout = None):
+        seen.append(request.get_header("Authorization"))
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    # The code reads GITHUB_TOKEN first; a developer with one exported would otherwise
+    # see their own token here and the assertion below would fail on their machine.
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setenv("GH_TOKEN", "ghp_test_token")
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    notes_module._fetch_latest_release()
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "https://mirror.example/releases")
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+    assert seen == ["Bearer ghp_test_token", None]
+
+
+def test_a_mirror_rate_limit_does_not_lock_out_the_github_api(notes_module, monkeypatch):
+    """UNSLOTH_RELEASES_URL can point anywhere. A 429 from a mirror says nothing
+    about api.github.com's quota, and recording one would send the llama.cpp and
+    whisper.cpp freshness checks to the lagging redirect for up to an hour."""
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "https://mirror.example/releases")
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, 429, "slow down", headers, None)
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        result = notes_module.get_latest_release()
+        assert "rate limit" in (result.error or "").lower()
+        assert freshness_flow.github_rate_limit_remaining() == 0
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_a_github_api_rate_limit_is_shared_with_the_freshness_checks(notes_module, monkeypatch):
+    """The same 60/hour per-IP quota, so the notes fetch that spent it tells the
+    freshness checks rather than letting each one rediscover the lockout."""
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, 403, "rate limited", headers, None)
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        notes_module.get_latest_release()
+        assert freshness_flow.github_rate_limit_remaining() > 0
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_a_permission_403_is_not_shared_as_a_rate_limit(notes_module, monkeypatch):
+    """A fine-grained token without access to the repo is refused with quota to spare.
+    Sharing that as a lockout would suppress every llama.cpp and whisper.cpp API check
+    in the process over a permission error."""
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+    headers["X-RateLimit-Limit"] = "5000"
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, 403, "forbidden", headers, None)
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        notes_module.get_latest_release()
+        assert freshness_flow.github_rate_limit_remaining() == 0
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_the_notes_fetch_picks_the_same_token_as_the_freshness_checks(notes_module, monkeypatch):
+    """They share one process-wide lockout, so authenticating as a different identity
+    would let one token's exhaustion silence requests the other could still make."""
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout = None):
+        seen.append(request.get_header("Authorization"))
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    monkeypatch.setenv("GH_TOKEN", "ghp_gh")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_github")
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+    # freshness_flow and llama_cpp_changelog both read GITHUB_TOKEN first.
+    assert seen == ["Bearer ghp_github"]
+
+
+def test_a_429_is_shared_as_a_rate_limit_despite_the_quota_header(notes_module, monkeypatch):
+    """A secondary limit answers 429 without touching X-RateLimit-Remaining."""
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, 429, "too many", headers, None)
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        notes_module.get_latest_release()
+        assert freshness_flow.github_rate_limit_remaining() > 0
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_a_token_never_travels_over_plaintext_http(notes_module, monkeypatch):
+    """UNSLOTH_RELEASES_URL accepts http://, so a hostname-only check would put the
+    token on the wire in clear for http://api.github.com."""
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout = None):
+        seen.append(request.get_header("Authorization"))
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "http://api.github.com/repos/x/releases")
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+    assert seen == [None]
+
+
+def test_a_redirect_cannot_carry_the_token_off_the_api_host(notes_module, monkeypatch):
+    """urllib replays a request's headers on a redirect, but not its unredirected ones.
+    The token must be in the second set, or a 302 would hand it to the new host."""
+    import urllib.error
+
+    captured = []
+
+    def capture(request, timeout = None):
+        captured.append(request)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+
+    request = captured[0]
+    assert request.get_header("Authorization") == "Bearer ghp_secret"
+    # What urllib.request.HTTPRedirectHandler.redirect_request copies onto the new
+    # request is req.headers; unredirected_hdrs is exactly what it leaves behind.
+    assert "Authorization" not in request.headers
+    assert request.unredirected_hdrs.get("Authorization") == "Bearer ghp_secret"
+
+
 def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
     """GitHub says not to request again before X-RateLimit-Reset, so the reset
     wins over the back-off. Only the first wait used to be bounded, so the fetch
