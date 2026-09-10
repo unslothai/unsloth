@@ -595,6 +595,116 @@ def test_a_search_the_MODEL_asked_for_is_not_archived_as_new_history():
     assert "total 12" in mixed_rendered
 
 
+def test_a_folded_retrieval_result_is_still_kept_out_of_the_archive():
+    """A toolless template has its ``role="tool"`` turns rewritten to user text before it ever
+    reaches the archive, so the id match that removes a retrieved passage stops firing and the
+    passage is indexed as fresh conversation -- the nesting above, back by another door.
+
+    The passage usually arrives already merged with the question asked after it, so the cut has
+    to keep that question: dropping the whole turn archives the answer without the ask.
+    """
+    from core.inference.anthropic_compat import fold_tool_results_into_user
+    from core.rag import conversation_archive as archive
+    from routes.inference import _coalesce_consecutive_user_turns
+
+    recalled = [
+        {"role": "user", "content": "what did we say?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "function": {"name": "search_conversation", "arguments": '{"query":"pass"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "search_conversation",
+            "content": "<chunk>RETRIEVEDPASSAGE</chunk>",
+        },
+        {"role": "user", "content": "ASKEDAFTERWARDS?"},
+        {"role": "assistant", "content": "It was ZQXVARA123."},
+    ]
+    folded = _coalesce_consecutive_user_turns(fold_tool_results_into_user(recalled))
+
+    rendered = archive.render_turn(archive._archivable(folded))
+    assert "RETRIEVEDPASSAGE" not in rendered
+    assert "ASKEDAFTERWARDS?" in rendered
+    assert "ZQXVARA123" in rendered
+
+    # An image on the next question makes the coalesce produce a part list, not a string, and
+    # reading only strings archived the passage on exactly the turns that carry an image.
+    with_image = [
+        {"role": "user", "content": "what did we say?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_0", "function": {"name": "search_conversation", "arguments": "{}"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "search_conversation",
+            "content": "<chunk>RETRIEVEDPASSAGE</chunk>",
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "ASKEDWITHIMAGE?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        },
+    ]
+    folded_image = _coalesce_consecutive_user_turns(fold_tool_results_into_user(with_image))
+    assert isinstance(folded_image[-1]["content"], list), folded_image[-1]
+    kept_image = archive._archivable(folded_image)
+    dumped = json.dumps(kept_image)
+    assert "RETRIEVEDPASSAGE" not in dumped
+    assert "ASKEDWITHIMAGE?" in dumped
+    assert "image_url" in dumped
+
+    # The fold's output is only JSON in user text, so a user who types that shape while talking
+    # about the API must keep their own words: no retrieval call in the group, nothing to strip.
+    typed = [
+        {
+            "role": "user",
+            "content": "why this shape?\n\n"
+            + json.dumps(
+                {
+                    "tool_response": {
+                        "tool": "search_conversation",
+                        "content": "MYOWNWORDS",
+                        "tool_call_id": "call_0",
+                    }
+                },
+                indent = 2,
+            ),
+        },
+        {"role": "assistant", "content": "because of the fold."},
+    ]
+    assert "MYOWNWORDS" in json.dumps(archive._archivable(typed))
+
+    # A tool whose result IS conversation keeps it, folded or not.
+    kept = fold_tool_results_into_user(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "terminal", "arguments": '{"cmd":"ls"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "terminal", "content": "total 12"},
+        ]
+    )
+    assert "total 12" in archive.render_turn(archive._archivable(kept))
+
+
 def test_swapping_the_tool_retires_the_archived_call():
     """Which tool ran is part of what the turn says, so it has to be part of the probe.
 
