@@ -240,6 +240,59 @@ def retire_media_load(modality: str, account_id: str, engine) -> bool:
         return True
 
 
+# Accounts sharing the resident: its loader plus every account whose matching load reused it.
+_resident_sharers: dict[str, set[str]] = {}
+_sharers_lock = threading.Lock()
+
+
+def publish_resident(modality: str, *references: str) -> None:
+    """A new resident: recorded as before, with its loader as the only sharer."""
+    if not policy.installation_has_managed_accounts():
+        return
+    note_resident_account(modality, *references)
+    with _sharers_lock:
+        _resident_sharers[modality] = {current_account_id()}
+
+
+def join_resident(modality: str) -> None:
+    """A matching load reused the resident: the caller shares it from now on."""
+    if not policy.installation_has_managed_accounts():
+        return
+    with _sharers_lock:
+        _resident_sharers.setdefault(modality, set()).add(current_account_id())
+
+
+def release_shared_resident(modality: str) -> bool:
+    """Drop the caller's share while others keep the model; False leaves the share for a real unload."""
+    if not policy.installation_has_managed_accounts():
+        return False
+    account_id = current_account_id()
+    with _sharers_lock:
+        sharers = _resident_sharers.get(modality)
+        if not sharers or account_id not in sharers or len(sharers) == 1:
+            return False
+        sharers.discard(account_id)
+        return True
+
+
+def clear_resident(modality: str) -> None:
+    """The backend was torn down; the next load publishes afresh."""
+    with _sharers_lock:
+        _resident_sharers.pop(modality, None)
+
+
+def retire_resident_shares(account_id: str) -> None:
+    """A deactivated or deleted account shares nothing; other sharers keep the model."""
+    with _sharers_lock:
+        for sharers in _resident_sharers.values():
+            sharers.discard(account_id)
+
+
+def resident_shared_with(modality: str, account_id: str) -> bool:
+    with _sharers_lock:
+        return account_id in _resident_sharers.get(modality, ())
+
+
 _resident_components: dict[str, tuple[str, frozenset[str]]] = {}
 
 
@@ -288,6 +341,8 @@ def restore_resident_metadata(modality: str) -> bool:
 def resident_hidden(modality: str | None = None, reference: str | None = None) -> bool:
     if not managed_account():
         return False
+    if modality is not None and resident_shared_with(modality, current_account_id()):
+        return False
     from core.inference import gpu_arbiter
 
     owner = gpu_arbiter.current_owner()
@@ -305,6 +360,11 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
 
 def hidden_resident_response():
     return JSONResponse(content = {"loaded": True, "yours": False})
+
+
+def hidden_chat_status_response():
+    """The chat status shape (``loaded`` is a list there), with nothing of the resident."""
+    return JSONResponse(content = {"loaded": [], "loading": [], "yours": False})
 
 
 def gpu_busy_error(path: str | None = None) -> HTTPException:

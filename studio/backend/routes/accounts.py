@@ -19,6 +19,7 @@ from models.auth import (
     AccountSetupResponse,
     CreateAccountRequest,
 )
+from hub.services.models import account_access
 from state import active_generations
 from utils.account_context import AccountContext, run_as
 from utils.paths import storage_roots
@@ -45,6 +46,7 @@ def retire_account_roots(account: AccountContext):
     if account.is_owner or account.account_id == "owner":
         raise ValueError("The installation owner cannot be retired")
     active_generations.cancel_all(account.account_id)
+    account_access.retire_resident_shares(account.account_id)
     from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
     from core.training.account_jobs import retire_account_jobs
 
@@ -134,6 +136,7 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             restore_account_jobs(account_id)
         else:
             active_generations.cancel_all(account_id)
+            account_access.retire_resident_shares(account_id)
         return result
 
 

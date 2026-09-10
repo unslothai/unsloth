@@ -63,6 +63,9 @@ def _evict_chat() -> None:
     # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
     # warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
+    from hub.services.models.account_access import clear_resident
+
+    clear_resident(CHAT)
 
 
 def _evict_diffusion() -> None:

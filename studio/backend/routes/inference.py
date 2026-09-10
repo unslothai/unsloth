@@ -14152,9 +14152,6 @@ async def _run_tracked_load_model_impl(
             on_reload_confirmed = on_reload_confirmed,
             load_cancel_event = attempt.cancel_event,
         )
-        account_access.note_resident_account(
-            "chat", request.model_path, getattr(response, "model", request.model_path)
-        )
         return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
@@ -14485,6 +14482,7 @@ async def _load_model_impl(
             logger.info("Model already loaded (GGUF): %s, skipping reload", model_log_label)
             # A no-op Unsloth load of a preview-owned checkpoint still claims it.
             _set_preview_resident(None)
+            account_access.join_resident("chat")
             return _gguf_load_response(
                 llama_backend,
                 "already_loaded",
@@ -14549,6 +14547,7 @@ async def _load_model_impl(
                 # Owns no GPU, so the arbiter would cancel a generation for nothing.
                 if not _resident_audio_holds_no_gpu(backend):
                     await asyncio.to_thread(acquire_for_request, CHAT)
+                account_access.join_resident("chat")
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
@@ -15120,6 +15119,11 @@ async def _load_model_impl(
             llama_backend._is_local_model = bool(native_grant_backed or config.is_local)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
+            account_access.publish_resident(
+                "chat",
+                request.model_path,
+                model_log_label if native_grant_backed else public_model_identifier,
+            )
 
             return _gguf_load_response(
                 llama_backend,
@@ -15299,6 +15303,11 @@ async def _load_model_impl(
         from core.inference.llama_keepwarm import note_model_loaded
 
         note_model_loaded()
+        account_access.publish_resident(
+            "chat",
+            request.model_path,
+            model_log_label if native_grant_backed else config.identifier,
+        )
 
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
@@ -16732,6 +16741,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
+    if (
+        request.cancel_load_request_id is None
+        and account_access.managed_account()
+        and account_access.release_shared_resident("chat")
+    ):
+        # Other accounts still share the model: only this account's share ends, and the
+        # backend, its keep-warm state and the GPU claim stay as they are.
+        return UnloadResponse(status = "unloaded", model = request.model_path)
     account_access.require_resident_control(
         "chat", _loaded_slot_ident() if account_access.managed_account() else None
     )
@@ -16879,6 +16896,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # loop would block this route's own padding.
                 await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
+                account_access.clear_resident("chat")
                 await asyncio.to_thread(release_chat_gpu_claim)
                 api_monitor.record_lifecycle(
                     event = "unload",
@@ -16905,6 +16923,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 backend.unload_model, _resident_standard_model_name(backend, request.model_path)
             )
             note_model_unloaded()
+            account_access.clear_resident("chat")
             await asyncio.to_thread(release_chat_gpu_claim)
             api_monitor.record_lifecycle(
                 event = "unload",
@@ -17371,13 +17390,13 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
     Reports whichever backend (Unsloth or llama-server) is active.
     """
     if account_access.resident_hidden("chat"):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_chat_status_response()
     try:
         llama_backend = get_llama_cpp_backend()
         if account_access.managed_account() and account_access.resident_hidden(
             "chat", _loaded_slot_ident()
         ):
-            return account_access.hidden_resident_response()
+            return account_access.hidden_chat_status_response()
 
         # The cold subprocess and GitHub probes must not block the event loop or
         # consume the default executor used by local token streaming.

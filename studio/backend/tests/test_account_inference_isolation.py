@@ -85,7 +85,10 @@ def test_resident_identity_and_progress_are_hidden_from_other_accounts(
         for path in paths:
             response = client.get(f"/api/inference/{path}")
             assert response.status_code == 200
-            assert response.json() == {"loaded": True, "yours": False}
+            body = response.json()
+            assert body.get("yours") is False, body
+            # The chat status shape lists resident models, so its hidden answer lists none.
+            assert body["loaded"] == ([] if path == "status" and modality == "chat" else True)
     assert not run_as(ALICE, access.resident_hidden, modality)
     assert not run_as(OWNER, access.resident_hidden, modality)
 
