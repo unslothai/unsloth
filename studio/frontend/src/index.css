@@ -2094,31 +2094,14 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* ~375px and under. Each control is a circle around a much smaller glyph,
-	   so built-in air, not the gap, sets the spacing. Overlap the circles
-	   instead of shrinking them; hit targets stay full size. */
+	   so the built-in air, not the gap, sets the spacing. Shrink the circles
+	   by 4px; overlapping them instead would make adjacent hit areas share
+	   pixels, and the later button would win the taps in between. */
 	@container composer-shell (max-width: 22rem) {
 		.unsloth-composer-line {
 			--composer-tight-gap: 0rem;
 		}
 
-		/* > button skips the hidden file inputs the + menu keeps in this row.
-		   The running state's wrapper div is a flex item here too. */
-		.unsloth-composer-left > button,
-		.unsloth-composer-line .aui-composer-action-wrapper > button,
-		.unsloth-composer-line
-			.aui-composer-action-wrapper
-			> .aui-composer-run-controls {
-			margin-inline: -0.125rem;
-		}
-
-		/* Outer edges give the 2px back, keeping the row's inset. */
-		.unsloth-composer-left {
-			margin-left: 0;
-		}
-
-		.unsloth-composer-line .aui-composer-action-wrapper {
-			margin-right: 0;
-		}
 
 		/* A 32px corner is a big fraction of a box this small. The drop
 		   overlay tracks it, or its edge shows against the surface. */
@@ -2127,17 +2110,18 @@ html[data-chat-font] .aui-root {
 			border-radius: 1.5rem;
 		}
 
-		/* Plus and send were the row's only 36px circles. Match the rest. */
+		/* 32px to 28px for every control, and 36px to 28px for plus and send,
+		   which were the row's only oversized ends. Each selector has to
+		   outrank the compact pill rules, hence the longer shapes. */
 		.unsloth-composer-left > .unsloth-composer-plus,
+		.unsloth-composer-line .unsloth-composer-left > button.composer-pill-btn,
+		.unsloth-composer-line .aui-composer-action-wrapper > button,
 		.unsloth-composer-line .aui-composer-send,
 		.unsloth-composer-line .aui-composer-cancel {
-			width: 2rem;
-			height: 2rem;
-		}
-
-		/* Plus carries less air than the pills, so skip its inward pull. */
-		.unsloth-composer-left > .unsloth-composer-plus {
-			margin-right: 0;
+			width: 1.75rem;
+			height: 1.75rem;
+			/* The thinking pill reserves a text line; that would win over height. */
+			min-height: 1.75rem;
 		}
 
 		/* Send commits, so keep it clear of the toggle strip. Needs the same
@@ -2220,8 +2204,18 @@ html[data-chat-font] .aui-root {
 
 	/* Narrow panes shrink the greeting along with the composer under it, or a
 	   30px title wraps over two lines above a tightened box. Sized off the
-	   text tokens so the UI font scale still applies. */
+	   text tokens so the UI font scale still applies.
+
+	   The gutters here are on the pane's width, not the window's: an artifact
+	   split can leave a 42% thread pane inside a wide window, and a viewport
+	   breakpoint would keep the full 20px there. */
 	@container (max-width: 31.5rem) {
+		.unsloth-composer-dock-inner,
+		.aui-thread-welcome-message {
+			padding-left: 0.75rem;
+			padding-right: 0.75rem;
+		}
+
 		.unsloth-welcome-title {
 			font-size: var(--text-2xl);
 		}

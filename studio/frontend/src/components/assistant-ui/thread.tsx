@@ -2135,8 +2135,9 @@ const ThreadComposerDock: FC<{
             : "top-[10px]",
         )}
       />
-      {/* Narrow windows spend the gutter on the composer instead. */}
-      <div className="relative px-3 pb-2 sm:px-5">
+      {/* Narrow panes spend the gutter on the composer instead; index.css
+          trims it off the pane's width, not the window's. */}
+      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}
@@ -2246,8 +2247,8 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
-        {/* Matches the docked composer's gutter. */}
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-3 sm:px-4">
+        {/* Matches the docked composer's gutter; index.css trims both. */}
+        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[15px]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
