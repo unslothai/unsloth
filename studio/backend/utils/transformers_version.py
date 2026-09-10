@@ -2392,7 +2392,9 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
     if _runtime_repair_is_offline():
         # pip has no offline mode: with the network declared absent, uv's answer from
         # the cache is the only one there is, and without uv there is none.
-        logger.warning("%s not installed: the session is offline and pip would use the network", pkg)
+        logger.warning(
+            "%s not installed: the session is offline and pip would use the network", pkg
+        )
         return False
     logger.warning("installing %s with pip", pkg)
     result = subprocess.run(
@@ -2701,6 +2703,15 @@ def _optional_top_up_lock(venv_dir: str):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.25)
+
+
+        if sys.platform == "win32":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         if handle is not None:
             handle.close()
