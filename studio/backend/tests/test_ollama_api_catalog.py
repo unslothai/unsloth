@@ -5,6 +5,7 @@ import os
 import struct
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -213,6 +214,21 @@ def test_http_catalog_id_autoloads_without_prior_ui_load(
             },
         )
         assert retagged.status_code == 200, retagged.text
+        monkeypatch.setattr(
+            openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+        )
+        data["layers"][0]["digest"] = "sha256:" + "e" * 64
+        (store / "blobs" / ("sha256-" + "e" * 64)).write_bytes(b"GGUF-not-loaded")
+        manifest.write_text(json.dumps(data))
+        refused = client.post(
+            "/v1/chat/completions",
+            json = {
+                "model": model["id"],
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "Say hello again."}],
+            },
+        )
+        assert refused.status_code == 404, refused.text
     assert len(seen) == 2
     assert [item[2] for item in seen] == [b"GGUF-not-really", b"GGUF-updated"]
     assert seen[0][0].startswith("ollama-manifest:")
@@ -237,6 +253,52 @@ def test_ollama_vision_preflight_reads_projector_without_materializing(store, mo
     assert inf._target_is_vision(row.id) is True
     assert inf._resolve_target_gguf_file(row.id, None) == row.path
     assert not (store / ".studio_links").exists()
+
+
+def test_manual_ollama_load_advertises_one_loaded_catalog_id(store, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+
+    async def launch(_backend, intent, _cancel_event):
+        backend._process = SimpleNamespace(poll = lambda: None)
+        backend._healthy = True
+        backend._model_identifier = intent.model_identifier
+        backend._gguf_path = intent.gguf_path
+        backend._gguf_load_identity = backend._gguf_load_source_identity(intent.gguf_path)
+        backend._arch_gate_forced_cpu = True
+        return True
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(
+        inf, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None, models = {})
+    )
+    monkeypatch.setattr(inf, "_run_gguf_load_attempt", launch)
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *args, **kwargs: 4)
+    monkeypatch.setattr(backend, "generate_chat_completion", lambda **kwargs: iter(["Hello."]))
+    app = FastAPI()
+    app.include_router(inf.router, prefix = "/v1")
+    app.dependency_overrides[inf.get_current_subject] = lambda: "test"
+    row = models_route._scan_ollama_dir(store)[0]
+    with TestClient(app) as client:
+        loaded = client.post(
+            "/v1/load",
+            json = {"model_path": row.id, "gpu_layers": 0, "max_seq_length": 512},
+        )
+        assert loaded.status_code == 200, loaded.text
+        catalog = client.get("/v1/models").json()["data"]
+        assert len(catalog) == 1
+        assert catalog[0]["id"] == row.model_id
+        assert catalog[0]["loaded"] is True
+        response = client.post(
+            "/v1/chat/completions",
+            json = {"model": row.model_id, "messages": [{"role": "user", "content": "Hi."}]},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["model"] == row.model_id
 
 
 def test_removed_ollama_manifest_defers_vision_failure_to_load(store):
