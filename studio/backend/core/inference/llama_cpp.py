@@ -31669,6 +31669,8 @@ class LlamaCppBackend:
                 min_p = min_p,
                 max_tokens = resume_max_tokens,
                 admission_output_allowance = admission_output_allowance,
+                # Forwarded so a resumed attempt that refits under truncate_oldest prices the prompt it sends
+                on_prompt_fitted = on_prompt_fitted,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 frequency_penalty = frequency_penalty,
@@ -31745,6 +31747,8 @@ class LlamaCppBackend:
                     # The route still holds the optimistically priced lease and the participant,
                     # so the retry keeps the clamp, signal, policy and token reports.
                     admission_output_allowance = admission_output_allowance,
+                    # Forwarded so a resumed attempt that refits under truncate_oldest prices the prompt it sends
+                    on_prompt_fitted = on_prompt_fitted,
                     **({} if preempt_event is None else {"preempt_event": preempt_event}),
                     preempt_policy = preempt_policy,
                     on_tokens = on_tokens,
