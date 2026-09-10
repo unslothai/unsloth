@@ -2041,6 +2041,35 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # The same rule between the other curated families, mirroring setup.ps1's "Torch-index
+        # pin changed" branch: an explicit cu*/rocm*/cpu pin over a venv whose torch carries
+        # ANOTHER family's label is a request only the dependency pass acts on
+        # (_ensure_cuda_torch, _ensure_rocm_torch and _ensure_cpu_torch reinstall from the
+        # pin), and the version compare above would otherwise call the install up to date and
+        # keep the old wheel. Labelled wheels only: an untagged torch (PyPI's, macOS) names no
+        # family to disagree with, and escaping on it would force a pass on every update.
+        # Custom leaves (a private mirror) are left alone, as everywhere else.
+        _setup_pin_have_family=""
+        case "${_setup_pin_ver:-}" in
+            *+cu[0-9]*) _setup_pin_have_family=cu ;;
+            *+rocm*) _setup_pin_have_family=rocm ;;
+            *+cpu) _setup_pin_have_family=cpu ;;
+            *+xpu) _setup_pin_have_family=xpu ;;
+        esac
+        _setup_pin_want_family=""
+        if [ "$_setup_pin_known_nonxpu" = true ]; then
+            case "$_setup_pin_leaf" in
+                cu[0-9]*) _setup_pin_want_family=cu ;;
+                rocm[0-9]* | gfx[0-9]*) _setup_pin_want_family=rocm ;;
+                cpu) _setup_pin_want_family=cpu ;;
+            esac
+        fi
+        if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "$_setup_pin_want_family" ] \
+            && [ -n "$_setup_pin_have_family" ] && [ "$_setup_pin_have_family" != xpu ] \
+            && [ "$_setup_pin_have_family" != "$_setup_pin_want_family" ]; then
+            substep "$_setup_pin_leaf pinned over a +$_setup_pin_have_family torch wheel -- forcing dependency pass to reinstall torch from the pin..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then

@@ -1073,8 +1073,16 @@ def _scan_payload_files(
                 record = dist.read_text("RECORD")
             except Exception:
                 continue
-            # RECORD is optional per the spec, and unreadable says nothing.
             if not record:
+                # Absent from a .dist-info is not "optional": uv and pip write RECORD
+                # last, so a managed wheel install without one was interrupted, and
+                # its payload can be anything. Only egg-info never had a RECORD.
+                # Unreadable (the read above raised) still says nothing.
+                dist_path = str(getattr(dist, "_path", "") or "")
+                if dist_path.endswith(".dist-info"):
+                    found.append(f"{name}: RECORD is missing")
+                    if len(found) >= limit:
+                        return found
                 continue
             try:
                 anchor = _venv_anchor(Path(dist.locate_file("")))
