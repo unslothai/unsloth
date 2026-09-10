@@ -210,7 +210,13 @@ test("the recompute note is persisted with the answer and read from the answer o
   assert.match(PROVIDER, /function VisibleAnswerRecomputeSync\(/);
   assert.match(
     PROVIDER,
-    /useAuiState\(\(\{ thread \}\) => \{[\s\S]{0,400}\?\.preemptRecomputed === true/,
+    /useAuiState\(\(\{ thread \}\) => \{[\s\S]{0,600}\?\.preemptRecomputed === true/,
+  );
+  // Scoped to the model that wrote the answer: a note from model A must not qualify model B,
+  // loaded into the same thread before it has answered.
+  assert.match(
+    PROVIDER,
+    /answer\.recomputed && \(answer\.modelId === null \|\| answer\.modelId === checkpoint\)/,
   );
   assert.match(PROVIDER, /setPreemptRecompute\(activeThreadId, recomputed\)/);
   assert.match(PROVIDER, /<VisibleAnswerRecomputeSync\s+enabled=\{modelType === "base" && !pairId && !backgrounded\}/);

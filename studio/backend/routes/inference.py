@@ -4475,7 +4475,16 @@ async def _aiter_llama_stream_items(
         if last_item_at is None and _server_park_sse(item) is not None:
             # A park notice before any token is not the first token: the request was parked
             # during its prefill, and the prefill it resumes into still needs the first-token
-            # window, not the stall clock. Fed to the excuse and relayed, nothing else.
+            # window, not the stall clock. The window is renewed by each notice, up to the park
+            # cap, since a keepalive every two seconds means the wrapper below never times out
+            # and never gets to apply its own grace. Fed to the excuse and relayed.
+            now = time.monotonic()
+            if park_since is None:
+                park_since = now
+            if now - park_since < _RAW_PARK_STALL_CAP_S:
+                first_token_deadline = max(
+                    first_token_deadline, now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                )
             if park_above is not None:
                 park_above.feed_line(item)
             yield item

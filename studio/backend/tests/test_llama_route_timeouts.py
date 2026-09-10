@@ -267,14 +267,17 @@ def test_park_notices_before_the_first_token_keep_the_first_token_window():
             cancel_event = threading.Event(),
             request = _Request(),
             response = response,
-            first_token_deadline = time.monotonic() + 100,
+            first_token_deadline = time.monotonic() + 5,
             post_first_item_read_timeout_s = lambda: 2.0,
         ):
             seen.append((item, response.request.extensions["timeout"].get("read")))
 
         assert [item for item, _ in seen] == [": preempted", ": resumed", "data: {}", "data: {}"]
-        # The notices leave the first-token window armed; the first token arms the stall clock.
-        assert seen[0][1] > 50 and seen[1][1] > 50
+        # The first read waits out what was left of the window; the notice renews it, since
+        # a park longer than the window would otherwise end at the next read; the first token
+        # arms the stall clock.
+        assert 3 < seen[0][1] <= 5
+        assert seen[1][1] > inf_mod._DEFAULT_FIRST_TOKEN_TIMEOUT_S - 5
         assert all(abs(read - 2.0) < 0.05 for _, read in seen[2:])
 
     asyncio.run(_run())

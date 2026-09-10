@@ -2989,18 +2989,25 @@ function ThreadScopedSettingsSync({
 function VisibleAnswerRecomputeSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
-  const recomputed = useAuiState(({ thread }) => {
+  // The answer's model rides in its usage record. A note from model A must not qualify the
+  // chip for model B, loaded into the same thread before B has answered.
+  const answer = useAuiState(({ thread }) => {
     const messages = thread.messages;
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
       if (message.role !== "assistant") continue;
-      return (
-        (message.metadata?.custom as Record<string, unknown> | undefined)
-          ?.preemptRecomputed === true
-      );
+      const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+      const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
+      return {
+        recomputed: custom?.preemptRecomputed === true,
+        modelId: typeof usage?.modelId === "string" ? usage.modelId : null,
+      };
     }
-    return false;
+    return { recomputed: false, modelId: null };
   });
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const recomputed =
+    answer.recomputed && (answer.modelId === null || answer.modelId === checkpoint);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
 
   useEffect(() => {
