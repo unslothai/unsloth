@@ -3397,7 +3397,8 @@ class TestLoadabilityIsComputedNotAwaited:
         monkeypatch.setattr(m.sys, "platform", "win32")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_build_windows_path_dirs",
+            m.LlamaCppBackend,
+            "_build_windows_path_dirs",
             staticmethod(lambda *a, **k: []),
         )
         (tmp_path / "ggml-cuda.dll").write_text("")
@@ -3416,14 +3417,14 @@ class TestLoadabilityIsComputedNotAwaited:
         monkeypatch.setattr(m.sys, "platform", "win32")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_build_windows_path_dirs",
+            m.LlamaCppBackend,
+            "_build_windows_path_dirs",
             staticmethod(lambda *a, **k: [str(libs)]),
         )
         assert not m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {"PATH": ""})
 
     def test_it_is_a_noop_off_windows(self, monkeypatch):
         import core.inference.llama_cpp as m
-
         monkeypatch.setattr(m.sys, "platform", "linux")
         assert not m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {})
 
@@ -3437,7 +3438,8 @@ class TestAnExternalVulkanPluginStillGetsProbed:
         import core.inference.llama_cpp as m
 
         beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir(); external.mkdir()
+        beside.mkdir()
+        external.mkdir()
         (external / "ggml-vulkan.dll").write_text("")
         monkeypatch.setattr(m.sys, "platform", "win32")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: beside)
@@ -3452,6 +3454,6 @@ class TestAnExternalVulkanPluginStillGetsProbed:
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # the probe is skipped only when NEITHER signal says Vulkan
-        assert flat.count(
-            "not(is_vulkan_backendorself._vulkan_plugin_in_roots(binary,_mem_env))"
-        ) == 2
+        assert (
+            flat.count("not(is_vulkan_backendorself._vulkan_plugin_in_roots(binary,_mem_env))") == 2
+        )

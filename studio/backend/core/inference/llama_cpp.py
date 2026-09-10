@@ -12699,7 +12699,9 @@ class LlamaCppBackend:
 
     @classmethod
     def _cuda_runtime_missing_for(
-        cls, binary: Optional[str], env: Optional[Mapping[str, str]] = None
+        cls,
+        binary: Optional[str],
+        env: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """Whether this install's CUDA plugin has no runtime to load.
 
@@ -24205,10 +24207,7 @@ class LlamaCppBackend:
                     # `_is_vulkan_backend` misses an external GGML_BACKEND_PATH plugin,
                     # so the probe is demanded whenever one could be the target.
                     and (
-                        not (
-                            is_vulkan_backend
-                            or self._vulkan_plugin_in_roots(binary, _mem_env)
-                        )
+                        not (is_vulkan_backend or self._vulkan_plugin_in_roots(binary, _mem_env))
                         or self._vulkan_offload_is_discrete(binary, gpu_indices)
                     )
                 )
@@ -24346,8 +24345,7 @@ class LlamaCppBackend:
                         and self._offload_target_is_classifiable(binary, _mem_env)
                         and (
                             not (
-                                is_vulkan_backend
-                                or self._vulkan_plugin_in_roots(binary, _mem_env)
+                                is_vulkan_backend or self._vulkan_plugin_in_roots(binary, _mem_env)
                             )
                             or self._vulkan_offload_is_discrete(binary, devices)
                         )
