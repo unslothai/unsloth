@@ -69,9 +69,7 @@ class TestTheCasesThatMustNotChange:
         """
         for cap in (BUDGET, BUDGET + 1):
             for active in (False, True):
-                assert _charged(cap, 3000, active = active) == _charged(
-                    None, 3000, active = active
-                )
+                assert _charged(cap, 3000, active = active) == _charged(None, 3000, active = active)
 
     def test_the_charge_is_never_zero(self):
         """A zero charge reads as "this request occupies nothing", which would let an unbounded

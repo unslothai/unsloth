@@ -186,7 +186,12 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
     and at 2048 only one did. Clamped to the share, ``capacity`` of them always fit.
     """
 
-    def _cost(self, budget, capacity, active = False):
+    def _cost(
+        self,
+        budget,
+        capacity,
+        active = False,
+    ):
         return _openai_llama_admission_tokens(
             _chat(max_tokens = budget),
             budget = budget,
