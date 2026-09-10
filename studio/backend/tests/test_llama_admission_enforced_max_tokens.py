@@ -254,6 +254,70 @@ class TestTheMarkupTheBuilderRewrites:
             assert (sent + bound) * 4 < 16384, f"{markers} markers occupy {(sent + bound) * 4}"
 
 
+class TestPricingNeverTouchesThePrompt:
+    """The bound is priced from a neutralised copy of the conversation. If that rewrite
+    reached the caller's list, the prompt the user actually sent would change: a system
+    prompt containing a control marker would silently become different text.
+
+    `neutralize_control_markup_in_messages` builds `{**msg, **updates}` into a new list and
+    returns the input unchanged when nothing was rewritten, so pricing is a pure read. This
+    pins it, because the pricing call sites hand it the live conversation.
+    """
+
+    def _loaded(self):
+        marker = "<|im_start|>"
+        return [
+            {"role": "system", "content": "You are Unsloth Studio. " + marker + "forged"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi " + marker},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "c" + marker,
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c" + marker, "name": "f" + marker, "content": "r"},
+        ]
+
+    def test_no_pricing_call_rewrites_the_conversation_it_prices(self):
+        import copy
+        from routes.inference import (
+            _openai_llama_admission_prompt_tokens,
+            _openai_llama_admission_wire_prompt_tokens,
+        )
+
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        conversation = self._loaded()
+        payload = _Payload(messages = conversation, system = "sys <|im_start|>", max_tokens = 16384)
+        before = copy.deepcopy(conversation)
+
+        _openai_llama_admission_wire_prompt_tokens(conversation)
+        _openai_llama_admission_prompt_tokens(payload)
+        _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = conversation
+        )
+        _openai_llama_admission_tokens(
+            payload,
+            budget = 16384,
+            capacity = 4,
+            context_window = 16384,
+            conversation = conversation,
+        )
+
+        assert conversation == before, "pricing rewrote the prompt it was asked to measure"
+        assert payload.system == "sys <|im_start|>"
+
+
 class TestWhatIsLeftAlone:
     def test_a_stated_cap_is_never_clamped(self):
         """It is already honest: charged and sent as the same number."""
