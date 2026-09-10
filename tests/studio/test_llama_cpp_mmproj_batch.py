@@ -62,27 +62,41 @@ class TestChildEffectiveMmproj:
     """Whose projector llama-server ends up holding."""
 
     def test_emitted_wins_over_nothing(self):
-        assert _child_effective_mmproj("/m/own.gguf", {}) == "/m/own.gguf"
+        assert _child_effective_mmproj("/m/own.gguf", None, {}) == "/m/own.gguf"
 
     def test_url_outranks_the_emitted_flag(self):
         # The URL download overwrites mmproj.path after argv is parsed, so a
         # configured audio-only projector does not decide what the child opens.
         env = {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/vision.gguf"}
-        assert _child_effective_mmproj("/m/audio.gguf", env) == env["LLAMA_ARG_MMPROJ_URL"]
+        assert _child_effective_mmproj("/m/audio.gguf", None, env) == env["LLAMA_ARG_MMPROJ_URL"]
 
     def test_inherited_path_only_fills_a_gap(self, tmp_path):
         real = tmp_path / "mmproj.gguf"
         real.write_bytes(b"")
         env = {"LLAMA_ARG_MMPROJ": str(real)}
-        assert _child_effective_mmproj("/m/own.gguf", env) == "/m/own.gguf"
-        assert _child_effective_mmproj(None, env) == str(real)
+        assert _child_effective_mmproj("/m/own.gguf", None, env) == "/m/own.gguf"
+        assert _child_effective_mmproj(None, None, env) == str(real)
 
     def test_inherited_path_must_exist(self, tmp_path):
         env = {"LLAMA_ARG_MMPROJ": str(tmp_path / "gone.gguf")}
-        assert _child_effective_mmproj(None, env) is None
+        assert _child_effective_mmproj(None, None, env) is None
+
+    def test_pass_through_flag_beats_the_emitted_one(self, tmp_path):
+        # Extras are appended after the managed flags, so they last-win at the child.
+        override = tmp_path / "custom.gguf"
+        override.write_bytes(b"")
+        got = _child_effective_mmproj("/m/own.gguf", ["--mmproj", str(override)], {})
+        assert got == str(override)
+
+    def test_url_beats_the_pass_through_flag(self, tmp_path):
+        override = tmp_path / "custom.gguf"
+        override.write_bytes(b"")
+        env = {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/vision.gguf"}
+        got = _child_effective_mmproj(None, ["--mmproj", str(override)], env)
+        assert got == env["LLAMA_ARG_MMPROJ_URL"]
 
     def test_nothing_anywhere(self):
-        assert _child_effective_mmproj(None, {}) is None
+        assert _child_effective_mmproj(None, None, {}) is None
 
 
 class TestMmprojOpensImages:
@@ -139,6 +153,18 @@ class TestRemoteOpensVisionMmproj:
     def test_no_mmproj_still_counts_an_inherited_projector(self, monkeypatch):
         # --no-mmproj empties the command line; the child still opens the env's one.
         monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+        assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is True
+
+    def test_an_inherited_audio_projector_is_classified(self, monkeypatch, tmp_path):
+        # It is on this disk, so ask it rather than reserving for images it cannot make.
+        import utils.models.gguf_metadata as meta
+
+        real = tmp_path / "mmproj.gguf"
+        real.write_bytes(b"")
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(real))
+        monkeypatch.setattr(meta, "mmproj_accepts_image", lambda path: False)
+        assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is False
+        monkeypatch.setattr(meta, "mmproj_accepts_image", lambda path: True)
         assert _remote_opens_vision_mmproj(self._config(), ["--no-mmproj"], False) is True
 
     @pytest.fixture(autouse = True)

@@ -9961,24 +9961,16 @@ def _launch_vision_mmproj(
     inherited ``LLAMA_ARG_MMPROJ(_URL)`` counts even under ``--no-mmproj``, which
     empties the command line without clearing ``mmproj.path``.
     """
-    from core.inference.llama_cpp import (
-        _child_effective_mmproj,
-        _extra_args_device,
-        extra_args_disable_mmproj,
-    )
+    from core.inference.llama_cpp import _child_effective_mmproj, extra_args_disable_mmproj
 
     if not getattr(config, "is_vision", False) or disable_vision:
         return None
-    emitted = None
-    if not extra_args_disable_mmproj(llama_extra_args):
-        # A --mmproj in the extras is appended after Studio's and last-wins at the child.
-        override = _extra_args_device(llama_extra_args, {"--mmproj", "-mm"})
-        if override and Path(override).is_file():
-            emitted = str(override)
-        else:
-            own = getattr(config, "gguf_mmproj_file", None)
-            emitted = str(own) if own else None
-    return _child_effective_mmproj(emitted)
+    own = (
+        None
+        if extra_args_disable_mmproj(llama_extra_args)
+        else (getattr(config, "gguf_mmproj_file", None))
+    )
+    return _child_effective_mmproj(str(own) if own else None, llama_extra_args)
 
 
 def _remote_opens_vision_mmproj(
@@ -9993,15 +9985,20 @@ def _remote_opens_vision_mmproj(
     Hub listing: ``_gguf_resident_file_gb`` subtracts this term and must pair with it
     without spending a listing per settings change.
     """
-    from core.inference.llama_cpp import _child_effective_mmproj, extra_args_disable_mmproj
+    from core.inference.llama_cpp import (
+        _child_effective_mmproj,
+        _mmproj_opens_images,
+        extra_args_disable_mmproj,
+    )
 
     if not getattr(config, "is_vision", False) or disable_vision:
         return False
     # --no-mmproj suppresses only the repo's own projector; an inherited one still
-    # opens, exactly as it does once the files are local.
+    # opens, exactly as it does once the files are local, and a local one can be
+    # classified from disk instead of assumed.
     if not extra_args_disable_mmproj(llama_extra_args):
         return True
-    return _child_effective_mmproj(None) is not None
+    return _mmproj_opens_images(_child_effective_mmproj(None, llama_extra_args))
 
 
 def _gguf_runtime_bytes(

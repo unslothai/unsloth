@@ -5797,19 +5797,26 @@ def _extra_args_n_ubatch(
 
 
 def _child_effective_mmproj(
-    emitted_mmproj: Optional[str], env: Optional[Mapping[str, str]] = None
+    emitted_mmproj: Optional[str],
+    extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
 ) -> Optional[str]:
     """The projector llama-server ends up with, given the one Unsloth would emit.
 
-    ``LLAMA_ARG_MMPROJ_URL`` wins outright: its download overwrites ``mmproj.path``
-    after argv is parsed, so it outranks even an emitted ``--mmproj``. A plain
-    ``LLAMA_ARG_MMPROJ`` only fills a gap, and fills it even under ``--no-mmproj``,
-    which empties the command line without clearing ``mmproj.path``.
+    Four sources, in the order the child resolves them. ``LLAMA_ARG_MMPROJ_URL`` wins
+    outright: its download overwrites ``mmproj.path`` after argv is parsed. Then a
+    pass-through ``--mmproj``, appended after the managed flags and so last-wins over
+    them. Then Unsloth's own. A plain ``LLAMA_ARG_MMPROJ`` only fills a gap, and fills
+    it even under ``--no-mmproj``, which empties the command line without clearing
+    ``mmproj.path``.
     """
     source = os.environ if env is None else env
     url = (source.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
     if url:
         return url
+    override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+    if override and os.path.isfile(str(override)):
+        return str(override)
     if emitted_mmproj:
         return emitted_mmproj
     inherited = (source.get("LLAMA_ARG_MMPROJ") or "").strip()
@@ -20001,7 +20008,8 @@ class LlamaCppBackend:
                     else self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
-                    )
+                    ),
+                    extra_args,
                 )
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
                 _mmproj_opens_images(_fit_vision_mmproj),
