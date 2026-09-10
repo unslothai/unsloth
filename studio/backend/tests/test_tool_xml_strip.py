@@ -234,10 +234,47 @@ def test_strips_orphan_function_no_close():
     assert "I'll call python:" in cleaned
 
 
-def test_strips_orphan_only_opening_tag():
-    cleaned = _TOOL_XML_RE.sub("", "Search starting.\n<tool_call>")
-    assert "<tool_call>" not in cleaned
-    assert "Search starting." in cleaned
+@pytest.mark.parametrize(
+    "text, removed, kept",
+    [
+        pytest.param(
+            "Search starting.\n<tool_call>",
+            "<tool_call>",
+            "Search starting.",
+            id = "strips_orphan_only_opening_tag",
+        ),
+        # Outer </function></tool_call> truncated by EOS, inner <parameter=...> DRAINED.
+        pytest.param(
+            "and the text is not readable.\n</parameter>\n\n",
+            "</parameter>",
+            "and the text is not readable.",
+            id = "strips_tail_only_parameter_orphan",
+        ),
+        pytest.param(
+            "Global Economic Prospects\n</parameter>\n",
+            "</parameter>",
+            "Global Economic Prospects",
+            id = "strips_tail_only_parameter_orphan_single_newline",
+        ),
+        pytest.param(
+            "Final answer.</parameter>",
+            "</parameter>",
+            "Final answer.",
+            id = "strips_tail_only_parameter_orphan_no_trailing_ws",
+        ),
+        # A complete Mistral call strips only its balanced JSON, leaving following prose intact.
+        pytest.param(
+            '[TOOL_CALLS]web_search{"q":"x"} and then prose',
+            "[TOOL_CALLS]",
+            "and then prose",
+            id = "strips_complete_bracket_tag_keeps_trailing_prose",
+        ),
+    ],
+)
+def test_tool_xml_strip_drops_markup_and_keeps_prose(text, removed, kept):
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert removed not in cleaned
+    assert kept in cleaned
 
 
 def test_strips_multiple_orphans():
@@ -273,49 +310,34 @@ def test_strips_gemma_native_orphan_closing_tag():
 # ── Tail-only </parameter> (PR #5735 follow-up) ───────────────────
 
 
-def test_strips_tail_only_parameter_orphan():
-    # Outer </function></tool_call> truncated by EOS, inner <parameter=...> DRAINED.
-    cleaned = _TOOL_XML_RE.sub("", "and the text is not readable.\n</parameter>\n\n")
-    assert "</parameter>" not in cleaned
-    assert "and the text is not readable." in cleaned
-
-
-def test_strips_tail_only_parameter_orphan_single_newline():
-    cleaned = _TOOL_XML_RE.sub("", "Global Economic Prospects\n</parameter>\n")
-    assert "</parameter>" not in cleaned
-    assert "Global Economic Prospects" in cleaned
-
-
-def test_strips_tail_only_parameter_orphan_no_trailing_ws():
-    cleaned = _TOOL_XML_RE.sub("", "Final answer.</parameter>")
-    assert "</parameter>" not in cleaned
-    assert "Final answer." in cleaned
-
-
-def test_strips_complete_bracket_tag_keeps_trailing_prose():
-    # A complete Mistral call strips only its balanced JSON, leaving following prose intact.
-    cleaned = _TOOL_XML_RE.sub("", '[TOOL_CALLS]web_search{"q":"x"} and then prose')
-    assert "[TOOL_CALLS]" not in cleaned
-    assert "and then prose" in cleaned
-
-
-def test_strips_unclosed_bracket_tail():
-    # Close brace lost to EOS: the truncated tail strips to the end instead of leaking.
-    cleaned = _TOOL_XML_RE.sub("", 'here [TOOL_CALLS]web_search{"query":"weather"')
-    assert "[TOOL_CALLS]" not in cleaned
-    assert cleaned.strip() == "here"
-
-
-def test_strips_unclosed_rehearsal_tail():
-    cleaned = _TOOL_XML_RE.sub("", 'text python[ARGS]{"code":"print(1)"')
-    assert "[ARGS]" not in cleaned
-    assert cleaned.strip() == "text"
-
-
-def test_strips_hyphenated_mcp_bracket_name():
-    cleaned = _TOOL_XML_RE.sub("", 'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}')
-    assert "list-issues" not in cleaned
-    assert cleaned.strip() == "x"
+@pytest.mark.parametrize(
+    "text, removed, expected",
+    [
+        # Close brace lost to EOS: the truncated tail strips to the end instead of leaking.
+        pytest.param(
+            'here [TOOL_CALLS]web_search{"query":"weather"',
+            "[TOOL_CALLS]",
+            "here",
+            id = "strips_unclosed_bracket_tail",
+        ),
+        pytest.param(
+            'text python[ARGS]{"code":"print(1)"',
+            "[ARGS]",
+            "text",
+            id = "strips_unclosed_rehearsal_tail",
+        ),
+        pytest.param(
+            'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}',
+            "list-issues",
+            "x",
+            id = "strips_hyphenated_mcp_bracket_name",
+        ),
+    ],
+)
+def test_tool_xml_strip_trims_truncated_bracket_tails(text, removed, expected):
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert removed not in cleaned
+    assert cleaned.strip() == expected
 
 
 def test_preserves_mid_string_parameter_in_code_sample():
