@@ -638,6 +638,31 @@ def select_transformer_quant_scheme(
     return None
 
 
+# Arch floor per EXPLICIT scheme, as the module header states them. Separate from _AUTO_LADDER, which is a preference
+# order and deliberately omits nvfp4: an explicit nvfp4 is still honoured on Blackwell. Advertised capability only --
+# the smoke probe and the family deny list can each refuse one of these at load time.
+_SCHEME_MIN_CAPABILITY: dict[str, tuple[int, int]] = {
+    TQ_INT8: (8, 0),  # Ampere sm_80
+    TQ_FP8: (8, 9),  # Ada sm_89 / Hopper sm_90
+    TQ_NVFP4: (10, 0),  # Blackwell sm_100
+    TQ_MXFP8: (10, 0),
+}
+
+
+def dense_quant_host_schemes(target: Any) -> tuple[str, ...]:
+    """The explicit schemes this host's arch could run, without the allocating smoke probe.
+
+    The picker needs this because one capability bit is not enough to label a row: an Ampere card
+    clears the ladder on int8, so a bit alone says "fast" for an explicit fp8 the loader then
+    refuses. This is the set the picker must not promise BEYOND, never a guarantee."""
+    if not dense_quant_host_capable(target):
+        return ()
+    cap = _capability()
+    if cap is None:
+        return ()
+    return tuple(s for s in TQ_SCHEMES if cap >= _SCHEME_MIN_CAPABILITY[s])
+
+
 def dense_quant_host_capable(target: Any) -> bool:
     """Whether an ``auto`` scheme could run here, without the allocating smoke probe.
 

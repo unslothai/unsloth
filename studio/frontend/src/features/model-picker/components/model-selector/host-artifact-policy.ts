@@ -54,14 +54,35 @@ export const DENSE_QUANT_PRECISION_CHIP = "FP8 / INT8";
  *  has no control to report, in which case the row describes the default (auto) request. */
 export type RequestedPrecision = string | null | undefined;
 
+/** The explicit schemes the backend says this host can run, or undefined when it did not say
+ *  (an older backend). Undefined defers to the host class alone. */
+export type DenseQuantSchemes = readonly string[] | undefined;
+
 /** The runtime-precision chip for a dense-quant row under `precision`, or null when the load will
- *  run the checkpoint as-is. A row that promises a precision the request cannot produce sends the
- *  user to the wrong row, which is exactly what the label is here to prevent. */
-export function denseQuantPrecisionChip(precision: RequestedPrecision): string | null {
+ *  run the checkpoint as-is or would be refused.
+ *
+ *  Auto never refuses: it walks down to whatever the card has, or to BF16, so it keeps the pair.
+ *  An explicit scheme fails closed, so a card that cannot run it (fp8 on Ampere) must not be
+ *  labelled fast at all -- the click would end in a precision refusal rather than a load. */
+export function denseQuantPrecisionChip(
+  precision: RequestedPrecision,
+  schemes?: DenseQuantSchemes,
+): string | null {
   const value = (precision ?? "auto").trim().toLowerCase();
   if (value === "" || value === "auto") return DENSE_QUANT_PRECISION_CHIP;
   if (value === "none" || value === "off") return null;
+  if (schemes && !schemes.includes(value)) return null;
   return value.toUpperCase();
+}
+
+/** The precision a row should describe, given what this host can actually run. An explicit scheme
+ *  the card lacks is refused at load, so the row has to read exactly as it does with Precision=Off
+ *  rather than advertise a click that ends in the refusal. */
+export function effectiveRowPrecision(
+  precision: RequestedPrecision,
+  schemes?: DenseQuantSchemes,
+): RequestedPrecision {
+  return denseQuantPrecisionChip(precision, schemes) === null ? "none" : precision;
 }
 
 /** The H3 group, whose two rows differ by roughly 10x in throughput. */

@@ -1779,3 +1779,38 @@ def test_an_unsupported_device_advertises_nothing(monkeypatch):
     _capable_host(monkeypatch)
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
     assert tq.dense_quant_host_capable(_target(device = "cpu")) is False
+
+
+def test_the_scheme_list_narrows_with_the_arch(monkeypatch):
+    """One capability bit cannot separate an Ampere host from an Ada one."""
+    _capable_host(monkeypatch)
+    for cap, expected in [
+        ((8, 0), (TQ_INT8,)),
+        ((8, 6), (TQ_INT8,)),
+        ((8, 9), (TQ_INT8, TQ_FP8)),
+        ((9, 0), (TQ_INT8, TQ_FP8)),
+        ((10, 0), (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)),
+    ]:
+        monkeypatch.setattr(tq, "_capability", lambda _c = cap: _c)
+        assert tq.dense_quant_host_schemes(_target()) == expected, cap
+        # The bit and the list must never disagree.
+        assert tq.dense_quant_host_capable(_target()) is bool(expected), cap
+
+
+def test_an_explicit_nvfp4_is_advertised_even_though_auto_never_picks_it(monkeypatch):
+    """nvfp4 is out of the auto ladder by choice, but an explicit request is still honoured."""
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    assert TQ_NVFP4 in tq.dense_quant_host_schemes(_target())
+    assert not any(TQ_NVFP4 in schemes for _floor, schemes in tq._AUTO_LADDER)
+
+
+def test_a_host_that_cannot_quantise_advertises_no_schemes(monkeypatch):
+    _capable_host(monkeypatch, torchao_reason = "ImportError: no torchao")
+    assert tq.dense_quant_host_schemes(_target()) == ()
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    assert tq.dense_quant_host_schemes(_target(device = "cpu")) == ()
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "_capability", lambda: None)
+    assert tq.dense_quant_host_schemes(_target()) == ()

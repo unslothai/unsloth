@@ -9,6 +9,7 @@ import {
   classifyHost,
   curatedArtifactIsOfferable,
   denseQuantPrecisionChip,
+  effectiveRowPrecision,
   h3PerfSuffix,
   hostIsAccelerated,
   hostRunsDenseQuant,
@@ -79,6 +80,38 @@ test("the precision chip names what the request will run", () => {
   ] as const) {
     assert.equal(denseQuantPrecisionChip(scheme), chip, scheme);
   }
+});
+
+// One capability bit cannot separate an Ampere card from an Ada one.
+test("an explicit scheme the host cannot run is not advertised", () => {
+  const ampere = ["int8"];
+  const ada = ["int8", "fp8"];
+  const blackwell = ["int8", "fp8", "nvfp4", "mxfp8"];
+  // fp8 on Ampere is refused by the loader, so no chip and no fast qualifier.
+  assert.equal(denseQuantPrecisionChip("fp8", ampere), null);
+  assert.equal(effectiveRowPrecision("fp8", ampere), "none");
+  for (const scheme of ["nvfp4", "mxfp8"]) {
+    assert.equal(denseQuantPrecisionChip(scheme, ada), null, scheme);
+    assert.equal(effectiveRowPrecision(scheme, ada), "none", scheme);
+  }
+  // A scheme the card does run keeps its own name.
+  assert.equal(denseQuantPrecisionChip("int8", ampere), "INT8");
+  assert.equal(effectiveRowPrecision("int8", ampere), "int8");
+  assert.equal(denseQuantPrecisionChip("nvfp4", blackwell), "NVFP4");
+  // Auto never fails closed: it walks down to what the card has, so it keeps the pair everywhere.
+  for (const schemes of [ampere, ada, blackwell]) {
+    assert.equal(denseQuantPrecisionChip("auto", schemes), DENSE_QUANT_PRECISION_CHIP);
+    assert.equal(effectiveRowPrecision("auto", schemes), "auto");
+  }
+  // Off stays off whatever the card runs.
+  assert.equal(effectiveRowPrecision("none", blackwell), "none");
+  // A backend too old to report the list must not suppress anything.
+  for (const scheme of ["fp8", "nvfp4", "int8"]) {
+    assert.equal(denseQuantPrecisionChip(scheme, undefined), scheme.toUpperCase(), scheme);
+    assert.equal(effectiveRowPrecision(scheme, undefined), scheme, scheme);
+  }
+  // An empty list is an answer, not a missing one: the host runs nothing.
+  assert.equal(denseQuantPrecisionChip("int8", []), null);
 });
 
 test("the backends that only run the native engine are gguf-only", () => {
