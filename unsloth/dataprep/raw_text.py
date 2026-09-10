@@ -323,7 +323,8 @@ class TextPreprocessor:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         text = self._WHITESPACE_PATTERN.sub(" ", text)
         text = "".join(
-            c for c in text
+            c
+            for c in text
             if " " <= c <= "~"
             or c == "\n"
             or unicodedata.category(c)[0] in self._KEEP_UNICODE_CATEGORIES

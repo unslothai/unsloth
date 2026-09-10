@@ -264,9 +264,9 @@ def test_clean_text_keeps_letters_marks_and_punctuation():
         "\uc548\ub155\ud558\uc138\uc694.",
         "\u0393\u03b5\u03b9\u03ac \u03c3\u03bf\u03c5",
     ]:
-        assert preprocessor.clean_text(script_text) == script_text, (
-            f"clean_text must not drop letters, marks or punctuation: {script_text!r}"
-        )
+        assert (
+            preprocessor.clean_text(script_text) == script_text
+        ), f"clean_text must not drop letters, marks or punctuation: {script_text!r}"
 
 
 def test_clean_text_still_drops_symbols_and_control_characters():
