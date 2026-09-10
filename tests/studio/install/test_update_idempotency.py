@@ -388,6 +388,9 @@ def run_update(
         "XDG_CONFIG_HOME",
         "UNSLOTH_STUDIO_HOME",
         "STUDIO_HOME",
+        "NPM_CONFIG_PROXY",
+        "NPM_CONFIG_HTTPS_PROXY",
+        "NPM_CONFIG_NOPROXY",
     ):
         env.pop(leaked, None)
     env.update(
@@ -403,6 +406,13 @@ def run_update(
         http_proxy = url,
         NO_PROXY = "127.0.0.1,localhost",
         no_proxy = "127.0.0.1,localhost",
+        # npm reads its own variables ahead of the generic ones (with npm 11 an
+        # npm_config_https_proxy in the invoking environment outranks HTTPS_PROXY), and
+        # setup runs npm on every update: a value inherited from a corporate machine
+        # would route the registry traffic around the proxy that counts it.
+        npm_config_proxy = url,
+        npm_config_https_proxy = url,
+        npm_config_noproxy = "127.0.0.1,localhost",
         # Presence, not truthiness: without it the CLI probes the Windows PowerShell
         # profiles for an Invoke-WebRequest proxy default, which would outrank the
         # variables above and route setup.ps1 around the logging proxy.
