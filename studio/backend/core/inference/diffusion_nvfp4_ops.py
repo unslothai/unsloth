@@ -23,7 +23,15 @@ Three things live here and nothing else does:
    that way. Every launch below therefore enters the tensor's own device first, and a test walks
    this file's AST to prove no launch escapes one.
 
-3. **The backend decision.** ``select_nvfp4_backend`` answers "torchao or flashinfer" by PROBING
+3. **The layout, and the dequantiser.** ``swizzle_sf`` / ``unswizzle_sf`` move between cutlass's
+   128x4 block-scale tiling and the plain matrix, and ``dequantize_nvfp4_weight`` decodes a packed
+   operand back to a dense ``[N, K]`` weight. That decoder is what the per-step W4A16 branch runs
+   on (see ``diffusion_nvfp4_protect``); it reproduces torchao's ``NVFP4Tensor.dequantize``
+   arithmetic in torchao's order, and a CUDA test holds it to bit equality on real DiT shapes,
+   because a protected step that computed a slightly different weight would be a second quantiser
+   rather than the same one at a different activation precision.
+
+4. **The backend decision.** ``select_nvfp4_backend`` answers "torchao or flashinfer" by PROBING
    (import, capability, a guarded 128x256 preflight GEMM) rather than by a version table, because
    the failure this is really about -- FlashInfer's NVFP4 JIT needing CUDA >= 12.9 to emit
    ``compute_120f``, which most sm_120 stacks do not ship -- is invisible to a version table and
@@ -399,6 +407,78 @@ def swizzle_sf(sf_lin: Any, m: int, k: int):
     full[:m, :kb] = sf_lin.reshape(m, kb).view(torch.uint8)
     v = full.reshape(m_pad, k_pad // 4, 4).reshape(m_pad // 128, 4, 32, k_pad // 4, 4)
     return v.permute(0, 3, 2, 1, 4).reshape(-1).contiguous()
+
+
+# The e2m1 value set, indexed by the 3 magnitude bits; the 16-entry signed table is indexed by the
+# raw nibble (``sign << 3 | magnitude``). These ARE the values the hardware format assigns, which is
+# what makes the dequantised weight below the same weight the FP4 tensor cores read, not an
+# approximation of it.
+_E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+_E2M1_LUT = _E2M1_MAGNITUDES + tuple(-v for v in _E2M1_MAGNITUDES)
+
+# One 16-entry fp32 table per device, shared by every layer. Deliberately NOT a registered buffer:
+# 64 bytes is nothing, but 304 copies of it inside a model whose whole claim is "no second resident
+# operand" is exactly the kind of byte that has to not exist.
+_LUT_CACHE: dict = {}
+
+
+def e2m1_lut(device: Any):
+    """The signed e2m1 decode table on ``device``, memoised.
+
+    Memoised rather than rebuilt so that it is not ALLOCATED inside a CUDA-graph capture: a buffer
+    first created while recording is only valid while recording. ``GraphedForward`` warms the
+    branch three times before it captures, so the table already exists by then, and it is never
+    freed.
+    """
+    import torch
+
+    key = (str(device.type), device.index)
+    table = _LUT_CACHE.get(key)
+    if table is None:
+        table = torch.tensor(_E2M1_LUT, device = device, dtype = torch.float32)
+        _LUT_CACHE[key] = table
+    return table
+
+
+def reset_lut_cache() -> None:
+    """Forget the per-device decode tables. For tests and for a device set that changed."""
+    _LUT_CACHE.clear()
+
+
+def dequantize_nvfp4_weight(wq: Any, w_sf: Any, per_tensor_scale: Any, *, dtype: Any = None):
+    """The packed NVFP4 operand as a dense ``[N, K]`` weight. TRANSIENT by contract.
+
+    ``wq`` is the row-major ``[N, K / 2]`` e2m1x2 payload, ``w_sf`` the swizzled 128x4 e4m3 block
+    scales, and ``per_tensor_scale`` torchao's own second-level scale (``1 / w_gsf``, the
+    ``w_scale`` buffer the layer carries). The arithmetic is torchao's, in torchao's order:
+    ``value = e2m1(code) * (per_tensor_scale * block_scale)`` in fp32, rounded to ``dtype`` once at
+    the end. It is bit-identical to ``NVFP4Tensor.dequantize`` on a real layer (T-CUDA-PROTECT-1),
+    which matters because the protected step has to be the SAME weight the unprotected step reads,
+    at a different activation precision, and not a second quantisation of it.
+
+    The caller must drop the result. Nothing here caches it: a cached dense weight is a second
+    resident operand, which is the one thing this lever exists to avoid.
+    """
+    import torch
+
+    if dtype is None:
+        dtype = torch.bfloat16
+    q = wq if wq.dtype == torch.uint8 else wq.view(torch.uint8)
+    rows, half_k = int(q.shape[-2]), int(q.shape[-1])
+    cols = half_k * 2
+    blocks = cols // 16
+    lut = e2m1_lut(q.device)
+    # int32, not int64: the gather index is the size of the weight, and an int64 copy of it is
+    # 8 bytes per 4-bit code. Under the regional compile this whole chain fuses into one kernel.
+    codes = q.to(torch.int32)
+    values = torch.stack((lut[codes & 0x0F], lut[codes >> 4]), dim = -1).reshape(rows, blocks, 16)
+    block_scale = unswizzle_sf(w_sf, rows, cols).to(torch.float32)
+    if not isinstance(per_tensor_scale, torch.Tensor):
+        per_tensor_scale = torch.tensor(
+            [float(per_tensor_scale)], device = q.device, dtype = torch.float32
+        )
+    step = (block_scale * per_tensor_scale.to(torch.float32).reshape(1)).reshape(rows, blocks, 1)
+    return (values * step).reshape(rows, cols).to(dtype)
 
 
 def sf_matrix_shape(rows: int, cols: int) -> tuple[int, int]:

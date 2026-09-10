@@ -473,7 +473,11 @@ def test_state_dict_round_trips_with_and_without_a_bias():
         )
 
     with_bias = _build(True)
-    assert sorted(with_bias.state_dict()) == ["a_gsf", "alpha", "bias", "w_sf", "wq"]
+    # ``w_scale`` is torchao's per_tensor_scale, kept so the W4A16 protect branch dequantises with
+    # the number torchao stored rather than one rebuilt from alpha. One fp32 element per layer.
+    assert sorted(with_bias.state_dict()) == ["a_gsf", "alpha", "bias", "w_scale", "w_sf", "wq"]
+    # Absent, it is derived, so an old construction site still builds a usable layer.
+    assert float(with_bias.w_scale) == 0.25 * 1344.0
     reloaded = _build(True)
     reloaded.load_state_dict(with_bias.state_dict(), strict = True)
     for key, value in with_bias.state_dict().items():

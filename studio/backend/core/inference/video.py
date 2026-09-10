@@ -924,6 +924,8 @@ def _video_auto_denoiser_scheme(
         # The modular workflow seeds its own partition through _h3_auto_denoiser_scheme; this is the conventional path.
         if getattr(fam, "modular_workflow", None):
             return None
+        from .video_denoiser_prequant import denoiser_prequant_sources
+
         scheme = select_transformer_quant_scheme(
             # base_repo, because the deny table's nvfp4 entry is lifted per BASE by a gate record
             # and a video family's auto head is keyed on the base its measurements were taken on.
@@ -932,11 +934,17 @@ def _video_auto_denoiser_scheme(
             requested,
             family = getattr(fam, "name", None),
             base_repo = base_repo,
+            # AUTO may only offer a require_prequant scheme where a hosted checkpoint really covers
+            # this load. Without this probe the default (``has_prequant=None``) answers no for
+            # nvfp4 and auto could never reach it here, however a family's head is ordered. Same
+            # resolver as the whole-model check below, so the scheme auto picks is one this call
+            # has already proven is fully covered.
+            has_prequant = lambda candidate: (
+                denoiser_prequant_sources(fam, candidate, base_repo) is not None
+            ),
         )
         if scheme is None or scheme == TQ_AUTO:
             return None
-        from .video_denoiser_prequant import denoiser_prequant_sources
-
         # EVERY component or none: a dual-expert MoE with one hosted artifact is not partially covered, it is
         # uncovered, and reading it as covered drops shards the dense fallback then has to open.
         if denoiser_prequant_sources(fam, scheme, base_repo) is None:
@@ -6020,6 +6028,15 @@ class VideoBackend:
                         raise _VideoGenerationCancelled()
                     _tick(done)
 
+                # The NVFP4 per-step precision lever, driven off scheduler.step for the duration
+                # of this generation. A no-op context (nothing wrapped, nothing counted) unless
+                # UNSLOTH_NVFP4_PROTECT_STEPS names steps, so it costs an armed load one attribute
+                # read per step and every other load nothing at all. It goes through the scheduler
+                # rather than the callback below because only some families expose a callback and
+                # the step index has to be right for all of them.
+                from .diffusion_nvfp4_protect import protect_generation
+                protect_ctx = protect_generation(pipe, steps, logger = logger)
+
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
                     progress_ctx = contextlib.nullcontext()
@@ -6056,7 +6073,7 @@ class VideoBackend:
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:
-                    with torch.inference_mode(), progress_ctx, sigma_ctx:
+                    with torch.inference_mode(), protect_ctx, progress_ctx, sigma_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would

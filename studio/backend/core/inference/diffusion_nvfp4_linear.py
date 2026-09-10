@@ -27,7 +27,13 @@ torchao rather than running on a guessed scale.
 
 Everything else the research layer carried is dropped on purpose: no GFLOP routing, no fp8 weight
 replica, no SmoothQuant migration, no rotation, no fused-bias nvcc extension. What is left is a
-weight, a scale, an alpha and a bias.
+weight, two scales, an alpha and a bias.
+
+One research lever DID survive, because it costs no resident bytes: the **per-step precision
+switch**. At a step named by ``UNSLOTH_NVFP4_PROTECT_STEPS`` the layer dequantises its own 4-bit
+payload to a transient bf16 weight and runs a dense GEMM (W4A16) instead of the FP4 one (W4A4).
+Same checkpoint, same bytes, nothing extra resident, and the step set is per-model and off by
+default. ``diffusion_nvfp4_protect`` owns the schedule and the step counter.
 """
 
 from __future__ import annotations
@@ -39,10 +45,12 @@ from .diffusion_nvfp4_ops import (
     BACKEND_FLASHINFER,
     DEFAULT_MM_BACKEND,
     _device_guard,
+    dequantize_nvfp4_weight,
     register_ops,
     sf_matrix_shape,
     swizzle_sf,
 )
+from .diffusion_nvfp4_protect import protect_controller
 
 # Where the builder records the per-fqn activation global scale (``6 * 448 / act_amax``, the same
 # convention FlashInfer's ``nvfp4_quantize`` takes) and the flag that says it did.
@@ -88,6 +96,7 @@ def nvfp4_linear_class():
     """
     import torch
     from torch import nn
+    from torch.nn import functional as F
 
     from .diffusion_nvfp4_bias import fused_bias_add_
 
@@ -97,6 +106,15 @@ def nvfp4_linear_class():
         The forward is deliberately dull: two opaque ops and an in-place bias add. No host
         synchronize, no Python branch on a device value, and no allocation beyond what the two ops
         return, because this runs inside a captured CUDA graph.
+
+        One branch breaks that rule and earns it. At a PROTECTED denoising step the layer
+        dequantises its own 4-bit bytes to a transient bf16 weight and runs a plain ``F.linear``
+        (W4A16) instead of the NVFP4 GEMM (W4A4). The switch is a Python ``bool`` on a controller
+        object -- a host value, constant for the whole step, so Dynamo compiles two variants of the
+        block and no more, and there is no device value read on the host anywhere. The dequantised
+        weight is built inside the call and dropped when it returns: no second resident operand,
+        and the checkpoint is the same checkpoint. ``diffusion_nvfp4_protect`` owns the schedule
+        and the step counter; the lever is OFF unless an operator names the steps.
         """
 
         def __init__(
@@ -109,6 +127,7 @@ def nvfp4_linear_class():
             alpha,
             a_gsf,
             bias = None,
+            w_scale = None,
             backend: str = DEFAULT_MM_BACKEND,
             activation_scales_baked: bool = False,
         ):
@@ -126,8 +145,19 @@ def nvfp4_linear_class():
             self.register_buffer("w_sf", w_sf)
             self.register_buffer("alpha", alpha)
             self.register_buffer("a_gsf", a_gsf)
+            # torchao's own ``per_tensor_scale`` (``1 / w_gsf``), which is what the block scales
+            # have to be multiplied by to dequantise. ONE fp32 element per layer, 1.2 KB across a
+            # 304-linear video denoiser, and it is a buffer rather than a derived value because
+            # ``alpha * a_gsf`` reconstructs it only to within a rounding: the protected step has
+            # to read the weight the GEMM reads, bit for bit, or the lever is a second quantiser.
+            self.register_buffer(
+                "w_scale",
+                (alpha * a_gsf) if w_scale is None else w_scale,
+            )
             self.register_buffer("bias", bias)
             self._tuned = False
+            # The process-wide schedule. Read (not called) in forward, so it is a compile guard.
+            self.protect = protect_controller()
 
         def forward(self, x):
             shape = x.shape
@@ -151,18 +181,32 @@ def nvfp4_linear_class():
                 return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(
                     *shape[:-1], self.out_features
                 )
-            # The guard stays under torch.compile. It is a live context manager inside a traced
-            # region, which is a plausible graph break, so it was measured: a two-layer NVFP4 block
-            # compiles fullgraph to ONE graph with zero breaks on torch 2.12
-            # (test_a_two_layer_block_compiles_fullgraph). Free, and the alternative is a launch
-            # that can reach the card the process is not currently on.
-            with _device_guard(flat):
-                xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
-                out = torch.ops.unsloth_nvfp4.mm(
-                    xq, self.wq, x_sf, self.w_sf, self.alpha, self.out_features, self.backend
+            # The per-step precision switch. ``armed`` is fixed for the life of the load, so a
+            # load that never asked for the lever short-circuits here and ``protected`` is neither
+            # read nor guarded: one compiled variant, byte for byte the forward that shipped.
+            # An armed load reads a bool that changes at most twice per render, so it traces two.
+            if self.protect.armed and self.protect.protected:
+                # W4A16 on the SAME bytes: the 4-bit operand decoded to bf16 for this call only,
+                # then dropped. No activation quantiser, no FP4 GEMM, no device guard needed --
+                # nothing here launches a flashinfer kernel.
+                weight = dequantize_nvfp4_weight(
+                    self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16
                 )
+                out = F.linear(flat, weight)
+            else:
+                # The guard stays under torch.compile. It is a live context manager inside a traced
+                # region, which is a plausible graph break, so it was measured: a two-layer NVFP4
+                # block compiles fullgraph to ONE graph with zero breaks on torch 2.12
+                # (test_a_two_layer_block_compiles_fullgraph). Free, and the alternative is a launch
+                # that can reach the card the process is not currently on.
+                with _device_guard(flat):
+                    xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
+                    out = torch.ops.unsloth_nvfp4.mm(
+                        xq, self.wq, x_sf, self.w_sf, self.alpha, self.out_features, self.backend
+                    )
             # Back to the caller's dtype BEFORE the bias, so an fp32 layer adds its fp32 bias at
-            # fp32. A no-op returning the op's own output when the model is bf16.
+            # fp32. A no-op returning the op's own output when the model is bf16. The bias is added
+            # the same way on both branches, so a step never changes how a layer applies it.
             out = out.to(out_dtype)
             if self.bias is not None:
                 # mm_fp4 has no bias epilogue (no bias argument, no beta accumulate), so the add is
@@ -177,6 +221,7 @@ def nvfp4_linear_class():
             return (
                 f"in_features={self.in_features}, out_features={self.out_features}, "
                 f"bias={self.bias is not None}, backend={self.backend}, nvfp4=flashinfer"
+                + (f", protect={self.protect.spec}" if self.protect.armed else "")
             )
 
     return NVFP4FlashInferLinear
@@ -257,6 +302,9 @@ def nvfp4_linear_from_torchao(
         alpha = alpha,
         a_gsf = _as_scale_tensor(a_gsf, device = device, dtype = torch.float32),
         bias = bias,
+        # Kept as torchao stored it, not rebuilt from alpha: the W4A16 branch dequantises with it
+        # and has to land on torchao's own bytes.
+        w_scale = _as_scale_tensor(per_tensor_scale, device = device, dtype = torch.float32),
         backend = backend,
         # The caller reached this scale through the checkpoint's ``act_global_scales`` block, which
         # is the only source ``convert_nvfp4_backend`` accepts, so it is baked by construction.
@@ -371,6 +419,9 @@ def nvfp4_prewarm(
     shapes (measured 1.11x to 1.14x, bit-identical output either way). Tuning costs one profiling
     pass per distinct ``(M, K, N)``, so it belongs here -- outside the request path, and before a
     capture, since an untuned layer under capture bakes the default tactic into the graph.
+
+    Runs with the per-step precision lever SUSPENDED, so that a prewarm triggered at a protected
+    step still tunes the FP4 kernel rather than marking the shape tuned after a bf16 forward.
     """
     import torch
 
@@ -380,9 +431,29 @@ def nvfp4_prewarm(
         _log(logger, "debug", f"[nvfp4] prewarm skipped: {type(exc).__name__}: {exc}")
         return 0
 
+    from .diffusion_nvfp4_protect import suspend_protect
+
     register_ops()
-    tuned = 0
     modules = [mod for _, mod in _iter_linears(transformer) if is_nvfp4_flashinfer_linear(mod)]
+    counter = [0]
+    # The per-step lever OFF for the whole pass. A protected step would send every one of these
+    # forwards down the bf16 branch, which tunes no FlashInfer tactic while the loop below still
+    # records the shape as tuned -- so the next capture, on the other branch, would bake in the
+    # default tactic. See ``suspend_protect``.
+    with suspend_protect(modules):
+        _prewarm_shapes(modules, shapes, logger = logger, tuned_box = counter)
+    tuned = counter[0]
+    if tuned:
+        _log(logger, "info", f"[nvfp4] prewarm tuned {tuned} GEMM shapes")
+    return tuned
+
+
+def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
+    """The tuning loop itself. Split out so the suspension above wraps every launch in it."""
+    import torch
+
+    import flashinfer
+
     for module in modules:
         for m in shapes:
             m = int(m)
@@ -402,11 +473,8 @@ def nvfp4_prewarm(
                 _log(logger, "debug", f"[nvfp4] prewarm {key} failed ({type(exc).__name__}: {exc})")
                 continue
             _TUNED_SHAPES.add(key)
-            tuned += 1
+            tuned_box[0] += 1
         module._tuned = True
-    if tuned:
-        _log(logger, "info", f"[nvfp4] prewarm tuned {tuned} GEMM shapes")
-    return tuned
 
 
 # ── module-tree plumbing ──────────────────────────────────────────────────────────────────────
