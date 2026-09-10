@@ -30,19 +30,16 @@ cleanup() {
 trap cleanup EXIT
 
 # Say who died and when, for a failure mode that currently reports nothing.
-#
 # Observed on windows-latest at roughly one run in twenty-five: the suite prints
 # "permission-only run passed" and the STEP then ends with "Process completed with exit
 # code 143". 143 is 128+SIGTERM, so something signalled this script after its work had
 # already succeeded, and neither the step log nor the server log records what. The
 # server log simply stops mid-request, which is what cleanup killing it looks like, so
 # it cannot distinguish the two.
-#
 # suite_done is the fact worth capturing: it separates "signalled while driving the
 # browser" (a real timeout worth chasing) from "signalled after passing" (a teardown
 # ordering problem, and what the one observed instance was). Without it the next
 # occurrence is as unreadable as this one.
-#
 # `exit` explicitly, because the whole point is to be unambiguous about the status
 # rather than to rely on what bash would have chosen for a trapped signal.
 suite_done=0

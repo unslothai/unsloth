@@ -78,13 +78,12 @@ export function resolveCtxPinSeed(options: {
   if (isMlx) {
     return { customContextLength: incoming, loadedCustomContextLength: incoming };
   }
-  // One placement mode has no ambiguity to reason around: under Manual memory
-  // with Auto layers the load sends its pin as max_seq_length through
-  // resolveFitMaxSeqLength, which answers `customContextLength > 0 ? it : 0`.
-  // Auto there is 0 on the wire, always, so a POSITIVE echo in this mode is
-  // proof of an explicit pin rather than evidence of nothing. Read before the
-  // branches below because it outranks both of them: it is better evidence than
-  // a saved config, and on a model change it describes the model that arrived.
+  // One placement mode has no ambiguity to reason around: under Manual memory with Auto layers the
+  // load sends its pin as max_seq_length through resolveFitMaxSeqLength, which answers
+  // `customContextLength > 0 ? it : 0`. Auto there is 0 on the wire, always, so a POSITIVE echo in
+  // this mode is proof of an explicit pin rather than evidence of nothing. Read before the branches
+  // below because it outranks both of them: it is better evidence than a saved config, and on a
+  // model change it describes the model that arrived.
   if (gpuMemoryMode === "manual" && gpuLayers != null && gpuLayers < 0) {
     return { customContextLength: incoming, loadedCustomContextLength: incoming };
   }

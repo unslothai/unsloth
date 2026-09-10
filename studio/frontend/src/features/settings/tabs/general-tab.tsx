@@ -94,9 +94,8 @@ const PREFS_KEYS: string[] = [
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
-  // Rebound chords. Without this a reset leaves the user on shortcuts they
-  // asked to throw away, and a chord bound to something unusable has no
-  // escape hatch from this button.
+  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
+  // a chord bound to something unusable has no escape hatch from this button.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
   // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
   // transport changes made elsewhere.
@@ -123,15 +122,13 @@ const PREFS_KEYS: string[] = [
   // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
-  // The memory bar's opt-in. Reset All advertises restoring defaults and this
-  // feature's default is off, so leaving the key out left it switched on across
-  // a reset that said it had turned everything back.
-  //
-  // Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
-  // reason the note above gives: it lives in chat-runtime-store, which is in an
-  // import cycle with this file, so the constant would still be in its temporal
-  // dead zone when this module-scope list is built. A test pins this literal
-  // against the store's constant so the two cannot drift apart silently.
+  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
+  // off, so leaving the key out left it switched on across a reset that said it had turned
+  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
+  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
+  // this file, so the constant would still be in its temporal dead zone when this module-scope list
+  // is built. A test pins this literal against the store's constant so the two cannot drift apart
+  // silently.
   "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
   // Chat presets
