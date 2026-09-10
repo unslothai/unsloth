@@ -358,10 +358,36 @@ def test_project_supervisor_keeps_truncation_notice_on_early_stop(
     else:
         result = tools._bash_exec("echo ignored", session_id = session_id)
 
-    expected = "Execution timed out" if status == "timed_out" else "Execution cancelled."
-    assert result.startswith(expected)
     assert result.count(notice.strip()) == 1
-    assert "prefix" not in result
+    if status == "timed_out":
+        assert "prefix" in result
+        assert result.endswith("Execution timed out after 300 seconds.")
+    else:
+        assert result.startswith("Execution cancelled.")
+        assert "prefix" not in result
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal"])
+def test_project_timeout_keeps_captured_streamed_output(tool_name, tmp_path, monkeypatch):
+    root = tmp_path / "repository"
+    root.mkdir()
+    session_id = _bind_project(monkeypatch, root)
+    output = "completed the first step\n"
+    streamed = []
+
+    def timed_out(*_args, **kwargs):
+        kwargs["output_callback"](output)
+        return supervisor.ProjectProcessResult("timed_out", None, output, len(output), False)
+
+    monkeypatch.setattr(supervisor, "run_project_python", timed_out)
+    monkeypatch.setattr(supervisor, "run_project_process", timed_out)
+    execute = tools._python_exec if tool_name == "python" else tools._bash_exec
+    result = execute("ignored", session_id = session_id, output_callback = streamed.append)
+
+    assert streamed == [output]
+    assert result.startswith(output)
+    assert result.count(output) == 1
+    assert result.endswith("Execution timed out after 300 seconds.")
 
 
 def test_boundary_open_rejects_an_unavailable_backend_without_touching_the_root(

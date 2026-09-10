@@ -15126,7 +15126,12 @@ def _render_supervised_project_result(
             f"{retained_bytes}-byte prefix was retained.]\n"
         )
     if supervised.status == "timed_out":
-        rendered = _truncate(f"Execution timed out after {timeout} seconds.{truncation_notice}")
+        partial = supervised.output or ""
+        if truncation_notice:
+            if partial.endswith(truncation_notice):
+                partial = partial[: -len(truncation_notice)]
+            partial = f"{truncation_notice.strip()}\n{partial}"
+        rendered = _timed_out_result(partial, timeout, spill_dir, spill_scope)
         return rendered + (
             _created_file_sentinels(workdir, before, None, call_token) if session_id else ""
         )

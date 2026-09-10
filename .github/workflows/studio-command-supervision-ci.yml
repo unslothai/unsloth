@@ -86,7 +86,7 @@ jobs:
       - name: Compose confined edit support
         shell: bash
         env:
-          EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
+          EDIT_REVISION: a85723e1cc245a6d286fc0f3521eee8a21c869d3
         run: |
           if ! git cat-file -e "$EDIT_REVISION^{commit}" 2>/dev/null; then
             git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$EDIT_REVISION"
