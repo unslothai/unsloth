@@ -1332,8 +1332,12 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif self.provider_type == "vllm" and enable_thinking is not None:
-            # vLLM gates thinking via chat_template_kwargs.enable_thinking.
+        elif self.provider_type in ("vllm", "custom") and enable_thinking is not None:
+            # vLLM gates thinking via chat_template_kwargs.enable_thinking, and so does
+            # llama.cpp. Both register as "custom" when added by base_url without a preset,
+            # which _TEMPLATE_APPLYING_PROVIDERS above already assumes of it, so the same
+            # mechanism is the right one. Without "custom" here the toggle survives only as
+            # a top-level body field that neither server reads.
             tpl_kw = body.get("chat_template_kwargs")
             if not isinstance(tpl_kw, dict):
                 tpl_kw = {}
