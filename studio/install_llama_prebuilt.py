@@ -7530,7 +7530,9 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
 
 def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
     """Whether the CUDA selectors could pick *line* here: its runtime is on disk and the
-    driver can run it, the two filters they apply before ordering."""
+    driver can run it, the two filters they apply before ordering. The Windows selector
+    falls back to every driver-compatible line when no runtime DLL is found at all
+    (a bundle carries its own), so an empty detected set does not veto there."""
     try:
         if host.is_linux:
             detected = detected_linux_runtime_lines()[0]
@@ -7538,6 +7540,8 @@ def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
         else:
             detected = detected_windows_runtime_lines()[0]
             compatible = compatible_windows_runtime_lines(host)
+            if not detected:
+                detected = list(compatible)
     except Exception:  # noqa: BLE001 - an unreadable host answers "cannot tell", which is not movement
         return False
     return line in detected and line in compatible

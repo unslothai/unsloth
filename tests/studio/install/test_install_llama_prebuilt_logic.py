@@ -6712,6 +6712,14 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12"])
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is False
     monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12", "cuda13"])
+    # Windows with no runtime DLL found at all: the selector falls back to every line the
+    # driver can run, so torch's preference still counts there.
+    windows = SimpleNamespace(has_usable_nvidia = True, is_linux = False, is_windows = True)
+    monkeypatch.setattr(M, "detected_windows_runtime_lines", lambda: ([], {}))
+    monkeypatch.setattr(M, "compatible_windows_runtime_lines", lambda _h: ["cuda12", "cuda13"])
+    assert M._runtime_preference_moved({"runtime_line": "cuda12"}, windows) is True
+    monkeypatch.setattr(M, "compatible_windows_runtime_lines", lambda _h: ["cuda12"])
+    assert M._runtime_preference_moved({"runtime_line": "cuda12"}, windows) is False
     # A non-CUDA install, or a preference torch cannot state, keeps the fast path.
     assert M._runtime_preference_moved({"runtime_line": "vulkan"}, host) is False
     monkeypatch.setattr(
