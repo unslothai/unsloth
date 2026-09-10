@@ -411,7 +411,7 @@ def test_the_lockout_holds_even_for_a_forced_refresh(monkeypatch):
         "_fetch_release",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fetched into a rate limit")),
     )
-    freshness_flow.note_github_rate_limited(wait = 600)
+    freshness_flow.note_github_rate_limited(_force_wait = 600)
     assert changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh = True) is None
     # A body still inside its TTL keeps answering; only the fetch is withheld.
     key = ("unslothai/llama.cpp", "b2")

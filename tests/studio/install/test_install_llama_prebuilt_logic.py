@@ -4243,8 +4243,11 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     assert target.stat().st_mode & 0o777 == 0o755
 
 
-def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, tmp_path: Path):
-    asset_name = "llama-diffusion-gemma-visual-server-attacker-linux"
+def test_diffusion_visual_server_skips_when_the_manifest_names_no_visual_server(
+    monkeypatch, tmp_path: Path
+):
+    # The resolver reads only the checksum manifest now, never the release listing, so
+    # an asset that exists in the release but not in the manifest is simply not seen.
     verified_calls: list[str] = []
     raw_calls: list[str] = []
 

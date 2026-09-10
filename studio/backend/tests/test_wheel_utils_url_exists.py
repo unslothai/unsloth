@@ -2,8 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """url_exists must tell a missing wheel (404) from GitHub refusing us (403/429/5xx, dropped
-connection): the second is retried and reported, or the caller starts a many-minute source
-build for a wheel that exists."""
+connection). A refusal is retried once and then reported as None. Callers still take their
+slow path either way, since the wheel may well exist and a source build needs no GitHub;
+what changes is the message ("could not check", never "not published") and that a refusal
+is never treated as proof that no prebuilt exists."""
 
 from __future__ import annotations
 
