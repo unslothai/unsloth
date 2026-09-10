@@ -52,7 +52,7 @@ export async function readNativeChatImportChunk(
     : new Uint8Array(bytes);
 }
 
-function browserDownload(blob: Blob, filename: string): void {
+export function browserDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
