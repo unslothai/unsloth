@@ -236,28 +236,35 @@ def _warm_inference_backend() -> None:
     # handlers. Building it here makes the getter a dict read. After hardware, to reuse it.
     from core.inference import get_inference_backend
     get_inference_backend()
+    _prime_nvlink_topology()
 
 
-def _warm_nvlink_topology() -> None:
-    # The P2P gate needs an interconnect matrix before the first model loads, and
-    # building it costs ~230 ms via NVML or ~1.2 s via `nvidia-smi topo -m` on an
-    # 8x B200. Paying it here means the load path reads a warm cache. Only hosts
-    # that would probe anyway do any work: the probe is skipped outright unless
-    # there are at least two GPUs with an NVLink-capable name (#10613).
-    from core.inference.llama_cpp import LlamaCppBackend
-    if LlamaCppBackend._effective_gpu_count() < 2:
-        return
-    if not LlamaCppBackend._all_selected_gpus_match(
-        LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
-    ):
-        return
-    LlamaCppBackend._nvlink_topology()
+def _prime_nvlink_topology() -> None:
+    """Build the P2P gate's interconnect matrix before the first model load.
+
+    It costs ~230 ms via NVML, or ~1.2 s where only `nvidia-smi topo -m` can answer,
+    and the load path would otherwise pay it inline. Rides the inference_backend
+    stage rather than adding one of its own: it imports the same first-party module,
+    so a separate stage would need a purge mapping it has no use for.
+
+    Only hosts that would probe anyway do any work, and a failure here must not fail
+    the stage: the gate re-probes on demand and fails closed by itself (#10613)."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        if LlamaCppBackend._effective_gpu_count() < 2:
+            return
+        if not LlamaCppBackend._all_selected_gpus_match(
+            LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
+        ):
+            return
+        LlamaCppBackend._nvlink_topology()
+    except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
+        logger.debug("NVLink topology prime skipped: %r", e)
 
 
 _STAGES = (
     ("hardware", _warm_hardware),
     ("inference_backend", _warm_inference_backend),
-    ("nvlink_topology", _warm_nvlink_topology),
     ("transformers", _warm_transformers),
     ("datasets", _warm_datasets),
 )
