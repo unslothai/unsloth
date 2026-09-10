@@ -10829,11 +10829,8 @@ class LlamaCppBackend:
     def _cgroup_memory_limit_mib() -> Optional[int]:
         """The CAPACITY an enforcing cgroup allows, i.e. the tightest LIMIT.
 
-        Distinct from the remainder above and not interchangeable with it: the
-        remainder shrinks as the container fills, so reading it as capacity would
-        report a pool that gets smaller the more of it is in use, and would price a
-        reserve, or a replacement model that only has to fit once the current one is
-        evicted, against memory that is merely busy rather than absent."""
+        Not interchangeable with the remainder above, which shrinks as the container
+        fills and would price against memory that is merely busy rather than absent."""
         budgets = LlamaCppBackend._cgroup_memory_budgets()
         if not budgets:
             return None

@@ -410,10 +410,9 @@ def _torch_is_rocm(torch) -> bool:
     """Whether this torch is a ROCm build.
 
     ``version.hip`` alone is not the test: AMD SDK and Radeon wheels leave it unset and
-    encode "rocm" in ``__version__`` only, and reading them as CUDA would credit host
-    memory onto an APU's already optimistic free reading. Same rule as
-    ``LlamaCppBackend._torch_is_rocm``, taken from there so the two cannot drift, with
-    the rule restated inline for an import that cannot be satisfied.
+    tag ``__version__`` only, and reading one as CUDA would credit host memory onto an
+    APU's already optimistic free reading. Taken from ``LlamaCppBackend`` so the two
+    cannot drift, restated inline only for an import that cannot be satisfied.
     """
     try:
         from core.inference.llama_cpp import LlamaCppBackend
@@ -437,20 +436,13 @@ def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int,
     swapping, a floor rather than an optimistic figure, and it is clamped to the driver
     reading and the device total, so a genuinely full machine is refused as it is today.
 
-    Through the llama.cpp helper, which caps it by the cgroup remainder: a
-    ``--memory``-capped Spark is where an over-credit reaches the OOM kill this
-    guard pre-empts. That cap is then applied AGAIN as a ceiling, because reading it
-    only as a lower bound throws it away whenever the driver's host-wide ``MemFree``
-    is larger, which is the normal case in a container.
+    Through the llama.cpp helper, which caps it by the cgroup remainder, then applied
+    AGAIN as a ceiling: as a lower bound it is thrown away whenever the driver's
+    host-wide ``MemFree`` is larger, the normal case in a container.
 
-    Returns the CAPACITY as well as the free reading, because on this device they are
-    the same pool. When the cgroup binds, the device total is the host's 121 GiB but
-    the memory this process can charge is the container's, and ``_reserve_mib`` takes
-    20% of the total: a 32 GiB container on a Spark would reserve 24 GiB and leave
-    about 8 GiB usable, refusing models that fit it comfortably. Capacity is reported
-    as the capped pool so the reserve, and ``plan_fits_total_capacity`` with it, are
-    priced against what the container will actually hand over. Uncapped hosts, the
-    ordinary case, keep the device total unchanged.
+    Returns the CAPACITY too, since on this device it is the same pool. ``_reserve_mib``
+    takes 20% of the total, so leaving a 32 GiB container's at the host's 121 GiB
+    reserved 24 GiB and left about 8 GiB usable. Uncapped hosts keep the device total.
     """
     available_mib = _available_system_memory_mib()
     cgroup_mib = _cgroup_available_memory_mib()
@@ -459,18 +451,13 @@ def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int,
     else:
         credited = max(free_mib, min(int(available_mib), total_mib))
     if cgroup_mib is not None and int(cgroup_mib) <= credited:
-        # Bound by the container. `<=`, not `<`: the host reading is itself
-        # cgroup-capped, so `credited == cgroup_mib` is the ordinary result whenever
-        # MemAvailable exceeds the remainder and the driver's MemFree does not, and
-        # treating that as unbound left the reserve priced against the host total.
+        # `<=`, not `<`: the host reading is cgroup-capped already, so equality is the
+        # ordinary result in a container, not a sign that the limit does not bind.
         credited = int(cgroup_mib)
-    # The capacity question is separate from the free-memory one, and a finite limit
-    # answers it whether or not the remainder happens to be what caps the free reading.
-    # A tighter host reading does not make a 64 GiB container a 121 GiB device: the
-    # reserve is 20% of capacity, so leaving the host total in place there prices a
-    # 24 GiB reserve against a pool that cannot exceed 64 and can zero the budget.
-    # The LIMIT, never the remainder, which shrinks as the container fills and would
-    # refuse a replacement model that only has to fit once the resident one is evicted.
+    # Capacity is a separate question, and a finite limit answers it whether or not the
+    # remainder is what caps the free reading: a tighter host figure does not make a
+    # 64 GiB container a 121 GiB device. The LIMIT, never the remainder, which shrinks
+    # as the container fills and would refuse a model that fits once one is evicted.
     limit_mib = _cgroup_memory_limit_mib()
     if limit_mib is None:
         capacity = total_mib
