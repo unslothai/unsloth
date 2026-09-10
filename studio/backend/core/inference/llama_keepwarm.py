@@ -904,6 +904,10 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
+                    # As /unload: a kept claim hides the empty GPU from other accounts.
+                    from routes.inference import release_chat_gpu_claim
+
+                    await asyncio.to_thread(release_chat_gpu_claim)
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})

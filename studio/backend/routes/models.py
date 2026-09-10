@@ -2462,6 +2462,33 @@ def _model_config_inspection_target(
     return snapshot
 
 
+async def _require_model_access_or_caller_token(
+    model_name: str,
+    hf_token,
+    *,
+    local_path: Optional[str] = None,
+    prefer_local_cache: bool = False,
+) -> None:
+    """Managed access check that also accepts the caller's own Hub token: a remote preflight
+    precedes the first download and its grant. Local and cache-only selections keep the
+    account check; the owner is unaffected."""
+    if not account_access.managed_account():
+        return
+    try:
+        await asyncio.to_thread(account_access.require_model_access, model_name)
+    except HTTPException as exc:
+        if (
+            exc.status_code != 404
+            or local_path
+            or prefer_local_cache
+            or is_local_path(model_name)
+            or not isinstance(hf_token, str)
+            or not hf_token.strip()
+        ):
+            raise
+        await asyncio.to_thread(account_access.authorize_download, model_name, "model", hf_token)
+
+
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
@@ -2480,24 +2507,12 @@ async def get_model_config(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
-    if account_access.managed_account():
-        try:
-            await asyncio.to_thread(account_access.require_model_access, model_name)
-        except HTTPException as exc:
-            # A remote preflight precedes the first download and its grant; the caller's
-            # own token stands in. Local and cache selections keep the account check.
-            if (
-                exc.status_code != 404
-                or local_path
-                or prefer_local_cache
-                or is_local_path(model_name)
-                or not isinstance(hf_token, str)
-                or not hf_token.strip()
-            ):
-                raise
-            await asyncio.to_thread(
-                account_access.authorize_download, model_name, "model", hf_token
-            )
+    await _require_model_access_or_caller_token(
+        model_name,
+        hf_token,
+        local_path = local_path,
+        prefer_local_cache = prefer_local_cache,
+    )
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
     from utils.models.model_config import shared_hub_model_info
     from utils.utils import pinned_hf_reachability
@@ -3711,12 +3726,12 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
-    if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, model_name)
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
+    # After the token, so a private repo classifies before its first download.
+    await _require_model_access_or_caller_token(model_name, hf_token)
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision). Offline
@@ -3759,12 +3774,12 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
-    if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, model_name)
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token and not account_access.managed_account(),
     )
+    # After the token, so a private repo classifies before its first download.
+    await _require_model_access_or_caller_token(model_name, hf_token)
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         # Same guard as /check-vision: is_embedding_model hits the hub with a 15s timeout.
@@ -5208,7 +5223,8 @@ def _preferred_gguf_copy(
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        return {"cached": cached_gguf_rows()}
+        # Off the loop: the managed-account filter can probe the Hub per ungranted repo.
+        return {"cached": await asyncio.to_thread(cached_gguf_rows)}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
         return {"cached": []}
@@ -5318,7 +5334,8 @@ async def list_cached_models(
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        return {"cached": cached_model_rows()}
+        # Off the loop: the managed-account filter can probe the Hub per ungranted repo.
+        return {"cached": await asyncio.to_thread(cached_model_rows)}
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
         return {"cached": []}
@@ -5895,8 +5912,7 @@ async def get_export_size(
     Returns nulls with HTTP 200 when the size can't be determined. The HF token
     (for gated repos) comes from the X-HF-Token header so it never hits URLs/logs.
     """
-    if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, model)
+    await _require_model_access_or_caller_token(model, _normalize_hf_token(hf_token))
     if is_local_path(model):
         if not _is_sizable_local_path(model):
             return ExportSizeResponse(

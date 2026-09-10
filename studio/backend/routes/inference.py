@@ -9370,6 +9370,27 @@ def _loaded_slot_ident() -> Optional[str]:
     return None
 
 
+def release_chat_gpu_claim() -> bool:
+    """Drop the CHAT claim once nothing is resident or loading, as /images/unload does;
+    otherwise the arbiter keeps naming the loader and hides an empty GPU from every other
+    account. release_if evaluates under the arbiter lock, so a re-registered load keeps it."""
+    from core.inference.gpu_arbiter import CHAT, release_if
+    from core.inference.llama_cpp import chat_load_active
+
+    def chat_idle() -> bool:
+        llama = get_llama_cpp_backend()
+        # is_active, not is_loaded: a starting model holds VRAM; chat_load_active covers
+        # an HF load with no process yet.
+        if llama.is_active or chat_load_active():
+            return False
+        backend = _peek_inference_backend()
+        return not getattr(backend, "active_model_name", None) and not tuple(
+            getattr(backend, "loading_models", ()) or ()
+        )
+
+    return release_if(CHAT, chat_idle)
+
+
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
@@ -16858,6 +16879,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # loop would block this route's own padding.
                 await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
+                await asyncio.to_thread(release_chat_gpu_claim)
                 api_monitor.record_lifecycle(
                     event = "unload",
                     model = _lifecycle_model_label(_unloaded, _unloaded_variant),
@@ -16883,6 +16905,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 backend.unload_model, _resident_standard_model_name(backend, request.model_path)
             )
             note_model_unloaded()
+            await asyncio.to_thread(release_chat_gpu_claim)
             api_monitor.record_lifecycle(
                 event = "unload",
                 model = _lifecycle_model_label(request.model_path),
