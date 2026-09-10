@@ -633,3 +633,43 @@ test("the Python script cell moves inside the collapsible when collapsing is on"
     "the always-visible script cell is no longer guarded by the preference",
   );
 });
+
+test("created files stay outside the collapsible on Python and Terminal cards", async () => {
+  for (const file of [
+    "../src/components/assistant-ui/tool-ui-python.tsx",
+    "../src/components/assistant-ui/tool-ui-terminal.tsx",
+  ]) {
+    const source = await sourceOf(file);
+    const root = jsxElement(source, "ToolFallbackRoot");
+    const content = jsxElement(root, "ToolFallbackContent");
+    const files = find(
+      root,
+      (node) =>
+        (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) &&
+        ts.isIdentifier(node.tagName) &&
+        node.tagName.text === "SandboxFiles",
+    );
+    assert.equal(
+      files.length,
+      1,
+      `${file} must render SandboxFiles once under ToolFallbackRoot`,
+    );
+    const insideContent = find(content, (node) => node === files[0]);
+    assert.equal(
+      insideContent.length,
+      0,
+      `${file} hid SandboxFiles inside ToolFallbackContent`,
+    );
+    const wrap = files[0].parent;
+    assert.ok(
+      wrap && ts.isJsxElement(wrap),
+      `${file} did not wrap SandboxFiles`,
+    );
+    const cls = jsxAttribute(wrap, "className");
+    assert.match(
+      cls?.initializer?.getText() ?? "",
+      /pl-5/,
+      `${file} wrapper is missing pl-5, so the file row sits flush with the trigger`,
+    );
+  }
+});

@@ -141,6 +141,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     // That holds only while collapseToolActivity is off; with it on the script
     // moves inside the collapsible, behind one click. awaitingApproval is the
     // exception: a decision about a script needs the script on screen.
+    // Created files stay outside even when the card is collapsed (#10425).
     <ToolFallbackRoot
       defaultOpen={isRunning}
       awaitingApproval={awaitingApproval}
@@ -182,9 +183,6 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
             </div>
           ) : null}
 
-          {/* Anything the script wrote, as a real download */}
-          <SandboxFiles sessionId={sessionId} files={files} />
-
           {/* Images from Python tool execution */}
           {images.length > 0 && sessionId && (
             <div className="mt-2 flex flex-col gap-2">
@@ -199,6 +197,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           )}
         </div>
       </ToolFallbackContent>
+      <div className="pl-5">
+        <SandboxFiles sessionId={sessionId} files={files} />
+      </div>
     </ToolFallbackRoot>
   );
 };
