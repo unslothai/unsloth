@@ -2384,12 +2384,18 @@ _sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
 # uv to pip, so under that rule it would either reach for the network or destroy a
 # usable sidecar and then fail. Left for the next online update; the runtime self-heal
 # (transformers_version._ensure_venv_dir) covers a missing tier in the meantime.
+# A deferred tier keeps its own flag, so the status line below says "left for the next
+# online update" rather than "current" for a sidecar the warning just called stale.
+_DEFER_T5_530=false
+_DEFER_T5_550=false
+_DEFER_T5_510=false
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
         set -- $_ofp
         if eval "[ \"\$_NEED_T5_$1\" = true ]"; then
             substep "transformers $2 sidecar is stale but UV_OFFLINE is set -- left for the next online update"
             eval "_NEED_T5_$1=false"
+            eval "_DEFER_T5_$1=true"
         fi
     done
     unset _ofp
@@ -2397,18 +2403,24 @@ fi
 
 if [ "$_NEED_T5_530" = true ]; then
     _install_sidecar "$VENV_T5_530_DIR" "5.3.0" "5.3"
+elif [ "$_DEFER_T5_530" = true ]; then
+    step "transformers" "5.3.0 sidecar stale -- left for the next online update"
 else
     step "transformers" "5.3.0 sidecar current"
     _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
 fi
 if [ "$_NEED_T5_550" = true ]; then
     _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
+elif [ "$_DEFER_T5_550" = true ]; then
+    step "transformers" "5.5.0 sidecar stale -- left for the next online update"
 else
     step "transformers" "5.5.0 sidecar current"
     _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
 fi
 if [ "$_NEED_T5_510" = true ]; then
     _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
+elif [ "$_DEFER_T5_510" = true ]; then
+    step "transformers" "5.10.2 sidecar stale -- left for the next online update"
 else
     step "transformers" "5.10.2 sidecar current"
     _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
