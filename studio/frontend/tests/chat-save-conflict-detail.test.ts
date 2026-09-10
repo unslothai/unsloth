@@ -60,6 +60,10 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       },
       "../types": {},
       "../types/api": {},
+      "../utils/continuation": {
+        isPreemptGaveUp: (truncation: { reason?: string } | null | undefined) =>
+          truncation?.reason === "preempt_gave_up",
+      },
       "../utils/chat-history-revision": {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
