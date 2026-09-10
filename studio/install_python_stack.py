@@ -8188,6 +8188,12 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         # in _requirements_satisfied, and the deep verify is run against this same copy.
         if not manifest:
             manifest = install_manifest.read_previous_manifest()
+            # Read once. The live manifest is removed before a pass so a pass killed
+            # part-way leaves nothing that verifies as complete; the parked copy has to
+            # follow the same rule, or the next run would read the last completed pass
+            # as evidence over an environment the killed pass had half-modified.
+            if manifest:
+                install_manifest.consume_previous_manifest()
     except Exception:  # noqa: BLE001 - an unreadable manifest is a full pass, never a crash
         return _refuse_evidence("manifest unreadable")
     if not manifest or manifest.get("schema") != install_manifest.MANIFEST_SCHEMA:
@@ -8320,9 +8326,13 @@ def _installed_index() -> "dict | None":
 def _inputs_unchanged(keys: "list[str]") -> bool:
     recorded = (_PASS_EVIDENCE or {}).get("pass_inputs") or {}
     for key in keys:
-        # digest_file returns None for a file that is gone or unreadable, and None never
-        # equals a recorded digest, so an input nobody can read forces the work.
-        if recorded.get(key) != install_manifest.digest_file(REQ_ROOT / key):
+        # Membership first: pass_input_digests leaves out a file it could not read, and
+        # digest_file answers None for one that is gone or unreadable now, so a missing
+        # key compared against None would read an unreadable input as unchanged.
+        if key not in recorded:
+            return False
+        current = install_manifest.digest_file(REQ_ROOT / key)
+        if current is None or recorded[key] != current:
             return False
     return True
 

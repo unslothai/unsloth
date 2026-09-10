@@ -1709,3 +1709,49 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
     assert stack._mlx_payload_present() is False
     payload.unlink()
     assert stack._mlx_payload_present() is False
+
+
+def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):
+    """pass_input_digests leaves out a file it could not read and digest_file answers None
+    for one it cannot read now; compared with .get, the two Nones were equal and an
+    unreadable requirements file counted as unchanged."""
+    monkeypatch.setattr(stack, "REQ_ROOT", tmp_path)
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"pass_inputs": {"studio.txt": "abc"}})
+    digests = {"studio.txt": "abc"}
+    monkeypatch.setattr(stack.install_manifest, "digest_file", lambda p: digests.get(p.name))
+    assert stack._inputs_unchanged(["studio.txt"]) is True
+    assert stack._inputs_unchanged(["extras.txt"]) is False, "not recorded, not readable: unchanged"
+    digests["studio.txt"] = None
+    assert stack._inputs_unchanged(["studio.txt"]) is False, "recorded, unreadable now"
+    digests["studio.txt"] = "def"
+    assert stack._inputs_unchanged(["studio.txt"]) is False
+
+
+def test_the_parked_manifest_is_consumed_when_it_is_read_as_evidence(monkeypatch, tmp_path):
+    """The live manifest is removed before a pass so a killed pass leaves nothing that
+    verifies as complete; the parked copy follows the same rule once read."""
+    parked = tmp_path / "unsloth_install_manifest.previous.json"
+    parked.write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(stack.install_manifest, "previous_manifest_path", lambda root = None: parked)
+    stack.install_manifest.consume_previous_manifest()
+    assert not parked.exists()
+    stack.install_manifest.consume_previous_manifest()  # gone already: not an error
+    source = open(stack.__file__, encoding = "utf-8").read()
+    at = source.index("manifest = install_manifest.read_previous_manifest()")
+    assert "install_manifest.consume_previous_manifest()" in source[at : at + 700]
+
+
+def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatch, tmp_path):
+    """Two pyarrow records: importlib.metadata answers from whichever it meets first, so
+    the pinned one can hide the other; the step that puts one record back must run."""
+    manifest = stack.install_manifest
+    req = tmp_path / "constraints.txt"
+    req.write_text("pyarrow==15.0.0\nnumpy>=1.0\n", encoding = "utf-8")
+    versions = {"pyarrow": ["15.0.0", "16.0.0"], "numpy": ["2.0.0"]}
+    monkeypatch.setattr(manifest, "installed_versions", lambda name: versions.get(name, []))
+    assert manifest.violated_constraints(req_file = req) == ["pyarrow"]
+    versions["pyarrow"] = ["15.0.0"]
+    assert manifest.violated_constraints(req_file = req) == []
+    versions["pyarrow"] = [""]
+    assert manifest.violated_constraints(req_file = req) == ["pyarrow"]
+

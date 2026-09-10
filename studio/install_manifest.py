@@ -333,6 +333,20 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
     return True
 
 
+def consume_previous_manifest(root: Optional[Path] = None) -> None:
+    """Drop the parked copy once a pass has read it.
+
+    The parked copy stands in for the live manifest remove_manifest took away, and it
+    has to go the same way: a pass killed after reading it must not leave it for the
+    next run to read as evidence of a completed pass. Best effort, as remove_manifest's
+    own fallback is.
+    """
+    try:
+        previous_manifest_path(root).unlink()
+    except OSError:
+        pass
+
+
 def read_previous_manifest(root: Optional[Path] = None) -> Optional[dict]:
     """The manifest remove_manifest parked, or None.
 
@@ -875,6 +889,14 @@ def violated_constraints(
             continue
         name, marker, specifier = parsed
         if not specifier or not _marker_applies(marker):
+            continue
+        if metadata_conflict(installed_versions(name)):
+            # Two records, or an unreadable one: importlib.metadata answers from
+            # whichever it meets first and the closure index kept the first too, so a
+            # resident record that violates the pin can stand behind one that meets it.
+            # Ambiguous is stale, not absent; the step being considered for a skip is
+            # the one that would put a single record back.
+            violated.append(name)
             continue
         version = _installed_version(name, installed)
         # Absent is not a violation; unparseable metadata is, since the step that
