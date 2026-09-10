@@ -378,7 +378,7 @@ function ReasoningPageNavigation({
     <nav
       data-slot="reasoning-page-navigation"
       aria-label="Reasoning pages"
-      className="sticky top-0 z-10 mb-2 flex min-w-0 items-center gap-1 border-b border-border/60 bg-background/95 pb-2 backdrop-blur-sm"
+      className="flex min-w-0 flex-wrap items-center gap-1 border-b border-border/60 py-1"
     >
       <button
         type="button"
@@ -734,6 +734,18 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
       >
+        {paginationActive && (
+          <ReasoningPageNavigation
+            hasEarlier={page.hasEarlier}
+            hasNewer={page.hasNewer}
+            onEarlier={showEarlierPage}
+            onNewer={showNewerPage}
+            onLatest={showLatestPage}
+            start={page.start}
+            end={page.end}
+            total={reasoningText.length}
+          />
+        )}
         <ReasoningText
           autoScroll={viewingLatestPage}
           pageKey={paginationActive ? `${page.start}:${page.end}` : undefined}
@@ -741,16 +753,6 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         >
           {paginationActive ? (
             <>
-              <ReasoningPageNavigation
-                hasEarlier={page.hasEarlier}
-                hasNewer={page.hasNewer}
-                onEarlier={showEarlierPage}
-                onNewer={showNewerPage}
-                onLatest={showLatestPage}
-                start={page.start}
-                end={page.end}
-                total={reasoningText.length}
-              />
               {page.oversizedCode ? (
                 <OversizedReasoningCode source={page.markdown} />
               ) : (
