@@ -14,6 +14,7 @@ have an equivalent boundary.
 from __future__ import annotations
 
 import functools
+import json
 import os
 import shutil
 import stat
@@ -87,6 +88,18 @@ _MACOS_PROFILE = """
 """.strip()
 
 
+def _macos_runtime_profile(*runtime_roots: Path) -> str:
+    # Framework Python resolves its executable through the installation's
+    # ancestors. Permit stat/realpath there without allowing directory contents
+    # or reads of sibling installations, user files, or credentials.
+    ancestors = {str(parent) for root in runtime_roots for parent in root.parents}
+    metadata_rules = [
+        f"(allow file-read-metadata (literal {json.dumps(path, ensure_ascii = False)}))"
+        for path in sorted(ancestors)
+    ]
+    return "\n".join([_MACOS_PROFILE, *metadata_rules])
+
+
 @dataclass(frozen = True)
 class ExecutionBoundaryStatus:
     available: bool
@@ -140,7 +153,9 @@ def _probe_backend(platform: str, executable: str) -> bool:
                         "-D",
                         f"BASE_RUNTIME_ROOT={Path(sys.base_prefix).resolve()}",
                         "-p",
-                        _MACOS_PROFILE,
+                        _macos_runtime_profile(
+                            Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()
+                        ),
                         "/usr/bin/true",
                     ],
                     stdin = subprocess.DEVNULL,
@@ -619,7 +634,7 @@ class ProjectExecutionBoundary:
                 "-D",
                 f"BASE_RUNTIME_ROOT={self.base_runtime_root}",
                 "-p",
-                _MACOS_PROFILE,
+                _macos_runtime_profile(self.runtime_root, self.base_runtime_root),
                 *command,
             ]
         if self.backend == "bubblewrap":

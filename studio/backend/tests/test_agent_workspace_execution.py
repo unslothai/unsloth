@@ -328,6 +328,8 @@ def test_macos_boundary_denies_private_reads_and_network_egress(tmp_path):
 import json, os, socket, sys
 from pathlib import Path
 
+os.path.realpath(sys.executable, strict=True)
+
 def readable(path):
     try:
         with open(path, 'rb') as source:
