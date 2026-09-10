@@ -1997,17 +1997,19 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                     continue
 
                 part_type = part.get("type")
-                # The same filter anthropic_messages_to_openai applies, so the estimate
-                # charges what that sends. The content list is untyped, so a screenshot an
-                # agent's tool returned, a document and a future block type all arrive
-                # here, and none of them reach the wire to earn an allowance.
+                # Match the native tool-result conversion: text and image blocks reach the wire.
                 if part_type == "tool_result" and isinstance(part.get("content"), list):
                     part = dict(part)
-                    part["content"] = [
-                        block
-                        for block in part["content"]
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ]
+                    tool_content = []
+                    for block in part["content"]:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "text":
+                            tool_content.append(block)
+                        elif block.get("type") == "image":
+                            image_parts += 1
+                            tool_content.append(_openai_llama_admission_compact_image_part(block))
+                    part["content"] = tool_content
                     estimate_content.append(part)
                     continue
 
