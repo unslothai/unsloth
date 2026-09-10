@@ -599,3 +599,66 @@ test("the follower restores seeded approvals at the moment it learns the scope, 
     "the seed is where a skipped tool_start left the approval; the follower has to read it back out",
   );
 });
+
+test("a truncated result hands its artifact envelope to the shaper when the stream replaces its body", () => {
+  // The stream carried stdout in full and never carried ONE BYTE of the created-files/images envelope -- only
+  // tool_end's model-visible result does, riding past the truncation footer. A selection that swaps the fuller
+  // body in must carry the envelope along: without it the shaper has nothing to split and the reopened card
+  // loses its downloads and its rendered chart.
+  const replay = createRecoveryReplay("", undefined, { sandboxSessionId: "sess" });
+  replay.applyChunk({
+    _toolEvent: { type: "tool_start", tool_call_id: "call_0", tool_name: "python", arguments: {} },
+  });
+  replay.applyChunk({
+    _toolEvent: { type: "tool_output", tool_call_id: "call_0", text: "the full stdout, longer than any prefix of it\n" },
+  });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_end",
+      tool_call_id: "call_0",
+      result:
+        "the full stdout, longer than any prefix of it\n\n... (truncated to 43 chars for the model; 4096 chars total)\n" +
+        '__FILES__:[{"name":"report.csv","size":1}]\n__IMAGES__:["chart.png"]',
+    },
+  });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  const call = parts.find((part) => part.type === "tool-call")!;
+  const result = call.result as { text: string; files: unknown[]; images: unknown[] };
+  assert.equal(result.text.includes("longer than any prefix"), true);
+  assert.equal(
+    result.text.includes("(truncated"),
+    false,
+    "the model-visible truncation notice is not the reader's output",
+  );
+  assert.deepEqual(result.files, [{ name: "report.csv", size: 1 }]);
+  assert.deepEqual(result.images, ["chart.png"]);
+});
+
+test("an exit-prefixed result keeps its envelope when the stream replaces its body", () => {
+  // The other branch: a failed call prefixes the result with "Exit code N:", so the fuller stream is matched
+  // through the exit prefix instead -- and the hint match ran to end of string, which USED to be the only thing
+  // keeping the envelope alive when a Hint rode along. Now the envelope rides on its own, with or without one.
+  const replay = createRecoveryReplay("", undefined, { sandboxSessionId: "sess" });
+  replay.applyChunk({
+    _toolEvent: { type: "tool_start", tool_call_id: "call_0", tool_name: "terminal", arguments: {} },
+  });
+  replay.applyChunk({
+    _toolEvent: { type: "tool_output", tool_call_id: "call_0", text: "boom output that ran long enough to truncate\n" },
+  });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_end",
+      tool_call_id: "call_0",
+      result:
+        "Exit code 1:\nboom output that ran long enough to tr\n\n... (truncated for the model)\nHint: rerun with X\n" +
+        '__FILES__:[{"name":"out.log","size":2}]',
+    },
+  });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  const call = parts.find((part) => part.type === "tool-call")!;
+  const result = call.result as { text: string; files: unknown[] };
+  assert.equal(result.text.startsWith("Exit code 1:"), true);
+  assert.equal(result.text.includes("ran long enough to truncate"), true);
+  assert.equal(result.text.includes("Hint: rerun with X"), true);
+  assert.deepEqual(result.files, [{ name: "out.log", size: 2 }]);
+});
