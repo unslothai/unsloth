@@ -84,14 +84,10 @@ def test_prequant_repo_filename_convention():
     )
     assert prequant_repo_filename("org/Some-Model-quantized", "fp8") == "Some-Model-FP8.pt"
     assert prequant_repo_filename("org/PlainRepo", "int8") == "PlainRepo-INT8.pt"
-    # The fp4 / MX repos are named the same way, and without their suffixes in the strip the model
-    # name keeps them and the load asks for Wan2.2-TI2V-5B-NVFP4-NVFP4.pt, which is a 404.
     assert (
         prequant_repo_filename("unsloth/Wan2.2-TI2V-5B-NVFP4", "nvfp4") == "Wan2.2-TI2V-5B-NVFP4.pt"
     )
     assert prequant_repo_filename("unsloth/Model-MXFP8", "mxfp8") == "Model-MXFP8.pt"
-    # A second denoiser of the same family gets its own name; the default component keeps the
-    # plain one every hosted repo already uses.
     assert (
         prequant_repo_filename("unsloth/Wan2.2-T2V-A14B-NVFP4", "nvfp4", component = "transformer_2")
         == "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"
@@ -305,7 +301,6 @@ def test_usable_source_repo_unaffected_by_allowlist(monkeypatch, restricted_load
     assert src is not None and src.kind == "repo" and src.location == "org/hosted-fp8"
 
 
-# ── the packed-weight fingerprint ────────────────────────────────────────────────
 _UINT8 = object()  # the stub torch's uint8, so the fingerprint's dtype view is a no-op here
 
 
@@ -327,9 +322,6 @@ class _Bytes:
         return 1
 
     def view(self, dtype):
-        # Already bytes. Defined so the fingerprint computes the same digest whether the torch in
-        # scope is the stub below (whose uint8 IS this sentinel, so no view happens) or the real
-        # one a test computes an expected fingerprint under.
         return self
 
     def cpu(self):
@@ -392,8 +384,6 @@ def _fingerprinted_ckpt(payloads, *, recorded = None):
 
 
 def test_a_flipped_byte_in_a_packed_weight_is_refused_and_named(monkeypatch, tmp_path):
-    # Every other check reads what the artifact SAYS. A checkpoint corrupted after it was built --
-    # a bad upload, a truncated cache entry -- says all the right things and renders garbage.
     good = _fingerprinted_ckpt(
         {"blocks.0.attn1.to_q.weight": b"q0", "blocks.1.attn1.to_q.weight": b"q1"}
     )
@@ -404,15 +394,12 @@ def test_a_flipped_byte_in_a_packed_weight_is_refused_and_named(monkeypatch, tmp
     )
     corrupt["state_dict"]["blocks.1.attn1.to_q.weight"].qdata = _Bytes(b"Q1")
     logger = _Recorder()
-    # Dense fallback, the file's convention for every other refusal, not a raise.
     assert _load(monkeypatch, tmp_path, corrupt, logger = logger) is None
     assert "blocks.1.attn1.to_q.weight" in logger.text
     assert "blocks.0.attn1.to_q.weight" not in logger.text
 
 
 def test_a_checkpoint_without_a_fingerprint_block_still_loads(monkeypatch, tmp_path):
-    # Every hosted fp8 / int8 artifact predates the block. Refusing them would drop a working fast
-    # path to the dense download for nothing.
     ckpt = _good_ckpt()
     ckpt["state_dict"] = {"blocks.0.attn1.to_q.weight": Float8Tensor(b"q0")}
     assert _load(monkeypatch, tmp_path, ckpt) is not None
@@ -426,7 +413,6 @@ def test_the_fingerprint_mode_env_picks_how_much_is_checked(monkeypatch, tmp_pat
         _fingerprint_sampled,
     )
 
-    # One in eight fqns, chosen by a stable hash of the name so two loads check the same subset.
     sampled = [f"blocks.{i}.attn1.to_q.weight" for i in range(64)]
     checked = [fqn for fqn in sampled if _fingerprint_sampled(fqn)]
     assert 0 < len(checked) < len(sampled)
@@ -434,7 +420,6 @@ def test_the_fingerprint_mode_env_picks_how_much_is_checked(monkeypatch, tmp_pat
 
     payloads = {fqn: fqn.encode("utf-8") for fqn in sampled}
     corrupt = _fingerprinted_ckpt(payloads)
-    # Corrupt one weight the sample DOES cover, and one it does not.
     missed = next(fqn for fqn in sampled if not _fingerprint_sampled(fqn))
     corrupt["state_dict"][checked[0]].qdata = _Bytes(b"flipped")
     monkeypatch.setenv(FINGERPRINT_MODE_ENV, "sample")
@@ -442,19 +427,15 @@ def test_the_fingerprint_mode_env_picks_how_much_is_checked(monkeypatch, tmp_pat
     only_missed = _fingerprinted_ckpt(payloads)
     only_missed["state_dict"][missed].qdata = _Bytes(b"flipped")
     assert _load(monkeypatch, tmp_path, only_missed) is not None
-    # ... which full mode catches, and off checks nothing at all.
     monkeypatch.setenv(FINGERPRINT_MODE_ENV, "full")
     assert _load(monkeypatch, tmp_path, only_missed) is None
     monkeypatch.setenv(FINGERPRINT_MODE_ENV, "off")
     assert _load(monkeypatch, tmp_path, only_missed) is not None
-    # An unrecognised value is the default, not "no check".
     monkeypatch.setenv(FINGERPRINT_MODE_ENV, "sometimes")
     assert _load(monkeypatch, tmp_path, only_missed) is None
 
 
 def test_a_build_that_recognises_no_quantized_weight_loads_unverified(monkeypatch, tmp_path):
-    # A torchao that renamed a payload attribute makes every weight uncoverable here. Refusing the
-    # whole scheme over a library rename is worse than not checking, so this one fails soft.
     ckpt = _fingerprinted_ckpt({"blocks.0.attn1.to_q.weight": b"q0"})
     ckpt["state_dict"] = {"blocks.0.attn1.to_q.weight": object()}
     assert _load(monkeypatch, tmp_path, ckpt) is not None
@@ -538,8 +519,6 @@ def _stub_torch_accelerate(
         seen["safe_globals"] = list(entries)
 
     torch.load = _load
-    # The fingerprint check views a payload as uint8 before hashing it; the fakes below carry this
-    # same sentinel as their dtype, so the view is a no-op here.
     torch.uint8 = _UINT8
     # A stub without this namespace would let a regression to an unrestricted load pass silently.
     torch.serialization = types.SimpleNamespace(add_safe_globals = _add_safe_globals)
@@ -755,9 +734,6 @@ def test_load_require_bf16_nvfp4_true_is_none(monkeypatch, tmp_path):
 
 
 def test_load_require_divisible_mismatch_is_none(monkeypatch, tmp_path):
-    # Same scheme, same min_features, a DIFFERENT admitted set: a checkpoint baked without the
-    # GEMM tiling floor carries the ragged linears the runtime leaves dense, and the first real
-    # matmul of the first render is where that would otherwise surface.
     ckpt = _good_ckpt(scheme = "fp8")
     ckpt["metadata"]["require_divisible"] = 0
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
@@ -770,15 +746,12 @@ def test_load_require_divisible_match_ok(monkeypatch, tmp_path):
 
 
 def test_load_require_divisible_absent_is_accepted(monkeypatch, tmp_path):
-    # Every hosted artifact predates the field, and none of them is wrong about anything else.
     ckpt = _good_ckpt(scheme = "fp8")
     assert "require_divisible" not in ckpt["metadata"]
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is not None
 
 
 def test_load_component_mismatch_is_none(monkeypatch, tmp_path):
-    # A MoE family's two experts share family, scheme, base and key set, so every other check here
-    # passes on the wrong one: it would load clean and render from the other expert's weights.
     ckpt = _good_ckpt()
     ckpt["metadata"]["component"] = "transformer_2"
     assert _load(monkeypatch, tmp_path, ckpt, component = "transformer") is None
@@ -786,11 +759,8 @@ def test_load_component_mismatch_is_none(monkeypatch, tmp_path):
 
 
 def test_load_component_absent_is_accepted(monkeypatch, tmp_path):
-    # A single-denoiser family has nothing to confuse its checkpoint with, which is every hosted
-    # artifact today.
     ckpt = _good_ckpt()
     assert _load(monkeypatch, tmp_path, ckpt, component = "transformer") is not None
-    # And a caller that names no component checks nothing.
     ckpt["metadata"]["component"] = "transformer_2"
     assert _load(monkeypatch, tmp_path, ckpt) is not None
 

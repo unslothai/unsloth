@@ -231,17 +231,10 @@ class PadToMinM(nn.Module):
 class ZeroRowSafeLinear(nn.Module):
     """Wrap ``inner`` so an EMPTY activation is answered here rather than by the GEMM.
 
-    torchao's NVFP4 dynamic-activation path takes a global scale from ``torch.max(torch.abs(x))``
-    over the WHOLE input, and ``max()`` over an empty tensor raises::
-
-        RuntimeError: max(): Expected reduction dim to be specified for input.numel() == 0.
-
-    (measured on a B200, torch 2.12.1 / torchao 0.17.0, on a quantized Linear(1152, 3072) fed a
-    ``(1, 0, 1152)`` input.) An empty projection has one correct answer -- an empty tensor at the
-    output width, plus nothing to add the bias to -- so producing it directly is not an
-    approximation. Same result as ``F.linear`` bit for bit, since both are empty at that shape.
-
-    Shape-preserving and inert above zero rows: a non-empty call goes straight to ``inner``.
+    torchao's NVFP4 dynamic-activation path takes its global scale from ``torch.max(torch.abs(x))``
+    over the whole input, and ``max()`` raises on ``numel() == 0``. An empty projection has one
+    correct answer, an empty tensor at the output width, so producing it here is not an
+    approximation. Inert above zero rows.
     """
 
     def __init__(self, inner: nn.Linear) -> None:
@@ -250,16 +243,14 @@ class ZeroRowSafeLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
-            # Every leading dim is the caller's; only the feature dim becomes out_features. The bias add is a broadcast
-            # over zero elements, kept so the result is the same object F.linear would build, dtype and all.
+            # The bias add is a broadcast over zero elements, kept so the result matches what F.linear would build, dtype and all.
             out = x.new_zeros((*x.shape[:-1], self.inner.out_features))
             bias = getattr(self.inner, "bias", None)
             return out if bias is None else out + bias
         return self.inner(x)
 
     def __getattr__(self, name: str) -> Any:
-        # Same passthrough as PadToMinM: callers reach THROUGH a Linear for weight / bias / in_features /
-        # out_features, and without this the wrapper is a drop-in only until the first such access.
+        # Same passthrough as PadToMinM: callers reach THROUGH a Linear for weight / bias / in_features / out_features.
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -271,9 +262,7 @@ class ZeroRowSafeLinear(nn.Module):
             return getattr(inner, name)
 
     def state_dict(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        """Emit the inner Linear's tensors under the WRAPPER's prefix, as ``PadToMinM`` does, so a
-        checkpoint written from a wrapped transformer still names ``image_embedder.linear_1.weight``
-        and stays loadable by an unwrapped tree."""
+        """Emit the inner Linear's tensors under the WRAPPER's prefix so the checkpoint stays loadable by an unwrapped tree."""
         destination = kwargs.pop("destination", args[0] if args else None)
         prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
@@ -306,16 +295,9 @@ class ZeroRowSafeLinear(nn.Module):
 def wrap_zero_row_linears(model: nn.Module, fqns: Iterable[str]) -> tuple[str, ...]:
     """Replace each Linear named in ``fqns`` with a ``ZeroRowSafeLinear``; return those wrapped.
 
-    Mirrors ``wrap_small_m_linears``: surgical (only the fqns handed in), tolerant of a name this
-    checkpoint variant does not have, and gated on ``is_quantized_linear``. That one gate also
-    makes the wrap idempotent and keeps the two wrappers from stacking: neither wrapper is an
-    ``nn.Linear``, so an already-wrapped module is skipped whichever wrapper it holds. Skipping a
-    ``PadToMinM`` is the right answer rather than a missed guard -- it answers a zero-row call
-    itself, at the same width, without reaching the GEMM.
-
-    No granularity proof is needed here (unlike the padding, this changes no arithmetic: it
-    substitutes the empty result for a call that would have raised), so a Linear is either
-    quantized and wrapped or dense and left alone."""
+    Gated on ``is_quantized_linear``, which also makes the wrap idempotent and keeps the two
+    wrappers from stacking: neither wrapper is an ``nn.Linear``. Skipping a ``PadToMinM`` is right
+    rather than a missed guard, since it answers a zero-row call itself without reaching the GEMM."""
     done: list[str] = []
     for fqn in sorted(set(fqns)):
         parent_name, _, leaf = fqn.rpartition(".")

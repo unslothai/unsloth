@@ -3,18 +3,11 @@
 
 """Read or diff the packed-weight fingerprint of a pre-quantized transformer checkpoint.
 
-``scripts/build_prequant_checkpoint.py`` stamps an md5 of every quantized weight's packed
-payload into the artifact's metadata, and both the builder's ``--verify-against`` gate and the
-loader's runtime check read that block. This is the same answer on the command line, for the
-artifacts that already exist: what a hosted checkpoint claims, and whether two builds of one
-artifact are the same weights.
-
   python scripts/prequant_fingerprint.py --fingerprint Wan2.2-TI2V-5B-NVFP4.pt
   python scripts/prequant_fingerprint.py --diff build_a.pt build_b.pt
 
-``--diff`` exits 3 on any difference, so it drops straight into a build script. The metadata is
-read through the loader's own restricted ``weights_only`` path, so pointing this at a file that
-turns out not to be one of ours cannot execute anything.
+``--diff`` exits 3 on any difference. The metadata is read through the loader's own restricted
+``weights_only`` path, so pointing this at a file that is not one of ours cannot execute anything.
 """
 
 from __future__ import annotations
@@ -53,8 +46,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     sys.path.insert(0, str(BACKEND))
-    # Imported here rather than at module scope: the fingerprint helpers live in the backend, which only joins
-    # sys.path above, and the diff helpers live beside the builder.
+    # Imported here rather than at module scope: the backend only joins sys.path above.
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
