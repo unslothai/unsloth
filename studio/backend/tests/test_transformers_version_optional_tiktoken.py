@@ -175,6 +175,38 @@ def test_a_runtime_repair_survives_a_tiktoken_that_will_not_install(tmp_path, mo
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
 
 
+def test_a_remnant_that_will_not_go_fails_the_build_instead_of_shadowing(tmp_path, monkeypatch):
+    """The optional install failed part-way and left tiktoken/ behind, and the cleanup
+    cannot remove it (a file another process holds open on Windows, a permission). That
+    directory sits ahead of site-packages, so the build is a failure to be redone, not a
+    sidecar without the package."""
+    root = tmp_path / ".venv_t5_550"
+
+    def fake_install(pkg, target_dir):
+        if pkg.startswith("tiktoken"):
+            (Path(target_dir) / "tiktoken").mkdir(parents = True, exist_ok = True)
+            (Path(target_dir) / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+            return False
+        return True
+
+    monkeypatch.setattr(tv, "_install_to_dir", fake_install)
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    real_rmtree = tv.shutil.rmtree
+
+    def stuck_rmtree(path, *a, **k):
+        if Path(path).name == "tiktoken":
+            return None
+        return real_rmtree(path, *a, **k)
+
+    monkeypatch.setattr(tv.shutil, "rmtree", stuck_rmtree)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+    assert (root / "tiktoken").is_dir()
+    monkeypatch.setattr(tv.shutil, "rmtree", real_rmtree)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert not (root / "tiktoken").exists()
+    assert tv._remove_optional_remnants(str(root), "tiktoken==0.12.0") is True
+
+
 def test_a_present_tiktoken_is_held_to_its_record_like_any_other(tmp_path, monkeypatch):
     """Absence is what is optional. A tiktoken that is present but whose RECORD names a
     file that is not there (an interrupted install, a native extension left from an
