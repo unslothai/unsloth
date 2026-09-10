@@ -36,6 +36,7 @@ import {
 } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -388,6 +389,13 @@ function RootLayout() {
   // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
+  // Reserves the navbar the shell actually rendered. Read off the same hook
+  // Navbar uses, not the `md` breakpoint: a narrowed desktop window keeps the
+  // desktop navbar, and a CSS rule would reserve the mobile one's 56px and
+  // leave --studio-titlebar-height at 0 for the pages sized off it.
+  const nonChatTopInset = useIsMobile()
+    ? "pt-14"
+    : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -573,7 +581,7 @@ function RootLayout() {
             <Navbar />
             <div
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >
               {/* The find bar floats over this region and searches it: the workspace on screen,
                   without the sidebar, the navbar, or the off-route workspaces parked here under
