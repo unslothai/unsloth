@@ -40,6 +40,8 @@ from .preempt_fakes import clean_admission_queues, clean_preemption_registry
 # pytest finds these by name; named here so the import reads as a use.
 _FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _controller(
     budget = 16384,
@@ -134,9 +136,25 @@ class TestTheSignal:
 
     @pytest.mark.parametrize(
         ("value", "enabled"),
-        [(None, True), ("0", False), ("false", False), ("OFF", False), ("maybe", True)],
+        [
+            # OFF by default, which is the whole point: an install that sets nothing pauses
+            # nobody. A typo cannot switch it on either, so "maybe" keeps that default.
+            (None, False),
+            ("maybe", False),
+            ("   ", False),
+            ("1", True),
+            ("true", True),
+            ("yes", True),
+            ("on", True),
+            ("ON", True),
+            ("0", False),
+            ("false", False),
+            ("no", False),
+            ("off", False),
+            ("OFF", False),
+        ],
     )
-    def test_the_rollout_switch_is_on_unless_the_environment_plainly_says_otherwise(
+    def test_the_opt_in_switch_is_off_unless_the_environment_plainly_asks_for_it(
         self, monkeypatch, value, enabled
     ):
         if value is None:

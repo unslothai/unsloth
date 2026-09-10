@@ -10,6 +10,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import PREEMPT_GAVE_UP_REASON, _TOKEN_REPORT_EVERY
 from core.inference.llama_preemption import (
@@ -38,6 +40,8 @@ for _extra in (str(Path(__file__).resolve().parent), str(Path(__file__).resolve(
 
 _TOOL = web_search_tool(required = True)
 _PLAIN_TOOL = web_search_tool()
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def _Recorder(

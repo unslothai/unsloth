@@ -9,6 +9,8 @@ import asyncio
 import json
 import threading
 
+import pytest
+
 
 from core.inference import llama_preemption as preemption
 from core.inference import studio_tool_loop as loop_mod
@@ -22,6 +24,8 @@ from core.inference.studio_tool_loop import (
     ToolLoopRun,
     stream_with_studio_tools,
 )
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def _sse(

@@ -29,6 +29,8 @@ from .preempt_fakes import (
     usage as _usage,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _Recorder(
     monkeypatch,

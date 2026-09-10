@@ -30,6 +30,8 @@ from .test_llama_tool_loop_preempt_resume import (
     _run,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 @pytest.fixture(autouse = True)
 def _clean_registry():

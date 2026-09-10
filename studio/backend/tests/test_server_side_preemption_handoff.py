@@ -38,6 +38,8 @@ from .preempt_fakes import (
     finish as preempt_fakes_finish,
 )
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _delta(content: str) -> str:
     return preempt_fakes_delta(content, terminator = "\n\n")

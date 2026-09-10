@@ -60,6 +60,11 @@ def _prompt_tokens(payload):
 class TestEveryChatIsPermittedItsWholeWindow:
     """The invariant MOVED. It is no longer arithmetic, it is eviction."""
 
+    # Opted in per class, not per module: other classes here assert the SHARE-based bound a
+    # default install gets, and the whole-window bound asserted here exists only where a pause
+    # can reclaim it.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
     @pytest.mark.parametrize("total", [2048, 4096, 8192, 16384, 65536, 262144])
     def test_no_request_may_exceed_its_own_window(self, total):
         backend = _backend(window = total, total = total, slots = 4)
@@ -306,6 +311,9 @@ class TestWhereAStatedCapStopsBeingStated:
 
 
 class TestTheEdges:
+    # The window-sized bound this class measures against is the opted-in one.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
     def test_a_prompt_that_fills_the_window_still_gets_a_token(self):
         """Zero would be refused upstream, so the floor is one."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
@@ -469,6 +477,10 @@ class TestAStatedCapNoLongerSerialises:
 
 class TestTheGateIsTheEnforcementItself:
     """The optimism must be switched on by exactly what makes it survivable."""
+
+    # Opted in: each case here starts from the optimism being ON and turns one switch off, so
+    # the switch under test is the reason, not the default.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
     class _Backend:
         def __init__(self, unified):

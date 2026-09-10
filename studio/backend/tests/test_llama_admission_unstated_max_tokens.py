@@ -183,12 +183,13 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
     and at 2048 only one did. Clamped to the share, ``capacity`` of them always fit.
     """
 
-    def _cost(self, budget, capacity):
+    def _cost(self, budget, capacity, active = False):
         return _openai_llama_admission_tokens(
             _chat(max_tokens = budget),
             budget = budget,
             capacity = capacity,
             context_window = budget,
+            preemption_active = active,
         )
 
     def test_capacity_default_chats_fit_at_every_cache_size(self):
@@ -196,24 +197,26 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
             cost = self._cost(budget, 4)
             assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
 
-    def test_the_charge_does_not_scale_with_the_cache_while_a_pause_can_reclaim_it(self):
-        # With nothing able to pause the request, the charge IS its share, which does scale:
-        # that is the cap it is sent, and charging less admitted more than the cache holds.
-        def _pausable(budget):
-            return _openai_llama_admission_tokens(
-                _chat(max_tokens = budget),
-                budget = budget,
-                capacity = 4,
-                context_window = budget,
-                preemption_active = True,
-            )
+    def test_the_charge_scales_with_the_cache(self):
+        """A bigger cache buys a bigger share: the charge is the share itself, so it must
+        scale or a large cache is priced as a small one. How MANY fit is asserted above.
 
-        assert _pausable(262144) == _pausable(
-            32768
+        This is the DEFAULT, with `UNSLOTH_LLAMA_ADMISSION_PREEMPT` unset: nothing can hand
+        the difference back, so the reservation has to cover what the wire is permitted.
+        """
+        assert self._cost(262144, 4) > self._cost(32768, 4)
+        for budget in (32768, 262144):
+            assert self._cost(budget, 4) == budget // 4, "unpausable: the share it may fill"
+
+    def test_the_charge_stops_scaling_once_a_pause_can_reclaim(self):
+        """The opt-in half: a bigger cache does NOT buy a bigger charge, because the
+        optimism is what preemption makes survivable.
+        """
+        assert self._cost(262144, 4, active = True) == self._cost(
+            32768, 4, active = True
         ), "a large cache must not be charged more for the same unstated request"
         for budget in (32768, 262144):
-            assert _pausable(budget) < budget // 4
-            assert self._cost(budget, 4) == budget // 4, "unpausable: the share it may fill"
+            assert self._cost(budget, 4, active = True) < budget // 4
 
     def test_the_share_only_ever_lowers_the_allowance(self):
         base = _openai_llama_admission_output_allowance(

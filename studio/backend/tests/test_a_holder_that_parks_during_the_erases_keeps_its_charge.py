@@ -16,6 +16,9 @@ import inspect
 
 from core.inference.llama_preemption import ParticipantState, PreemptionController
 import routes.inference as inference
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 BASE = "http://127.0.0.1:65041"

@@ -12,6 +12,9 @@ import inspect
 from core.inference import llama_preemption as preemption
 from core.inference.llama_preemption import ParticipantState
 import routes.inference as inference
+import pytest
+
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 
 def _controller(key: str) -> preemption.PreemptionController:

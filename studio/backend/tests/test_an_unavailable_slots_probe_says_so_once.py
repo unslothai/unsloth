@@ -17,6 +17,8 @@ import pytest
 
 import routes.inference as inference
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _backend(port: int):
     return SimpleNamespace(

@@ -574,6 +574,11 @@ class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
 
 
 class TestAutoDoesNotStartAModeItWillReportUnavailable:
+    # Opted in: exact concurrency needs the SERVER to park, and the server only parks where
+    # preemption was asked for, so the switch is what these cases hold still while they vary
+    # the launch line. `TestTheGlobalOptOutBlocksAnAutoLaunch` is the other half.
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
     _ARGV = ["llama-server", "--kv-unified"]
 
     def test_studio_side_pausing_blocks_an_auto_launch(self, monkeypatch):
@@ -840,7 +845,15 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
         monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: False)
         why = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {})
-        assert why and "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0" in why
+        # Spelled as the operator set it. Unset is the default, and "=0" there would name a
+        # variable nobody wrote.
+        assert why and f"{preemption_mod.PREEMPT_ENV} is not set" in why
+        monkeypatch.setenv(preemption_mod.PREEMPT_ENV, "0")
+        assert (
+            f"{preemption_mod.PREEMPT_ENV}=0"
+            in llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {})
+        )
+        monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
         # A named budget does not buy the child a park either: `_stand_down_child_parking`
         # zeroes it, so the mode would be started for a server that never parks.
         for argv, env in (
@@ -848,7 +861,7 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
             (["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "4096"}),
         ):
             blocked = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, argv, env)
-            assert blocked and "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0" in blocked
+            assert blocked and preemption_mod.PREEMPT_ENV in blocked
         monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: True)
         assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {}) is None
 
@@ -1204,7 +1217,9 @@ class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:
 
     def test_auto_does_not_start_a_mode_the_extras_contradict(self, monkeypatch):
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
-        monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
+        # On, so the launch line is the only thing left to block on: unset is the opt-out, and
+        # that blocks every auto launch on its own.
+        monkeypatch.setenv(preemption_mod.PREEMPT_ENV, "1")
         reason = llama_mod._exact_auto_blocker(
             exact.EXACT_AUTO, ["llama-server", "--kv-unified", "--no-kv-unified"], {}
         )
@@ -1216,7 +1231,8 @@ class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:
 
     def test_cpu_expert_placement_is_read_off_the_whole_launch_line(self, monkeypatch):
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
-        monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
+        # As above: the launch line is what is under test, so the switch is held on.
+        monkeypatch.setenv(preemption_mod.PREEMPT_ENV, "1")
         # Studio emits --n-cpu-moe itself, so the preflight reads the line, not just the extras,
         # and llama-server does not refuse this one: exact concurrency does.
         reason = llama_mod._exact_auto_blocker(

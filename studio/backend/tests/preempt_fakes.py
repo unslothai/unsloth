@@ -1,7 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Doubles shared by the KV-preemption tests."""
+"""Doubles shared by the KV-preemption tests, and the opt-in every one of them needs.
+
+`UNSLOTH_LLAMA_ADMISSION_PREEMPT` is off unless an operator sets it, so a module that tests
+pausing and resuming asks for it the way an operator would:
+
+    pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
+Deliberately NOT autouse: switching it on for the whole suite would hide the real default from
+every test that is meant to see it, which is the regression the default exists to prevent.
+`tests/conftest.py` imports the fixture so the marker resolves from anywhere, including the
+modules a sibling imports as a top-level module rather than through the package. A test that sets
+the variable itself still wins, `monkeypatch.setenv` in a body running after its fixtures, which
+is what keeps the explicit `=0` and `=1` cases meaningful.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +26,7 @@ import threading
 import pytest
 
 from core.inference import llama_preemption as preemption
+from core.inference.llama_preemption import PREEMPT_ENV
 from core.inference.llama_cpp import LlamaCppBackend
 
 
@@ -337,3 +351,10 @@ def clean_admission_queues():
     reset_llama_admission_queues()
     yield
     reset_llama_admission_queues()
+
+
+@pytest.fixture
+def preemption_opted_in(monkeypatch):
+    """Run this module as an install that opted in. Undone after every test."""
+    monkeypatch.setenv(PREEMPT_ENV, "1")
+    yield

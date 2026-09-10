@@ -16,6 +16,8 @@ from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQ
 from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.llama_preemption import PreemptionController
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
 
 def _ticking():
     """A progress signature that moves on every reading, like a decoding backend."""

@@ -2256,6 +2256,17 @@ def _exact_preflight_env(environ: Mapping[str, str], gpu_memory_mode: Optional[s
     return env
 
 
+def _preempt_switch_spelling() -> str:
+    """The preemption switch as the operator set it, for a message that names what lost.
+
+    An unset switch is not spelled as a zero: preemption is off until it is asked for, so "=0"
+    would name a variable nobody wrote."""
+    setting = (os.environ.get(_preemption.PREEMPT_ENV) or "").strip()
+    if setting:
+        return f"{_preemption.PREEMPT_ENV}={setting}"
+    return f"{_preemption.PREEMPT_ENV} is not set"
+
+
 def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[str]:
     """Why an ``auto`` exact launch should not start the mode at all, else None.
 
@@ -2284,7 +2295,7 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
     # The same condition `_stand_down_child_parking` acts on later (studio mode above is its
     # other): Studio's preemption off hands the child a zero, over any budget the line names.
     if not _preemption.preemption_enabled():
-        return "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 switches the server's parking off as well"
+        return f"{_preempt_switch_spelling()} switches the server's parking off as well"
     return None
 
 
@@ -2297,14 +2308,7 @@ def _child_parking_stand_down_reason(server_supports: Optional[bool] = None) -> 
     if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
         return f"{_preemption.PREEMPT_MODE_ENV}=studio"
     if not _preemption.preemption_enabled():
-        setting = (os.environ.get(_preemption.PREEMPT_ENV) or "").strip()
-        # As the user set it, and an unset switch is not spelled as a zero: preemption is off
-        # until it is asked for, so "=0" would name a variable nobody wrote.
-        return (
-            f"{_preemption.PREEMPT_ENV}={setting}"
-            if setting
-            else f"{_preemption.PREEMPT_ENV} is not set"
-        )
+        return _preempt_switch_spelling()
     if server_supports is False:
         return "the llama-server probe did not confirm --preempt-ram"
     return None
@@ -35588,9 +35592,7 @@ class LlamaCppBackend:
                         admission_output_allowance = _final_recosted_allowance
                         # As in the loop: the respawn refit below is the one sizing left
                         # under the re-cost, and this attempt's cap is what it sends.
-                        _final_fit_max_tokens = min(
-                            _final_attempt_cap, _final_recosted_allowance
-                        )
+                        _final_fit_max_tokens = min(_final_attempt_cap, _final_recosted_allowance)
                 except LlamaAdmissionRecostRefused:
                     # As in the loop: not sent, and a continuation keeps what it has shown.
                     logger.info(

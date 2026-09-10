@@ -2,7 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Who pauses when the shared KV cache fills. llama-server admits on `prompt_tokens <
-slot.n_ctx` alone, so chats that each fit collide and it errors EVERY processing slot."""
+slot.n_ctx` alone, so chats that each fit collide and it errors EVERY processing slot.
+
+OPT-IN: all of it is off unless `UNSLOTH_LLAMA_ADMISSION_PREEMPT=1`. Unset, an install behaves
+as it did before this module existed: no `/slots` reads on the token path, no participants, no
+`preempt_event` handed to a generation, no `: preempt-*` SSE comments, no park notices, and
+admission prices every request against its fair share. `preemption_enabled()` is that switch and
+every entry point below asks it first."""
 
 from __future__ import annotations
 
@@ -31,8 +37,10 @@ from loggers import get_logger
 _log = get_logger(__name__)
 
 
+# Opt-in: `=1` turns the whole controller on. Unset it is off and admission falls back to step 1's
+# wire clamp alone, which is what every install ran before preemption existed.
 PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
-DEFAULT_PREEMPT_ENABLED = True
+DEFAULT_PREEMPT_ENABLED = False
 
 
 # The park notices a llama-server built with unslothai/llama.cpp#197 writes on the very stream it
@@ -451,6 +459,12 @@ _DECODES_WHEN_TOKENS_ARRIVE = frozenset(
 
 
 def preemption_enabled() -> bool:
+    """Whether the operator opted in with ``UNSLOTH_LLAMA_ADMISSION_PREEMPT=1``.
+
+    A plain environment read, so it is cheap enough to be the FIRST thing every gate asks:
+    off, the caller must be able to bail out before it builds a signal, registers a
+    participant or opens a ``/slots`` round trip.
+    """
     return _bool_env(PREEMPT_ENV, DEFAULT_PREEMPT_ENABLED)
 
 
@@ -939,7 +953,12 @@ class PreemptionController:
 
     def observe(self, gen_id: str, generated: int) -> List["Participant"]:
         """Live growth during generation, and THE watermark sweep. It cannot live only between
-        rounds: one round can generate thousands of tokens. Returns whoever must stop, signalled."""
+        rounds: one round can generate thousands of tokens. Returns whoever must stop, signalled.
+
+        Gated first: off, the surfaces hand out `on_tokens = None` and no chat reaches here, but
+        the tool loops re-baseline through `note_tokens`, and that sweeps."""
+        if not preemption_enabled():
+            return []
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
@@ -965,7 +984,13 @@ class PreemptionController:
 
     def set_residency_probe(self, probe: Optional[Callable[[], None]]) -> None:
         """Register a way to re-read the cache on demand. The ledger adds up prompt ESTIMATES; a
-        reading a second old can be a thousand tokens stale when a resume grant uses it."""
+        reading a second old can be a thousand tokens stale when a resume grant uses it.
+
+        Refused while the switch is off: the call sites register one unconditionally and each is a
+        per-request closure kept on a process-lifetime controller. Clearing (`probe = None`) is
+        always allowed, so flipping the switch off never strands an earlier request's probe."""
+        if probe is not None and not preemption_enabled():
+            return
         self._residency_probe = probe
 
     def refresh_residency(self) -> None:

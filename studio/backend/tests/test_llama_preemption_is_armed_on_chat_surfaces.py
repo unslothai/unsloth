@@ -33,6 +33,9 @@ from .preempt_fakes import clean_admission_queues, clean_preemption_registry
 _FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 
+pytestmark = pytest.mark.usefixtures("preemption_opted_in")
+
+
 BASE = "http://llama.test"
 
 
