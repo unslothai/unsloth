@@ -9718,6 +9718,9 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+            warm = {}
+            _apply_seeded_llama_request(warm, value, reuse_prompt_cache = True)
+            assert warm == {"seed": value}, (seed, value, warm)
 
 
 class TestPassthroughImageNormalization:
