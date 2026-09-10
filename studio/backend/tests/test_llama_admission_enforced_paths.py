@@ -1406,6 +1406,41 @@ class TestARetryThatGrewItsPrompt:
         )
 
 
+class TestTheOpeningLeaseIsPricedOnTheProfiledPrompt:
+    """The builders neutralise against the loaded model's profile, and so does the bound.
+    Charging the generic sweep instead left a lease short of the wire by every profiled
+    marker the prompt repeats, and a bound priced past its share falls to the flat
+    allowance: cells the ledger never booked."""
+
+    def test_the_charge_moves_with_the_profile_exactly_as_the_wire_does(self):
+        from core.inference.chat_template_helpers import model_markup
+
+        profile = model_markup("[ZETA] {{ m }}", ["[ZETA]"])
+        conversation = [{"role": "user", "content": "[ZETA] " * 40 + "hello"}]
+        payload = _Payload(messages = conversation, max_tokens = 64)
+        wire = lambda markup: _openai_llama_admission_wire_prompt_tokens(
+            conversation, markup = markup
+        )
+        charge = lambda markup: _openai_llama_admission_tokens(
+            payload,
+            budget = 65536,
+            capacity = 1,
+            context_window = 65536,
+            conversation = conversation,
+            markup = markup,
+        )
+        assert wire(profile) > wire(None), "the profile is what makes the marker cost words"
+        assert charge(profile) - charge(None) == wire(profile) - wire(None)
+
+    def test_the_reservation_hands_the_backends_profile_over(self):
+        import inspect
+
+        from routes.inference import _openai_llama_admission_reserve
+
+        source = inspect.getsource(_openai_llama_admission_reserve)
+        assert "markup = _openai_llama_admission_markup(llama_backend)," in source
+
+
 class TestTheOperatorSwitches:
     """Both switches turn the reservation itself off, so there is nothing to enforce."""
 

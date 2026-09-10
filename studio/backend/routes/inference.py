@@ -2162,6 +2162,7 @@ def _openai_llama_admission_tokens(
     injected_tools = None,
     context_window: Optional[int] = None,
     conversation = None,
+    markup = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -2177,8 +2178,13 @@ def _openai_llama_admission_tokens(
         return None
     if conversation is not None:
         # What is sent: the GGUF builders splice a date prompt, a nudge and media in later.
+        # Priced on the same neutralised list the bound is, so a profiled marker the generic
+        # sweep leaves alone cannot leave the charge below what the wire carries.
         prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
-            conversation, image_tokens = image_tokens, injected_tools = injected_tools
+            conversation,
+            image_tokens = image_tokens,
+            injected_tools = injected_tools,
+            markup = markup,
         ) + _openai_llama_admission_transport_tokens(payload)
     else:
         prompt_tokens = _openai_llama_admission_prompt_tokens(
@@ -2521,6 +2527,7 @@ def _openai_llama_admission_reserve(
             injected_tools = injected_tools,
             context_window = _openai_llama_admission_context_window(llama_backend),
             conversation = conversation,
+            markup = _openai_llama_admission_markup(llama_backend),
         )
         if payload is not None
         else None,
