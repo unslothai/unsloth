@@ -3,15 +3,9 @@
 
 """Delete preflight and orphaned-companion cleanup for image-model assets.
 
-Three answers live here, all derived from the cache scan at call time (see
-``hub.utils.companion_assets`` for why nothing is counted):
+Three answers live here, all derived from the cache scan at call time (see ``hub.utils.companion_assets`` for why nothing is counted): :func:`delete_impact_response` (what a pending delete reclaims and what it leaves behind), :func:`companion_dependents` (who still needs a companion base, used as a delete guard) and :func:`orphan_companions_response` (companion bases no installed model needs any more).
 
-  :func:`delete_impact_response`  what a pending delete reclaims, and what it leaves behind
-  :func:`companion_dependents`    who still needs a companion base, used as a delete guard
-  :func:`orphan_companions_response`  companion bases no installed model needs any more
-
-Sizes are real on-disk blob bytes from the HF cache scan, deduped per blob, not Hub metadata:
-the number in a delete dialog has to be the number the disk gives back.
+Sizes are real on-disk blob bytes from the HF cache scan, deduped per blob, not Hub metadata: the number in a delete dialog has to be the number the disk gives back.
 """
 
 from __future__ import annotations
@@ -35,10 +29,7 @@ logger = get_logger(__name__)
 
 
 def _repo_blob_bytes(repo_info, *, only = None) -> int:
-    """On-disk bytes of *repo_info*, deduped by blob so a file shared across revisions counts once.
-
-    ``only`` is an optional predicate on the snapshot-relative file name.
-    """
+    """On-disk bytes of *repo_info*, deduped by blob so a file shared across revisions counts once. ``only`` is an optional predicate on the snapshot-relative file name."""
     unique: dict[str, int] = {}
     for revision in getattr(repo_info, "revisions", ()) or ():
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
@@ -59,8 +50,7 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
     return sum(unique.values())
 
 
-# One definition, so the orphan listing and the delete preview cannot disagree about which cached
-# repos are leftovers (see companion_assets.repo_holds_denoiser).
+# One definition, so the orphan listing and the delete preview cannot disagree about which cached repos are leftovers (see companion_assets.repo_holds_denoiser).
 _repo_holds_denoiser = companion_assets.repo_holds_denoiser
 
 
@@ -80,13 +70,7 @@ def _repos_by_id(cache_scans) -> dict[str, list]:
 
 
 def _variant_keys(repo_info, variant: str) -> set[str]:
-    """The variant keys *variant* names in *repo_info*, from the destructive path's own resolver.
-
-    The inventory and the delete both identify a row by ``gguf_variant_key``, which for a
-    path-qualified checkpoint (``distilled/ltx-2.3-22b-distilled-Q6_K``) is not the bare quant
-    label. Comparing labels here made the preview miss the file entirely: 0 B reclaimed, and the
-    last checkpoint of a repo read as if a sibling survived, so its companions were described as
-    retained rather than freed."""
+    """The variant keys *variant* names in *repo_info*, from the destructive path's own resolver. The inventory and the delete both identify a row by ``gguf_variant_key``, which for a path-qualified checkpoint (``distilled/ltx-2.3-22b-distilled-Q6_K``) is not the bare quant label. Comparing labels here made the preview miss the file entirely: 0 B reclaimed, and the last checkpoint of a repo read as if a sibling survived, so its companions were described as retained rather than freed."""
     from hub.services.models.deletion import _variant_keys_to_delete
     return {key.lower() for key in _variant_keys_to_delete(repo_info, variant)}
 
@@ -115,8 +99,7 @@ def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None)
                     pass
             if not _is_main_gguf_filename(name):
                 continue
-            # The delete this previews ignores proven metadata, so counting it here would report a checkpoint as
-            # surviving that the deletion itself does not see.
+            # The delete this previews ignores proven metadata, so counting it here would report a checkpoint as surviving that the deletion itself does not see.
             if path and is_appledouble_metadata(Path(path)):
                 continue
             key = gguf_variant_key(name).lower()
@@ -131,10 +114,7 @@ def companion_dependents(
     *,
     ignore_repo_ids = (),
 ) -> list[str]:
-    """Installed checkpoints that would still need *base_repo_id* after ignoring *ignore_repo_ids*.
-
-    Sorted for a stable message. Empty means the base is safe to remove.
-    """
+    """Installed checkpoints that would still need *base_repo_id* after ignoring *ignore_repo_ids*, sorted for a stable message. Empty means the base is safe to remove."""
     scans = cache_scans if cache_scans is not None else cache_inventory.all_hf_cache_scans()
     required = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore_repo_ids)
     return sorted(required.get((base_repo_id or "").strip().lower(), set()))
@@ -156,8 +136,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
     for repo_info in repos:
         reclaimed += _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
 
-    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
-    # while a sibling quant survives they stay in use.
+    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable; while a sibling quant survives they stay in use.
     removes_last_checkpoint = True
     if variant:
         for repo_info in repos:
@@ -185,13 +164,10 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         entry = {"repo_id": display, "size_bytes": base_bytes, "needed_by": holders}
         if holders:
             retained.append(entry)
-        # The SAME offerability test orphan_companions_response applies, since this row points at that
-        # list: a borrowed chat GGUF repo is a curated companion id but holds a denoiser, so advertising
-        # it sent the user to Free up space to remove a row that is never there.
+        # The SAME offerability test orphan_companions_response applies, since this row points at that list: a borrowed chat GGUF repo is a curated companion id but holds a denoiser, so advertising it sent the user to Free up space to remove a row that is never there.
         elif base_key in offerable and any(not _repo_holds_denoiser(r) for r in base_repos):
             freeable.append(entry)
-        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it
-        # here pointed the user at a Free up space list it will never appear in.
+        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it here pointed the user at a Free up space list it will never appear in.
 
     return {
         "repo_id": repo_id,
@@ -199,9 +175,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         "reclaimed_bytes": reclaimed,
         "retained_companions": retained,
         "freeable_companions": freeable,
-        # Same predicate the destructive path uses: the native Qwen-Image encoder is a named quant inside
-        # a chat GGUF repo, so previewing only whole-repo deletes left Delete enabled and the refusal
-        # arriving after the user confirmed.
+        # Same predicate the destructive path uses: the native Qwen-Image encoder is a named quant inside a chat GGUF repo, so previewing only whole-repo deletes left Delete enabled and the refusal arriving after the user confirmed.
         "blocked_by": (
             companion_dependents(repo_id, scans, ignore_repo_ids = [repo_id])
             if companion_assets.is_companion_base(repo_id)
@@ -239,20 +213,16 @@ def _orphan_companions_blocking() -> dict:
         if required.get(base_key):
             continue
         repos = by_id[base_key]
-        # A repo holding a runnable denoiser is a model the user installed: a companion fetch takes
-        # everything BUT transformer/, while a pipeline pick takes it, so its presence answers whether the
-        # user asked for this repo. Per COPY, since a delete is scoped to one cache root.
+        # A repo holding a runnable denoiser is a model the user installed: a companion fetch takes everything BUT transformer/, while a pipeline pick takes it, so its presence answers whether the user asked for this repo. Per COPY, since a delete is scoped to one cache root.
         repos = [r for r in repos if not _repo_holds_denoiser(r)]
         if not repos:
             continue
-        # One row per cache root: a delete is scoped to a single cache, so pooling copies from several would
-        # promise bytes one removal cannot deliver.
+        # One row per cache root: a delete is scoped to a single cache, so pooling copies from several would promise bytes one removal cannot deliver.
         for repo in repos:
             size = _repo_blob_bytes(repo)
             if size <= 0:
                 continue
-            # The repo dir itself, not its parent: scoped_delete_root walks up to the models-- component, so a
-            # bare root resolves to nothing and the delete comes back "Invalid cache_path".
+            # The repo dir itself, not its parent: scoped_delete_root walks up to the models-- component, so a bare root resolves to nothing and the delete comes back "Invalid cache_path".
             try:
                 cache_path = str(Path(getattr(repo, "repo_path")))
             except (TypeError, OSError):
