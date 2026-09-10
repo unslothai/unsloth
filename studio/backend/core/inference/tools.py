@@ -15944,15 +15944,6 @@ def _volume_timestamps_finely(workdir: str) -> bool:
     return True
 
 
-def _cut_by_the_replay_stripper(text: str) -> bool:
-    """Whether replaying ``text`` to the model would drop everything after some point.
-
-    Read from the stripper rather than restated here, so the two cannot drift apart.
-    """
-    from .tool_loop_controller import REPLAY_SPLIT_SENTINELS  # noqa: PLC0415
-    return any(sentinel in text for sentinel in REPLAY_SPLIT_SENTINELS)
-
-
 def _defuse_sentinels(text: str) -> str:
     """Break a marker line the executed program printed itself.
 
@@ -16152,6 +16143,34 @@ def _created_file_sentinels(
     return out
 
 
+def _timed_out_result(
+    output: str | None, timeout: int, workdir: str | None, scope: "str | None"
+) -> str:
+    """Captured output, then the timeout status line.
+
+    Output leads: a finished card shows the live stream when the result is a prefix of it
+    (`preferFullToolOutput`), so a leading status would show the output twice.
+    """
+    ended = _truncate(f"Execution timed out after {timeout} seconds.")
+    partial = _defuse_sentinels(output or "")
+    if not partial.strip():
+        return ended
+    # Both cuts price against the same room, so the head reserves the status line's share.
+    ctx = _window_context_tokens()
+    head = _truncate(
+        partial,
+        workdir = workdir,
+        scope = scope,
+        reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
+    )
+    result = f"{head}\n{ended}"
+    # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
+    room = _request_result_room()
+    if room is not None and _text_token_cost(result, ctx) + _appended_by_the_loop(result) > room:
+        return ended
+    return result
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -16267,30 +16286,7 @@ def _python_exec(
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            partial = _defuse_sentinels(output or "")
-            # Output the replay stripper would cut the whole result at is left out, and
-            # the sentence goes back alone -- exactly what this branch returned before it
-            # kept anything. `strip_result_for_model` splits at a bare `__IMAGES__:` or
-            # `__RAG_SOURCES__:` wherever it appears (`_defuse_sentinels` only breaks the
-            # line-anchored `__FILES__:` form), so ahead of the sentence such output takes
-            # it with it and the model is handed an empty result: strictly worse than the
-            # status line, and the one thing this branch exists to say. Leading with the
-            # sentence instead is not the answer either -- the finished card keeps the
-            # live stream when the result is a prefix of it (`preferFullToolOutput`), so a
-            # status prefix makes a truncated card render the captured output twice.
-            if partial.strip() and not _cut_by_the_replay_stripper(partial):
-                # `ended` goes after this cut, so its tokens come off the same room
-                # rather than being spent a second time: `_truncate` prices against
-                # `_request_result_room` and two independent calls each take all of it,
-                # while the model is handed the concatenation.
-                head = _truncate(
-                    partial,
-                    workdir = spill_dir,
-                    scope = spill_scope,
-                    reserve_tokens = _text_token_cost(f"\n{ended}", _window_context_tokens()),
-                )
-                ended = f"{head}\n{ended}"
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16443,30 +16439,7 @@ def _bash_exec(
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
-            ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            partial = _defuse_sentinels(output or "")
-            # Output the replay stripper would cut the whole result at is left out, and
-            # the sentence goes back alone -- exactly what this branch returned before it
-            # kept anything. `strip_result_for_model` splits at a bare `__IMAGES__:` or
-            # `__RAG_SOURCES__:` wherever it appears (`_defuse_sentinels` only breaks the
-            # line-anchored `__FILES__:` form), so ahead of the sentence such output takes
-            # it with it and the model is handed an empty result: strictly worse than the
-            # status line, and the one thing this branch exists to say. Leading with the
-            # sentence instead is not the answer either -- the finished card keeps the
-            # live stream when the result is a prefix of it (`preferFullToolOutput`), so a
-            # status prefix makes a truncated card render the captured output twice.
-            if partial.strip() and not _cut_by_the_replay_stripper(partial):
-                # `ended` goes after this cut, so its tokens come off the same room
-                # rather than being spent a second time: `_truncate` prices against
-                # `_request_result_room` and two independent calls each take all of it,
-                # while the model is handed the concatenation.
-                head = _truncate(
-                    partial,
-                    workdir = spill_dir,
-                    scope = spill_scope,
-                    reserve_tokens = _text_token_cost(f"\n{ended}", _window_context_tokens()),
-                )
-                ended = f"{head}\n{ended}"
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )

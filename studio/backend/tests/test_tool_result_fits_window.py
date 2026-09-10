@@ -2211,6 +2211,29 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         assert "x" in out, "the captured output was dropped, so nothing was measured"
         _within_room(out, 400)
 
+    def test_a_room_with_no_space_for_output_gets_the_status_line_alone(self, monkeypatch):
+        """At zero room the output's omission stub would overrun what the status line fits."""
+        out = self._timed_out(monkeypatch, 20)
+
+        assert out == "Execution timed out after 1 seconds."
+        _within_room(out, 20)
+
+    def test_output_that_reads_as_an_error_pays_for_the_nudge_it_brings(self, monkeypatch):
+        """Error-looking output brings the retry nudge, so it is kept only where that fits."""
+        from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+        from core.inference.tool_loop_controller import is_tool_error
+
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        code = "import sys, time\nprint('Error: failed')\nsys.stdout.flush()\ntime.sleep(30)\n"
+
+        tight = tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = 40)
+        assert tight == "Execution timed out after 1 seconds."
+        _within_room(tight + (TOOL_ERROR_NUDGE if is_tool_error(tight) else ""), 40)
+
+        roomy = tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = 400)
+        assert roomy.startswith("Error: failed"), roomy
+
     def test_a_silent_timeout_pays_nothing_for_output_it_never_had(self, monkeypatch):
         """The control: charged to the calls that carry output, and a command that printed
         nothing still gets exactly the sentence it always did."""
