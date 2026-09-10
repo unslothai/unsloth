@@ -514,6 +514,7 @@
   ],
   "core.inference.tools.execute_tool": [
     "tests/test_a_pause_keeps_the_thought_and_a_stop_ends_the_wait.py",
+    "tests/test_a_pause_on_a_spent_cap_ends_the_turn.py",
     "tests/test_anthropic_messages.py",
     "tests/test_gguf_route_cursor_reset.py",
     "tests/test_length_truncated_reasoning_continuation.py",
