@@ -95,6 +95,29 @@ def test_discovers_both_roots_with_agents_precedence(isolated_skills):
     assert records[2]["shadowed_by"] == "agents"
 
 
+
+def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+        ("bundled", Path(skills.__file__).with_name("bundled_skills")),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+
+    creator = next(record for record in skills.list_skills() if record["name"] == "skill-creator")
+    assert creator["source"] == "bundled"
+    assert creator["enabled"] is True
+    assert "create_skill" in skills.read_skill_resource("skill-creator")
+
+    _write_skill(home, "agents", "skill-creator", description = "User override")
+    records = [record for record in skills.list_skills() if record["name"] == "skill-creator"]
+    assert [(record["source"], record["shadowed"]) for record in records] == [
+        ("agents", False),
+        ("bundled", True),
+    ]
+
+
 @pytest.mark.parametrize(
     "directory,manifest",
     [
@@ -290,6 +313,67 @@ def test_skill_directory_name_must_match_exactly(isolated_skills):
     assert "match its parent directory" in record["error"]
 
 
+
+def test_create_skill_writes_valid_manifest_without_overwriting(isolated_skills):
+    home, _ = isolated_skills
+
+    record = skills.create_skill(
+        "release-notes",
+        "Draft concise release notes.",
+        "# Workflow\n\n1. Inspect the diff.\n2. Summarize user-visible changes.",
+        home = home,
+    )
+
+    assert record["name"] == "release-notes"
+    assert record["source"] == "agents"
+    created = home / ".agents" / "skills" / "release-notes" / "SKILL.md"
+    assert skills._validate_skill_dir(created.parent)["description"] == "Draft concise release notes."
+    with pytest.raises(skills.SkillError, match = "already exists"):
+        skills.create_skill("release-notes", "Different", "Do something else.", home = home)
+    assert "Different" not in created.read_text(encoding = "utf-8")
+
+
+@pytest.mark.parametrize("name", ("../escape", "Bad Name", "con"))
+def test_create_skill_rejects_unsafe_names(isolated_skills, name):
+    home, _ = isolated_skills
+    with pytest.raises(skills.SkillError):
+        skills.create_skill(name, "Description", "Instructions", home = home)
+
+
+def test_create_skill_rejects_a_linked_agents_ancestor(isolated_skills):
+    home, _ = isolated_skills
+    outside = home.parent / "outside"
+    outside.mkdir()
+    try:
+        (home / ".agents").symlink_to(outside, target_is_directory = True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+
+    with pytest.raises(skills.SkillError, match = "unsafe"):
+        skills.create_skill("escaped", "Description", "Instructions", home = home)
+
+    assert not (outside / "skills").exists()
+
+
+def test_create_skill_tool_invalidates_the_inference_cache(isolated_skills, monkeypatch):
+    from core.inference import tools as tools_module
+    from routes import inference as inference_routes
+
+    home, _ = isolated_skills
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(
+        inference_routes, "_AGENT_SKILLS_CACHE", (float("inf"), [{"name": "stale"}])
+    )
+
+    result = tools_module.execute_tool(
+        "create_skill",
+        {"name": "fresh", "description": "Description", "instructions": "Instructions"},
+    )
+
+    assert "Created Agent Skill 'fresh'" in result
+    assert inference_routes._AGENT_SKILLS_CACHE == (0.0, [])
+
+
 def test_catalog_is_bounded_at_complete_entries():
     candidates = [{"name": f"skill-{index}", "description": "x" * 300} for index in range(20)]
 
@@ -346,7 +430,7 @@ def test_authenticated_list_and_toggle_routes(isolated_skills, monkeypatch):
     assert client.put("/api/skills/api-skill/enabled", json = {"enabled": "false"}).status_code == 422
 
 
-def test_read_skill_tool_registration_selection_and_prompt(isolated_skills, monkeypatch):
+def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypatch):
     import asyncio
 
     from core.inference import tools as tools_module
@@ -370,14 +454,15 @@ def test_read_skill_tool_registration_selection_and_prompt(isolated_skills, monk
     selected = asyncio.run(
         inference_routes._select_request_tools(payload, tools_on = True, mcp_allowed = False)
     )
-    assert [tool["function"]["name"] for tool in selected] == ["read_skill"]
+    assert [tool["function"]["name"] for tool in selected] == ["read_skill", "create_skill"]
     assert tools_module.is_always_safe_tool("read_skill") is True
+    assert tools_module.is_high_risk_tool_call("create_skill", {}) is True
     result = tools_module.execute_tool("read_skill", {"name": "guided"})
     assert "Skill: guided" in result
     nudge = inference_routes._build_tool_action_nudge(tools = selected, model_name = "test")
     assert "- guided: Guide this task" in nudge
     assert "@skill-name" in nudge
-    assert ":skill[...]" in nudge
+    assert "create_skill" in nudge
     # Codex and external-provider paths never carry the general tool nudge; they
     # still need the catalog so an @mention can be followed.
     narrow = inference_routes._build_tool_action_nudge(

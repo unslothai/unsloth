@@ -43,10 +43,9 @@ test("request building waits for skills and preserves the launcher tool catalog"
     payloadBuilder,
     /supportsTools &&\s*\([\s\S]*hasEnabledSkills[\s\S]*\)\s*\? \{\s*enable_tools: true/,
   );
-  assert.doesNotMatch(
-    payloadBuilder.slice(
-      payloadBuilder.indexOf("// Sent for every local chat"),
-    ),
-    /^\s*"read_skill",$/m,
+  const localToolCatalog = payloadBuilder.slice(
+    payloadBuilder.indexOf("// Sent for every local chat"),
   );
+  assert.doesNotMatch(localToolCatalog, /^\s*"read_skill",$/m);
+  assert.doesNotMatch(localToolCatalog, /^\s*"create_skill",$/m);
 });

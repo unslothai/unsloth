@@ -18,11 +18,11 @@ class SkillRecord(BaseModel):
 
     name: str
     description: str
-    source: Literal["agents", "claude"]
+    source: Literal["agents", "claude", "bundled"]
     enabled: bool
     valid: bool
     shadowed: bool
-    shadowed_by: Optional[Literal["agents", "claude"]] = None
+    shadowed_by: Optional[Literal["agents", "claude", "bundled"]] = None
     error: Optional[str] = None
     license: Optional[str] = None
     compatibility: Optional[str] = None

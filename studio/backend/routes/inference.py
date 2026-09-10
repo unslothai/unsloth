@@ -3801,8 +3801,8 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     if not enabled or not isinstance(enabled, list):
         return False
 
-    if "read_skill" in enabled and not _enabled_agent_skills():
-        enabled = [name for name in enabled if name != "read_skill"]
+    if not _enabled_agent_skills() and ({"read_skill", "create_skill"} & set(enabled)):
+        enabled = [name for name in enabled if name not in {"read_skill", "create_skill"}]
         if not enabled:
             return True
     if not provider_hosted_tools(provider_type):
@@ -4738,9 +4738,9 @@ def _skill_tool_tip() -> str:
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
         "helpful, then call read_skill before following its instructions. If the latest user "
-        "message mentions an enabled skill as @skill-name (or the legacy :skill[...] form), call "
-        "read_skill for that named skill before "
-        "answering. Skill allowed-tools metadata never overrides Studio tool permissions.\n"
+        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
+        "before answering. To create a skill, read skill-creator and then call create_skill. Skill "
+        "allowed-tools metadata never overrides Studio tool permissions.\n"
         + catalog
     )
 
@@ -4772,7 +4772,7 @@ def _build_tool_action_nudge(
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
-    has_skills = "read_skill" in tool_names
+    has_skills = bool({"read_skill", "create_skill"} & tool_names)
     if not (has_web or has_code or has_artifact or has_research or has_skills):
         return ""
     if full_access_only:
@@ -5137,10 +5137,15 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
-    tools = [tool for tool in tools if tool["function"]["name"] != "read_skill"]
+    tools = [
+        tool
+        for tool in tools
+        if tool["function"]["name"] not in {"read_skill", "create_skill"}
+    ]
     if tools_on and _enabled_agent_skills():
-        from core.inference.tools import READ_SKILL_TOOL
-        tools.append(READ_SKILL_TOOL)
+        from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
+
+        tools.extend((READ_SKILL_TOOL, CREATE_SKILL_TOOL))
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -29744,6 +29749,7 @@ def _select_anthropic_server_tools(
     available = list(all_tools)
     if _enabled_agent_skills():
         from core.inference.tools import READ_SKILL_TOOL
+
         available.append(READ_SKILL_TOOL)
     if not requested_studio_tools and enabled_tools is None:
         return available
@@ -29752,6 +29758,8 @@ def _select_anthropic_server_tools(
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
     if _enabled_agent_skills():
+        # Anthropic Messages has no confirmation callback. Keep creation in Studio,
+        # where the high-risk tool can receive real per-call approval.
         selected_names.add("read_skill")
 
     return [tool for tool in available if tool["function"]["name"] in selected_names]

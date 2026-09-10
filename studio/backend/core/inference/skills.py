@@ -25,6 +25,7 @@ MAX_SKILL_CATALOG_BYTES = 1_536
 MAX_SKILL_RESOURCE_PATH_BYTES = 400
 MAX_SKILL_PATH_COMPONENTS = 256
 MAX_SKILLS_PER_ROOT = 1_000
+MAX_SKILL_INSTRUCTIONS_BYTES = 256 * 1024
 
 _LOCK = threading.RLock()
 _OVERRIDES_NAME = "skill-overrides.json"
@@ -75,6 +76,71 @@ def _is_linked_path(path: Path) -> bool:
     attributes = getattr(status, "st_file_attributes", 0)
     reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     return stat.S_ISLNK(status.st_mode) or bool(reparse_point and attributes & reparse_point)
+
+
+def _require_unlinked_agent_path(base: Path, *paths: Path) -> None:
+    for path in paths:
+        if _is_linked_path(path) or (path.exists() and not path.is_dir()):
+            raise SkillError("Agent Skills directory is missing or unsafe.")
+        try:
+            path.relative_to(base)
+        except ValueError as exc:
+            raise SkillError("Agent Skills directory is missing or unsafe.") from exc
+
+
+def _write_new_skill_manifest(base: Path, name: str, manifest: bytes) -> None:
+    base = base.resolve(strict = True)
+    agents = base / ".agents"
+    root = agents / "skills"
+    _require_unlinked_agent_path(base, agents, root)
+    root.mkdir(mode = 0o700, parents = True, exist_ok = True)
+    _require_unlinked_agent_path(base, agents, root)
+
+    skill_dir = root / name
+    skill_dir.mkdir(mode = 0o700)
+    skill_file = skill_dir / "SKILL.md"
+    directories = (agents, root, skill_dir)
+    expected = [os.stat(path, follow_symlinks = False) for path in directories]
+
+    def revalidate(descriptor: int) -> None:
+        _require_unlinked_agent_path(base, *directories)
+        current = [os.stat(path, follow_symlinks = False) for path in directories]
+        file_status = os.stat(skill_file, follow_symlinks = False)
+        if (
+            not all(map(os.path.samestat, expected, current))
+            or _is_linked_path(skill_file)
+            or not os.path.samestat(file_status, os.fstat(descriptor))
+        ):
+            raise SkillError("Agent Skill path changed while the manifest was being written.")
+
+    descriptor: Optional[int] = None
+
+    manifest_created = False
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(skill_file, flags, 0o600)
+
+        manifest_created = True
+        revalidate(descriptor)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(manifest)
+            handle.flush()
+            os.fsync(handle.fileno())
+            revalidate(handle.fileno())
+    except Exception:
+        try:
+            current = [os.stat(path, follow_symlinks = False) for path in directories]
+            if all(map(os.path.samestat, expected, current)):
+                if manifest_created:
+                    skill_file.unlink(missing_ok = True)
+                skill_dir.rmdir()
+        except OSError:
+            pass
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _read_limited(
@@ -222,7 +288,10 @@ def _validate_skill_dir(skill_dir: Path) -> dict:
 
 def _skill_roots(home: Optional[Path] = None) -> tuple[tuple[str, Path], ...]:
     base = home if home is not None else Path.home()
-    return (("agents", base / ".agents" / "skills"), ("claude", base / ".claude" / "skills"))
+    roots = (("agents", base / ".agents" / "skills"), ("claude", base / ".claude" / "skills"))
+    if home is not None:
+        return roots
+    return (*roots, ("bundled", Path(__file__).with_name("bundled_skills")))
 
 
 def _override_path() -> Path:
@@ -371,6 +440,58 @@ def set_skill_enabled(
             overrides[record["name"]] = False
         _save_overrides(overrides)
         return {**record, "enabled": enabled}
+
+
+def create_skill(
+    name: str,
+    description: str,
+    instructions: str,
+    *,
+    home: Optional[Path] = None,
+) -> dict:
+    normalized = _normalize_skill_name(name)
+    if not isinstance(description, str) or not description.strip() or len(description) > 1024:
+        raise SkillError("Skill description must be 1-1024 characters.")
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise SkillError("Skill instructions must be non-empty UTF-8 text.")
+    try:
+        instruction_bytes = instructions.strip().encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SkillError("Skill instructions must be valid UTF-8 text.") from exc
+    if len(instruction_bytes) > MAX_SKILL_INSTRUCTIONS_BYTES:
+        raise SkillError("Skill instructions exceed the 256 KB limit.")
+
+    frontmatter = yaml.safe_dump(
+        {"name": normalized, "description": description.strip()},
+        allow_unicode = True,
+        sort_keys = False,
+    )
+    manifest = f"---\n{frontmatter}---\n\n{instructions.strip()}\n".encode("utf-8")
+    metadata = _parse_skill_markdown(manifest, normalized)
+
+    base = home if home is not None else Path.home()
+    with _LOCK:
+        try:
+            _write_new_skill_manifest(base, normalized, manifest)
+        except FileExistsError as exc:
+            raise SkillError(f"Skill '{normalized}' already exists.") from exc
+        except SkillError:
+            raise
+        except OSError as exc:
+            raise SkillError(f"Could not create skill '{normalized}'.") from exc
+
+        overrides = _load_overrides()
+        if normalized in overrides:
+            overrides.pop(normalized)
+            _save_overrides(overrides)
+
+    return {
+        **metadata,
+        "source": "agents",
+        "enabled": True,
+        "valid": True,
+        "shadowed": False,
+    }
 
 
 def format_skill_catalog(skills: Optional[list[dict]] = None) -> str:

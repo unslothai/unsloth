@@ -1916,6 +1916,7 @@ export async function buildLocalTokenCountExtras(
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
       "read_skill",
+      "create_skill",
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -5918,7 +5919,9 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(hasEnabledSkills ? ["read_skill"] : []),
+                      ...(hasEnabledSkills
+                        ? ["read_skill", "create_skill"]
+                        : []),
                       ...studioLocalCodeTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6159,7 +6162,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(hasEnabledSkills ? ["read_skill"] : []),
+                    ...(hasEnabledSkills
+                      ? ["read_skill", "create_skill"]
+                      : []),
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file"]
                       : []),

@@ -12,16 +12,16 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import {
-  listSkills,
-  setSkillEnabled,
-  useSkillsCatalog,
-} from "../api/skills-api";
 import { toast } from "@/lib/toast";
 import { BookOpen01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshCwIcon } from "lucide-react";
 import { type ReactElement, useEffect, useState } from "react";
+import {
+  listSkills,
+  setSkillEnabled,
+  useSkillsCatalog,
+} from "../api/skills-api";
 
 export function ChatSkillsDialog({
   open,
@@ -108,14 +108,18 @@ export function ChatSkillsDialog({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate font-medium">{skill.name}</span>
                       <Badge variant="outline">
-                        {skill.source === "agents" ? "Agents" : "Claude"}
+                        {skill.source === "agents"
+                          ? "Agents"
+                          : skill.source === "claude"
+                            ? "Claude"
+                            : "Bundled"}
                       </Badge>
                       {skill.shadowed ? (
                         <Badge variant="secondary">Shadowed</Badge>
                       ) : null}
-                      {!skill.valid ? (
+                      {skill.valid ? null : (
                         <Badge variant="destructive">Invalid</Badge>
-                      ) : null}
+                      )}
                     </div>
                     {skill.description ? (
                       <p className="mt-1 text-sm text-muted-foreground">
@@ -130,7 +134,11 @@ export function ChatSkillsDialog({
                     {skill.shadowed_by ? (
                       <p className="mt-2 text-xs text-muted-foreground">
                         Another{" "}
-                        {skill.shadowed_by === "agents" ? "Agents" : "Claude"}{" "}
+                        {skill.shadowed_by === "agents"
+                          ? "Agents"
+                          : skill.shadowed_by === "claude"
+                            ? "Claude"
+                            : "bundled"}{" "}
                         skill with this name takes precedence.
                       </p>
                     ) : null}

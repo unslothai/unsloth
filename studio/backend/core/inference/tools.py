@@ -10175,6 +10175,35 @@ READ_SKILL_TOOL = {
         },
     },
 }
+CREATE_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_skill",
+        "description": (
+            "Create a new Agent Skill in ~/.agents/skills. Use the skill-creator instructions "
+            "first. Existing skills are never overwritten."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Lowercase skill name using letters, numbers, and single hyphens.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "When the skill should be used, in 1-1024 characters.",
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": "Complete Markdown instructions for the skill body.",
+                },
+            },
+            "required": ["name", "description", "instructions"],
+        },
+    },
+}
+
 
 
 ALL_TOOLS = [
@@ -10484,6 +10513,27 @@ def execute_tool(
             "split across smaller calls if the content is long."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "create_skill":
+        from .skills import SkillError, create_skill
+
+        try:
+            record = create_skill(
+                arguments.get("name", ""),
+                arguments.get("description", ""),
+                arguments.get("instructions", ""),
+            )
+        except SkillError as exc:
+            return f"Error: {exc}"
+        # A following turn must discover the skill immediately rather than serving
+        # the inference route's one-second catalog snapshot.
+        from routes.inference import _invalidate_agent_skills_cache
+
+        _invalidate_agent_skills_cache()
+        return (
+            f"Created Agent Skill '{record['name']}' in ~/.agents/skills/{record['name']}/SKILL.md. "
+            f"It is enabled and ready to use."
+        )
+
     if name == "read_skill":
         from .skills import MAX_SKILL_PAGE_CHARS, SkillError, read_skill_resource
         try:

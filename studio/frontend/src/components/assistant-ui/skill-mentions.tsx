@@ -12,8 +12,6 @@ import type {
 } from "@assistant-ui/core";
 import {
   ComposerPrimitive,
-  MessagePartPrimitive,
-  type TextMessagePartComponent,
   unstable_useMentionAdapter,
 } from "@assistant-ui/react";
 import { BookOpen01Icon } from "@hugeicons/core-free-icons";
@@ -22,7 +20,6 @@ import {
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
-  type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
@@ -37,8 +34,7 @@ function enabled(records: readonly SkillRecord[]): readonly SkillRecord[] {
   );
 }
 
-const MENTION_PATTERN =
-  /:skill\[([^\]\n]{1,128})\](?:\{name=([^}\n]{1,128})\})?|(^|\s)@([a-z0-9][a-z0-9-]{0,127})/gim;
+const MENTION_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]{0,63})/gim;
 
 const skillMentionFormatter: Unstable_DirectiveFormatter = {
   serialize: (item) => `@${item.label}`,
@@ -47,7 +43,7 @@ const skillMentionFormatter: Unstable_DirectiveFormatter = {
     let lastIndex = 0;
 
     for (const match of text.matchAll(MENTION_PATTERN)) {
-      const whitespace = match[3] ?? "";
+      const whitespace = match[1] ?? "";
       const mentionStart = match.index + whitespace.length;
       if (mentionStart > lastIndex) {
         segments.push({
@@ -55,12 +51,12 @@ const skillMentionFormatter: Unstable_DirectiveFormatter = {
           text: text.slice(lastIndex, mentionStart),
         });
       }
-      const label = match[1] ?? match[4] ?? "";
+      const label = match[2] ?? "";
       segments.push({
         kind: "mention",
         type: "skill",
         label,
-        id: match[2] ?? label,
+        id: label,
       });
       lastIndex = match.index + match[0].length;
     }
@@ -243,7 +239,7 @@ export function useTextareaSkillMentions({
     resultsRef.current
       ?.querySelector<HTMLElement>(`[data-mention-index="${highlighted}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [highlighted, range, results.length]);
+  }, [highlighted, range]);
 
   const update = useCallback(
     (nextText: string, caret: number) => {
@@ -308,11 +304,7 @@ export function useTextareaSkillMentions({
 
   const popover =
     range && results.length > 0 ? (
-      <div
-        role="listbox"
-        aria-label="Agent Skills"
-        className="animate-in fade-in-0 zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100"
-      >
+      <div className="animate-in fade-in-0 zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100">
         <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
           Agent Skills
         </div>
@@ -321,10 +313,9 @@ export function useTextareaSkillMentions({
             <button
               key={`${skill.source}:${skill.name}`}
               type="button"
-              role="option"
               data-mention-index={index}
-              aria-selected={index === highlighted}
-              className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+              data-highlighted={index === highlighted}
+              className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-[highlighted=true]:bg-accent data-[highlighted=true]:text-accent-foreground"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => insert(skill)}
               onMouseEnter={() => setHighlighted(index)}
@@ -350,39 +341,3 @@ export function useTextareaSkillMentions({
 
   return { update, onKeyDown, popover, close: () => setRange(null) };
 }
-
-// Same markup as assistant-ui's default Text part unless the message names a
-// known skill, so an ordinary user message renders exactly as it did before.
-export const DirectiveText: TextMessagePartComponent = ({ text }) => {
-  const { skills } = useSkillsCatalog();
-  const known = useMemo(
-    () => new Set(skills.filter((skill) => skill.valid).map((skill) => skill.name)),
-    [skills],
-  );
-  const parts: ReactNode[] = [];
-  let lastIndex = 0;
-  for (const match of text.matchAll(MENTION_PATTERN)) {
-    const name = match[2] ?? match[1] ?? match[4] ?? "";
-    if (!known.has(name)) continue;
-    const start = match.index + (match[3] ?? "").length;
-    parts.push(text.slice(lastIndex, start));
-    parts.push(
-      <span key={start} className="font-medium text-primary">
-        @{match[1] ?? match[4]}
-      </span>,
-    );
-    lastIndex = match.index + match[0].length;
-  }
-  if (parts.length === 0) {
-    return (
-      <p style={{ whiteSpace: "pre-line" }}>
-        <MessagePartPrimitive.Text />
-        <MessagePartPrimitive.InProgress>
-          <span style={{ fontFamily: "revert" }}> &#x25CF;</span>
-        </MessagePartPrimitive.InProgress>
-      </p>
-    );
-  }
-  parts.push(text.slice(lastIndex));
-  return <p style={{ whiteSpace: "pre-line" }}>{parts}</p>;
-};

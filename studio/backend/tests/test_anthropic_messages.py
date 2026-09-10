@@ -2407,6 +2407,10 @@ class TestAnthropicRequestedStudioTools:
         tools = [{"type": "read_skill", "name": "read_skill"}]
         assert _anthropic_requested_studio_tools(tools) == {"read_skill"}
 
+    def test_create_skill_is_not_available_without_a_confirmation_channel(self):
+        tools = [{"type": "create_skill", "name": "create_skill"}]
+        assert _anthropic_requested_studio_tools(tools) == set()
+
     def test_bare_name_without_type_is_not_treated_as_server_tool(self):
         # Anthropic dispatches server tools by `type`; bare-name matching
         # would let a malformed client tool (missing input_schema) silently
@@ -3393,6 +3397,16 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls == []
 
     def test_permission_mode_gating_for_server_tools(self, monkeypatch):
+
+        import routes.inference as inf_mod
+
+        # The bundled skill-creator is enabled by default, but an Anthropic web-search
+        # request must not inherit its local, confirmation-gated create_skill tool.
+        monkeypatch.setattr(
+            inf_mod,
+            "_enabled_agent_skills",
+            lambda: [{"name": "skill-creator", "description": "Create a skill."}],
+        )
         # ask is a request for a per-call pause this channel cannot honor, so it is
         # always rejected, even for a safe-only server tool (web_search).
         safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]

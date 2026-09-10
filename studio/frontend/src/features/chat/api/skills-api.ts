@@ -7,11 +7,11 @@ import { useEffect, useSyncExternalStore } from "react";
 export type SkillRecord = {
   name: string;
   description: string;
-  source: "agents" | "claude";
+  source: "agents" | "claude" | "bundled";
   enabled: boolean;
   valid: boolean;
   shadowed: boolean;
-  shadowed_by?: "agents" | "claude" | null;
+  shadowed_by?: "agents" | "claude" | "bundled" | null;
   error?: string | null;
   license?: string | null;
   compatibility?: string | null;
@@ -140,9 +140,7 @@ export async function setSkillEnabled(
   return updated;
 }
 
-// Both mention spellings the composer formatter parses: @name and the legacy :skill[label]{name=…}.
-const SKILL_MENTION_PATTERN =
-  /:skill\[([^\]\n]{1,128})\](?:\{name=([^}\n]{1,128})\})?|(^|\s)@([a-z0-9][a-z0-9-]{0,127})/gi;
+const SKILL_MENTION_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]{0,63})/gi;
 
 // Settle the catalog before a request decides tool enablement from it: finish any fetch
 // already in flight, and re-read the folders when the text names a skill the snapshot has
@@ -158,7 +156,7 @@ export async function settleSkillsForText(text: string): Promise<void> {
   );
   let stale = !snapshot.initialized;
   for (const match of text.matchAll(SKILL_MENTION_PATTERN)) {
-    const name = match[2] ?? match[1] ?? match[4] ?? "";
+    const name = match[2] ?? "";
     if (!known.has(name.toLowerCase())) {
       stale = true;
       break;
