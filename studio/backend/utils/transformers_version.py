@@ -2452,6 +2452,29 @@ def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
     )
 
 
+def _optional_package_entries(venv_dir: str, pkg_spec: str) -> list[str]:
+    """Every top-level entry of the sidecar the optional package's wheel owns."""
+    stem = pkg_spec.split("==")[0].lower().replace("-", "_")
+    try:
+        entries = os.listdir(venv_dir)
+    except OSError:
+        return []
+    return [
+        entry
+        for entry in entries
+        if entry.lower().replace("-", "_") == stem
+        or entry.lower().replace("-", "_").startswith((stem + "_", stem + "."))
+    ]
+
+
+def _optional_package_partly_there(venv_dir: str, pkg_spec: str) -> bool:
+    """A payload without the dist-info that would make it count: an interrupted top-up
+    (or a failed install) left it, and it sits ahead of site-packages."""
+    return _optional_package_absent(venv_dir, pkg_spec) and bool(
+        _optional_package_entries(venv_dir, pkg_spec)
+    )
+
+
 def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> bool:
     """Drop what a failed optional install left: the payload directory and every dist-info.
 
@@ -2470,20 +2493,10 @@ def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> bool:
     # shadow the ambient one on its own) and tiktoken-<v>.dist-info; a .libs directory
     # would follow the same naming. The prefix is the project name followed by the end,
     # an underscore, a dot or a hyphen, which no other package in these sidecars shares.
-    stem = pkg_spec.split("==")[0].lower().replace("-", "_")
     root = Path(venv_dir)
 
     def _owned() -> list[str]:
-        try:
-            entries = os.listdir(venv_dir)
-        except OSError:
-            return []
-        return [
-            entry
-            for entry in entries
-            if entry.lower().replace("-", "_") == stem
-            or entry.lower().replace("-", "_").startswith((stem + "_", stem + "."))
-        ]
+        return _optional_package_entries(venv_dir, pkg_spec)
 
     for entry in _owned():
         path = root / entry
@@ -2582,7 +2595,7 @@ def _record_top_up_outcome(venv_dir: str, pkg: str, ok: bool) -> None:
     _write_top_up_failures(venv_dir, failures)
 
 
-def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
+def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     """Add an optional package a valid sidecar is missing, without touching the rest.
 
     _venv_dir_is_valid accepts a sidecar without tiktoken, so a transient failure while
@@ -2601,10 +2614,26 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
     damaged. One process at a time does this; another that finds the lock held waits
     for it, then finds the package there.
     """
-    if _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES:
-        return
+    usable = True
+    offline = _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
+            continue
+        if offline:
+            # No install offline, but a payload an interrupted top-up left without its
+            # dist-info is still cleared: it counts as absent to the validators and would
+            # otherwise be activated ahead of a working ambient copy. Under the lock, so
+            # a top-up another process is finishing right now is not swept from under it.
+            if _optional_package_partly_there(venv_dir, pkg):
+                with _optional_top_up_lock(venv_dir) as held:
+                    if held and _optional_package_partly_there(venv_dir, pkg):
+                        logger.warning(
+                            "%s: removing the partial %s an interrupted add left", venv_dir, pkg
+                        )
+                        if not _remove_optional_remnants(venv_dir, pkg):
+                            usable = False
+                    elif not held:
+                        usable = False
             continue
         # A recordless dist-info beside a complete install (a retry that succeeded after
         # an interrupted one) is never reached by the staging path's cleanup, since the
@@ -2638,6 +2667,12 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
                     pkg,
                     venv_dir,
                 )
+                # ...only if nothing of it is left behind. A remnant the cleanup could
+                # not remove sits ahead of site-packages, and the sidecar is not one to
+                # activate until it is gone.
+                if _optional_package_partly_there(venv_dir, pkg):
+                    usable = False
+    return usable
 
 
 def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
@@ -2746,8 +2781,7 @@ def _optional_top_up_lock(venv_dir: str):
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
-        _top_up_optional_packages(venv_dir, packages)
-        return True
+        return _top_up_optional_packages(venv_dir, packages)
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
@@ -3192,9 +3226,9 @@ def _ensure_venv_t5_latest_exists() -> bool:
         if conclusive:
             _clear_latest_repair_request()
         # Healthy without an optional package is healthy; activation is where the latest
-        # tier is asked for, so it is where a missing tiktoken gets its top-up.
-        _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
-        return True
+        # tier is asked for, so it is where a missing tiktoken gets its top-up. A partial
+        # one that would not go withholds the sidecar for this activation.
+        return _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
     # Broken, and every path below can still fail to fix it (offline, a child, a swap already
     # running, pip). Flag it here rather than per bailout, so the routing predicate withholds
     # the sidecar whichever we take: it cannot see sub-file damage itself, and a mapping
@@ -3271,8 +3305,7 @@ def ensure_latest_transformers_venv(
         and tuple(pin["packages"]) == packages
         and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)
     ):
-        _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
-        return True
+        return _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
     return _stage_and_swap_latest_venv(version, packages, before_swap = before_swap)
 
 
