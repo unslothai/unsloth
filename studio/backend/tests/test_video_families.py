@@ -464,3 +464,74 @@ def test_the_h3_measurement_still_answers_through_the_helper():
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(fam.prequant_resident_gb)
     assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(fam.prequant_resident_gb)
+
+
+def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
+    """A hosted artifact with no measured row is priced by the generic factor off the dense bf16
+    term. The plan's hard unified-memory refusal reads this term, so the row has to be the measured
+    one and it has to be the DENOISER alone, which is what bf16_components_gb[0] is."""
+    from core.inference.video_families import (
+        _FAMILIES,
+        video_family_prequant_resident_gb,
+    )
+
+    expected = {
+        "wan2.2-ti2v-5b": 2.9,
+        "wan2.2-t2v-a14b": 16.2,
+        "hunyuanvideo-1.5": 4.8,
+        "hunyuanvideo-1.5-720p": 4.8,
+    }
+    hosting = {
+        fam.name
+        for fam in _FAMILIES
+        if any(scheme == "nvfp4" for scheme, _repo in fam.prequant_repos)
+    }
+    assert hosting == set(expected)
+    for fam in _FAMILIES:
+        if fam.name not in expected:
+            continue
+        assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(
+            expected[fam.name]
+        )
+
+
+def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
+    """Sanity on direction and magnitude. A 4-bit artifact keeping its scales and its unadmitted
+    layers lands near 0.29 of the bf16 denoiser term on all three architectures; a row recorded as
+    the whole pipeline instead of the denoiser, or in the wrong unit, leaves that band at once."""
+    from core.inference.video_families import (
+        _FAMILIES,
+        video_family_prequant_resident_gb,
+    )
+
+    seen = 0
+    for fam in _FAMILIES:
+        # Families that actually HOST an nvfp4 denoiser. The helper answers for every family, since
+        # a legacy family-wide float (H3's) is returned whatever scheme is asked for.
+        if not any(scheme == "nvfp4" for scheme, _repo in fam.prequant_repos):
+            continue
+        measured = video_family_prequant_resident_gb(fam, "nvfp4")
+        if measured is None or not fam.bf16_components_gb:
+            continue
+        seen += 1
+        assert 0.2 * fam.bf16_components_gb[0] < measured < 0.4 * fam.bf16_components_gb[0], fam.name
+    assert seen == 4
+
+
+def test_the_a14b_row_prices_both_experts_not_one():
+    # transformer + transformer_2 are two artifacts and two residents; the plan subtracts ONE
+    # denoiser term, so a per-expert number here would under-state the load by half.
+    from core.inference.video_families import (
+        detect_video_family,
+        video_family_prequant_resident_gb,
+    )
+
+    fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert fam.is_moe
+    names = {entry[-1] for entry in fam.prequant_filenames}
+    assert len(names) == 2
+    measured = video_family_prequant_resident_gb(fam, "nvfp4")
+    assert measured == pytest.approx(16.2)
+    # One expert's share of the bf16 pair is 28.6; a row that priced a single expert would sit
+    # near 8.1, below this bound.
+    assert measured > 0.25 * fam.bf16_components_gb[0]
