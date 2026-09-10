@@ -795,16 +795,23 @@ def test_the_same_volume_is_checked_once(monkeypatch):
     monkeypatch.setattr(_studio_prefetch, "_filesystem_id", lambda path: 7)
     assert _studio_prefetch._volumes_to_check(root, "/studio/cache/uv") == [root]
     monkeypatch.setattr(_studio_prefetch, "_filesystem_id", lambda path: None)
-    assert _studio_prefetch._volumes_to_check(root, "/elsewhere/uv") == [root, Path("/elsewhere/uv")]
+    assert _studio_prefetch._volumes_to_check(root, "/elsewhere/uv") == [
+        root,
+        Path("/elsewhere/uv"),
+    ]
     assert _studio_prefetch._volumes_to_check(root, None) == [root]
 
 
 def test_planned_core_names_cover_every_pin_in_the_plan():
-    marker = {"core_plan": {"unsloth": "2026.9.9", "unsloth_zoo": "2026.9.9", "numpy": "2.3.1", "": "x"}}
+    marker = {
+        "core_plan": {"unsloth": "2026.9.9", "unsloth_zoo": "2026.9.9", "numpy": "2.3.1", "": "x"}
+    }
     assert _studio_prefetch.planned_core_names(marker) == ["unsloth", "unsloth-zoo", "numpy"]
     assert _studio_prefetch.planned_core_names({"state": "noop"}) == []
     # A dependency moved past its planned version holds the plan back like the core does.
-    assert not _studio_prefetch.plan_is_not_behind(marker, {"numpy": "2.4.0", "unsloth": "2026.9.9"})
+    assert not _studio_prefetch.plan_is_not_behind(
+        marker, {"numpy": "2.4.0", "unsloth": "2026.9.9"}
+    )
 
 
 def test_a_directory_unsloth_did_not_create_is_refused_not_deleted(managed, monkeypatch):
