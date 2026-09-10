@@ -1069,7 +1069,9 @@ class TestWhatTheWireActuallyCarries:
             payload, request = None, llama_backend = backend, conversation = translated
         )
         # The two shapes differ only by their JSON envelope around the same image.
-        assert abs(raw - wire) <= 32, "the raw Anthropic image must be priced as an image, not as base64"
+        assert (
+            abs(raw - wire) <= 32
+        ), "the raw Anthropic image must be priced as an image, not as base64"
         assert (
             raw > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
         ), "the base64 transport must not swamp the share"
