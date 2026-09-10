@@ -4838,9 +4838,11 @@ function Find-InstalledUv {
     if ($env:XDG_DATA_HOME) { $candidates += [System.IO.Path]::Combine($env:XDG_DATA_HOME, "..", "bin") }
     $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
     if ($userHome) { $candidates += [System.IO.Path]::Combine($userHome, ".local", "bin") }
+    $script:InstalledUvLooked = @()
     foreach ($dir in $candidates) {
         if (-not $dir) { continue }
         $exe = [System.IO.Path]::Combine($dir, "uv.exe")
+        $script:InstalledUvLooked += $exe
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
         # "ok" only. The pinned installer accepts "unknown" because a digest already
         # proved its bytes; an existing candidate has no such proof, and a launch that
@@ -4879,6 +4881,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } elseif (-not $StageRoot) {
     if ($script:InstalledUvProbeMiss) {
         substep "the uv at $($script:InstalledUvProbeMiss) did not answer --version twice; installing the pinned release"
+    } elseif ($script:InstalledUvLooked) {
+        # Named so a re-download can be read: which destinations held no uv.exe at this moment.
+        substep "no installed uv at $($script:InstalledUvLooked -join ', '); installing the pinned release"
     }
     substep "installing uv package manager..."
     try {
