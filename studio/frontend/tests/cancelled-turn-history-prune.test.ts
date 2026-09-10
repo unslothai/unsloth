@@ -77,6 +77,16 @@ test("a Stop while a model loads arrives as a Stop", () => {
   );
 });
 
+test("a Stop that beats the durable admission arrives as a Stop", () => {
+  // createChatGenerationRunUntilAbort resolves null only when the Stop won the race. Returning
+  // there yields nothing, so assistant-ui settles the turn "complete", the fill never engages,
+  // and the prompt is pruned away again -- the same defect as the waitForModelReady case above.
+  assert.match(
+    adapter,
+    /throw runSignal\.reason \?\?\s*new DOMException\("Aborted", "AbortError"\)/,
+  );
+});
+
 test("only a deliberate Stop is replayed as one", () => {
   // Collapsing this back to a constant tells the model a failed turn was stopped.
   assert.match(

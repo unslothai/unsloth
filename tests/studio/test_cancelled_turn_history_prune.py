@@ -480,6 +480,49 @@ def test_a_generation_that_failed_is_not_replayed_as_a_stop():
         assert out["contents"] == ["first", INTERRUPTED, "second"]
 
 
+def test_a_reloaded_stop_keeps_its_prompt_once_the_marker_was_persisted():
+    """The rehydrated shape, not the in-session one.
+
+    ``status`` is session state: ``restoredAssistantStatus`` rebuilds a reloaded thread as
+    ``complete``, so after a reload the persisted ``custom.incomplete`` marker is the only
+    thing left saying the turn was stopped. The durable path stamps it server-side
+    (``_sync_assistant_status_locked`` in studio/backend/storage/chat_generation_runs_db.py),
+    and this is the shape that comes back.
+
+    A legacy stopped turn that yielded nothing persists no marker at all, so it reloads as a
+    plain empty assistant and is still pruned with its prompt; that gap is
+    ``test_a_reloaded_stop_with_no_persisted_marker_is_still_dropped`` below.
+    """
+    reloaded = (
+        '{ role: "assistant", content: [], status: { type: "complete", reason: "unknown" },'
+        ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
+    )
+    for is_external in ("false", "true"):
+        out = _run(_send_script(f"[{_user('first')}, {reloaded}, {_user('second')}]", is_external))
+        assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["first", STOPPED, "second"]
+
+
+def test_a_reloaded_stop_with_no_persisted_marker_is_still_dropped():
+    """The known limit of this fix, pinned so it is a decision and not a surprise.
+
+    A Stop before the first token never reaches a streamed yield, so on the subscriber-owned
+    path ``liveCustom`` never runs and nothing persists. The reloaded row is indistinguishable
+    from a turn the model finished without saying anything, which is pruned with its prompt on
+    purpose. Closing this means persisting the marker at Stop time, not reading harder here.
+    """
+    reloaded_unmarked = (
+        '{ role: "assistant", content: [], status: { type: "complete", reason: "unknown" },'
+        " metadata: { custom: {} } }"
+    )
+    for is_external in ("false", "true"):
+        out = _run(
+            _send_script(f"[{_user('first')}, {reloaded_unmarked}, {_user('second')}]", is_external)
+        )
+        assert out["roles"] == ["user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["second"]
+
+
 def test_the_send_path_still_carries_an_answered_exchange():
     """The counterpart: pruning must not be the send path quietly dropping history."""
     answered = '{ role: "assistant", content: [{ type: "text", text: "an answer" }] }'

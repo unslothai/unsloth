@@ -6327,7 +6327,14 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    if (generationDecision === "durable") return;
+                    // Admission only resolves null when the Stop won the race, and returning here
+                    // yields nothing, so assistant-ui settles the turn "complete". A Stop that does
+                    // not arrive as an AbortError is filed as a finished reply, the fill above never
+                    // engages, and the interrupted prompt is pruned away again (#10428).
+                    if (generationDecision === "durable") {
+                      throw runSignal.reason ??
+                        new DOMException("Aborted", "AbortError");
+                    }
                   } else {
                     generationRunId = generationRun.id;
                     // Normally the same id claimed above; claimed again in case the server echoes a different one.
