@@ -668,6 +668,27 @@ def test_a_folded_retrieval_result_is_still_kept_out_of_the_archive():
     assert "ASKEDWITHIMAGE?" in dumped
     assert "image_url" in dumped
 
+    # The fold's output is only JSON in user text, so a user who types that shape while talking
+    # about the API must keep their own words: no retrieval call in the group, nothing to strip.
+    typed = [
+        {
+            "role": "user",
+            "content": "why this shape?\n\n"
+            + json.dumps(
+                {
+                    "tool_response": {
+                        "tool": "search_conversation",
+                        "content": "MYOWNWORDS",
+                        "tool_call_id": "call_0",
+                    }
+                },
+                indent = 2,
+            ),
+        },
+        {"role": "assistant", "content": "because of the fold."},
+    ]
+    assert "MYOWNWORDS" in json.dumps(archive._archivable(typed))
+
     # A tool whose result IS conversation keeps it, folded or not.
     kept = fold_tool_results_into_user(
         [
