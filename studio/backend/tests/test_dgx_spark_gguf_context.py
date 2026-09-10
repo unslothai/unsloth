@@ -41,6 +41,8 @@ class _DiscreteProps:
     total_memory = 183 * GIB
     is_integrated = 0
     gcnArchName = ""
+
+
 def _spark_torch(driver_free_mib: int, total_mib: int) -> types.ModuleType:
     """torch as it answers on a GB10: mem_get_info's free half is MemFree."""
     module = types.ModuleType("torch")
@@ -55,7 +57,11 @@ def _spark_torch(driver_free_mib: int, total_mib: int) -> types.ModuleType:
 
 
 def _spark_gpu_memory(
-    monkeypatch, driver_free_mib, available_mib, total_mib = 124609, cgroup_mib = None
+    monkeypatch,
+    driver_free_mib,
+    available_mib,
+    total_mib = 124609,
+    cgroup_mib = None,
 ):
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -115,8 +121,6 @@ def test_gguf_fit_never_exceeds_the_pool(monkeypatch):
     assert gpus[0][1] == 124609 - 1024
 
 
-
-
 # ── a host that is not one of these parts must be untouched ──────────────────
 
 
@@ -135,9 +139,7 @@ def test_discrete_cuda_keeps_the_whole_free_reading(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "llama-server")
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4096)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4096))
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
@@ -145,8 +147,6 @@ def test_discrete_cuda_keeps_the_whole_free_reading(monkeypatch):
 
     # Untouched by both the 1 GiB reserve and the low host figure beside it.
     assert LlamaCppBackend._get_gpu_memory() == [(0, 29509, 81559)]
-
-
 
 
 def test_gguf_fit_is_bounded_by_an_enforcing_cgroup(monkeypatch):
@@ -192,9 +192,7 @@ def test_the_unified_preflight_reaches_an_integrated_cuda_soc(monkeypatch):
     assert LlamaCppBackend._integrated_cuda_unified_memory(None) is True
     assert LlamaCppBackend._integrated_cuda_unified_memory([0]) is True
     # 180 GiB of weights against 118 GiB of pool: the message the preflight now reaches.
-    message = LlamaCppBackend._apu_ram_shortfall_message(
-        180 * GIB, 118 * 1024, part = "SoC"
-    )
+    message = LlamaCppBackend._apu_ram_shortfall_message(180 * GIB, 118 * 1024, part = "SoC")
     assert message is not None
     assert "unified-memory SoC" in message
     # A Spark is aarch64 Linux and a Jetson is not a PC: neither runs under WSL.
@@ -280,9 +278,7 @@ def test_repricing_keeps_the_soc_wording(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
-    original = LlamaCppBackend._apu_ram_shortfall_message(
-        200 * GIB, 118 * 1024, part = "SoC"
-    )
+    original = LlamaCppBackend._apu_ram_shortfall_message(200 * GIB, 118 * 1024, part = "SoC")
     backend._last_load_warning = original
 
     backend._reprice_after_dropping_pinned_projector(

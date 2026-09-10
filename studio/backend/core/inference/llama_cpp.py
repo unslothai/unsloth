@@ -11173,9 +11173,7 @@ class LlamaCppBackend:
         need_mib = model_size_bytes / (1024 * 1024)
         if need_mib <= avail_mib - headroom_mib:
             return None
-        free_hint = (
-            " (on WSL, raise the memory limit in .wslconfig)" if part == "APU" else ""
-        )
+        free_hint = " (on WSL, raise the memory limit in .wslconfig)" if part == "APU" else ""
         return (
             f"This model needs about {need_mib / 1024:.0f} GB but only about "
             f"{avail_mib / 1024:.0f} GB of memory is available. On a unified-memory "
@@ -22775,9 +22773,7 @@ class LlamaCppBackend:
                     # rebuild a Spark's as an APU's, complete with .wslconfig advice
                     # that cannot apply to a Jetson or a DGX Spark.
                     _apu_ram_part = (
-                        "APU"
-                        if self._amd_apu_wants_unified_memory(gpu_indices)
-                        else "SoC"
+                        "APU" if self._amd_apu_wants_unified_memory(gpu_indices) else "SoC"
                     )
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
