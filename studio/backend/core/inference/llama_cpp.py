@@ -8958,10 +8958,8 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    # PHYSICAL integrated ids per visibility mask, filled by the probe below and read
-    # by _integrated_cuda_probe_is_free. Integratedness is a property of the silicon,
-    # so it cannot change under a fixed mask; the mask is the key because it decides
-    # WHICH devices the answer is about.
+    # PHYSICAL integrated ids per visibility mask. Integratedness cannot change under
+    # a fixed mask, and the mask decides which devices the answer is about.
     _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
 
     @staticmethod
@@ -8975,19 +8973,14 @@ class LlamaCppBackend:
     def _integrated_cuda_probe_is_free() -> bool:
         """True when ``_integrated_cuda_gpu_ids()`` costs no NEW CUDA context.
 
-        That probe calls ``get_device_properties`` on every visible card, which
-        initialises CUDA and pins a ~700 MiB primary context per device for the life of
-        this process. The launch preflight runs AFTER the VRAM budget was snapshotted,
-        so paying it there can OOM a tightly fitted child against a stale budget, on a
-        host whose answer is False regardless.
-
-        So the preflight never probes: it reads the answer only if one is already
-        cached for this mask. ``_get_gpu_memory`` fills that cache on its torch arm,
-        BEFORE it reads any free/total figure, so the cost is inside the snapshot that
-        follows it. That arm is the one an integrated SoC takes anyway: nvidia-smi
-        reports ``[N/A]`` for both memory columns on a Spark, so the CLI probe parses
-        nothing and falls through. A host whose nvidia-smi answers never reaches the
-        probe and never pays for it, which includes an ARM host with discrete cards.
+        That probe pins a ~700 MiB primary context per visible card for the life of
+        this process, and the launch preflight runs AFTER the VRAM budget was taken, so
+        probing there can OOM a tightly fitted child against a stale budget. So the
+        preflight never probes: it reads an answer only if one is cached for this mask.
+        ``_get_gpu_memory`` fills that cache on its torch arm before reading any
+        free/total figure, which puts the cost inside the snapshot. That is the arm an
+        integrated SoC takes anyway (nvidia-smi answers ``[N/A]`` on a Spark, so the CLI
+        probe parses nothing); a host whose nvidia-smi answers never pays for it.
         """
         return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
 
@@ -9005,8 +8998,7 @@ class LlamaCppBackend:
             LlamaCppBackend._integrated_cuda_mask_key()
         )
         if cached is not None:
-            # Settled for this mask, and integratedness cannot change under one, so
-            # there is nothing a second pass over the devices could learn.
+            # Settled: a second pass over the devices could learn nothing.
             return set(cached)
         try:
             import torch
@@ -9019,11 +9011,9 @@ class LlamaCppBackend:
             # (CUDA_VISIBLE_DEVICES=2) does not answer for the wrong card.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             integrated: set[int] = set()
-            # A device that did not answer leaves this answer incomplete. It is still
-            # returned, so a card that cannot be queried keeps its discrete default,
-            # but it is not remembered: a later caller reading it as settled could
-            # retry the query that failed, and a retry that succeeds initialises that
-            # device after the budget was taken.
+            # A device that did not answer leaves this incomplete: still returned, so
+            # an unqueryable card keeps its discrete default, but not remembered, since
+            # a caller reading it as settled would retry the query that failed.
             complete = True
             for ordinal in range(torch.cuda.device_count()):
                 try:
@@ -9042,11 +9032,8 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-            # Remembered so the launch preflight can read it without a second probe.
-            # Only a probe that reached every visible device is cached: a torch that
-            # raised, or a card that did not answer, says nothing about the hardware,
-            # and caching that would either make the miss permanent or invite a retry
-            # whose cost nothing has accounted for.
+            # Cached for the preflight, but only a pass that reached every device: a
+            # torch that raised says nothing about the hardware.
             if complete:
                 LlamaCppBackend._INTEGRATED_CUDA_IDS[
                     LlamaCppBackend._integrated_cuda_mask_key()
@@ -10591,23 +10578,19 @@ class LlamaCppBackend:
                     if avail is not None:
                         raw_mib = min(raw_mib, avail)
                 elif integrated:
-                    # cudaMemGetInfo's free half here is the kernel's MemFree, which
-                    # counts the page cache as used, so a GGUF's own download or mmap
-                    # collapses it and the context is fitted against the bytes its
-                    # weights left in cache (#9889). That cache is reclaimed on demand;
-                    # MemAvailable is the kernel's own estimate of what an allocation
-                    # can have without swapping. Clamped to the driver figure and pool.
+                    # cudaMemGetInfo's free half here is MemFree, which counts the
+                    # page cache as used, so a GGUF's own download or mmap collapses it
+                    # and the context is fitted against its own cached bytes (#9889).
+                    # MemAvailable prices that reclaimable cache back in.
                     avail = LlamaCppBackend._available_system_memory_mib()
                     # A zero total is a probe that could not size the pool, not a pool
                     # of zero: capping against it would take the device to nothing.
                     if avail is not None and total_mib > 0:
                         raw_mib = min(total_mib, max(raw_mib, avail))
-                    # Separately, and as a CEILING: `avail` is already capped by the
-                    # cgroup, but taking it as a lower bound throws that away whenever
-                    # the driver's host-wide MemFree is the larger number, which is the
-                    # normal case in a container. Host-backed GPU allocations are
-                    # charged to the cgroup here, so the limit is real and a fit sized
-                    # above it is killed at memory.max rather than merely slow.
+                    # Again as a CEILING: `avail` is cgroup-capped already, but as a
+                    # lower bound that is thrown away whenever host-wide MemFree is
+                    # larger, the normal case in a container. Allocations here are
+                    # charged to the cgroup, so an oversized fit dies at memory.max.
                     cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
                     if cgroup_mib is not None:
                         raw_mib = min(raw_mib, cgroup_mib)
@@ -10619,9 +10602,9 @@ class LlamaCppBackend:
                         f"RAM; reserving {raw_mib - free_mib}MiB host headroom "
                         f"({raw_mib}->{free_mib}MiB usable)"
                     )
-                # The ROCm shared pool publishes 0 because that "total" is system RAM
-                # of unknown scope. An integrated CUDA part's total IS the whole pool, so
-                # it is the one honest ceiling; zeroing it drops the fit to free*frac.
+                # ROCm publishes 0 because that "total" is system RAM of unknown
+                # scope. An integrated part's total IS the pool, so it is a real
+                # ceiling; zeroing it would drop the fit to free*frac.
                 gpus.append((idx, free_mib, 0 if shared else total_mib))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
@@ -11220,9 +11203,8 @@ class LlamaCppBackend:
         Advisory, never a refusal: the load goes ahead and llama.cpp reports what
         actually happens rather than Studio pre-empting a failure it predicted.
 
-        ``part`` names the hardware in the message. An integrated CUDA SoC has the same
-        shortfall and is not an APU, and the WSL hint below cannot apply to one: that
-        pool is a Jetson or a DGX Spark, neither of which runs under WSL.
+        ``part`` names the hardware. An integrated CUDA SoC has the same shortfall and
+        is not an APU, and the WSL hint cannot apply to a Jetson or a DGX Spark.
         """
         if avail_mib is None:
             return None
@@ -22806,11 +22788,9 @@ class LlamaCppBackend:
                 if (
                     model_size is not None
                     and not is_vulkan_backend
-                    # An integrated CUDA SoC loads its weights into system RAM for the
-                    # same reason an APU does, and _shared_gpu_ids is Vulkan-only, so
-                    # without this its pool is credited downstream as dedicated VRAM,
-                    # the spill prices out at zero, and an unmapped oversize load is
-                    # never remapped. Same helper the tensor-spill guard already uses.
+                    # An integrated CUDA SoC loads into system RAM like an APU, and
+                    # _shared_gpu_ids is Vulkan-only, so without this its pool is
+                    # credited as dedicated VRAM and the spill prices out at zero.
                     and (
                         self._amd_apu_wants_unified_memory(gpu_indices)
                         or (
@@ -22824,10 +22804,9 @@ class LlamaCppBackend:
                     # second live reading there would be the pool MINUS the model the
                     # reprice is asking about, which double-charges it.
                     _apu_avail_mib = self._available_system_memory_mib()
-                    # Which hardware this notice is about, kept beside the notice: the
-                    # text-only fallback rebuilds the message later and would otherwise
-                    # rebuild a Spark's as an APU's, complete with .wslconfig advice
-                    # that cannot apply to a Jetson or a DGX Spark.
+                    # Kept beside the notice: the text-only fallback rebuilds it later
+                    # and would otherwise turn a Spark's into an APU's, .wslconfig hint
+                    # and all.
                     _apu_ram_part = (
                         "APU" if self._amd_apu_wants_unified_memory(gpu_indices) else "SoC"
                     )
