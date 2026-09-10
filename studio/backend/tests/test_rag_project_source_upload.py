@@ -110,6 +110,7 @@ def test_sanitizer_keeps_the_name_the_user_gave(raw):
         ("a\u200bb.pdf", "ab.pdf"),
         ("\ufeff报告.pdf", "报告.pdf"),
         ("a\nb.pdf", "a b.pdf"),
+        ("a\u2028b.pdf", "a b.pdf"),
         # What a browser actually sends for a file picked on Windows.
         ("C:\\fakepath\\notes.txt", "notes.txt"),
     ],

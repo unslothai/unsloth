@@ -98,7 +98,9 @@ def _availability(available: bool) -> dict:
 def _document_label(name: str) -> str:
     # A display label, never a path: the bytes are stored at uploads/<uuid><ext>.
     base = "".join(
-        (" " if ch.isspace() else "") if unicodedata.category(ch) in ("Cc", "Cf") else ch
+        (" " if ch.isspace() else "")
+        if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp")
+        else ch
         for ch in name or ""
     )
     # Not \s+: U+3000 and the other Zs spaces belong to the name.
