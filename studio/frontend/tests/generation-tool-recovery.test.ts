@@ -1227,3 +1227,64 @@ test("two rounds finding the same page keep a source each, with their own titles
     ["Docs v1", "Docs v2"],
   );
 });
+
+test("a card that finishes twice rebuilds its sources from the newer result", () => {
+  // Sources are parsed once per card rather than once per rebuild, so the cache key has to
+  // move whenever the result does. Keying it on the card's backend id instead, which reads
+  // as the obvious choice, breaks exactly here: OpenAI Responses ends a web search twice,
+  // a placeholder and then the citations, and the panel would keep the placeholder's.
+  const carried: Carried[] = [];
+  const { apply, withSources } = createGenerationToolRecovery(carried, "run");
+  apply({ type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" }, 0, 1);
+  apply(
+    {
+      type: "tool_end",
+      tool_call_id: "ws_0",
+      result: "Title: Placeholder\nURL: https://example.com/a\nSnippet: first",
+    },
+    0,
+    2,
+  );
+  assert.deepEqual(
+    withSources<Record<string, unknown>>([]).map((part) => part.title),
+    ["Placeholder"],
+  );
+  apply(
+    {
+      type: "tool_end",
+      tool_call_id: "ws_0",
+      result: "Title: Cited\nURL: https://example.com/b\nSnippet: second",
+    },
+    0,
+    3,
+  );
+  assert.deepEqual(
+    withSources<Record<string, unknown>>([]).map((part) => part.title),
+    ["Cited"],
+    "the second completion's sources, not the ones parsed for the first",
+  );
+});
+
+test("each rebuild yields its own source objects", () => {
+  // Same reason: the parse is shared between rebuilds, the objects must not be. A caller
+  // that edits a part it was handed would otherwise change what the next rebuild returns.
+  const carried: Carried[] = [];
+  const { apply, withSources } = createGenerationToolRecovery(carried, "run");
+  apply({ type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" }, 0, 1);
+  apply(
+    {
+      type: "tool_end",
+      tool_call_id: "ws_0",
+      result: "Title: Docs\nURL: https://example.com/a\nSnippet: only",
+    },
+    0,
+    2,
+  );
+  const first = withSources<Record<string, unknown>>([])[0];
+  first.title = "edited";
+  (first.metadata as Record<string, unknown>).description = "edited";
+  const second = withSources<Record<string, unknown>>([])[0];
+  assert.notEqual(first, second);
+  assert.equal(second.title, "Docs");
+  assert.deepEqual(second.metadata, { description: "only" });
+});

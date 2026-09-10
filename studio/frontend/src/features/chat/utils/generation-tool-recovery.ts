@@ -110,6 +110,31 @@ export function createGenerationToolRecovery(
 ) {
   const pending = new Map<string, CarriedPart>();
   const researchHandoff = newDeepResearchHandoff();
+  /** The sources a finished search card yields, parsed once per card rather than per publish.
+   *  Every rebuild used to re-run the parse over every finished search result in the turn,
+   *  which measured as the bulk of a recovery's per-publish cost on a long tool-using reply.
+   *  `apply` replaces a card object wholesale rather than editing one, so an entry that is
+   *  still the same object still holds the same result; the result is compared as well, so
+   *  an in-place edit somewhere else could not make this serve a stale list either. */
+  const parsedSources = new WeakMap<
+    object,
+    { result: unknown; sources: ReturnType<typeof parseSourcesFromResult> }
+  >();
+  const searchCard = (part: unknown) => {
+    const card = record(part);
+    return card?.type === "tool-call" &&
+      card.result !== undefined &&
+      (card.toolName === "web_search" || card.toolName === "web_fetch")
+      ? card
+      : undefined;
+  };
+  const cardSources = (card: Record<string, unknown>) => {
+    const hit = parsedSources.get(card);
+    if (hit && hit.result === card.result) return hit.sources;
+    const sources = parseSourcesFromResult(searchResultText(card.result));
+    parsedSources.set(card, { result: card.result, sources });
+    return sources;
+  };
   // A source a previous recovery appended is carried at the offset it was appended AT, so text
   // replayed after it lands behind it and cuts the reply in two, breaking any markdown that
   // spans the cut. `withSources` rebuilds these from the card, so drop them and let every
@@ -117,14 +142,8 @@ export function createGenerationToolRecovery(
   // is anchored where it arrived and has no card to rebuild it, so it stays.
   const rebuildableSourceIds = new Set(
     carried.flatMap(({ part }) => {
-      const card = record(part);
-      return card?.type === "tool-call" &&
-        card.result !== undefined &&
-        (card.toolName === "web_search" || card.toolName === "web_fetch")
-        ? parseSourcesFromResult(searchResultText(card.result)).map(
-            (source) => source.id,
-          )
-        : [];
+      const card = searchCard(part);
+      return card ? cardSources(card).map((source) => source.id) : [];
     }),
   );
   for (let i = carried.length - 1; i >= 0; i--) {
@@ -398,18 +417,16 @@ export function createGenerationToolRecovery(
   const withSources = <TPart>(parts: TPart[]): TPart[] => {
     const out: TPart[] = [...parts];
     for (const { part } of carried) {
-      const card = record(part);
-      if (
-        card?.type !== "tool-call" ||
-        card.result === undefined ||
-        (card.toolName !== "web_search" && card.toolName !== "web_fetch")
-      ) {
-        continue;
-      }
-      for (const source of parseSourcesFromResult(
-        searchResultText(card.result),
-      )) {
-        out.push(source as TPart);
+      const card = searchCard(part);
+      if (!card) continue;
+      for (const source of cardSources(card)) {
+        // Copied rather than handed out from the cache, `metadata` included: before the
+        // cache each rebuild yielded its own objects all the way down, and a caller that
+        // edits a part it was given must not reach back into what the next rebuild yields.
+        out.push({
+          ...source,
+          ...(source.metadata ? { metadata: { ...source.metadata } } : {}),
+        } as TPart);
       }
     }
     return out;
