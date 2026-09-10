@@ -6162,8 +6162,9 @@ _PATH_LINE_RE='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_
 #   $1 the directory  $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always
 #   has)  $3 how to name it in the line we print  $4 the grep that says it is already there
 #   $5 an explicit profile file, or empty to pick one the way this installer always has
+#   $6 `true` to add an explicit prepend even when the directory already appears later in PATH
 _persist_login_path_dir() {
-    _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"; _plp_file="${5:-}"
+    _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"; _plp_file="${5:-}"; _plp_prepend="${6:-false}"
     [ -n "${HOME:-}" ] || return 0
     # fish reads none of the POSIX rc files, so an `export` line there is a no-op for a fish
     # user: the next session resolves neither uv nor the shim. conf.d is fish's own drop-in
@@ -6192,8 +6193,21 @@ _persist_login_path_dir() {
     # is not an active entry, and neither is `UV_CACHE=/opt/uv` or `PYTHONPATH=/opt/uv`. The name
     # boundary is what keeps PYTHONPATH out. Taking any of them for a PATH entry leaves the next
     # shell with no uv at all.
-    if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
+    _plp_write=true
+    if [ "$_plp_prepend" = true ]; then
+        # Tauri's managed CLI must win over an older `unsloth` even when
+        # ~/.local/bin is already present later in the user's PATH. Match the
+        # exact line we own so repeated desktop installs stay idempotent.
+        _plp_exact_line="export PATH=\"$_plp_literal:\$PATH\""
+        if grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
+            | grep -qxF "$_plp_exact_line"; then
+            _plp_write=false
+        fi
+    elif grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
+        _plp_write=false
+    fi
+    if [ "$_plp_write" = true ]; then
         # One redirect, not three: a write dying midway would leave a dangling
         # "# Added by Unsloth installer" with no export under it. A failure is a WARNING
         # carrying the manual line, never a failed install: set -e would abort after the venv,
@@ -6212,10 +6226,18 @@ _persist_login_path_dir() {
             substep "Add this to your shell config to get 'unsloth' in new shells:"
             substep "  export PATH=\"$_plp_literal:\$PATH\""
         fi
+
     fi
 }
 
-if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"; then  # not on a new shell's PATH
+# The desktop installer must repair precedence, not just presence: a stale
+# system/venv `unsloth` earlier on PATH otherwise opens Studio and never reaches
+# the managed `unsloth start` CLI. Custom roots remain session-only and are not
+# written into user shell profiles.
+if [ "$TAURI_MODE" = true ] && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+    _persist_login_path_dir "$_LOCAL_BIN" '$HOME/.local/bin' "~/.local/bin" '\.local/bin' "" true
+    export PATH="$_LOCAL_BIN:$PATH"
+elif ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"; then  # not on a new shell's PATH
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             export PATH="$_LOCAL_BIN:$PATH"
             step "path" "exported $_LOCAL_BIN for this session (no rc-file append in env-override mode)"
@@ -6284,15 +6306,12 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     exit "$_SETUP_EXIT"
 fi
 
-# ── Tauri mode: done, skip shortcuts and auto-launch ──
-if [ "$TAURI_MODE" = true ]; then
-    tauri_log "DONE" ""
-    exit 0
-fi
-
 # Warn if another 'unsloth' wins on PATH; canonicalize via python (BSD readlink lacks -f).
 _installed_bin="$VENV_DIR/bin/unsloth"
-_path_unsloth=$(command -v unsloth 2>/dev/null || true)
+# Probe the PATH inherited from the user's login shell. The installer prepends
+# its own shim to the current process later, which would hide the exact shadow
+# that a new terminal would otherwise resolve.
+_path_unsloth=$(PATH="$_UNSLOTH_LOGIN_PATH" command -v unsloth 2>/dev/null || true)
 if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
     # If either side fails to resolve, skip the check rather than compare raw paths.
     _canon() {
@@ -6304,15 +6323,25 @@ if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
     _path_real=$(_canon "$_path_unsloth")
     if [ -n "$_installed_real" ] && [ -n "$_path_real" ] \
         && [ "$_installed_real" != "$_path_real" ]; then
-        echo ""
-        step "warning" "another 'unsloth' wins on PATH:" "$C_WARN"
-        substep "$_path_unsloth"
-        substep "this installer's binary is at:"
-        substep "$_installed_bin"
-        substep "to use this install, run the absolute path above,"
-        substep "alias unsloth, or put its dir earlier on PATH."
-        echo ""
+        if [ "$TAURI_MODE" = true ]; then
+            tauri_log "PROGRESS" "another 'unsloth' wins on PATH: $_path_unsloth; managed CLI: $_installed_bin"
+        else
+            echo ""
+            step "warning" "another 'unsloth' wins on PATH:" "$C_WARN"
+            substep "$_path_unsloth"
+            substep "this installer's binary is at:"
+            substep "$_installed_bin"
+            substep "to use this install, run the absolute path above,"
+            substep "alias unsloth, or put its dir earlier on PATH."
+            echo ""
+        fi
     fi
+fi
+
+# ── Tauri mode: done, skip shortcuts and auto-launch ──
+if [ "$TAURI_MODE" = true ]; then
+    tauri_log "DONE" ""
+    exit 0
 fi
 
 echo ""
