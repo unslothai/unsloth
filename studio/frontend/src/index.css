@@ -1964,8 +1964,9 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-left {
 		@apply flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
-		/* Pull the plus button closer to the composer edge. */
-		margin-left: -0.25rem;
+		/* Pull the plus button closer to the composer edge. Logical, so RTL
+		   pulls it outward instead of into the action group. */
+		margin-inline-start: -0.25rem;
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -1974,9 +1975,9 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
-		margin-left: auto;
+		margin-inline-start: auto;
 		/* 12px surface + 4px line padding minus this = 12px edge gap. */
-		margin-right: -0.25rem;
+		margin-inline-end: -0.25rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -2064,11 +2065,11 @@ html[data-chat-font] .aui-root {
 
 		/* Plus and send hug their edges by the same amount. */
 		.unsloth-composer-left {
-			margin-left: -0.125rem;
+			margin-inline-start: -0.125rem;
 		}
 
 		.unsloth-composer-line .aui-composer-action-wrapper {
-			margin-right: -0.125rem;
+			margin-inline-end: -0.125rem;
 		}
 
 		/* Send's own inset stacks on the gap above; drop it. The running state
