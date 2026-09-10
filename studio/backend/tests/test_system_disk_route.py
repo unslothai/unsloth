@@ -64,7 +64,9 @@ def test_the_route_walks_nothing():
         if isinstance(node, ast.ImportFrom)
         for alias in node.names
     }
-    assert "hf_default_cache_dir" in imported, "the route reports the filesystem root, not the models volume"
+    assert (
+        "hf_default_cache_dir" in imported
+    ), "the route reports the filesystem root, not the models volume"
 
 
 def test_a_disk_reading_is_microseconds(tmp_path):
