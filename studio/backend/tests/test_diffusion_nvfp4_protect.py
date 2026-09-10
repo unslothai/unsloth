@@ -17,6 +17,19 @@ from core.inference import diffusion_nvfp4_protect as pr
 REAL_SHAPES = ((3072, 3072), (18432, 3072), (15360, 256), (5120, 3072))
 
 
+class _CapableLayer:
+    """A stand-in for a converted flashinfer Linear: weak-referenceable, which is all the
+    controller's registry asks of it."""
+
+
+def _capable(ctl):
+    """Register one, which is what makes a controller willing to arm. The caller must keep the
+    returned object alive: the registry is weak."""
+    layer = _CapableLayer()
+    ctl.register_layer(layer)
+    return layer
+
+
 def _cuda_or_skip():
     torch = pytest.importorskip("torch")
     if os.environ.get("CUDA_VISIBLE_DEVICES", None) == "":
@@ -170,6 +183,7 @@ class _FakePipe:
 
 def test_the_scheduler_wrapper_gives_the_forward_the_right_step_index():
     ctl = pr.NVFP4StepController("0,1,2,3,-1")
+    layer = _capable(ctl)
     pipe = _FakePipe()
     seen: list = []
     with pr.protect_generation(pipe, 50, controller = ctl):
@@ -182,6 +196,7 @@ def test_the_scheduler_wrapper_gives_the_forward_the_right_step_index():
 def test_the_wrapper_is_removed_and_the_controller_reset_afterwards():
     """Removed by DELETING the instance attribute it added, not by assigning the method back."""
     ctl = pr.NVFP4StepController("0")
+    layer = _capable(ctl)
     pipe = _FakePipe()
     assert "step" not in pipe.scheduler.__dict__
     with pr.protect_generation(pipe, 8, controller = ctl):
@@ -193,6 +208,7 @@ def test_the_wrapper_is_removed_and_the_controller_reset_afterwards():
 
 def test_the_wrapper_is_removed_when_the_denoise_loop_raises():
     ctl = pr.NVFP4StepController("0,-1")
+    layer = _capable(ctl)
     pipe = _FakePipe()
     with pytest.raises(RuntimeError):
         with pr.protect_generation(pipe, 8, controller = ctl):
@@ -223,6 +239,7 @@ def test_a_pipeline_with_no_scheduler_protects_nothing():
             type(self).text += message % args if args else message
 
     ctl = pr.NVFP4StepController("0,-1")
+    layer = _capable(ctl)
     logger = _Logger()
     with pr.protect_generation(_NoScheduler(), 50, controller = ctl, logger = logger):
         assert ctl.protected is False
@@ -232,6 +249,7 @@ def test_a_pipeline_with_no_scheduler_protects_nothing():
 def test_a_second_wrapper_over_the_first_still_counts_once():
     """The gate harness and the video backend both wrap ``scheduler.step`` for progress."""
     ctl = pr.NVFP4StepController("0,-1")
+    layer = _capable(ctl)
     pipe = _FakePipe()
     with pr.protect_generation(pipe, 10, controller = ctl):
         inner = pipe.scheduler.step
@@ -550,3 +568,51 @@ def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
     assert replays == 3, handle.stats
     assert torch.equal(plain, again)
     assert not torch.equal(protected, plain)
+
+
+def test_an_armed_controller_with_no_protect_capable_layer_refuses_and_says_so():
+    """Only ``NVFP4FlashInferLinear`` reads the controller, so a load that stayed on torchao runs
+    W4A4 at every step. Arming there would count protected steps nothing ran."""
+
+    class _Logger:
+        def __init__(self):
+            self.text = ""
+
+        def warning(self, message, *args):
+            self.text += (message % args if args else message) + "\n"
+
+        def info(self, message, *args):
+            self.text += (message % args if args else message) + "\n"
+
+    ctl = pr.NVFP4StepController("0,-1")
+    assert ctl.capable_layers() == 0
+    pipe = _FakePipe()
+    logger = _Logger()
+    with pr.protect_generation(pipe, 10, controller = ctl, logger = logger):
+        assert "step" not in pipe.scheduler.__dict__
+        pipe.run(10, lambda: None)
+    assert "no protect-capable NVFP4 layer" in logger.text
+    assert (ctl.steps, ctl.protected, ctl.protected_steps_seen) == ((), False, 0)
+
+
+def test_a_registered_layer_lets_the_same_controller_arm():
+    ctl = pr.NVFP4StepController("0,-1")
+    layer = _capable(ctl)
+    assert ctl.capable_layers() == 1
+    pipe = _FakePipe()
+    seen: list = []
+    with pr.protect_generation(pipe, 10, controller = ctl):
+        pipe.run(10, lambda: seen.append(ctl.protected))
+    assert [i for i, protected in enumerate(seen) if protected] == [0, 9]
+    assert layer is not None
+
+
+def test_the_layer_registry_is_weak_so_an_unloaded_model_stops_counting():
+    import gc
+
+    ctl = pr.NVFP4StepController("0,-1")
+    layer = _capable(ctl)
+    assert ctl.capable_layers() == 1
+    del layer
+    gc.collect()
+    assert ctl.capable_layers() == 0

@@ -87,6 +87,7 @@ def nvfp4_linear_class():
             self.register_buffer("bias", bias)
             self._tuned = False
             self.protect = protect_controller()
+            self.protect.register_layer(self)
 
         def forward(self, x):
             shape = x.shape

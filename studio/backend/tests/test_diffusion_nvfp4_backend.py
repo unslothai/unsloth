@@ -298,3 +298,80 @@ def test_real_preflight_reports_ok_on_a_blackwell_card_with_flashinfer():
     ops.nvfp4_preflight(0)
     assert ops.nvfp4_preflight(0) == record
     assert ops.select_nvfp4_backend(0) == "flashinfer"
+
+
+def _fake_blackwell(monkeypatch):
+    """Enough of ``torch.cuda`` for ``nvfp4_preflight`` to reach its probe on a masked-off host."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (10, 0))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: "stub B200")
+    return torch
+
+
+def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
+    """AUTO planning probes while the model the arbiter is about to evict still owns the card, so
+    an OOM here says 'not now'. Cached, it would drop nvfp4 for the rest of the process."""
+    torch = _fake_blackwell(monkeypatch)
+    calls: list = []
+
+    def _oom(dev):
+        calls.append(dev)
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 64.00 MiB")
+
+    monkeypatch.setattr(ops, "_preflight_probe", _oom)
+    first = ops.nvfp4_preflight(0)
+    assert first["ok"] is False
+    assert "out of memory" in first["reason"].lower()
+
+    monkeypatch.setattr(ops, "_preflight_probe", lambda dev: True)
+    second = ops.nvfp4_preflight(0)
+    assert second["ok"] is True
+    assert len(calls) == 1
+
+
+def test_a_host_property_failure_stays_cached(monkeypatch):
+    """A JIT build that cannot run here is not going to start; re-probing it every selection would
+    pay the build over and over."""
+    _fake_blackwell(monkeypatch)
+    calls: list = []
+
+    def _boom(dev):
+        calls.append(dev)
+        raise RuntimeError("JIT build failed")
+
+    monkeypatch.setattr(ops, "_preflight_probe", _boom)
+    assert ops.nvfp4_preflight(0)["ok"] is False
+
+    monkeypatch.setattr(ops, "_preflight_probe", lambda dev: True)
+    assert ops.nvfp4_preflight(0)["ok"] is False
+    assert len(calls) == 1
+
+
+def test_a_successful_probe_is_cached(monkeypatch):
+    _fake_blackwell(monkeypatch)
+    calls: list = []
+
+    def _ok(dev):
+        calls.append(dev)
+        return True
+
+    monkeypatch.setattr(ops, "_preflight_probe", _ok)
+    assert ops.nvfp4_preflight(0)["ok"] is True
+    assert ops.nvfp4_preflight(0)["ok"] is True
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "exc,transient",
+    [
+        (MemoryError(), True),
+        (RuntimeError("CUDA out of memory. Tried to allocate 64.00 MiB"), True),
+        (RuntimeError("cudaErrorMemoryAllocation"), True),
+        (RuntimeError("JIT build failed"), False),
+        (ImportError("no flashinfer"), False),
+    ],
+)
+def test_only_allocation_failures_read_as_transient(exc, transient):
+    assert ops._transient_preflight_failure(exc) is transient

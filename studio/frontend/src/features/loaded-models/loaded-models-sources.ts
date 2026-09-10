@@ -266,6 +266,7 @@ export function describeVideoStatus(
         precisionLabel(status.gguf_variant) ??
           precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),
+        quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),
     },
