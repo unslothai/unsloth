@@ -14,6 +14,7 @@ Hermetic: torch, nvidia-smi and host memory are stubbed, so these run anywhere.
 
 from __future__ import annotations
 
+import sys
 import types
 
 import psutil
@@ -45,7 +46,20 @@ def _torch_module(props) -> types.SimpleNamespace:
     return types.SimpleNamespace(get_device_properties = lambda ordinal: props)
 
 
+def _not_hip(monkeypatch) -> None:
+    """Stub the torch the CUDA classifier asks for HIP.
+
+    Without this the suite reads the HOST's torch, so every assertion about an integrated
+    CUDA part inverts on a ROCm machine, where ``torch.version.hip`` is set and the
+    classifier correctly declines. Caught on a real gfx1151 runner, not by reading it.
+    """
+    monkeypatch.setitem(
+        sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = None))
+    )
+
+
 def _cuda_host(monkeypatch, props) -> None:
+    _not_hip(monkeypatch)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
@@ -166,8 +180,10 @@ def test_multi_gpu_smi_host_is_untouched(monkeypatch):
     assert not any(d.get("shared_memory_host_backed_gb") for d in devices)
 
 
-def test_xpu_is_not_classified_by_the_cuda_integrated_flag():
+def test_xpu_is_not_classified_by_the_cuda_integrated_flag(monkeypatch):
     """A same-named field on a future Intel wheel must not rewrite an iGPU's capacity."""
+    _not_hip(monkeypatch)
+    monkeypatch.setattr(hw, "IS_ROCM", False)
     assert hw._cuda_props_are_integrated(_SparkProps(), "xpu") is False
     assert hw._cuda_props_are_integrated(_SparkProps(), None) is False
     assert hw._cuda_props_are_integrated(_SparkProps(), "cuda") is True
@@ -277,3 +293,18 @@ def test_monitor_reconciliation_creates_no_driver_context(monkeypatch):
     assert hw.get_gpu_utilization()["devices"][0]["vram_total_gb"] == SPARK_TOTAL_GB
 
 
+
+
+def test_a_hip_torch_is_never_read_with_the_cuda_rule(monkeypatch):
+    """HIP reuses this namespace and a real APU sets the same flag.
+
+    IS_ROCM is a global that detection publishes, so the classifier also asks torch
+    directly: this covers the window before detection has settled, and the ROCm CI runner
+    where the previous revision of these tests inverted.
+    """
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setitem(
+        sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = "6.2.0"))
+    )
+
+    assert hw._cuda_props_are_integrated(_SparkProps(), "cuda") is False
