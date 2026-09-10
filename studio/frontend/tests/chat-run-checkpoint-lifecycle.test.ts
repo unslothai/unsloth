@@ -76,6 +76,34 @@ function createFakeTimers() {
   };
 }
 
+function recordingScheduler(
+  options: Parameters<typeof createRunCheckpointScheduler>[1] = {},
+) {
+  const clock = createFakeTimers();
+  const saved: string[] = [];
+  const scheduler = createRunCheckpointScheduler(
+    async (threadId) => {
+      saved.push(threadId);
+    },
+    { intervalMs: INTERVAL, timers: clock.timers, ...options },
+  );
+  return { clock, saved, scheduler };
+}
+
+/** The same, over a save the test settles by hand. */
+function gatedScheduler(
+  options: Parameters<typeof createRunCheckpointScheduler>[1] = {},
+) {
+  const clock = createFakeTimers();
+  const gated = createGatedSave();
+  const scheduler = createRunCheckpointScheduler(gated.save, {
+    intervalMs: INTERVAL,
+    timers: clock.timers,
+    ...options,
+  });
+  return { clock, gated, scheduler };
+}
+
 /** A save whose settling the test controls. */
 function createGatedSave() {
   const releases: Array<() => void> = [];
@@ -107,18 +135,9 @@ function createGatedSave() {
 // pin; what it may no longer do is run without any bound at all.
 
 test("omitting isActive keeps checkpointing until the staleness bound, not forever", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    {
-      intervalMs: INTERVAL,
-      timers: clock.timers,
-      maxDurationMs: 20 * INTERVAL,
-    },
-  );
+  const { clock, saved, scheduler } = recordingScheduler({
+    maxDurationMs: 20 * INTERVAL,
+  });
 
   scheduler.start("thread-a");
   for (let i = 0; i < 12; i += 1) {
@@ -144,19 +163,10 @@ test("omitting isActive keeps checkpointing until the staleness bound, not forev
 });
 
 test("an isActive that always returns true behaves like no isActive at all", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    {
-      intervalMs: INTERVAL,
-      timers: clock.timers,
-      isActive: () => true,
-      maxDurationMs: 20 * INTERVAL,
-    },
-  );
+  const { clock, saved, scheduler } = recordingScheduler({
+    isActive: () => true,
+    maxDurationMs: 20 * INTERVAL,
+  });
 
   scheduler.start("thread-a");
   for (let i = 0; i < 12; i += 1) {
@@ -301,27 +311,22 @@ test("checkpoints continue while active and end with one final save when the run
 });
 
 test("an isActive that throws is treated as not running", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
+  const { clock, saved, scheduler } = recordingScheduler({
+    isActive: () => {
+      throw new Error("thread record is gone");
     },
-    {
-      intervalMs: INTERVAL,
-      timers: clock.timers,
-      isActive: () => {
-        throw new Error("thread record is gone");
-      },
-    },
-  );
+  });
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);
-  assert.equal(saves, 1, "a throwing probe must still yield the final save");
+  assert.equal(
+    saved.length,
+    1,
+    "a throwing probe must still yield the final save",
+  );
   assert.equal(clock.pending(), 0, "a throwing probe must end the schedule");
   await clock.advance(INTERVAL * 10);
-  assert.equal(saves, 1);
+  assert.equal(saved.length, 1);
 });
 
 test("a thread can be started again after it self-terminated", async () => {
@@ -431,11 +436,7 @@ test("the final save is still attempted when the save itself rejects", async () 
 });
 
 test("a stop arriving while the final save is in flight does not rearm", async () => {
-  const clock = createFakeTimers();
-  const gated = createGatedSave();
-  const scheduler = createRunCheckpointScheduler(gated.save, {
-    intervalMs: INTERVAL,
-    timers: clock.timers,
+  const { clock, gated, scheduler } = gatedScheduler({
     isActive: () => false,
   });
 
@@ -452,18 +453,9 @@ test("a stop arriving while the final save is in flight does not rearm", async (
 });
 
 test("the final save is given the thread id that went inactive", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    {
-      intervalMs: INTERVAL,
-      timers: clock.timers,
-      isActive: (threadId) => threadId !== "thread-b",
-    },
-  );
+  const { clock, saved, scheduler } = recordingScheduler({
+    isActive: (threadId) => threadId !== "thread-b",
+  });
 
   scheduler.start("thread-b");
   await clock.advance(INTERVAL);
@@ -472,18 +464,9 @@ test("the final save is given the thread id that went inactive", async () => {
 });
 
 test("one thread going inactive does not stop its sibling", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    {
-      intervalMs: INTERVAL,
-      timers: clock.timers,
-      isActive: (threadId) => threadId === "thread-a",
-    },
-  );
+  const { clock, saved, scheduler } = recordingScheduler({
+    isActive: (threadId) => threadId === "thread-a",
+  });
 
   scheduler.start("thread-a");
   scheduler.start("thread-b");
@@ -694,14 +677,7 @@ test("a throwing probe and a throwing save still terminate cleanly", async () =>
 // D. flushAll
 
 test("flushAll checkpoints every started thread", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.start("thread-b");
@@ -712,14 +688,7 @@ test("flushAll checkpoints every started thread", async () => {
 });
 
 test("flushAll does not checkpoint a stopped thread", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.start("thread-b");
@@ -731,24 +700,17 @@ test("flushAll does not checkpoint a stopped thread", async () => {
 });
 
 test("flushAll leaves the pending timer armed and on its original schedule", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);
-  assert.equal(saves, 1);
+  assert.equal(saved.length, 1);
   const armedBefore = clock.pending();
   assert.equal(armedBefore, 1);
 
   scheduler.flushAll();
   await flushMicrotasks();
-  assert.equal(saves, 2, "the flush is an extra checkpoint");
+  assert.equal(saved.length, 2, "the flush is an extra checkpoint");
   assert.equal(
     clock.pending(),
     armedBefore,
@@ -757,13 +719,13 @@ test("flushAll leaves the pending timer armed and on its original schedule", asy
 
   await clock.advance(INTERVAL - 1);
   assert.equal(
-    saves,
+    saved.length,
     2,
     "the flush must not have pulled the next checkpoint forward",
   );
   await clock.advance(1);
   assert.equal(
-    saves,
+    saved.length,
     3,
     "the next checkpoint must still land on its original deadline",
   );
@@ -771,28 +733,16 @@ test("flushAll leaves the pending timer armed and on its original schedule", asy
 });
 
 test("flushAll with no started threads is a no-op", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.flushAll();
   await flushMicrotasks();
-  assert.equal(saves, 0);
+  assert.equal(saved.length, 0);
   assert.equal(clock.pending(), 0);
 });
 
 test("flushAll during an in-flight checkpoint still issues the extra save", async () => {
-  const clock = createFakeTimers();
-  const gated = createGatedSave();
-  const scheduler = createRunCheckpointScheduler(gated.save, {
-    intervalMs: INTERVAL,
-    timers: clock.timers,
-  });
+  const { clock, gated, scheduler } = gatedScheduler();
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);
@@ -818,21 +768,18 @@ test("flushAll during an in-flight checkpoint still issues the extra save", asyn
 });
 
 test("flushAll after stopAll saves nothing", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.start("thread-b");
   scheduler.stopAll();
   scheduler.flushAll();
   await flushMicrotasks();
-  assert.equal(saves, 0, "unmount must not be followed by a flush write");
+  assert.equal(
+    saved.length,
+    0,
+    "unmount must not be followed by a flush write",
+  );
 });
 
 test("a synchronous throw inside flushAll does not break the scheduler", async () => {
@@ -903,14 +850,7 @@ test("flushAll does not consult isActive", async () => {
 });
 
 test("repeated flushAll calls each write once per thread", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.flushAll();
@@ -942,14 +882,7 @@ test("flushAll ignores a thread that already self-terminated", async () => {
 });
 
 test("flushAll writes a thread that was restarted after stopAll", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.stopAll();
@@ -967,12 +900,7 @@ test("the checkpoint interval constant is still eight seconds", () => {
 });
 
 test("quiet time is measured after the checkpoint settles, not on a fixed cadence", async () => {
-  const clock = createFakeTimers();
-  const gated = createGatedSave();
-  const scheduler = createRunCheckpointScheduler(gated.save, {
-    intervalMs: INTERVAL,
-    timers: clock.timers,
-  });
+  const { clock, gated, scheduler } = gatedScheduler();
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);
@@ -1001,12 +929,7 @@ test("quiet time is measured after the checkpoint settles, not on a fixed cadenc
 });
 
 test("no timer is armed while a checkpoint is in flight", async () => {
-  const clock = createFakeTimers();
-  const gated = createGatedSave();
-  const scheduler = createRunCheckpointScheduler(gated.save, {
-    intervalMs: INTERVAL,
-    timers: clock.timers,
-  });
+  const { clock, gated, scheduler } = gatedScheduler();
 
   scheduler.start("thread-a");
   assert.equal(clock.pending(), 1);
@@ -1025,14 +948,7 @@ test("no timer is armed while a checkpoint is in flight", async () => {
 });
 
 test("a duplicate start does not stack timers", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.start("thread-a");
@@ -1040,7 +956,7 @@ test("a duplicate start does not stack timers", async () => {
   assert.equal(clock.pending(), 1, "one timer per thread, not per start");
   await clock.advanceUntilQuiet(INTERVAL);
   assert.equal(
-    saves,
+    saved.length,
     1,
     "a repeated runStart must not double the checkpoint rate",
   );
@@ -1048,14 +964,7 @@ test("a duplicate start does not stack timers", async () => {
 });
 
 test("stopping an unknown thread is a no-op and does not disturb a live thread", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.stop("thread-never-started");
@@ -1066,56 +975,35 @@ test("stopping an unknown thread is a no-op and does not disturb a live thread",
 });
 
 test("stopping a thread twice is a no-op the second time", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.stop("thread-a");
   scheduler.stop("thread-a");
   assert.equal(clock.pending(), 0);
   await clock.advance(INTERVAL * 5);
-  assert.equal(saves, 0, "a double stop must not resurrect anything");
+  assert.equal(saved.length, 0, "a double stop must not resurrect anything");
 });
 
 test("start after stop restarts the schedule cleanly", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);
-  assert.equal(saves, 1);
+  assert.equal(saved.length, 1);
   scheduler.stop("thread-a");
   await clock.advance(INTERVAL * 3);
-  assert.equal(saves, 1);
+  assert.equal(saved.length, 1);
 
   scheduler.start("thread-a");
   assert.equal(clock.pending(), 1);
   await clock.advance(INTERVAL);
-  assert.equal(saves, 2, "a restarted thread must checkpoint again");
+  assert.equal(saved.length, 2, "a restarted thread must checkpoint again");
   scheduler.stop("thread-a");
 });
 
 test("stopAll is idempotent and threads can restart after it", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.start("thread-b");
@@ -1132,14 +1020,7 @@ test("stopAll is idempotent and threads can restart after it", async () => {
 });
 
 test("threads are checkpointed independently", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   scheduler.start("thread-b");
@@ -1157,32 +1038,22 @@ test("threads are checkpointed independently", async () => {
 });
 
 test("a run shorter than one interval produces no checkpoints", async () => {
-  const clock = createFakeTimers();
-  let saves = 0;
-  const scheduler = createRunCheckpointScheduler(
-    async () => {
-      saves += 1;
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL - 1);
   scheduler.stop("thread-a");
   await clock.advance(INTERVAL * 10);
-  assert.equal(saves, 0, "a short run must not write a checkpoint at all");
+  assert.equal(
+    saved.length,
+    0,
+    "a short run must not write a checkpoint at all",
+  );
   assert.equal(clock.pending(), 0);
 });
 
 test("each thread's save receives its own thread id", async () => {
-  const clock = createFakeTimers();
-  const saved: string[] = [];
-  const scheduler = createRunCheckpointScheduler(
-    async (threadId) => {
-      saved.push(threadId);
-    },
-    { intervalMs: INTERVAL, timers: clock.timers },
-  );
+  const { clock, saved, scheduler } = recordingScheduler();
 
   scheduler.start("alpha");
   scheduler.start("beta");
@@ -1213,12 +1084,7 @@ test("a custom interval is honoured for every thread", async () => {
 });
 
 test("stop during an in-flight checkpoint ends the schedule", async () => {
-  const clock = createFakeTimers();
-  const gated = createGatedSave();
-  const scheduler = createRunCheckpointScheduler(gated.save, {
-    intervalMs: INTERVAL,
-    timers: clock.timers,
-  });
+  const { clock, gated, scheduler } = gatedScheduler();
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);
@@ -1237,12 +1103,7 @@ test("stop during an in-flight checkpoint ends the schedule", async () => {
 });
 
 test("a thread restarted while its old save is in flight keeps exactly one schedule", async () => {
-  const clock = createFakeTimers();
-  const gated = createGatedSave();
-  const scheduler = createRunCheckpointScheduler(gated.save, {
-    intervalMs: INTERVAL,
-    timers: clock.timers,
-  });
+  const { clock, gated, scheduler } = gatedScheduler();
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);

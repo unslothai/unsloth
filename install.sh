@@ -619,12 +619,75 @@ _resolve_studio_destinations() {
     _STUDIO_HOME_REDIRECT=default
 }
 
+# Records which cache this install used, so an update reuses it rather than guessing: the
+# launch below repoints the backend at the Studio cache even in shared mode, so one
+# on-demand install makes an empty Studio cache look full. Never fatal.
+# A relative UV_CACHE_DIR names a different directory in each phase of one install: uv
+# resolves it against its working directory, and setup.sh changes into its own before the
+# dependency pass (studio/setup.sh:1788). Absolute once, here, so both phases and the
+# marker agree. The base is uv's working directory, which --directory / UV_WORKING_DIR
+# moves, and which may itself be relative to where the installer was run.
+_absolutize_uv_cache_dir() {
+    case "$UV_CACHE_DIR" in
+        /*) return 0 ;;
+    esac
+    _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
+    case "$_uv_cache_base" in
+        /*) ;;
+        *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+    esac
+    UV_CACHE_DIR="$_uv_cache_base/$UV_CACHE_DIR"
+}
+
+_record_uv_cache_choice() {
+    # In place, before anything reads it: every branch records, so this is the one point
+    # every phase of the install and the marker are made to agree on one directory.
+    _absolutize_uv_cache_dir
+    _uv_marker_dir="$STUDIO_HOME/cache"
+    _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
+    _uv_marker_value="$UV_CACHE_DIR"
+    # Remembered so a failed install can put it back.
+    if [ "$_UV_MARKER_SAVED" != true ]; then
+        if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
+            # One we cannot read is one we cannot put back, so leave it alone.
+            _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || return 0
+            _UV_MARKER_EXISTED=true
+        else
+            _UV_MARKER_PREVIOUS=""
+            _UV_MARKER_EXISTED=false
+        fi
+        _UV_MARKER_SAVED=true
+    fi
+    (
+        mkdir -p "$_uv_marker_dir" 2>/dev/null &&
+            # Unlinked first: a redirection follows a symlink and truncates its target.
+            rm -f "$_uv_marker_file" 2>/dev/null &&
+            # And only once gone: rm can fail on a link in an undeletable directory.
+            ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; } &&
+            printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
+    ) || true
+}
+
+_restore_uv_cache_marker() {
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
+    [ "$_UV_MARKER_SAVED" = true ] || return 0
+    _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
+    rm -f "$_uv_marker_file" 2>/dev/null || true
+    if [ "$_UV_MARKER_EXISTED" = true ] \
+       && ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; }; then
+        printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
+    fi
+    _UV_MARKER_SAVED=false
+}
+
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
     case "${UV_CACHE_DIR-}" in
         *[![:space:]]*)
             _UV_CACHE_MODE=custom
             export UV_CACHE_DIR
+            # Recorded like any other choice; a caller still outranks the marker.
+            _record_uv_cache_choice
             step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
             return 0
             ;;
@@ -634,6 +697,7 @@ _configure_uv_cache() {
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
+        _record_uv_cache_choice
         step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
         return 0
     fi
@@ -687,6 +751,7 @@ _configure_uv_cache() {
         _UV_CACHE_MODE=studio
     fi
     export UV_CACHE_DIR
+    _record_uv_cache_choice
 
     case "$_UV_CACHE_MODE" in
         shared)
@@ -715,9 +780,91 @@ _resolve_studio_destinations
 # for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+
+# Claim the root before anything of ours goes into it: the uv cache, the venv and the venv's own
+# marker all land inside $STUDIO_HOME, so an install that dies in between used to leave a
+# directory the uninstaller could only identify by guessing at leftovers. Never fatal.
+#
+# Only a root this run may take over: in env mode $STUDIO_HOME is a user-chosen workspace, so an
+# empty one, or one already carrying an unambiguous marker, and nothing else, or a run that
+# aborts at the venv-step guard leaves somebody's project marked. Shorter than that guard's list
+# on purpose: it only refuses to overwrite, this authorizes a delete, so no bin/unsloth.
+# A sentinel this list may trust: a regular file, never a link, never inside a linked directory
+# ($2). -f follows a link and -L answers for the named file only, so a planted marker or a linked
+# `share` holding a genuine one would otherwise short-circuit the emptiness test below.
+_claim_sentinel() {
+    [ -f "$1" ] || return 1
+    [ -L "$1" ] && return 1
+    [ -n "${2:-}" ] && [ -L "$2" ] && return 1
+    return 0
+}
+
+_claim_studio_root() {
+    _claim_marker="$STUDIO_HOME/.unsloth-studio-owned"
+    # Already ours and the right shape: leave it. A run killed between the unlink and the write
+    # would lose the only proof this root is ours.
+    _claim_sentinel "$_claim_marker" && return 0
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && ! _claim_sentinel "$VENV_DIR/.unsloth-studio-owned" "$VENV_DIR" \
+       && ! _claim_sentinel "$STUDIO_HOME/share/studio.conf" "$STUDIO_HOME/share"; then
+        if [ -d "$STUDIO_HOME" ]; then
+            # Not enumerable: without read the globs cannot expand and an occupied workspace
+            # reads as empty. Fail closed like _dir_has_entries.
+            { [ -r "$STUDIO_HOME" ] && [ -x "$STUDIO_HOME" ]; } || return 0
+            # The globs ARE the emptiness check, so a caller's `sh -f` would make every workspace
+            # look empty. Saved and restored like _dir_has_entries.
+            _claim_glob=on
+            case $- in *f*) _claim_glob=off ;; esac
+            set +f
+            _claim_empty=true
+            for _claim_entry in "$STUDIO_HOME"/* "$STUDIO_HOME"/.[!.]* "$STUDIO_HOME"/..?*; do
+                if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then _claim_empty=false; break; fi
+            done
+            [ "$_claim_glob" = off ] && set -f
+            [ "$_claim_empty" = true ] || return 0
+        fi
+    fi
+    mkdir -p "$STUDIO_HOME" 2>/dev/null || true
+    # Unlink first, then confirm it: the redirection follows a symlink here and truncates its
+    # TARGET, and rm can fail on a root we cannot write while that target stays writable. No
+    # marker is fine; the venv writes its own later.
+    rm -f "$_claim_marker" 2>/dev/null || true
+    if [ -e "$_claim_marker" ] || [ -L "$_claim_marker" ]; then return 0; fi
+    printf '' > "$_claim_marker" 2>/dev/null || true
+}
+_claim_studio_root
+
+# Keep uv's cache on the same filesystem as the venv it fills.
+# uv hardlinks wheels within one filesystem and copies across a boundary, so a moved
+# STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins.
+# The fallback is required, since uv aborts on a cache it cannot create. mkdir -p exits 0 for
+# an existing unwritable directory and -w reads the mode rather than the filesystem, so probe
+# with a real create.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+    # mktemp, not a $$ name: a predictable path in another account's directory can be
+    # pre-created as a symlink for `: >` to follow and truncate as root.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+        echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
+        unset UV_CACHE_DIR
+    fi
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
+# The marker travels with the environment. See _record_uv_cache_choice.
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
+# One flag for both rollbacks: two leave a window either way round, where a signal
+# restores half a committed install.
+_STUDIO_INSTALL_COMMITTED=false
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
@@ -789,6 +936,8 @@ _discard_venv_for_recreate() {  # venv dir
 }
 
 _restore_studio_venv_replacement() {
+    # The flag the marker restore consults too, so a signal mid-commit cannot split them.
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
     # -e/-L, not -d: a rollback holds whatever _dir_has_entries called occupied,
     # and -d would drop a file or a dangling link and strand the original.
@@ -850,6 +999,10 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
+    # First and alone, because a signal can land between any two statements. A first
+    # install rolls nothing back and still commits.
+    _STUDIO_INSTALL_COMMITTED=true
+    _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"
         # The new environment is already committed. Clear the restore state
@@ -886,6 +1039,8 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
+        # Separate from the venv restore: an install can fail before one is in flight.
+        _restore_uv_cache_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -898,6 +1053,7 @@ _on_install_signal() {
     trap - EXIT
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
+    _restore_uv_cache_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
@@ -1642,8 +1798,13 @@ LAUNCHER_EOF
     # Try to find rounded-512.png from installed package (site-packages) or local repo
     _css_found_icon=""
     _css_venv_dir=$(dirname "$(dirname "$_css_exe")")
-    # Check site-packages
-    for _sp in "$_css_venv_dir"/lib/python*/site-packages/unsloth/studio/frontend/public; do
+    # Check site-packages. `studio` is a top-level package in the wheel (see
+    # top_level.txt), not a subpackage of `unsloth`, so the old
+    # site-packages/unsloth/studio/... glob never matched and every install fell
+    # through to the network download below. Read it out of frontend/dist rather
+    # than frontend/public: Vite copies public/ into dist/ at build time, so the
+    # file is in both in a checkout, but only dist/ ships in the wheel.
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/frontend/dist; do
         if [ -f "$_sp/rounded-512.png" ]; then
             _css_found_icon="$_sp/rounded-512.png"
         fi
@@ -2843,7 +3004,11 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # not blocked. Sentinels must be regular files: -f follows symlinks
     # to files (the legitimate ln -s shim shape) but rejects directories
     # and broken/dir-targeted symlinks.
+    # The root marker goes through _claim_sentinel, not -f: the claim refuses to write one
+    # through a link, so reading one through a link here would undo that decision. The older
+    # sentinels keep -f, since bin/unsloth is legitimately a symlink into the venv.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && ! _claim_sentinel "$STUDIO_HOME/.unsloth-studio-owned" \
        && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
        && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
        && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
@@ -3567,16 +3732,37 @@ _hsa_spoofed_physical_gfx() {
 # as the last command would trip set -e in callers' assignments). Shared by
 # get_torch_index_url's gfx gate and the runtime-less reroute gate so the two
 # can never disagree on what "readable" means.
+#   $1: unset    strip the visible-device masks only (#7314).
+#       physical also strip HSA_OVERRIDE_GFX_VERSION, which ROCr applies in userland so
+#                rocminfo reports the SPOOFED ISA while it is set (unslothai#7331).
+#                Mirrors _detect_amd_gfx_codes(ignore_hsa_override = True).
+#
+# Neither mode answers which device the runtime SELECTS, and no probe here applies both mask
+# families. _runtime_gfx_target() in install_python_stack.py answers that.
+#
+# shellcheck disable=SC2086  # $_pg_strip is a LIST of names for unset; quoting it would
+# unset one variable whose name contains spaces.
 _probe_amd_gfx_arch() {
     _ensure_rocm_probe_env
-    _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    case "${1:-}" in
+        physical) _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION" ;;
+        *)        _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" ;;
+    esac
+    # "physical" ignores the declared arch: a stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Van
+    # Gogh would answer the miscomputing gate with a healthy arch. It stays authoritative for
+    # ordinary routing.
+    if [ "${1:-}" = "physical" ]; then
+        _pg=""
+    else
+        _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    fi
     if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
     fi
     if [ -z "$_pg" ] && command -v amd-smi >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         if [ -z "$_pg" ]; then
-            _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _pg=$( (unset $_pg_strip; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
     fi
     printf '%s\n' "$_pg"
@@ -3872,7 +4058,39 @@ get_torch_index_url() {
             echo "[WARN] For GPU PyTorch, install or repair rocminfo/amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
             echo "$_base/cpu"; return
         fi
-        # AMD GPU confirmed -- detect ROCm version
+        # Archs measured to compute INCORRECTLY under ROCm route to CPU instead. Not
+        # "everything AMD does not list": unsloth serves gfx906 and gfx1031-gfx1036 on purpose
+        # (#7277). gfx1033 (Van Gogh) installs ROCm wheels and then computes wrong answers
+        # (studio/ROCM_RDNA2_APU.md). PRESENCE, not selection: picking the runtime's GPU needs
+        # the mask layering _runtime_gfx_target() implements, so a mixed host takes the cpu
+        # index and keeps the UNSLOTH_TORCH_INDEX_URL escape hatch. Inline, not a helper:
+        # harnesses extract get_torch_index_url alone. "physical" mode so no override hides the
+        # silicon; KFD first, since amdkfd writes gfx_target_version from the kernel.
+        _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe=$(_kfd_gfx_targets 2>/dev/null || true)
+        if [ -z "$_amd_gfx_gate_probe" ] && [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
+            # Under a spoof nothing override-independent named the silicon, so the only value
+            # left is the spoofed name: absence of evidence, not evidence of a healthy arch.
+            # HSA_OVERRIDE_GFX_VERSION only, NOT UNSLOTH_ROCM_GFX_ARCH, which is a DECLARED
+            # arch for the runtime-less #7301 hosts.
+            echo "[WARN] HSA_OVERRIDE_GFX_VERSION is set and this host cannot confirm its real arch (no unspoofed rocminfo, amd-smi or KFD topology)." >&2
+            echo "[WARN] Installing CPU-only PyTorch rather than trusting the spoofed name: gfx1033 (Van Gogh) computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md)." >&2
+            echo "[WARN] Unset HSA_OVERRIDE_GFX_VERSION so the arch can be read, or pin UNSLOTH_TORCH_INDEX_URL to choose deliberately." >&2
+            echo "$_base/cpu"; return
+        fi
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
+        _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+        case "$_amd_gfx_tokens" in
+            *" gfx1033 "*)
+                echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
+                echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
+                echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
+                echo "$_base/cpu"; return ;;
+        esac
+        # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
+        # the block between the header comment above and this line, so keep both exact.
+        # detect ROCm version
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # ^ || guard: belt and braces on the set -e contract the helpers hold, so a
@@ -4496,6 +4714,17 @@ case "$TORCH_INDEX_URL" in
                 || _amd_probed_family=""
             _amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") \
                 || _amd_probed_gfx_first=""
+            # A measured-bad arch anywhere in the inventory disqualifies the whole family, at
+            # the source not at each consumer: gfx1033 shares gfx103X-all with gfx1030-gfx1036,
+            # so the shared-family arm below would otherwise rewrite the cpu index the gate
+            # just chose back to ROCm wheels.
+            case " $(printf '%s\n' "$_amd_probe_out" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) is in the probed inventory -- not routing torch to the shared $_amd_probed_family index (studio/ROCM_RDNA2_APU.md)." >&2
+                    _amd_probed_family=""
+                    _amd_probed_gfx_first="" ;;
+            esac
             if [ -n "${_amd_probed_family:-}" ] && \
                [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
                 _amd_no_rocm_version_reroute=true
@@ -4520,17 +4749,43 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             # for, so the suffix silently cost the reroute. Normalise as the caller did.
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
-            # Route on the arch the probe READ, not on lspci marketing-name inference:
+            # Route on the arch the probe read, not on lspci marketing-name inference:
             # the two disagree on a mixed APU + discrete host, and inference's answer
             # would install wheels for a GPU the reroute decision never looked at.
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
+            # The gfx1033 gate in get_torch_index_url is not enough alone: this reroute can take
+            # an explicit override or a no-version probe family straight back to gfx103X-all.
+            # UNSLOTH_ROCM_GFX_ARCH is unset too, not just the local: setup.sh forwards it as
+            # --rocm-gfx and _apply_host_overrides reads any forwarded gfx as proof of ROCm,
+            # skipping the Vulkan branch (112.8 vs 49.8 tok/s) and asking for a HIP build the host
+            # cannot run. Keyed on the PHYSICAL inventory, since a stale gfx1030 override makes the
+            # inferred value look healthy. The gate's own verdict ran in a command substitution and
+            # cannot be reused, hence the re-probe.
+            _amd_reroute_physical=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+            [ -n "$_amd_reroute_physical" ] || _amd_reroute_physical=$(_kfd_gfx_targets 2>/dev/null || true)
+            case " $(printf '%s\n' "$_amd_reroute_physical" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*) _linux_inferred_gfx="gfx1033" ;;
+            esac
+            case "${_linux_inferred_gfx%%:*}" in
+                gfx1033)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- keeping CPU-only PyTorch (studio/ROCM_RDNA2_APU.md)." >&2
+                    _linux_inferred_gfx=""
+                    unset UNSLOTH_ROCM_GFX_ARCH ;;
+            esac
             _amd_family=""
-            if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
+            if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+               [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family="${_amd_probed_family:-}"
             elif [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
+            elif [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+                 [ -z "${_amd_probed_gfx_first:-}" ]; then
+                # Multiple healthy arches may share one wheel family. No single arch is
+                # forwarded to llama.cpp, but torch can still use the agreed family.
+                _amd_family="${_amd_probed_family:-}"
             fi
             if [ -n "$_amd_family" ]; then
                     _amd_mirror="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
@@ -5113,7 +5368,13 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         step "gpu" "AMD ROCm"
     fi
     _rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_rocm_root"
+    # Only claim a path that is really there: /opt/rocm is a FALLBACK, not a detection, and
+    # a runtime-only ROCm (no SDK tree) reaches here with nothing at that path.
+    if [ -d "$_rocm_root" ]; then
+        substep "ROCm: $_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_rocm_root)"
+    fi
     [ -n "$_gpu_rocm_ver" ] && substep "hipconfig: $_gpu_rocm_ver"
     [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ] && substep "GPU: $_gpu_disp_mkt"
 elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
@@ -5337,7 +5598,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.2}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.4}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -5347,7 +5608,7 @@ if [ "$_MIGRATED" = true ]; then
         # No-torch: --no-deps throughout (PyPI metadata still hard-deps torch).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -5362,7 +5623,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -5555,7 +5816,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     if [ "$SKIP_TORCH" = true ]; then
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -5574,7 +5835,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -5605,7 +5866,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.1" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.3" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -5876,6 +6137,9 @@ _persist_fish_path_dir() {
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not
     # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
+        # Same single-redirect, warning-not-failure contract as the POSIX arm. 2>/dev/null
+        # comes FIRST: redirections apply left to right, so the other order prints the
+        # shell's own "Permission denied" before the redirect can silence it.
         if {
             echo "# Added by Unsloth installer"
             echo "fish_add_path '$_pfp_quoted'"
@@ -5883,6 +6147,9 @@ _persist_fish_path_dir() {
             step "path" "added $_pfp_label to PATH in $_pfp_file"
         else
             step "path" "could not write $_pfp_file; add $_pfp_label to PATH yourself" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your fish config to get 'unsloth' in new shells:"
+            substep "  fish_add_path '$_pfp_quoted'"
         fi
     fi
 }
@@ -5927,8 +6194,12 @@ _persist_login_path_dir() {
     # shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
-        # One redirect, so an unwritable profile leaves no half-written entry; a warning rather
-        # than a failure, because under set -e an unguarded append would end the install.
+        # One redirect, not three: a write dying midway would leave a dangling
+        # "# Added by Unsloth installer" with no export under it. A failure is a WARNING
+        # carrying the manual line, never a failed install: set -e would abort after the venv,
+        # llama.cpp and the shim are in place, and a read-only rc (NixOS, home-manager,
+        # chezmoi) is a supported setup.
+        # 2>/dev/null first, as in the fish arm.
         if {
             echo ''
             echo '# Added by Unsloth installer'
@@ -5937,6 +6208,9 @@ _persist_login_path_dir() {
             step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
         else
             step "path" "could not write $_SHELL_PROFILE; add $_plp_label to PATH yourself" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your shell config to get 'unsloth' in new shells:"
+            substep "  export PATH=\"$_plp_literal:\$PATH\""
         fi
     fi
 }

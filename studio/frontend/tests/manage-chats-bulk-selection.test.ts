@@ -5,11 +5,11 @@
 // view pulls in the whole app, so it is read as text; the store runs for real.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrcAsync,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -24,12 +24,8 @@ const { rangeBetween } = await import(
 );
 
 async function manageChatsSource(): Promise<string> {
-  return await readFile(
-    new URL(
-      "../src/features/settings/components/manage-chats-view.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  return await readSrcAsync(
+    "features/settings/components/manage-chats-view.tsx",
   );
 }
 

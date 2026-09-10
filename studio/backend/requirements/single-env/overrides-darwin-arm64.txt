@@ -1,7 +1,25 @@
-# Keep mlx-vlm / mlx-lm on the same Transformers floor as the main Unsloth
+# Keep mlx-vlm / mlx-lm on the same Transformers version as the main Unsloth
 # environment when uv applies their dependency metadata.
-transformers>=5.5.0; python_version >= "3.10"
-transformers>=4.57.6; python_version < "3.10"
+#
+# A window, not a floor. An override replaces EVERY requirement on the package,
+# including unsloth's own transformers<=5.5.0 cap in pyproject, and install.sh's
+# core install is the one uv command that does not also pass constraints.txt. A
+# bare floor therefore let that resolve pick transformers 5.16.1 (the first
+# release wanting tokenizers>=0.23.1) with tokenizers 0.23.2 on macOS arm64;
+# extras-no-deps.txt then pinned transformers back to 5.5.0 --no-deps and left
+# tokenizers stranded, so every `import transformers`, and so every
+# `import mlx_lm`, raised and Apple Silicon came up chat-only.
+#
+# Unlike the huggingface_hub case below, this cannot go unsatisfiable: that one
+# replaced other packages' requirements ON hub while a direct requirement still
+# had to be met, whereas here no requirement on transformers survives to
+# contradict the window. A future mlx-vlm needing a newer transformers gets this
+# one installed instead, which is what an override is for.
+#
+# Keep in lockstep with constraints.txt; tests/studio/install/
+# test_transformers_tokenizers_pair.py fails if the two disagree.
+transformers>=5.5.0,<=5.5.0; python_version >= "3.10"
+transformers>=4.57.6,<=4.57.6; python_version < "3.10"
 
 # mlx-vlm / mlx-lm pull anyio>=4.14, which fights the constraints.txt cap (needed
 # for the 4.14 Python-3.13 streaming cancel-scope RuntimeError, #6483). The -c

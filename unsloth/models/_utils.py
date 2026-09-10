@@ -2078,6 +2078,10 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+else:
+    # Exhaustive because both names are in __all__: an unbound branch (mlx) breaks `import *`.
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = DEVICE_TYPE_TORCH)
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = DEVICE_TYPE_TORCH)
 
 # Fix KeyError: 'Cache only has 0 layers, attempted to access layer with index 0'.
 

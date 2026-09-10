@@ -21,6 +21,7 @@ import io
 import json
 import sys
 import tarfile
+import urllib.error
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -915,3 +916,51 @@ def test_module_ops_prefers_module_globals_over_core_defaults(component):
     assert callable(ops.fetch_json)
     with pytest.raises(AttributeError):
         _ = ops.does_not_exist_anywhere
+
+
+def _github_api_403(headers):
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b1",
+        403,
+        "rate limit exceeded",
+        headers,
+        io.BytesIO(b""),
+    )
+
+
+@pytest.mark.parametrize(
+    ("headers", "retryable"),
+    [
+        ({}, False),
+        ({"Retry-After": "5"}, True),
+        ({"X-RateLimit-Reset": "1700000030"}, True),
+        ({"X-RateLimit-Reset": "1700003600"}, False),
+    ],
+)
+def test_github_api_403_retries_only_with_a_reachable_reset(monkeypatch, headers, retryable):
+    monkeypatch.setattr(core.time, "time", lambda: 1_700_000_000.0)
+    assert core.is_retryable_url_error(_github_api_403(headers)) is retryable
+
+
+def test_github_api_403_without_a_reachable_reset_makes_one_request():
+    component = Component(LLAMA_DESCRIPTOR)
+    requests = []
+
+    class Opener:
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
+            requests.append(request.full_url)
+            raise _github_api_403({})
+
+    component.namespace["_URL_OPENER"] = Opener()
+
+    with pytest.raises(urllib.error.HTTPError):
+        core.download_bytes(
+            component.ops,
+            "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b1",
+        )
+
+    assert len(requests) == 1

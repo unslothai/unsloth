@@ -277,16 +277,27 @@ class TestStepThirteenWiring:
             "not IS_MACOS and (not NO_TORCH)",
             "not IS_WINDOWS and (not IS_MACOS) and (not NO_TORCH)",
         ]
+        repairs = [
+            "_ensure_cuda_torch",
+            "_ensure_rocm_torch",
+            "_ensure_xpu_torch",
+            "_ensure_cpu_torch",
+            "_ensure_xpu_triton",
+        ]
         for guard in guards:
-            assert _calls_in(guard) == [
-                "_progress",
-                "_torch_step_label",
-                "_ensure_cuda_torch",
-                "_ensure_rocm_torch",
-                "_ensure_xpu_torch",
-                "_ensure_cpu_torch",
-                "_ensure_xpu_triton",
-            ]
+            calls = _calls_in(guard)
+            assert [c for c in calls if c in repairs] == repairs
+            assert calls[:2] == ["_progress", "_torch_step_label"]
+        # str() is the label coercion around the probe, not a step.
+        step13 = [c for c in _calls_in(guards[1]) if c != "str"]
+        # Step 13 also re-selects torchao when a repair moved the torch label, which both the
+        # spec and the leaf are read from. Nothing else may join the set.
+        assert step13 == (
+            ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
+            + repairs
+            + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+        ), step13
+        assert "_install_torchao_for_torch" not in _calls_in(guards[0])
 
     def test_the_invariant_is_wired_in_exactly_once(self):
         body = ast.unparse(_install_stack_ast())
@@ -300,7 +311,7 @@ def _base_total(**flags) -> int:
     total fails here instead of drawing a progress bar past 100%.
     """
     lines = _STACK_SRC.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = 12"))
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = "))
     end = next(i for i, line in enumerate(lines) if line.strip().startswith("base_requirements ="))
     block = textwrap.dedent("\n".join(lines[start:end]))
     namespace = {
@@ -316,20 +327,20 @@ def _base_total(**flags) -> int:
 
 
 class TestStepTotals:
-    def test_windows_gained_one_step(self):
-        assert _base_total(IS_WINDOWS = True) == 14
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 12
+    def test_windows_totals_include_torchcodec(self):
+        assert _base_total(IS_WINDOWS = True) == 15
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 13
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 16),  # Linux, torch
-            ({"NO_TORCH": True}, 13),  # Linux, GGUF-only
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),  # Apple Silicon
-            ({"IS_MACOS": True}, 12),  # Intel Mac
+            ({}, 17),  # Linux, torch
+            ({"NO_TORCH": True}, 14),  # Linux, GGUF-only
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 14),  # Apple Silicon
+            ({"IS_MACOS": True}, 13),  # Intel Mac
         ],
     )
-    def test_the_other_platforms_are_unchanged(self, flags, total):
+    def test_the_other_platform_totals_include_torchcodec(self, flags, total):
         assert _base_total(**flags) == total
 
 

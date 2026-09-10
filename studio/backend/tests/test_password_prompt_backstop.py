@@ -8,6 +8,7 @@ so run under the Unsloth venv."""
 from __future__ import annotations
 
 import io
+import os
 import re
 import sys
 from pathlib import Path
@@ -188,7 +189,7 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
         lambda u, p, **kw: calls.append(("update", u, p, kw)),
     )
 
-    def _fake_prompt(*, min_length, is_current_password, apply_change, out):
+    def _fake_prompt(*, min_length, is_current_password, apply_change, out, **_kw):
         # The gate wires the policy constant and route-equivalent apply hook.
         assert min_length == auth_storage.MIN_PASSWORD_LENGTH
         # Wired to the real hash comparison: a wrong guess is rejected.
@@ -409,3 +410,453 @@ def test_apply_supplied_password_strips_env_even_when_literal_wins(monkeypatch):
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "env-should-be-stripped")
     run._apply_supplied_password("literal-new-password")
     assert terminal_prompt.SUPPLIED_PASSWORD_ENV not in run.os.environ
+
+
+# ──────────────────────────────────────────────────────────────────────
+# The gate now covers a raw exposed bind, not just the tunnel.
+# ──────────────────────────────────────────────────────────────────────
+
+
+_RAW_BIND_KWARGS = dict(
+    host = "0.0.0.0",
+    secure = False,
+    api_only = False,
+    frontend_served = True,
+)
+
+
+def test_a_headless_raw_bind_is_byte_for_byte_unchanged(monkeypatch):
+    """The compatibility promise of this change.
+
+    Headless `-H 0.0.0.0` is the long-running container case: it must still
+    proceed, keep serving the bootstrap credential, and above all not reach the
+    strip-and-refuse handling a public tunnel launch uses, which would delete the
+    .bootstrap_password such deployments are logged into with.
+    """
+    _patch_streams(monkeypatch, tty = False)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+
+
+def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
+    """ "Unchanged" has to mean it does not touch the database either.
+
+    A headless raw bind used to return at `if not tunnel_will_start` without
+    importing auth storage. Calling ensure_default_admin() first would move
+    seeding earlier and open the SQLite file sooner, giving a read-only or locked
+    STUDIO_HOME a new place to fail on a launch that used to work, so
+    promptability must be decided before storage is consulted.
+    """
+    _patch_streams(monkeypatch, tty = False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError(
+            "auth storage was opened on a headless raw bind; the gate must "
+            "decide it cannot prompt before touching the database"
+        )
+
+    from auth import storage as _storage
+
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+    monkeypatch.setattr(_storage, "requires_password_change", _boom)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+
+
+def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
+    """Ctrl+C must not turn a working launch into no Studio.
+
+    `docker/studio_run.sh` execs `unsloth studio -H 0.0.0.0` and only supplies a
+    password when the initial-password file is non-empty, so a fresh
+    `docker run -it` meets this prompt and aborting would stop a container that
+    starts today. It proceeds on the bootstrap deadline it already had.
+    """
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.setattr(
+        terminal_prompt,
+        "prompt_for_password_change",
+        lambda **_kw: False,  # Ctrl+C / EOF
+    )
+
+    # proceed = True, and the bootstrap credential is still injected as before.
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+
+
+def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
+    """The tunnel case is unchanged: refusing to secure a public URL fails closed."""
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+
+
+def test_a_raw_bind_with_a_terminal_reaches_the_prompt(monkeypatch):
+    """The fix. Before this, `if not tunnel_will_start` returned first."""
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    seen = {}
+
+    def _fake_prompt(*, min_length, is_current_password, apply_change, out, **kw):
+        seen.update(kw)
+        apply_change("a-brand-new-password")
+        return True
+
+    from auth import terminal_prompt
+
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, True)
+    # And it must not tell a LAN operator they are on the public internet.
+    assert seen.get("exposure") == "on every network interface"
+
+
+def test_a_loopback_launch_still_short_circuits(monkeypatch):
+    """Plain `unsloth studio` must not consult storage at all."""
+
+    def _boom(*_a, **_k):
+        raise AssertionError("storage must not be consulted for a loopback launch")
+
+    monkeypatch.setattr(run, "_stream_isatty", lambda _s: True)
+    from auth import storage as _storage
+
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False,
+        host = "127.0.0.1",
+        secure = False,
+        api_only = False,
+        frontend_served = True,
+    ) == (True, False)
+
+
+def test_api_only_and_colab_raw_binds_do_not_prompt(monkeypatch):
+    """Scoped like the bootstrap deadline: web UI only, never api-only or Colab."""
+
+    def _boom(*_a, **_k):
+        raise AssertionError("storage must not be consulted")
+
+    monkeypatch.setattr(run, "_stream_isatty", lambda _s: True)
+    from auth import storage as _storage
+
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False,
+        host = "0.0.0.0",
+        secure = False,
+        api_only = True,
+        frontend_served = True,
+    ) == (True, False)
+    assert run._terminal_password_gate(
+        tunnel_will_start = False,
+        host = "0.0.0.0",
+        secure = False,
+        api_only = False,
+        frontend_served = True,
+        is_colab = True,
+    ) == (True, False)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A backgrounded shell job is not a usable terminal.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _FdStream(_Stream):
+    def __init__(self):
+        super().__init__(isatty = True)
+
+    def fileno(self):
+        return 0
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
+def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
+    """`unsloth studio -H 0.0.0.0 &` must still launch.
+
+    A background job inherits the terminal, so isatty() is True on both streams,
+    but the masked prompt calls termios.tcsetattr; POSIX SIGTTOUs a background
+    process group that does, and the default action STOPS the process. The launch
+    would freeze before the socket binds, so it takes the old headless path:
+    proceed on the bootstrap deadline, without consulting auth storage.
+    """
+    monkeypatch.setattr(sys, "stdin", _FdStream())
+    monkeypatch.setattr(sys, "stderr", _FdStream())
+    monkeypatch.setattr(run.os, "tcgetpgrp", lambda _fd: 4242)
+    monkeypatch.setattr(run.os, "getpgrp", lambda: 99)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("storage must not be opened for a background job")
+
+    monkeypatch.setattr(auth_storage, "ensure_default_admin", _boom)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
+def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
+    """A tunnel publishes a public URL: it must not quietly proceed unprompted."""
+    monkeypatch.setattr(sys, "stdin", _FdStream())
+    monkeypatch.setattr(sys, "stderr", _FdStream())
+    monkeypatch.setattr(run.os, "tcgetpgrp", lambda _fd: 4242)
+    monkeypatch.setattr(run.os, "getpgrp", lambda: 99)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    # The process group check is scoped to the raw-bind branch, so a tunnel still
+    # reaches the prompt and still aborts when it is refused.
+    assert run._prompt_owns_the_terminal() is False
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
+def test_a_foreground_raw_bind_still_reaches_the_prompt(monkeypatch):
+    """The ordinary interactive case is untouched."""
+    monkeypatch.setattr(sys, "stdin", _FdStream())
+    monkeypatch.setattr(sys, "stderr", _FdStream())
+    monkeypatch.setattr(run.os, "tcgetpgrp", lambda _fd: 4242)
+    monkeypatch.setattr(run.os, "getpgrp", lambda: 4242)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: True)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, True)
+
+
+def test_no_job_control_falls_back_to_the_isatty_answer(monkeypatch):
+    """Windows / no controlling terminal: nothing can stop us, so still prompt."""
+    for exc in (OSError("ENOTTY"), AttributeError(), ValueError()):
+
+        def _boom(_fd, _exc = exc):
+            raise _exc
+
+        monkeypatch.setattr(run.os, "tcgetpgrp", _boom, raising = False)
+        monkeypatch.setattr(sys, "stdin", _FdStream())
+        assert run._prompt_owns_the_terminal() is True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A pty is not a person: an unattended terminal must not hold the launch.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _PtyStdin:
+    """sys.stdin standing on a real pty slave, as tmux/screen/docker -t give it."""
+
+    def __init__(self, fd):
+        self._fd = fd
+        self.encoding = "utf-8"
+
+    def fileno(self):
+        return self._fd
+
+    def isatty(self):
+        return True
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
+def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
+    """`tmux new -d 'unsloth studio -H 0.0.0.0'` must still bind its socket.
+
+    A detached pty is a real, foreground terminal nobody will ever type into:
+    isatty() is True on both streams and the process owns the terminal, so every
+    interactivity test says "prompt". The read never returns, and the gate runs
+    BEFORE uvicorn binds, so the launch hangs forever instead of starting.
+    """
+    import io
+    import pty
+
+    master, slave = pty.openpty()
+    try:
+        monkeypatch.setattr(sys, "stdin", _PtyStdin(slave))
+        out = io.StringIO()
+        # Nothing is written to `master`: the pty exists, the human does not.
+        changed = terminal_prompt.prompt_for_password_change(
+            min_length = 8,
+            is_current_password = lambda _c: False,
+            apply_change = lambda _p: pytest.fail("nothing was typed"),
+            out = out,
+            first_key_timeout = 0.25,
+        )
+    finally:
+        os.close(master)
+        os.close(slave)
+
+    assert changed is False
+    assert "No response at the terminal" in out.getvalue()
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
+def test_a_pty_someone_types_into_is_not_treated_as_unattended(monkeypatch):
+    """The deadline is on the FIRST keystroke only, and a real one clears it."""
+    import io
+    import pty
+
+    applied = []
+    master, slave = pty.openpty()
+    try:
+        os.write(master, b"abcdefgh12\rabcdefgh12\r")
+        monkeypatch.setattr(sys, "stdin", _PtyStdin(slave))
+        out = io.StringIO()
+        changed = terminal_prompt.prompt_for_password_change(
+            min_length = 8,
+            is_current_password = lambda _c: False,
+            apply_change = applied.append,
+            out = out,
+            first_key_timeout = 0.25,
+        )
+    finally:
+        os.close(master)
+        os.close(slave)
+
+    assert changed is True
+    assert applied == ["abcdefgh12"]
+
+
+def test_the_gate_deadlines_a_raw_bind_prompt_and_never_the_tunnel(monkeypatch):
+    """Scope: only the launch that must not be blocked gets a deadline.
+
+    A tunnel publishes a public URL, so it keeps waiting indefinitely and fails
+    closed; a raw bind falls back to the protection it already had.
+    """
+    seen = {}
+
+    def _fake_prompt(**kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
+
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS)
+    assert seen["first_key_timeout"] == run._UNATTENDED_PROMPT_SECONDS
+
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS)
+    assert seen["first_key_timeout"] is None
+
+
+def test_a_refusal_does_not_promise_a_deadline_that_is_disabled(monkeypatch):
+    """With TIMEOUT=0 nothing will shut this instance down; do not say otherwise.
+
+    The refusal path proceeds on purpose (the launch worked before the prompt
+    existed), but must not tell the operator a deadline will rescue them when
+    `should_arm_bootstrap_timeout` will not arm one: that is the single sentence
+    they would act on.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
+    stderr = _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    err = stderr.getvalue()
+    assert "DISABLED for this launch" in err, err
+    assert "shuts down after the bootstrap deadline" not in err, err
+
+
+def test_a_refusal_still_names_the_deadline_when_one_will_arm(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    stderr = _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    err = stderr.getvalue()
+    assert "shuts down after the bootstrap deadline" in err, err
+    assert "DISABLED" not in err, err
+
+
+def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkeypatch):
+    """A 30s fallback must not become 60s across the re-exec.
+
+    The CLI parent holds the terminal for its deadline, gets nothing, warns and
+    launches. The child gate then sees the SAME unattended pty; without a handoff
+    it waits the whole deadline again, and a third time on the `studio run` path,
+    which is the startup stall the 30s value was chosen to stay under.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "1")
+    _patch_streams(monkeypatch, tty = True)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("the child prompted again after the parent gave up")
+
+    from auth import storage as _storage
+
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    # Consumed, so a later launch from the same environment keeps its own prompt.
+    import os as _os
+
+    assert _os.environ.get("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE") is None
+
+
+def test_the_marker_never_silences_a_tunnel_launch(monkeypatch):
+    """A public URL fails closed regardless of what the parent did."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "1")
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+
+
+def test_windows_has_no_terminal_ownership_to_lose(monkeypatch):
+    """The Windows half of the tests skipped above, and it runs everywhere.
+
+    `_prompt_owns_the_terminal` exists to catch a backgrounded POSIX job, where
+    driving the terminal raises SIGTTOU and stops the process. Windows has no
+    process groups and no `os.tcgetpgrp`, so the call raises AttributeError and
+    the answer must be True: there is nothing there that can stop us, so the
+    isatty verdict stands and an interactive Windows launch still prompts. A
+    False would silently drop the prompt on every Windows terminal.
+    """
+    monkeypatch.delattr(run.os, "tcgetpgrp", raising = False)
+    assert run._prompt_owns_the_terminal() is True

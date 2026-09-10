@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { apiUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
@@ -81,6 +82,7 @@ type AuthFormProps = {
 const HIDDEN_LOGIN_USERNAME = "unsloth";
 
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
@@ -181,8 +183,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   useEffect(() => {
     if (statusLoading || reloadReadySent.current) return;
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [statusLoading]);
+    signalReady();
+  }, [statusLoading, signalReady]);
 
   // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {

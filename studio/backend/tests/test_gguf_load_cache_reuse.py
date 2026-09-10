@@ -710,7 +710,8 @@ class TestLoadHubDownloadExclusion:
         assert intent.gguf_path is None
         assert intent.hf_variant == "Q8_0"
 
-    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self):
+    @pytest.mark.parametrize("reuse_case", ["unchanged", "new_roots", "completed_file"])
+    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self, reuse_case, tmp_path):
         from models.inference import LoadRequest
 
         route = _load_route_module(
@@ -728,6 +729,16 @@ class TestLoadHubDownloadExclusion:
             holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
+        if reuse_case == "new_roots":
+            request._gguf_companion_roots = ("weights-revision", "companion-revision")
+        elif reuse_case == "completed_file":
+            request._gguf_companion_roots = (str(tmp_path),)
+            backend._openai_gguf_companion_roots = request._gguf_companion_roots
+            backend._openai_gguf_companion_state = ()
+            (tmp_path / "mmproj-F16.gguf").write_bytes(b"GGUF companion")
+
+        class MetadataReached(BaseException):
+            pass
 
         with (
             _reuse_route(route, backend, response),
@@ -735,13 +746,15 @@ class TestLoadHubDownloadExclusion:
                 route,
                 "ModelConfig",
                 SimpleNamespace(
-                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(
-                        AssertionError("resident reuse must not resolve model metadata")
-                    )
+                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(MetadataReached())
                 ),
             ),
             patch.object(route, "_active_gguf_intent", return_value = object()),
         ):
+            if reuse_case != "unchanged":
+                with pytest.raises(MetadataReached):
+                    _run_route_load(route, request)
+                return
             result = _run_route_load(route, request)
 
         assert result is response

@@ -148,6 +148,12 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 422,
             detail = safe_validation_errors(exc.errors()),
         ) from exc
+    # The refusal the completion route runs on entry. Without it a part no path can serve is
+    # queued at 202 and fails asynchronously in the supervisor, where the caller cannot see it.
+    from routes.inference import _messages_have_input_audio, _reject_unsupported_content_parts
+
+    _reject_unsupported_content_parts(request)
+
     # Message content/reasoning are user-authored data, not routing configuration. Scan every
     # other persisted field, including extra message-envelope fields, with the credential policy.
     durable_config = {
@@ -172,8 +178,10 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = "Durable chat runs are available only for local inference",
         )
     # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread.
-    if any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
+    # request_json for the life of the thread. A recording rides in a content part too, not just the field.
+    if any(
+        raw.get(field) not in (None, "") for field in _MEDIA_FIELDS
+    ) or _messages_have_input_audio(request.messages):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",

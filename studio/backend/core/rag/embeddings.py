@@ -199,7 +199,11 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         return ()
 
 
-def _guard_model_security(name: str, local_only: bool = False) -> None:
+def _guard_model_security(
+    name: str,
+    local_only: bool = False,
+    display: str | None = None,
+) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
     /settings gate (a name can also arrive via env/default); local paths and unreachable
@@ -207,6 +211,11 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
 
     ``local_only`` (offline) inspects the local cache; subdir probes are skipped (they'd hit the
     network and hang, and the offline gate walks the whole snapshot anyway).
+
+    ``display`` names the model in the error. The scan runs on ``name``, which the caller has
+    already resolved to an absolute snapshot directory, and that path reaches a user through
+    /v1/embeddings; the configured model is what they can act on and what the rest of that
+    route reports.
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
@@ -235,7 +244,7 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
             else "is flagged as unsafe by Hugging Face's security scan"
         )
         raise UnsafeEmbeddingModelError(
-            f"Embedding model {name!r} {reason}; refusing to load. "
+            f"Embedding model {(display or name)!r} {reason}; refusing to load. "
             "Set a different RAG embedding model."
         )
 
@@ -470,7 +479,7 @@ def _get(model_name: str | None = None):
             # Scan after load_target is settled: on the repo id it checked the Hub's current commit while the
             # load opened an older cached one. evaluate_file_security recovers the repo and exact commit from
             # a snapshot path.
-            _guard_model_security(load_target, offline)
+            _guard_model_security(load_target, offline, display = name)
             with _quiet_transformers_load() as report:
                 # Re-emit in finally: a load that raises after transformers wrote its report is exactly when a
                 # MISSING or MISMATCH line matters.
@@ -540,6 +549,22 @@ def _st_dim(model_name: str | None = None) -> int:
         return _get(model_name).get_sentence_embedding_dimension()
 
 
+def _st_max_tokens(model_name: str | None = None) -> int | None:
+    with _compute_lock:
+        model = _get(model_name)
+        limit = getattr(model, "max_seq_length", None)
+        if not limit:
+            return None
+        tokenizer = getattr(model, "tokenizer", None)
+        specials = getattr(tokenizer, "num_special_tokens_to_add", None)
+        reserved = int(specials()) if callable(specials) else 0
+        prompts = getattr(model, "prompts", None) or {}
+        prompt = prompts.get(getattr(model, "default_prompt_name", None))
+        if prompt and tokenizer is not None:
+            reserved += len(tokenizer.encode(prompt, add_special_tokens = False))
+        return max(1, int(limit) - reserved)
+
+
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Token counter using the model's tokenizer, under the compute lock (the same
     fast tokenizer backs encode and isn't thread-safe), with rayon enabled for the
@@ -601,6 +626,9 @@ class _SentenceTransformersBackend:
 
     def dim(self, *, model_name = None):
         return _st_dim(model_name)
+
+    def max_tokens(self, *, model_name = None):
+        return _st_max_tokens(model_name)
 
     def warm(self, *, model_name = None):
         _get(model_name)
@@ -1141,6 +1169,10 @@ def encode(
 def dim(model_name: str | None = None) -> int:
     """Embedding dimension for the (loaded) model."""
     return _get_backend(model_name).dim(model_name = model_name)
+
+
+def max_tokens(model_name: str | None = None) -> int | None:
+    return _get_backend(model_name).max_tokens(model_name = model_name)
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:

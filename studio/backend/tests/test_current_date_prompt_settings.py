@@ -197,6 +197,31 @@ class TestExternalProviderMessages:
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
         assert out[1] == {"role": "user", "content": "hi"}
 
+    def test_ollama_keeps_its_modelfile_system_prompt_when_studio_sends_none(self):
+        # Ollama applies the Modelfile SYSTEM only while messages[0] is not a system turn (#10436).
+        import routes.inference as inference
+
+        messages = [{"role": "user", "content": "hi"}]
+        out = inference._prepend_current_date_to_messages(messages, provider_type = "ollama")
+        assert out is messages
+
+    def test_ollama_still_dates_a_system_turn_studio_composed(self):
+        import routes.inference as inference
+
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}],
+            provider_type = "ollama",
+        )
+        assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
+        assert out[1] == {"role": "user", "content": "hi"}
+
+    def test_other_local_servers_still_get_a_synthesized_system_turn(self):
+        import routes.inference as inference
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "user", "content": "hi"}], provider_type = "llama_cpp"
+        )
+        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+
     def test_date_prefixes_text_inside_structured_content(self):
         messages = [{"role": "system", "content": [{"type": "text", "text": "Be terse."}]}]
         out = self._prepend(messages)

@@ -6,6 +6,7 @@
 import os
 import structlog
 import threading
+from contextvars import ContextVar
 import time
 from loggers import get_logger
 from contextlib import contextmanager
@@ -284,15 +285,49 @@ def hf_probe_disabled() -> bool:
     }
 
 
+# The memo above expires on wall-clock, right between requests and wrong inside one: a slow
+# request outlives the TTL, so its later guards re-probe and can disagree with the first.
+_hf_reachability_pin: "ContextVar[Optional[list]]" = ContextVar("hf_reachability_pin", default = None)
+
+
+@contextmanager
+def pinned_hf_reachability():
+    """Hold one reachability verdict for this block, however long it runs.
+
+    Every verdict this module reaches fills it -- probed, already memoised, or opted out
+    of -- and the rest read it. Nothing is pinned until something asks, so a block that
+    never touches the Hub pays nothing.
+    """
+    token = _hf_reachability_pin.set([])
+    try:
+        yield
+    finally:
+        _hf_reachability_pin.reset(token)
+
+
+def _pin_reachability(verdict: bool) -> bool:
+    """Record the first verdict this request reaches, so every later read returns it."""
+    pinned = _hf_reachability_pin.get()
+    if pinned is not None and not pinned:
+        pinned.append(verdict)
+    return verdict
+
+
 def hf_reachability_memo() -> Optional[bool]:
-    """The memoised verdict while still fresh, else None.
+    """The pinned or memoised verdict while still usable, else None.
 
     Lets a caller skip a cheaper-but-still-slow shortcut it has already effectively run:
     one request opens several guards, and repeating a 2s DNS lookup per guard adds up.
     Lock-free like force_hf_offline_active: the tuple read is atomic.
     """
+    pinned = _hf_reachability_pin.get()
+    if pinned:
+        return pinned[0]
     cached = _hf_reachability
-    return cached[1] if _reachability_fresh(cached) else None
+    if not _reachability_fresh(cached):
+        return None
+    # Answering from the memo produces a verdict, and a warm memo is the usual first one.
+    return _pin_reachability(cached[1])
 
 
 def reset_hf_reachability_cache() -> None:
@@ -312,17 +347,25 @@ def hf_unreachable(timeout: int = 3) -> bool:
     reachable and the load decides as it does today.
     """
     if hf_probe_disabled():
+        # A declination, not a verdict, so it does not pin. UNSLOTH_OFFLINE_PROBE turns off
+        # the TCP probe and not DNS, and pinning here answers for the DNS shortcut too:
+        # guards 2..N read "reachable" and never look again. Leaving it open costs no
+        # lookup, since a dead one returns above this and never reaches here.
         return False
+
+    pinned = _hf_reachability_pin.get()
+    if pinned:
+        return pinned[0]
 
     global _hf_reachability
     cached = _hf_reachability
     if _reachability_fresh(cached):
-        return cached[1]
+        return _pin_reachability(cached[1])
 
     with _hf_reachability_lock:
         cached = _hf_reachability
         if _reachability_fresh(cached):
-            return cached[1]
+            return _pin_reachability(cached[1])
         try:
             from utils.transformers_version import hf_endpoint_unreachable
 
@@ -335,7 +378,7 @@ def hf_unreachable(timeout: int = 3) -> bool:
         except Exception:
             unreachable = False
         _hf_reachability = (time.monotonic(), unreachable)
-        return unreachable
+        return _pin_reachability(unreachable)
 
 
 def _reset_hf_sessions() -> None:

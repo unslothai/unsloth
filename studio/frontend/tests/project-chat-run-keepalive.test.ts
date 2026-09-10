@@ -9,17 +9,12 @@
 // rather than a replacement.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const page = readFileSync(
-  new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-  "utf8",
-);
-const provider = readFileSync(
-  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const page = readSrc("features/chat/chat-page.tsx");
+const provider = readSrc("features/chat/runtime-provider.tsx");
 
 /** The source of one component, from its declaration to the next one. */
 function componentSource(source: string, declaration: string): string {
@@ -357,10 +352,7 @@ test("a delayed first send keeps the creation inputs it was sent under", () => {
   // attachment before handleSend and Unsloth's PDF/DOCX/text adapters extract there, so with
   // the provider surviving a project switch a document send materializes in whichever project
   // is on screen by then.
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(
     thread,
     /claimThreadCreation\([\s\S]*?\);\s*aui\.composer\(\)\.send\(\);/,
@@ -392,10 +384,7 @@ test("a delayed first send keeps the creation inputs it was sent under", () => {
 
   // The RUN resolves its project separately from the record write, and takes the run's
   // instructions, RAG sources and sandbox from it. It reads the same stamp.
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
     /const creationClaim = unstable_threadId\s*\? readThreadCreationClaim\(unstable_threadId\)\s*: undefined;\s*const composerProjectIdAtSend = creationClaim\s*\? creationClaim\.projectId/,
@@ -403,10 +392,7 @@ test("a delayed first send keeps the creation inputs it was sent under", () => {
   // ...and the claim has to outlive initialize(), because there is no ordering guarantee
   // between the two readers. Consuming it on the first read starves the second.
   assert.doesNotMatch(provider, /releaseThreadCreationClaim/);
-  const claimModule = readFileSync(
-    new URL("../src/features/chat/utils/chat-thread-creation-claim.ts", import.meta.url),
-    "utf8",
-  );
+  const claimModule = readSrc("features/chat/utils/chat-thread-creation-claim.ts");
   assert.doesNotMatch(claimModule, /export function releaseThreadCreationClaim/);
 });
 

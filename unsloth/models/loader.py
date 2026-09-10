@@ -513,7 +513,7 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
                 rope_scaling = rope_scaling,  # [TODO] No effect
-                fix_tokenizer = fix_tokenizer,  # [TODO] No effect
+                fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 resize_model_vocab = resize_model_vocab,  # [TODO] No effect
@@ -940,7 +940,7 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
                 rope_scaling = rope_scaling,  # [TODO] No effect
-                fix_tokenizer = fix_tokenizer,  # [TODO] No effect
+                fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 resize_model_vocab = resize_model_vocab,  # [TODO] No effect
@@ -1231,7 +1231,7 @@ class FastModel(FastBaseModel):
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         rope_scaling = None,  # [TODO] No effect
-        fix_tokenizer = True,  # [TODO] No effect
+        fix_tokenizer = True,
         trust_remote_code = False,
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab = None,  # [TODO] No effect
@@ -2015,6 +2015,7 @@ class FastModel(FastBaseModel):
             token = token,
             device_map = device_map,
             device_map_planner_kwargs = device_map_planner_kwargs,
+            fix_tokenizer = fix_tokenizer,
             trust_remote_code = trust_remote_code,
             revision = model_revision,
             tokenizer_revision = _revision_for_tokenizer_repo(

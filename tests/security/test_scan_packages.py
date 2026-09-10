@@ -2292,6 +2292,17 @@ def _audited_requirements(root):
 # added at all, fails rather than silently widening the exemption.
 FIRST_PARTY_DIGEST_PINNED = {"unsloth-zoo"}
 
+# The `pip` branch is the one uploaded to PyPI, and its `[project].dependencies` carries
+# the whole training runtime rather than just the CLI entry path main declares there.
+# torch comes with it, and it has to stay a range: an exact pin in published wheel
+# metadata would put every `pip install unsloth` on one torch build, which is what the
+# cuXXX-torchYYY extras exist to choose instead. Digest pinning still does its job -- the
+# audit reopens on any byte change -- it just cannot name the version ahead of time, so
+# the bound is what gets asserted. Named, not skipped, and only for the pyproject half:
+# the studio requirement files pin exactly and are held to that. On main, where torch is
+# not declared in pyproject at all, this allowance never fires.
+PYPROJECT_BOUNDED_RANGE_ALLOWED = {"torch"}
+
 
 def test_digest_pinned_packages_are_pinned_on_every_supported_python():
     """A digest-pinned third-party package must be `==` pinned on every Python we support.
@@ -2358,6 +2369,17 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
             continue
         present.add(pkg)
         specifiers = list(requirement.specifier)
+        if source == "pyproject.toml" and pkg in PYPROJECT_BOUNDED_RANGE_ALLOWED:
+            operators = {s.operator for s in specifiers}
+            assert operators & {">=", ">"} and operators & {"<=", "<"}, (
+                f"{pkg} is allowed a range in pyproject.toml, but only a bounded one: an "
+                f"open-ended spec resolves to whatever ships next; got {spec!r}"
+            )
+            marker = requirement.marker
+            for python in pythons:
+                if marker is None or marker.evaluate({"python_version": python}):
+                    covered.setdefault(pkg, set()).add(python)
+            continue
         exact = (
             len(specifiers) == 1
             and specifiers[0].operator == "=="

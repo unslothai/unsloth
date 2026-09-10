@@ -254,3 +254,6 @@ Speech_12dB_s16.flac
 # storage_roots.studio_root at it. It is a mutable SQLite runtime database, not a fixture,
 # so a test run or an Unsloth start rewrites it and dirties the checkout.
 .studio-test-root/
+
+# launch.py --outdir scratch from a local run
+/out/

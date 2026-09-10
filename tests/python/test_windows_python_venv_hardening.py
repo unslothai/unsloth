@@ -52,21 +52,82 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     # case in this file reads its stdout, so an interpreter that died at startup would surface as install.ps1 losing
     # half a moved environment.
     # See tests/_shared/unsloth_pwsh_runner.py.
+    # encoding, not the default: `text = True` alone decodes with the locale codec, which is
+    # cp1252 on a Windows runner, while both shells write their stdout as UTF-8. A non-ASCII
+    # path therefore came back as mojibake ("kaffee" with the a-umlaut arriving as A-tilde
+    # plus currency sign) and failed an assertion about a file that was in fact written
+    # correctly, so this decoded the transport wrongly rather than catching a real defect.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        # strict, so the next mismatch raises here rather than turning into U+FFFD and
+        # failing an assertion somewhere downstream about a value that was written fine.
+        errors = "strict",
         env = env,
         timeout = 30,
     )
     return result.stdout.strip()
 
 
+def _assert_same_text(actual: str, expected: str, note: str) -> None:
+    """`actual == expected`, but a mismatch names the codepoints that differ.
+
+    A bare `==` between two paths that differ in one accented character is unreadable in
+    CI: pytest renders its diff through the same stdout that mangled the string, so on a
+    non-UTF-8 console one side comes back as U+FFFD and the report accuses the half that
+    was right. Codepoints survive any code page, so they are what gets printed.
+    """
+    if actual == expected:
+        return
+    head = len(os.path.commonprefix([actual, expected]))
+
+    def describe(text: str) -> str:
+        shown = text[:24]
+        codepoints = " ".join(f"U+{ord(ch):04X}" for ch in shown)
+        return f"{shown!r}  [{codepoints}{' ...' if len(text) > len(shown) else ''}]"
+
+    lines = [
+        note,
+        f"  first {head} characters match, then:",
+        f"    actual   {describe(actual[head:])}",
+        f"    expected {describe(expected[head:])}",
+    ]
+    # Only claim a cause when the bytes show one, and only the cause that is still possible.
+    # _run_powershell decodes stdout as strict UTF-8, so a transport mis-decode raises there
+    # rather than arriving here: mojibake that reaches this point was produced inside the
+    # script, which is the product defect these cases exist to catch. Saying "the script did
+    # not lose the path" would be exactly backwards, and a wrong explanation on a real
+    # restore bug costs more than none.
+    if _looks_like_a_mis_decode(actual[head:], expected[head:]):
+        lines.append(
+            "  actual is expected's UTF-8 bytes read back through a single-byte code page. "
+            "Stdout is decoded strictly as UTF-8 here, so the shell handed us these "
+            "characters: the mis-decode happened inside the script, not in transport. Check "
+            "the marker read/write path for a missing -Encoding utf8."
+        )
+    raise AssertionError("\n".join(lines))
+
+
+def _looks_like_a_mis_decode(actual: str, expected: str) -> bool:
+    """True when `actual` is `expected` encoded UTF-8 and decoded through a legacy code page."""
+    for codec in ("cp1252", "latin-1", "cp437", "cp850"):
+        try:
+            if expected.encode("utf-8").decode(codec) == actual:
+                return True
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+    return False
+
+
 def _uv_cache_functions(source: str) -> str:
     return "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Resolve-StudioUvCachePath",
+            "Write-StudioUvCacheMarker",
             "Set-StudioUvCacheEnvironment",
             "Set-StudioUvCacheForLaunch",
             "Restore-StudioUvCacheEnvironment",
@@ -76,23 +137,46 @@ def _uv_cache_functions(source: str) -> str:
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: str):
+@pytest.mark.parametrize(
+    "reported_version,accepted",
+    [
+        ("3.9.0", False),
+        ("3.10.0", False),
+        ("3.11.0", True),
+        ("3.12.0", True),
+        ("3.13.0", True),
+        ("3.13.8", False),
+        ("3.14.0", False),
+    ],
+)
+def test_path_python_wrapper_resolves_to_real_executable(
+    tmp_path: Path, shell: str, reported_version: str, accepted: bool
+):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
     (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
     if os.name == "nt":
         wrapper = tmp_path / "python.bat"
-        wrapper.write_text(f'@"{sys.executable}" %*\n', encoding = "utf-8")
+        wrapper.write_text(
+            f'@echo off\nif "%~1"=="--version" (\n'
+            f"echo Python {reported_version}\nexit /b 0\n)\n"
+            f'@"{sys.executable}" %*\n',
+            encoding = "utf-8",
+        )
     else:
         wrapper = tmp_path / "python-wrapper"
         wrapper.write_text(
-            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding = "utf-8"
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then\n'
+            f"printf 'Python {reported_version}\\n'\nexit 0\nfi\n"
+            f'exec {shlex.quote(sys.executable)} "$@"\n',
+            encoding = "utf-8",
         )
         wrapper.chmod(0o755)
 
     script = f"""
 $ErrorActionPreference = "Stop"
 $PythonVersion = "3.13"
+$PythonSkip = @("3.13.8")
 $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda)'
 function Get-HostMachineArch {{ return "x86_64" }}
 function Test-IsCondaPython {{ param([string]$Exe) return $false }}
@@ -112,7 +196,12 @@ Write-Output $found.Path
     env = os.environ.copy()
     env["TEST_PYTHON_WRAPPER"] = str(wrapper)
     env["PYTHONPATH"] = str(tmp_path)
-    assert Path(_run_powershell(shell, script, env)).resolve() == Path(sys.executable).resolve()
+    found = _run_powershell(shell, script, env)
+    if accepted:
+        assert found
+        assert Path(found).resolve() == Path(sys.executable).resolve()
+    else:
+        assert not found
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -238,6 +327,7 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
+            "Restore-StudioUvCacheMarker",
         )
     )
     target = tmp_path / "unsloth_studio"
@@ -293,6 +383,7 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
+            "Restore-StudioUvCacheMarker",
         )
     )
     target = tmp_path / "unsloth_studio"
@@ -360,6 +451,7 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
+            "Restore-StudioUvCacheMarker",
         )
     )
     target = tmp_path / "unsloth_studio"
@@ -685,6 +777,15 @@ try {{
         ) == "keep"
         assert (shared / ".gitignore").read_text(encoding = "utf-8") == "*\n"
 
+    # The marker `unsloth studio update` reads back, so it reuses the cache this install
+    # used instead of re-deriving it from content that a runtime install can change.
+    # utf-8-sig because Windows PowerShell 5.1 writes -Encoding utf8 with a BOM.
+    # Every mode records, custom included: a marker left by a previous install would aim
+    # later updates at a cache this one never filled.
+    marker = studio_root / "cache" / "uv-cache-dir"
+    recorded = marker.read_text(encoding = "utf-8-sig").strip()
+    assert norm(recorded) == norm(str(expected_selected)), case
+
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
@@ -736,7 +837,13 @@ try {{
     env["LOCALAPPDATA"] = str(tmp_path / "local app data")
     result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
 
-    expected = initial_value if initial_value.strip() else str(tmp_path / "studio" / "cache" / "uv")
+    # A caller's own value is kept, and resolved: setup runs uv from a directory of its
+    # own choosing, so a relative one would name two caches across the one install. What
+    # gets RESTORED afterwards is still the caller's spelling, asserted below.
+    if initial_value.strip():
+        expected = os.path.abspath(initial_value)
+    else:
+        expected = str(tmp_path / "studio" / "cache" / "uv")
     assert os.path.normcase(os.path.normpath(result["Active"])) == os.path.normcase(
         os.path.normpath(expected)
     )
@@ -793,3 +900,203 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
     assert result["Modes"] == ["studio", "studio"]
     assert result["PresentAfter"] is False
     assert result["ProviderPresentAfter"] is False
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
+    """The update writes this file BOM-less UTF-8, and Windows PowerShell 5.1 reads a
+    BOM-less file with the active ANSI code page, so a non-ASCII path came back as
+    mojibake and the rollback wrote that back over a marker that had been correct."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in (
+            "Resolve-StudioUvCachePath",
+            "Write-StudioUvCacheMarker",
+            "Restore-StudioUvCacheMarker",
+        )
+    )
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+    previous = tmp_path / "kaffee cache"
+    # As the Python backfill writes it: UTF-8, no BOM.
+    marker.parent.mkdir(parents = True)
+    marker.write_bytes(f"{previous}\n".replace("kaffee", "k\u00e4ffee").encode("utf-8"))
+    expected = str(previous).replace("kaffee", "k\u00e4ffee")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+$script:StudioUvMarkerExisted = $false
+$script:StudioUvMarkerPrevious = $null
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache $env:TEST_CHOSEN
+Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
+[pscustomobject]@{{
+    After = (Get-Content -LiteralPath $env:TEST_MARKER -Raw -Encoding UTF8).Trim()
+}} | ConvertTo-Json -Compress
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_CHOSEN"] = str(tmp_path / "chosen cache")
+    env["TEST_MARKER"] = str(marker)
+    result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
+
+    _assert_same_text(result["After"], expected, "the rollback did not restore the marker it saved")
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("preexisting", [True, False])
+def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
+    tmp_path: Path, shell: str, preexisting: bool
+):
+    """The marker describes the environment, so it goes back when the environment does:
+    install.ps1 restores the previous venv on failure, and a marker for an install that
+    never happened would outlive it."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in (
+            "Resolve-StudioUvCachePath",
+            "Write-StudioUvCacheMarker",
+            "Restore-StudioUvCacheMarker",
+        )
+    )
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+    previous = tmp_path / "previous cache"
+    chosen = tmp_path / "chosen cache"
+    if preexisting:
+        marker.parent.mkdir(parents = True)
+        marker.write_text(f"{previous}\n", encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+$script:StudioUvMarkerExisted = $false
+$script:StudioUvMarkerPrevious = $null
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache $env:TEST_CHOSEN
+$during = Get-Content -LiteralPath $env:TEST_MARKER -Raw
+Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
+$after = if (Test-Path -LiteralPath $env:TEST_MARKER) {{
+    (Get-Content -LiteralPath $env:TEST_MARKER -Raw).Trim()
+}} else {{ "<gone>" }}
+[pscustomobject]@{{ During = $during.Trim(); After = $after }} | ConvertTo-Json -Compress
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_CHOSEN"] = str(chosen)
+    env["TEST_MARKER"] = str(marker)
+    result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
+
+    norm = lambda value: os.path.normcase(os.path.normpath(value))
+    assert norm(result["During"]) == norm(str(chosen))
+    assert result["After"] == ("<gone>" if not preexisting else result["After"])
+    if preexisting:
+        assert norm(result["After"]) == norm(str(previous))
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_relative_cache_is_recorded_absolute(tmp_path: Path, shell: str):
+    """`uv cache dir` answers a relative cache-dir with the relative spelling, and the
+    update resolves the marker against ITS working directory, not the installer's."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
+    )
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+Set-Location -LiteralPath $env:TEST_CWD
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
+(Get-Content -LiteralPath $env:TEST_MARKER -Raw).Trim()
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_MARKER"] = str(marker)
+    env["TEST_CWD"] = str(tmp_path)
+    recorded = _run_powershell(shell, script, env).splitlines()[-1]
+
+    assert os.path.normcase(os.path.normpath(recorded)) == os.path.normcase(
+        os.path.normpath(str(tmp_path / "relcache"))
+    ), recorded
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_relative_working_directory_moves_the_relative_cache(tmp_path: Path, shell: str):
+    """UV_WORKING_DIR is where uv starts, so a relative cache hangs off it and not off the
+    installer's own directory. It may itself be relative, against the installer's."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
+    )
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+Set-Location -LiteralPath $env:TEST_CWD
+$env:UV_WORKING_DIR = "subdir"
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
+(Get-Content -LiteralPath $env:TEST_MARKER -Raw).Trim()
+"""
+    env = os.environ.copy()
+    env.pop("UV_WORKING_DIR", None)
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_MARKER"] = str(marker)
+    env["TEST_CWD"] = str(tmp_path)
+    recorded = _run_powershell(shell, script, env).splitlines()[-1]
+
+    assert os.path.normcase(os.path.normpath(recorded)) == os.path.normcase(
+        os.path.normpath(str(tmp_path / "subdir" / "relcache"))
+    ), recorded
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path, shell: str):
+    """The marker is optional, so probing for it must not fail the install: under
+    $ErrorActionPreference = "Stop", Test-Path inside an ACL-denied directory throws
+    UnauthorizedAccessException rather than returning $false."""
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("POSIX mode bits do not deny this caller")
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
+    )
+    studio_root = tmp_path / "studio root"
+    (studio_root / "cache").mkdir(parents = True)
+    (studio_root / "cache").chmod(0o000)
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+try {{
+    Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache $env:TEST_CACHE
+    "survived"
+}} catch {{
+    "THREW: " + $_.Exception.GetType().Name
+}}
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_CACHE"] = str(tmp_path / "chosen")
+    try:
+        assert _run_powershell(shell, script, env).splitlines()[-1] == "survived"
+    finally:
+        (studio_root / "cache").chmod(0o755)

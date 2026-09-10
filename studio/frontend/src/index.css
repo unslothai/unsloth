@@ -3330,16 +3330,10 @@ html[data-chat-font] .aui-root {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
 	}
+	/* Flex centers both symmetric glyphs; pixel offsets vary by display scale. */
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.15);
 		height: calc(var(--ui-icon-size) * 1.15);
-		/* The stroked arrow rasterizes half a Retina pixel to the right. */
-		transform: translateX(-0.25px);
-	}
-	/* The filled stop glyph lands one Retina pixel right of the circular
-	   action's center even though its SVG box is flex-centered. */
-	& svg.aui-composer-cancel-icon {
-		transform: translateX(-0.5px);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */

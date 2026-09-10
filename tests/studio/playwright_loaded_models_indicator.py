@@ -366,7 +366,18 @@ def run(page, state: Runtime) -> None:
 
     for route in ("/hub", "/train", "/images"):
         page.goto(BASE + route, wait_until = "domcontentloaded")
-        page.wait_for_timeout(3000)
+        # Wait for the card, not for the clock. This is a hard navigation: a
+        # full SPA reload plus a loaded-models poll, and 3000ms was the only
+        # fixed budget in this file that was not derived from SETTLE_MS. On a
+        # loaded runner the first route overran it and all three then failed
+        # together, which is what a fixed budget looks like when it is the
+        # thing that is wrong. The check below is unchanged and still fails if
+        # the card genuinely does not survive the navigation -- this only stops
+        # a slow render from being read as a missing card.
+        try:
+            page.wait_for_selector(CARD, timeout = SETTLE_MS)
+        except Exception:
+            pass
         check(f"card survives {route}", page.locator(CARD).count() > 0)
 
     # ── Hardware shapes a CUDA runner never produces ────────────────────

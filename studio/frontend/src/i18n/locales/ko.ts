@@ -917,7 +917,11 @@ export const ko = {
         currentStreak: "현재 연속 기록",
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
-        activityDescription: "최근 {weeks} 동안 {total}",
+        activityDescription: {
+          daily: "최근 {weeks} 동안 {total}",
+          weekly: "최고 주 {total} · 최근 {weeks}",
+          cumulative: "최근 {weeks} 동안 누적 {total}",
+        },
         mode: {
           daily: "일별",
           weekly: "주별",
@@ -1251,6 +1255,7 @@ export const ko = {
       copy: "복사",
       copied: "복사됨",
       commandBuilder: "명령 빌더",
+      commandShell: "모든 명령에 사용할 셸",
       agent: "코딩 에이전트",
       model: "모델",
       searchModels: "GGUF 모델 검색...",
@@ -1268,9 +1273,8 @@ export const ko = {
       docs: "문서",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1703,7 +1707,7 @@ export const ko = {
         desktopCheckingDescription: "보통 몇 초 정도 걸립니다.",
         desktopAvailable: "데스크톱 앱 {version} 버전을 사용할 수 있습니다",
         desktopAvailableDescription:
-          "지금 업데이트하면 백그라운드에서 준비됩니다. 계속 작업하다가 준비되면 다시 시작하세요.",
+          "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
           "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
         desktopManualInstall:
@@ -1713,17 +1717,11 @@ export const ko = {
           "연결 상태를 확인한 후 다시 시도하세요.",
         desktopCurrent: "데스크톱 앱이 최신 버전입니다",
         desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
-        desktopPreparingDescription: "업데이트를 백그라운드에서 준비하고 있습니다. 계속 작업할 수 있습니다.",
-        desktopReadyToRestartDescription: "모두 준비되었습니다. 다시 시작하면 업데이트 설치가 완료됩니다.",
-        desktopReadyToInstallDescription: "앱 업데이트를 다운로드했습니다. 설치하려면 백엔드 업데이트를 완료하세요.",
         checkForUpdates: "업데이트 확인",
         checkAgain: "다시 확인",
         retryCheck: "다시 시도",
         checking: "확인 중...",
-        preparing: "준비 중...",
         updateNow: "지금 업데이트",
-        restartToUpdate: "다시 시작하여 업데이트",
-        finishUpdate: "업데이트 완료",
         openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",
@@ -1861,6 +1859,7 @@ export const ko = {
       sourceHfCache: "HF 캐시",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "사용자 지정 폴더",
       sourceLocalModel: "로컬 모델",
       scanningLocal: "로컬 모델을 스캔하는 중…",
@@ -2136,6 +2135,7 @@ export const ko = {
       memoryEfficient: "메모리 효율적",
       weightDecomposed: "가중치 분해",
       notSupportedAppleSilicon: "Apple Silicon에서는 지원되지 않음",
+      doraNeedsVisionLayersOff: "DoRA를 사용하려면 비전 레이어 학습을 끄세요",
       optimization: "최적화",
       schedule: "스케줄",
       memory: "메모리",
