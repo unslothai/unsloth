@@ -3221,7 +3221,13 @@ def _openai_llama_admission_enforced_max_tokens(
         return None
     budget = _openai_llama_admission_budget(llama_backend)
     window = _openai_llama_admission_context_window(llama_backend)
-    cap = _positive_int_or_none(_effective_openai_max_tokens(payload))
+    stated = _effective_openai_max_tokens(payload)
+    cap = _positive_int_or_none(stated)
+    # Stated but unusable, which `_positive_int_or_none` cannot tell from absent: /v1/messages
+    # takes `max_tokens: 0` past its required-field check, and reading that as unstated would
+    # replace the caller's zero with an allowance. Not ours to rewrite.
+    if cap is None and stated is not None:
+        return None
     if cap is not None and cap < (window or budget):
         return None
     # Against the RAW cache, not the reduced budget: under --no-kv-unified a share IS a
