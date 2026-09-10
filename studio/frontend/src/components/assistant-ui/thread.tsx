@@ -6836,7 +6836,9 @@ const ComposerRightControls: FC<{
         </Button>
       ) : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
-          <div className="ml-1.5 flex items-center">
+          {/* Classed so the narrow-screen rules can treat this like the
+              sibling send/stop buttons; it is the flex item, not the button. */}
+          <div className="aui-composer-run-controls ml-1.5 flex items-center">
             {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button

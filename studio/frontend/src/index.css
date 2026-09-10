@@ -2071,9 +2071,11 @@ html[data-chat-font] .aui-root {
 			margin-right: -0.125rem;
 		}
 
-		/* Send's own inset stacks on the gap above; drop it. */
+		/* Send's own inset stacks on the gap above; drop it. The running state
+		   puts that inset on a wrapper div instead of the button. */
 		.unsloth-composer-line .aui-composer-send,
-		.unsloth-composer-line .aui-composer-cancel {
+		.unsloth-composer-line .aui-composer-cancel,
+		.unsloth-composer-line .aui-composer-run-controls {
 			margin-left: 0;
 		}
 
@@ -2099,9 +2101,13 @@ html[data-chat-font] .aui-root {
 			--composer-tight-gap: 0rem;
 		}
 
-		/* > button skips the hidden file inputs the + menu keeps in this row. */
+		/* > button skips the hidden file inputs the + menu keeps in this row.
+		   The running state's wrapper div is a flex item here too. */
 		.unsloth-composer-left > button,
-		.unsloth-composer-line .aui-composer-action-wrapper > button {
+		.unsloth-composer-line .aui-composer-action-wrapper > button,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> .aui-composer-run-controls {
 			margin-inline: -0.125rem;
 		}
 
@@ -2141,7 +2147,10 @@ html[data-chat-font] .aui-root {
 			> button.aui-composer-send,
 		.unsloth-composer-line
 			.aui-composer-action-wrapper
-			> button.aui-composer-cancel {
+			> button.aui-composer-cancel,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> .aui-composer-run-controls {
 			margin-left: 0.25rem;
 		}
 	}
