@@ -96,6 +96,34 @@ function seededReplayState(content: unknown): {
   return { raw, parts, reasoningOpen };
 }
 
+/** A call still PARKED on its approval when the tab closed is stored as an unresolved tool card whose id IS
+ *  the key live keyed it by: `${scopeId}:${approvalId}`. That `tool_start` sits at or below a follower's
+ *  cursor -- the cursor equals the autosave's sequence -- so no frame here ever re-folds it and the replay's
+ *  own registration never fires for it; without a restore from the seed the tab's store never hears the card
+ *  is waiting, Approve/Deny never renders, and the run parks until its lease expires. The approvalId hides
+ *  behind a scope prefix unknown at construction, so this extraction runs when the caller learns the run's
+ *  scope instead. A card whose id is NOT scoped-form carried a minted (provisional) id: its approvalId lived
+ *  in the closed tab's separate store and rides on no part, so there is nothing to restore here -- only a
+ *  scoped id says "live keyed this call by its approval". A card WITH a result already answered; re-raising
+ *  it would hang an Approve/Deny on a call that finished while nobody was watching. */
+export function seededParkedApprovals(
+  seed: unknown,
+  scopeId: string,
+): Array<{ id: string; approvalId: string }> {
+  if (!Array.isArray(seed)) return [];
+  const parked: Array<{ id: string; approvalId: string }> = [];
+  for (const part of seed as ContentPart[]) {
+    if (!part || typeof part !== "object" || part.type !== "tool-call") continue;
+    // An unresolved call is one no `tool_end` ever wrote a result onto.
+    if ((part as { result?: unknown }).result !== undefined) continue;
+    const id = (part as { toolCallId?: unknown }).toolCallId;
+    if (typeof id !== "string" || !id.startsWith(`${scopeId}:`)) continue;
+    const approvalId = id.slice(scopeId.length + 1);
+    if (approvalId) parked.push({ id, approvalId });
+  }
+  return parked;
+}
+
 export type RecoveryReplay = {
   /** Fold one replayed chunk event. `at` is the instant the run WROTE that event, and it is what every
    *  reasoning group on this path is timed against: a follower folds frames written minutes before it

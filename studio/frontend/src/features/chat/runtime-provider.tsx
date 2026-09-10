@@ -125,7 +125,10 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
-import { createRecoveryReplay } from "./utils/chat-generation-replay";
+import {
+  createRecoveryReplay,
+  seededParkedApprovals,
+} from "./utils/chat-generation-replay";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -1053,9 +1056,28 @@ function scheduleGenerationRecovery(
           // happens to be on.
           replayOptions.sandboxSessionId ??=
             update.run.requestPayload.session_id;
-          if (replayOptions.toolConfirmations) {
-            replayOptions.toolConfirmations.scopeId ??= `${update.run.requestPayload
+          if (
+            replayOptions.toolConfirmations &&
+            replayOptions.toolConfirmations.scopeId === undefined
+          ) {
+            replayOptions.toolConfirmations.scopeId = `${update.run.requestPayload
               .session_id || "_default"}:${threadId}`;
+            // A call still parked when the tab closed sits in storage as an unresolved scoped-id card, and its
+            // tool_start sits AT OR BELOW the cursor (the cursor equals the autosave's sequence): no frame here
+            // ever re-folds it, so the replay's own registration never fires for it. Re-raising each seeded one
+            // with the scope now known is what renders Approve/Deny in THIS tab; without it the store never
+            // hears the card is waiting and the run parks until its lease settles it. A call whose tool_start
+            // lands ABOVE the cursor registers itself as the frame folds -- setToolConfirmation is idempotent,
+            // so the seed restore and the fold register the same pair, once.
+            for (const parked of seededParkedApprovals(
+              storedMessage.content,
+              replayOptions.toolConfirmations.scopeId,
+            )) {
+              replayOptions.toolConfirmations.register(
+                parked.id,
+                parked.approvalId,
+              );
+            }
           }
           if (!identityValidated) {
             if (

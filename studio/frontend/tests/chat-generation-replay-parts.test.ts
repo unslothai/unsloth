@@ -20,7 +20,7 @@ const read = (relative: string) =>
 
 registerBundlerResolver();
 
-const { createRecoveryReplay } = await import(
+const { createRecoveryReplay, seededParkedApprovals } = await import(
   "../src/features/chat/utils/chat-generation-replay.ts"
 );
 
@@ -554,4 +554,48 @@ test("a parked call the reader never saw still asks to be approved", () => {
   const card = parts.find((part) => part.type === "tool-call")!;
   assert.equal(card.toolCallId, "sess:thread:appr_9");
   assert.deepEqual(calls, [["sess:thread:appr_9", "appr_9"]]);
+});
+
+test("a call still parked when the tab closed reopens parked even though its tool_start sat below the cursor", () => {
+  // The cursor equals the autosave's sequence, so a call ALREADY parked at close time has no frame left to
+  // fold and the replay's own registration never fires for it: the SEED itself must re-raise it. Only a
+  // scoped-id card carries an approval to restore (a minted-id card carried its approval in the closed tab's
+  // separate store, not on the part), and a card already answered must NOT have Approve/Deny raised on it.
+  const calls: Array<[string, string]> = [];
+  const toolConfirmations = {
+    scopeId: "sess:thread",
+    register: (id: string, approvalId: string) => {
+      calls.push([id, approvalId]);
+    },
+  };
+  const seed = [
+    text("do the thing"),
+    tool("sess:thread:appr_1", "bash", { argsText: '{"cmd":"ls"}' }),
+    tool("call_9:uuid-1", "read_file", { result: "answered while away" }),
+    tool("sess:thread:appr_0", "bash", { result: "already answered" }),
+  ];
+  // What the follower does the moment it learns the run's scope -- before ANY frame has been folded:
+  // a string seed holds no cards, and an already-answered scoped card must not re-ask.
+  for (const parked of seededParkedApprovals(seed, toolConfirmations.scopeId)) {
+    toolConfirmations.register(parked.id, parked.approvalId);
+  }
+  assert.deepEqual(
+    calls,
+    [["sess:thread:appr_1", "appr_1"]],
+    "the parked card re-raises under the key live keyed it by; the answered and minted-id cards do not",
+  );
+  assert.deepEqual(seededParkedApprovals("just prose", "sess:thread"), []);
+});
+
+test("the follower restores seeded approvals at the moment it learns the scope, not per frame", () => {
+  // The restore rides on the SAME holder the accumulator reads lazily, and fires exactly once -- when
+  // `scopeId` lands with the first run frame, before any event folds. A fold later re-registering the pair
+  // is the same store entry set again (idempotent), and a tool_end resolving it clears it by the SAME key.
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  assert.ok(
+    provider.includes("for (const parked of seededParkedApprovals(") &&
+      provider.includes("storedMessage.content,") &&
+      provider.includes("parked.approvalId,"),
+    "the seed is where a skipped tool_start left the approval; the follower has to read it back out",
+  );
 });
