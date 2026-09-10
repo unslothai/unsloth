@@ -17,6 +17,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+
+def _shared_setup_1():
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    return inf, pytest, threading, torch
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -413,11 +423,7 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
 
 
 def test_native_reasoning_streamer_selected_and_errors_raise():
-    import threading
-    import pytest
-
-    torch = pytest.importorskip("torch")
-    inf = pytest.importorskip("core.inference.inference")
+    inf, pytest, threading, torch = _shared_setup_1()
 
     class Batch(dict):
         def to(self, _device):
@@ -469,11 +475,7 @@ def test_native_reasoning_streamer_selected_and_errors_raise():
 
 def test_native_reasoning_streamer_starts_inside_prompt_opened_channel():
     """A post-tool prompt opens the channel, so generation emits only its close."""
-    import threading
-    import pytest
-
-    torch = pytest.importorskip("torch")
-    inf = pytest.importorskip("core.inference.inference")
+    inf, pytest, threading, torch = _shared_setup_1()
 
     class Batch(dict):
         def to(self, _device):
@@ -515,11 +517,7 @@ def test_native_reasoning_streamer_starts_inside_prompt_opened_channel():
 
 
 def test_text_only_vlm_fallback_resolves_native_markers_off():
-    import threading
-    import pytest
-
-    torch = pytest.importorskip("torch")
-    inf = pytest.importorskip("core.inference.inference")
+    inf, pytest, threading, torch = _shared_setup_1()
 
     class Batch(dict):
         def to(self, _device):
