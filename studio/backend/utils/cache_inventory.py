@@ -1059,9 +1059,14 @@ def empty_cache_root(
     return outcome
 
 
-# Which registries write into each cache. Both for the hub root: a dataset
-# download snapshot_downloads its datasets-- entries into the same tree.
-_DOWNLOAD_REGISTRIES = {"hf_hub": ("models", "datasets"), "hf_datasets": ("datasets",)}
+# Which registries write into each cache. Both for the hub and xet roots: a
+# dataset download snapshot_downloads its datasets-- entries into the same hub
+# tree, and each claim of either kind carries the xet cache it fetches chunks to.
+_DOWNLOAD_REGISTRIES = {
+    "hf_hub": ("models", "datasets"),
+    "hf_xet": ("models", "datasets"),
+    "hf_datasets": ("datasets",),
+}
 
 _PURGE_BUSY = "Cancel the active downloads before clearing this cache."
 

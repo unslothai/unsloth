@@ -1866,7 +1866,7 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         variant_key = (variant or "").strip().lower() or None
         with self._lock:
-            if repo_id in self._repository_owners:
+            if repo_id in self._repository_owners or self._purging:
                 return False
             if self._delete_blocked_by_active_locked(repo_id, variant_key):
                 return False
@@ -1880,12 +1880,13 @@ class DownloadRegistry:
         making :func:`claim` reject it until the delete finishes. A purge empties
         the root instead, so it needs the same promise over every repository, or
         a worker that claims just after the check writes into a tree already
-        being removed. Counted, so overlapping purges of two caches that share
-        this registry nest.
+        being removed. The two exclude each other in both directions, since a
+        scoped delete is removing files from the same root. Counted, so
+        overlapping purges of two caches that share this registry nest.
         """
         with self._lock:
             if not self._purging:
-                if self._repository_owners:
+                if self._repository_owners or self._deleting:
                     return False
                 if any(job.state in _ACTIVE_STATES for job in self._jobs.values()):
                     return False

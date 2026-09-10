@@ -1252,3 +1252,45 @@ def test_a_purge_holds_the_registry_against_a_download_claimed_after_the_check(t
 
     # ...and a purge is refused while that owner holds the repository.
     assert registry.begin_cache_purge() is False
+
+
+def test_the_xet_cache_is_reserved_like_the_hub(monkeypatch):
+    """Both download services pass the active xet cache into their claim, so a
+    worker is fetching chunks into it while a clear would be emptying it."""
+    from hub.utils import download_registry
+    from utils import cache_inventory as module
+
+    class _Registry:
+        def __init__(self):
+            self.held = 0
+
+        def begin_cache_purge(self):
+            self.held += 1
+            return True
+
+        def end_cache_purge(self):
+            self.held -= 1
+
+    models, datasets = _Registry(), _Registry()
+    monkeypatch.setattr(download_registry, "get_models_registry", lambda: models)
+    monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: datasets)
+
+    reserved, busy = module._reserve_downloads("hf_xet")
+    assert busy is None
+    assert (models.held, datasets.held) == (1, 1)
+    module._release_downloads(reserved)
+
+
+def test_a_repository_delete_and_a_whole_cache_purge_exclude_each_other():
+    """Both are removing files from the same root, in either order."""
+    from hub.utils.download_registry import DownloadRegistry
+
+    registry = DownloadRegistry()
+    assert registry.begin_delete("org/model") is True
+    assert registry.begin_cache_purge() is False
+    registry.end_delete("org/model")
+
+    assert registry.begin_cache_purge() is True
+    assert registry.begin_delete("org/model") is False
+    registry.end_cache_purge()
+    assert registry.begin_delete("org/model") is True
