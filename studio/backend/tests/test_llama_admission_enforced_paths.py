@@ -725,7 +725,10 @@ class TestTheLedgerBoundsTheAggregate:
         refused before any generation ran."""
         budget = 16384
         share = budget // 4
-        system = "You are a careful assistant. " * 500
+        # 480, not 500: at 500 the prompt lands inside the wire reserve of its share, where
+        # it is deliberately priced the flat allowance instead. This test is about the path
+        # that DOES fit its share.
+        system = "You are a careful assistant. " * 480
         payload = _Payload(
             messages = [{"role": "user", "content": "hi"}],
             system = system,

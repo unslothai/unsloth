@@ -104,6 +104,39 @@ class TestThePoolIsNeverFilledToTheLastCell:
                 window - occupancy >= slots
             ), f"{window}/{slots}: only {window - occupancy} cells left for {slots} sequences"
 
+    def test_a_prompt_inside_the_reserve_of_its_share_does_not_reclaim_it(self):
+        """At `share - 1` the fair-share allowance is 1, the reserve takes it below zero and
+        the floor of one used to hand back exactly `share`, which is the exact fill that
+        loses every chat. Such a prompt does not fit its share, so it is priced like one
+        that is over it: a bigger charge, and the queue admits fewer."""
+        from routes.inference import (
+            _openai_llama_admission_output_allowance as allowance,
+            _openai_llama_admission_wire_output_bound as wire_bound,
+        )
+        window, slots = 16384, 4
+        share = window // slots
+        for prompt in range(share - _RESERVE, share + 2):
+            charged_allowance = allowance(
+                None, budget = window, prompt_tokens = prompt,
+                context_window = window, share = share,
+            )
+            charged = max(1, min(window, max(share, prompt + charged_allowance)))
+            sent = wire_bound(
+                share = share, prompt_tokens = prompt, window = window, budget = window
+            )
+            assert prompt + sent <= charged, (prompt, sent, charged)
+            assert prompt + sent != share, f"{prompt}: fills the pool to exactly its share"
+
+    def test_a_prompt_just_clear_of_the_reserve_still_takes_its_share(self):
+        """The band is only the reserve wide; below it nothing changes."""
+        from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
+        window, slots = 16384, 4
+        share = window // slots
+        prompt = share - _RESERVE - 1
+        sent = wire_bound(share = share, prompt_tokens = prompt, window = window, budget = window)
+        assert (prompt + sent) * slots < window
+        assert prompt + sent == share - _RESERVE
+
     def test_the_reserve_is_taken_out_of_the_charge_not_added_to_it(self):
         """The ledger holds `prompt + allowance`; the reserve is room it paid for and did
         not spend. Charging for it would admit fewer chats to buy the same safety."""

@@ -1896,13 +1896,19 @@ def _openai_llama_admission_output_allowance(
 
     Under a known ``share`` the charge is the WHOLE share: charging less than is permitted
     let a small prompt undercharge beside a large one and overrun the cache.
+
+    "Fits its share" means with the wire reserve still in it. A prompt inside that of its
+    share does not fit either, and pricing it as if it did left the bound's floor of one to
+    hand the room back: at ``share - 1`` the allowance is 1, the reserve takes it below zero,
+    and the floor permits exactly ``share`` again, which is the exact fill that loses every
+    chat. It takes the flat allowance instead, so the charge grows and the queue admits fewer.
     """
     window = context_window or budget
     if cap is not None and cap < window:
         return cap
     # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
     allowance = min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
-    if share is not None and share > prompt_tokens:
+    if share is not None and share - prompt_tokens > _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS:
         allowance = min(share - prompt_tokens, max(0, window - prompt_tokens))
     return allowance
 
