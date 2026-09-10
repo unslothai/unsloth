@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import types
 
+import os
+
 import pytest
 
 from core.inference import diffusion_nvfp4_linear as nl
@@ -36,6 +38,12 @@ DENSE_GAP_BOUND = 0.002
 
 def _cuda_or_skip():
     torch = pytest.importorskip("torch")
+    # A hermetic run masks every device with an EMPTY CUDA_VISIBLE_DEVICES. torch answers is_available()
+    # from the mask it saw when the driver was first initialised, and another test in the same process
+    # can rewrite the variable (test_gpu_arch_gate_consumers_7624 asserts on it), so the variable is
+    # checked directly as well: a masked process has no device to run these on, whatever torch believes.
+    if os.environ.get("CUDA_VISIBLE_DEVICES", None) == "":
+        pytest.skip("CUDA devices are masked off for this process")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         pytest.skip("needs CUDA")
     capability = tuple(torch.cuda.get_device_capability(0))
@@ -197,6 +205,7 @@ def test_m1_gemm_is_finite_on_both_backends(out_features, in_features, capsys):
 
 def test_a_two_layer_block_compiles_fullgraph():
     torch = _cuda_or_skip()
+    pytest.importorskip("triton")  # inductor cannot build a GPU kernel without it (TritonMissing)
     import torch.nn as nn
 
     class Block(nn.Module):
