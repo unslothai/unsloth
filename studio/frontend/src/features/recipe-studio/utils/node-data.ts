@@ -34,10 +34,18 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "validator") {
     const isOxc = config.validator_type === "oxc";
+    const isJson = config.validator_type === "json";
+    const isMarkdown = config.validator_type === "markdown";
     const isSql = config.code_lang.startsWith("sql:");
     let subtype = "Python";
     let blockType: RecipeNodeData["blockType"] = "validator_python";
-    if (isOxc) {
+    if (isJson) {
+      subtype = "JSON";
+      blockType = "validator_json";
+    } else if (isMarkdown) {
+      subtype = "Markdown";
+      blockType = "validator_markdown";
+    } else if (isOxc) {
       subtype = "OXC";
       blockType = "validator_oxc";
     } else if (isSql) {

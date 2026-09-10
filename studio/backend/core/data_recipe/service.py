@@ -16,6 +16,10 @@ from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
 )
+from .text_format_validators import (
+    register_text_format_local_callable_validators,
+    split_text_format_local_callable_validators,
+)
 
 _IMAGE_CONTEXT_PATCHED = False
 
@@ -264,10 +268,15 @@ def build_config_builder(recipe: dict[str, Any]):
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+    recipe_core, text_format_specs = split_text_format_local_callable_validators(recipe_core)
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
         specs = oxc_local_callable_specs,
+    )
+    register_text_format_local_callable_validators(
+        builder = builder,
+        specs = text_format_specs,
     )
 
     # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
