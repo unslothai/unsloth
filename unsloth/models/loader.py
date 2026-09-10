@@ -1822,10 +1822,7 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
-            elif (
-                AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None)
-                is not None
-            ):
+            elif AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None) is not None:
                 auto_model = AutoModelForSeq2SeqLM
             elif is_vlm:
                 # Some repo-code VL models register only a generic auto class (Nemotron-VL uses AutoModelForCausalLM, DeepSeek-OCR AutoModel), so the VLM auto class raises "Unrecognized configuration class". Fall back to what the repo registered, matching the CONCRETE class name, since transformers resolves remote code by that exact name.
