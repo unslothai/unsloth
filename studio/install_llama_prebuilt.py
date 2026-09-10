@@ -6920,7 +6920,10 @@ def _marker_selection_patch(
     # selectors actually saw rather than against whichever line they routed to.
     if host is not None and (host.is_linux or host.is_windows):
         preference = _torch_runtime_preference_for_marker(host)
-        if "torch_runtime_preference" not in marker or marker.get("torch_runtime_preference") != preference:
+        if (
+            "torch_runtime_preference" not in marker
+            or marker.get("torch_runtime_preference") != preference
+        ):
             patch["torch_runtime_preference"] = preference
     return patch
 
