@@ -424,8 +424,7 @@ def test_setup_helpers_gate_on_canonical_custom_root():
     # out of.
     ps_func = ps_src[ps_idx:].split("\nfunction ", 1)[0]
     assert (
-        "$isCustomRoot = $StudioHomeIsCustom" in ps_func
-        and "$isCustomRoot -and" in ps_func
+        "$isCustomRoot = $StudioHomeIsCustom" in ps_func and "$isCustomRoot -and" in ps_func
     ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on the canonical custom-root flag"
     assert (
         "$StudioOwnedMarker) -PathType Leaf" in ps_func

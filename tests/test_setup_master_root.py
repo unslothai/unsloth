@@ -321,11 +321,13 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
     home = tmp_path / "home"
     (home / ".unsloth" / "studio").mkdir(parents = True)
     src = SETUP_SH.read_text(encoding = "utf-8")
-    script = "\n".join((
-        "set -u",
-        _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
-        'printf "%s %s\\n" "$_STUDIO_HOME_IS_CUSTOM" "$_RUNTIME_ROOT_IS_CUSTOM"',
-    ))
+    script = "\n".join(
+        (
+            "set -u",
+            _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
+            'printf "%s %s\\n" "$_STUDIO_HOME_IS_CUSTOM" "$_RUNTIME_ROOT_IS_CUSTOM"',
+        )
+    )
     completed = subprocess.run(
         ["bash", "-c", script],
         env = {
@@ -345,11 +347,13 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 def test_no_master_root_leaves_the_ownership_flag_alone(tmp_path):
     src = SETUP_SH.read_text(encoding = "utf-8")
-    script = "\n".join((
-        "set -u",
-        _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
-        'printf "%s %s\\n" "$_STUDIO_HOME_IS_CUSTOM" "$_RUNTIME_ROOT_IS_CUSTOM"',
-    ))
+    script = "\n".join(
+        (
+            "set -u",
+            _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
+            'printf "%s %s\\n" "$_STUDIO_HOME_IS_CUSTOM" "$_RUNTIME_ROOT_IS_CUSTOM"',
+        )
+    )
     for flag in ("false", "true"):
         completed = subprocess.run(
             ["bash", "-c", script],
@@ -405,7 +409,7 @@ def test_both_uninstallers_clear_the_master_root_children():
         for child in ("llama.cpp", "node", "whisper.cpp"):
             assert child in block, (child, block)
     # A user-chosen root reaches the deny list on both sides before anything is removed.
-    assert "_is_unsafe_root \"$_mr_root\"" in sh
+    assert '_is_unsafe_root "$_mr_root"' in sh
     assert "_IsUnsafeRoot $masterRoot" in ps
     # And it only contributes its studio child when neither exact override is set, as in
     # storage_roots.studio_root().
@@ -424,7 +428,9 @@ def test_the_stop_pass_covers_the_master_root_runtimes():
     block = _slice(ps, "$masterRootToStop = _MasterRoot", "$stopRoots = ")
     assert ".unsloth-studio-owned" in block, block
     assert "_IsUnsafeRoot $masterRootToStop" in block, block
-    assert ps.index("$masterRootToStop = _MasterRoot") < ps.index("_StopProcessesLockingRoots -Roots")
+    assert ps.index("$masterRootToStop = _MasterRoot") < ps.index(
+        "_StopProcessesLockingRoots -Roots"
+    )
 
 
 def test_a_shared_staging_directory_is_pruned_not_deleted():
