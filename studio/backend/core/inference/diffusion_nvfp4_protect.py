@@ -17,9 +17,10 @@ the plain flashinfer arm loads. That is the whole point of switching on the ACTI
 Three things live here:
 
 1. **The schedule.** ``UNSLOTH_NVFP4_PROTECT_STEPS`` is a comma list of step indices, negative
-   indices counting from the end (``0,1,2,3,-1``), or ``auto`` for "the first 8 percent of the
-   steps plus the last one", which is ``0,1,2,3,49`` on the 50-step video schedule. Empty (the
-   default) is OFF and the layer keeps the forward it has today, guard for guard.
+   indices counting from the end (``0,1,2,3,-1``), ``auto`` for "the first 8 percent of the steps
+   plus the last one" (``0,1,2,3,49`` at 50 steps, ``0,8`` at 9, ``0,3`` at 4), or ``all`` for the
+   ceiling. Empty (the default) is OFF and the layer keeps the forward it has today, guard for
+   guard.
 2. **The controller.** One small object per process holding a plain Python ``bool``. The layer
    reads ``ctl.armed and ctl.protected``, which under Dynamo is two constant guards and therefore
    at most TWO compiled variants of a block for a whole render, not one per step. ``armed`` is
@@ -55,6 +56,11 @@ PROTECT_STEPS_ENV = "UNSLOTH_NVFP4_PROTECT_STEPS"
 AUTO = "auto"
 AUTO_HEAD_FRACTION = 0.08
 
+# ``all``: every step. The ceiling arm -- what the lever would buy if speed were free -- and the
+# only spelling of it that survives a schedule whose step count is not known when the environment
+# is written.
+ALL = "all"
+
 _OFF_TOKENS = ("", "off", "none", "0-none", "false", "no")
 
 
@@ -67,9 +73,10 @@ def protect_steps_env() -> str:
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
     """``spec`` resolved against a schedule of ``total_steps`` steps, as a sorted tuple.
 
-    Negative indices count from the end, so one environment value serves every step count that
-    wants "the first few and the last". An index the schedule does not REACH is dropped rather than
-    raising: the same value has to survive a 4-step smoke render and a 50-step production one. A
+    ``auto`` is the first ``AUTO_HEAD_FRACTION`` of the steps plus the last one; ``all`` is every
+    step. Negative indices count from the end, so one environment value serves every step count
+    that wants "the first few and the last". An index the schedule does not REACH is dropped rather
+    than raising: the same value has to survive a 4-step smoke render and a 50-step production one. A
     token that is not an integer DOES raise, because that is a typo and silently protecting nothing
     is how a lever gets reported as measured when it never ran.
     """
@@ -79,6 +86,8 @@ def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
     raw = "" if spec is None else str(spec).strip().lower()
     if raw in _OFF_TOKENS:
         return ()
+    if raw == ALL:
+        return tuple(range(total))
     if raw == AUTO:
         head = int(math.ceil(AUTO_HEAD_FRACTION * total))
         wanted: list = list(range(min(head, total))) + [total - 1]
@@ -264,6 +273,31 @@ def protect_generation(
             except (AttributeError, TypeError):  # noqa: PERF203 - a slotted or proxied scheduler
                 scheduler.step = original
         ctl.reset()
+
+
+@contextlib.contextmanager
+def suspend_protect(modules: Any):
+    """Force every controller reachable from ``modules`` to report itself unarmed, then restore.
+
+    ONE caller needs this and it is not optional there. ``nvfp4_prewarm`` autotunes the FlashInfer
+    GEMM by running each layer inside ``flashinfer.autotune(True)`` and then marking the shape
+    tuned. If a protected step is live while it runs, every one of those forwards takes the bf16
+    branch, tunes nothing, and marks the shape tuned anyway -- and the NEXT capture, on the
+    unprotected branch, skips the prewarm and records an untuned tactic into the graph. Suspending
+    here makes the tuning pass measure the kernel it is tuning, whatever step the model is on.
+    """
+    seen: dict = {}
+    for module in modules or ():
+        ctl = getattr(module, "protect", None)
+        if ctl is not None and id(ctl) not in seen:
+            seen[id(ctl)] = (ctl, bool(getattr(ctl, "armed", False)))
+    for ctl, _ in seen.values():
+        ctl.armed = False
+    try:
+        yield
+    finally:
+        for ctl, armed in seen.values():
+            ctl.armed = armed
 
 
 def protect_graph_key(protected: Optional[bool] = None) -> tuple:

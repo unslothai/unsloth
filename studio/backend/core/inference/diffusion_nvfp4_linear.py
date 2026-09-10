@@ -391,6 +391,9 @@ def nvfp4_prewarm(
     shapes (measured 1.11x to 1.14x, bit-identical output either way). Tuning costs one profiling
     pass per distinct ``(M, K, N)``, so it belongs here -- outside the request path, and before a
     capture, since an untuned layer under capture bakes the default tactic into the graph.
+
+    Runs with the per-step precision lever SUSPENDED, so that a prewarm triggered at a protected
+    step still tunes the FP4 kernel rather than marking the shape tuned after a bf16 forward.
     """
     import torch
 
@@ -400,9 +403,29 @@ def nvfp4_prewarm(
         _log(logger, "debug", f"[nvfp4] prewarm skipped: {type(exc).__name__}: {exc}")
         return 0
 
+    from .diffusion_nvfp4_protect import suspend_protect
+
     register_ops()
-    tuned = 0
     modules = [mod for _, mod in _iter_linears(transformer) if is_nvfp4_flashinfer_linear(mod)]
+    counter = [0]
+    # The per-step lever OFF for the whole pass. A protected step would send every one of these
+    # forwards down the bf16 branch, which tunes no FlashInfer tactic while the loop below still
+    # records the shape as tuned -- so the next capture, on the other branch, would bake in the
+    # default tactic. See ``suspend_protect``.
+    with suspend_protect(modules):
+        _prewarm_shapes(modules, shapes, logger = logger, tuned_box = counter)
+    tuned = counter[0]
+    if tuned:
+        _log(logger, "info", f"[nvfp4] prewarm tuned {tuned} GEMM shapes")
+    return tuned
+
+
+def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
+    """The tuning loop itself. Split out so the suspension above wraps every launch in it."""
+    import torch
+
+    import flashinfer
+
     for module in modules:
         for m in shapes:
             m = int(m)
@@ -422,11 +445,8 @@ def nvfp4_prewarm(
                 _log(logger, "debug", f"[nvfp4] prewarm {key} failed ({type(exc).__name__}: {exc})")
                 continue
             _TUNED_SHAPES.add(key)
-            tuned += 1
+            tuned_box[0] += 1
         module._tuned = True
-    if tuned:
-        _log(logger, "info", f"[nvfp4] prewarm tuned {tuned} GEMM shapes")
-    return tuned
 
 
 # ── module-tree plumbing ──────────────────────────────────────────────────────────────────────

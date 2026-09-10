@@ -146,6 +146,7 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
+from .diffusion_nvfp4_protect import protect_generation
 from .diffusion_precision import (
     TE_QUANT_FP8,
     effective_te_quant,
@@ -6196,17 +6197,19 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
+                # The EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`. Both the auto
+                # step-cache decision and the NVFP4 per-step precision schedule key on this rather than on `steps`,
+                # since a negative index in the schedule ("the last step") has to land on a step the loop reaches.
+                strength_applied = effective_request_strength(
+                    strength,
+                    init_pil is not None,
+                    "strength" in call_params,
+                    call_params["strength"].default if "strength" in call_params else None,
+                )
+                denoise_steps = effective_denoise_steps(steps, strength_applied)
+
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
-                    # Key on the EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, so
-                    # fold it in to keep FBCache off short trajectories.
-                    strength_applied = effective_request_strength(
-                        strength,
-                        init_pil is not None,
-                        "strength" in call_params,
-                        call_params["strength"].default if "strength" in call_params else None,
-                    )
-                    denoise_steps = effective_denoise_steps(steps, strength_applied)
                     toggled = maybe_toggle_step_cache(
                         state.pipe,
                         steps = denoise_steps,
@@ -6264,9 +6267,21 @@ class DiffusionBackend:
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
+                    # The NVFP4 per-step precision lever, armed for the duration of THIS chunk. Per chunk, not per
+                    # generate: a batch that splits into chunks runs one denoise loop each, and each one starts again
+                    # at step 0. Inert (nothing wrapped, nothing counted) unless UNSLOTH_NVFP4_PROTECT_STEPS names
+                    # steps.
+                    #
+                    # It counts scheduler.step, which a step cache does NOT skip: FBCache skips the transformer's
+                    # BLOCKS, not the loop, so the index stays right. What it does mean is that a protected step whose
+                    # forward the cache skipped simply does not run the protected branch -- the lever protects the
+                    # steps that are computed, and a cached step was never going to read the 4-bit weight at all.
+                    # Nothing to reconcile with the bypass above either: that one keys on the cache, this one on the
+                    # step, and the graph key carries both.
+                    protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
-                        with torch.inference_mode():
+                        with torch.inference_mode(), protect_ctx:
                             out = pipe(**chunk_kwargs).images
                     except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                         oom = is_oom_error(exc)

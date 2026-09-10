@@ -379,6 +379,20 @@ class GraphedForward:
             key = graph_key((args, kwargs))
             if self.protect_keyed is None:
                 self.protect_keyed = _protect_keyed(self.module)
+                if self.protect_keyed:
+                    # Arming the lever splits every input shape into two calls, so the same set of
+                    # shapes now needs twice the graphs. Without this the cap is reached at half
+                    # the shapes it used to hold and the rest run eager, which reads as the lever
+                    # costing speed when what it cost was a graph slot. Raised once, here, because
+                    # this is where the doubling is discovered.
+                    self.max_graphs *= 2
+                    if self.logger is not None:
+                        self.logger.info(
+                            "diffusion.cuda_graph: NVFP4 per-step precision is armed on %s; graph "
+                            "cap raised to %d (one graph per branch per input shape)",
+                            type(self.module).__name__,
+                            self.max_graphs,
+                        )
             if self.protect_keyed:
                 # One graph per branch. A graph recorded at a W4A4 step replayed at a W4A16 one
                 # would run the 4-bit kernels the capture baked in and report the lever as
