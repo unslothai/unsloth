@@ -321,6 +321,61 @@ def test_a_partial_live_tree_goes_when_the_top_up_install_itself_fails(tmp_path,
     assert not (root / ".top-up-staging").exists()
 
 
+def _partial_tiktoken(root):
+    (root / "tiktoken").mkdir(parents = True, exist_ok = True)
+    (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
+    (root / "tiktoken_ext").mkdir(exist_ok = True)
+    (root / "tiktoken_ext" / "openai_public.py").write_text("", encoding = "utf-8")
+
+
+def test_offline_still_clears_a_partial_optional_payload(tmp_path, monkeypatch):
+    """A worker killed after the payload moved in and before its dist-info left tiktoken/
+    ahead of site-packages. Offline there is no install, but the partial tree still goes,
+    or the otherwise valid sidecar would be activated with it shadowing the ambient copy."""
+    root = tmp_path / ".venv_t5_550"
+    _partial_tiktoken(root)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    installs = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target_dir: installs.append(pkg) or False)
+    assert tv._top_up_optional_packages(str(root), tv._VENV_T5_550_PACKAGES) is True
+    assert installs == []
+    assert not (root / "tiktoken").exists() and not (root / "tiktoken_ext").exists()
+    # And through the sidecar check that activation runs.
+    _partial_tiktoken(root)
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: True)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert not (root / "tiktoken").exists()
+
+
+def test_a_sidecar_whose_top_up_remnants_will_not_go_is_not_activated(tmp_path, monkeypatch):
+    """The top-up failed and the cleanup could not remove the partial tree (a locked
+    file, a permission): the sidecar the cleanup itself calls unusable is not activated."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    _partial_tiktoken(root)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target_dir: False)
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: True)
+    real_rmtree = tv.shutil.rmtree
+
+    def stuck_rmtree(path, *a, **k):
+        if Path(path).name in ("tiktoken", "tiktoken_ext"):
+            return None
+        return real_rmtree(path, *a, **k)
+
+    monkeypatch.setattr(tv.shutil, "rmtree", stuck_rmtree)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+    assert (root / "tiktoken").is_dir()
+    # Once the remnants can go, the same failed top-up leaves a usable sidecar.
+    monkeypatch.setattr(tv.shutil, "rmtree", real_rmtree)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    (root / tv._OPTIONAL_TOP_UP_FAILED).unlink(missing_ok = True)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert not (root / "tiktoken").exists()
+
+
 def test_an_interrupted_top_up_is_finished_by_the_next_one(tmp_path, monkeypatch):
     """A process killed between moving tiktoken/ in and its dist-info left a payload no
     scan could judge and no activation would complete: a package counts as present only
