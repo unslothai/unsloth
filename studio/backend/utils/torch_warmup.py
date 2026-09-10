@@ -238,9 +238,26 @@ def _warm_inference_backend() -> None:
     get_inference_backend()
 
 
+def _warm_nvlink_topology() -> None:
+    # The P2P gate needs an interconnect matrix before the first model loads, and
+    # building it costs ~230 ms via NVML or ~1.2 s via `nvidia-smi topo -m` on an
+    # 8x B200. Paying it here means the load path reads a warm cache. Only hosts
+    # that would probe anyway do any work: the probe is skipped outright unless
+    # there are at least two GPUs with an NVLink-capable name (#10613).
+    from core.inference.llama_cpp import LlamaCppBackend
+    if LlamaCppBackend._effective_gpu_count() < 2:
+        return
+    if not LlamaCppBackend._all_selected_gpus_match(
+        LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
+    ):
+        return
+    LlamaCppBackend._nvlink_topology()
+
+
 _STAGES = (
     ("hardware", _warm_hardware),
     ("inference_backend", _warm_inference_backend),
+    ("nvlink_topology", _warm_nvlink_topology),
     ("transformers", _warm_transformers),
     ("datasets", _warm_datasets),
 )

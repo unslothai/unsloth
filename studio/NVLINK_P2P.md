@@ -51,11 +51,38 @@ A product name cannot tell you whether the box has a bridge.
 asking it again is not verification. vLLM reached the same conclusion and performs a real
 data-integrity check (`can_actually_p2p`, from vllm#2728).
 
-Studio reads `nvidia-smi topo -m` instead and requires `NV#` between every selected pair.
+Studio reads the topology itself and requires a confirmed NVLink between every selected pair.
 NVLink traffic does not traverse the PCIe root complex, so the IOMMU fault class above
 cannot apply to it. The probe fails closed: a missing `nvidia-smi`, a non-zero exit, a
 timeout, an unparsable matrix, or a device mask that cannot be mapped to PCI indices all
 mean no P2P.
+
+### Where the answer comes from
+
+Two sources, in order. The first conclusive one wins; if neither answers, no P2P.
+
+| tier | source | cost on an 8x B200 |
+|---|---|---|
+| 1 | NVML, via `ctypes` against the driver's own `libnvidia-ml.so.1` / `nvml.dll` | ~230 ms |
+| 2 | `nvidia-smi topo -m` | ~1200 ms |
+
+NVML ships with the driver, so it is present exactly when `nvidia-smi` is (`nvidia-smi` is
+itself an NVML client) and this adds no Python dependency. Tier 1 asks
+`nvmlDeviceGetP2PStatus(a, b, NVML_P2P_CAPS_INDEX_NVLINK)`, which is a question about one
+pair. Note what it deliberately does not do: an active link whose remote endpoint is an
+NVSwitch proves only that the GPU is attached to a switch, and switch fabrics can be
+partitioned, so "every GPU has a switch link" is not read as "every pair is reachable".
+
+Anything short of a complete, unambiguous answer falls to tier 2: a missing library or
+symbol, any non-zero NVML return, fewer than two devices, a partial walk, or a positive
+that contradicts the live NVLink count on either endpoint. The result is cached for the
+process, primed on the startup warm thread so the first model load reads it warm, and
+never gates startup.
+
+Whichever tier answers, the verdict is identical on the hardware tested here: NVML and
+`topo -m` agree exactly on an 8x B200 NVSwitch host, 56 of 56 ordered pairs, in both
+directions. PCIe-only and partially bridged hosts were not available to test, which is what
+`UNSLOTH_P2P_TOPO_CROSSCHECK=1` and `scripts/p2p_integrity_probe.py` are for.
 
 ### Partially bridged boxes, and which pairs get checked
 
@@ -100,6 +127,7 @@ at several sizes. Exit 0 means intact, 1 means data was lost, 2 means it could n
 | `UNSLOTH_DISABLE_DC_TUNING=1` | disables all data-center tuning, including FP32 accumulate |
 | `UNSLOTH_DISABLE_DC_P2P=1` | disables `GGML_CUDA_P2P` only, keeping FP32 accumulate and `CUDA_SCALE_LAUNCH_QUEUES`. Also removes an inherited `GGML_CUDA_P2P`, so it holds even if the variable is already set elsewhere in your environment |
 | `UNSLOTH_FORCE_DC_P2P=1` | enables P2P on an unverified fabric (use after the probe passes). It cannot override `UNSLOTH_DISABLE_DC_P2P=1`, an off-meaning `GGML_CUDA_P2P` in your environment, or the data-center gate itself |
+| `UNSLOTH_P2P_TOPO_CROSSCHECK=1` | runs both topology tiers and logs any disagreement, preferring `nvidia-smi topo -m` when they differ. Diagnostic only; costs the slow probe on every process |
 
 `CUDA_SCALE_LAUNCH_QUEUES` is deliberately not gated on the fabric: it sizes a CUDA command
 buffer, moves no data between devices, and the reporter of #10613 measured it clean in
