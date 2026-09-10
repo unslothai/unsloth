@@ -2880,9 +2880,17 @@ def get_package_versions() -> Dict[str, Optional[str]]:
 
 
 def _torch_get_device_module():
-    """Return the appropriate torch device module (cuda or xpu) and its name."""
+    """Return the appropriate torch device module (cuda or xpu) and its name.
+
+    No torch at all answers ``(None, None)`` like an unsupported device: raising took the
+    exception out through /api/system on a host whose vendor CLI HAD found GPUs.
+    """
     device = get_device()
-    import torch
+    try:
+        import torch
+    except Exception as e:  # noqa: BLE001 - no torch is an answer, not a fault
+        logger.debug("torch is not importable: %s", e)
+        return None, None
 
     if device == DeviceType.CUDA:
         return torch.cuda, "cuda"
@@ -3084,6 +3092,31 @@ def _rocm_props_total_is_carve_out(props: Any) -> bool:
     )
 
 
+def _cuda_props_are_integrated(props: Any, backend: Optional[str] = "cuda") -> bool:
+    """Whether ``props`` describes an integrated CUDA part whose VRAM is system RAM.
+
+    Jetson and DGX Spark class parts set ``cudaDeviceProp::integrated`` (torch's
+    ``is_integrated``, ``integrated`` on older wheels).
+
+    ROCm and XPU are excluded BY NAME, not by trusting the field to be absent: HIP reuses
+    this namespace and left that field unassigned before 6.2, so reading it would call a
+    discrete card integrated on exactly the runtimes ``_HIP_INTEGRATED_FLAG_MIN``
+    distrusts (``_rocm_props_unified_status`` is the classifier for that hardware), and a
+    same-named field on a future Intel wheel must not start rewriting an iGPU's capacity.
+    ``torch.version.hip`` as well as ``IS_ROCM`` because that global is published by
+    detection, and this inventory is reachable from inside detection.
+    """
+    if IS_ROCM or backend != "cuda":
+        return False
+    try:
+        import torch
+        if getattr(torch.version, "hip", None):
+            return False
+    except Exception as e:  # noqa: BLE001 - no torch to ask: IS_ROCM alone then
+        logger.debug("HIP probe failed while classifying an integrated device: %s", e)
+    return bool(getattr(props, "is_integrated", False) or getattr(props, "integrated", False))
+
+
 def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any]]:
     """Per-GPU name and total VRAM only, without creating a driver context.
 
@@ -3099,7 +3132,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
     totals are unchanged. ``used_gb`` is always None, the value this module already
     uses for "telemetry unavailable".
     """
-    mod, _ = _torch_get_device_module()
+    mod, backend = _torch_get_device_module()
     if mod is None:
         return []
 
@@ -3153,6 +3186,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     ),
                     "_rocm_known_unified": known_unified,
                     "_rocm_gfx": rocm_gfx,
+                    "_cuda_integrated": _cuda_props_are_integrated(props, backend),
                 }
             )
         except Exception as e:
@@ -4856,6 +4890,10 @@ def get_gpu_utilization() -> Dict[str, Any]:
             numeric_ids = parent_visible_spec.get("numeric_ids")
             if IS_ROCM and numeric_ids is not None:
                 _reconcile_rocm_unified_memory(result, numeric_ids)
+            elif not IS_ROCM:
+                # numeric_ids is None under a UUID/MIG mask, which nvidia.py resolves
+                # itself and answers with relative-indexed rows: still repairable.
+                _reconcile_cuda_integrated_memory(result, numeric_ids)
 
             return _gpu_utilization_payload(
                 device,
@@ -5077,6 +5115,108 @@ def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: 
         _apply_unified_memory_correction(dev, td)
 
 
+def _cuda_join_is_unsafe(device_indices: Optional[list[int]]) -> bool:
+    """Whether a torch row cannot be attached to an nvidia-smi row on this host.
+
+    CUDA enumerates FASTEST_FIRST by default while nvidia-smi reports PCI order, and
+    equal-sized cards defeat every other check, so with a NUMERIC mask the join is only
+    safe behind ``_cuda_order_matches_smi``. A UUID or MIG mask has no physical ids to
+    disagree about: nvidia.py resolves the mask itself and torch enumerates that same
+    mask in the same order, so ``visible_ordinal`` joins them whatever the order says.
+    """
+    if not device_indices:
+        return False
+    return not _cuda_order_matches_smi()
+
+
+def _integrated_cuda_inventory(
+    device_indices: Optional[list[int]],
+) -> tuple[Dict[Any, Dict[str, Any]], str]:
+    """torch's context-free inventory, keyed the way the SMI rows are indexed.
+
+    Returns ``({key: row}, key_field)``, empty when the two sources cannot be joined.
+
+    Two index spaces, and picking the wrong one attaches another card's capacity to a
+    row. With a NUMERIC mask the SMI rows carry physical ids, so the join is on
+    ``index`` -- but only behind ``_cuda_order_matches_smi``, because CUDA enumerates
+    FASTEST_FIRST by default while nvidia-smi reports PCI order, and equal-sized cards
+    defeat every other check. Same gate the SMI VRAM query already applies. With a UUID
+    or MIG mask there are no physical ids: nvidia.py resolves the mask itself and
+    returns rows ordered by it, and torch enumerates that same mask in that same order,
+    so ``visible_ordinal`` joins them whatever CUDA_DEVICE_ORDER says.
+    """
+    if device_indices is None:
+        ordinals = list(range(_torch_get_physical_gpu_count() or 0))
+        if not ordinals:
+            return {}, "visible_ordinal"
+        return {
+            td["visible_ordinal"]: td for td in _torch_get_device_inventory(ordinals)
+        }, "visible_ordinal"
+    if _cuda_join_is_unsafe(device_indices):
+        # Refusing beats guessing: the caller keeps whatever the CLI reported.
+        return {}, "index"
+    inventory = _torch_get_device_inventory(
+        device_indices if device_indices else list(range(_torch_get_physical_gpu_count() or 0))
+    )
+    return {td["index"]: td for td in inventory}, "index"
+
+
+def _reconcile_cuda_integrated_memory(
+    utilization: Dict[str, Any], device_indices: Optional[list[int]]
+) -> None:
+    """Fill the VRAM columns nvidia-smi leaves at ``[N/A]`` on an integrated CUDA SoC.
+
+    The monitor names a Spark's GB10 and prints "Unknown / 0.00 GiB" beside it (#10691).
+
+    NOT _torch_get_per_device_info, which the ROCm twin above can afford and this cannot:
+    this is the /api/system poll, and mem_get_info pins a ~612 MiB primary context for
+    the life of the process (test_system_poll_no_cuda_context.py). Both figures here are
+    context-free. Host counters are not an approximation of the used half on one shared
+    pool, they are the same measurement.
+
+    Writes only what the CLI could not answer, only on a confirmed integrated device.
+    """
+    missing = [dev for dev in utilization.get("devices", []) if dev.get("vram_total_gb") is None]
+    if not missing:
+        return
+    try:
+        inventory, key_field = _integrated_cuda_inventory(device_indices)
+    except Exception as e:  # noqa: BLE001 - reached on a host that HAS nvidia-smi
+        logger.debug("torch inventory unavailable while sizing an integrated GPU: %s", e)
+        return
+    integrated = {key: td for key, td in inventory.items() if td.get("_cuda_integrated")}
+    if not integrated:
+        return
+    used_gb = None
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        used_gb = round((int(vm.total) - int(vm.available)) / (1024**3), 2)
+    except Exception as e:  # noqa: BLE001 - a total alone still beats Unknown / 0.00
+        logger.debug("host memory probe failed while sizing an integrated GPU: %s", e)
+    for dev in missing:
+        td = integrated.get(dev.get(key_field))
+        if td is None:
+            continue
+        total_gb = td["total_gb"]
+        dev["vram_total_gb"] = total_gb
+        # The CLI's own used figure wins where it has one: memory.used can be readable
+        # on a row whose memory.total is [N/A], and filling the total is exactly what
+        # makes the percentage computable. Host counters stand in only where it is not.
+        pool_used_gb = dev.get("vram_used_gb")
+        if pool_used_gb is None:
+            if used_gb is None:
+                continue
+            pool_used_gb = min(used_gb, total_gb)
+            dev["vram_used_gb"] = pool_used_gb
+        if dev.get("vram_utilization_pct") is None:
+            dev["vram_utilization_pct"] = (
+                round((min(pool_used_gb, total_gb) / total_gb) * 100, 1)
+                if total_gb > 0
+                else None
+            )
+
+
 def _reconcile_primary_rocm_unified_memory(
     utilization: Dict[str, Any], parent_visible_spec: Dict[str, Any]
 ) -> None:
@@ -5268,6 +5408,11 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             if IS_ROCM and numeric_ids is not None:
                 # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.).
                 _reconcile_rocm_unified_memory(result, numeric_ids)
+            elif not IS_ROCM:
+                # THIS is what /api/system reads (main.py::_get_cached_system_gpu_info),
+                # so the floating monitor's Unknown / 0.00 GiB is repaired here; the twin
+                # in get_gpu_utilization serves the training-side callers.
+                _reconcile_cuda_integrated_memory(result, numeric_ids)
             return result
 
         # Windows AMD/ROCm (issue #7072): the System tab's VRAM source. The torch
@@ -6826,11 +6971,59 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
     return result
 
 
+def _repair_smi_visible_devices(
+    devices: list[Dict[str, Any]], parent_visible_ids: Optional[list[int]]
+) -> bool:
+    """Fill in what nvidia-smi could not answer for, from torch's context-free inventory.
+
+    Returns whether every device now carries a capacity.
+
+    nvidia-smi answers ``[N/A]`` for memory.total on a DGX Spark, which NVIDIA documents.
+    Keeping that row is right, but a missing total is indistinguishable from no GPU
+    downstream: the frontend maps it to zero, the fit classifier returns ``ram``, and the
+    picker warns "No GPU detected" on a 121 GiB Blackwell (#10691). ``props.total_memory``
+    answers on the same host for no driver context.
+
+    The integrated flag rides along because the reason the capacity is unreadable is that
+    this part has no memory of its own, and a total published without it is counted twice.
+
+    A host whose nvidia-smi CAN answer returns above without touching torch, so the 3-5s
+    poll is unchanged and a readable part is never reclassified as unified.
+    """
+    if not devices:
+        return False
+    if all(dev.get("memory_total_gb") is not None for dev in devices):
+        return True
+    try:
+        inventory, key_field = _integrated_cuda_inventory(parent_visible_ids)
+    except Exception as e:  # noqa: BLE001 - the caller keeps the rows nvidia-smi found
+        logger.debug("torch inventory unavailable while repairing a GPU capacity: %s", e)
+        return False
+    for dev in devices:
+        td = inventory.get(dev.get(key_field))
+        if td is None:
+            continue
+        if dev.get("memory_total_gb") is None:
+            dev["memory_total_gb"] = td["total_gb"]
+        if td.get("_cuda_integrated"):
+            dev["unified_memory"] = True
+            # `shared_memory` as well, not just the host-backed figure: gpu-vram.ts
+            # splits the pools on THAT flag alone and only then reads the figure, so a
+            # row carrying one without the other is added to the dedicated total and
+            # counted a second time beside the same system RAM.
+            dev["shared_memory"] = True
+            dev["shared_memory_host_backed_gb"] = dev["memory_total_gb"]
+    return all(dev.get("memory_total_gb") is not None for dev in devices)
+
+
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
 
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
+        # Held back in case torch cannot size them either: an unknown total is a poor
+        # answer, but losing the card outright is worse than the pre-repair behaviour.
+        unrepaired_smi_result: Optional[Dict[str, Any]] = None
         # Try native SMI first (nvidia-smi; skipped for ROCm).
         if device == DeviceType.CUDA and not IS_ROCM:
             try:
@@ -6842,8 +7035,28 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     parent_visible_spec["raw"],
                 )
                 if result.get("available"):
-                    result["backend"] = _backend_label(device)
-                    return result
+                    if _repair_smi_visible_devices(
+                        result.get("devices") or [], parent_visible_spec["numeric_ids"]
+                    ):
+                        result["backend"] = _backend_label(device)
+                        return result
+                    # Falls through to the torch inventory rather than publishing an
+                    # unknown the frontend reads as zero -- unless the reason the repair
+                    # failed is that the two sources cannot be joined at all. The torch
+                    # fallback labels its rows with physical ids taken from the mask, so
+                    # under FASTEST_FIRST it would publish one card's name and capacity
+                    # under another card's index and send GPU selection at the wrong
+                    # hardware. The SMI rows are coherent; one of them is missing a
+                    # total, which is the lesser answer and the one this host had before
+                    # the repair existed.
+                    if _cuda_join_is_unsafe(parent_visible_spec["numeric_ids"]):
+                        logger.debug(
+                            "Keeping the nvidia-smi rows: CUDA_DEVICE_ORDER does not "
+                            "match nvidia-smi, so no torch row can be trusted here."
+                        )
+                        result["backend"] = _backend_label(device)
+                        return result
+                    unrepaired_smi_result = result
             except Exception as e:
                 logger.warning("Backend GPU visibility query failed: %s", e)
 
@@ -6878,18 +7091,35 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "visible_ordinal": td["visible_ordinal"],
                     "name": td["name"],
                     "memory_total_gb": td["total_gb"],
-                    "shared_memory": bool(td.get("shared_memory")),
-                    "shared_memory_host_backed_gb": td.get("shared_memory_host_backed_gb"),
+                    "shared_memory": bool(td.get("shared_memory") or td.get("_cuda_integrated")),
+                    # An integrated part's total IS host memory; publishing it here is
+                    # what stops a consumer adding the two pools together.
+                    "shared_memory_host_backed_gb": (
+                        td["total_gb"]
+                        if td.get("_cuda_integrated")
+                        else td.get("shared_memory_host_backed_gb")
+                    ),
                     # Surfaced from the inventory's own `_rocm_known_unified`
                     # rather than re-derived: a ROCm APU's total is the GTT pool,
                     # which moves with host usage and is not a VRAM ceiling a fit
                     # verdict can be measured against. Distinct from
                     # `shared_memory`, which is that flag AND Windows, so a Linux
                     # APU reads as not-shared while still having no such ceiling.
-                    "unified_memory": bool(td.get("_rocm_known_unified")),
+                    "unified_memory": bool(
+                        td.get("_rocm_known_unified") or td.get("_cuda_integrated")
+                    ),
                 }
                 for td in torch_devices
             ]
+            # A per-device probe failure leaves this list SHORT rather than empty, and
+            # a shorter list drops cards nvidia-smi could see. The repair's guarantee is
+            # that it never reports fewer devices than before it existed.
+            if unrepaired_smi_result is not None and len(devices) < len(
+                unrepaired_smi_result.get("devices") or []
+            ):
+                unrepaired_smi_result["backend"] = _backend_label(device)
+                return unrepaired_smi_result
+
             return {
                 "available": True,
                 "backend": _backend_label(device),
@@ -6898,6 +7128,12 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 "devices": devices,
                 "index_kind": index_kind,
             }
+
+        if unrepaired_smi_result is not None:
+            # Neither source could size them, but nvidia-smi found them: reporting no GPU
+            # for a host that has one is worse than an unknown capacity.
+            unrepaired_smi_result["backend"] = _backend_label(device)
+            return unrepaired_smi_result
 
         return {
             "available": False,
