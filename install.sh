@@ -2749,14 +2749,44 @@ _uv_sha256() {
 }
 
 # Can a freshly downloaded binary run at all? Both ways it could hang are closed off: no stdin,
-# so a build that prompts reads EOF, and a ceiling where `timeout` exists (stock macOS has none).
-# A healthy uv answers in milliseconds, so only a binary we would refuse reaches the ceiling.
+# so a build that prompts reads EOF, and a ceiling. A healthy uv answers in milliseconds, so
+# only a binary we would refuse reaches the ceiling. Where `timeout` exists it holds the
+# ceiling (with a KILL after TERM where it takes -k); stock macOS has none, and there a
+# background job with a watchdog does the same, since a probe that only had a ceiling under
+# `timeout` waited the full length of a hang on exactly the hosts that ship without it.
 _uv_probe_exec() {
+    _upe_secs="${_UV_PROBE_SECONDS:-20}"
     if command -v timeout >/dev/null 2>&1; then
-        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
-    else
-        "$1" --version >/dev/null 2>&1 </dev/null
+        if timeout -k 1 5 true >/dev/null 2>&1; then
+            timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        else
+            timeout "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        fi
+        return $?
     fi
+    "$1" --version >/dev/null 2>&1 </dev/null &
+    _upe_pid=$!
+    _upe_waited=0
+    while kill -0 "$_upe_pid" 2>/dev/null; do
+        if [ "$_upe_waited" -ge "$_upe_secs" ]; then
+            kill "$_upe_pid" 2>/dev/null
+            _upe_grace=0
+            while [ "$_upe_grace" -lt 5 ] && kill -0 "$_upe_pid" 2>/dev/null; do
+                sleep 1
+                _upe_grace=$((_upe_grace + 1))
+            done
+            kill -9 "$_upe_pid" 2>/dev/null
+            wait "$_upe_pid" 2>/dev/null
+            unset _upe_pid _upe_waited _upe_grace
+            return 124
+        fi
+        sleep 1
+        _upe_waited=$((_upe_waited + 1))
+    done
+    wait "$_upe_pid"
+    _upe_rc=$?
+    unset _upe_pid _upe_waited
+    return $_upe_rc
 }
 
 _uv_install_pinned() {
