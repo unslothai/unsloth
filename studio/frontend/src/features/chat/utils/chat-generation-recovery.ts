@@ -312,6 +312,20 @@ export function restoreCarriedParts<TPart>(
   return out;
 }
 
+/** A card offset is the raw length at a chunk boundary, and a think tag can arrive split
+ *  across two chunks, so an offset can land inside one. Cutting there leaves the tag's halves
+ *  as text AND lets the tracker reopen the block, so the reply projects back with the tag
+ *  twice. A tag is atomic: put the card past it. */
+function pastThinkTag(raw: string, at: number): number {
+  for (const tag of [THINK_OPEN, THINK_CLOSE]) {
+    const start = raw.lastIndexOf(tag, at);
+    if (start !== -1 && at > start && at < start + tag.length) {
+      return start + tag.length;
+    }
+  }
+  return at;
+}
+
 /** Split raw replay before parsing, since parsing can coalesce separate think blocks. */
 export function restoreCarriedPartsFromRaw(
   raw: string,
@@ -332,7 +346,9 @@ export function restoreCarriedPartsFromRaw(
     cursor = end;
   };
   for (const entry of [...carried].sort((a, b) => a.at - b.at)) {
-    appendUntil(Math.max(cursor, Math.min(entry.at, raw.length)));
+    appendUntil(
+      Math.max(cursor, pastThinkTag(raw, Math.min(entry.at, raw.length))),
+    );
     out.push(entry.part as (typeof out)[number]);
   }
   appendUntil(raw.length);

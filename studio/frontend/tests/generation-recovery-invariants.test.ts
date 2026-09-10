@@ -260,3 +260,51 @@ test("an import that is not the view keeps the recovered body whole", () => {
     );
   }
 });
+
+// A think tag can arrive split across two chunks, so a card offset -- the raw length at a
+// chunk boundary -- can land inside one. The generator above keeps angle brackets out, so
+// these two are spelled out.
+test("a card offset inside a split think tag lands past the tag, not in it", () => {
+  const raw = "<think>\n\nreasoned";
+  const card: Part = {
+    type: "tool-call",
+    toolCallId: "c1",
+    toolName: "edit_file",
+    args: {},
+  };
+  const out = restoreCarriedPartsFromRaw(raw, [
+    { at: "<thi".length, part: card },
+  ]) as unknown as Part[];
+
+  assert.deepEqual(
+    out.map((part) => part.type),
+    ["tool-call", "reasoning"],
+  );
+  assert.equal(out[1].text, "\n\nreasoned");
+  assert.equal(generationRawContent(out).raw, raw);
+});
+
+test("cards on both sides of a split think tag do not duplicate it", () => {
+  const raw = "<think>\n\nreasoned";
+  const carried: CarriedPart[] = [
+    { at: "<thi".length, part: { type: "source", id: "s1" } },
+    {
+      at: "<think>".length,
+      part: {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "edit_file",
+        args: {},
+      },
+    },
+  ];
+  const out = restoreCarriedPartsFromRaw(raw, carried) as unknown as Part[];
+
+  assert.deepEqual(
+    out.map((part) => part.type),
+    ["source", "tool-call", "reasoning"],
+  );
+  // The tag survives exactly once: projecting the reply back has to give the raw it came from,
+  // or the next publish compares the reply against a body it never streamed.
+  assert.equal(generationRawContent(out).raw, raw);
+});
