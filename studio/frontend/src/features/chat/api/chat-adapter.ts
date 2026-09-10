@@ -5095,7 +5095,11 @@ export function createOpenAIStreamAdapter(
         // A window the provider reported as full outranks either guess (utils/continuation.ts).
         incomplete: {
           reason: resolveIncompleteReason(
-            generationDecision === "durable" ? "cancelled" : "interrupted",
+            // Once an explicit Stop has latched its reason, streamed yields that
+            // still go out carry it -- a stopped legacy turn must persist as
+            // cancelled, not read back as a walk-away interruption.
+            incompleteReason ??
+                (generationDecision === "durable" ? "cancelled" : "interrupted"),
             contextWindowExceeded,
           ),
         },
@@ -7735,7 +7739,11 @@ export function createOpenAIStreamAdapter(
             });
           }
         }
-        if (!abortSignal.aborted) {
+        // An explicit Stop is an abort too, but it must persist its reason instead of
+        // leaving the last streamed yield's label standing: the replacement yield
+        // below carries the latched "cancelled" (the durable path reads the latch at
+        // 5098-101 style already; legacy only got it via this gate staying shut).
+        if (!abortSignal.aborted || generationStopRequested) {
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
@@ -7759,12 +7767,15 @@ export function createOpenAIStreamAdapter(
                   // said why the model stopped.
                   incomplete: {
                     reason: resolveIncompleteReason(
-                      err instanceof GenerationLengthError
-                        ? ("length" as const)
-                        : err instanceof ChatGenerationTerminalError &&
-                            err.generationStatus === "cancelled"
-                          ? ("cancelled" as const)
-                          : ("interrupted" as const),
+                      // An explicit Stop latched incompleteReason = "cancelled" at the abort
+                      // handler; that outranks the error-derived guess below.
+                      incompleteReason ??
+                          (err instanceof GenerationLengthError
+                              ? ("length" as const)
+                              : err instanceof ChatGenerationTerminalError &&
+                                    err.generationStatus === "cancelled"
+                                ? ("cancelled" as const)
+                                : ("interrupted" as const)),
                       contextWindowExceeded,
                     ),
                   },
