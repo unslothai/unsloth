@@ -21,8 +21,7 @@ from pathlib import Path
 
 
 def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
-    """Write ``data`` to ``path`` atomically via same-dir tmp + fsync + os.replace,
-    so a crash mid-write leaves either the old or full new content, never a truncation."""
+    """Write ``data`` to ``path`` atomically via same-dir tmp + fsync + os.replace, so a crash mid-write leaves either the old or the full new content, never a truncation."""
     dirpath = str(path.parent) or "."
     # mkstemp creates the file 0600, and os.replace carries that mode over the
     # original's, so an executable script rewritten by this pass came back
@@ -77,7 +76,6 @@ def enforce_spacing(text: str) -> tuple[str, bool]:
 
         line_changed = False
 
-        # Insert a space before '=' when missing and not preceded by whitespace.
         if col > 0 and line[col - 1] not in {" ", "\t"}:
             line = f"{line[:col]} {line[col:]}"
             offsets[line_index] += 1
@@ -85,7 +83,6 @@ def enforce_spacing(text: str) -> tuple[str, bool]:
             line_changed = True
             changed = True
 
-        # Insert a space after '=' when missing and not followed by whitespace or newline.
         next_index = col + 1
         if next_index < len(line) and line[next_index] not in {" ", "\t", "\n", "\r"}:
             line = f"{line[:next_index]} {line[next_index:]}"
@@ -158,7 +155,6 @@ def remove_redundant_passes(text: str) -> tuple[str, bool]:
         suffix = lines[end][(node.end_col_offset or 0) :]
         lines[end] = suffix
 
-    # Normalise to ensure lines end with newlines except at EOF.
     result_lines: list[str] = []
     for index, line in enumerate(lines):
         if not line:
@@ -172,13 +168,7 @@ def remove_redundant_passes(text: str) -> tuple[str, bool]:
 
 
 def remove_blank_after_short_import(text: str) -> tuple[str, bool]:
-    """Drop blank line(s) after an import block in a small nested suite.
-
-    In an indented suite of <= 3 statements (never module level), when consecutive
-    imports are followed across blank lines (nothing else) by another statement,
-    remove those blanks. A comment in the gap blocks the rule. Removing blank lines
-    never changes the AST.
-    """
+    """Drop blank line(s) after an import block in a small nested suite. In an indented suite of <= 3 statements (never module level), when consecutive imports are followed across blank lines (nothing else) by another statement, remove those blanks. A comment in the gap blocks the rule. Removing blank lines never changes the AST."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -231,12 +221,7 @@ _DEF_MIN_PARAMS_FOR_MULTILINE = 3  # signatures with < this many params stay one
 
 
 def _def_specs_by_line(tree: ast.AST) -> dict[int, tuple[int, bool]]:
-    """Map each def keyword line to (param count, has-any-default).
-
-    ``*`` / ``/`` markers aren't counted. A default exists if any positional default
-    is present or any keyword-only default is not ``None`` (``None`` in ``kw_defaults``
-    means a required keyword-only arg).
-    """
+    """Map each def keyword line to (param count, has-any-default). ``*`` and ``/`` markers are not counted. A default exists if any positional default is present or any keyword-only default is not ``None`` (``None`` in ``kw_defaults`` means a required keyword-only arg)."""
     out: dict[int, tuple[int, bool]] = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -254,13 +239,7 @@ def _def_specs_by_line(tree: ast.AST) -> dict[int, tuple[int, bool]]:
 
 
 def normalize_def_trailing_comma(text: str) -> tuple[str, bool]:
-    """Force a def signature one-per-line iff >= 3 params AND a default; else collapsible.
-
-    A qualifying signature gets a magic trailing comma added (ruff wraps it
-    one-per-line); every other signature has its trailing comma stripped so ruff
-    collapses it when it fits. Def parameter lists only, never call sites or
-    collection literals. Run BEFORE ruff format. Never changes the AST (re-checked).
-    """
+    """Force a def signature one-per-line iff >= 3 params AND a default, else collapsible. A qualifying signature gets a magic trailing comma added (ruff wraps it one-per-line); every other signature has its trailing comma stripped so ruff collapses it when it fits. Def parameter lists only, never call sites or collection literals. Run BEFORE ruff format. Never changes the AST (re-checked)."""
     try:
         tree = ast.parse(text)
         toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
@@ -328,11 +307,7 @@ def normalize_def_trailing_comma(text: str) -> tuple[str, bool]:
 
 
 def _split_string_token(s: str) -> tuple[str, str, str] | None:
-    """Split a string literal source into (prefix, quote, body).
-
-    ``prefix`` is the letters before the opening quote, ``quote`` the delimiter,
-    ``body`` everything between. ``None`` if not a recognizable string literal.
-    """
+    """Split a string literal source into (prefix, quote, body): the letters before the opening quote, the delimiter, and everything between. ``None`` if not a recognizable string literal."""
     i = 0
     while i < len(s) and s[i] not in ("'", '"'):
         i += 1
@@ -345,17 +320,12 @@ def _split_string_token(s: str) -> tuple[str, str, str] | None:
     return None
 
 
-# PEP 701 split f-strings into FSTRING_START/MIDDLE/END in 3.12. Before that one arrives
-# as a single STRING token, which the branch below already handles, so reading the names
-# unguarded raised AttributeError and killed the whole post-pass: `ruff format` had already
-# stripped the kwarg spacing this script exists to restore, so every file it touched came
-# back reformatted and the hook failed repo-wide. `t.type` is an int, so None never matches.
+# PEP 701 split f-strings into FSTRING_START/MIDDLE/END in 3.12; before that one arrives as a single STRING token, which the branch below handles, so reading the names unguarded raised AttributeError and killed the whole post-pass, leaving every file ruff-reformatted without the kwarg spacing this script restores. `t.type` is an int, so None never matches.
 _FSTRING_START = getattr(tokenize, "FSTRING_START", None)
 _FSTRING_END = getattr(tokenize, "FSTRING_END", None)
 
 
-# A "piece" is one string literal in source: a plain STRING token, or a whole
-# f-string spanning FSTRING_START..FSTRING_END. (kind, (row, col0), (row, col1), raw)
+# A "piece" is one string literal in source: a plain STRING token, or a whole f-string spanning FSTRING_START..FSTRING_END. (kind, (row, col0), (row, col1), raw)
 def _string_pieces(
     toks: list[tokenize.TokenInfo], lines: list[str]
 ) -> list[tuple[str, tuple[int, int], tuple[int, int], str | None]]:
@@ -394,15 +364,7 @@ def _string_pieces(
 
 
 def _merge_string_run(pieces: list[tuple[str, str]]) -> str | None:
-    """Merge a run of adjacent string pieces into one literal's source text.
-
-    ``pieces`` is ``(kind, raw_source)`` with kind ``"str"`` or ``"f"``. Bytes are
-    left side-by-side (``None``); a run with no f-string merges plain/raw/unicode
-    sharing one prefix+quote by body concatenation; a run mixing an f-string with a
-    plain string (no bytes, no raw) folds into one f-string with plain braces escaped.
-    Runs of only f-strings are left alone. Caller re-checks the AST and drops a
-    differing change, so subtle cases are caught.
-    """
+    """Merge a run of adjacent string pieces into one literal's source text. ``pieces`` is ``(kind, raw_source)`` with kind ``"str"`` or ``"f"``. Bytes are left side-by-side (``None``); a run with no f-string merges plain/raw/unicode sharing one prefix+quote by body concatenation; a run mixing an f-string with a plain string (no bytes, no raw) folds into one f-string with plain braces escaped. Runs of only f-strings are left alone. The caller re-checks the AST and drops a differing change."""
     parsed = []
     for kind, raw in pieces:
         pqb = _split_string_token(raw)
@@ -453,13 +415,7 @@ def _enclosing_stmt(tree: ast.AST, row: int) -> ast.stmt | None:
 def _fold_collapses(
     tree: ast.AST, lines: list[str], row: int, c0: int, c1: int, merged: str
 ) -> bool:
-    """Whether an f-string fold at ``row[c0:c1]`` -> ``merged`` is safe to apply.
-
-    Only ``assert`` wraps awkwardly when a message folds (ruff parenthesizes the
-    condition once it no longer fits one line); every other construct wraps
-    acceptably so is always allowed. An ``assert`` fold is allowed only if already
-    one line, or its estimated folded one-line length fits the line length.
-    """
+    """Whether an f-string fold at ``row[c0:c1]`` -> ``merged`` is safe to apply. Only ``assert`` wraps awkwardly when a message folds (ruff parenthesizes the condition once it no longer fits one line), so an ``assert`` fold is allowed only if already one line or its estimated folded length fits; every other construct wraps acceptably."""
     stmt = _enclosing_stmt(tree, row)
     if not isinstance(stmt, ast.Assert):
         return True
@@ -473,20 +429,13 @@ def _fold_collapses(
             ln = ln[:c0] + merged + ln[c1:]
         seg.append(ln)
     indent = len(seg[0]) - len(seg[0].lstrip())
-    # Conservative over-estimate: join continuation lines with a single space
-    # (ruff joins bracketed wraps with none), so borderline cases skip the fold.
+    # Conservative over-estimate: join continuation lines with a single space (ruff joins bracketed wraps with none), so borderline cases skip the fold.
     joined = " ".join(s.strip() for s in seg)
     return indent + len(joined) <= _LINE_LENGTH
 
 
 def merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
-    """Merge adjacent string literals on ONE physical line into a single literal.
-
-    Plain/raw/unicode runs merge by concatenation; an f-string + plain string folds
-    into one f-string (plain braces escaped) only while the statement still fits one
-    line. Runs of only f-strings, and bytes, are left side-by-side. The file AST is
-    re-checked and a differing change dropped, so meaning never changes.
-    """
+    """Merge adjacent string literals on ONE physical line into a single literal. Plain/raw/unicode runs merge by concatenation; an f-string + plain string folds into one f-string (plain braces escaped) only while the statement still fits one line. Runs of only f-strings, and bytes, are left side-by-side. The file AST is re-checked and a differing change dropped."""
     try:
         toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
         tree = ast.parse(text)
@@ -496,7 +445,6 @@ def merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
     lines = text.splitlines(keepends=True)
     pieces = _string_pieces(toks, lines)
 
-    # Group consecutive mergeable pieces (str/f, single line, same physical line).
     runs: list[list[tuple[str, tuple[int, int], tuple[int, int], str]]] = []
     cur: list[tuple[str, tuple[int, int], tuple[int, int], str]] = []
     for kind, start, end, raw in pieces:
@@ -521,8 +469,7 @@ def merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
         if merged is None:
             continue
         row, c0, c1 = run[0][1][0], run[0][1][1], run[-1][2][1]
-        # An f-string fold must not push its statement onto extra lines; a plain
-        # concatenation always collapses cleanly so it skips this check.
+        # An f-string fold must not push its statement onto extra lines; a plain concatenation always collapses cleanly so it skips this check.
         if any(kind == "f" for kind, _s, _e, _r in run) and not _fold_collapses(
             tree, lines, row, c0, c1, merged
         ):
@@ -544,14 +491,7 @@ def merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
 
 
 def collapse_short_asserts(text: str) -> tuple[str, bool]:
-    """Collapse a multi-line ``assert`` onto one line when it would fit.
-
-    When the statement's estimated one-line length fits, strip the magic trailing
-    commas (comma before a closer) holding it open so ruff rejoins it. Run BEFORE
-    ruff format. Skips asserts with a comment (would oscillate). Stripping is
-    non-semantic except for a one-element tuple; AST is re-checked and changing
-    asserts left alone.
-    """
+    """Collapse a multi-line ``assert`` onto one line when the estimated one-line length fits, by stripping the magic trailing commas (a comma before a closer) holding it open so ruff rejoins it. Run BEFORE ruff format. Skips asserts with a comment (would oscillate). Stripping is non-semantic except for a one-element tuple; the AST is re-checked and changing asserts left alone."""
     try:
         tree = ast.parse(text)
         toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
@@ -575,15 +515,13 @@ def collapse_short_asserts(text: str) -> tuple[str, bool]:
             continue  # a comment would keep ruff multi-line -> never collapses
         seg = [lines[k].rstrip("\n") for k in range(lo - 1, hi)]
         indent = len(seg[0]) - len(seg[0].lstrip())
-        # Over-estimate (join with a space; keep the comma) so a "fits" verdict
-        # is always at least as long as ruff's real one-line output -> no fight.
+        # Over-estimate (join with a space, keep the comma) so a "fits" verdict is always at least as long as ruff's real one-line output, and the two never fight.
         if indent + len(" ".join(s.strip() for s in seg)) <= _LINE_LENGTH:
             targets.append((lo, hi))
     if not targets:
         return text, False
 
-    # Trailing commas (a ',' whose next significant token is a closer), grouped
-    # by the target assert they belong to.
+    # Trailing commas (a ',' whose next significant token is a closer), grouped by the target assert they belong to.
     sig = [t for t in toks if t.type not in _STRING_TRIVIA]
     by_target: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
     for i, t in enumerate(sig):
@@ -624,10 +562,7 @@ def process_file(path: Path, pre: bool = False) -> bool:
         return False
 
     if pre:
-        # Pre-ruff: normalize def-signature magic commas (>=3 params + a default
-        # add so ruff forces one-per-line; everything else strips so ruff
-        # collapses), and strip the magic trailing comma from a short multi-line
-        # assert so ruff joins it onto one line. Everything else runs post-ruff.
+        # Pre-ruff: normalize def-signature magic commas (>=3 params + a default add so ruff forces one-per-line, everything else strips so ruff collapses), and strip the magic trailing comma from a short multi-line assert so ruff joins it. Everything else runs post-ruff.
         updated, normalized = normalize_def_trailing_comma(original)
         updated, collapsed = collapse_short_asserts(updated)
         if normalized or collapsed:

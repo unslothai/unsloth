@@ -174,10 +174,9 @@ function Tooltip({
     if (!clickOpen) return;
     const release = (event: Event) => {
       const target = event.target as Node | null;
-      // The trigger is matched by element, not by data-slot: an `asChild` child
-      // can drop the attribute (a component that does not spread props), and
-      // then a press on this very trigger read as outside, cleared the pin, and
-      // the click handler toggled it straight back on.
+      // The trigger is matched by element, not by data-slot: an `asChild` child can drop the
+      // attribute (a component that does not spread props), and then a press on this very trigger
+      // read as outside, cleared the pin, and the click handler toggled it straight back on.
       if (target && modalBlockStore.getTriggerElement()?.contains(target)) {
         return;
       }
@@ -275,9 +274,8 @@ function TooltipTrigger({
 
 type TooltipVariant = "default" | "rich" | "none";
 
-// `default` applies the compact black-pill styling shared with the
-// sidebar/chat icon labels. `rich` opts into the larger multi-row
-// popover surface used for timing/context breakdowns. `none` is an
+// `default` applies the compact black-pill styling shared with the sidebar/chat icon labels. `rich`
+// opts into the larger multi-row popover surface used for timing/context breakdowns. `none` is an
 // escape hatch for tooltips that need to bring their own surface.
 function TooltipContent({
   variant = "default",
@@ -289,10 +287,9 @@ function TooltipContent({
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & {
   variant?: TooltipVariant;
 }) {
-  // Single-line compact tooltips render as a full pill; wrapped ones keep
-  // the squarer corners so tall pills do not look like capsules. A ref
-  // callback measures on mount: Radix mounts the portal content without
-  // re-rendering this wrapper, so an effect here would never see the node.
+  // Single-line compact tooltips render as a full pill; wrapped ones keep the squarer corners so
+  // tall pills do not look like capsules. A ref callback measures on mount: Radix mounts the portal
+  // content without re-rendering this wrapper, so an effect here would never see the node.
   const contentRef = useCallback(
     (el: React.ComponentRef<typeof TooltipPrimitive.Content> | null) => {
       assignRef(ref, el);

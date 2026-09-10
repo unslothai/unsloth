@@ -1074,10 +1074,8 @@ def create_mlx_trainer_adapter(*args, **kwargs):
 
 
 class TrainingBackend:
-    """
-    Training orchestration backend — subprocess-based.
-    Launches a fresh subprocess per job, communicates via mp.Queue.
-    """
+    """Training orchestration backend: launches a fresh subprocess per job and communicates via
+    mp.Queue."""
 
     FLUSH_THRESHOLD: int = 10
 
@@ -1100,7 +1098,6 @@ class TrainingBackend:
         self._stop_watchdog_proc: Optional[mp.Process] = None
         self._complete_seen = threading.Event()
 
-        # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
@@ -1114,7 +1111,6 @@ class TrainingBackend:
         self._last_progress_log_elapsed: Optional[float] = None
         self._last_progress_log_tokens: Optional[int] = None
 
-        # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
         self.step_history: list = []
@@ -1574,17 +1570,14 @@ class TrainingBackend:
         spawn_already_reserved: bool = False,
         **kwargs,
     ) -> bool:
-        """Spawn a subprocess to run the full training pipeline.
+        """Spawn a subprocess to run the full training pipeline. All kwargs are serialized into a
+        config dict and sent to the worker; returns True if the subprocess started successfully.
 
-        All kwargs are serialized into a config dict and sent to the worker.
-        Returns True if the subprocess started successfully.
-
-        ``before_spawn`` is an optional no-arg callable run after synchronous
-        validation (start guards, config build, explicit gpu_ids) passes but
-        before VRAM-dependent auto GPU-selection and the spawn -- used to free
-        VRAM (e.g. unload chat) without tearing it down on a refused start, while
-        still letting auto-selection place training against the freed memory.
-        Hook failures never block the start.
+        ``before_spawn`` is an optional no-arg callable run after synchronous validation (start
+        guards, config build, explicit gpu_ids) passes but before VRAM-dependent auto GPU-selection
+        and the spawn -- used to free VRAM (e.g. unload chat) without tearing it down on a refused
+        start, while still letting auto-selection place training against the freed memory. Hook
+        failures never block the start.
         """
         with self._lock:
             if not self._start_request_allows_spawn_locked(start_request_id, job_id):
@@ -1873,7 +1866,6 @@ class TrainingBackend:
         *,
         expected_job_id: str,
     ) -> bool:
-        """Send stop signal to the training subprocess."""
         from .lifecycle import training_lifecycle_guard
         with training_lifecycle_guard():
             return self._stop_training_with_lifecycle_reserved(
@@ -2102,22 +2094,21 @@ class TrainingBackend:
         target_proc: "Optional[mp.Process]" = None,
         watched_job_id: Optional[str] = None,
     ) -> None:
-        """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
-        even if the worker is wedged in driver teardown; preserves output_dir on a save so
-        the checkpoint is kept, and clears it on a cancel (Stop without saving must not
-        offer resume/export). No-ops if a new run already replaced the watched worker, so a
-        stale watchdog never marks a fresh run stopped or drops its handle.
+        """Finalize parent state after a force-terminate so the UI leaves "Stopping..." even if the
+        worker is wedged in driver teardown; preserves output_dir on a save so the checkpoint is
+        kept, and clears it on a cancel (Stop without saving must not offer resume/export). No-ops
+        if a new run already replaced the watched worker.
 
         Supersession is checked on both the watched proc and job id: start_training sets
-        current_job_id before it installs the new _proc, so a stale watchdog entering that
-        startup window still sees the old (dead) handle and is caught by the job-id guard.
+        current_job_id before it installs the new _proc, so a stale watchdog entering that startup
+        window still sees the old (dead) handle and is caught by the job-id guard.
 
-        The run's terminal DB state is recorded (create-if-needed + finish by captured id)
-        BEFORE _proc is dropped: a wedged worker still reports alive, so the pump never
-        reaches its own finalize and would bail on its _proc-is-None guard once the handle
-        is gone. While the handle is held is_training_active() stays true, so no new run can
-        start and current_job_id stays the watched run for the write. _proc is dropped last,
-        re-guarded on target_proc so a run that did replace the worker keeps its handle."""
+        The run's terminal DB state is recorded (create-if-needed + finish by captured id) BEFORE
+        _proc is dropped: a wedged worker still reports alive, so the pump never reaches its own
+        finalize and would bail on its _proc-is-None guard once the handle is gone. While the handle
+        is held is_training_active() stays true, so no new run can start and current_job_id stays
+        the watched run for the write. _proc is dropped last, re-guarded on target_proc.
+        """
         with self._lock:
             if target_proc is not None and self._proc is not target_proc:
                 return
@@ -2500,11 +2491,11 @@ class TrainingBackend:
     def _ensure_pump_alive(self) -> bool:
         """Restart the event pump if it crashed, even after the worker exited.
 
-        Defence in depth behind _pump_loop's guards. _pump_running stays True only
-        after an abnormal exit (the loop clears it on intended exits), so a True
-        flag plus a dead thread is an unambiguous crash. Restarts even after worker
-        exit so a fresh pump can drain the terminal events and finalize; otherwise
-        the run looks stuck "running" forever. Returns True if restarted.
+        Defence in depth behind _pump_loop's guards. _pump_running stays True only after an abnormal
+        exit (the loop clears it on intended exits), so a True flag plus a dead thread is an
+        unambiguous crash. Restarts even after worker exit so a fresh pump can drain the terminal
+        events and finalize; otherwise the run looks stuck running forever. Returns True if
+        restarted.
         """
         with self._lock:
             if not self._pump_running:
@@ -2543,7 +2534,6 @@ class TrainingBackend:
             return self._run_finished_locked()
 
     def is_training_active(self) -> bool:
-        """Check if training is currently active."""
         # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded.
         if getattr(self, "_new_job_spawn_id", None) is not None or getattr(
             self, "_spawn_in_progress", False
@@ -2608,7 +2598,6 @@ class TrainingBackend:
         return str(output_dir) if output_dir else None
 
     def get_training_status(self, theme: str = "light") -> Tuple:
-        """Get current training status and loss plot."""
         with self._lock:
             progress = self._progress
 
@@ -2619,7 +2608,6 @@ class TrainingBackend:
         return (plot, progress)
 
     def refresh_plot_for_theme(self, theme: str) -> "Optional[plt.Figure]":
-        """Refresh plot with new theme."""
         if theme and isinstance(theme, str) and theme in ["light", "dark"]:
             self.current_theme = theme
         if self.loss_history:
@@ -2672,11 +2660,10 @@ class TrainingBackend:
     def _pump_loop(self) -> None:
         """Background thread: consume subprocess events and update state.
 
-        Sole writer of the in-memory progress state that /progress, /status,
-        /metrics and DB history read. If it exited while the worker still ran, the
-        run would burn GPU with events piling up while every surface froze. So no
-        single bad event or transient queue/DB error may end it; it returns only
-        through intended exits (worker gone, respawn handed off, finalized).
+        Sole writer of the in-memory progress state that /progress, /status, /metrics and DB history
+        read. If it exited while the worker still ran, the run would burn GPU with events piling up
+        while every surface froze, so no single bad event or transient queue/DB error may end it; it
+        returns only through intended exits (worker gone, respawn handed off, finalized).
         """
         self._pump_running = True
         while True:
@@ -3491,12 +3478,10 @@ class TrainingBackend:
         return fig
 
 
-# ========== GLOBAL INSTANCE ==========
 _training_backend = None
 
 
 def get_training_backend() -> TrainingBackend:
-    """Get global training backend instance"""
     global _training_backend
     if _training_backend is None:
         _training_backend = TrainingBackend()

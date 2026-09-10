@@ -20,11 +20,10 @@ type ApiCodingAgentsInfo = {
 // every consumer of this endpoint sees the same set.
 const HIDDEN_AGENTS = new Set(["pi"]);
 
-// Which CLIs are on PATH is environment state, not a persisted setting -- it
-// can change any time the user installs something new, so this only
-// de-duplicates concurrent in-flight calls (e.g. React strict-mode's double
-// mount) rather than caching the result across the module's lifetime. Every
-// fresh call (each time a settings panel mounts) re-checks PATH for real.
+// Which CLIs are on PATH is environment state, not a persisted setting -- it can change any time
+// the user installs something new, so this only de-duplicates concurrent in-flight calls (e.g.
+// React strict-mode's double mount) rather than caching the result across the module's lifetime.
+// Every fresh call (each time a settings panel mounts) re-checks PATH for real.
 let inFlightInfo: Promise<CodingAgentsInfo> | null = null;
 
 function fromApi(info: ApiCodingAgentsInfo): CodingAgentsInfo {

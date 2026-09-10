@@ -97,9 +97,8 @@ function ReloadSnapshotReady() {
   return null;
 }
 
-// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory
-// privacy state onto the document so Temporary Chat is never serialized even
-// briefly into sessionStorage.
+// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory privacy state onto
+// the document so Temporary Chat is never serialized even briefly into sessionStorage.
 function ReloadSnapshotPrivacy() {
   const incognito = useChatRuntimeStore((state) => state.incognito);
 
@@ -310,9 +309,8 @@ function RootLayout() {
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
-  // Video is the other row the sidebar grays out, on the two verdicts its
-  // pipelines cannot run on at all. Same hint the row reads, so the two cannot
-  // disagree about which hosts they are.
+  // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
+  // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
@@ -342,12 +340,11 @@ function RootLayout() {
     }),
     [rawThread, rawCompare, rawNew, rawProject],
   );
-  // Freeze the last /chat search and latch "mounted" via render-phase setState
-  // (React's "adjust state during render" pattern), avoiding effects/refs.
-  // Empty until /chat is visited: location.search is the raw URL's, not the
-  // matched route's, so seeding it would let another route's ?project= stand
-  // in for a chat the user has never opened. The adjustment below fills it on
-  // the first /chat render, so landing straight on /chat loses nothing.
+  // Freeze the last /chat search and latch "mounted" via render-phase setState (React's "adjust
+  // state during render" pattern), avoiding effects/refs. Empty until /chat is visited:
+  // location.search is the raw URL's, not the matched route's, so seeding it would let another
+  // route's ?project= stand in for a chat the user has never opened. The adjustment below fills it
+  // on the first /chat render, so landing straight on /chat loses nothing.
   const [frozenChatSearch, setFrozenChatSearch] = useState<ChatSearch>({});
   const [chatMounted, setChatMounted] = useState(isChatRoute);
   if (isChatRoute && frozenChatSearch !== liveChatSearch) {
@@ -450,13 +447,12 @@ function RootLayout() {
   }) => {
     clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
-    // The project on screen, which on Chat is the runtime's. The page keeps
-    // that in step with the route, the inferred ones included: a thread or a
-    // compare pair opened without ?project= still belongs to its project, and
-    // the page's own New chat button starts the next chat there. Reading the
-    // search param instead would leave that project without being asked to.
-    // Off Chat the page is hidden rather than unmounted, so its project is one
-    // the user cannot see and a new chat belongs to none.
+    // The project on screen, which on Chat is the runtime's. The page keeps that in step with the
+    // route, the inferred ones included: a thread or a compare pair opened without ?project= still
+    // belongs to its project, and the page's own New chat button starts the next chat there.
+    // Reading the search param instead would leave that project without being asked to. Off Chat
+    // the page is hidden rather than unmounted, so its project is one the user cannot see and a new
+    // chat belongs to none.
     const openProjectId = isChatRoute ? chatRuntime.activeProjectId : null;
     const projectId = options?.standalone ? null : openProjectId;
     chatRuntime.setActiveThreadId(null);
@@ -498,11 +494,10 @@ function RootLayout() {
   useShortcut("switchToHub", goTo("/hub"), {
     enabled: routeShortcutEnabled,
   });
-  // Train is the one workspace the chat-only guard turns away, so its chord is
-  // the one that has to ask first: firing it on a host without the hardware
-  // would bounce off /studio and land the user on /chat, away from whatever
-  // they had open. The sidebar disables the row on the same measured check,
-  // and only once measured, since the guess is what the row waits out too.
+  // Train is the one workspace the chat-only guard turns away, so its chord is the one that has to
+  // ask first: firing it on a host without the hardware would bounce off /studio and land the user
+  // on /chat, away from whatever they had open. The sidebar disables the row on the same measured
+  // check, and only once measured, since the guess is what the row waits out too.
   useShortcut("switchToTrain", goTo("/studio"), {
     enabled: routeShortcutEnabled && !chatOnlyMeasured,
   });

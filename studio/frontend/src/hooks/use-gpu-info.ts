@@ -141,10 +141,9 @@ function toGpuInfo(
       ),
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
-    // Additive, and deliberately some() where sharedMemory above is "no dedicated
-    // pool at all": one unified part makes the aggregate total partly host RAM,
-    // which is already enough to stop it being a VRAM ceiling a fit verdict can
-    // be measured against.
+    // Additive, and deliberately some() where sharedMemory above is "no dedicated pool at all": one
+    // unified part makes the aggregate total partly host RAM, which is already enough to stop it
+    // being a VRAM ceiling a fit verdict can be measured against.
     unifiedMemory: devices.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
@@ -174,17 +173,15 @@ function toGpuDevices(
   // about the CUDA / ROCm devices an image or video load can be pinned to.
   forDiffusion = false,
 ): SystemGpuDevice[] {
-  // GGUF loads run through llama-server, so on a Vulkan build the pickable set
-  // is the inference inventory, not the torch view: it can see cards torch
-  // cannot, and its indices are the ggml ordinals `--device Vulkan<i>` pins.
-  // The XPU ban does not apply there, it is about torch-xpu ordinals that no
-  // applicator speaks; a Vulkan pick does not use them.
+  // GGUF loads run through llama-server, so on a Vulkan build the pickable set is the inference
+  // inventory, not the torch view: it can see cards torch cannot, and its indices are the ggml
+  // ordinals `--device Vulkan<i>` pins. The XPU ban does not apply there, it is about torch-xpu
+  // ordinals that no applicator speaks; a Vulkan pick does not use them.
   const inference = data?.inference_gpu;
   if (!forDiffusion && inference?.backend === "vulkan") {
-    // The installed inference backend is confirmed Vulkan, so even an empty
-    // device list (probe still cold, or transiently failed) must NOT fall
-    // through to the torch/CUDA inventory below: those physical IDs are
-    // meaningless to a Vulkan llama-server, and the backend rejects every
+    // The installed inference backend is confirmed Vulkan, so even an empty device list (probe
+    // still cold, or transiently failed) must NOT fall through to the torch/CUDA inventory below:
+    // those physical IDs are meaningless to a Vulkan llama-server, and the backend rejects every
     // explicit diffusion pin outright while is_vulkan_build is true. Report no
     // pinnable/diffusionPinnable devices until the probe succeeds.
     if (!(inference.devices ?? []).length) return [];
