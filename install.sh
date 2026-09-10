@@ -2756,12 +2756,11 @@ _uv_sha256() {
 # `timeout` waited the full length of a hang on exactly the hosts that ship without it.
 _uv_probe_exec() {
     _upe_secs="${_UV_PROBE_SECONDS:-20}"
-    if command -v timeout >/dev/null 2>&1; then
-        if timeout -k 1 5 true >/dev/null 2>&1; then
-            timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
-        else
-            timeout "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
-        fi
+    # TERM can be caught or ignored; KILL five seconds later cannot. `timeout -k` where
+    # the timeout at hand takes it (coreutils, current busybox); a timeout without -k
+    # would send TERM alone, so that host takes the watchdog below, which escalates.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
         return $?
     fi
     "$1" --version >/dev/null 2>&1 </dev/null &

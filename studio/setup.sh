@@ -1605,14 +1605,11 @@ _setup_uv_sha256() {
 # never answers cannot hold setup ahead of its download or pip fallback.
 _setup_uv_probe_exec() {
     _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
-    if command -v timeout >/dev/null 2>&1; then
-        # TERM can be caught or ignored; KILL five seconds later cannot. -k where the
-        # timeout at hand takes it (coreutils, current busybox), plain otherwise.
-        if timeout -k 1 5 true >/dev/null 2>&1; then
-            timeout -k 5 "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
-        else
-            timeout "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
-        fi
+    # TERM can be caught or ignored; KILL five seconds later cannot. `timeout -k` where
+    # the timeout at hand takes it (coreutils, current busybox); a timeout without -k
+    # would send TERM alone, so that host takes the watchdog below, which escalates.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
         return $?
     fi
     "$1" --version >/dev/null 2>&1 </dev/null &
