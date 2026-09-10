@@ -534,6 +534,11 @@ def version_meets_floor(version: str, floor: str) -> bool:
     """
     if not floor:
         return True
+    # Full ordering when both parse (a .post2 floor is not met by .post1; a .postN of a
+    # plain floor still is); the release tuple only when one does not.
+    left_key, right_key = _version_key(version), _version_key(floor)
+    if left_key is not None and right_key is not None:
+        return left_key >= right_key
     left = _release_tuple(version)
     right = _release_tuple(floor)
     if not left or not right:
@@ -879,8 +884,19 @@ def resolved_cache_dir(cache_dir: Optional[str], cwd: Optional[Path] = None) -> 
         return None
     cache = Path(value)
     if not cache.is_absolute():
-        cache = Path(cwd if cwd is not None else (_RUN_CWD or os.getcwd())) / cache
+        cache = _uv_working_directory(cwd) / cache
     return os.path.normpath(str(cache))
+
+
+def _uv_working_directory(cwd: Optional[Path] = None) -> Path:
+    """Where uv anchors a relative path: its working directory, moved by UV_WORKING_DIR
+    (itself relative to the process cwd when relative), as the installers and the uv
+    cache selector already read it."""
+    base = Path(cwd if cwd is not None else (_RUN_CWD or os.getcwd()))
+    working = (os.environ.get("UV_WORKING_DIR") or "").strip()
+    if working:
+        base = base / working
+    return base
 
 
 def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
@@ -895,9 +911,9 @@ def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
         cache = Path(cache_dir)
         if not cache.is_absolute():
             # uv resolves a relative UV_CACHE_DIR against ITS working directory, which
-            # every uv call here is given (_working_directory); anchor the check there
-            # rather than at this process's.
-            cache = Path(_RUN_CWD or os.getcwd()) / cache
+            # every uv call here is given (_working_directory) and UV_WORKING_DIR moves;
+            # anchor the check there rather than at this process's.
+            cache = _uv_working_directory() / cache
         root_id, cache_id = _filesystem_id(root), _filesystem_id(cache)
         if root_id is None or cache_id is None or root_id != cache_id:
             volumes.append(cache)
@@ -1080,8 +1096,40 @@ def _uv_version(uv: str, env: Optional[dict]) -> Optional[str]:
     return (result.stdout or "").strip() or None
 
 
+MANIFEST_NAME = "unsloth_install_manifest.json"
+NO_TORCH_TRUTHY = ("1", "true", "yes", "on")
+
+
+def no_torch_mode(venv: Path) -> bool:
+    """The mode the installer will run the update in, decided the way it decides it.
+
+    install_python_stack._infer_no_torch: UNSLOTH_NO_TORCH when set and non-empty (an
+    explicit "false" included), else the mode the install manifest recorded, else the
+    marker, else Intel Mac detection. The marker alone was read here before, and a
+    no-torch manifest without its companion marker had the prefetch resolving with
+    dependencies and handing the update a plan with torch in it, which the no-torch
+    core step's offline retry then installed with --no-deps.
+    """
+    env = os.environ.get("UNSLOTH_NO_TORCH")
+    if env is not None and env.strip():
+        return env.strip().lower() in NO_TORCH_TRUTHY
+    try:
+        manifest = json.loads((venv / MANIFEST_NAME).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        manifest = None
+    if isinstance(manifest, dict):
+        value = manifest.get("no_torch")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in NO_TORCH_TRUTHY
+    if (venv / NO_TORCH_MARKER).is_file():
+        return True
+    return platform.system() == "Darwin" and platform.machine() == "x86_64"
+
+
 def _no_torch(venv: Path) -> bool:
-    return (venv / NO_TORCH_MARKER).is_file()
+    return no_torch_mode(venv)
 
 
 def _installed_studio_root(venv: Path) -> Optional[Path]:
@@ -1316,6 +1364,8 @@ def _run_prefetch(
         "floor": floor or None,
         "shell_version": shell_version,
         "cache_dir": cache_dir,
+        # The mode the plan was made for; the consumer refuses a plan made for the other.
+        "no_torch": no_torch,
         "python": str(interpreter),
         "python_version": platform.python_version(),
         "uv_version": _uv_version(uv, child_env),

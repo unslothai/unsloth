@@ -950,6 +950,34 @@ def test_a_prefetch_that_does_not_describe_this_update_names_nothing(
     assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]
 
 
+@pytest.mark.parametrize("planned_no_torch, named", [(False, True), (True, False)])
+def test_a_prefetch_planned_for_the_other_torch_mode_names_nothing(
+    monkeypatch, tmp_path, caches, planned_no_torch, named
+):
+    """The plan was resolved for one mode. Given to an update running in the other, the
+    offline retry would install torch from it with --no-deps (or be short of what the core
+    step needs). The mode is decided the way the installer decides it: environment, then
+    the manifest, then the marker; here neither is set, so the venv is a with-torch one."""
+    from unsloth_cli import _studio_prefetch
+
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    monkeypatch.delenv("UNSLOTH_NO_TORCH", raising = False)
+    monkeypatch.setattr(_studio_prefetch.platform, "system", lambda: "Linux")
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python, no_torch = planned_no_torch)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert ("UNSLOTH_PREFETCHED_CORE_PINS" in seen["env"]) is named
+    # Set the venv to no-torch through the installer's marker and the verdicts swap.
+    venv = _studio_prefetch.managed_venv(studio.STUDIO_HOME)
+    venv.mkdir(parents = True, exist_ok = True)
+    (venv / _studio_prefetch.NO_TORCH_MARKER).write_text("", encoding = "utf-8")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert ("UNSLOTH_PREFETCHED_CORE_PINS" in seen["env"]) is (not named)
+
+
 def test_no_prefetch_at_all_names_nothing(monkeypatch, tmp_path, caches):
     studio = _studio()
     studio_cache, _default = caches

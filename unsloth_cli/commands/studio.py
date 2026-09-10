@@ -3261,6 +3261,15 @@ def _with_prefetched_core_pins(env: Optional[dict], cwd: Optional[Path] = None) 
         marker, floor = floor, python = str(python), cache_dir = cache_dir
     ):
         return env
+    # The plan was made for one mode. A no-torch update given a plan resolved with
+    # dependencies would install torch from it with --no-deps; the other way round,
+    # the pins would be short of what the core step needs. Decided the same way the
+    # installer decides it, so the two cannot disagree.
+    planned_mode = marker.get("no_torch")
+    if isinstance(planned_mode, bool) and planned_mode != _studio_prefetch.no_torch_mode(
+        _studio_prefetch.managed_venv(STUDIO_HOME)
+    ):
+        return env
     # And not behind what is installed: `unsloth studio setup` or a manual upgrade can
     # move the core packages past a plan left behind, and the offline retry given the
     # old exact pins would downgrade them and call the update done.

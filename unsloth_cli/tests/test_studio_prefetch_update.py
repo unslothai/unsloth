@@ -279,6 +279,39 @@ def test_a_post_release_of_the_floor_still_meets_it():
     assert _studio_prefetch.version_meets_floor("2026.9.2.post1", "2026.9.2")
     assert _studio_prefetch.version_meets_floor("2026.9.3", "2026.9.2")
     assert not _studio_prefetch.version_meets_floor("2026.9.1", "2026.9.2")
+    # Full ordering when both parse: a post-release floor is not met by an earlier
+    # post-release of the same version.
+    assert not _studio_prefetch.version_meets_floor("2026.9.5.post1", "2026.9.5.post2")
+    assert _studio_prefetch.version_meets_floor("2026.9.5.post2", "2026.9.5.post1")
+    assert _studio_prefetch.version_meets_floor("2026.9.5.post2", "2026.9.5.post2")
+
+
+def test_the_prefetch_decides_no_torch_mode_the_way_the_installer_does(managed, monkeypatch):
+    """install_python_stack._infer_no_torch: the environment when set, then the manifest,
+    then the marker. Reading the marker alone had a no-torch manifest without its marker
+    resolving with dependencies and handing the update a plan with torch in it."""
+    venv = managed / _studio_prefetch.VENV_NAME
+    manifest = venv / _studio_prefetch.MANIFEST_NAME
+    marker = venv / _studio_prefetch.NO_TORCH_MARKER
+    monkeypatch.delenv("UNSLOTH_NO_TORCH", raising = False)
+    monkeypatch.setattr(_studio_prefetch.platform, "system", lambda: "Linux")
+    assert _studio_prefetch.no_torch_mode(venv) is False
+    manifest.write_text(json.dumps({"no_torch": True}), encoding = "utf-8")
+    assert _studio_prefetch.no_torch_mode(venv) is True
+    manifest.write_text(json.dumps({"no_torch": "false"}), encoding = "utf-8")
+    marker.write_text("", encoding = "utf-8")
+    assert _studio_prefetch.no_torch_mode(venv) is False
+    manifest.unlink()
+    assert _studio_prefetch.no_torch_mode(venv) is True
+    monkeypatch.setenv("UNSLOTH_NO_TORCH", "false")
+    assert _studio_prefetch.no_torch_mode(venv) is False
+    monkeypatch.setenv("UNSLOTH_NO_TORCH", "1")
+    marker.unlink()
+    assert _studio_prefetch.no_torch_mode(venv) is True
+    # An empty value counts as unset, as it does for the installer (PowerShell cannot
+    # keep a set-but-empty variable).
+    monkeypatch.setenv("UNSLOTH_NO_TORCH", "  ")
+    assert _studio_prefetch.no_torch_mode(venv) is False
 
 
 # ── run() ──
@@ -1405,7 +1438,7 @@ def test_a_relative_cache_is_anchored_where_uv_runs(monkeypatch):
     assert _studio_prefetch._volumes_to_check(root, "rel/uv") == [root, Path("/uv/cwd/rel/uv")]
 
 
-def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path):
+def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path, monkeypatch):
     """uv anchors a relative UV_CACHE_DIR at ITS working directory (the setup script's),
     not the desktop shell's: recorded as spelled, the shell checked a directory under
     its own cwd, found it cold and reported the prefetch stale on every launch."""
@@ -1417,6 +1450,13 @@ def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path):
     )
     assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "uv-cache")
     assert _studio_prefetch.resolved_cache_dir("./uv-cache", tmp_path) == str(tmp_path / "uv-cache")
+    # UV_WORKING_DIR moves uv's working directory (itself relative to the process cwd
+    # when relative), and a relative cache follows it, as the installers already read it.
+    monkeypatch.setenv("UV_WORKING_DIR", "work")
+    assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "work" / "uv-cache")
+    monkeypatch.setenv("UV_WORKING_DIR", str(tmp_path / "abs"))
+    assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "abs" / "uv-cache")
+    monkeypatch.delenv("UV_WORKING_DIR", raising = False)
     # Without an explicit anchor, the working directory the prefetch's uv calls run from.
     with _studio_prefetch._working_directory(tmp_path / "script"):
         assert _studio_prefetch.resolved_cache_dir("uv-cache") == str(
