@@ -5,6 +5,7 @@
 
 import {
   ArtifactCard,
+  getCodeFilename,
   useChatProjectScope,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -300,39 +301,6 @@ function getMermaidSource(blockContent: string): string | null {
   return source && source.length > 0 ? source : null;
 }
 
-function getCodeFilename(language: string | null) {
-  const extByLanguage: Record<string, string> = {
-    bash: "sh",
-    "c++": "cpp",
-    csharp: "cs",
-    javascript: "js",
-    js: "js",
-    json: "json",
-    jsx: "jsx",
-    markdown: "md",
-    md: "md",
-    python: "py",
-    py: "py",
-    ruby: "rb",
-    rust: "rs",
-    shell: "sh",
-    sh: "sh",
-    sql: "sql",
-    ts: "ts",
-    tsx: "tsx",
-    typescript: "ts",
-    svg: "svg",
-    yaml: "yml",
-    yml: "yml",
-  };
-
-  const normalized = language?.toLowerCase();
-  const fallbackExt = normalized?.replace(/[^a-z0-9]+/g, "-");
-  const ext = normalized
-    ? extByLanguage[normalized] || fallbackExt || "txt"
-    : "txt";
-  return `snippet.${ext}`;
-}
 
 const UNSAFE_SVG_RE =
   /<script[\s>]|on\w+\s*=|javascript:|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;

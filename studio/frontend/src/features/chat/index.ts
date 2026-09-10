@@ -172,6 +172,7 @@ export {
 } from "./utils/prompt-queue-user-stop";
 export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 export { rangeBetween, toggleSelected } from "./utils/row-selection";
+export { getCodeFilename } from "./utils/code-filename";
 export {
   addQueuedChatRunSettingsThreadIds,
   consumeQueuedChatRunSettings,
