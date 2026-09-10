@@ -7949,6 +7949,16 @@ def _mlx_payload_present() -> bool:
             # None (no RECORD) is not "present": nothing then vouches for the payload.
             if _recorded_payload_damaged(dist_name) is not False:
                 return False
+        # And what the probe imports through them: a tokenizers or safetensors with an
+        # internal file truncated keeps its version (so the fingerprint above matches)
+        # and its metadata (so the dependency closure is satisfied), and only the
+        # import would notice. One that is not installed at all is the probe's to
+        # report, and its fingerprint entry is already the empty string.
+        for dist_name in _MLX_IMPORTED_DEPENDENCIES:
+            if not _installed_distribution_version(dist_name):
+                continue
+            if _recorded_payload_damaged(dist_name) is not False:
+                return False
         return True
     except Exception:  # noqa: BLE001 - not finding it is the probe's job to explain
         return False

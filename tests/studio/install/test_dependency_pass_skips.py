@@ -1728,10 +1728,19 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(importlib.metadata, "distribution", distribution)
+    # The imported dependencies are walked too, except one that is not installed at
+    # all (the probe's to report; its fingerprint entry is already empty).
+    monkeypatch.setattr(
+        stack,
+        "_installed_distribution_version",
+        lambda name: None if name == "sentencepiece" else "1.0",
+    )
     assert stack._mlx_payload_present() is True
     # Every pinned MLX distribution, the Metal library included: a truncated
     # mlx.metallib leaves mlx's own RECORD intact.
     assert set(asked) >= {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"}
+    assert set(asked) >= set(stack._MLX_IMPORTED_DEPENDENCIES) - {"sentencepiece"}
+    assert "sentencepiece" not in asked
     payload.write_bytes(b"x" * 3)
     assert stack._mlx_payload_present() is False
     payload.write_bytes(b"x" * 10)
