@@ -4828,8 +4828,9 @@ function Find-InstalledUv {
     # shell launched before the install and never relaunched from Explorer, a CI step with a
     # fresh PATH. Without this the miss re-downloaded the pinned archive on every update --
     # 19 MB and 42 of the 53 seconds a Windows no-op update took, measured on the staging
-    # matrix. The same priority list Install-UvFromPinnedRelease writes to, so what is found
-    # is what was installed, and it has to run, not merely exist.
+    # matrix. The same priority list Install-UvFromPinnedRelease writes to, then the alias
+    # directory install.ps1's winget route fills, so what is found is what was installed,
+    # and it has to run, not merely exist.
     # Paths are built with .NET's Combine, not the PowerShell path cmdlet: this runs under
     # the script's ErrorActionPreference Stop, before the installation branch's try, and
     # the cmdlet is a terminating error for a candidate on a missing or disconnected drive
@@ -4838,6 +4839,13 @@ function Find-InstalledUv {
     if ($env:XDG_DATA_HOME) { $candidates += [System.IO.Path]::Combine($env:XDG_DATA_HOME, "..", "bin") }
     $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
     if ($userHome) { $candidates += [System.IO.Path]::Combine($userHome, ".local", "bin") }
+    # install.ps1 installs uv through winget first, whose alias lands here and reaches
+    # PATH only through the registry, so a process started before that install (the
+    # desktop shell the installer launches, a CI step) never sees it. install.ps1 lists
+    # the same directory among its known locations; without it here, every update from
+    # such a process downloaded the pinned release over a uv winget had just installed
+    # (observed on the staging matrix: a manifest uv_version that moved once per install).
+    if ($env:LOCALAPPDATA) { $candidates += [System.IO.Path]::Combine($env:LOCALAPPDATA, "Microsoft", "WinGet", "Links") }
     $script:InstalledUvLooked = @()
     foreach ($dir in $candidates) {
         if (-not $dir) { continue }
