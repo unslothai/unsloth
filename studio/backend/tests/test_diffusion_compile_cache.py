@@ -485,3 +485,38 @@ def test_an_unreadable_legacy_bundle_pair_is_a_miss_not_a_failure(monkeypatch, t
     monkeypatch.setattr(Path, "exists", _raise)
 
     assert cc._load_from_legacy(ctx, None) is False
+
+
+def test_a_manifest_that_is_not_an_object_is_a_miss(monkeypatch, tmp_path, fake_megacache):
+    """json.loads returns [] for "[]" and None for "null", and .get() on either raises.
+
+    _try_load's whole contract is that a bad cache entry is a miss, and the legacy root makes
+    this reachable in a way it was not before: the manifest being validated was written by an
+    older build, on a disk this run has never checked.
+    """
+    legacy, _ = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    for payload in ("[]", "null", '"a string"', "42"):
+        for key_dir in legacy.iterdir():
+            (key_dir / cc._MANIFEST_NAME).write_text(payload, encoding = "utf-8")
+        ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+        assert ctx.hit is False, payload
+
+
+def test_an_unreadable_write_root_falls_back_to_legacy(monkeypatch, tmp_path, fake_megacache):
+    """Path.exists() raises rather than answering False when a parent denies traversal.
+
+    This branch moves the write root, so it can land on a directory the process does not own on
+    some machine. Unguarded, that exception left begin() before the legacy fallback could run,
+    which is the fallback the relocation depends on for a warm start.
+    """
+    legacy, studio_home = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    real_exists = Path.exists
+
+    def _raise_under_studio(self, *a, **k):
+        if str(self).startswith(str(studio_home)):
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self, *a, **k)
+
+    monkeypatch.setattr(Path, "exists", _raise_under_studio)
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx.hit is True

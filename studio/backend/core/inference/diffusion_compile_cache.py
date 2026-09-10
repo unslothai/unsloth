@@ -300,7 +300,18 @@ def begin(
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
 
     # Try an exact-match load. A miss/mismatch is normal and non-fatal.
-    if ctx.bundle.exists() and ctx.manifest_path.exists():
+    #
+    # The probe is guarded for the same reason _load_from_legacy's is: Path.exists() raises
+    # rather than returning False when a parent directory denies traversal, and this branch
+    # moves the write root to a directory the process may not own on every machine. Unguarded,
+    # that exception left begin() before the legacy fallback below could run, which is exactly
+    # the fallback the relocation depends on.
+    try:
+        pair_present = ctx.bundle.exists() and ctx.manifest_path.exists()
+    except OSError as exc:
+        _warn(logger, f"compile-cache: cannot check the bundle at {ctx.dir}: {exc}")
+        pair_present = False
+    if pair_present:
         ctx.hit = _try_load(ctx, logger)
     if not ctx.hit:
         # An install that predates the relocation may still hold this key under the old root.
@@ -377,6 +388,14 @@ def _try_load(
         manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: unreadable manifest: {exc}")
+        return False
+
+    # A manifest that decoded but is not an object. json.loads happily returns [] or null, and
+    # the .get() below would then raise AttributeError out of a function whose whole contract is
+    # that a bad cache entry is a miss. The legacy root makes this reachable: the bundle being
+    # validated was written by an older build, on a disk this run has never checked.
+    if not isinstance(manifest, dict):
+        _warn(logger, "compile-cache: manifest is not an object; ignoring")
         return False
 
     # Exact-match guard (defence in depth: torch also validates internally on load).
