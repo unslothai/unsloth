@@ -153,7 +153,6 @@ def _protect_keyed(module: Any) -> bool:
     its graph count for a branch it cannot take."""
     try:
         from .diffusion_nvfp4_protect import protect_controller
-
         if not protect_controller().armed:
             return False
         return bool(_nvfp4_flashinfer_linears(module))

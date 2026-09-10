@@ -107,7 +107,12 @@ class NVFP4StepController:
             "generations": self.generations,
         }
 
-    def begin(self, total_steps: int, *, logger: Any = None) -> tuple:
+    def begin(
+        self,
+        total_steps: int,
+        *,
+        logger: Any = None,
+    ) -> tuple:
         """Start a generation of ``total_steps`` steps. Returns the resolved protected set."""
         self.reset()
         if not self.armed:

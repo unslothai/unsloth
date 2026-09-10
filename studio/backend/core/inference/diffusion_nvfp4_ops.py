@@ -302,7 +302,13 @@ def reset_lut_cache() -> None:
     _LUT_CACHE.clear()
 
 
-def dequantize_nvfp4_weight(wq: Any, w_sf: Any, per_tensor_scale: Any, *, dtype: Any = None):
+def dequantize_nvfp4_weight(
+    wq: Any,
+    w_sf: Any,
+    per_tensor_scale: Any,
+    *,
+    dtype: Any = None,
+):
     """The packed NVFP4 operand as a dense ``[N, K]`` weight. TRANSIENT by contract: the caller
     must drop it, since caching it is the second resident operand this lever exists to avoid. The
     arithmetic is torchao's, in torchao's order, so the protected step reads the SAME weight the

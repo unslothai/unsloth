@@ -1379,8 +1379,6 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
         apply_small_m_padding(object(), TQ_INT8, "minimax-h3")
 
 
-
-
 def test_the_zero_row_guard_is_nvfp4_only():
     """The zero-row guard is nvfp4 only."""
     from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
@@ -1550,8 +1548,6 @@ def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
         assert (candidates[0] if candidates else None) == chosen, (cc, family)
 
 
-
-
 def _prefer(
     monkeypatch,
     row,
@@ -1668,21 +1664,14 @@ def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
     _stub_nvfp4_backend(monkeypatch, probe_backend)
     _prefer(monkeypatch, _nvfp4_head(backend = row_backend))
     candidates = tq.auto_scheme_candidates(_target(), family, **_HAS_PREQUANT)
-    chosen = select_transformer_quant_scheme(
-        _target(), "auto", family = family, **_HAS_PREQUANT
-    )
+    chosen = select_transformer_quant_scheme(_target(), "auto", family = family, **_HAS_PREQUANT)
     assert (candidates[0] if candidates else None) == chosen, (family, allowed)
 
 
 def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
-    assert set(tq._FAMILY_AUTO_PREFER) == {
-        "z-image",
-        "flux.1",
-        "qwen-image",
-        "wan2.2-t2v-a14b",
-    }
+    assert set(tq._FAMILY_AUTO_PREFER) == {"z-image", "flux.1", "qwen-image", "wan2.2-t2v-a14b"}
     ungated = {name for name, row in tq._FAMILY_AUTO_PREFER.items() if not row.gated}
     assert ungated == {"wan2.2-t2v-a14b"}
     for name in ungated:
@@ -1710,8 +1699,6 @@ def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
     assert tq.auto_scheme_candidates(
         _target(), "qwen-image", base_repo = "Qwen/Qwen-Image", **_HAS_PREQUANT
     ) == (TQ_FP8, TQ_INT8)
-
-
 
 
 def _stub_nvfp4_backend(monkeypatch, answer):
@@ -1873,8 +1860,6 @@ def test_the_a14b_promotion_does_not_touch_the_explicit_request_path(monkeypatch
 def test_the_other_three_measured_video_families_were_not_promoted():
     for family in ("wan2.2-ti2v-5b", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
         assert family not in tq._FAMILY_AUTO_PREFER
-
-
 
 
 def test_divisible_for_scheme_matches_each_gemm():
@@ -2075,8 +2060,6 @@ def test_real_torchao_configs_carry_set_inductor_config_false():
         assert getattr(ic, "coordinate_descent_tuning", None) == before
 
 
-
-
 def _policy_stub(monkeypatch, *, policy, applied, resolved):
     """Stand in for ``diffusion_nvfp4_policy`` so the runtime path can be tested without torchao."""
     from core.inference import diffusion_nvfp4_policy as np
@@ -2227,7 +2210,6 @@ def test_a_policy_mismatch_fails_the_whole_quantise(monkeypatch):
     assert order == []
     assert not hasattr(pipe.transformer, "_unsloth_runtime_quant")
     assert not hasattr(pipe.transformer, "_unsloth_nvfp4_policy")
-
 
 
 _ZIMAGE_BASE = "Tongyi-MAI/Z-Image-Turbo"

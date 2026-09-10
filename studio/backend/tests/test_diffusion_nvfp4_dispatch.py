@@ -57,8 +57,6 @@ def _fake_flashinfer(
     return root
 
 
-
-
 def test_the_allowlisted_version_with_every_symbol_is_available(monkeypatch):
     _fake_flashinfer(monkeypatch)
     ok, reason = dispatch.available()
@@ -113,8 +111,6 @@ def test_an_unrecognised_env_value_reads_as_auto(monkeypatch, value):
     assert dispatch.fast_dispatch_env() == "auto"
 
 
-
-
 def test_nothing_is_enabled_until_verify_has_passed_on_that_device(monkeypatch):
     _fake_flashinfer(monkeypatch)
     monkeypatch.setattr(ops, "_device_index", lambda device: int(device))
@@ -149,8 +145,6 @@ def test_verify_does_not_run_the_gemm_when_the_library_is_wrong(monkeypatch):
     monkeypatch.setattr(dispatch, "_run_verify", _boom)
     ok, reason = dispatch.verify(0)
     assert ok is False and "0.7.0" in reason
-
-
 
 
 class _Ptr:
@@ -245,7 +239,6 @@ def test_describe_reports_what_is_cached(monkeypatch):
     assert record["available"] is True
     assert record["verified_devices"] == [1]
     assert record["transposed"] == 1
-
 
 
 CUDA_SHAPES = (

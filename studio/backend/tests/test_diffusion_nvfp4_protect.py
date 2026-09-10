@@ -31,8 +31,6 @@ def _cuda_or_skip():
     return torch
 
 
-
-
 @pytest.mark.parametrize(
     "spec,total,want",
     [
@@ -76,8 +74,6 @@ def test_the_env_reader_treats_blank_and_off_as_off(monkeypatch):
     assert pr.protect_steps_env() == "0,1,2,3,-1"
     monkeypatch.setenv(pr.PROTECT_STEPS_ENV, "AUTO")
     assert pr.protect_steps_env() == "auto"
-
-
 
 
 def test_an_unarmed_controller_never_protects():
@@ -151,8 +147,6 @@ def test_configure_rearms_and_disarms():
     assert (ctl.armed, ctl.spec) == (False, "")
 
 
-
-
 class _FakeScheduler:
     def __init__(self) -> None:
         self.calls = 0
@@ -170,7 +164,7 @@ class _FakePipe:
 
     def run(self, steps: int, observe) -> None:
         for _ in range(steps):
-            observe()                       # the transformer forward for this step
+            observe()  # the transformer forward for this step
             self.scheduler.step()
 
 
@@ -226,7 +220,7 @@ def test_a_pipeline_with_no_scheduler_protects_nothing():
         text = ""
 
         def warning(self, message, *args):
-            type(self).text += (message % args if args else message)
+            type(self).text += message % args if args else message
 
     ctl = pr.NVFP4StepController("0,-1")
     logger = _Logger()
@@ -255,8 +249,6 @@ def test_a_second_wrapper_over_the_first_still_counts_once():
     assert seen == list(range(10))
     assert len(ticks) == 10
     assert "step" not in pipe.scheduler.__dict__
-
-
 
 
 def test_the_graph_key_is_empty_when_the_lever_is_off(monkeypatch):
@@ -296,9 +288,12 @@ def test_the_wrapper_does_not_key_a_model_with_no_nvfp4_layers(monkeypatch):
     assert torch is not None
 
 
-
-
-def _cpu_layer(torch, *, in_features = 64, out_features = 32):
+def _cpu_layer(
+    torch,
+    *,
+    in_features = 64,
+    out_features = 32,
+):
     return nl.nvfp4_linear_class()(
         in_features,
         out_features,
@@ -340,8 +335,6 @@ def test_attach_controller_reaches_every_nvfp4_layer():
     assert [name for name, _ in pr.protect_layers(tree)] == ["0", "2"]
 
 
-
-
 @pytest.mark.parametrize("out_features,in_features", REAL_SHAPES)
 def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
     """The protected step has to read the SAME weight the unprotected step's GEMM reads."""
@@ -353,14 +346,15 @@ def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
         w = torch.randn(out_features, in_features, device = "cuda", dtype = torch.bfloat16) * 0.02
         amax = w.float().abs().amax().clamp(min = 1e-8)
         per_tensor_scale = (amax / (6.0 * 448.0)).reshape(1)
-        tensor = NVFP4Tensor.to_nvfp4(
-            w, per_tensor_scale = per_tensor_scale, is_swizzled_scales = True
-        )
+        tensor = NVFP4Tensor.to_nvfp4(w, per_tensor_scale = per_tensor_scale, is_swizzled_scales = True)
         wq = tensor.qdata.view(torch.uint8).contiguous()
         cols = in_features // 16
-        w_sf = tensor.scale.reshape(-1).view(torch.uint8).reshape(
-            ops.sf_matrix_shape(out_features, cols)
-        ).contiguous()
+        w_sf = (
+            tensor.scale.reshape(-1)
+            .view(torch.uint8)
+            .reshape(ops.sf_matrix_shape(out_features, cols))
+            .contiguous()
+        )
 
         want = tensor.dequantize(torch.bfloat16)
         got = ops.dequantize_nvfp4_weight(wq, w_sf, per_tensor_scale, dtype = torch.bfloat16)
@@ -402,9 +396,14 @@ def test_the_dequantiser_matches_flashinfers_own_packing():
     assert bool(torch.isfinite(deq).all())
 
 
-
-
-def _torchao_linear(torch, out_features, in_features, *, bias = True, seed = 0):
+def _torchao_linear(
+    torch,
+    out_features,
+    in_features,
+    *,
+    bias = True,
+    seed = 0,
+):
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
     from torchao.quantization import quantize_
@@ -461,7 +460,7 @@ def test_the_protected_branch_leaves_no_resident_weight_behind():
         resident = lambda: sum(b.numel() * b.element_size() for b in converted.buffers())
         before_bytes = resident()
         with torch.inference_mode():
-            converted(x)                       # unprotected
+            converted(x)  # unprotected
         torch.cuda.synchronize()
         baseline = torch.cuda.memory_allocated()
         ctl.advance()
@@ -474,8 +473,6 @@ def test_the_protected_branch_leaves_no_resident_weight_behind():
 
     assert resident() == before_bytes
     assert after == baseline, f"{(after - baseline) / 2 ** 20:.1f} MiB left resident"
-
-
 
 
 def test_the_switch_costs_two_compiled_variants_over_a_fifty_step_render():
@@ -504,8 +501,6 @@ def test_the_switch_costs_two_compiled_variants_over_a_fifty_step_render():
     assert ctl.protected_steps_seen == 5
 
 
-
-
 def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
     """A graph recorded at a W4A4 step must never replay at a W4A16 one."""
     torch = _cuda_or_skip()
@@ -525,7 +520,11 @@ def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
                     super().__init__()
                     self.inner = inner
 
-                def forward(self, hidden_states, return_dict = True):
+                def forward(
+                    self,
+                    hidden_states,
+                    return_dict = True,
+                ):
                     out = self.inner(hidden_states)
                     return types.SimpleNamespace(sample = out) if return_dict else (out,)
 

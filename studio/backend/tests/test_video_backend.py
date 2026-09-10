@@ -8899,8 +8899,6 @@ def test_h3_generate_non_oom_error_leaves_the_graphs_alone(fake_runtime):
     assert handle.resets == 0
 
 
-
-
 def _stub_denoiser_seed(
     monkeypatch,
     *,

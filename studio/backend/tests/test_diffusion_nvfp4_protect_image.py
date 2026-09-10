@@ -37,8 +37,6 @@ def _calls(node: ast.AST, name: str) -> list:
     return found
 
 
-
-
 def test_generate_arms_the_lever_with_the_effective_step_count():
     """Not ``steps``: an img2img at strength < 1 denoises a fraction of them."""
     generate = _generate_body()
@@ -53,7 +51,8 @@ def test_the_effective_step_count_is_computed_outside_the_auto_cache_branch():
     """It used to be local to ``if state.cache_auto``."""
     generate = _generate_body()
     assignments = [
-        node for node in ast.walk(generate)
+        node
+        for node in ast.walk(generate)
         if isinstance(node, ast.Assign)
         and any(isinstance(t, ast.Name) and t.id == "denoise_steps" for t in node.targets)
     ]
@@ -91,8 +90,6 @@ def test_the_image_module_imports_the_lever_at_module_scope():
     assert "from .diffusion_nvfp4_protect import protect_generation" in source
 
 
-
-
 class _CachedScheduler:
     def __init__(self) -> None:
         self.calls = 0
@@ -119,14 +116,14 @@ class _CachingPipe:
 def test_a_cached_step_is_simply_not_protected():
     """The index still counts scheduler steps, so the lever protects the steps that are COMPUTED."""
     ctl = pr.NVFP4StepController("0,4,-1")
-    pipe = _CachingPipe(skip_steps = {4})       # step 4 is protected AND cached away
+    pipe = _CachingPipe(skip_steps = {4})  # step 4 is protected AND cached away
     seen: list = []
     with pr.protect_generation(pipe, 9, controller = ctl):
         pipe.run(9, lambda: seen.append((ctl.index, ctl.protected)))
     assert pipe.scheduler.calls == 9
     assert [index for index, _ in seen] == [0, 1, 2, 3, 5, 6, 7, 8]
     assert [index for index, protected in seen if protected] == [0, 8]
-    assert ctl.protected_steps_seen == 3          # the controller still counts step 4 as protected
+    assert ctl.protected_steps_seen == 3  # the controller still counts step 4 as protected
 
 
 def test_the_cache_marker_and_the_lever_do_not_fight():
@@ -146,8 +143,6 @@ def test_the_cache_marker_and_the_lever_do_not_fight():
     assert handle.stats["eager_calls"] == 1
 
 
-
-
 def test_each_chunk_restarts_the_schedule_at_step_zero():
     ctl = pr.NVFP4StepController("0,-1")
     first: list = []
@@ -160,8 +155,6 @@ def test_each_chunk_restarts_the_schedule_at_step_zero():
     assert [i for i, p in second if p] == [0, 8]
     assert ctl.generations == 2
     assert ctl.protected is False
-
-
 
 
 @pytest.mark.parametrize(
@@ -179,8 +172,6 @@ def test_the_image_schedules(spec, steps, want):
     assert pr.parse_protect_steps(spec, steps) == want
 
 
-
-
 def test_suspend_protect_disarms_every_controller_it_reaches_and_restores_it():
     a, b = pr.NVFP4StepController("0"), pr.NVFP4StepController("auto")
     shared = pr.NVFP4StepController("all")
@@ -188,7 +179,7 @@ def test_suspend_protect_disarms_every_controller_it_reaches_and_restores_it():
         types.SimpleNamespace(protect = a),
         types.SimpleNamespace(protect = b),
         types.SimpleNamespace(protect = shared),
-        types.SimpleNamespace(protect = shared),     # deduped by identity
+        types.SimpleNamespace(protect = shared),  # deduped by identity
         types.SimpleNamespace(protect = None),
         types.SimpleNamespace(),
     ]
@@ -211,7 +202,8 @@ def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step():
     from core.inference import diffusion_nvfp4_linear as nl
 
     layer = nl.nvfp4_linear_class()(
-        64, 32,
+        64,
+        32,
         wq = torch.zeros(32, 32, dtype = torch.uint8),
         w_sf = torch.ones(128, 4, dtype = torch.uint8),
         alpha = torch.tensor([0.25]),
@@ -232,7 +224,6 @@ def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step():
     nl._prewarm_shapes = _record
     try:
         import torch.nn as nn
-
         tree = nn.Sequential(layer)
         nl.nvfp4_prewarm(tree, (1,))
     finally:
@@ -241,20 +232,21 @@ def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step():
     assert ctl.armed is True and ctl.protected is True
 
 
-
-
 class _BlockHolding:
     """A denoiser-shaped module that HOLDS an NVFP4 layer without calling it."""
 
     def __new__(cls, inner):
         import torch.nn as nn
-
         class _Impl(nn.Module):
             def __init__(self, held):
                 super().__init__()
                 self.held = held
 
-            def forward(self, hidden_states, return_dict = True):
+            def forward(
+                self,
+                hidden_states,
+                return_dict = True,
+            ):
                 out = hidden_states * 2
                 return (out,) if not return_dict else out
 
@@ -266,7 +258,8 @@ def _cpu_nvfp4_tree(torch):
     from core.inference import diffusion_nvfp4_linear as nl
 
     layer = nl.nvfp4_linear_class()(
-        64, 32,
+        64,
+        32,
         wq = torch.zeros(32, 32, dtype = torch.uint8),
         w_sf = torch.ones(128, 4, dtype = torch.uint8),
         alpha = torch.tensor([0.25]),
@@ -315,8 +308,6 @@ def test_an_unarmed_load_keeps_its_graph_cap(monkeypatch):
     cg.uninstall_all([handle])
 
 
-
-
 def _cuda_or_skip():
     from core.inference import diffusion_nvfp4_ops as ops
 
@@ -361,17 +352,22 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
     try:
         with torch.cuda.device(0):
             torch.manual_seed(17)
-            dit = nn.Sequential(
-                nn.Linear(3072, 3072), nn.SiLU(), nn.Linear(3072, 3072)
-            ).to("cuda", torch.bfloat16).eval()
+            dit = (
+                nn.Sequential(nn.Linear(3072, 3072), nn.SiLU(), nn.Linear(3072, 3072))
+                .to("cuda", torch.bfloat16)
+                .eval()
+            )
             x = torch.randn(1024, 3072, device = "cuda", dtype = torch.bfloat16) * 0.05
             with torch.inference_mode():
                 hidden = dit[1](dit[0](x))
             quantize_(dit, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
             metadata = {
-                "scheme": "nvfp4", "activation_scales_baked": True,
-                "act_global_scales": {"0": float(ops.global_scale(x)),
-                                      "2": float(ops.global_scale(hidden))},
+                "scheme": "nvfp4",
+                "activation_scales_baked": True,
+                "act_global_scales": {
+                    "0": float(ops.global_scale(x)),
+                    "2": float(ops.global_scale(hidden)),
+                },
             }
             assert nl.convert_nvfp4_backend(dit, metadata, "flashinfer") == 2
 
@@ -380,13 +376,17 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
                     super().__init__()
                     self.inner = inner
 
-                def forward(self, hidden_states, return_dict = True):
+                def forward(
+                    self,
+                    hidden_states,
+                    return_dict = True,
+                ):
                     out = self.inner(hidden_states)
                     return types.SimpleNamespace(sample = out) if return_dict else (out,)
 
             module = DiT(dit).eval()
             eager = {}
-            ctl.begin(9)                              # step 0: protected
+            ctl.begin(9)  # step 0: protected
             with torch.inference_mode():
                 eager[True] = module(hidden_states = x, return_dict = False)[0].clone()
                 for _ in range(8):
@@ -407,7 +407,7 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
             base_reserved, base_alloc = settled()
             torch.cuda.reset_peak_memory_stats()
 
-            ctl.begin(9)                              # protected again: first capture
+            ctl.begin(9)  # protected again: first capture
             with torch.inference_mode():
                 first = module(hidden_states = x, return_dict = False)[0].clone()
             after_one, _ = settled()
@@ -443,11 +443,13 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
     assert not torch.equal(first, second)
     first_graph = after_one - base_reserved
     second_graph = after_two - after_one
-    print(f"\n[graph memory] model={base_alloc / 2 ** 20:.1f} MiB "
-          f"base_reserved={base_reserved / 2 ** 20:.1f} MiB "
-          f"graph1=+{first_graph / 2 ** 20:.1f} MiB graph2=+{second_graph / 2 ** 20:.1f} MiB "
-          f"peak_after_1={one_graph_peak / 2 ** 20:.1f} MiB "
-          f"peak_after_2={two_graph_peak / 2 ** 20:.1f} MiB")
+    print(
+        f"\n[graph memory] model={base_alloc / 2 ** 20:.1f} MiB "
+        f"base_reserved={base_reserved / 2 ** 20:.1f} MiB "
+        f"graph1=+{first_graph / 2 ** 20:.1f} MiB graph2=+{second_graph / 2 ** 20:.1f} MiB "
+        f"peak_after_1={one_graph_peak / 2 ** 20:.1f} MiB "
+        f"peak_after_2={two_graph_peak / 2 ** 20:.1f} MiB"
+    )
     assert first_graph > 0, "the first capture reserved nothing; the measurement is not reading it"
     assert second_graph <= 1.5 * first_graph, (first_graph, second_graph)
     assert two_graph_peak < base_alloc + 2 * first_graph + (64 << 20)

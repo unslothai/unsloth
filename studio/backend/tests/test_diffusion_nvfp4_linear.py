@@ -59,8 +59,6 @@ def _rel(a, b) -> float:
     return float((a.float() - b.float()).norm() / b.float().norm())
 
 
-
-
 @pytest.mark.parametrize("out_features,in_features", REAL_SHAPES)
 def test_torchao_and_flashinfer_pack_the_same_payload(out_features, in_features):
     """torchao's ``qdata``/``scale`` ARE FlashInfer's ``wq``/``w_sf``, so this is no requantization."""
@@ -90,8 +88,6 @@ def test_torchao_and_flashinfer_pack_the_same_payload(out_features, in_features)
     if fraction:
         assert torch.equal((ca >= 8)[differing], (cb >= 8)[differing])
         assert int(((ca & 7).int() - (cb & 7).int()).abs()[differing].max()) == 1
-
-
 
 
 @pytest.mark.parametrize("m", [1, 512, 4096, 16384])
@@ -128,8 +124,6 @@ def test_converted_layer_keeps_the_leading_dimensions_and_the_bias():
     assert tuple(empty.shape) == (0, 3072)
 
 
-
-
 @pytest.mark.parametrize("out_features,in_features", [(18432, 3072), (15360, 256)])
 def test_m1_gemm_is_finite_on_both_backends(out_features, in_features, capsys):
     """The image policies quantize modulation projections that run at M = 1."""
@@ -158,8 +152,6 @@ def test_m1_gemm_is_finite_on_both_backends(out_features, in_features, capsys):
             f"\n  M=1 ({in_features} -> {out_features}) per call: "
             + ", ".join(f"{k} {v:.3f} ms" for k, v in timings.items())
         )
-
-
 
 
 def test_a_two_layer_block_compiles_fullgraph():
@@ -197,8 +189,6 @@ def test_a_two_layer_block_compiles_fullgraph():
     assert bool(torch.isfinite(got).all())
     assert _rel(got, want) < 0.03
     torch._dynamo.reset()
-
-
 
 
 def test_graphed_forward_captures_and_replays_a_converted_block():
@@ -244,8 +234,6 @@ def test_graphed_forward_captures_and_replays_a_converted_block():
         cg.uninstall_all([handle])
 
 
-
-
 def test_convert_nvfp4_backend_moves_a_real_quantized_tree_and_prewarms_it():
     torch = _cuda_or_skip()
     import torch.nn as nn
@@ -282,8 +270,6 @@ def test_convert_nvfp4_backend_moves_a_real_quantized_tree_and_prewarms_it():
         tuned = tree(x)
     assert bool(torch.isfinite(tuned).all())
     nl.reset_tuned_shapes()
-
-
 
 
 class _FakeNVFP4Tensor:

@@ -202,7 +202,7 @@ _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 
 def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens whose quantized Linears need the empty-activation guard, per family.
-    
+
     nvfp4 only: fp8 and mxfp8 reduce per-row along dim=-1, which is well defined for zero rows, and
     int8 has its own answer through ``PadToMinM``."""
     if scheme != TQ_NVFP4:
@@ -219,7 +219,7 @@ def apply_zero_row_guard(
 ) -> tuple[str, ...]:
     """Wrap this family's zero-row-reachable quantized Linears so an empty activation never
     reaches the GEMM. Returns the fqns wrapped, empty for a family with no list.
-    
+
     Call AFTER the weights are quantized and in place, next to ``apply_small_m_padding``, which
     reparents the Linears too. Not best-effort: a raise here means the transformer is quantized but
     crashes on the first t2v render."""
@@ -740,7 +740,7 @@ def _auto_scheme_order(
 ) -> tuple[str, ...]:
     """The schemes ``auto`` would try on this GPU for this family, best first, before the deny
     list and the smoke probe have their say.
-    
+
     Empty when no tier matches, head or not: a capability below every tier has no dense quant path
     at all. Shared by ``select_transformer_quant_scheme`` and ``auto_scheme_candidates`` so the two
     can never disagree."""
