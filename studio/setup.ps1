@@ -4844,11 +4844,26 @@ function Find-InstalledUv {
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
         # "ok" only. The pinned installer accepts "unknown" because a digest already
         # proved its bytes; an existing candidate has no such proof, and a launch that
-        # threw or timed out would go on to an unbounded uv pip invocation.
-        if ((Get-SetupUvExecutableVerdict -Path $exe) -ne "ok") { continue }
+        # threw or timed out would go on to an unbounded uv pip invocation. Asked twice:
+        # one miss (Defender scanning a fresh binary, a loaded runner) used to send setup
+        # to the pinned download, which put an OLDER uv over the one found here and moved
+        # the manifest's uv_version on the next pass (observed on the staging matrix).
+        if ((Get-InstalledUvVerdict -Path $exe) -ne "ok") { continue }
         return $dir
     }
     return $null
+}
+
+function Get-InstalledUvVerdict {
+    # The verdict alone (Get-SetupUvExecutableVerdict also writes its reason to the
+    # pipeline), from a second question when the first was not "ok".
+    param([string]$Path)
+    $verdict = @(Get-SetupUvExecutableVerdict -Path $Path)[-1]
+    if ($verdict -eq "ok") { return "ok" }
+    Start-Sleep -Seconds 2
+    $verdict = @(Get-SetupUvExecutableVerdict -Path $Path)[-1]
+    if ($verdict -ne "ok") { $script:InstalledUvProbeMiss = "$Path ($verdict)" }
+    return $verdict
 }
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
@@ -4862,6 +4877,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true
 } elseif (-not $StageRoot) {
+    if ($script:InstalledUvProbeMiss) {
+        substep "the uv at $($script:InstalledUvProbeMiss) did not answer --version twice; installing the pinned release"
+    }
     substep "installing uv package manager..."
     try {
         $script:UvPinnedInstalled = $false

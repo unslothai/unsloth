@@ -1791,6 +1791,7 @@ _setup_persist_uv_path() {
     done
 }
 
+_SETUP_UV_PROBE_MISS=""
 _setup_find_installed_uv() {
     # The uv a previous run put at astral's destination, when it is not on PATH: a desktop
     # shell launched before the install and never relaunched from Explorer, a CI step with
@@ -1802,13 +1803,19 @@ _setup_find_installed_uv() {
     for _sfu_dir in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}" \
         "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
         [ -n "$_sfu_dir" ] || continue
+        [ -x "$_sfu_dir/uv" ] || continue
         # Bounded, as the pinned installer's own probe is: a binary that starts and never
-        # answers must not hold setup up before the download or pip fallback.
-        if [ -x "$_sfu_dir/uv" ] && _setup_uv_probe_exec "$_sfu_dir/uv"; then
+        # answers must not hold setup up before the download or pip fallback. Asked twice:
+        # one miss (an antivirus scan holding a fresh binary, a loaded machine) used to
+        # send setup to the pinned download, which put an OLDER uv over the one found here
+        # and moved the manifest's uv_version on the next pass (observed on the staging
+        # matrix under fault injection on Windows).
+        if _setup_uv_probe_exec "$_sfu_dir/uv" || { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv"; }; then
             printf '%s' "$_sfu_dir"
             unset _sfu_dir
             return 0
         fi
+        _SETUP_UV_PROBE_MISS="$_sfu_dir/uv"
     done
     unset _sfu_dir
     return 1
@@ -1826,6 +1833,9 @@ elif _setup_uv_dir=$(_setup_find_installed_uv); then
 elif [ -n "$STAGE_ROOT" ]; then
     step "uv" "using pip inside the staged environment"
 elif {
+    if [ -n "${_SETUP_UV_PROBE_MISS:-}" ]; then
+        step "uv" "the uv at $_SETUP_UV_PROBE_MISS did not answer --version twice; installing the pinned release"
+    fi
     _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned; then
         _SETUP_UV_PINNED_OK=true
