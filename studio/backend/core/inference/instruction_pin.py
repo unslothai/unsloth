@@ -83,15 +83,13 @@ _CONTINUATIONS = frozenset(
         "then",
     }
 )
-# keyboards autocorrect "..." to U+2026, so `continue...` matched nothing and recall searched for "continue"
 # U+2026 and U+2025 as well as the ASCII spellings: keyboards autocorrect "..." to one ellipsis character, so
 # `continue…` matched nothing and recall searched for "continue".
 _PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—\u2025\u2026]+")
 
-# A closed list, not a word count: words that cannot name a request's subject "Anaphoric" as a closed list rather than a
-# word count: words that cannot name the subject of a request. "what about it" has nothing to search for; "review
-# billing" names its own subject and keeps its retrieval slots. Negation is left out, as in `store._ARCHIVE_STOPWORDS`:
-# a missed anchor is cheaper than a wrong one.
+# "Anaphoric" as a closed list rather than a word count: words that cannot name the subject of a request. "what about
+# it" has nothing to search for; "review billing" names its own subject and keeps its retrieval slots. Negation is
+# left out, as in `store._ARCHIVE_STOPWORDS`: a missed anchor is cheaper than a wrong one.
 _FUNCTION_WORDS = frozenset(
     """
 a about all also am an and another any anything are as at be been being both but by can
@@ -209,7 +207,6 @@ def _protected_cost(turns: list[list[dict]], index: int) -> int:
     small instruction its pin over tokens the pin never keeps -- which is the case the pin
     exists for, since an agent run is exactly where the filler follow-up appears.
     """
-    # 4 chars per token undercharges CJK and emoji ~2x; over-charging only refuses the pin
     # Dense: 4 chars per token undercharges CJK and emoji ~2x, so a 1056-token turn was charged 276 and cleared a 1024
     # ceiling. Over-charging only refuses the pin.
     return estimate_messages_tokens_dense(turns[index])
@@ -246,9 +243,8 @@ def pinned_instruction_ids(
         return set()
 
     turns = group_turns(messages)
-    # the newest user group is already window-protected
-    # The newest user group is already protected by the window, and the inline recall path replaces that message with a
-    # new dict, so its id would go stale anyway.
+    # The newest user group is already protected by the window, and the inline recall path replaces that message with
+    # a new dict, so its id would go stale anyway.
     newest_user = next(
         (
             index

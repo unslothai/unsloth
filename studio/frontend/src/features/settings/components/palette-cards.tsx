@@ -127,10 +127,9 @@ export function PaletteCards() {
             onClick={() => setPalette(opt.value)}
             aria-pressed={active}
             data-palette-value={opt.value}
-            // The active ring is CSS-driven off html[data-palette] (see
-            // .palette-card in index.css) so it moves in the same style
-            // pass that swaps the tokens; keying it off React state leaves
-            // the ring on the old card until the app finishes re-rendering.
+            // The active ring is CSS-driven off html[data-palette] (see .palette-card in index.css)
+            // so it moves in the same style pass that swaps the tokens; keying it off React state
+            // leaves the ring on the old card until the app finishes re-rendering.
             className="palette-card flex flex-col gap-2 rounded-xl border border-border p-2.5 text-left transition-colors focus-visible:border-ring focus-visible:outline-none"
           >
             <PalettePreview colors={PREVIEWS[opt.value][resolved]} />

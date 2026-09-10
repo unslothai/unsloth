@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation
- *  is re-sent with the partial as the final assistant turn plus `continue_final_message`, so
- *  the prompt ends mid-sentence and the new text is appended to the partial. */
+/** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation is re-sent
+ *  with the partial as the final assistant turn plus `continue_final_message`, so the prompt ends mid-sentence
+ *  and the new text is appended to the partial. */
 
 /** Why a turn ended before the model was done. `context_window` is a `length` cut the same
  *  request can never fit into, hence its own reason. */

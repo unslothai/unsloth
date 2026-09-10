@@ -899,6 +899,9 @@
       "_llama_lib_dir": {
         "kind": "def"
       },
+      "_llama_predicted_n": {
+        "kind": "def"
+      },
       "_load_swa_cache": {
         "kind": "def"
       },

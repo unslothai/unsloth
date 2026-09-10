@@ -43,10 +43,11 @@ if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 # Registered, NOT applied: preemption is opt-in, and a module that tests it says so with
-# `pytestmark = pytest.mark.usefixtures("preemption_opted_in")`. Importing it here rather
-# than in each module keeps the marker resolvable from the modules a sibling imports as a
-# top-level module, where a relative import of tests/preempt_fakes.py cannot resolve.
-from .preempt_fakes import preemption_opted_in  # noqa: E402, F401
+# `pytestmark = pytest.mark.usefixtures("preemption_opted_in")`. Bound here so the marker resolves
+# from the modules a sibling imports as a top-level module, where a relative import cannot.
+from . import preempt_fakes  # noqa: E402
+
+preemption_opted_in = preempt_fakes.preemption_opted_in
 
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.

@@ -5,10 +5,9 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is
-// the engaged value (null when off), `requested` is what the caller asked for (null = left to
-// the backend), `source` is "auto" or "explicit", `status` says whether the ask survived, and
-// `reason` is the tooltip why.
+// One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
+// value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
+// or "explicit", `status` says whether the ask survived, and `reason` is the tooltip why.
 export interface DiffusionResolvedControl {
   value: string | boolean | null;
   // Absent on backends predating the requested/actual split.
@@ -31,9 +30,9 @@ export interface DiffusionStatus {
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;
   cpu_offload: boolean;
-  // The ENGAGED runtime build. The backend has always sent these; declaring them is what lets the UI
-  // report what actually ran instead of echoing the load request back. Transformer quant
-  // engaged on the dense fast path ("int8" / "fp8" / ...), null = the GGUF ran as-is.
+  // The ENGAGED runtime build. The backend has always sent these; declaring them is what lets the UI report what
+  // actually ran instead of echoing the load request back. Transformer quant engaged on the dense fast path
+  // ("int8" / "fp8" / ...), null = the GGUF ran as-is.
   transformer_quant?: string | null;
   // Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4"), null = dense bf16.
   text_encoder_quant?: string | null;
@@ -108,9 +107,9 @@ export interface DiffusionLoadRequest {
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
   transformer_cache?: "off" | "fbcache";
-  // LoRA adapters to BAKE into a torchao int8/fp8 build: they can only attach to the dense
-  // transformer BEFORE quantisation and compile, so a quantized load that omits them rejects
-  // every generation. Ignored by bf16 / bnb-4bit, which apply at generate time.
+  // LoRA adapters to BAKE into a torchao int8/fp8 build: they can only attach to the dense transformer BEFORE
+  // quantisation and compile, so a quantized load that omits them rejects every generation. Ignored by bf16 /
+  // bnb-4bit, which apply at generate time.
   loras?: LoraSpecInput[];
 }
 
@@ -270,9 +269,8 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
-  // Announced so the loaded models indicator shows the load for as long as the toast does, rather
-  // than up to one 5s poll later. This POST only starts the load, so the notice settles from
-  // load-progress, not from the response.
+  // Announced so the loaded models indicator shows the load for as long as the toast does, rather than up to one 5s
+  // poll later. This POST only starts the load, so the notice settles from load-progress, not from the response.
   return withBackgroundLoadNotice(
     "image",
     body.model_path,
@@ -303,10 +301,10 @@ export interface DiffusionDownloadPlan {
   required_bytes?: number;
   /** Selected checkpoint's contribution to required_bytes. */
   checkpoint_bytes?: number;
-  /** Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or
-   *  null when nothing is known to be wrong. The backend reads metadata only, so it stays silent
-   *  rather than guessing; when it does speak, refuse the pick here, since the alternative is
-   *  the loader saying the same thing after a ~19 GB download. */
+  /** Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or null when nothing
+     *  is known to be wrong. The backend reads metadata only, so it stays silent rather than guessing; when it does
+     *  speak, refuse the pick here, since the alternative is the loader saying the same thing after a ~19 GB
+     *  download. */
   incompatible_reason?: string | null;
 }
 
@@ -357,9 +355,9 @@ export async function generateDiffusionImage(
   }
   if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
     const detail = await readFastApiError(response);
-    // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the
-    // request may still be running: settling an application error would poll for a generation
-    // that never started and hide the reason the backend gave.
+    // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the request may still
+    // be running: settling an application error would poll for a generation that never started and hide the reason
+    // the backend gave.
     if (
       response.status === 503 &&
       (response.headers.get("content-type") || "").toLowerCase().includes("application/json")
@@ -378,9 +376,9 @@ export async function cancelDiffusionGeneration(
   signal?: AbortSignal,
 ): Promise<{ cancelled: boolean }> {
   return parseJson(
-    // No network retry, and abortable. The endpoint always targets whichever generation is active NOW,
-    // so a retry or a 401 refresh-and-replay firing after the stopped run settled can land on a
-    // run the user started meanwhile. The signal lets the caller drop a pending one.
+    // No network retry, and abortable. The endpoint always targets whichever generation is active NOW, so a retry or
+    // a 401 refresh-and-replay firing after the stopped run settled can land on a run the user started meanwhile.
+    // The signal lets the caller drop a pending one.
     await authFetch(
       "/api/inference/images/generate/cancel",
       { method: "POST", signal },
@@ -510,9 +508,8 @@ export interface DiffusionTrainingStartRequest {
   // stop-and-save always writes one, so Resume stays available either way.
   save_steps?: number;
   save_total_limit?: number;
-  // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it.
-  // train_steps then means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs
-  // 12..500.
+  // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it. train_steps then
+  // means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs 12..500.
   resume_from_checkpoint?: string | null;
   // The run being continued. Recorded in the history for lineage only.
   resumed_from_job_id?: string | null;
@@ -750,9 +747,9 @@ export async function uploadDiffusionDataset(
   );
 }
 
-// One item in a training dataset folder, with its resolved caption. `caption_source` records where
-// it came from, so the labeling grid can highlight uncaptioned items. `kind` is absent on
-// older backends, which listed images only; treat a missing value as "image".
+// One item in a training dataset folder, with its resolved caption. `caption_source` records where it came from,
+// so the labeling grid can highlight uncaptioned items. `kind` is absent on older backends, which listed images
+// only; treat a missing value as "image".
 export interface DiffusionDatasetImageRecord {
   filename: string;
   caption: string | null;

@@ -45,21 +45,15 @@ TE_PREQUANT_SCHEMES = ("fp8",)
 # diffusion_hidream.py).
 TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# Fraction of a bf16 text encoder a PRE-CAST fp8 checkpoint occupies, for memory budgeting.  fp8 storage is one byte per
-# parameter against bf16's two, so the floor is 0.5, but the cast deliberately keeps modules dense: nn.Embedding tables,
-# the norms in DEFAULT_SKIP_MODULES_PATTERN, the encoder's own _keep_in_fp32_modules (T5's ``wo``) and an lm_head tied
-# to the input embedding. Measured from Hub file metadata over every published artifact (2026-08-07), as hosted
-# checkpoint bytes over the bf16-EQUIVALENT dense bytes of the same component (an fp32-stored encoder is halved first,
-# since the pipeline loads it bf16):  FLUX.2-dev       text_encoder    Mistral-24B    24,683,130,873 / 48,022,800,560 =
-# 0.514 HiDream-I1-Full  text_encoder_4  Llama-3.1-8B    8,555,963,320 / 16,060,556,376 = 0.533 Qwen-Image
-# text_encoder    Qwen2.5-VL-7B   8,839,210,073 / 16,584,414,544 = 0.533 LTX-2            text_encoder    Gemma3-12B
-# 13,205,302,695 / 24,374,720,836 = 0.542 Krea-2-Turbo     text_encoder    Qwen3-4B        4,831,262,424 /
-# 8,875,715,136 = 0.544 Z-Image-Turbo    text_encoder    Qwen3-4B        4,411,751,967 /  8,044,982,000 = 0.548
-# Lumina-Image-2.0 text_encoder    Gemma2-2B       3,204,501,909 /  5,228,699,608 = 0.613 FLUX.1-schnell
-# text_encoder_2  T5-XXL          5,900,818,800 /  9,524,648,584 = 0.620  The small encoders sit highest: their
-# embedding tables are a large share of the parameters and stay dense. 0.65 is the observed maximum rounded up, so this
-# OVER-states every measured encoder rather than under-stating any. It is a memory budget, and an under-estimate is the
-# expensive direction: it lets an oversized load through to the OS killer.
+# Fraction of a bf16 text encoder a PRE-CAST fp8 checkpoint occupies, for memory budgeting. fp8 storage is one byte
+# per parameter against bf16's two, so the floor is 0.5, but the cast deliberately keeps modules dense: nn.Embedding
+# tables, the norms in DEFAULT_SKIP_MODULES_PATTERN, the encoder's own _keep_in_fp32_modules (T5's ``wo``) and an
+# lm_head tied to the input embedding. Measured from Hub file metadata over every published artifact (2026-08-07) as
+# hosted checkpoint bytes over the bf16-EQUIVALENT dense bytes of the same component, the ratios run 0.514 (FLUX.2-dev
+# Mistral-24B) to 0.620 (FLUX.1-schnell T5-XXL); the small encoders sit highest, because their embedding tables are a
+# large share of the parameters and stay dense. 0.65 is the observed maximum rounded up, so this OVER-states every
+# measured encoder rather than under-stating any: an under-estimate is the expensive direction, since it lets an
+# oversized load through to the OS killer.
 TE_PREQUANT_BUDGET_SCALE = 0.65
 
 
@@ -91,15 +85,13 @@ def te_prequant_budget_scale(
     return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
 
 
-# text-encoder weights VERIFIED byte-identical (every shard LFS sha256 compared 2026-07-18)
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one
 # hosted artifact serves them all. The validator accepts a base_model_id from the same group; anything else keeps the
 # strict refusal.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
-    # Qwen2.5-VL-7B: 4 shards, identical sha256 set
-    # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set. Qwen-Image-2512 republishes the
-    # same four shards (re-verified 2026-08-25); refusing it here would pull 16.6 GB of dense encoder the load never
-    # opens.
+    # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set. Qwen-Image-2512 republishes
+    # the same four shards (re-verified 2026-08-25); refusing it here would pull 16.6 GB of dense encoder the load
+    # never opens.
     frozenset(
         {
             "qwen/qwen-image",
@@ -122,7 +114,6 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "hidream-ai/hidream-i1-full",
         }
     ),
-    # Qwen3-4B: identical sha256 across the distilled Z-Image-Turbo and the undistilled base
     # T5-XXL (text_encoder_2): 2 shards, 9,524,648,584 bytes, identical sha256 across every FLUX.1 release; HiDream-I1
     # ships the same bytes as text_encoder_3 (cross-component mapping is not wired yet).
     frozenset(
@@ -293,10 +284,8 @@ def te_prequant_sources_for_base(
     return compatible
 
 
-# everything else (config.json, the shard index, tokenizer JSON) is kept when the pre-cast checkpoint replaces the
-# weights
-# Weight files a dense encoder folder holds. Everything else (config.json, the shard index, tokenizer JSON) is kept when
-# the pre-cast checkpoint replaces the weights: the pre-cast loader still meta-inits from the base repo component
+# Weight files a dense encoder folder holds. Everything else (config.json, the shard index, tokenizer JSON) is kept
+# when the pre-cast checkpoint replaces the weights: the pre-cast loader still meta-inits from the base repo component
 # config.
 _TE_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pth", ".pt", ".msgpack", ".h5")
 
