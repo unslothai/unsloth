@@ -5211,9 +5211,7 @@ def _reconcile_cuda_integrated_memory(
             dev["vram_used_gb"] = pool_used_gb
         if dev.get("vram_utilization_pct") is None:
             dev["vram_utilization_pct"] = (
-                round((min(pool_used_gb, total_gb) / total_gb) * 100, 1)
-                if total_gb > 0
-                else None
+                round((min(pool_used_gb, total_gb) / total_gb) * 100, 1) if total_gb > 0 else None
             )
 
 
