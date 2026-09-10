@@ -7895,12 +7895,33 @@ _MLX_HEALTH_PROBE = (
 )
 
 
+# What the probe imports through mlx_lm and mlx_vlm besides the MLX pins themselves.
+# These carry ranged requirements, so one of them can move (a manual pip between two
+# updates, a tool that shares the venv) with every step still satisfied and nothing
+# installed by the pass; the recorded verdict then vouched for an import it never ran.
+_MLX_IMPORTED_DEPENDENCIES = (
+    "transformers",
+    "tokenizers",
+    "huggingface-hub",
+    "safetensors",
+    "numpy",
+    "pillow",
+    "protobuf",
+    "sentencepiece",
+)
+
+
 def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
         "pins": list(_MLX_PINS) + [_MLX_VLM_SPEC],
         "python": _installer_python_tag(),
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
+        # Versions as installed; a record without this key (an older pass) never matches
+        # and is probed once, then rewritten with it.
+        "imports": {
+            name: _installed_distribution_version(name) or "" for name in _MLX_IMPORTED_DEPENDENCIES
+        },
     }
 
 
@@ -7993,6 +8014,7 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
         and recorded.get("pins") == fingerprint["pins"]
         and recorded.get("python") == fingerprint["python"]
         and recorded.get("mlx_vlm") == fingerprint["mlx_vlm"]
+        and recorded.get("imports") == fingerprint["imports"]
         and _mlx_payload_present()
     ):
         _step("mlx", "training stack ready")

@@ -1260,6 +1260,11 @@ def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
         {"pins": ["mlx==0.0.1"]},
         {"python": "39"},
         {"mlx_vlm": "0.4.4"},
+        # A dependency the probe imports moved between two passes (still inside its
+        # declared range, so no step reinstalled it), and a record from before the
+        # imports were fingerprinted.
+        {"imports": {**{n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}, "transformers": "4.0.0"}},
+        {"imports": None},
     ],
 )
 def test_a_verdict_that_no_longer_describes_this_install_is_re_probed(mlx, mutation) -> None:
@@ -1293,6 +1298,8 @@ def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> N
     fingerprint = stack._mlx_health_fingerprint()
     assert fingerprint["pins"] == list(stack._MLX_PINS) + [stack._MLX_VLM_SPEC]
     assert fingerprint["python"] == stack._installer_python_tag()
+    assert fingerprint["imports"] == {n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}
+    assert {"transformers", "tokenizers", "numpy", "huggingface-hub"} <= set(fingerprint["imports"])
     # mlx-vlm floats inside a range, so the pin string alone does not identify what is
     # installed -- and it is the package whose half-install the probe exists to catch.
     assert fingerprint["mlx_vlm"] == "0.4.5"
