@@ -1104,7 +1104,7 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     verified = src.index("_denoiser_prequant_verified")
     predownload = src.index("_predownload_base")
     assert planned < verified < predownload
-    assert 'h3_auto_denoiser or video_auto_denoiser or kwargs.get("transformer_quant")' in src
+    assert "h3_auto_denoiser or video_auto_denoiser or requested_denoiser" in src
 
 
 def _h3_placement_probe(
@@ -1369,3 +1369,60 @@ def test_the_conventional_coverage_probe_reads_every_component():
     )
     half = _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),))
     assert not VideoBackend._denoiser_prequant_covered(half, "nvfp4", "org/test-video")
+
+
+def _planned_denoiser_request(monkeypatch, fam, **load_kwargs):
+    """The scheme the download planner hands ``_denoiser_prequant_verified`` for this request.
+
+    The whole plan runs: what is stubbed out is the Hub probe it ends in (which is the decision
+    under test) and the pipeline build below it."""
+    from core.inference import video as vid
+
+    backend = vid.VideoBackend()
+    backend._load_token = 1
+    backend._loading = vid._VideoLoadingState(repo_id = fam.base_repo, base_repo = fam.base_repo)
+    monkeypatch.setattr(vid, "_detect_load_family", lambda *a, **k: fam)
+    monkeypatch.setattr(vid, "_assert_pick_is_not_speech", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_h3_planned_auto_denoiser_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_video_planned_auto_denoiser_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "load_pipeline", lambda **kwargs: None)
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: None)
+    seen: list = []
+
+    def _verified(_fam, transformer_quant, *a, **k):
+        seen.append(transformer_quant)
+        return False
+
+    monkeypatch.setattr(backend, "_denoiser_prequant_verified", _verified)
+    backend._run_load(
+        repo_id = fam.base_repo,
+        local_files_only = True,
+        _load_token = 1,
+        **load_kwargs,
+    )
+    assert seen, "the plan never reached the denoiser probe"
+    return seen[0]
+
+
+def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
+    """speed_mode="off" declines the conventional seed for an EXPLICIT scheme too, so the plan may
+    not drop the dense shards on the raw request: the load would top them up inline, outside its
+    progress, cancel and disk preflight."""
+    from core.inference.video_families import detect_video_family
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and not wan.modular_workflow
+    assert (
+        _planned_denoiser_request(monkeypatch, wan, transformer_quant = "nvfp4", speed_mode = "off")
+        is None
+    )
+    # And the modular workflow, which honours an explicit scheme whatever the speed mode is, still
+    # asks about the raw request.
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None and h3.modular_workflow
+    assert (
+        _planned_denoiser_request(
+            monkeypatch, h3, transformer_quant = "int8", speed_mode = "off", h3_task = "fl2va"
+        )
+        == "int8"
+    )
