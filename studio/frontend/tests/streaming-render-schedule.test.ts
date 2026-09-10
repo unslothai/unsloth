@@ -100,6 +100,19 @@ const MARKDOWN_CASES = [
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
+  // Marked registers every label up to CommonMark's 999, so one past 200 has to
+  // be held like any other; committing it away lexes it apart from its twin.
+  `[${"x".repeat(250)}]: /url\n\n${paragraphs(12)}[${"x".repeat(250)}]: /url\n\nq\n\n`,
+  `[${"x".repeat(999)}]: /url\n\n${paragraphs(12)}[${"x".repeat(999)}]: /url\n\nq\n\n`,
+  // Marked normalises label whitespace, so `[foo\nbar]` registers as `foo bar`.
+  `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
+  `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
+  // 520 characters but 1040 UTF-16 code units, so the bound only holds it if it
+  // counts code points. Streaming it also cuts surrogate pairs in half.
+  `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
+  // Marked registers this as `foo\ bar`, so the escape has to admit a line
+  // ending; `.` never would.
+  `[foo\\\nbar]: /url\n\n${paragraphs(12)}[foo\\\nbar]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
   // precedes the first bold marker.
@@ -306,7 +319,8 @@ test("the block split is shared per reply without leaking between replies", () =
   // their calls through it, so the only thing keeping that honest is that the slot is keyed
   // on the exact reply text: a miss recomputes, it never answers for the wrong reply.
   const plain = "Message A.\n\n```ts\nconst a = grid[r][c];\n```\n";
-  const withReference = "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
+  const withReference =
+    "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
   const other = "Message C.\n\n```js\nconst c = 1;\n```\n";
 
   for (const reply of [plain, withReference, other, withReference, plain]) {
@@ -359,6 +373,107 @@ test("link references and definitions stay in one rendered document", () => {
     (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
     true,
   );
+});
+
+// Everything Marked stores about a definition has to move the key as it arrives,
+// or the reference rendered before it keeps the stale link. Run over every line
+// ending, because the key is built from text the cache has not normalised.
+test("a definition that spans lines still moves the render key", () => {
+  const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
+
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    const eol = (text: string) => text.replaceAll("\n", newline);
+    const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
+
+    // marked accounts for a container marker before it stores the definition, so
+    // the label, the destination and the title each have to be found behind one.
+    for (const label of labels) {
+      for (const [container, indent] of [
+        ["", "  "],
+        ["> ", "> "],
+        ["- ", "  "],
+      ] as const) {
+        for (const separator of [" ", `\n${indent}`]) {
+          const opened = `${usage}${eol(`${container}[${label}]:${separator}`)}`;
+          const destined = `${opened}https://example.com/reference`;
+          const titled = `${destined}${eol(`\n${indent}"reference"`)}`;
+          const shape = JSON.stringify(
+            eol(`${container}[${label}]:${separator}`),
+          );
+
+          assert.equal(markdownRenderScope(destined), "document", shape);
+          assert.notEqual(
+            markdownRenderKey(opened),
+            markdownRenderKey(destined),
+            `render key did not move for the destination of ${shape}`,
+          );
+          assert.notEqual(
+            markdownRenderKey(destined),
+            markdownRenderKey(titled),
+            `render key did not move for the title of ${shape}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// The scope decides what the cache commits, so it cannot depend on the reply's
+// line ending. This label is 999 characters normalised and 1000 raw with CRLF.
+test("the render scope does not depend on the reply's line ending", () => {
+  const label = `foo${" ".repeat(995)}`;
+  const usage = `Before [reference][foo].\n\n${paragraphs(20)}`;
+
+  const source = `${usage}[${label}\n]: https://example.com/reference`;
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    assert.equal(
+      markdownRenderScope(source.replaceAll("\n", newline)),
+      "document",
+      JSON.stringify(newline),
+    );
+  }
+});
+
+test("extended definitions keep their scope and key outside code blocks", () => {
+  const labels = [
+    "x".repeat(250),
+    "x".repeat(999),
+    "foo\nbar",
+    "foo\\\nbar",
+    "😀".repeat(520),
+  ];
+  const usage = "See [guide][g].\n\n";
+
+  for (const label of labels) {
+    for (const prefix of ["", "> ", "- ", "1. ", "- > "]) {
+      for (const newline of ["\n", "\r\n", "\r"]) {
+        const eol = (text: string) => text.replaceAll("\n", newline);
+        const definition = `${prefix}[${label}]: /guide`;
+        const reply = eol(`${usage}${definition}`);
+        assert.equal(markdownRenderScope(reply), "document", reply);
+        assert.notEqual(
+          markdownRenderKey(reply),
+          markdownRenderKey(`${reply}-changed`),
+        );
+        assert.deepEqual(parseMarkdownIntoRenderableBlocks(reply), [reply]);
+      }
+    }
+
+    const fenced = `\`\`\`md\n[${label}]: /code\n\`\`\``;
+    const indented = `[${label}]: /code`
+      .split("\n")
+      .map((line) => `    ${line}`)
+      .join("\n");
+    for (const code of [fenced, indented]) {
+      assert.equal(markdownRenderScope(`${usage}${code}`), "blocks", code);
+      const real = `${usage}[g]: /guide`;
+      assert.equal(
+        markdownRenderKey(`${real}\n\n${code}`),
+        markdownRenderKey(real),
+        code,
+      );
+    }
+  }
 });
 
 test("a transient marker imbalance can recover incremental parsing", () => {

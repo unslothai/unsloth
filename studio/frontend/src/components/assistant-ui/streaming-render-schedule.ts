@@ -68,13 +68,53 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
+// Tracks Marked's `def` rule, whose label is `[^\]]+`: any run to the closing
+// bracket, line endings included, no length cap. A miss is a false NEGATIVE and
+// that is the only direction that costs correctness -- a definition not held in
+// the live tail is committed into an independently parsed block, and Marked
+// emits no token for a label it has already seen, so it lexes apart from its
+// still-live twin. A false positive only costs retention, so err that way.
+//
+// Hence `\n` in the class (Marked normalises label whitespace, so `[foo\nbar]`
+// registers as `foo bar`), `\\[\s\S]` over `\\.` (`.` stops at a line ending, so
+// a label whose line ends in a backslash was rejected), and `u` (without it
+// `{1,999}` counts UTF-16 code units, making the real bound 499 emoji).
+//
+// The bound stays although Marked has none: every `[` is a start position that
+// scans until it can decide, so bound B costs O(n*B) and no bound costs O(n^2).
+// 999 is CommonMark's limit, so the whole valid range is covered and only a
+// label outside the spec stays mis-lexed. Admitting `\n` is what makes
+// `documentProse` expensive, since it reads the whole reply rather than
+// a tail capped at STALLED_TAIL_CHARACTERS; unslothai/unsloth#10529.
+const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
 // Inside a block marked did not lex as code, the container markers and their indentation
 // have already been accounted for, so the label may sit behind any mix of them.
 // A block quote marker may be followed by nothing, but a list marker needs whitespace after
 // it or no list opens -- `-[label]:` is ordinary prose, not a bullet holding a definition.
-const LINK_DEFINITION_LINE_RE =
-  /^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d{1,9}[.)])[ \t]+))*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
+const CONTAINER_PREFIX = "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
+const LINK_DEFINITION_LINE_RE = new RegExp(
+  `^${CONTAINER_PREFIX}${LINK_DEFINITION_RE.source}`,
+  `m${LINK_DEFINITION_RE.flags}`,
+);
+// The same probe plus everything Marked stores after the label, since that is
+// what has to move the remount key: the destination after an optional line
+// break, then an optional title that may sit on the line below it. Deriving it from
+// LINK_DEFINITION_LINE_RE keeps the scope and key on the same definition grammar.
+// Matching per line missed multiline labels. Breaks are plain `\n` because
+// documentProse normalises first, and a continuation carries CONTAINER_PREFIX
+// for the same reason the label does: marked strips the repeated `>` or list
+// indent off `> [g]: /url` + `> "title"` and stores the title, so a continuation
+// that admitted only whitespace went blind to every definition in a container.
+//
+// A wrapped title is the documented residual: this stops at the title's opening
+// line, so the link keeps its old title until the message settles. Following it
+// means modelling the title grammar, and the one construct that avoids that,
+// capturing to the end of the definition's paragraph, remounts the tree once a
+// frame on any prose that follows a definition.
+const LINK_DEFINITION_KEY_RE = new RegExp(
+  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?[^\\n]*(?:\\n${CONTAINER_PREFIX}["'(][^\\n]*)?`,
+  `g${LINK_DEFINITION_LINE_RE.flags}`,
+);
 // The two block shapes whose body is literal code: an opening fence, and an indent that
 // reaches column four -- four spaces, or a tab, which advances to the same column.
 const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
@@ -130,13 +170,22 @@ function blocksOf(markdown: string): readonly string[] {
 // `document` when blocks would have done only costs that reply its per-code-block Copy and
 // Download controls -- which is what this path did for EVERY reply containing a `]:` substring
 // before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+// Normalised only where a line ending can change an answer: `\r` counts against
+// `{1,999}` where the `\n` it replaces does not, so a 999-character label reads
+// as 1000 raw and the scope would follow the reply's line ending. `blocksOf`
+// keeps the caller's own string -- it is one slot shared with
+// `parseMarkdownIntoRenderableBlocks`, and splitting a normalised copy here
+// misses that slot, which costs a CRLF reply two whole splits on every render.
 function documentProse(markdown: string): string | null {
-  if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
+  const normalized = normalizeLineEndings(markdown);
+  if (!LINK_REFERENCE_RE.test(normalized) || !LINK_DEFINITION_RE.test(normalized)) {
     return null;
   }
-  const prose = blocksOf(markdown)
-    .filter((block) => !isCodeBlock(block))
-    .join("\n");
+  const prose = normalizeLineEndings(
+    blocksOf(markdown)
+      .filter((block) => !isCodeBlock(block))
+      .join("\n"),
+  );
   return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
     ? prose
     : null;
@@ -151,10 +200,7 @@ export function markdownRenderKey(markdown: string): string {
   if (prose === null) {
     return "blocks";
   }
-  return `document:${prose
-    .split("\n")
-    .filter((line) => LINK_DEFINITION_LINE_RE.test(line))
-    .join("\n")}`;
+  return `document:${(prose.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
 }
 
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
