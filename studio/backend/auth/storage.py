@@ -748,7 +748,12 @@ def authenticate_account_login(
 ) -> Optional[Tuple[str, str, str, bool]]:
     """Managed login. A setup code is consumed once, so it cannot log in again; and
     must_change_password with no pending code admits only the issued session's password change."""
-    from auth.hashing import verify_password
+    from auth.hashing import equalize_login_work, verify_password
+
+    def miss():
+        # A miss without a hash to check costs what a wrong password costs.
+        equalize_login_work(password)
+        return None
 
     conn = get_connection()
     try:
@@ -760,12 +765,12 @@ def authenticate_account_login(
             (username,),
         ).fetchone()
         if row is None or not row["is_active"]:
-            return None
+            return miss()
         if row["must_change_password"]:
             if not row["setup_code_hash"] or not hmac.compare_digest(
                 row["setup_code_hash"], _hash_token(password)
             ):
-                return None
+                return miss()
             # Compare-and-swap on expiry, activity and generation: no code is spent twice.
             with conn:
                 cursor = conn.execute(
@@ -780,7 +785,7 @@ def authenticate_account_login(
                     ),
                 )
                 if cursor.rowcount != 1:
-                    return None
+                    return miss()
         elif not verify_password(password, row["password_salt"], row["password_hash"]):
             return None
         return (

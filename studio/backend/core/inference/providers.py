@@ -907,6 +907,37 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str
         raise ValueError(reason)
 
 
+def public_provider_address(url: str) -> str:
+    """Resolve ``url``'s host now and return one public address to dial, or raise ``ValueError``.
+
+    ``validate_provider_base_url`` checks one lookup and caches it, so a managed
+    account's connection re-resolves: a name cannot rebind to loopback or the
+    LAN between the check and the dial.
+    """
+    import socket
+
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").rstrip(".")
+    if not hostname:
+        raise ValueError("Provider URL must contain a hostname.")
+    reason = "Managed accounts may only use public-network provider base URLs."
+    try:
+        addresses = [ipaddress.ip_address(_canonical_host(hostname))]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                _transport_host(hostname),
+                parts.port or (443 if parts.scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("Provider base URL hostname could not be resolved.") from exc
+        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+    if not addresses or any(not ip.is_global for ip in addresses):
+        raise ValueError(reason)
+    return str(addresses[0])
+
+
 def validate_provider_base_url(base_url: str) -> str:
     """Return a normalized provider base URL, or raise ``ValueError``.
 

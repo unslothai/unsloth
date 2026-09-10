@@ -486,6 +486,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     if record is None:
         # Use the same bounded per-name buckets as existing accounts. A shared
         # unknown-name bucket makes another name's lockout an existence oracle.
+        hashing.equalize_login_work(payload.password)
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
