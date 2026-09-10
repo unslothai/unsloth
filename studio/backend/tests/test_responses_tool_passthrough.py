@@ -1949,11 +1949,11 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
-    def test_reasoning_capable_gguf_sanitizes_think_tags_when_disabled(self, monkeypatch):
+    def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
         body = self._run_with_message(
             monkeypatch,
-            {"content": "<think>leaked</think>answer"},
+            {"content": "Use <think>hi</think> in your prompt."},
             payload = payload,
             llama_backend = SimpleNamespace(
                 is_loaded = True,
@@ -1962,8 +1962,94 @@ class TestResponsesNonStreamingAdapter:
             ),
         )
 
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_effort_dial_gguf_still_parses_think_tags_when_disabled(self, monkeypatch):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            payload = payload,
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                # gpt-oss offers no "none" level, so it stays on low effort and the markup is real.
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking, reasoning_effort = None, preserve_thinking = None: (
+                        {"reasoning_effort": "low"}
+                    )
+                ),
+            ),
+        )
+
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "leaked"}]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+
+    def test_inkling_numeric_zero_effort_keeps_think_tags_visible(self, monkeypatch):
+        # Real resolver, not a stand-in: for Inkling, _coerce_reasoning_effort rewrites
+        # the "none" sentinel to numeric 0, which a string-only check misreads as still on.
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = object()
+        backend._healthy = True
+        backend._supports_reasoning = True
+        backend._reasoning_always_on = False
+        backend._reasoning_style = "reasoning_effort"
+        backend._reasoning_effort_levels = ["none", "low", "medium", "high", "max"]
+        backend._supports_preserve_thinking = False
+        backend._preserve_thinking_default = False
+        backend._reasoning_default = True
+        backend._architecture = "inkling"
+
+        assert backend._request_reasoning_kwargs(False, "none", None) == {"reasoning_effort": 0.0}
+
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "Use <think>hi</think> in your prompt."},
+            payload = payload,
+            llama_backend = backend,
+        )
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_launch_default_thinking_off_keeps_think_tags_visible(self, monkeypatch):
+        # No reasoning field means no override, so the model runs on the default it was
+        # launched with. The Qwen3.5 Small tier launches thinking off.
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "Use <think>hi</think> in your prompt."},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                reasoning_default = False,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_launch_default_thinking_on_still_parses_think_tags(self, monkeypatch):
+        # Mirror: a thinking-on launch default still splits, so the fix is not "never parse".
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                reasoning_default = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
     def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
@@ -2633,6 +2719,106 @@ class TestResponsesStreamAdapter:
         done = self._payloads(lines, "response.output_item.done")
         assert done[0]["item"]["type"] == "function_call"
         assert self._payloads(lines, "response.function_call_arguments.done")
+
+    def test_studio_ownership_marker_reaches_the_chat_request(self):
+        """ResponsesRequest takes the marker as an extra field, and every fold downstream reads
+        it off the ChatCompletionRequest. Dropped in translation, only the legacy
+        search_conversation arm can claim a Studio thread, so one that ran terminal or
+        search_knowledge_base is refused non-streaming and forwarded raw when streamed."""
+        from routes.inference import _build_chat_request
+
+        payload = ResponsesRequest.model_validate(
+            {"input": "hi", "stream": True, "model": "org/M-GGUF", "studio_tool_history": True}
+        )
+        chat_req = _build_chat_request(
+            payload, [ChatMessage(role = "user", content = "hi")], stream = True
+        )
+        assert chat_req.studio_tool_history is True
+
+        # Absent stays absent: a plain client must not be read as Studio's.
+        plain = _build_chat_request(
+            ResponsesRequest.model_validate({"input": "hi", "model": "org/M-GGUF"}),
+            [ChatMessage(role = "user", content = "hi")],
+            stream = False,
+        )
+        assert not plain.studio_tool_history
+
+    def test_studio_tool_history_is_folded_on_the_direct_stream(self, monkeypatch):
+        """This half of /v1/responses builds the passthrough body itself, so it has to fold the
+        way openai_chat_completions does. Otherwise the same thread on the same model answers
+        non-streaming and ships role="tool" to a toolless template when streamed."""
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            content = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+        )
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                supports_tools = False,
+                supports_tool_passthrough = False,
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+
+        payload = ResponsesRequest(input = "and now?", stream = True, model = "org/M-GGUF")
+        messages = [
+            ChatMessage(role = "user", content = "what did we say about seeds?"),
+            ChatMessage(
+                role = "assistant",
+                content = None,
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_conversation",
+                            "arguments": '{"query": "seeds"}',
+                        },
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "call_1",
+                name = "search_conversation",
+                content = "we said 3407",
+            ),
+            ChatMessage(role = "user", content = "and now?"),
+        ]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        roles = [m.get("role") for m in captured["body"]["messages"]]
+        assert "tool" not in roles, roles
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+        assert "we said 3407" in json.dumps(captured["body"]["messages"])
 
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod

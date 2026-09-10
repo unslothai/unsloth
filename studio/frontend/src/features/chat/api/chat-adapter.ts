@@ -35,6 +35,7 @@ import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/ll
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
+  IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
   isSandboxFileList,
@@ -299,6 +300,12 @@ import {
   useResearchRunStore,
   watchResearchRun,
 } from "../stores/research-run-store";
+import {
+  documentCitationToSource,
+  isSafeNavigableSourceUrl,
+  parseSourcesFromResult,
+} from "../utils/document-citation-source";
+import { mergeGoogleNativeParts } from "../utils/google-native-parts";
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
@@ -660,118 +667,6 @@ async function updateStoredChatThreadEventually(
     if (updated) return;
     await wait(50);
   }
-}
-
-/** Return `raw` when it is a safe http(s) URL, else "": rejects CR/LF and javascript:/data:/
- *  vbscript: so provider strings cannot land in an <a href>. */
-function isSafeNavigableSourceUrl(raw: unknown): string {
-  if (typeof raw !== "string") return "";
-  const value = raw.trim();
-  if (!value || /[\r\n]/.test(value)) return "";
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return value;
-    }
-  } catch {
-  }
-  return "";
-}
-
-/** Convert an Anthropic document citation dict into a Sources-panel source. */
-function documentCitationToSource(
-  cit: Record<string, unknown>,
-  fallbackIdx: number,
-): {
-  type: "source";
-  sourceType: "url";
-  id: string;
-  url: string;
-  title: string;
-  metadata?: { description: string };
-} | null {
-  const source = typeof cit.source === "string" && cit.source ? cit.source : "";
-  const docTitle =
-    (typeof cit.document_title === "string" && cit.document_title) ||
-    (typeof cit.title === "string" && cit.title) ||
-    "";
-  const docIndex =
-    typeof cit.document_index === "number" ? cit.document_index : undefined;
-  // search_result_location `source` can be a free-form id or a hostile scheme; fall back to a
-  // doc anchor unless it is real http(s).
-  const url =
-    isSafeNavigableSourceUrl(source) ||
-    `#anthropic-doc-${docIndex ?? fallbackIdx}`;
-  const title = docTitle || source || `Document ${fallbackIdx + 1}`;
-  const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
-  const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
-  // Anthropic numbers inline [N] per citation, so fold citation type and position into the id.
-  const citationType = typeof cit.type === "string" ? String(cit.type) : "";
-  const positionParts = [
-    cit.search_result_index,
-    cit.start_char_index,
-    cit.end_char_index,
-    cit.start_page_number,
-    cit.end_page_number,
-    cit.start_block_index,
-    cit.end_block_index,
-  ]
-    .filter((v) => typeof v === "number")
-    .map((v) => String(v))
-    .join(":");
-  const idAnchor = positionParts
-    ? `${citationType}:${positionParts}`
-    : `${citationType}:${fallbackIdx}`;
-  const id = `${url}#${idAnchor}`;
-  return {
-    type: "source" as const,
-    sourceType: "url" as const,
-    id,
-    url,
-    title,
-    ...(description ? { metadata: { description } } : {}),
-  };
-}
-
-/** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
-function parseSourcesFromResult(raw: string): {
-  type: "source";
-  sourceType: "url";
-  id: string;
-  url: string;
-  title: string;
-  metadata?: { description: string };
-}[] {
-  if (!raw) return [];
-  const blocks = raw.split(/\n---\n/).filter(Boolean);
-  const sources: {
-    type: "source";
-    sourceType: "url";
-    id: string;
-    url: string;
-    title: string;
-    metadata?: { description: string };
-  }[] = [];
-  for (const block of blocks) {
-    const titleMatch = block.match(/Title:\s*(.+)/);
-    const urlMatch = block.match(/URL:\s*(.+)/);
-    const snippetMatch = block.match(/Snippet:\s*(.+)/);
-    if (titleMatch && urlMatch) {
-      // Provider output is attacker-controllable: a non-http(s) URL must not reach the Sources panel <a href>.
-      const url = isSafeNavigableSourceUrl(urlMatch[1]);
-      if (!url) continue;
-      const snippet = snippetMatch?.[1]?.trim();
-      sources.push({
-        type: "source" as const,
-        sourceType: "url" as const,
-        id: url,
-        url,
-        title: titleMatch[1].trim(),
-        ...(snippet ? { metadata: { description: snippet } } : {}),
-      });
-    }
-  }
-  return sources;
 }
 
 function estimateTokenCount(text: string): number | undefined {
@@ -5241,6 +5136,9 @@ export function createOpenAIStreamAdapter(
         [key: string]: unknown;
       };
       type PositionedToolCallPart = ToolCallMessagePart & {
+        backendToolCallId?: string;
+        generationToolCallId?: string;
+        toolApprovalId?: string;
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
@@ -6675,6 +6573,15 @@ export function createOpenAIStreamAdapter(
                     toolEvent.arguments_text,
                     toolArgs,
                   );
+                  const toolIdentity = {
+                    backendToolCallId,
+                    ...(generationRunId
+                      ? {
+                          generationToolCallId: `${generationRunId}:${generationSeq}`,
+                        }
+                      : {}),
+                    ...(approvalId ? { toolApprovalId: approvalId } : {}),
+                  };
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6684,6 +6591,7 @@ export function createOpenAIStreamAdapter(
                     ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
                       ...existing,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
@@ -6696,6 +6604,7 @@ export function createOpenAIStreamAdapter(
                     toolCallParts.push({
                       type: "tool-call" as const,
                       toolCallId: id,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
@@ -6759,7 +6668,14 @@ export function createOpenAIStreamAdapter(
                         ? extractSearchImages(rawResult)
                         : { text: rawResult, images: [] as SearchImageEntry[] };
                     const imgMarker = "\n__IMAGES__:";
-                    const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    // Same rule again. The backend keeps this line for the model when the tool is not one that
+                    // emits the envelope, so the card keeps it too, rather than hiding it and fetching a
+                    // sandbox file that was never written.
+                    const imgIdx = IMAGE_SENTINEL_TOOLS.has(
+                      toolCallParts[idx].toolName ?? "",
+                    )
+                      ? rawResult.lastIndexOf(imgMarker)
+                      : -1;
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
                     const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
@@ -6858,86 +6774,12 @@ export function createOpenAIStreamAdapter(
                       typeof toolEvent.arguments === "object"
                         ? (toolEvent.arguments as ToolCallMessagePart["args"])
                         : undefined;
-                    const mergedArgs: ToolCallMessagePart["args"] = {
-                      ...(toolCallParts[idx].args ?? {}),
-                      ...(nextArgs ?? {}),
-                    } as ToolCallMessagePart["args"];
+                    const mergedArgs = mergeGoogleNativeParts(
+                      { ...(toolCallParts[idx].args ?? {}), ...(nextArgs ?? {}) },
+                      toolEvent.google,
+                    ) as ToolCallMessagePart["args"];
                     const overwrittenArgumentKeys =
                       nextArgs !== undefined ? Object.keys(nextArgs) : [];
-                    // Merge tool_end native_part into args.google so the
-                    // outbound translator replays both start (executableCode)
-                    // and end (result / inlineData) on the same turn.
-                    // Concatenate so each part keeps its own thoughtSignature.
-                    const endGoogle = (
-                      toolEvent as { google?: { native_part?: unknown } }
-                    ).google;
-                    if (
-                      endGoogle &&
-                      typeof endGoogle === "object" &&
-                      endGoogle.native_part &&
-                      typeof endGoogle.native_part === "object"
-                    ) {
-                      const argsObj = mergedArgs as Record<string, unknown>;
-                      const existingGoogle = (argsObj.google ?? {}) as Record<
-                        string,
-                        unknown
-                      >;
-                      const existingNative =
-                        (existingGoogle.native_part as Record<
-                          string,
-                          unknown
-                        >) ?? {};
-                      const endNative = endGoogle.native_part as Record<
-                        string,
-                        unknown
-                      >;
-                      // Extract part entries from parts:[...] or a legacy single-object native_part; a legacy
-                      // thoughtSignature always belongs on executableCode.
-                      const collectParts = (
-                        native: Record<string, unknown>,
-                      ): Record<string, unknown>[] => {
-                        if (Array.isArray(native.parts)) {
-                          return (native.parts as unknown[]).filter(
-                            (entry): entry is Record<string, unknown> =>
-                              Boolean(entry) &&
-                              typeof entry === "object" &&
-                              !Array.isArray(entry),
-                          );
-                        }
-                        const out: Record<string, unknown>[] = [];
-                        const legacySig =
-                          typeof native.thoughtSignature === "string"
-                            ? native.thoughtSignature
-                            : typeof native.thought_signature === "string"
-                              ? (native.thought_signature as string)
-                              : null;
-                        for (const key of [
-                          "executableCode",
-                          "codeExecutionResult",
-                          "inlineData",
-                        ] as const) {
-                          const sub = native[key];
-                          if (sub && typeof sub === "object") {
-                            const entry: Record<string, unknown> = {
-                              [key]: sub,
-                            };
-                            if (key === "executableCode" && legacySig) {
-                              entry.thoughtSignature = legacySig;
-                            }
-                            out.push(entry);
-                          }
-                        }
-                        return out;
-                      };
-                      const mergedParts = [
-                        ...collectParts(existingNative),
-                        ...collectParts(endNative),
-                      ];
-                      argsObj.google = {
-                        ...existingGoogle,
-                        native_part: { parts: mergedParts },
-                      };
-                    }
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;

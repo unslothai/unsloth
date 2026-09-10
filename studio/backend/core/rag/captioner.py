@@ -179,6 +179,7 @@ def caption_images(
     *,
     endpoint: tuple[str, str] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    on_caption: Callable[[object], None] | None = None,
 ) -> dict[int, list[str]]:
     """Caption ``ParsedImage`` objects, keyed by 1-based page number; ``{}`` when there
     are no images or no vision model. The caller (`ingestion._run`) owns the on/off
@@ -199,6 +200,8 @@ def caption_images(
         if caption:
             page = getattr(img, "page_number", None) or 0
             out.setdefault(int(page), []).append(_collapse_runaway(caption))
+            if on_caption is not None:
+                on_caption(img)
         if on_progress is not None:
             on_progress(index, len(selected))
     return out
