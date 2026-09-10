@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Static registry of supported external LLM providers.
-
-All providers expose OpenAI-compatible /v1/chat/completions endpoints
-with Bearer token auth and SSE streaming.
-"""
+"""Static registry of supported external LLM providers. All expose OpenAI-compatible
+/v1/chat/completions endpoints with Bearer token auth and SSE streaming."""
 
 import ipaddress
 import os
@@ -447,12 +443,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
-    """Return the registry entry for a provider type, or None if unknown."""
     return PROVIDER_REGISTRY.get(provider_type)
 
 
 def get_base_url(provider_type: str) -> str | None:
-    """Return the default base URL for a provider type."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
 
@@ -460,18 +454,16 @@ def get_base_url(provider_type: str) -> str | None:
 def provider_runs_local_tools(provider_type: str | None) -> bool:
     """Whether Unsloth may run its own tool loop against this provider type.
 
-    Unsloth's tools (web_search, python, terminal, MCP, knowledge-base search)
-    execute on the Unsloth host, so any provider whose wire format can carry a
-    tool schema out and a tool result back can use them. That is the whole
-    OpenAI-compatible family plus Gemini, whose native shape is translated to
-    and from OpenAI chunks in ``external_provider.py``.
+    Unsloth's tools (web_search, python, terminal, MCP, knowledge-base search) execute on the
+    Unsloth host, so any provider whose wire format can carry a tool schema out and a tool result
+    back can use them: the whole OpenAI-compatible family plus Gemini, whose native shape is
+    translated to and from OpenAI chunks in ``external_provider.py``.
 
-    Anthropic is deliberately absent: ``_stream_anthropic`` only appends
-    Anthropic's own hosted builtins and never forwards a caller's function-tool
-    schemas, so the loop would advertise a catalog the model never sees.
-    Enabling it needs OpenAI -> Anthropic schema translation plus tool_use /
-    tool_result message replay, which is separate work. Anthropic keeps its
-    hosted web_search, web_fetch and code_execution meanwhile.
+    Anthropic is deliberately absent: ``_stream_anthropic`` only appends Anthropic's own hosted
+    builtins and never forwards a caller's function-tool schemas, so the loop would advertise a
+    catalog the model never sees. Enabling it needs OpenAI -> Anthropic schema translation plus
+    tool_use / tool_result message replay, which is separate work. Anthropic keeps its hosted
+    web_search, web_fetch and code_execution meanwhile.
     """
     # isinstance, not a truthiness check: the value reaches here straight from a
     # request body, and a list or dict key raises TypeError inside dict.get, which
@@ -657,24 +649,16 @@ def _metadata_host(hostname: str) -> bool:
     return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
-# The block above only reads the hostname text, so a caller-controlled name
-# (metadata-alias.attacker.test IN A 169.254.169.254) dials the very service it
-# exists to refuse. Names are resolved on the default path too, but only far
-# enough to answer "is this metadata"; refusing other private addresses stays
-# opt-in. Three things keep that lookup off the endpoints people configure:
-#   * registry hosts and IP literals skip it, so a real provider or
-#     http://127.0.0.1:11434 touches no resolver;
-#   * a name that does not resolve is allowed -- http://my_ollama:11434 may only
-#     resolve in the client's network namespace, not in this one;
-#   * it is bounded and cached, so a dead resolver cannot stall each request.
-#     A client is built per request and the route validates the same URL again,
-#     so the cache is what keeps a request to one lookup.
-# Short on purpose. This validator is sync and called from async handlers, so
-# the wait is the event loop's wait, and every millisecond of it is shared by
-# every concurrent request. A provider hostname that a resolver can answer at
-# all is answered well inside this; past it the answer is treated as unknown,
-# which the default path allows and the opt-in path re-asks for without a bound.
-# So a longer deadline buys accuracy for nobody and costs latency for everyone.
+# The block above only reads the hostname text, so a caller-controlled name (metadata-alias.attacker.test IN A
+# 169.254.169.254) dials the very service it exists to refuse. Names are resolved on the default path too, but only
+# far enough to answer "is this metadata"; refusing other private addresses stays opt-in. Three things keep that
+# lookup off the endpoints people configure: registry hosts and IP literals skip it, so a real provider or
+# http://127.0.0.1:11434 touches no resolver; a name that does not resolve is allowed, since http://my_ollama:11434
+# may only resolve in the client's network namespace; and it is bounded and cached, so a dead resolver cannot stall
+# each request. The deadline is short on purpose: this validator is sync and called from async handlers, so the wait
+# is the event loop's wait, shared by every concurrent request. A provider hostname a resolver can answer at all is
+# answered well inside it; past it the answer is treated as unknown, which the default path allows and the opt-in path
+# re-asks for without a bound.
 _DNS_TIMEOUT_SECONDS = 0.5
 _DNS_CACHE_TTL_SECONDS = 300.0
 _DNS_CACHE_MAX_ENTRIES = 512
@@ -682,19 +666,13 @@ _DNS_CACHE_MAX_ENTRIES = 512
 # timeout are both cheap to repeat and wrong to remember.
 _dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 _dns_cache_lock = threading.Lock()
-# A lookup that times out is abandoned, not cancelled, so its thread lives until
-# the platform resolver gives up. Rotating hostnames defeat the cache and would
-# otherwise pile those up one per request, so the number in flight is capped and
-# a caller waits its turn up to the same deadline rather than being waved
-# through the moment the pool is busy.
-#
-# Saturating the pool still ends in "no answer", which the default path allows.
-# That is the same decision this file makes for a lookup that times out, and it
-# is deliberate: refusing instead would mean any resolver trouble, or any caller
-# willing to stall a few lookups, could stop the operator configuring a provider
-# at all. The check is a bound on what a caller-supplied URL may resolve to, not
-# a guarantee about what the socket will later connect to -- see the transport
-# note on _resolve_host.
+# A lookup that times out is abandoned, not cancelled, so its thread lives until the platform resolver gives up.
+# Rotating hostnames defeat the cache and would otherwise pile those up one per request, so the number in flight is
+# capped and a caller waits its turn up to the same deadline rather than being waved through the moment the pool is
+# busy. Saturating the pool still ends in "no answer", which the default path allows: refusing instead would mean any
+# resolver trouble, or any caller willing to stall a few lookups, could stop the operator configuring a provider at
+# all. The check is a bound on what a caller-supplied URL may resolve to, not a guarantee about what the socket will
+# later connect to; see the transport note on _resolve_host.
 _DNS_MAX_IN_FLIGHT = 32
 _dns_in_flight = threading.BoundedSemaphore(_DNS_MAX_IN_FLIGHT)
 
@@ -941,15 +919,14 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     """Return registered providers (for the /registry endpoint).
 
     Hidden entries exist only for backend lookups and are surfaced by the UI via
-    ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown, so they stay filtered
-    out by default. That default is load-bearing for upgrades: a browser holding
-    a cached bundle from before this capability existed has no idea to filter on
-    ``hidden``, and would render the self-hosted presets as duplicate dropdown
-    entries.
+    ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown, so they stay filtered out by default. That
+    default is load-bearing for upgrades: a browser holding a cached bundle from before this
+    capability existed has no idea to filter on ``hidden``, and would render the self-hosted presets
+    as duplicate dropdown entries.
 
-    ``include_hidden`` is how a client that does know says so. The self-hosted
-    presets are exactly the ones that run Unsloth's tools, so their capability
-    has to reach a frontend that asks for it, and asking is opt-in.
+    ``include_hidden`` is how a client that does know says so. The self-hosted presets are exactly
+    the ones that run Unsloth's tools, so their capability has to reach a frontend that asks for it,
+    and asking is opt-in.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():

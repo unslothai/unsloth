@@ -162,8 +162,9 @@ jobs:
           }
           if ($seen.TempLibraries) {
               $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }
-              throw ("the installer left {0} DLL(s) in a temporary directory. Even without a " +
-                     "compiler process this is the artefact half of the same shape." -f `
+              throw ("the installer wrote {0} DLL(s) into a temporary directory. Even without a " +
+                     "compiler process this is the artefact half of the same shape. Cleaning one " +
+                     "up does not clear it: the watcher records the creation." -f `
                      $seen.TempLibraries.Count)
           }
           Write-Host "no compiler, no temporary DLL"
@@ -232,7 +233,7 @@ jobs:
           }
           if ($seen.TempLibraries) {
               $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }
-              throw "the desktop-mode installer left $($seen.TempLibraries.Count) DLL(s) in a temporary directory."
+              throw "the desktop-mode installer wrote $($seen.TempLibraries.Count) DLL(s) into a temporary directory."
           }
           Write-Host "desktop mode: no compiler, no temporary DLL"
 
