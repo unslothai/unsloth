@@ -962,3 +962,53 @@ def test_the_moe_fallback_grades_its_boundary_block_like_the_dense_arm():
     assert moved(down // 2) == 3 * whole + down
     assert moved(down + gate // 2) == 3 * whole + down + gate
     assert moved(down + gate + 1) == 4 * whole
+
+
+def swa_split_layout() -> ModelLayout:
+    """A gemma-class model: some layers window-bound, the rest full-context."""
+    return replace(dense_layout(), arch = "gemma4", has_swa = True, n_ctx_train = 131072)
+
+
+def test_the_windowed_fallback_charges_only_the_live_prefix_of_the_global_layers():
+    """A windowed cache is two caches. Charging the whole reservation as decode traffic
+    priced the full-attention layers' entire n_ctx at Access.KV_CACHE's 20.1x although only
+    the live prefix is ever read, and that overcharge flipped the gate toward accepting a
+    losing spill."""
+    layout = swa_split_layout()
+    n_ctx, floor, windowed = 131072, 5 * GIB, 4 * GIB
+    shape = dict(workload_prompt_tokens = 2048, workload_generated_tokens = 0)
+    args = dict(quantised = False, kv_bytes_floor = floor, kv_on_host = False)
+    whole = _fit_fallback_placement(layout, gated(**shape), 8 * GIB, n_ctx, **args)
+    split = _fit_fallback_placement(
+        layout, gated(kv_swa_bytes_floor = windowed, **shape), 8 * GIB, n_ctx, **args
+    )
+    assert whole is not None and split is not None
+    assert whole.kv_host_bytes > 0
+    # Both arms move the same layers: only the RATE the moved cache is charged at changes.
+    live = (4 + 1 / 64) / 5
+    assert abs(split.kv_host_bytes / whole.kv_host_bytes - live) < 0.001
+
+
+def test_the_windowed_split_moves_the_gate_verdict():
+    """The honest direction: a cheaper fitter is harder to beat, so a spill that only won on
+    the overcharge is now declined."""
+    layout = swa_split_layout()
+    n_ctx, floor, windowed = 131072, 5 * GIB, 4 * GIB
+    # The margin brackets the two fit scores rather than the card size, which moves a whole
+    # block at a time and cannot resolve them.
+    shape = dict(host = HostProfile(threads = 6), min_penalty_reduction = 0.80)
+    card = [25 * GIB]
+    accepted = plan_placement(
+        layout, card, 200 * GIB, n_ctx, kv_bytes_floor = floor, opts = gated(**shape)
+    )
+    declined = plan_placement(
+        layout,
+        card,
+        200 * GIB,
+        n_ctx,
+        kv_bytes_floor = floor,
+        opts = gated(kv_swa_bytes_floor = windowed, **shape),
+    )
+    assert accepted.spills_anything, accepted.reason
+    assert not declined.spills_anything and declined.declined_by_gate, declined.reason
+    assert declined.predicted_fit_request_ms < accepted.predicted_fit_request_ms

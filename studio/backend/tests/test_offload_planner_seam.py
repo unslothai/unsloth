@@ -2851,3 +2851,14 @@ def test_the_compute_reserve_reaches_the_planner_priced_per_context(monkeypatch)
     seen.clear()
     _plan(_Stub(), free_mib = 14 * 1024, ctx_compute = 512 * MIB)
     assert seen["opts"].overhead_bytes_at is None
+
+
+def test_the_windowed_half_of_the_cache_reaches_the_planner(monkeypatch):
+    """The planner charges a saturated window in full and the full-context layers only over
+    their live prefix, and a summed total cannot be decomposed after the fact: the seam has
+    to hand the split over."""
+    opts, _ = _captured_opts(monkeypatch, _Stub(), free_mib = 14 * 1024, kv_swa_bytes = 2 * GIB)
+    assert opts.kv_swa_bytes_floor == 2 * GIB
+
+    plain, _ = _captured_opts(monkeypatch, _Stub(), free_mib = 14 * 1024)
+    assert plain.kv_swa_bytes_floor == 0, "a snapshot from before this field plans as it did"

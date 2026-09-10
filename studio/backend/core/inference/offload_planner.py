@@ -196,6 +196,9 @@ class PlanOptions:
     n_parallel: int = 1
     min_parallel: int = 1
     kv_bytes_floor_by_parallel: Mapping[int, int] = field(default_factory = dict)
+    # The window-bound part of ``kv_bytes_floor`` at the requested context and slot count.
+    # 0 means "unknown", which keeps the whole floor charged as live.
+    kv_swa_bytes_floor: int = 0
     kv_bytes_at: Optional[Callable[[int, int], int]] = None
     overhead_bytes_at: Optional[Callable[[int], int]] = None
     n_ubatch_by_parallel: Mapping[int, int] = field(default_factory = dict)
@@ -659,9 +662,13 @@ def _fit_fallback_placement(
     floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
     if kv_on_host:
         kv_live_total = 0
+    elif layout.has_swa and kv_bytes_floor > 0 and opts.kv_swa_bytes_floor > 0:
+        # A saturated window is read in full, but the full-context layers are RESERVED at
+        # n_ctx and only their live prefix is ever read.
+        swa_part = min(max(0, opts.kv_swa_bytes_floor), kv_total)
+        kv_live_total = swa_part + int((kv_total - swa_part) * live_tokens / max(1, n_ctx))
     elif layout.has_swa and kv_bytes_floor > 0:
-        # The measured floor of a windowed cache is context-FLAT once the window is saturated,
-        # and the layout does not say how it splits between windowed and full-context layers.
+        # No split supplied, and the layout cannot say which half is which.
         kv_live_total = kv_total
     else:
         kv_live_total = int(cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale)
