@@ -1555,9 +1555,16 @@ class VideoBackend:
                 speed_mode = kwargs.get("speed_mode"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
             )
+            # A conventional load seeds only what _video_auto_denoiser_scheme returns (None under speed_mode="off" even
+            # for an explicit scheme); the raw request would drop dense shards the load then tops up inline, outside the
+            # plan's progress, cancel and disk preflight. The modular path honours the raw request, so it keeps it.
+            conventional_denoiser = kind == "pipeline" and not getattr(
+                fam, "modular_workflow", None
+            )
+            requested_denoiser = None if conventional_denoiser else kwargs.get("transformer_quant")
             skip_transformer_weights = self._denoiser_prequant_verified(
                 fam,
-                h3_auto_denoiser or video_auto_denoiser or kwargs.get("transformer_quant"),
+                h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
                 base,
                 kwargs.get("h3_task"),
                 kwargs.get("hf_token"),
@@ -2919,17 +2926,20 @@ class VideoBackend:
             )
             or transformer_quant
         )
-        transformer_quant = (
-            self._video_planned_auto_denoiser_scheme(
-                fam,
-                base = base,
-                kind = kind,
-                transformer_quant = transformer_quant,
-                speed_mode = load_kwargs.get("speed_mode"),
-                gpu_ordinal = load_kwargs.get("gpu_ordinal"),
-            )
-            or transformer_quant
+        video_planned = self._video_planned_auto_denoiser_scheme(
+            fam,
+            base = base,
+            kind = kind,
+            transformer_quant = transformer_quant,
+            speed_mode = load_kwargs.get("speed_mode"),
+            gpu_ordinal = load_kwargs.get("gpu_ordinal"),
         )
+        if kind == "pipeline" and not getattr(fam, "modular_workflow", None):
+            # The planned scheme IS the conventional seed decision (None under speed_mode="off" even for an explicit
+            # request), so a raw-request fallback would stage an artifact and drop shards the load then opens neither of.
+            transformer_quant = video_planned
+        else:
+            transformer_quant = video_planned or transformer_quant
         # Only the header tells an LTX-2.3 checkpoint from 2.0 and it is not on disk yet, so narrow the base pull by
         # NAME: a wrong guess costs an inline pull, the wide base list costs gigabytes.
         ltx23 = self._pick_looks_like_ltx23(fam, repo_id, gguf_filename, kind)

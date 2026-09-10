@@ -159,6 +159,40 @@ def resolve_build_policy(
     return resolved, None
 
 
+def prequant_filename_task(component: str) -> Optional[str]:
+    """The ``prequant_filenames`` task slot for ``component``: None for the default denoiser (the
+    task-agnostic row), the component name otherwise, as ``denoiser_prequant_sources`` asks."""
+    part = (component or "").strip()
+    return None if not part or part == DEFAULT_COMPONENT else part
+
+
+def families_sharing_prequant_repo(fam: Any, scheme: str, repo_id: str) -> tuple[str, ...]:
+    """Other families publishing into ``repo_id`` for ``scheme``: they derive the SAME
+    ``<Model>-<SCHEME>.pt`` name (HunyuanVideo-1.5 480p and 720p), so one would publish over the other."""
+    from core.inference.diffusion_families import _FAMILIES as image_families
+    from core.inference.video_families import _FAMILIES as video_families
+
+    names: list[str] = []
+    for other in tuple(image_families) + tuple(video_families):
+        if getattr(other, "name", None) == getattr(fam, "name", None):
+            continue
+        hosted = [
+            (entry[0], entry[1])
+            for entry in (getattr(other, "prequant_repos", ()) or ())
+            if len(entry) == 2
+        ]
+        hosted += [
+            (entry[1], entry[2])
+            for entry in (getattr(other, "prequant_variant_repos", ()) or ())
+            if len(entry) == 3
+        ]
+        if any(
+            entry_scheme == scheme and entry_repo == repo_id for entry_scheme, entry_repo in hosted
+        ):
+            names.append(str(getattr(other, "name", other)))
+    return tuple(names)
+
+
 def upload_destination(
     fam: Any,
     scheme: str,
@@ -174,33 +208,51 @@ def upload_destination(
     ``<Model>-<SCHEME>.pt`` second, so a ROTATED artifact published under the legacy
     ``transformer_<scheme>.pt`` is either never resolved at all, or resolved as the fallback by a
     build too old to honour the rotation, which then refuses the v2 tag and drops to the dense
-    download. A rotated build therefore goes to the declared name or nowhere.
+    download. A rotated build therefore goes to the name declared for the COMPONENT it built, or
+    nowhere: the task-agnostic row is the first expert's file.
 
-    A plain build publishes under the derived ``<Model>-<SCHEME>.pt``, which is the name the
-    loader asks for FIRST and the layout every hosted prequant repo already uses; the legacy
-    ``transformer_<scheme>.pt`` stays resolvable as the loader's fallback for the repos that only
-    ever carried it. A non-default ``--component`` becomes part of the name
+    A plain build publishes under the derived ``<Model>-<SCHEME>.pt``, the layout every hosted
+    prequant repo already uses and one the loader still resolves as its fallback; the legacy
+    ``transformer_<scheme>.pt`` stays resolvable behind it for the repos that only ever carried it.
+    A non-default ``--component`` becomes part of the name
     (``Wan2.2-T2V-A14B-transformer_2-NVFP4.pt``): the second expert is a different set of weights
     under the same family, scheme and base, so one name per component is the only thing keeping a
-    resolver from serving expert 1 where expert 2 was asked for."""
+    resolver from serving expert 1 where expert 2 was asked for.
+    The derived name identifies the artifact only while ONE family publishes into the repo; where
+    several do, the plain build takes the declared name too, or is refused."""
     if override:
         return override
+    from core.inference.diffusion_families import family_prequant_filename
+
+    task = prequant_filename_task(component)
+    preferred = family_prequant_filename(fam, scheme, task = task)
+    if task and preferred == family_prequant_filename(fam, scheme):
+        # An unmatched task slot falls back to the FIRST component's row: read that as undeclared.
+        preferred = None
     if not rotated:
         from core.inference.diffusion_prequant import prequant_repo_filename
+
         if not repo_id:
             raise ValueError(
                 "a plain build's filename derives from the destination repo, so publishing "
                 "needs --upload-repo (or an explicit --upload-filename)"
             )
-        return prequant_repo_filename(repo_id, scheme, component = component)
-    from core.inference.diffusion_families import family_prequant_filename
-
-    preferred = family_prequant_filename(fam, scheme)
+        shared = families_sharing_prequant_repo(fam, scheme, repo_id)
+        if not shared:
+            return prequant_repo_filename(repo_id, scheme, component = component)
+        if not preferred:
+            raise ValueError(
+                f"{repo_id} also hosts {', '.join(shared)} for {scheme!r}, so the derived "
+                f"filename names both and family {getattr(fam, 'name', fam)!r} declares no "
+                f"prequant_filenames entry for ({scheme!r}, {task!r}) to publish under. Add the "
+                "entry to the family table, or pass --upload-filename."
+            )
+        return preferred
     if not preferred:
         raise ValueError(
             f"family {getattr(fam, 'name', fam)!r} declares no prequant_filenames entry for "
-            f"{scheme!r}, so a rotated checkpoint has no name the loader would ask for. Add the "
-            "entry to the family table, or pass --upload-filename."
+            f"({scheme!r}, {task!r}), so a rotated checkpoint has no name the loader would ask "
+            "for. Add the entry to the family table, or pass --upload-filename."
         )
     return preferred
 
@@ -543,22 +595,32 @@ def gptq_sources(
     """Where one component's GPTQ weights, Hessian meta and do-no-harm scores live.
 
     A MoE family writes per-component paths and a single-denoiser family does not; both layouts are
-    probed rather than declared, so the same --gptq-dir serves either."""
+    probed rather than declared, so the same --gptq-dir serves either. The FLAT layout is the default
+    component's alone: the experts share every fqn and shape, so expert 1's correction would load
+    into expert 2 and pass every check."""
     root = str(gptq_dir).rstrip("/")
+    flat_ok = component == DEFAULT_COMPONENT
     per_component = os.path.join(root, "weights", component)
-    weights = per_component if exists(per_component) else os.path.join(root, "weights")
+    weights = (
+        per_component if exists(per_component) or not flat_ok else os.path.join(root, "weights")
+    )
     meta = meta_override
     if not meta:
         named = os.path.join(root, f"gptq_meta_{component}.json")
-        meta = named if exists(named) else os.path.join(root, "gptq_meta.json")
+        meta = named if exists(named) or not flat_ok else os.path.join(root, "gptq_meta.json")
     score = score_override
     if not score:
-        for candidate in (
-            f"gptq_score_{component}.json",
-            "gptq_score.json",
-            f"gptq_check_{component}.json",
-            "gptq_check.json",
-        ):
+        candidates = (
+            (f"gptq_score_{component}.json", f"gptq_check_{component}.json")
+            if not flat_ok
+            else (
+                f"gptq_score_{component}.json",
+                "gptq_score.json",
+                f"gptq_check_{component}.json",
+                "gptq_check.json",
+            )
+        )
+        for candidate in candidates:
             path = os.path.join(root, candidate)
             if exists(path):
                 score = path

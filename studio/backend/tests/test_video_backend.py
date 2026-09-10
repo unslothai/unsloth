@@ -9166,6 +9166,69 @@ def test_base_download_files_keeps_the_h3_partition_default():
 
 def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
     """The download plan stages both experts' artifacts."""
+    import core.inference.video as video_mod
+    import core.inference.video_denoiser_prequant as dq
+
+    _plan_api(
+        monkeypatch,
+        {
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers": [
+                _PlanSibling("model_index.json", 1000),
+                _PlanSibling("transformer/config.json", 1000),
+                _PlanSibling("transformer/diffusion_pytorch_model.safetensors", 28_000_000_000),
+                _PlanSibling("transformer_2/config.json", 1000),
+                _PlanSibling("transformer_2/diffusion_pytorch_model.safetensors", 28_000_000_000),
+                _PlanSibling("text_encoder/model-00001-of-00001.safetensors", 11_000_000_000),
+                _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
+            ],
+            "unsloth/Wan2.2-T2V-A14B-NVFP4": [
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+            ],
+        },
+    )
+    sources = {
+        "transformer": types.SimpleNamespace(
+            kind = "repo",
+            location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
+            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            fallback_filename = None,
+        ),
+        "transformer_2": types.SimpleNamespace(
+            kind = "repo",
+            location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            fallback_filename = None,
+        ),
+    }
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    # The plan asks the LOAD's own seed question, which reads the device this pick would land on.
+    # Pinned here so the staging assertions below do not depend on the test host's card.
+    monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
+
+    plan = VideoBackend().download_plan(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+    )
+
+    staged = {f for e in plan["entries"] for f in e["files"]}
+    assert "Wan2.2-T2V-A14B-NVFP4.pt" in staged
+    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt" in staged
+    assert not any(
+        f.endswith("diffusion_pytorch_model.safetensors") and f.startswith("transformer")
+        for f in staged
+    )
+    assert "transformer/config.json" in staged and "transformer_2/config.json" in staged
+    assert (
+        plan["required_bytes"]
+        == 8_000_000_000 + 8_100_000_000 + 1000 * 3 + 11_000_000_000 + 500_000_000
+    )
+
+
+def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatch):
+    """speed_mode="off" declines the conventional seed for an EXPLICIT scheme too, so the plan
+    stages the dense shards rather than a replacement the load refuses to install."""
     import core.inference.video_denoiser_prequant as dq
 
     _plan_api(
@@ -9206,17 +9269,10 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
         "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         model_kind = "pipeline",
         transformer_quant = "nvfp4",
+        speed_mode = "off",
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert "Wan2.2-T2V-A14B-NVFP4.pt" in staged
-    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt" in staged
-    assert not any(
-        f.endswith("diffusion_pytorch_model.safetensors") and f.startswith("transformer")
-        for f in staged
-    )
-    assert "transformer/config.json" in staged and "transformer_2/config.json" in staged
-    assert (
-        plan["required_bytes"]
-        == 8_000_000_000 + 8_100_000_000 + 1000 * 3 + 11_000_000_000 + 500_000_000
-    )
+    assert "transformer/diffusion_pytorch_model.safetensors" in staged
+    assert "transformer_2/diffusion_pytorch_model.safetensors" in staged
+    assert not any(f.endswith(".pt") for f in staged)
