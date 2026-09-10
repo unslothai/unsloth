@@ -108,7 +108,12 @@ def _provider_recipe(endpoint: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    "endpoint", (*_PRIVATE_ENDPOINTS, "http://169.254.169.254/latest", "http://[::1]:11434/v1")
+    "endpoint",
+    (
+        *(e.replace("http://", "https://") for e in _PRIVATE_ENDPOINTS),
+        "https://169.254.169.254/latest",
+        "https://[::1]:11434/v1",
+    ),
 )
 def test_managed_recipe_model_provider_must_be_public(endpoint):
     """The engine dials providers itself, so a managed recipe cannot point one at loopback or the LAN."""
