@@ -1132,13 +1132,17 @@ class FluxSingleTransformerBlock(_Block):
 
 class _MergingByArgOrderA(_Block):
     def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)  # noqa: F821
+        import torch  # source fixture: only the text is read
+
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
         return hidden_states, encoder_hidden_states
 
 
 class _MergingByArgOrderB(_Block):
     def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
-        hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim = 1)  # noqa: F821
+        import torch  # source fixture: only the text is read
+
+        hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim = 1)
         return hidden_states, encoder_hidden_states
 
 
