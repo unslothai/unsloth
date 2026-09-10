@@ -55,6 +55,8 @@ on:
       - 'install.ps1'
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - 'pyproject.toml'
       # --local also runs the checkout's setup scripts (install.sh picks
       # $_REPO_ROOT/studio/setup.sh, the editable install resolves setup.ps1 to the
@@ -128,6 +130,12 @@ jobs:
       # tests/studio/test_frontend_dist_cache.py derives this from the `on:` block rather
       # than allowlisting the filename, so adding `push:` here without adding the save --
       # or adding the save without the trigger -- goes red.
+      # The uv download cache the producers fill on main. No push and no schedule here,
+      # so this workflow only ever consumes it (as the dist restore below argues).
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
       - name: Restore the built frontend
         id: fe-dist
         uses: ./.github/actions/frontend-dist-restore
@@ -157,6 +165,14 @@ jobs:
         with:
           cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
           key: ${{ steps.fe-dist.outputs.key }}
+          save: 'false'
+
+      # No upload, for the reason the dist save above gives: nothing here runs on main.
+      - name: Declare this job a uv cache consumer, not a producer
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
           save: 'false'
 
       - name: Profile startup
