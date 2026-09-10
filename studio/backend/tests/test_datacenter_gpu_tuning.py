@@ -942,8 +942,13 @@ def test_auto_fit_launch_does_not_rewrite_an_inherited_device_order(monkeypatch)
     branch = branch[: branch.index("_launch_pinned_ids")]
     pin = 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"'
     assert pin in branch
-    # The pin must stay behind the explicit-pick condition.
-    assert "if gpu_ids:" in branch[: branch.index(pin)]
+    # The pin must stay behind a guard, never unconditional.
+    assert "if _p2p_launch_order_pinned:" in branch[: branch.index(pin)]
+    # And that guard must require an absent inherited mask, which is the point:
+    # an inherited numeric mask is the thing that must not be re-read.
+    start = src.index("_p2p_launch_order_pinned = (")
+    guard = src[start : src.index("\n", src.index("bool(gpu_ids)", start))]
+    assert 'os.environ.get("CUDA_VISIBLE_DEVICES") is None' in guard, guard
 
 
 def test_datacenter_box_warns_once_not_twice(monkeypatch):
@@ -978,3 +983,34 @@ def test_partially_bridged_box_still_needs_a_pinned_order(monkeypatch):
     _use_topo(monkeypatch, TOPO_BRIDGED_4X)
     monkeypatch.delenv("CUDA_DEVICE_ORDER")
     assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+
+
+def test_unmasked_auto_fit_keeps_p2p(monkeypatch):
+    """An Auto load that fits on a subset sets gpu_indices with gpu_ids empty. With
+    no inherited CUDA_VISIBLE_DEVICES there is nothing to reinterpret, so the launch
+    pins PCI_BUS_ID and the flag is kept. Otherwise ordinary Auto loads on
+    B200/H100 NVLink boxes would lose the 33-51% win for nothing."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 4))
+    _use_topo(monkeypatch, TOPO_BRIDGED_4X)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    # Not uniform, so this only passes because the launch can pin the order.
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], launch_order_pinned = True) is None
+
+
+def test_p2p_opt_out_skips_the_topology_probe(monkeypatch):
+    """A user who turned P2P off should not pay the nvidia-smi probe, which can
+    cost the full 10s timeout on a host where it hangs, to decide something they
+    already decided."""
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    probed = []
+    monkeypatch.setattr(
+        LlamaCppBackend, "_nvlink_topology",
+        classmethod(lambda cls, *a, **k: (probed.append(1), None)[1]),
+    )
+    env: dict = {}
+    LlamaCppBackend._apply_datacenter_env(env, [0, 1], p2p_opted_out = True)
+    assert "GGML_CUDA_P2P" not in env
+    assert env["CUDA_SCALE_LAUNCH_QUEUES"] == "4x"
+    assert probed == [], "topology probed despite an explicit opt-out"

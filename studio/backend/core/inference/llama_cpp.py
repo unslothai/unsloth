@@ -9504,10 +9504,16 @@ class LlamaCppBackend:
         if LlamaCppBackend._effective_gpu_count(gpu_indices) > 1:
             # Moves no data between GPUs, so it is not gated on the fabric.
             applied.append(_apply("CUDA_SCALE_LAUNCH_QUEUES", "4x"))
-            veto = LlamaCppBackend._p2p_veto_reason(gpu_indices, launch_order_pinned)
+            # Asked for off: skip the probe rather than pay it. On a host where
+            # nvidia-smi hangs that is up to the full 10s timeout added to the
+            # first load, to decide something the user already decided.
+            veto = (
+                "GGML_CUDA_P2P was turned off in the environment"
+                if p2p_opted_out
+                else LlamaCppBackend._p2p_veto_reason(gpu_indices, launch_order_pinned)
+            )
             if veto is None:
-                if not p2p_opted_out:
-                    applied.append(_apply("GGML_CUDA_P2P", "1"))
+                applied.append(_apply("GGML_CUDA_P2P", "1"))
             elif "GGML_CUDA_P2P" in env:
                 # Truthy and user-supplied: their value stands, but they are
                 # steering into the #10613 failure.
@@ -24160,6 +24166,15 @@ class LlamaCppBackend:
                     and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
 
+                # Whether the child will resolve gpu_indices as the nvidia-smi ids
+                # the P2P gate verifies. The launch below pins PCI_BUS_ID for an
+                # explicit pick, and for an auto-fit selection when no mask was
+                # inherited (nothing to reinterpret). Anything else leaves CUDA on
+                # FASTEST_FIRST, where those ids may name other cards.
+                _p2p_launch_order_pinned = (
+                    bool(gpu_ids) or os.environ.get("CUDA_VISIBLE_DEVICES") is None
+                )
+
                 # Only when the fabric is NOT confirmed: on a verified NV# pair the
                 # flag is the benchmarked configuration, and warning there would
                 # push users off a working optimisation.
@@ -24175,7 +24190,9 @@ class LlamaCppBackend:
                     and self._effective_gpu_count(gpu_indices) > 1
                     and not LlamaCppBackend._warned_no_nvlink
                 ):
-                    _p2p_veto = self._p2p_veto_reason(gpu_indices, bool(gpu_ids))
+                    _p2p_veto = self._p2p_veto_reason(
+                        gpu_indices, _p2p_launch_order_pinned
+                    )
                     if _p2p_veto is not None:
                         LlamaCppBackend._warned_no_nvlink = True
                         logger.warning(
@@ -24200,7 +24217,7 @@ class LlamaCppBackend:
                         gpu_indices,
                         p2p_opted_out = self._p2p_user_opted_out(),
                         # The launch pins PCI_BUS_ID only for an explicit pick.
-                        launch_order_pinned = bool(gpu_ids),
+                        launch_order_pinned = _p2p_launch_order_pinned,
                     )
 
                 # Pin to selected GPU(s) (issue #7164; resolved above into gpu_indices).
@@ -24274,14 +24291,16 @@ class LlamaCppBackend:
                     # the PCI-bus order the picker enumerated, so "GPU 1" in the UI is
                     # GPU 1 to llama.cpp, not CUDA's FASTEST_FIRST default (#5025).
                     #
-                    # Deliberately NOT extended to auto-fit selections. Forcing the
-                    # order there re-interprets an inherited numeric mask: a
-                    # scheduler's CUDA_VISIBLE_DEVICES=0,1 meaning physical 2,0 would
-                    # become physical 0,1, running on a device that was hidden on
-                    # purpose. The P2P gate wants this pin, but not at that price;
-                    # it withholds the flag instead when the order is unpinned
-                    # (see _p2p_veto_reason).
-                    if gpu_ids:
+                    # Extended to an auto-fit selection ONLY when nothing was
+                    # inherited to reinterpret. The hazard is an inherited numeric
+                    # mask: a scheduler's CUDA_VISIBLE_DEVICES=0,1 meaning physical
+                    # 2,0 would be re-read as physical 0,1 once the order changes,
+                    # running on a device that was hidden on purpose. With no mask
+                    # in the environment there is nothing to preserve, and the mask
+                    # emitted below is our own, built from nvidia-smi indices, so
+                    # pinning is what makes it mean those cards. Where we cannot
+                    # pin, the P2P gate withholds the flag (see _p2p_veto_reason).
+                    if _p2p_launch_order_pinned:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
