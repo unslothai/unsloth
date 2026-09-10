@@ -168,8 +168,12 @@ class ModelLayout:
     # Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A multi-device split has to
     # know WHERE the big caches land, so the planner abstains.
     has_swa: bool = False
-    # Multi-head latent attention (attention.kv_lora_rank): the cache is one compressed K-only latent per token, not
-    # a K+V pair per head, so the per-head product above over-counts it by up to two orders of magnitude.
+    # Multi-head latent attention: the cache is one compressed K-only latent per token, not a K+V pair per head, so the
+    # per-head product above over-counts it by up to two orders of magnitude. Keyed on attention.key_length_mla AND
+    # attention.value_length_mla, as llama-hparams.cpp:llama_hparams::is_mla is: a GGUF that carries only
+    # attention.kv_lora_rank (unsloth/DeepSeek-R1-GGUF, unsloth/DeepSeek-V3-0324-GGUF) gets the full per-head K+V cache
+    # from llama.cpp, and the product above is exact for it -- claiming MLA there makes the planner discard the exact
+    # number for a floor that is 40% short.
     has_mla: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
@@ -377,7 +381,10 @@ def _layout_from_readers(readers) -> ModelLayout:
     # Charging every layer the full context above is the safe direction for the TOTAL; what it cannot say is which
     # layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
-    has_mla = bool(_field(reader, f"{arch}.attention.kv_lora_rank") or 0)
+    # Both MLA head lengths, never kv_lora_rank: llama-hparams.cpp:llama_hparams::is_mla.
+    has_mla = bool(_field(reader, f"{arch}.attention.key_length_mla") or 0) and bool(
+        _field(reader, f"{arch}.attention.value_length_mla") or 0
+    )
 
     # Mamba conv + SSM state, one f32 copy per sequence. Mirrors llama.cpp's own sizing; zero when the model has no
     # recurrent layers.

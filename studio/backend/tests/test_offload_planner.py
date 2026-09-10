@@ -2617,7 +2617,15 @@ def test_an_mla_cache_trusts_the_measured_floor():
 
 
 def test_layout_from_gguf_marks_a_latent_attention_cache():
-    fields = _shard_fields(**{"llama.attention.kv_lora_rank": 512})
+    # Both MLA head lengths, as llama_hparams::is_mla keys it; the LoRA rank alone
+    # is the DeepSeek-R1 shape and gets the full per-head K+V cache instead.
+    fields = _shard_fields(
+        **{
+            "llama.attention.kv_lora_rank": 512,
+            "llama.attention.key_length_mla": 192,
+            "llama.attention.value_length_mla": 128,
+        }
+    )
     assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(64)))).has_mla is True
     assert (
         _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64)))).has_mla
@@ -3107,3 +3115,56 @@ def test_a_windowed_cache_across_devices_is_not_shrunk_on_a_stale_layer_vector()
         kv_layer_weights = vector,
     )
     assert one.priced and one.n_ctx < 65536, one.reason
+
+
+def _deepseek2_fields(**extra):
+    """unsloth/DeepSeek-R1-GGUF's header: the LoRA rank, and no MLA head lengths."""
+    base = {
+        "general.architecture": "deepseek2",
+        "deepseek2.block_count": 61,
+        "deepseek2.attention.head_count_kv": 128,
+        "deepseek2.attention.head_count": 128,
+        "deepseek2.embedding_length": 7168,
+        "deepseek2.attention.key_length": 192,
+        "deepseek2.attention.value_length": 128,
+        "deepseek2.attention.kv_lora_rank": 512,
+        "deepseek2.context_length": 163840,
+    }
+    base.update(extra)
+    return base
+
+
+def test_the_lora_rank_alone_is_not_the_latent_cache():
+    """llama_hparams::is_mla (llama-hparams.cpp) is true only when BOTH MLA head
+    lengths are present and non-zero, because deepseek2.cpp reads them optionally.
+    unsloth/DeepSeek-R1-GGUF and unsloth/DeepSeek-V3-0324-GGUF predate the keys and
+    carry kv_lora_rank 512 with head_count_kv 128, so llama.cpp allocates the full
+    128-head K+V cache -- 39040 MiB at 8192 -- and the product below is exact for
+    them. Keying has_mla on the rank made the planner throw that exact number away
+    for the estimator's latent-only floor, which is 40% short."""
+    layout = _layout_from_reader(_StubReader(_deepseek2_fields(), _shard_tensors(range(61))))
+    assert layout.complete
+    assert layout.has_mla is False
+    assert layout.kv_bytes(8192) == 39040 * MIB
+
+    latent = _layout_from_reader(
+        _StubReader(
+            _deepseek2_fields(
+                **{
+                    "deepseek2.attention.key_length_mla": 192,
+                    "deepseek2.attention.value_length_mla": 128,
+                }
+            ),
+            _shard_tensors(range(61)),
+        )
+    )
+    assert latent.has_mla is True
+
+    # One of the two alone is not is_mla() either.
+    half = _layout_from_reader(
+        _StubReader(
+            _deepseek2_fields(**{"deepseek2.attention.key_length_mla": 192}),
+            _shard_tensors(range(61)),
+        )
+    )
+    assert half.has_mla is False

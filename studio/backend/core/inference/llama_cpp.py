@@ -6480,6 +6480,7 @@ class LlamaCppBackend:
         self._full_attention_interval: Optional[int] = None
         self._kv_lora_rank: Optional[int] = None
         self._key_length_mla: Optional[int] = None
+        self._value_length_mla: Optional[int] = None
         self._kv_key_length_swa: Optional[int] = None
         self._kv_value_length_swa: Optional[int] = None
         self._ssm_inner_size: Optional[int] = None
@@ -12396,12 +12397,25 @@ class LlamaCppBackend:
 
     # ── KV cache VRAM estimation ─────────────────────────────────────
 
+    def _uses_mla_cache(self) -> bool:
+        """Whether llama.cpp allocates the K-only latent cache for this GGUF.
+
+        llama-hparams.cpp:llama_hparams::is_mla keys it on BOTH MLA head lengths,
+        never on kv_lora_rank: deepseek2.cpp/glm-dsa.cpp read those two optionally,
+        so a file that carries the LoRA rank alone (unsloth/DeepSeek-R1-GGUF,
+        unsloth/DeepSeek-V3-0324-GGUF: rank 512, head_count_kv 128, no MLA lengths)
+        still gets the full per-head K+V cache and must be priced as one.
+        """
+        return bool(getattr(self, "_key_length_mla", None)) and bool(
+            getattr(self, "_value_length_mla", None)
+        )
+
     def _can_estimate_kv(self) -> bool:
         """True if we have enough GGUF metadata to estimate KV cache size."""
         if self._n_layers is None:
             return False
-        # MLA: kv_lora_rank suffices (K-only cache).
-        if self._kv_lora_rank is not None:
+        # MLA: the K-only latent width comes from kv_lora_rank plus the MLA rope dim.
+        if self._uses_mla_cache():
             return True
         # New-style: need explicit key AND value dimensions.
         if self._kv_key_length is not None and self._kv_value_length is not None:
@@ -12467,7 +12481,7 @@ class LlamaCppBackend:
             return []
         # Mirror _estimate_kv_cache_bytes' branch order: anything it returns before
         # path 3 is a shape this vector cannot describe.
-        if self._kv_lora_rank is not None:
+        if self._uses_mla_cache():
             return []
         if self._ssm_inner_size is not None and self._full_attention_interval is not None:
             return []
@@ -12728,15 +12742,17 @@ class LlamaCppBackend:
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
 
-        # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
+        # Path 1: MLA (DeepSeek-R1-0528, GLM-4.7, GLM-5, Kimi-K2.x/K3)
         # One compressed KV latent per token/layer (shared across heads); V is
         # reconstructed from it, no separate V cache. key_length = kv_lora_rank
         # + rope_dim. MLA GGUFs set head_count_kv=1; default to 1 if absent to
         # avoid falling back to n_heads (e.g. 128 for DeepSeek-V3) which 128x's.
-        if self._kv_lora_rank is not None:
+        # A file with the LoRA rank but no MLA head lengths is NOT this cache; it
+        # falls through to path 4, which prices its full per-head K+V exactly.
+        if self._uses_mla_cache():
             n_kv_mla = self._n_kv_heads or 1
-            rope_dim = self._key_length_mla or 64
-            key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
+            rope_dim = self._key_length_mla
+            key_len = self._kv_key_length or ((self._kv_lora_rank or 0) + rope_dim)
             # Hybrid MLA (Kimi-K3): head_count_kv is a per-layer array whose KDA
             # linear-attention layers are 0 and hold a constant-size state instead
             # of a growing cache. Only the non-zero layers allocate KV, so counting
@@ -12876,6 +12892,7 @@ class LlamaCppBackend:
                 "_ssm_conv_kernel",
                 "_full_attention_interval",
                 "_key_length_mla",
+                "_value_length_mla",
                 "_n_kv_heads_by_layer",
                 "_kv_key_length_swa",
                 "_kv_value_length_swa",
@@ -14071,6 +14088,7 @@ class LlamaCppBackend:
         self._full_attention_interval = None
         self._kv_lora_rank = None
         self._key_length_mla = None
+        self._value_length_mla = None
         self._kv_key_length_swa = None
         self._kv_value_length_swa = None
         self._ssm_inner_size = None
@@ -14190,6 +14208,7 @@ class LlamaCppBackend:
                                         f"{arch}.full_attention_interval": "full_attention_interval",
                                         f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
                                         f"{arch}.attention.key_length_mla": "key_length_mla",
+                                        f"{arch}.attention.value_length_mla": "value_length_mla",
                                         f"{arch}.attention.key_length_swa": "kv_key_length_swa",
                                         f"{arch}.attention.value_length_swa": "kv_value_length_swa",
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
@@ -27133,6 +27152,7 @@ class LlamaCppBackend:
             self._full_attention_interval = None
             self._kv_lora_rank = None
             self._key_length_mla = None
+            self._value_length_mla = None
             self._kv_key_length_swa = None
             self._kv_value_length_swa = None
             self._ssm_inner_size = None

@@ -1588,7 +1588,7 @@ def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
     a window-shaped vector is a different model of the cache, so it must answer []
     and let the planner abstain.
 
-    Not hypothetical for path 1: dots3note reads KV_LORA_RANK and
+    Not hypothetical for path 1: dots3note reads the MLA head lengths and
     ATTENTION_SLIDING_WINDOW(_PATTERN) in the same loader. Path 2 is the
     recurrent-hybrid hole -- the abstain is `uneven_cache and not weights`, so a
     hybrid that ever produced a vector would walk past it and the device loop
@@ -1598,6 +1598,8 @@ def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
 
     mla = _swa_backend()
     mla._kv_lora_rank = 512
+    mla._key_length_mla = 192
+    mla._value_length_mla = 128
     assert mla._kv_layer_weights(131072) == []
 
     hybrid = _swa_backend()
@@ -2851,3 +2853,62 @@ def test_the_compute_reserve_reaches_the_planner_priced_per_context(monkeypatch)
     seen.clear()
     _plan(_Stub(), free_mib = 14 * 1024, ctx_compute = 512 * MIB)
     assert seen["opts"].overhead_bytes_at is None
+
+
+def _deepseek_backend(**extra):
+    """unsloth/DeepSeek-R1-GGUF's metadata as _load_gguf_metadata populates it."""
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._n_layers = 61
+    b._n_kv_heads = 128
+    b._n_heads = 128
+    b._embedding_length = 7168
+    b._kv_key_length = 192
+    b._kv_value_length = 128
+    b._kv_key_length_swa = None
+    b._kv_value_length_swa = None
+    b._sliding_window = None
+    b._sliding_window_pattern = None
+    b._n_kv_heads_by_layer = None
+    b._shared_kv_layers = None
+    b._nextn_predict_layers = None
+    b._architecture = "deepseek2"
+    b._kv_lora_rank = 512
+    b._key_length_mla = None
+    b._value_length_mla = None
+    b._ssm_inner_size = None
+    b._ssm_state_size = None
+    b._ssm_group_count = None
+    b._ssm_conv_kernel = None
+    b._kda_head_dim = None
+    b._full_attention_interval = None
+    for key, value in extra.items():
+        setattr(b, key, value)
+    return b
+
+
+def test_the_lora_rank_alone_does_not_take_the_latent_path():
+    """llama_hparams::is_mla (llama-hparams.cpp) needs BOTH MLA head lengths, and
+    deepseek2.cpp reads them optionally. DeepSeek-R1 / V3-0324 carry the rank alone
+    with head_count_kv 128, so llama.cpp allocates the full per-head K+V cache and
+    path 1's K-only latent under-books it by 40% at every context."""
+    plain = _deepseek_backend()
+    full = plain._estimate_kv_cache_bytes(
+        8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    # Path 4, 128 heads of K and of V over 61 layers: what llama-server allocates.
+    assert full == 39040 * MIB
+
+    latent = _deepseek_backend(_key_length_mla = 192, _value_length_mla = 128)
+    assert (
+        latent._estimate_kv_cache_bytes(
+            8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+        )
+        == 23424 * MIB
+    )
+
+    # One of the two alone is not is_mla(), so it must not flip the path either.
+    half = _deepseek_backend(_key_length_mla = 192)
+    assert (
+        half._estimate_kv_cache_bytes(8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False)
+        == full
+    )
