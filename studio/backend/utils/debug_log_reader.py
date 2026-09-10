@@ -5,8 +5,8 @@
 
 The active session log is never rotated and only pruned at startup (run.py
 retains the newest 20 files), so it can be many GB by the time someone opens
-this. Everything here seeks from the end and reads a bounded window, so cost
-does not scale with file size.
+this. Initial reads seek from the end; polling processes bounded pages without
+skipping redaction context.
 
 read_tail and read_since return REDACTED lines. The raw reader is private so a
 later caller cannot forget.
@@ -15,13 +15,17 @@ later caller cannot forget.
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
+from copy import copy
 import json
 import os
+import secrets
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from utils.log_redaction import redact_log_text
+from utils.log_redaction import StreamingLogRedactor
 
 BLOCK_BYTES = 65_536
 DEFAULT_TAIL_LINES = 1_000
@@ -34,6 +38,30 @@ MAX_LINE_BYTES = 32_768
 MAX_LINES_PER_RESPONSE = 2_000
 
 _CURSOR_PREFIX = "c1."
+MAX_CURSOR_STATES = 256
+_OMITTED_CONTEXT_BYTES = 4096
+
+
+@dataclass
+class _OmittedRecord:
+    start: int
+    sensitive: bool = False
+    continuation: Optional[str] = None
+    private_key: bool = False
+    quote: Optional[str] = None
+    escaped: bool = False
+
+
+@dataclass
+class _CursorState:
+    path: str
+    redactor: StreamingLogRedactor
+    partial_start: Optional[int]
+    omitted: Optional[_OmittedRecord]
+
+
+_CURSOR_STATES: OrderedDict[str, _CursorState] = OrderedDict()
+_CURSOR_LOCK = threading.Lock()
 
 
 @dataclass
@@ -54,8 +82,15 @@ def _file_key(stat: os.stat_result, name: str) -> str:
     return f"{name}|{stat.st_dev}|{stat.st_ino}"
 
 
-def encode_cursor(key: str, offset: int) -> str:
-    raw = json.dumps({"k": key, "o": int(offset)}, separators = (",", ":")).encode("utf-8")
+def encode_cursor(
+    key: str,
+    offset: int,
+    state_id: Optional[str] = None,
+) -> str:
+    payload = {"k": key, "o": int(offset)}
+    if state_id is not None:
+        payload["s"] = state_id
+    raw = json.dumps(payload, separators = (",", ":")).encode("utf-8")
     return _CURSOR_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
@@ -75,6 +110,58 @@ def decode_cursor(cursor: Optional[str]) -> Optional[tuple[str, int]]:
     if not isinstance(key, str) or offset < 0:
         return None
     return key, offset
+
+
+def _remember_cursor(
+    path: Path,
+    key: str,
+    offset: int,
+    redactor: StreamingLogRedactor,
+    partial_start: Optional[int] = None,
+    omitted: Optional[_OmittedRecord] = None,
+) -> str:
+    cursor = encode_cursor(key, offset, secrets.token_urlsafe(16))
+    state = _CursorState(os.path.abspath(path), copy(redactor), partial_start, copy(omitted))
+    with _CURSOR_LOCK:
+        _CURSOR_STATES[cursor] = state
+        while len(_CURSOR_STATES) > MAX_CURSOR_STATES:
+            _CURSOR_STATES.popitem(last = False)
+    return cursor
+
+
+def _restore_cursor(path: Path, cursor: str) -> Optional[_CursorState]:
+    with _CURSOR_LOCK:
+        state = _CURSOR_STATES.get(cursor)
+        if state is None or state.path != os.path.abspath(path):
+            return None
+        _CURSOR_STATES.move_to_end(cursor)
+        return _CursorState(
+            state.path, copy(state.redactor), state.partial_start, copy(state.omitted)
+        )
+
+
+def _scan_omitted_record(
+    redactor: StreamingLogRedactor,
+    state: _OmittedRecord,
+    context: bytes,
+    piece: bytes,
+    terminated: bool,
+) -> None:
+    scan = (context + piece).decode("utf-8", errors = "replace")
+    state.sensitive |= redactor.omitted_record_chunk_has_sensitive_context(scan)
+    state.continuation = redactor.omitted_record_continuation_kind(
+        scan, state.continuation, state.sensitive
+    )
+    state.private_key = redactor.omitted_record_private_key_state(scan, state.private_key)
+    quote_scan = piece.decode("utf-8", errors = "replace") if state.quote else scan
+    state.quote, state.escaped = redactor.omitted_record_quote_state(
+        quote_scan, state.quote, state.escaped
+    )
+    if terminated:
+        if state.quote is not None or state.continuation is not None:
+            redactor.mark_omitted_sensitive_record(state.quote, state.continuation)
+        if state.private_key:
+            redactor.mark_omitted_private_key_block()
 
 
 def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bool]:
@@ -98,26 +185,32 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
     lines: list[str] = []
     for line in raw:
         line = line.rstrip("\r")
-        # An enormous line is split rather than dropped, so nothing is lost.
-        while len(line) > MAX_LINE_BYTES:
-            lines.append(line[:MAX_LINE_BYTES])
-            line = line[MAX_LINE_BYTES:]
         lines.append(line)
     return lines, truncated_head
 
 
-def _redact(lines: list[str]) -> list[str]:
-    return [redact_log_text(line) for line in lines]
+def _redact(lines: list[str], redactor: StreamingLogRedactor) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        # Redact physical records before splitting them for display.
+        line = redactor.redact_record(line)
+        while len(line) > MAX_LINE_BYTES:
+            result.append(line[:MAX_LINE_BYTES])
+            line = line[MAX_LINE_BYTES:]
+        result.append(line)
+    return result
 
 
 def read_tail(path: Path, max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
     max_lines = max(1, min(int(max_lines), MAX_TAIL_LINES))
     stat = path.stat()
     size = stat.st_size
+    key = _file_key(stat, path.name)
+    redactor = StreamingLogRedactor()
     result = ReadResult(size_bytes = size)
-    result.cursor = encode_cursor(_file_key(stat, path.name), size)
     result.reset = True
     if size == 0:
+        result.cursor = _remember_cursor(path, key, size, redactor)
         return result
 
     chunks: list[bytes] = []
@@ -139,10 +232,18 @@ def read_tail(path: Path, max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
     data = b"".join(chunks)
     lines, truncated = _split_lines(data, drop_partial_head = pos > 0)
     result.truncated_head = truncated
+    partial_start = None
+    if data and not data.endswith(b"\n"):
+        partial_start = size - len(data.rsplit(b"\n", 1)[-1])
+        complete = _redact(lines[:-1], redactor)
+        lines = complete + _redact(lines[-1:], copy(redactor))
+    else:
+        lines = _redact(lines, redactor)
     if len(lines) > max_lines:
         lines = lines[-max_lines:]
         result.truncated_head = True
-    result.lines = _redact(lines[-MAX_LINES_PER_RESPONSE:])
+    result.lines = lines[-MAX_LINES_PER_RESPONSE:]
+    result.cursor = _remember_cursor(path, key, size, redactor, partial_start)
     return result
 
 
@@ -173,28 +274,62 @@ def read_since(
         result.reset_reason = "truncated"
         return result
 
-    result = ReadResult(size_bytes = size)
-    if offset == size:
-        result.cursor = encode_cursor(current_key, offset)
+    state = _restore_cursor(path, cursor)
+    if state is None:
+        result = read_tail(path, max_lines)
+        result.reset_reason = "cursor_stale"
         return result
 
+    result = ReadResult(size_bytes = size)
+    if offset == size:
+        result.cursor = cursor
+        return result
+    if state.partial_start is not None:
+        offset = state.partial_start
+        result.reset = True
+        result.reset_reason = "partial_record"
+
     start = offset
-    pending = size - offset
-    if pending > MAX_APPEND_BYTES:
-        start = size - MAX_APPEND_BYTES
-        result.dropped_bytes = start - offset
+    read_start = start
+    if state.omitted is not None:
+        overlap = min(_OMITTED_CONTEXT_BYTES, MAX_APPEND_BYTES // 2)
+        read_start = max(state.omitted.start, start - overlap)
     with open(path, "rb") as handle:
-        handle.seek(start)
-        data = handle.read(size - start)
+        handle.seek(read_start)
+        raw = handle.read(min(MAX_APPEND_BYTES, size - read_start))
+    context, data = raw[: start - read_start], raw[start - read_start :]
+    result.more_pending = read_start + len(raw) < size
+
+    if state.omitted is not None:
+        newline = data.find(b"\n")
+        consumed = len(data) if newline == -1 else newline + 1
+        _scan_omitted_record(state.redactor, state.omitted, context, data[:consumed], newline != -1)
+        start += consumed
+        data = data[consumed:]
+        if newline == -1:
+            result.cursor = _remember_cursor(
+                path, current_key, start, state.redactor, omitted = state.omitted
+            )
+            return result
+        state.omitted = None
+
+    if not data:
+        result.cursor = _remember_cursor(path, current_key, start, state.redactor)
+        return result
 
     # Stop at the last newline and leave the cursor before the partial line
     last_newline = data.rfind(b"\n")
     if last_newline == -1:
-        if len(data) < MAX_LINE_BYTES:
-            result.cursor = encode_cursor(current_key, start)
+        if len(data) < MAX_APPEND_BYTES:
+            result.cursor = _remember_cursor(path, current_key, start, state.redactor)
             return result
-        consumed = len(data)
-        body = data
+        omitted = _OmittedRecord(start)
+        _scan_omitted_record(state.redactor, omitted, b"", data, False)
+        result.lines = ["[oversized log record omitted]"]
+        result.cursor = _remember_cursor(
+            path, current_key, start + len(data), state.redactor, omitted = omitted
+        )
+        return result
     else:
         consumed = last_newline + 1
         body = data[:consumed]
@@ -212,8 +347,8 @@ def read_since(
         body = body[:consumed]
         result.more_pending = True
 
-    lines, truncated = _split_lines(body, drop_partial_head = result.dropped_bytes > 0)
+    lines, truncated = _split_lines(body, drop_partial_head = False)
     result.truncated_head = truncated
-    result.lines = _redact(lines)
-    result.cursor = encode_cursor(current_key, start + consumed)
+    result.lines = _redact(lines, state.redactor)
+    result.cursor = _remember_cursor(path, current_key, start + consumed, state.redactor)
     return result

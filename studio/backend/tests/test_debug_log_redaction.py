@@ -16,9 +16,243 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from utils.log_redaction import REDACTED, redact_log_text
+from utils.log_redaction import REDACTED, StreamingLogRedactor, redact_log_text
+from utils.secret_env import SECRET_ENV_NAMES
 
 _SLACK_SHAPED = "xox" + "b-" + "1234567890" + "-ABCDEFGHIJKLMNOP"
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["secret_key", "signing_key", "encryption_key", "ssh_key", "secretKey", "providerSigningKey"],
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        '{{"{key}": "{value}", "status": 401}}',
+        "('{key}', '{value}')",
+        "--{key} {value} --port 8080",
+    ],
+)
+def test_compound_secret_keys_are_masked(key, template):
+    line = template.format(key = key, value = "opaqueCredential123456789")
+    expected = template.format(key = key, value = REDACTED)
+    assert redact_log_text(line) == expected
+    assert StreamingLogRedactor().redact_record(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize("key", ["secret_key", "signing_key", "encryption_key", "ssh_key"])
+def test_compound_secret_keys_track_blocks_and_preserve_paths(key):
+    redactor = StreamingLogRedactor()
+    assert redactor.redact_record(f"{key}: |\n") == f"{key}: |\n"
+    assert redactor.redact_record("  opaque-body\n") == "  <redacted>\n"
+    assert redactor.redact_record("ordinary: kept\n") == "ordinary: kept\n"
+    line = f"{key}_path=/tmp/key"
+    assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "('https://example.com','alice@example.org')",
+        '{"url":"https://example.com","email":"alice@example.org"}',
+        '["https://example.com","alice@example.org"]',
+        "[https://example.com],alice@example.org",
+        "{https://example.com},alice@example.org",
+        "b'https://example.com',b'alice@example.org'",
+        '"https://example.com",email=alice@example.org',
+    ],
+)
+def test_url_redaction_preserves_adjacent_serialized_fields(line):
+    assert redact_log_text(line) == line
+    assert StreamingLogRedactor().redact_record(line) == line
+
+
+@pytest.mark.parametrize(
+    "userinfo",
+    [
+        "user:pa,ss",
+        "user:pa'ss",
+        "user:pa(ss)",
+        "opaque,token",
+        "user:p%40ss",
+        ":opaque-redis-key",
+        "user:p@ss",
+    ],
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        "https://{userinfo}@example.com/path",
+        '"https://{userinfo}@example.com/path","alice@example.org"',
+    ],
+)
+def test_url_userinfo_punctuation_remains_masked(userinfo, template):
+    line = template.format(userinfo = userinfo)
+    expected = template.format(userinfo = REDACTED)
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+def test_quoted_url_credentials_do_not_consume_the_next_field():
+    line = "('https://user:pa,ss@example.com','alice@example.org')"
+    expected = "('https://<redacted>@example.com','alice@example.org')"
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize("key", ["Password", "password", "PASSWORD", "Pwd", "PWD"])
+@pytest.mark.parametrize("separator", [";", "; "])
+def test_connection_strings_preserve_multiword_fields(key, separator):
+    tail = separator + "Data Source=db.example;Initial Catalog=prod;User ID=app"
+    line = f"{key}=opaqueCredential123456789{tail}"
+    expected = f"{key}=<redacted>{tail}"
+    assert redact_log_text(line) == expected
+    assert StreamingLogRedactor().redact_record(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            'Password="opaque;Data Source=still-secret";Initial Catalog=prod',
+            'Password="<redacted>";Initial Catalog=prod',
+        ),
+        (
+            "password=opaque;still-secret;Data Source=db.example",
+            "password=<redacted>;Data Source=db.example",
+        ),
+        (
+            "PASSWORD: opaque-secret;Data Source=db.example",
+            "PASSWORD: <redacted>;Data Source=db.example",
+        ),
+    ],
+)
+def test_connection_field_boundaries_preserve_only_separate_fields(line, expected):
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "openaiApiKey",
+        "azureClientSecret",
+        "awsSecretAccessKey",
+        "providerAccessToken",
+        "providerPrivateKey",
+        "dbPassword",
+        "dbPasswd",
+        "smtpPassphrase",
+    ],
+)
+@pytest.mark.parametrize(
+    "template",
+    ['{{"{name}": "{value}", "status": 401}}', "{name} = '{value}'", "('{name}', '{value}')"],
+)
+def test_provider_prefixed_secret_keys_are_masked(name, template):
+    line = template.format(name = name, value = "opaqueCredential123456")
+    expected = template.format(name = name, value = REDACTED)
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ('PASSWORD=`"correct horse battery`" -Verbose', f'PASSWORD=`"{REDACTED}`" -Verbose'),
+        ("password = `'correct horse`' status=ok", f"password = `'{REDACTED}`' status=ok"),
+        (
+            'llama-server --api-key `"correct horse`" --port 8080',
+            f'llama-server --api-key `"{REDACTED}`" --port 8080',
+        ),
+    ],
+)
+def test_a_powershell_escaped_quote_delimits_the_whole_value(line, expected):
+    """A -Command line logs its quotes as `", so the value runs to the closing pair, not the first space."""
+    assert redact_log_text(line) == expected
+    assert StreamingLogRedactor().redact_record(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+def test_a_bare_bearer_token_is_masked_without_another_trigger():
+    """The scheme rule has no key word of its own, so the pre-scan must let "Bearer" through."""
+    line = "Bearer AbCdEfGhIjKlMnOpQrStUvWx0123"
+    assert redact_log_text(line) == f"Bearer {REDACTED}"
+    assert StreamingLogRedactor().redact_record(line) == f"Bearer {REDACTED}"
+
+
+@pytest.mark.parametrize("name", ["NPM_CONFIG__AUTH", "REDISCLI_AUTH"])
+@pytest.mark.parametrize("separator", [" = ", "\t=\t", "= ", " ="])
+@pytest.mark.parametrize(
+    "value,masked", [("opaqueCredential123456", REDACTED), ('"opaque credential"', f'"{REDACTED}"')]
+)
+def test_spaced_environment_assignments_are_masked(name, separator, value, masked):
+    line = f"{name}{separator}{value} python server.py"
+    expected = f"{name}{separator}{masked} python server.py"
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("AWS_REGION", "us-east-1"),
+        ("AWS_DEFAULT_REGION", "us-west-2"),
+        ("AWS_PROFILE", "production"),
+        ("AWS_DEFAULT_PROFILE", "staging"),
+        ("GOOGLE_CLOUD_PROJECT", "my-project"),
+        ("DYLD_PRINT_LIBRARIES", "1"),
+    ],
+)
+@pytest.mark.parametrize(
+    "template", ["{name}={value}", '{{"{name}": "{value}"}}', "('{name}', '{value}')"]
+)
+def test_non_secret_cloud_settings_remain_visible(name, value, template):
+    from utils.secret_env import is_secret_env_name
+
+    line = template.format(name = name, value = value)
+    assert redact_log_text(line) == line
+    assert StreamingLogRedactor().redact_record(line) == line
+    assert is_secret_env_name(name)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"openaiApiKeyPath": "/tmp/key"}',
+        '{"azureClientSecretName": "reference"}',
+        '{"providerPrivateKeyFile": "/tmp/key"}',
+        '{"providerAccessTokenCount": 10}',
+    ],
+)
+def test_provider_credential_metadata_remains_visible(line):
+    assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize(
+    "opener,closer",
+    [
+        ('password\x1b[31m=\x1b[0m"first-secret\n', 'last-secret"\x1b[0m\n'),
+        ("-----BE\x1b[31mGIN PRIVATE KEY-----\n", "-----EN\x1b[0mD PRIVATE KEY-----\n"),
+        ("PASSWORD\x1b[31m:\x1b[0m |\n", ""),
+        ("tool --api-key\x1b[31m \x1b[0mfirst-secret-\\\n", ""),
+        ('azureClientSecret: "first-secret\n', 'last-secret"\n'),
+    ],
+)
+def test_multiline_state_uses_normalized_openers(opener, closer):
+    redactor = StreamingLogRedactor()
+    records = [opener, "  opaque-body\n", closer, "ordinary: kept\n"]
+    result = "".join(redactor.redact_record(record) for record in records if record)
+    for secret in ("first-secret", "opaque-body", "last-secret"):
+        assert secret not in result
+    assert result.endswith("ordinary: kept\n")
+
+
+def test_ansi_private_key_block_is_masked_as_a_whole():
+    text = "-----BE\x1b[31mGIN PRIVATE KEY-----\nopaque-body\n-----END PRIVATE KEY-----\nordinary: kept\n"
+    assert redact_log_text(text) == REDACTED + "\nordinary: kept\n"
+
 
 # (line, the substring that must be gone)
 SECRETS = [
@@ -36,16 +270,37 @@ SECRETS = [
     ),
     ("HF_TOKEN=hf_zzzzzzzzzzzzzzzzzzzzzzzzzzz", "hf_zzzzzzzzzzzzzzzzzzzzzzzzzzz"),
     ('{"event":"auth","api_key":"abcdef123456","model":"gpt-4o"}', "abcdef123456"),
+    (
+        'payload="{\\"password\\":\\"correct-horse-battery-staple\\"}"',
+        "correct-horse-battery-staple",
+    ),
     ("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
     (
         "https://cdn.example.com/m.gguf?X-Amz-Signature=deadbeef0123456789&X-Amz-Expires=900",
         "deadbeef0123456789",
     ),
     (
+        "https://storage.googleapis.com/bucket/object?X-Goog-Signature=deadbeef0123456789&x-goog-expires=900",
+        "deadbeef0123456789",
+    ),
+    (
         "git clone https://dan:ghp_ABCDEFGHIJKLMNOPQRST0123@github.com/x/y",
         "ghp_ABCDEFGHIJKLMNOPQRST0123",
     ),
+    (
+        "git clone https://opaquecredential123@private.example/repo",
+        "opaquecredential123",
+    ),
+    (
+        "postgresql://alice:p@ssword@example.com/db",
+        "p@ssword",
+    ),
+    ("redis://:correct-horse-battery@localhost:6379/0", "correct-horse-battery"),
     ("password: hunter2hunter2", "hunter2hunter2"),
+    ("password: correct horse battery staple", "correct horse battery staple"),
+    ("password=1234", "1234"),
+    ("api_key=abc", "abc"),
+    ('api_key="xy"', "xy"),
     # "_" is a word character, so a \b before the key name never fires inside an
     # env-style name; all of these used to survive in the clear.
     ("OPENAI_API_KEY=opaquevalue123456", "opaquevalue123456"),
@@ -55,10 +310,15 @@ SECRETS = [
         "0123456789abcdef0123456789abcdef01234567",
     ),
     ("DATABASE_PASSWORD=hunter2hunter2", "hunter2hunter2"),
+    ("SSH_KEY_PASSPHRASE=correct-horse-battery-staple", "correct-horse-battery-staple"),
     ("training config: wandb_token='local-9f8e7d6c5b4a3210'", "local-9f8e7d6c5b4a3210"),
     # The key/value rule captures the scheme word as the "value", so the
     # credential after it was never looked at.
     ("Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=", "dXNlcm5hbWU6c3VwZXJzZWNyZXQ="),
+    ("Authorization: Basic dTpw", "dTpw"),
+    ("Authorization: Bearer xy", "xy"),
+    ("Authorization: Negotiate YIIF-fake-negotiate-token", "YIIF-fake-negotiate-token"),
+    ("Authorization: Custom short", "short"),
     ("headers={'authorization': 'Basic dXNlcjpwdw=='}", "dXNlcjpwdw=="),
     # Unsloth's UI session cookie gates these very endpoints.
     ("Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e", "8f3c9d1ab77e4f0a9c2b3d4e"),
@@ -80,6 +340,38 @@ SECRETS = [
     # The flag rule's value class rejected a leading quote, so this line
     # survived untouched.
     ('llama-server --api-key "abcdef ghijklmnop" --port 8080', "abcdef ghijklmnop"),
+    ("provider-cli --token opaqueCredential123456789 --verbose", "opaqueCredential123456789"),
+    # The equals form of the same flags, and an ODBC PWD= field in any case.
+    ("provider-cli --token=opaqueCredential123456789 --verbose", "opaqueCredential123456789"),
+    ('provider-cli --token="opaque Credential123456789"', "Credential123456789"),
+    ("ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes", "hunter2hunter2"),
+    ("Driver={SQL Server};Server=db;UID=app;Pwd=s3cretvalue", "s3cretvalue"),
+    ('{"credentials":"opaqueCredential123456"}', "opaqueCredential123456"),
+    ("credentials: opaqueCredential123456", "opaqueCredential123456"),
+    ("credential=opaqueCredential123456", "opaqueCredential123456"),
+    # TOML triple quotes, a path-shaped ODBC password, and the AWS session token header.
+    ('password = """opaqueSecret123"""', "opaqueSecret123"),
+    ("password = '''opaqueSecret123'''", "opaqueSecret123"),
+    ("UID=alice;PWD=/hunter2;Encrypt=yes", "/hunter2"),
+    (
+        "X-Amz-Security-Token: IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQ",
+        "IQoJb3JpZ2luX2VjEJr",
+    ),
+    ('headers={"x-amz-security-token": "IQoJb3JpZ2luX2VjEJr"}', "IQoJb3JpZ2luX2VjEJr"),
+    # Python raw and unicode literals, an env dump as tuples, and a logged argv list.
+    ('password = r"opaqueCredential123456"', "opaqueCredential123456"),
+    ("password = u'opaqueCredential123456'", "opaqueCredential123456"),
+    (
+        "env=[('OPENAI_API_KEY', 'opaqueCredential123456'), ('HOME', '/home/dan')]",
+        "opaqueCredential123456",
+    ),
+    (
+        "['llama-server', '--api-key', 'opaqueCredential123456', '--port', '8080']",
+        "opaqueCredential123456",
+    ),
+    ('["provider-cli", "--token", "opaqueCredential123456"]', "opaqueCredential123456"),
+    # YAML doubles an apostrophe inside a single-quoted scalar.
+    ("password: 'it''s-correct-horse-battery'", "s-correct-horse-battery"),
 ]
 
 # Real log lines. Each one must come back byte for byte.
@@ -107,6 +399,7 @@ KEEP = [
     "tokenizer: eos_token = <|eot_id|>, bos_token = <|begin_of_text|>",
     "pad_token_id=128004 set from config",
     "note: cookie support is disabled in this webview",
+    "headers=[('Cookie', 'disabled')]",
     "reading secret_sauce_path from the recipe",
     "hint: password authentication is not configured for this endpoint",
     "downloaded checkpoint-sk-9f8a7b6c5d4e3f2a1b0c9d8e7f.safetensors",
@@ -114,6 +407,18 @@ KEEP = [
     # "key" in an object storage URL names the object, so it stays readable.
     "https://cdn-lfs.hf.co/repos/ab/cd/model.gguf?download=true&key=publicfilename",
     "provider config: api_key = None",
+    "https://example.com?email=alice@example.com",
+    "server --token-id 128009",
+    # The shell's working directory, and variables that name a file rather than hold a secret.
+    "PWD=/home/dan/Downloads/unsloth-work",
+    "export PWD=/home/dan/Downloads/unsloth-work",
+    "env=[('HOME', '/home/dan'), ('PATH', '/usr/bin'), ('name', 'kept')]",
+    "['llama-server', '--port', '8080', '--token-id', '128009']",
+    "secret_sauce_path=/data/recipes/default.yaml",
+    "PRIVATE_KEY_PATH=/etc/ssl/private/server.key",
+    "HF_TOKEN_PATH=/home/dan/.cache/huggingface/token",
+    "passwordLength: 8",
+    "maxPasswordAge: 90",
 ]
 
 
@@ -129,6 +434,11 @@ def test_ordinary_log_content_is_untouched(line):
     assert redact_log_text(line) == line
 
 
+@pytest.mark.parametrize("line", KEEP, ids = [k[:28] for k in KEEP])
+def test_the_streaming_redactor_leaves_ordinary_records_alone(line):
+    assert StreamingLogRedactor().redact_record(line + "\n") == line + "\n"
+
+
 @pytest.mark.parametrize("line", [s[0] for s in SECRETS] + KEEP)
 def test_redaction_is_idempotent(line):
     once = redact_log_text(line)
@@ -140,6 +450,14 @@ QUOTED = [
     ('password="correct horse battery staple"', 'password="<redacted>"'),
     ("password='correct horse battery staple'", "password='<redacted>'"),
     ('llama-server --api-key "abcdef ghijklmnop"', 'llama-server --api-key "<redacted>"'),
+    ('llama-server --api-key="abcdef ghijklmnop"', 'llama-server --api-key="<redacted>"'),
+    ('password = """opaqueSecret123"""', 'password = """<redacted>"""'),
+    ("password: 'it''s-correct-horse-battery'", "password: '<redacted>'"),
+    ('{"password": "", "model": "gpt-4o"}', '{"password": "<redacted>", "model": "gpt-4o"}'),
+    (
+        "ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes",
+        "ODBC: UID=alice;PWD=<redacted>;Encrypt=yes",
+    ),
     # The value ends at its own closing quote, so the fields after it survive.
     (
         '{"password": "correct horse battery staple", "model": "gpt-4o"}',
@@ -147,8 +465,14 @@ QUOTED = [
     ),
     # An escaped quote inside the value does not end it early.
     ('password="corr\\"ect horse staple"', 'password="<redacted>"'),
+    ("password='first \"nickname\" last'", "password='<redacted>'"),
+    ("password=\"first 'nickname' last\"", 'password="<redacted>"'),
     # Quoting puts the scheme inside the value; it stays, the credential goes.
     ('password: "Basic dXNlcjpwdw=="', 'password: "Basic <redacted>"'),
+    ("{'password': b'opaqueCredential123456'}", "{'password': b'<redacted>'}"),
+    ("{'password': br'opaqueCredential123456'}", "{'password': br'<redacted>'}"),
+    ("{'password': rb'opaqueCredential123456'}", "{'password': rb'<redacted>'}"),
+    ("{'OPENAI_API_KEY': B'opaqueCredential123456'}", "{'OPENAI_API_KEY': B'<redacted>'}"),
 ]
 
 
@@ -157,6 +481,45 @@ def test_a_quoted_credential_is_masked_whole(line, expected):
     """The value patterns used to stop at whitespace, so a quoted credential
     containing spaces was masked only up to its first space and the rest of the
     secret was printed next to the <redacted> marker."""
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize("prefix", ["b", "B", "r", "R", "u", "U", "br", "Rb"])
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_prefixed_env_secret_is_masked_whole(prefix, quote):
+    line = f"SSH_KEY_PASSPHRASE={prefix}{quote}correct horse battery staple{quote} status=failed"
+    expected = f"SSH_KEY_PASSPHRASE={prefix}{quote}<redacted>{quote} status=failed"
+
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            "password: [oldOpaqueSecret123456, newOpaqueSecret654321]",
+            "password: <redacted>",
+        ),
+        (
+            '{"api_key": ["oldOpaqueSecret123456", "newOpaqueSecret654321"], "model": "gpt-4o"}',
+            '{"api_key": <redacted>, "model": "gpt-4o"}',
+        ),
+        (
+            "config={'password': {'current': 'old]secret', 'previous': ['new}secret']}, 'mode': 'safe'}",
+            "config={'password': <redacted>, 'mode': 'safe'}",
+        ),
+        (
+            "password=(oldOpaqueSecret123456, {'rotated': 'newOpaqueSecret654321'}) status=401",
+            "password=<redacted> status=401",
+        ),
+        (
+            "password: [oldOpaqueSecret123456, newOpaqueSecret654321",
+            "password: <redacted>",
+        ),
+    ],
+)
+def test_a_container_valued_credential_is_masked_whole(line, expected):
     assert redact_log_text(line) == expected
 
 
@@ -212,6 +575,22 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
             '{"Authorization":"Bearer abcdef123456","x-request-id":"req-42"}',
             '{"Authorization":"Bearer <redacted>","x-request-id":"req-42"}',
         ),
+        (
+            "Authorization: Bearer abcdef123456, status=401; request_id=req-42",
+            "Authorization: Bearer <redacted>, status=401; request_id=req-42",
+        ),
+        (
+            "Authorization: Digest username=alice, realm=secret, nonce=abcdef, response=deadbeef",
+            "Authorization: Digest <redacted>",
+        ),
+        (
+            "Authorization: AWS4-HMAC-SHA256 Credential=AKID/20260826/eu-west-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef",
+            "Authorization: AWS4-HMAC-SHA256 <redacted>",
+        ),
+        (
+            "curl -H 'Authorization: Bearer abcdef123456' https://example.com",
+            "curl -H 'Authorization: Bearer <redacted>' https://example.com",
+        ),
         ("authorization: 'Basic dXNlcjpwdw=='", "authorization: 'Basic <redacted>'"),
         (
             'headers={"Cookie": "session=abc123def456xyz", "accept": "*/*"}',
@@ -221,6 +600,191 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
 )
 def test_the_fields_after_a_masked_header_survive(line, expected):
     assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            r'payload="{\"password\":\"abc\\\"defSECRET\"}"',
+            r'payload="{\"password\":\"<redacted>\"}"',
+        ),
+        (
+            r'payload="{\"Cookie\":\"session=abc123def456SECRET\"}"',
+            r'payload="{\"Cookie\":\"<redacted>\"}"',
+        ),
+        (
+            "headers=[('Cookie', 'session=abc123def456SECRET')]",
+            "headers=[('Cookie', '<redacted>')]",
+        ),
+        (
+            "headers=[('Authorization', 'Bearer abc123def456SECRET')]",
+            "headers=[('Authorization', 'Bearer <redacted>')]",
+        ),
+        ("password=correct horse battery staple", "password=<redacted>"),
+        (
+            "OPENAI_API_KEY=abcdef123456 python server.py --port 8080",
+            "OPENAI_API_KEY=<redacted> python server.py --port 8080",
+        ),
+        (
+            "OPENAI_API_KEY='first-secret-'second-secret; echo kept",
+            "OPENAI_API_KEY='<redacted>'; echo kept",
+        ),
+        (
+            "DATABASE_PASSWORD=abc,def}] python server.py",
+            "DATABASE_PASSWORD=<redacted> python server.py",
+        ),
+        (
+            r"DATABASE_PASSWORD=abc\ def python server.py",
+            "DATABASE_PASSWORD=<redacted> python server.py",
+        ),
+        ("password=abc;def", "password=<redacted>"),
+        (
+            "password=abc;def; status=401",
+            "password=<redacted>; status=401",
+        ),
+        (
+            '{"OPENAI_API_KEY": abc;def;status=401}',
+            '{"OPENAI_API_KEY": <redacted>;status=401}',
+        ),
+        (
+            "rediscli_auth=abc123SECRET python server.py",
+            "rediscli_auth=<redacted> python server.py",
+        ),
+        ('{"password":"null"}', '{"password":"<redacted>"}'),
+        ("password='None'", "password='<redacted>'"),
+    ],
+)
+def test_credential_boundaries_do_not_leak_suffixes(line, expected):
+    assert redact_log_text(line) == expected
+
+
+def test_same_indented_yaml_sequence_credentials_remain_masked():
+    redactor = StreamingLogRedactor()
+    records = ["- api_key:\n", "  - opaqueOne123456\n", "  - opaqueTwo123456\n"]
+
+    assert [redactor.redact_record(record) for record in records] == [
+        "- api_key:\n",
+        "  <redacted>\n",
+        "  <redacted>\n",
+    ]
+
+
+def test_multiline_container_credentials_remain_masked():
+    redactor = StreamingLogRedactor()
+    records = [
+        "password: [oldOpaqueSecret123456,\n",
+        "  newOpaqueSecret654321,\n",
+        "]\n",
+        "status: failed\n",
+    ]
+
+    assert [redactor.redact_record(record) for record in records] == [
+        "password: <redacted>\n",
+        "  <redacted>\n",
+        "]\n",
+        "status: failed\n",
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(
+        SECRET_ENV_NAMES
+        | {
+            "AWS_ACCESS_KEY_ID",
+            "AZURE_CLIENT_SECRET",
+            "NPM_CONFIG__AUTH",
+        }
+    ),
+)
+def test_studio_secret_environment_inventory_is_masked(name):
+    secret = "opaque-environment-secret"
+    line = f"{name}={secret} python server.py"
+    assert redact_log_text(line) == f"{name}=<redacted> python server.py"
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            '{"GITHUB_TOKEN":"plainopaquecredential123456","status":401}',
+            '{"GITHUB_TOKEN":"<redacted>","status":401}',
+        ),
+        (
+            "{'REPLICATE_API_TOKEN': 'r8_plainopaquecredential123456'}",
+            "{'REPLICATE_API_TOKEN': '<redacted>'}",
+        ),
+        (
+            "AZURE_CLIENT_CREDENTIAL: plainopaquecredential123456",
+            "AZURE_CLIENT_CREDENTIAL: <redacted>",
+        ),
+        (
+            '{"github_token":"plainopaquecredential123456"}',
+            '{"github_token":"<redacted>"}',
+        ),
+    ],
+)
+def test_structured_secret_environment_inventory_is_masked(line, expected):
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"author":"Sam","status":200}',
+        '{"AWS_EC2_METADATA_DISABLED":"true"}',
+        '{"n_tokens":4096}',
+    ],
+)
+def test_structured_non_secret_fields_remain_visible(line):
+    assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["AccountKey", "SharedAccessKey", "AccessKey", "Pwd"],
+)
+def test_connection_string_secret_fields_are_masked(field):
+    secret = "VerySecretValue123"
+    line = f"Endpoint=sb://example;{field}={secret};Retry=3"
+    masked = redact_log_text(line)
+    assert secret not in masked
+    assert masked == f"Endpoint=sb://example;{field}=<redacted>;Retry=3"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["private_key", "private-key", "privateKey", "private-key-data"],
+)
+def test_private_key_fields_are_masked(field):
+    secret = "BASE64KEYSECRET123"
+    line = f'credentials: {{"{field}":"{secret}","name":"kept"}}'
+    masked = redact_log_text(line)
+    assert secret not in masked
+    assert '"name":"kept"' in masked
+
+
+@pytest.mark.parametrize("field", ["session_token", "session-token", "sessionToken"])
+def test_generic_session_token_fields_are_masked(field):
+    secret = "opaqueSESSIONSECRET123456"
+    line = f'{{"{field}":"{secret}","status":401}}'
+    assert redact_log_text(line) == f'{{"{field}":"<redacted>","status":401}}'
+
+
+@pytest.mark.parametrize(
+    "key,value,masked",
+    [
+        ("cookie", "session=opaqueCOOKIESECRET123456", "<redacted>"),
+        ("authorization", "Custom opaqueAUTHSECRET123456", "<redacted>"),
+        ("x-api-key", "opaqueAPISECRET123456", "<redacted>"),
+    ],
+)
+def test_byte_string_header_pairs_are_masked(key, value, masked):
+    line = f"headers=[(b'{key}', b'{value}'), (b'x-request-id', b'req-42')]"
+    assert redact_log_text(line) == (
+        f"headers=[(b'{key}', b'{masked}'), (b'x-request-id', b'req-42')]"
+    )
 
 
 # A colorized writer puts an escape between the key and its value. Every rule is

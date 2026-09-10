@@ -90,6 +90,24 @@ def test_a_symlink_out_of_the_log_dir_is_not_readable(tmp_path):
     assert link.name not in labels
 
 
+def test_a_symlinked_family_directory_outside_the_studio_root_is_not_scanned(tmp_path, monkeypatch):
+    root = tmp_path / "studio"
+    outside = tmp_path / "unrelated"
+    (root / "logs").mkdir(parents = True)
+    outside.mkdir()
+    stolen = outside / "server-20260813-999999-pid1.log"
+    stolen.write_text("not a Studio log\n", encoding = "utf-8")
+    try:
+        (root / "logs" / "server").symlink_to(outside, target_is_directory = True)
+    except (OSError, NotImplementedError):
+        # Skip because Windows requires Developer Mode or elevation for this
+        # primitive; other hosts still exercise the containment behavior.
+        pytest.skip("symlinks unavailable")
+
+    monkeypatch.setattr(debug_log_sources, "candidate_roots", lambda: [root])
+    assert stolen.name not in [source.label for source in debug_log_sources.list_sources()]
+
+
 def test_a_missing_family_directory_is_not_an_error():
     _seed("server", f"server-20260813-101011-pid{os.getpid()}.log")
     sources = debug_log_sources.list_sources()
