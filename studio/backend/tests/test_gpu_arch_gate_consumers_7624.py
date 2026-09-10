@@ -628,6 +628,9 @@ class TestArchRetryRestoresTheMemoryPolicy:
             # Same reason: a rung that strips a COPY clears it while `cmd` still owes
             # DirectIO, so the respawn has to get `cmd`'s answer back with the pair.
             "self._memory_dio_applicable",
+            # Copied on the way in, so a later strip cannot reach back into the
+            # snapshot the fallback respawns from.
+            "_mem_dio_flags_for_cmd",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]
@@ -655,6 +658,7 @@ class TestArchRetryRestoresTheMemoryPolicy:
             # Same reason: a rung that strips a COPY clears it while `cmd` still owes
             # DirectIO, so the respawn has to get `cmd`'s answer back with the pair.
             "self._memory_dio_applicable",
+            "self._memory_dio_flags",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]

@@ -2946,17 +2946,6 @@ class TestTheBackendCheckReusesTheRepoRecognition:
         assert "_GGML_GPU_BACKEND_RE" in src
         assert '{"cuda", "hip", "vulkan"}' not in src
 
-    def test_an_external_backend_path_counts_as_gpu_capable(self, monkeypatch):
-        from core.inference.llama_cpp import LlamaCppBackend
-        monkeypatch.setattr(
-            LlamaCppBackend,
-            "_binary_ships_no_gpu_backend",
-            staticmethod(lambda binary = None, env = None: False),
-        )
-        assert LlamaCppBackend._build_offers_gpu_backend(
-            "llama-server", {"GGML_BACKEND_PATH": r"C:\plugins"}
-        )
-
     def test_a_readable_cpu_only_bundle_is_still_rejected(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
         monkeypatch.setattr(
@@ -2982,3 +2971,92 @@ class TestTheBackendCheckReusesTheRepoRecognition:
 
         monkeypatch.setattr(m, "_llama_lib_dir", boom)
         assert not m.LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
+
+
+class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
+    """_binary_ships_no_gpu_backend answering False means "I cannot say it ships
+    none", not "it ships one": it returns False for a static layout, an unreadable
+    directory, and any nonempty GGML_BACKEND_PATH. Reading that as a positive is
+    the fail-open this check exists to prevent."""
+
+    @staticmethod
+    def _no_verdict(monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            staticmethod(lambda binary = None, env = None: False),
+        )
+
+    def test_a_path_holding_a_gpu_plugin_confirms(self, monkeypatch, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        self._no_verdict(monkeypatch)
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        assert LlamaCppBackend._build_offers_gpu_backend(
+            "llama-server", {"GGML_BACKEND_PATH": str(tmp_path)}
+        )
+
+    def test_a_cpu_only_path_does_not(self, monkeypatch, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        self._no_verdict(monkeypatch)
+        (tmp_path / "ggml-cpu.dll").write_text("")
+        assert not LlamaCppBackend._build_offers_gpu_backend(
+            "llama-server", {"GGML_BACKEND_PATH": str(tmp_path)}
+        )
+
+    def test_a_stale_or_missing_path_does_not(self, monkeypatch, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        self._no_verdict(monkeypatch)
+        assert not LlamaCppBackend._build_offers_gpu_backend(
+            "llama-server", {"GGML_BACKEND_PATH": str(tmp_path / "gone")}
+        )
+
+    def test_a_gpu_lib_beside_the_binary_still_confirms(self, monkeypatch, tmp_path):
+        import core.inference.llama_cpp as m
+
+        self._no_verdict(monkeypatch)
+        (tmp_path / "ggml-vulkan.dll").write_text("")
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
+        assert m.LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
+
+
+class TestAFailedProbeIsMemoisedToo:
+    def test_a_raising_probe_is_cached(self, monkeypatch):
+        """An unanswered probe folds into "not an iGPU" upstream, which sends the
+        confirmation straight back here, so an uncached timeout is paid twice over
+        and again per device-set rung."""
+        import core.inference.llama_cpp as m
+
+        m._reset_vulkan_probe_memo()
+        calls = []
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
+        monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
+
+        def boom(*a, **k):
+            calls.append(1)
+            raise OSError("probe timed out")
+
+        monkeypatch.setattr(m.subprocess, "run", boom)
+        for _ in range(3):
+            assert m.LlamaCppBackend._run_vulkan_probe("llama-server") == []
+        assert len(calls) == 1
+        assert m._VULKAN_PROBE_MEMO["llama-server"] == []
+
+
+class TestTheSnapshotCarriesTheDioTokens:
+    def test_the_flags_round_trip_with_the_base_command(self):
+        """The fit-off retry can append the pair to its OWN run_cmd and record it
+        while `cmd` never carried one; the fallback respawning `cmd` then read that
+        stale record as "already has it" and could not append what its own devices
+        confirm."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        # Copied on the way in, so a later strip cannot reach back into the snapshot.
+        assert src.count("_mem_dio_flags_for_cmd = list(self._memory_dio_flags)") == 2
+        assert src.count("_mem_dio_flags_for_cmd,") == 2           # both snapshots
+        assert "self._memory_dio_flags,\n" in src                  # the restore

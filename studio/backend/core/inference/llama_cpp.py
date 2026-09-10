@@ -8475,14 +8475,32 @@ class LlamaCppBackend:
         # elsewhere. A private cuda/hip/vulkan set answered "no GPU" for all of those.
         if LlamaCppBackend._binary_ships_no_gpu_backend(binary, env):
             return False
+        # _binary_ships_no_gpu_backend answering False means "I cannot say it ships
+        # none", which is NOT "it ships one": it returns False for a static layout,
+        # an unreadable directory and any nonempty GGML_BACKEND_PATH. Reading it as
+        # a positive is the fail-open this check exists to avoid, so look for the
+        # plugin itself, in the external path when one is set and beside the binary
+        # otherwise. A stale, missing or CPU-only path confirms nothing.
         source = os.environ if env is None else env
-        if str(source.get("GGML_BACKEND_PATH", "") or "").strip():
-            return True
+        external = str(source.get("GGML_BACKEND_PATH", "") or "").strip()
         try:
-            files = tuple(path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file())
-        except OSError:
+            roots = (
+                [Path(part) for part in external.split(os.pathsep) if part.strip()]
+                if external
+                else [_llama_lib_dir(binary)]
+            )
+        except Exception:
+            # Naming the directory can fail too, and an install we cannot even
+            # locate is the fail-closed case by definition.
             return False
-        return any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
+        for root in roots:
+            try:
+                names = tuple(path.name for path in root.iterdir() if path.is_file())
+            except OSError:
+                continue
+            if any(_GGML_GPU_BACKEND_RE.match(name) for name in names):
+                return True
+        return False
 
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
@@ -10302,6 +10320,11 @@ class LlamaCppBackend:
                 return []
         except Exception as e:
             logger.debug(f"vulkan GPU probe failed: {e}")
+            # Memoised like any other answer: an unanswered probe folds into
+            # "not an iGPU" upstream, which sends the DirectIO confirmation
+            # straight back here, so an uncached timeout is paid twice over
+            # and again per device-set rung.
+            _VULKAN_PROBE_MEMO[binary] = []
             return []
 
         rows: list[dict] = []
@@ -23814,14 +23837,21 @@ class LlamaCppBackend:
                 self._memory_policy_active = _mem_managed_is_effective or _mem_policy_touched_extras
                 self._memory_policy_extras_touched = _mem_policy_touched_extras
                 # What `cmd` itself means, snapshotted before any respawn edits it.
+                # The dio TOKENS are in it, not just the applicability: the fit-off
+                # retry appends the pair to its OWN run_cmd and records it while `cmd`
+                # never carried one, and the fallback respawning `cmd` then read that
+                # stale record as "already has it" and could not append the pair its
+                # own devices confirm. Copied, so a later strip cannot reach back in.
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
                 # and write the policy back; the arch-crash retry (#7624) respawns
                 # `cmd`, which never carried that lock, so it restores these.
+                _mem_dio_flags_for_cmd = list(self._memory_dio_flags)
                 _mem_policy_for_cmd = (
                     _mem_host_resident,
                     self._memory_state,
                     self._memory_direct_io,
                     self._memory_dio_applicable,
+                    _mem_dio_flags_for_cmd,
                     self._memory_policy_active,
                     self._memory_mlock_applicable,
                 )
@@ -24436,11 +24466,13 @@ class LlamaCppBackend:
                     # runs. The snapshot too: the arch-crash retry restores it over
                     # `cmd`, which now carries the override.
                     self._record_memory_state(cmd, env)
+                    _mem_dio_flags_for_cmd = list(self._memory_dio_flags)
                     _mem_policy_for_cmd = (
                         _mem_host_resident,
                         self._memory_state,
                         self._memory_direct_io,
                         self._memory_dio_applicable,
+                        _mem_dio_flags_for_cmd,
                         self._memory_policy_active,
                         self._memory_mlock_applicable,
                     )
@@ -25412,6 +25444,7 @@ class LlamaCppBackend:
                             self._memory_state,
                             self._memory_direct_io,
                             self._memory_dio_applicable,
+                            self._memory_dio_flags,
                             self._memory_policy_active,
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
