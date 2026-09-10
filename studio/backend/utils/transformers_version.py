@@ -2459,13 +2459,18 @@ def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
     )
 
 
-def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> None:
+def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> bool:
     """Drop what a failed optional install left: the payload directory and every dist-info.
 
     An installer that exits nonzero part-way (a full disk, an interrupted copy) can leave
     the package directory without its native extension, or metadata without the package;
     with both gone, _optional_package_absent reads the package as absent and the next
     top-up tries again instead of the sidecar shadowing a working ambient copy.
+
+    Answers whether nothing of the package is left. A remnant that would not go (a file
+    another process holds open on Windows, a permission) still sits ahead of
+    site-packages, and the caller has to treat the directory as not usable rather than
+    report a sidecar that will fail at tokenization.
     """
     # Every top-level entry the wheel owns, not only the import package: tiktoken ships
     # tiktoken/, tiktoken_ext/ (the plugin namespace, whose openai_public module would
@@ -2474,14 +2479,20 @@ def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> None:
     # an underscore, a dot or a hyphen, which no other package in these sidecars shares.
     stem = pkg_spec.split("==")[0].lower().replace("-", "_")
     root = Path(venv_dir)
-    try:
-        entries = os.listdir(venv_dir)
-    except OSError:
-        return
-    for entry in entries:
-        lowered = entry.lower().replace("-", "_")
-        if lowered != stem and not lowered.startswith((stem + "_", stem + ".")):
-            continue
+
+    def _owned() -> list[str]:
+        try:
+            entries = os.listdir(venv_dir)
+        except OSError:
+            return []
+        return [
+            entry
+            for entry in entries
+            if entry.lower().replace("-", "_") == stem
+            or entry.lower().replace("-", "_").startswith((stem + "_", stem + "."))
+        ]
+
+    for entry in _owned():
         path = root / entry
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path, ignore_errors = True)
@@ -2490,6 +2501,15 @@ def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> None:
                 path.unlink()
             except OSError:
                 pass
+    left = _owned()
+    if left:
+        logger.warning(
+            "%s could not be removed from %s after a failed install of %s; the directory is not usable",
+            ", ".join(sorted(left)[:5]),
+            venv_dir,
+            pkg_spec,
+        )
+    return not left
 
 
 def _remove_recordless_dist_infos(venv_dir: str, pkg_spec: str) -> None:
@@ -2847,9 +2867,11 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
                 )
                 # Only an absent optional package is safe to continue without: this
                 # directory goes ahead of site-packages, and a half-copied payload
-                # would shadow the ambient one and fail at tokenization.
-                _remove_optional_remnants(venv_dir, pkg)
-                continue
+                # would shadow the ambient one and fail at tokenization. A remnant
+                # that would not go makes this a failed build, not a sidecar without
+                # the package; the next run rebuilds it.
+                if _remove_optional_remnants(venv_dir, pkg):
+                    continue
             # Nothing usable was there before this began (it was just wiped), and a
             # partial tree left behind would count as one next time: offline, the
             # guard above would then keep it instead of asking the cache again.
