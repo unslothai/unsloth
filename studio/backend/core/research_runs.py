@@ -2171,7 +2171,6 @@ class ResearchSupervisor:
             if step.get("status") != "completed":
                 step_error = _preferred_step_error(step_error, str(result.get("error") or ""))
                 continue
-            completed_steps += 1
             restored_state = _normalize_research_state(result.get("researchState"))
             if restored_state:
                 research_state = restored_state
@@ -2223,6 +2222,9 @@ class ResearchSupervisor:
                 f"{item.get('text') or item.get('snippet') or ''}"
                 for item in accepted_rag_sources
             )
+            # An unscraped search persists no excerpt, so a completed step can come back with nothing in it.
+            if web_evidence or rag_evidence:
+                completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
             notes.append(
                 f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}\n\n"

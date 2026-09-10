@@ -153,3 +153,51 @@ def test_a_step_that_found_results_completes_the_run_even_with_no_citable_source
     assert finished["status"] == "completed"
     assert not finished["sources"]
     assert REPORT in finished["report"]
+
+
+@pytest.mark.parametrize(
+    ("restored_result", "expected_status"),
+    [
+        ({"excerpt": "It happened on a Tuesday."}, "completed"),
+        ({}, "failed"),
+    ],
+)
+def test_a_resumed_step_counts_only_if_its_evidence_survived(
+    research_home, monkeypatch, restored_result, expected_status
+):
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    plan_steps = [
+        {"title": "One", "query": "what happened 0"},
+        {"title": "Two", "query": "what happened 1"},
+    ]
+    _claimed_run(supervisor, plan_steps, 2, None)
+    research_db.upsert_execution_step(
+        "run-1",
+        0,
+        "One",
+        "what happened 0",
+        "completed",
+        {"action": "search", "input": "what happened 0", "sourceCount": 0, **restored_result},
+        supervisor.worker_id,
+    )
+    conn = studio_db.get_connection()
+    conn.execute(
+        "UPDATE research_runs SET lease_owner = NULL, lease_expires_at = 0 WHERE id = 'run-1'"
+    )
+    conn.commit()
+    conn.close()
+    resumed = research_db.claim_next(supervisor.worker_id)
+    assert resumed["claimedFromStatus"] == "running"
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        if kwargs.get("phase") == "synthesis":
+            return REPORT, "", "stop", None
+        return "not json", "", "stop", None
+
+    monkeypatch.setattr(worker, "execute_tool", lambda *args, **kwargs: THROTTLED)
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    asyncio.run(supervisor._process(resumed))
+
+    assert research_db.get_run("run-1")["status"] == expected_status
