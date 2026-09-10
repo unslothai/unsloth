@@ -2072,6 +2072,8 @@ def _policy_meta(
         "scheme": "nvfp4",
         "base_model_id": base,
         "family": family,
+        # Stamped by the builder for a policy build too: the fp8 half runs the same per-row kernels.
+        "fp8_granularity": "per_row",
         NVFP4_POLICY_KEY: block,
     }
 
@@ -2130,6 +2132,31 @@ def test_a_policy_checkpoint_is_validated_end_to_end():
     ckpt["format"] = pq.PREQUANT_FORMAT
     assert pq._validate_checkpoint(ckpt, "nvfp4", "Tongyi-MAI/Z-Image-Turbo", logger) is False
     assert "v3" in logger.text
+
+
+def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
+    # A policy artifact is declared nvfp4 and is mostly Float8Tensor, so the per-row granularity and
+    # the activation floor decide whether ITS fp8 layers render or go black. Gating both on
+    # scheme == fp8 skipped every one of them.
+    logger = _Recorder()
+    ckpt = {
+        "format": pq.PREQUANT_FORMAT_POLICY,
+        "metadata": _policy_meta(),
+        "state_dict": {
+            "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
+            "layers.0.feed_forward.w1.weight": Float8Tensor(hp_value_lb = 1e-12),
+        },
+    }
+    base = "Tongyi-MAI/Z-Image-Turbo"
+    assert pq._validate_checkpoint(ckpt, "nvfp4", base, logger) is True
+    unfloored = dict(ckpt)
+    unfloored["state_dict"] = dict(ckpt["state_dict"])
+    unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is False
+    per_tensor = dict(ckpt)
+    per_tensor["metadata"] = _policy_meta()
+    per_tensor["metadata"]["fp8_granularity"] = "per_tensor"
+    assert pq._validate_checkpoint(per_tensor, "nvfp4", base, logger) is False
 
 
 def test_the_floor_check_skips_the_4_bit_weights_beside_the_fp8_ones():
