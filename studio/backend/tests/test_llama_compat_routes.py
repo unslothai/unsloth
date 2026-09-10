@@ -42,6 +42,7 @@ CATALOG = [
         "created": 1_700_000_000,
         "owned_by": "unsloth",
         "loaded": True,
+        "status": {"value": "loaded"},
         "quant": "UD-Q4_K_XL",
     },
     {
@@ -50,6 +51,7 @@ CATALOG = [
         "created": 1_700_000_000,
         "owned_by": "unsloth",
         "loaded": False,
+        "status": {"value": "unloaded"},
     },
 ]
 
@@ -80,6 +82,9 @@ def _inference_double(
     backend,
     catalog,
     orchestrator = None,
+    *,
+    load_impl = None,
+    unload_impl = None,
 ):
     """Stand-in for routes.inference. Deliberately not a sys.modules entry: stubbing it
     globally broke two unrelated route tests when the suite ran in one process."""
@@ -93,6 +98,15 @@ def _inference_double(
         return catalog
 
     inference._openai_catalog_objects = _objects
+
+    async def _default_load(request, fastapi_request, current_subject, *, user_initiated = False):
+        return types.SimpleNamespace(status = "loaded", model = request.model_path)
+
+    async def _default_unload(request, current_subject):
+        return types.SimpleNamespace(status = "unloaded", model = request.model_path)
+
+    inference.load_model_gated = load_impl or _default_load
+    inference._unload_model_impl = unload_impl or _default_unload
     return inference
 
 
@@ -103,20 +117,30 @@ def _load(
     backend = None,
     catalog = None,
     orchestrator = None,
+    *,
+    load_impl = None,
+    unload_impl = None,
+    force_reload = False,
 ):
     """The real routes/llama_compat.py, with routes.inference replaced by a double."""
     global _MOD
+    if force_reload or (_MOD is not None and not hasattr(_MOD, "router")):
+        sys.modules.pop("llama_compat_under_test", None)
+        _MOD = None
     if _MOD is None:
         spec = importlib.util.spec_from_file_location(
             "llama_compat_under_test", str(_BACKEND / "routes" / "llama_compat.py")
         )
-        _MOD = importlib.util.module_from_spec(spec)
-        sys.modules["llama_compat_under_test"] = _MOD
-        spec.loader.exec_module(_MOD)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["llama_compat_under_test"] = mod
+        spec.loader.exec_module(mod)
+        _MOD = mod
     double = _inference_double(
         backend if backend is not None else _Backend(),
         CATALOG if catalog is None else catalog,
         orchestrator,
+        load_impl = load_impl,
+        unload_impl = unload_impl,
     )
     _MOD._inference = lambda: double
     return _MOD
@@ -449,11 +473,14 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
     assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
-    for path in ("/props", "/v1/props", "/version"):
+    for path in ("/props", "/v1/props", "/version", "/models"):
         assert ("GET", path) in _INFERENCE_ROUTES, path
     # Not the Ollama paths: they are not served at all.
     for path in ("/api/tags", "/api/show", "/api/version"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
+    # Mutating management stays out of the keyless inference grant.
+    assert ("POST", "/models/load") not in _INFERENCE_ROUTES
+    assert ("POST", "/models/unload") not in _INFERENCE_ROUTES
 
 
 # ── round two ─────────────────────────────────────────────────────────────────
@@ -493,9 +520,9 @@ def test_the_nested_slot_endpoint_is_denied_too(path):
 
 
 def test_the_deny_list_matches_llama_servers_own_route_table():
-    """Transcribed from tools/server/server.cpp. /props is the only bare route Studio
-    serves, so anything else missing means a probe still reaches the app shell."""
-    mod = _load()
+    """Transcribed from tools/server/server.cpp. Served bare routes are excluded;
+    anything else missing means a probe still reaches the app shell."""
+    mod = _load(force_reload = True)
     bare_llama_routes = {
         "apply-template",
         "audio/transcriptions",
@@ -524,19 +551,20 @@ def test_the_deny_list_matches_llama_servers_own_route_table():
         "tokenize",
         "tools",
     }
-    served = {"props"}
+    # Studio serves /props and the Open WebUI management trio; sse/download/delete stay probes.
+    served = {"props", "models", "models/load", "models/unload"}
     for route in bare_llama_routes - served:
         assert mod.is_engine_probe_path(route), route
-    assert not mod.is_engine_probe_path("props"), "Studio serves /props"
+    for route in served:
+        assert not mod.is_engine_probe_path(route), route
 
 
 def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
-    mod = _load()
+    mod = _load(force_reload = True)
     with _client(mod) as c:
         for path in (
             "/chat/completions",
             "/responses",
-            "/models",
             "/tools",
             "/audio/transcriptions",
         ):
@@ -544,6 +572,11 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
                 r = c.request(method, path, json = {} if method == "POST" else None)
                 assert r.status_code == 404, (method, path, r.status_code)
                 assert "text/html" not in r.headers.get("content-type", ""), (method, path)
+        # Download/delete remain unsupported on the management catalog path.
+        for method in ("POST", "DELETE"):
+            r = c.request(method, "/models", json = {} if method == "POST" else None)
+            assert r.status_code == 404, (method, r.status_code)
+        assert c.get("/models/sse").status_code == 404
 
 
 def test_props_does_not_advertise_child_endpoints_studio_denies():
@@ -799,12 +832,13 @@ def test_a_get_probe_404s_in_api_only_mode(path):
 
 
 def test_api_only_mode_still_serves_the_three_real_routes():
-    mod = _load()
+    mod = _load(force_reload = True)
     with _api_only_client(mod) as c:
-        for path in ("/props", "/v1/props", "/version"):
+        for path in ("/props", "/v1/props", "/version", "/models"):
             r = c.get(path)
             assert r.status_code == 200, (path, r.status_code)
             assert "application/json" in r.headers["content-type"], path
+        assert c.get("/models").json()["object"] == "list"
 
 
 def test_the_get_denials_are_not_added_when_a_frontend_is_mounted():
