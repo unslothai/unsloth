@@ -571,6 +571,20 @@ _resolve_studio_destinations() {
 
 # Records which cache this install used, so an update reuses it rather than guessing: the launch below repoints the backend at the Studio cache even in shared mode, so one on-demand install makes an empty Studio cache look full. Never fatal. A relative UV_CACHE_DIR names a different directory in each phase of one install, since uv resolves it against its working directory and setup.sh changes into its own before the dependency pass, so make it absolute once, here.
 # Takes $1, defaulting to UV_CACHE_DIR, and prints it; the scan resolves uv's answer on this same base so two bases cannot miss a warm cache.
+# True for a name uv itself creates: <kind>-v<N>, whole suffix numeric. `archive-v0.backup`
+# and `archive-v0.tar.gz` are not uv's, so neither the write probe nor the warmth scan may
+# treat them as buckets -- one rule, because tightening only one of them is how they drifted.
+_uv_is_bucket_name() {
+    case "$1" in
+        *-v[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "${1##*-v}" in
+        *[!0-9]*) return 1 ;;
+    esac
+    return 0
+}
+
 _absolutize_uv_cache_dir() {
     _uv_cache_path="${1-$UV_CACHE_DIR}"
     case "$_uv_cache_path" in
@@ -651,6 +665,20 @@ _configure_uv_cache() {
         return 0
     fi
 
+    # uv --no-cache neither reads nor writes a cache, so there is nothing to select: probing
+    # would touch a cache the caller told uv to leave alone, and a marker written here would
+    # name one this install never filled. Mirrors _uv_no_cache_requested() in
+    # unsloth_cli/commands/studio.py, which skips probing and recording for the same reason.
+    case "${UV_NO_CACHE:-}" in
+        1|true|TRUE|yes|YES|on|ON)
+            UV_CACHE_DIR="$_uv_studio_cache"
+            _UV_CACHE_MODE=studio
+            export UV_CACHE_DIR
+            step "uv cache" "uv caching is off (UV_NO_CACHE); nothing to select or record"
+            return 0
+            ;;
+    esac
+
     # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank inherited value cannot override them; last line so a notice ahead of the path does not become the path.
     _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
         | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1) || _uv_default_cache=""
@@ -705,17 +733,9 @@ _configure_uv_cache() {
                 # Anything else at the top level is not uv's to write: CACHEDIR.TAG and
                 # .gitignore are its own files, and a cache-dir pointed at a mount point has
                 # a root-owned lost+found that must not condemn the whole cache.
-                if [ "$_uv_probe_dir" != "$_uv_candidate" ]; then
-                    _uv_probe_base="${_uv_probe_dir##*/}"
-                    case "$_uv_probe_base" in
-                        *-v[0-9]*) ;;
-                        *) continue ;;
-                    esac
-                    # The whole suffix has to be the version, or `archive-v0.backup` and
-                    # `archive-v0.tar.gz` read as buckets and one stray file condemns the cache.
-                    case "${_uv_probe_base##*-v}" in
-                        *[!0-9]*) continue ;;
-                    esac
+                if [ "$_uv_probe_dir" != "$_uv_candidate" ] \
+                   && ! _uv_is_bucket_name "${_uv_probe_dir##*/}"; then
+                    continue
                 fi
                 if [ ! -d "$_uv_probe_dir" ]; then
                     # A file, or a symlink dangling or not, is still an existing path to
@@ -734,7 +754,7 @@ _configure_uv_cache() {
                     _uv_cand_writable=false
                 fi
             done
-            unset _uv_probe _uv_probe_dir _uv_probe_base
+            unset _uv_probe _uv_probe_dir
 
             # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
             # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
@@ -745,6 +765,9 @@ _configure_uv_cache() {
                 "$_uv_candidate"/wheels-* \
                 "$_uv_candidate"/sdists-*; do
                 [ -d "$_uv_bucket" ] || continue
+                # `archive-*` also matches `archive-v0.backup`, whose bytes uv cannot reuse:
+                # counting them warm picks a cache that is empty in practice.
+                _uv_is_bucket_name "${_uv_bucket##*/}" || continue
                 # Unreadable is not empty; remembered so the message below says why.
                 if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
                     _uv_scan_blocked=true

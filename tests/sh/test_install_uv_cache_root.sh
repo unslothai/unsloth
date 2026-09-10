@@ -12,13 +12,14 @@ HELPERS=$(awk '
     /^_configure_uv_cache\(\) \{/ { grab = 1 }
     /^_prepare_studio_uv_cache_for_launch\(\) \{/ { grab = 1 }
     /^_record_uv_cache_choice\(\) \{/ { grab = 1 }
+    /^_uv_is_bucket_name\(\) \{/ { grab = 1 }
     /^_absolutize_uv_cache_dir\(\) \{/ { grab = 1 }
     /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$INSTALL_SH")
 for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch _record_uv_cache_choice \
-    _restore_uv_cache_marker _absolutize_uv_cache_dir; do
+    _restore_uv_cache_marker _absolutize_uv_cache_dir _uv_is_bucket_name; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_helper}() {"; then
         echo "  FAIL: could not extract $_helper from install.sh"
         exit 1

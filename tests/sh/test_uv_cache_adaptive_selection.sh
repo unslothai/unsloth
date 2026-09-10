@@ -16,6 +16,7 @@
 #   * a caller's set -f                  -> the scan still expands its own globs
 #   * a dangling bucket link             -> studio; mkdir(2) answers EEXIST on it
 #   * a bucket-name lookalike            -> ignored; only <kind>-v<N> is uv's to write
+#   * UV_NO_CACHE                        -> studio, with nothing probed or recorded
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
 set -e
@@ -36,6 +37,7 @@ awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/'
 awk '/^_configure_uv_cache\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN"
 awk '/^_prepare_studio_uv_cache_for_launch\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_absolutize_uv_cache_dir\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
+awk '/^_uv_is_bucket_name\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_EARLY"; then
     echo "FAIL: could not extract the early UV_CACHE_DIR block from install.sh"
@@ -139,6 +141,13 @@ mkdir -p "$_lookalike/archive-v0/torch"
 : > "$_lookalike/CACHEDIR.TAG"
 : > "$_lookalike/archive-v0.tar.gz"
 : > "$_lookalike/archive-v0.backup"
+# A lookalike DIRECTORY full of files is not warmth either: `archive-*` matches
+# `archive-v0.backup`, whose bytes uv cannot reuse, so counting it would pick a cache that is
+# empty in practice and forfeit Studio-cache colocation for nothing.
+_lookalike_dir="$_TMP/uvlookalikedir"
+mkdir -p "$_lookalike_dir/archive-v0.backup/pkg"
+: > "$_lookalike_dir/archive-v0.backup/pkg/payload.so"
+: > "$_lookalike_dir/CACHEDIR.TAG"
 # uv mutates interpreter-v4 too, so the verdict cannot stop at the five artifact families.
 _denied_meta="$_TMP/uvmeta2"
 mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
@@ -199,6 +208,8 @@ else
 fi
 _out=$(_run "$_TMP/r" '' "$_lookalike")
 assert_eq "a bucket lookalike is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+_out=$(_run "$_TMP/t" '' "$_lookalike_dir")
+assert_eq "a lookalike dir is not warmth"      "studio" "$(echo "$_out" | cut -d' ' -f1)"
 chmod 700 "$_alien/lost+found"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
