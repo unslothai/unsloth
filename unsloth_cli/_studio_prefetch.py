@@ -1224,6 +1224,7 @@ def _run_unguarded(
     # mlx-vlm and mlx-audio DOWNGRADES the update never makes, and the offline swap then
     # installed them from the cache (observed on the staging matrix). Same file, same
     # rule: the live tree's, since the live installer is what runs the core step.
+    _applied_live_override = False
     if (
         platform.system() == "Darwin"
         and platform.machine() == "arm64"
@@ -1235,11 +1236,13 @@ def _run_unguarded(
         )
         if overrides.is_file():
             child_env["UV_OVERRIDE"] = str(overrides)
+            _applied_live_override = True
 
     # 2. Resolve. The plan is what the update's core step would do, asked of the
     #    live venv so anything already satisfied is absent from it.
     # The installer's own branch, read from the venv the update will run against.
     no_torch = _no_torch(venv)
+    live_override = child_env.get("UV_OVERRIDE") if _applied_live_override else None
     step("prefetch resolving core packages")
     core_cmd = core_dry_run_command(
         interpreter,
@@ -1263,6 +1266,7 @@ def _run_unguarded(
             live_constraints = live_constraints,
             deadline = deadline,
             step = step,
+            live_override = live_override,
         )
 
 
@@ -1281,6 +1285,7 @@ def _run_prefetch(
     live_constraints: Optional[Path],
     deadline: float,
     step: Callable[[str], None],
+    live_override: Optional[str] = None,
 ) -> dict:
     try:
         resolved = _run(core_cmd, child_env)
@@ -1375,6 +1380,14 @@ def _run_prefetch(
     else:
         req_root = new_studio / "backend" / "requirements"
         payload["requirement_digests"] = requirement_digests(req_root)
+        # The override the update's later passes run under is the NEW wheel's: the
+        # core step has installed it by then, at the same path the live one held. The
+        # core plan above kept the live file, since the live installer runs that step.
+        requirement_env = child_env
+        if live_override is not None:
+            new_overrides = req_root / "single-env" / "overrides-darwin-arm64.txt"
+            if new_overrides.is_file():
+                requirement_env = {**(child_env or {}), "UV_OVERRIDE": str(new_overrides)}
         new_constraints = req_root / "single-env" / "constraints.txt"
         if not new_constraints.is_file():
             new_constraints = None
@@ -1402,7 +1415,7 @@ def _run_prefetch(
                 target = target,
                 constraints = new_constraints,
                 no_deps = no_deps,
-                env = child_env,
+                env = requirement_env,
                 uv = uv,
                 step = step,
                 label = name,

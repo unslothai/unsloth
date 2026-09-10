@@ -1015,6 +1015,44 @@ def test_the_prefetch_module_stays_importable_under_isolated_python():
 # ── the installer's override, the budget inside each call, and redaction ──
 
 
+def test_requirement_passes_resolve_under_the_fetched_wheels_override(managed, monkeypatch):
+    """The update's later passes run after the core step has installed the new wheel,
+    at the same path the live override held: the prefetch keeps the live file for the
+    core plan and the fetched wheel's for the requirement files, or a changed override
+    resolves different pins than the update will and leaves them uncached."""
+    site = managed / _studio_prefetch.VENV_NAME / "lib" / "python3.12" / "site-packages"
+    live = site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    live.write_text("transformers>=5.5.0,<=5.5.0\n", encoding = "utf-8")
+    monkeypatch.setattr(_studio_prefetch.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_studio_prefetch.platform, "machine", lambda: "arm64")
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    target = _studio_prefetch.site_dir(managed)
+    fetched = target / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    seen = []
+
+    def respond(cmd, env):
+        cmd = list(cmd)
+        seen.append((cmd, dict(env or {})))
+        if "--dry-run" in cmd and any(a.startswith("unsloth>=") for a in cmd):
+            return _plan_response(" + unsloth==2026.9.2\n + unsloth-zoo==2026.9.1\n")
+        if "--dry-run" in cmd:
+            return _plan_response(" + fastapi==0.120.0\n")
+        if "--target" in cmd:
+            _install_new_wheel_tree(target)
+            fetched.write_text("transformers>=5.6.0,<=5.6.0\n", encoding = "utf-8")
+            return _completed(0)
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", respond)
+    monkeypatch.setattr(_studio_prefetch, "_uv_version", lambda uv, env: "uv 0.12.1")
+    payload = _studio_prefetch.run(studio_home = managed, floor = "2026.9.2", echo = lambda line: None)
+    assert payload["state"] == "ready"
+    core = [env for cmd, env in seen if any(a.startswith("unsloth>=") for a in cmd)]
+    later = [env for cmd, env in seen if "--dry-run" in cmd and not any(a.startswith("unsloth>=") for a in cmd)]
+    assert core and all(env.get("UV_OVERRIDE") == str(live) for env in core)
+    assert later and all(env.get("UV_OVERRIDE") == str(fetched) for env in later)
+
+
 def test_the_dry_run_carries_the_installer_override_on_apple_silicon(managed, monkeypatch):
     """Without the override uv answers for a different resolver than the core step's:
     on the staging matrix it planned mlx-vlm and mlx-audio downgrades the update never

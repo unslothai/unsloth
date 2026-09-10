@@ -882,7 +882,15 @@ pub fn cancel_prefetch_update(
 pub fn prefetch_status(
     prefetch_state: tauri::State<'_, update::PrefetchState>,
 ) -> prefetch::PrefetchStatus {
-    let mut status = prefetch::status(&diagnostics::studio_dir());
+    let home = diagnostics::studio_dir();
+    // An expired marker's payload is every fetched wheel, unpacked, held for an offer
+    // the status no longer calls prepared; an offer postponed for a week would keep it
+    // for as long as the same version stayed on offer. Gone here, where the renderer
+    // asks on every check, so it does not wait for another prefetch or the update.
+    if prefetch::marker_expired(&home) {
+        update::discard_prefetch_if_idle(prefetch_state.inner(), &home);
+    }
+    let mut status = prefetch::status(&home);
     // One observation, not two reads: a prefetch completing in between would report
     // running with no version, which the renderer reads as an older offer's run.
     let (running, version) = update::prefetch_running_snapshot(&prefetch_state);

@@ -234,32 +234,53 @@ fn effective_update_cache(home: &Path, explicit_cache: Option<&str>) -> Option<P
 /// cannot resolve the relative spelling itself: its working directory is not the one
 /// the update's uv runs from.
 fn same_cache(expected: &Path, recorded: &Path) -> bool {
-    let trim = |p: &Path| {
-        p.to_string_lossy()
-            .trim_end_matches(['/', '\\'])
-            .to_string()
-    };
-    if trim(expected) == trim(recorded) {
+    if comparable_cache_path(expected) == comparable_cache_path(recorded) {
         return true;
     }
     if expected.is_relative() && recorded.is_absolute() {
-        // Normalised the way the CLI normalised what it recorded: `.` dropped, `..`
-        // folded into the component before it, and a leading `..` (which only the setup
-        // script's working directory could resolve) dropped, so what is left is the
-        // tail the recorded absolute path has to end with.
-        let mut relative = PathBuf::new();
-        for component in expected.components() {
-            match component {
-                std::path::Component::CurDir => {}
-                std::path::Component::ParentDir => {
-                    relative.pop();
-                }
-                other => relative.push(other.as_os_str()),
-            }
-        }
+        // A leading `..` (which only the setup script's working directory could
+        // resolve) is dropped by the fold, so what is left is the tail the recorded
+        // absolute path has to end with.
+        let relative = fold_lexically(expected);
         return !relative.as_os_str().is_empty() && recorded.ends_with(&relative);
     }
     false
+}
+
+/// `.` dropped and `..` folded into the component before it: the normalisation the
+/// CLI applies (os.path.normpath) to what it records, applied here to what the
+/// environment spells, so `/cache/../uv` and `/uv` name one cache.
+fn fold_lexically(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other.as_os_str()),
+        }
+    }
+    folded
+}
+
+/// The folded path as one string: separators unified, no trailing separator, and on
+/// Windows case-folded, since two spellings that differ only there open one directory.
+fn comparable_cache_path(path: &Path) -> String {
+    let text = fold_lexically(path).to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text
+    }
+}
+
+/// Whether the marker on disk is past the age the status reports as stale.
+pub fn marker_expired(home: &Path) -> bool {
+    read_marker(home)
+        .and_then(|marker| marker.created_at)
+        .is_some_and(|created| now_ms().saturating_sub(created) > MAX_AGE_MS)
 }
 
 fn cache_holds_plan(
@@ -751,6 +772,35 @@ mod tests {
         fs::write(root.join(MARKER_NAME), b"{not json").unwrap();
         assert_eq!(status_for(&home, None).state, "none");
         fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn an_absolute_cache_spelled_with_dots_is_the_recorded_cache() {
+        assert!(same_cache(Path::new("/tmp/x/cache/../uv"), Path::new("/tmp/x/uv")));
+        assert!(same_cache(Path::new("/tmp/x/./uv/"), Path::new("/tmp/x/uv")));
+        assert!(!same_cache(Path::new("/tmp/x/other"), Path::new("/tmp/x/uv")));
+        // Relative spellings still match on their folded tail only.
+        assert!(same_cache(Path::new("./cache/../uv"), Path::new("/tmp/x/uv")));
+        assert!(!same_cache(Path::new("../"), Path::new("/tmp/x/uv")));
+    }
+
+    #[test]
+    fn a_marker_older_than_the_ceiling_reads_as_expired() {
+        let home = temp_home("expired-marker");
+        assert!(!marker_expired(&home));
+        write_prefetch(
+            &home,
+            serde_json::json!({"schema": MARKER_SCHEMA, "state": "ready", "created_at": now_ms() - MAX_AGE_MS - 1}),
+            true,
+        );
+        assert!(marker_expired(&home));
+        write_prefetch(
+            &home,
+            serde_json::json!({"schema": MARKER_SCHEMA, "state": "ready", "created_at": now_ms()}),
+            true,
+        );
+        assert!(!marker_expired(&home));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

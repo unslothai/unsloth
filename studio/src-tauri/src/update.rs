@@ -105,6 +105,19 @@ pub fn discard_prefetch(
     Ok(())
 }
 
+/// Drop the prepared update only if no prefetch is running: for a payload the status
+/// would report stale anyway, under the same lock, so a prefetch reserving its slot
+/// meanwhile keeps the directory it is about to write into.
+pub fn discard_prefetch_if_idle(prefetch_state: &PrefetchState, home: &std::path::Path) -> bool {
+    let _starts = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if is_prefetch_running(prefetch_state) {
+        return false;
+    }
+    crate::prefetch::discard(home)
+}
+
 /// Reserve the prefetch slot unless an update is running or starting, atomically with
 /// respect to `begin_update`. The reservation is held by the runner for the whole
 /// prefetch, so `is_prefetch_running` is true from here until it ends.
