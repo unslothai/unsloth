@@ -23287,9 +23287,23 @@ class LlamaCppBackend:
                         ),
                         may_shrink = bool((_spill_inputs or {}).get("context_policy_fit_only")),
                         emitted_ctx = int(effective_ctx or 0) if "-c" in cmd else 0,
+                        # A ratio the user typed, or one inherited through the env
+                        # twin, reaches the child either way (the extras are appended
+                        # after this block), so the plan emits no second one.
+                        user_tensor_split = bool(
+                            _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
+                            or str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
+                        ),
                     )
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
+                        if "--tensor-split" in _spill_flags:
+                            # Positional over the child's device list, and the plan's
+                            # device order is the ascending physical/PCI order
+                            # _get_gpu_memory reports, so the child's enumeration has
+                            # to be pinned to match it (the env block below reads
+                            # this the same way it does for a manual ratio).
+                            manual_tensor_split_emitted = True
                         self._spill_plan_restore = {}
                         self._spill_plan_append = []
                         _spill_ctx_locals_before = None
@@ -28759,10 +28773,18 @@ class LlamaCppBackend:
         requested_ctx: int = 0,
         may_shrink: bool = True,
         emitted_ctx: int = 0,
+        *,
+        user_tensor_split: bool = False,
     ) -> "list[str]":
         """The argv tokens for ``plan``, or ``[]`` when it must not be emitted. One flag per
         pattern: llama-server ACCUMULATES repeated ``-ot`` (common/arg.cpp:2657 push_backs into
         the shared override vector).
+
+        ``user_tensor_split`` says a ``--tensor-split`` / ``-ts`` the user typed (or
+        inherited through ``LLAMA_ARG_TENSOR_SPLIT``) reaches the child, in which
+        case the plan does not emit one of its own: theirs is the ratio the planner
+        already modelled the rows against, and last-wins between two of the same
+        flag is not a decision to make silently.
         """
         if plan is None or plan.insufficient or plan.declined_by_gate:
             return []
@@ -28785,7 +28807,19 @@ class LlamaCppBackend:
             return []
         # A plan that spilled nothing but reshaped the launch is still Unsloth's placement, so
         # it takes the same pin the proved arm does.
-        return ["-ngl", "-1", "--fit", "off", *tokens]
+        flags = ["-ngl", "-1", "--fit", "off", *tokens]
+        # ...and the pin is exactly why the split has to go with it. --fit off skips
+        # common/fit.cpp, so llama.cpp falls back to its default split, which is the
+        # free VRAM ggml_backend_dev_memory reads IN THE CHILD (llama-model.cpp:1462-1477)
+        # -- not the pre-launch snapshot this plan was budgeted on, and short of it by
+        # at least one CUDA primary context per card. On unequal cards that moves a
+        # layer boundary the plan assumed. Integer layer counts, the way
+        # common/fit.cpp:555 writes them; LAST, so a site that narrows the argv by
+        # dropping this pair (the arch gate does) leaves the rest of the block
+        # contiguous for the revocation.
+        if len(plan.device_layer_counts) > 1 and not user_tensor_split:
+            flags.extend(["--tensor-split", ",".join(str(n) for n in plan.device_layer_counts)])
+        return flags
 
     def _drop_tensor_spill(self, run_cmd: "list[str]", why: str) -> "list[str]":
         """Take the spill plan back out of an argv and restore ``--fit on``.
@@ -28803,6 +28837,16 @@ class LlamaCppBackend:
         if not self._spill_plan_flags:
             return run_cmd
         stripped = _without_subsequence(run_cmd, self._spill_plan_flags)
+        if stripped == run_cmd and "--tensor-split" in self._spill_plan_flags:
+            # The plan's own --tensor-split is the one token in the block another
+            # site may have taken back out (_without_tensor_split, when the arch
+            # gate masks a card out), and the run is matched contiguously. Retry
+            # without that pair rather than leave -ngl -1 --fit off standing.
+            _ts_at = self._spill_plan_flags.index("--tensor-split")
+            stripped = _without_subsequence(
+                run_cmd,
+                [*self._spill_plan_flags[:_ts_at], *self._spill_plan_flags[_ts_at + 2 :]],
+            )
         if stripped == run_cmd:
             return run_cmd
         # The drafter drop and the projector pin are NOT undone: both reduce VRAM, the

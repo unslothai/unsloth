@@ -294,6 +294,59 @@ def test_a_full_spill_uses_the_compact_global_pattern():
     assert r"\d+" in plan.ot_patterns[0]
 
 
+def test_a_multi_device_plan_pins_the_split_it_was_budgeted_on():
+    """--fit off means llama.cpp never re-fits, so the split has to be pinned.
+
+    Without -ts the child falls back to the default split, which is the free VRAM
+    ggml_backend_dev_memory reads IN THE CHILD (llama-model.cpp:1462-1477). That
+    is not the pre-launch snapshot this plan was budgeted on: it is short by at
+    least a CUDA primary context per card, and on a 24 GiB plus 10 GiB pair the
+    normalised ratio moves far enough to shift a layer boundary the plan assumed.
+
+    Integer layer counts per device, the way common/fit.cpp:555 writes them
+    (tensor_split[id] = ngl_per_device[id].n_layer).
+    """
+    layout = q4_layout()
+    # A hybrid layout needs the per-layer cache vector before the per-device
+    # arithmetic will run at all; 0 marks the rows that hold recurrent state.
+    weights = [1 if i % 4 == 3 else 0 for i in range(layout.n_layers)]
+    opts = PlanOptions(trust_device_row_model = True)
+    rows = layout.n_layers + 1
+
+    plan = plan_placement(
+        layout, [24 * GIB, 10 * GIB], 64 * GIB, 8192, opts = opts, kv_layer_weights = weights
+    )
+    assert plan.priced and plan.changed
+    assert sum(plan.device_layer_counts) == rows, "every row is owned by exactly one device"
+    assert plan_to_args(plan)[-2:] == [
+        "--tensor-split",
+        ",".join(str(n) for n in plan.device_layer_counts),
+    ]
+
+    # The counts REPRODUCE the assignment they were read off, rather than merely
+    # resembling it: llama.cpp prefix-sums and normalises whatever it is given, so
+    # a device whose share is c owns exactly c rows.
+    assert _device_slots(rows, plan.device_layer_counts) == _device_slots(
+        rows, [24 * GIB, 10 * GIB]
+    )
+
+    # One device: no split to pin, and #28218 measured a 20x slowdown from -ts on
+    # a single GPU.
+    single = plan_placement(layout, [24 * GIB], 64 * GIB, 8192, opts = opts)
+    assert single.device_layer_counts == ()
+    assert "--tensor-split" not in plan_to_args(single)
+
+
+def test_a_plan_that_is_never_emitted_pins_no_split():
+    """An abstention leaves llama.cpp's own placement alone. Pinning a split onto
+    it would be a launch of its own, and plan_to_args must stay empty."""
+    layout = q4_layout()
+    starved = plan_placement(layout, [4 * GIB, 4 * GIB], 64 * GIB, 131072)
+    assert starved.insufficient is True
+    assert starved.device_layer_counts == ()
+    assert plan_to_args(starved) == []
+
+
 def test_plan_to_args_shape():
     layout = q4_layout()
     args = plan_to_args(plan_placement(layout, [12 * GIB], 64 * GIB, 8192))

@@ -547,6 +547,95 @@ def test_repeated_ot_flags_rather_than_a_joined_value():
     assert ";" not in " ".join(tokens)
 
 
+# ------------------------------------------------ the split the plan modelled
+
+
+def _multi_device_plan(counts = (46, 19)) -> Plan:
+    """A plan that spills and was budgeted against ``counts`` rows per device."""
+    return Plan(
+        changed = True,
+        priced = True,
+        n_ctx = 32768,
+        ot_patterns = (FFN_SPILL_PATTERN,),
+        spilled_blocks = (0,),
+        device_layer_counts = counts,
+    )
+
+
+def test_a_multi_device_plan_emits_the_split_it_was_budgeted_on():
+    """--fit off leaves the child free to guess the split, and it guesses wrong.
+
+    common/fit.cpp never runs under the pin, so llama.cpp falls back to its
+    default split: the free VRAM ggml_backend_dev_memory reads in the CHILD
+    (llama-model.cpp:1462-1477), which is short of the pre-launch snapshot the
+    plan was budgeted on by at least a CUDA primary context per card. Equal cards
+    absorb a uniform shift in the normalised ratio; a 24 GiB plus 10 GiB pair does
+    not, and upper_bound moves a layer boundary the plan assumed.
+    """
+    flags = LlamaCppBackend._spill_plan_flags_for(_multi_device_plan())
+    assert flags[:4] == ["-ngl", "-1", "--fit", "off"]
+    assert flags[-2:] == ["--tensor-split", "46,19"]
+    # Integer layer counts, as common/fit.cpp:555 writes them, not a ratio.
+    assert re.fullmatch(r"\d+(,\d+)+", flags[-1])
+
+
+def test_one_device_and_a_user_ratio_both_emit_no_split():
+    """Two ways the plan must keep its hands off the split.
+
+    A single GPU has none to pin, and -ts there measured a 20x slowdown
+    (ggml-org/llama.cpp#28218). A ratio the user typed or inherited reaches the
+    child anyway, and it is the one the planner already modelled the rows
+    against, so a second copy of the flag decides last-wins silently.
+    """
+    assert "--tensor-split" not in LlamaCppBackend._spill_plan_flags_for(
+        _multi_device_plan(counts = ())
+    )
+    assert "--tensor-split" not in LlamaCppBackend._spill_plan_flags_for(
+        _multi_device_plan(counts = (65,))
+    )
+    assert "--tensor-split" not in LlamaCppBackend._spill_plan_flags_for(
+        _multi_device_plan(), user_tensor_split = True
+    )
+
+
+def test_the_revocation_takes_the_split_back_out_too():
+    """Every retry that revokes the plan re-places the model, so the split the
+    plan pinned describes a launch that is no longer happening."""
+    stub = _Stub()
+    stub._spill_plan_flags = LlamaCppBackend._spill_plan_flags_for(_multi_device_plan())
+    cmd = ["llama-server", "-m", "x.gguf", *stub._spill_plan_flags, "--port", "8080"]
+    got = stub._drop_tensor_spill(cmd, "noflash")
+    assert "--tensor-split" not in got and "-ot" not in got
+    assert got == ["llama-server", "-m", "x.gguf", "--port", "8080", "--fit", "on"]
+
+    # And when something else took the pair out first -- the arch gate drops any
+    # --tensor-split when it masks a card out -- the rest of the block still goes,
+    # rather than leaving -ngl -1 --fit off standing because the run no longer
+    # matches contiguously.
+    gated = LlamaCppBackend._without_tensor_split(cmd)
+    assert gated is not None and "--tensor-split" not in gated
+    got_gated = stub._drop_tensor_spill(gated, "arch gate")
+    assert "-ot" not in got_gated
+    assert got_gated == ["llama-server", "-m", "x.gguf", "--port", "8080", "--fit", "on"]
+
+
+def test_the_launch_path_pins_the_device_order_it_split_against(monkeypatch):
+    """The shares are POSITIONAL over the child's device list.
+
+    The plan's device order is the ascending physical/PCI order _get_gpu_memory
+    reports, while the CUDA runtime defaults to FASTEST_FIRST, so the child has to
+    be pinned to PCI order exactly as it is for a manual ratio -- otherwise share
+    0 is applied to whichever card CUDA decided to enumerate first.
+    """
+    compact = "".join(_load_model_source().split())
+    assert 'if"--tensor-split"in_spill_flags:' in compact
+    # Two sites set it now: the manual per-GPU ratio, and the plan's own split.
+    assert compact.count("manual_tensor_split_emitted=True") == 2
+    # And the predicate really is read from the launch, not defaulted.
+    assert "user_tensor_split=bool(" in compact
+    assert "_extra_args_set_any_flag(extra_args,_TENSOR_SPLIT_FLAGS)" in compact
+
+
 # ---------------------------------------------------- the argv, structurally
 
 

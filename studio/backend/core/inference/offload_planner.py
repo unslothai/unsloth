@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Callable, Collection, Mapping, Optional, Sequence, Union
 
@@ -253,6 +253,12 @@ class Plan:
     # context, so FIT_ONLY must not retry smaller.
     veto: bool = False
     priced: bool = False
+    # Layer rows per device under the split this plan was budgeted against, in the
+    # caller's device order, or () when there is only one device or the split could
+    # not be modelled. Emitted as ``-ts``: the plan pins the launch with ``--fit
+    # off``, so without it llama.cpp re-derives the split from the free VRAM its own
+    # child reads, which is not the number this was planned on.
+    device_layer_counts: tuple[int, ...] = field(default_factory = tuple)
 
     @property
     def spills_anything(self) -> bool:
@@ -953,6 +959,70 @@ def max_context_for(
 
 
 def plan_placement(
+    layout: ModelLayout,
+    vram_bytes_per_device: Sequence[int],
+    host_ram_bytes: Optional[int],
+    requested_ctx: int,
+    *,
+    opts: Optional[PlanOptions] = None,
+    kv_bytes_floor: int = 0,
+    split_weights_per_device: Sequence[int] = (),
+    kv_layer_weights: Sequence[int] = (),
+) -> Plan:
+    """Decide the placement for one launch, and record the split it was decided on.
+
+    Everything below is :func:`_plan_placement`; this only attaches the per-device
+    layer counts the plan was budgeted against, so the launch can pin them with
+    ``-ts`` instead of letting the child guess the split again.
+    """
+    plan = _plan_placement(
+        layout,
+        vram_bytes_per_device,
+        host_ram_bytes,
+        requested_ctx,
+        opts = opts,
+        kv_bytes_floor = kv_bytes_floor,
+        split_weights_per_device = split_weights_per_device,
+        kv_layer_weights = kv_layer_weights,
+    )
+    # Only a plan that will really be emitted: an abstention leaves llama.cpp's own
+    # placement alone, and pinning a split onto it would be a launch of its own.
+    if not plan.priced or plan.insufficient or plan.declined_by_gate:
+        return plan
+    counts = _modelled_device_layers(layout, vram_bytes_per_device, split_weights_per_device)
+    return plan if not counts else replace(plan, device_layer_counts = counts)
+
+
+def _modelled_device_layers(
+    layout: ModelLayout,
+    vram_bytes_per_device: Sequence[int],
+    split_weights_per_device: Sequence[int] = (),
+) -> tuple[int, ...]:
+    """Rows per device under llama.cpp's own split, or () for one device.
+
+    The rows are the ones :func:`_device_slots` hands out, which is
+    ``n_layers + 1``: the last is the output row, which goes to the last device
+    (llama-model.cpp:1517). Handed back as ``-ts``, integer counts per device the
+    way ``common/fit.cpp:555`` writes them (``tensor_split[id] =
+    ngl_per_device[id].n_layer``), and they reproduce this assignment exactly --
+    llama.cpp prefix-sums the shares and normalises, so a device whose count is
+    ``c`` owns exactly ``c`` rows.
+    """
+    if len(vram_bytes_per_device) <= 1:
+        return ()
+    n_slots = layout.n_layers + 1
+    if n_slots <= 1:
+        return ()
+    try:
+        slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
+    except ValueError:
+        # All-zero weights: llama.cpp errors on that split rather than producing
+        # one, and the planner has already declined for the same reason.
+        return ()
+    return tuple(len(rows) for rows in slots)
+
+
+def _plan_placement(
     layout: ModelLayout,
     vram_bytes_per_device: Sequence[int],
     host_ram_bytes: Optional[int],
@@ -2342,6 +2412,13 @@ def plan_to_args(plan: Plan) -> list[str]:
         args.extend(["--parallel", str(plan.n_parallel)])
     if plan.cache_ram_mib >= 0:
         args.extend(["--cache-ram", str(plan.cache_ram_mib)])
+    # The plan is pinned with --fit off, so nothing downstream re-fits it: without
+    # the split it was budgeted against, llama.cpp sizes the rows from the free
+    # VRAM its own child reads (llama-model.cpp:1462-1477), which has already
+    # moved by at least a CUDA primary context per card. On unequal cards that
+    # shifts a layer boundary the plan assumed.
+    if len(plan.device_layer_counts) > 1:
+        args.extend(["--tensor-split", ",".join(str(n) for n in plan.device_layer_counts)])
     return args
 
 
