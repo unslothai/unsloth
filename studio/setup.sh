@@ -2214,6 +2214,10 @@ _SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
 _sidecar_top_up_tiktoken() {
     _stt_dir="$1"
     _stt_label="$2"
+    # Under the offline keep this would reach for the network through fast_install's pip
+    # fallback, and for a tier whose rebuild was deferred it would create a directory
+    # holding tiktoken alone.
+    [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
     # The payload AND a complete dist-info (RECORD is written last), as
     # Repair-SidecarTiktoken and the runtime's _optional_package_absent check: an
     # interrupted install can leave the dist-info with no package beside it, or METADATA

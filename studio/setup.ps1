@@ -6000,6 +6000,10 @@ function Repair-SidecarTiktoken {
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$DirName
     )
+    # Under the offline keep this would reach for the network through Fast-Install's pip
+    # fallback, and for a tier whose rebuild was deferred it would create a directory
+    # holding tiktoken alone.
+    if ($script:OfflineFastPath) { return }
     # The payload AND a complete dist-info (RECORD is written last), as
     # _sidecar_top_up_tiktoken and the runtime's _optional_package_absent check: an
     # interrupted install can leave the dist-info with no package beside it, or METADATA
@@ -6015,17 +6019,6 @@ function Repair-SidecarTiktoken {
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
     $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf })
-
-
-    # Under the offline keep this would reach for the network through Fast-Install's pip
-    # fallback, and for a tier whose rebuild was deferred it would create a directory
-    # holding tiktoken alone.
-    if ($script:OfflineFastPath) { return }
-    # The payload, not the dist-info alone: an interrupted install can leave the
-    # dist-info directory with no package beside it, the sidecar predicate accepts the
-    # sidecar (tiktoken is unpinned and optional), and a dist-info-only check would then
-    # skip this top-up forever while Qwen tokenizers keep failing.
-    $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue)
     $payload = Join-Path $TargetDir "tiktoken"
     if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
     # Not present, so every tiktoken dist-info still here describes a payload that is
