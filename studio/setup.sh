@@ -2167,6 +2167,15 @@ _sidecar_top_up_tiktoken() {
         fi
     done
     unset _stt_meta
+    # Not present, so every tiktoken dist-info still here describes a payload that is
+    # missing or damaged. It goes before the install: --upgrade replaces the package
+    # but lands the new version's dist-info under its own name beside the old one, and
+    # importlib.metadata may keep answering the stale version (the runtime's
+    # _stage_optional_package clears the others for the same reason).
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        [ -d "$_stt_info" ] && rm -rf "$_stt_info"
+    done
+    unset _stt_info
     # --upgrade: a --target install without it does not replace existing files, so a
     # damaged tiktoken/ directory an interrupted install left would be kept under fresh
     # metadata and read as present on the next run.
