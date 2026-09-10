@@ -9384,12 +9384,14 @@ class LlamaCppBackend:
 
     @staticmethod
     def _nvidia_link_query() -> Optional[str]:
-        """nvidia-smi's index,gen,width rows, or None when the tool is absent or fails."""
+        """nvidia-smi's index,gen,width rows (the NEGOTIATED maximum, not the current state:
+        an idle card sits at gen 1 x1 and this runs before the load), or None when the tool
+        is absent or fails."""
         try:
             result = subprocess.run(
                 [
                     "nvidia-smi",
-                    "--query-gpu=index,pcie.link.gen.current,pcie.link.width.current",
+                    "--query-gpu=index,pcie.link.gen.max,pcie.link.width.max",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output = True,

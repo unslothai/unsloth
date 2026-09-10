@@ -3426,9 +3426,10 @@ def test_a_readable_device_still_answers_beside_a_broken_row():
     assert _link("0, [N/A], [N/A]\n1, 4, 16\n") == pytest.approx(_link("1, 4, 16"))
 
 
-def test_the_link_query_asks_nvidia_smi_for_the_current_link():
-    """The negotiated width, not the maximum: a card idles at x1 but trains up under
-    load, and gen.current is what the driver reports for the active link."""
+def test_the_link_query_asks_nvidia_smi_for_the_negotiated_maximum_link():
+    """gen.max and width.max, never the current state: the probe runs before the load,
+    when a consumer card idles at gen 1 x1, and that would price a PCIe 4 x16 slot as
+    a 0.2 GiB/s link and decline every spill it would win."""
     seen = {}
 
     class _Result:
@@ -3443,7 +3444,7 @@ def test_the_link_query_asks_nvidia_smi_for_the_current_link():
     with patch("subprocess.run", _run):
         assert LlamaCppBackend._nvidia_link_query() == "0, 5, 16\n"
     assert seen["cmd"][0] == "nvidia-smi"
-    assert "--query-gpu=index,pcie.link.gen.current,pcie.link.width.current" in seen["cmd"]
+    assert "--query-gpu=index,pcie.link.gen.max,pcie.link.width.max" in seen["cmd"]
     assert "--format=csv,noheader,nounits" in seen["cmd"]
     assert seen["timeout"] == 10
 
