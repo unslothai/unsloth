@@ -54,9 +54,6 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 # cannot close the gap, and paid once per run.
 RAPID_FIRST_TURN_HOLD_S = 3.0
 
-# Wall-clock cap for the whole script (healthy run is 5-9 min).
-WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
-
 PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 
 # Default stays Chromium for CI. Local runs can select firefox/webkit or a Chromium channel such as chrome/msedge.
@@ -72,15 +69,49 @@ CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
+# Budget for ONE wait, restarted by `wall_kick()`. It must outlast the longest single wait
+# or it hard-exits mid-wait and the run says only "wedged somewhere". All three candidates
+# are env vars, so take the max of all three rather than whichever wins at today's values:
+# the rapid-submit settle at 2x the turn timeout (1080s where studio-mac-ui-smoke.yml sets
+# 540000, against the 720s this was pinned at), the load fetch (600s on the Kaggle lane),
+# and the ordinary fetch. Not a total: `send_and_wait` budgets 4x the turn timeout across
+# seven turns. Linux, raising none of them, keeps its 720s floor.
+_WALL_FLOOR_S = 720.0
+_LONGEST_WAIT_S = max(
+    (TURN_TIMEOUT_MS / 1000) * 2,
+    LOAD_FETCH_TIMEOUT_MS / 1000,
+    FETCH_TIMEOUT_MS / 1000,
+)
+WALL_TIMEOUT_S = float(
+    os.environ.get(
+        "STUDIO_UI_WALL_TIMEOUT_S",
+        max(_WALL_FLOOR_S, _LONGEST_WAIT_S + 120),
+    )
+)
+# Off by default, so the run has no total; see `_WallClockWatchdog`. Set by the callers
+# that must size an outer bound around this process: tests/kaggle/studio_gpu and
+# .github/scripts/run-studio-permission-browser.sh.
+TOTAL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_TOTAL_TIMEOUT_S", "0")) or None
+
 _n = [0]
+
+_watchdog = None  # armed below; everything above it runs before there is one
+
+
+def wall_kick():
+    """Restart the budget. Call after a bounded wait, or the next inherits its leftover."""
+    if _watchdog is not None:
+        _watchdog.kick()
 
 
 def step(s):
     print(f"[ui] STEP {s}", flush = True)
+    wall_kick()
 
 
 def info(s):
     print(f"[ui] {s}", flush = True)
+    wall_kick()
 
 
 def fail(m):
@@ -674,6 +705,7 @@ with sync_playwright() as p:
         WALL_TIMEOUT_S,
         label = "ui",
         info = info,
+        total_deadline_s = TOTAL_TIMEOUT_S,
     )
     # Pre-flight: macos-14 can surface a 200 /api/health while the auth DB is still migrating;
     # this 30s probe catches that gap before we sink 60s into a change-password timeout.
@@ -766,6 +798,9 @@ with sync_playwright() as p:
     # page/reload between tries so a mid-try rerender doesn't poison the next.
     form_err: Exception | None = None
     for _form_attempt in range(3):
+        # Forward progress that reports itself with bare print(), so nothing else here
+        # resets the budget: two failed attempts spend the whole Linux 720s.
+        wall_kick()
         try:
             page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
             try:
@@ -855,6 +890,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     last_err: Exception | None = None
     for _attempt in range(2):
+        wall_kick()  # as in the change-password loop: the retry logs with bare print()
         try:
             composer.wait_for(state = "visible", timeout = 60_000)
             last_err = None
@@ -1118,6 +1154,7 @@ with sync_playwright() as p:
             state = "attached",
             timeout = TURN_TIMEOUT_MS,
         )
+        wall_kick()
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -1131,6 +1168,7 @@ with sync_playwright() as p:
                 state = "detached",
                 timeout = TURN_TIMEOUT_MS,
             )
+        wall_kick()
 
         # 2. Snapshot total bubble count before send; we wait for it to grow by exactly 1. We do NOT require
         #    non-empty text: an empty assistant response is legitimate (gemma-3-270m does this at temp 0), and the
@@ -1165,6 +1203,7 @@ with sync_playwright() as p:
             arg = bubbles_before + 1,
             timeout = TURN_TIMEOUT_MS,
         )
+        wall_kick()
 
         # 4. Wait for this turn's streaming to finish. Stop may never appear (gemma-3-270m can finish before it
         #    paints), so its appearance is best-effort; then wait for it to detach.
@@ -1176,6 +1215,7 @@ with sync_playwright() as p:
             )
         except Exception:
             pass
+        wall_kick()
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -1362,6 +1402,8 @@ with sync_playwright() as p:
     # Settle before the five-turn sequence below: two bubbles, nothing streaming, nothing queued.
     # What the turns SAID is not checked here and never was;
     # the queue behaviour this step exists to prove is `state.queueSeen` above.
+    # The longest single wait in the script, so it starts on a full budget.
+    wall_kick()
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(

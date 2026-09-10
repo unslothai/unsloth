@@ -744,23 +744,89 @@ def evaluate_fetch(
     return last or {"status": 0, "body": None, "error": "no attempt made"}
 
 
-# Wall-clock watchdog.
-# A browser wedge (CPU-pinned JS, silent renderer crash, asyncio deadlock) can still hang the script. A daemon Timer
-# calls os._exit(2) after deadline_s; exit code 2 lets the workflow's `set -e` propagate. Pick deadline_s above the
-# slowest healthy run (macos-14 cold cache ~7-9 min) but under the 30-min cap.
+class _WallClockWatchdog:
+    """A `deadline_s` budget that `kick()` restarts; never kicking is the absolute wall
+    a `threading.Timer` gave. Timer has no reschedule, hence a thread over a live deadline.
+    """
+
+    def __init__(
+        self,
+        deadline_s: float,
+        on_expiry: Callable[[], None],
+        total_deadline_s: float | None = None,
+    ) -> None:
+        self._budget_s = float(deadline_s)
+        self._on_expiry = on_expiry
+        self._lock = threading.Lock()
+        started = time.monotonic()
+        # A kick moves the deadline forever, so a caller sizing an outer bound has nothing
+        # to size against. `total_deadline_s` is a ceiling no kick moves, which makes that
+        # bound a sum. Off by default: a ceiling is what cuts a wait off mid-flight.
+        self._ceiling = started + float(total_deadline_s) if total_deadline_s else None
+        self._deadline = self._clamp(started + self._budget_s)
+        self._cancelled = threading.Event()
+        self._thread = threading.Thread(target = self._run, daemon = True)
+        self.kicked = False
+
+    def at_ceiling(self) -> bool:
+        """Did the total cap, rather than the per-wait budget, decide the deadline?"""
+        with self._lock:
+            return self._ceiling is not None and self._deadline >= self._ceiling
+
+    def _clamp(self, deadline: float) -> float:
+        return deadline if self._ceiling is None else min(deadline, self._ceiling)
+
+    def start(self) -> "_WallClockWatchdog":
+        self._thread.start()
+        return self
+
+    def kick(self) -> None:
+        """Progress was made: restart the budget."""
+        with self._lock:
+            self.kicked = True
+            self._deadline = self._clamp(time.monotonic() + self._budget_s)
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                if not self._cancelled.is_set():
+                    self._on_expiry()
+                return
+            # Capped so a mid-sleep kick is seen; the deadline is re-read, not trusted.
+            if self._cancelled.wait(min(remaining, 1.0)):
+                return
+
+
+# For a wedge no per-action timeout can bound. Exit 2 propagates through the workflow's `set -e`. Keep deadline_s
+# above the longest single wait, or that wait is cut off before it can name itself.
 def install_wall_clock_watchdog(
     deadline_s: float,
     *,
     label: str = "playwright",
     info: Callable[[str], None] | None = None,
-) -> threading.Timer:
-    """Start a daemon Timer that hard-exits the process at `deadline_s`; returned
-    so the caller can `.cancel()` on clean exit (daemonised, dies with process)."""
+    total_deadline_s: float | None = None,
+) -> _WallClockWatchdog:
+    """Hard-exit `deadline_s` after the last `kick()`, or at `total_deadline_s` from arming
+    if that comes first; returned so the caller can `.cancel()`."""
 
     def _kaboom() -> None:
+        # A caller that kicks is measuring inactivity, one that does not is measuring the
+        # whole run. Saying "no step" to a script that never reports one sends its reader
+        # looking for a step that was never going to come.
+        if total_deadline_s and watchdog.at_ceiling():
+            spent = f"hit the {total_deadline_s:.0f}s total cap"
+        elif watchdog.kicked:
+            spent = f"{deadline_s:.0f}s with no step reported"
+        else:
+            spent = f"hit {deadline_s:.0f}s wall-clock deadline"
         msg = (
-            f"[{label}] WATCHDOG: hit {deadline_s:.0f}s wall-clock "
-            f"deadline; forcing exit(2). The script wedged somewhere "
+            f"[{label}] WATCHDOG: {spent}; "
+            f"forcing exit(2). The script wedged somewhere "
             f"the per-action timeouts could not bound. Inspect the "
             f"most recent step printed above to localise."
         )
@@ -769,14 +835,24 @@ def install_wall_clock_watchdog(
             sys.stderr.flush()
         except Exception:
             pass
+        # The last step printed is where the script ENTERED, not where it blocked. Under the
+        # sync API the main thread stops at the driver loop: driver vs our code, no finer.
+        try:
+            import faulthandler
+            faulthandler.dump_traceback(file = sys.stderr, all_threads = True)
+            sys.stderr.flush()
+        except Exception:
+            pass
         os._exit(2)
 
-    timer = threading.Timer(deadline_s, _kaboom)
-    timer.daemon = True
-    timer.start()
+    # Bound before started: at deadline_s <= 0 the thread reaches _kaboom during start(),
+    # and a _kaboom that closed over an unbound name dies of NameError in that thread
+    # instead of exiting, leaving the run with no watchdog at all.
+    watchdog = _WallClockWatchdog(deadline_s, _kaboom, total_deadline_s)
+    watchdog.start()
     if info is not None:
-        info(f"watchdog armed: hard-exit at {deadline_s:.0f}s")
-    return timer
+        info(f"watchdog armed: hard-exit {deadline_s:.0f}s after the last step")
+    return watchdog
 
 
 def click_forced(

@@ -126,6 +126,14 @@ MIN_FREE_GB = 25.0
 # once per session before anything needs it. Generous, because the cost of
 # being too tight is a red that reads like a selection bug.
 LLAMA_CPP_INSTALL_TIMEOUT_S = 900.0
+# STUDIO_UI_WALL_TIMEOUT_S measures silence between progress reports, so it cannot size a
+# backstop: the driver exits one budget after its LAST step, and any fixed number here is a
+# guess a still-progressing run can beat. So hand the driver a total, which no kick moves,
+# and the backstop becomes a sum. Six times the lane's ~10 min healthy pass, inside its
+# 120 min job. Losing the race costs the driver's traceback: SIGKILL leaves
+# TimeoutExpired holding no stderr.
+UI_DRIVER_TOTAL_TIMEOUT_S = 3600.0
+UI_DRIVER_PROC_TIMEOUT_S = UI_DRIVER_TOTAL_TIMEOUT_S + 300.0
 # How long to let VRAM fall after an unload before calling it the baseline.
 # 12 x 2.5s bounds the wait at 30s, which is well past the ~3s a llama-server
 # takes to exit on the models this harness loads, without stalling the run if
@@ -2523,6 +2531,7 @@ class Payload:
                 # a cached 270M model. Here the model is larger and the box is
                 # busier.
                 "STUDIO_UI_WALL_TIMEOUT_S": str(self.args.ui_wall_timeout),
+                "STUDIO_UI_TOTAL_TIMEOUT_S": str(UI_DRIVER_TOTAL_TIMEOUT_S),
                 "STUDIO_UI_LOAD_TIMEOUT_MS": "600000",
                 "STUDIO_UI_TURN_TIMEOUT_MS": "180000",
                 "PYTHONUNBUFFERED": "1",
@@ -2537,7 +2546,7 @@ class Payload:
                 env = env,
                 capture_output = True,
                 text = True,
-                timeout = self.args.ui_wall_timeout + 300,
+                timeout = UI_DRIVER_PROC_TIMEOUT_S,
             )
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:

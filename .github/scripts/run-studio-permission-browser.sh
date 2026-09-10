@@ -97,7 +97,11 @@ export STUDIO_OLD_PW="$old_password"
 export STUDIO_NEW_PW="$new_password"
 export STUDIO_UI_STRICT=1
 export STUDIO_UI_PERMISSION_ONLY=1
+# 240s is a per-browser cap, and three browsers run in one step. The wall is the budget
+# between two progress reports now, so it no longer bounds a whole invocation on its own:
+# the total is what holds this to four minutes per browser.
 export STUDIO_UI_WALL_TIMEOUT_S=240
+export STUDIO_UI_TOTAL_TIMEOUT_S=240
 export STUDIO_PLAYWRIGHT_BROWSER="$browser"
 export PW_ART_DIR="$artifact_dir"
 if [ -n "$channel" ]; then
