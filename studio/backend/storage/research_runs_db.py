@@ -175,12 +175,8 @@ def _bind_assistant_locked(
     # Only bind to an empty placeholder or this run's own message: an untagged reply carries parts
     # _update_assistant drops on completion, so binding one silently overwrites an existing answer.
     parts = _loads(message["content_json"], [])
-    # A model may narrate before it hands off ("let me research that") in the same message
-    # as the structured deep_research call. That preamble is not an existing answer, and
-    # reading it as one strands the run behind a 409 while the composer looks as though
-    # research started and stopped. Scoped to messages that actually carry the call, so an
-    # ordinary reply under the same turn is still protected. Source parts never appear on a
-    # preamble -- only on a real completed answer -- so they keep refusing the bind alone.
+    # A preamble beside the deep_research call is not a prior answer, so only text WITHOUT the
+    # handoff refuses the bind. Source parts, which only a finished answer carries, still do.
     has_research_handoff = any(
         isinstance(part, dict)
         and part.get("type") == "tool-call"
